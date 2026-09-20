@@ -27,7 +27,8 @@ export function logout(env = process.env) {
 
 function spawnBridge(args, { port = DEFAULT_PORT, env = process.env, stdio = "pipe" } = {}) {
   return spawn(process.execPath, [
-    "--experimental-strip-types",
+    "--import",
+    "tsx",
     freebuffEntrypoint(),
     ...args,
   ], {
