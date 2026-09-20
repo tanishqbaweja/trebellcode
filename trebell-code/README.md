@@ -56,3 +56,28 @@ The agent runtime is OpenAI Codex, Apache-2.0 licensed. Trebell Code retains the
 The bundled Freebuff compatibility bridge is derived from **chenjh16/freebuff2api**, MIT licensed. Its original license is retained under `vendor/freebuff2api/LICENSE`.
 
 See `NOTICE` and `THIRD_PARTY_NOTICES.md`.
+
+
+## Graphical harness
+
+Trebell Code includes a local React/Vite agent interface inspired by modern desktop coding agents.
+
+```bash
+npm install
+npm run ui:build
+trebell gui
+```
+
+The GUI talks directly to Codex app-server over localhost WebSocket JSON-RPC, so thread history,
+turns, plan updates, shell commands, file changes, diffs, approvals, MCP activity, stop/interrupt,
+and tool events are surfaced from the real Codex runtime rather than simulated by the UI.
+The GUI's model picker is populated only from `GET /v1/models` on the local Freebuff bridge.
+
+For frontend-only development:
+
+```bash
+npm run gui:server
+npm run ui:dev
+```
+
+The Vite dev server proxies `/api` to the local GUI server.

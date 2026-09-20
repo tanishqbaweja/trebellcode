@@ -18,7 +18,7 @@ Usage:
   trebell signup               open Freebuff sign-up/login
   trebell logout               remove the locally stored Freebuff credential
   trebell models               list Freebuff models available to this account
-  trebell doctor               check the local Trebell Code installation
+  trebell doctor               check the local Trebell Code installation\n  trebell gui                  launch the Trebell Code graphical harness
 
 Run options:
   --model <id>                 select a Freebuff model

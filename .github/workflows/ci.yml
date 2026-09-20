@@ -24,6 +24,19 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npm test
       - run: npm run smoke:bridge
+      - name: Build Trebell GUI
+        run: npm run ui:build
+      - name: Install Chromium for UI test
+        run: npx playwright install --with-deps chromium
+      - name: Test Trebell GUI in Chromium
+        run: npm run ui:test
+      - name: Upload GUI screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trebell-code-ui
+          path: trebell-code/ui/test-results/trebell-code-ui.png
+          if-no-files-found: ignore
       - run: node ./bin/trebell.mjs --help
       - name: Verify Codex runtime is installed
         run: ./node_modules/.bin/codex --version

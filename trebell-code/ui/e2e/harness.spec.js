@@ -1,0 +1,20 @@
+import { test, expect } from "@playwright/test";
+
+test("Trebell Code harness renders and runs a complete demo turn", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByText("Trebell Code").first()).toBeVisible();
+  await expect(page.getByTestId("model-picker")).toBeVisible();
+  await expect(page.getByTestId("model-picker").locator("option")).toHaveCount(3);
+
+  const composer=page.getByTestId("composer");
+  await composer.fill("Build and validate a private local converter.");
+  await page.getByTestId("send").click();
+
+  await expect(page.getByText("Trebell Code is working…")).toBeVisible();
+  await expect(page.getByText("Setting up project structure")).toBeVisible();
+  await expect(page.getByText("Implemented the project structure")).toBeVisible({timeout:10000});
+
+  await page.getByText("Edit Files").click();
+  await expect(page.getByTestId("drawer")).toBeVisible();
+  await page.screenshot({path:"test-results/trebell-code-ui.png",fullPage:true});
+});
