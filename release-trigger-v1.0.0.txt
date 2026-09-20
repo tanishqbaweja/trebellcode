@@ -1,0 +1,1 @@
+Publish Trebell Code Desktop v1.0.0 after live Vyce browser-tool validation, final CI, and installed Windows validation.
