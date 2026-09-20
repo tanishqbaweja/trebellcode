@@ -321,7 +321,19 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
         try{
           const body=await readJsonBody(req);
           const provider=normalizeProviderId(body.provider||selectedProvider);
-          if("apiKey" in body && provider!=="freebuff") providers.setKey(provider,body.apiKey);
+          let previousKey=null;
+          if("apiKey" in body && provider!=="freebuff"){
+            previousKey=providers.key(provider);
+            providers.setKey(provider,body.apiKey);
+            if(String(body.apiKey||"").trim() && (provider==="agentrouter"||provider==="vyceai")){
+              try{
+                await providers.models(provider);
+              }catch(error){
+                providers.setKey(provider,previousKey);
+                throw new Error(`${providers.get(provider).name} API key validation failed: ${error instanceof Error?error.message:String(error)}`);
+              }
+            }
+          }
           const changed=provider!==selectedProvider;
           if(changed) state.updateSettings({modelProvider:provider});
           if(changed || ("apiKey" in body && provider===selectedProvider)) await restartAppServer(provider);
