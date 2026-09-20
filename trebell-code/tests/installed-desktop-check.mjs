@@ -50,6 +50,32 @@ try {
   }
   if(!mainPage) throw new Error("Installed Trebell renderer did not expose the desktop preload bridge.");
 
+  const providerSwitch=await mainPage.evaluate(async()=>{
+    const response=await fetch("/api/providers",{
+      method:"POST",
+      headers:{"content-type":"application/json"},
+      body:JSON.stringify({provider:"hcnsec",apiKey:"ci-dummy-key"}),
+    });
+    return await response.json();
+  });
+  if(providerSwitch?.selected!=="hcnsec"||!providerSwitch?.models?.includes("glm-5.3")){
+    throw new Error("Installed app could not switch to the HCNSec provider.");
+  }
+  let providerRuntime=null;
+  for(let attempt=0;attempt<30;attempt++){
+    providerRuntime=await mainPage.evaluate(()=>fetch("/api/runtime").then(r=>r.json())).catch(()=>null);
+    if(providerRuntime?.provider==="hcnsec"&&providerRuntime?.appServerReady)break;
+    await new Promise(r=>setTimeout(r,500));
+  }
+  if(providerRuntime?.provider!=="hcnsec"||!providerRuntime?.appServerReady){
+    throw new Error("Bundled Codex rejected the Responses-only HCNSec provider config.");
+  }
+  await mainPage.evaluate(()=>fetch("/api/providers",{
+    method:"POST",
+    headers:{"content-type":"application/json"},
+    body:JSON.stringify({provider:"freebuff"}),
+  }).then(r=>r.json()));
+
   const initial=await mainPage.evaluate(()=>window.trebellDesktop.background.get());
   if(typeof initial?.enabled!=="boolean") throw new Error("Background-mode state is unavailable.");
 
@@ -108,6 +134,7 @@ try {
     background:{initial,afterEnable,afterDisable},
     browser:{url:snapshot.url,title:snapshot.title,elements:snapshot.elements?.length||0,screenshotBytes:screenshot.dataUrl.length,cookieImport},
     voice,
+    providerCompatibility:{selected:providerSwitch.selected,runtime:providerRuntime},
   },null,2));
 } finally {
   try{await browser?.close();}catch{}
