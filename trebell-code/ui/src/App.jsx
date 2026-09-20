@@ -934,9 +934,9 @@ export default function App() {
         {(section==="chat" || section==="agent" || section==="new") && <>
           <Topbar title={activeTitle} running={running} stop={stop} openPanel={openPanelReal} renameThread={renameThread} shareThread={shareThread}/>
           <div className="conversation-scroll">
-            <UserBubble text={lastPrompt}/>
-            {(events.length>0 || running || assistantText) && <Timeline events={events} assistantText={assistantText} openPanel={setPanel}/>}
-            {!lastPrompt && <div className="welcome">
+            <ConversationMessages messages={messages}/>
+            {(events.length>0 || running || assistantText) && <Timeline events={events} assistantText={assistantText} openPanel={openPanelReal}/>}
+            {messages.length===0 && !lastPrompt && <div className="welcome">
               <div className="welcome-orb"><Sparkles size={28}/></div>
               <h1>What should Trebell build?</h1>
               <p>Give the agent a goal. It can plan, inspect files, run commands, edit code, use tools, and validate the result.</p>
