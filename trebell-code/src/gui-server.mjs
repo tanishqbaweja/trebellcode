@@ -18,6 +18,7 @@ import { TerminalManager } from "./terminal-manager.mjs";
 import { EnvironmentManager } from "./environment-manager.mjs";
 import { createRemoteControlServer } from "./remote-control.mjs";
 import { ProviderManager, normalizeProviderId } from "./provider-manager.mjs";
+import { startProviderBridge } from "./provider-bridge.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
   .then(text=>String(JSON.parse(text).version||"0.0.0"))
@@ -112,7 +113,7 @@ async function stopChildProcess(child){
   try{child.stderr?.destroy();}catch{}
 }
 
-function startAppServer({appPort,env=process.env,mock=false,provider="freebuff",providerManager=null}){
+function startAppServer({appPort,env=process.env,mock=false,provider="freebuff"}){
   if(mock) return { child:null, logs:[], targetUrl:null };
   ensureCodexConfig({port:DEFAULT_PORT,env,provider});
   const command=codexBin(env);
@@ -125,9 +126,7 @@ function startAppServer({appPort,env=process.env,mock=false,provider="freebuff",
   };
   const child=spawn(command,["app-server","--listen",`ws://127.0.0.1:${appPort}`],{
     cwd:process.cwd(),
-    env:providerManager
-      ? providerManager.childEnv(provider,{...env,CODEX_HOME:codexHome(env)})
-      : {...env,CODEX_HOME:codexHome(env)},
+    env:{...env,CODEX_HOME:codexHome(env)},
     windowsHide:true,
     shell:process.platform==="win32" && !command.toLowerCase().endsWith(".exe"),
     stdio:["ignore","pipe","pipe"],
@@ -176,9 +175,18 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
   const providers=new ProviderManager({env});
   let selectedProvider=normalizeProviderId(state.settings().modelProvider);
   if(state.settings().modelProvider!==selectedProvider) state.updateSettings({modelProvider:selectedProvider});
+  const providerBridgeLogs=[];
+  const providerBridge=mock?null:await startProviderBridge({
+    providerManager:providers,
+    provider:selectedProvider,
+    log:(message)=>{
+      providerBridgeLogs.push({at:Date.now(),stream:"provider-bridge",text:String(message)});
+      if(providerBridgeLogs.length>100) providerBridgeLogs.splice(0,providerBridgeLogs.length-100);
+    },
+  });
   ensureCodexConfig({port:DEFAULT_PORT,env,provider:selectedProvider});
   let bridge=null;
-  let appServer=startAppServer({appPort,env,mock,provider:selectedProvider,providerManager:providers});
+  let appServer=startAppServer({appPort,env,mock,provider:selectedProvider});
   let loginPromise=null;
   const checkpoints=new CheckpointService({state,env});
   const terminals=mock ? null : new TerminalManager({env});
@@ -193,8 +201,9 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
     const next=normalizeProviderId(providerId);
     await stopChildProcess(appServer?.child);
     selectedProvider=next;
+    providerBridge?.setProvider(selectedProvider);
     ensureCodexConfig({port:DEFAULT_PORT,env,provider:selectedProvider});
-    appServer=startAppServer({appPort,env,mock,provider:selectedProvider,providerManager:providers});
+    appServer=startAppServer({appPort,env,mock,provider:selectedProvider});
     if(!mock) await waitForCodexReady(appPort,15000).catch(()=>false);
     return selectedProvider;
   }
@@ -533,7 +542,7 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
         appServerReady:mock || await probeCodexReady(appPort),
         bridgeReady:selectedProvider==="freebuff" ? (mock || await health(DEFAULT_PORT)) : false,
         appServerExitCode:appServer?.child?.exitCode ?? null,
-        logs:(appServer?.logs || []).slice(-80),
+        logs:[...(providerBridgeLogs||[]),...(appServer?.logs||[])].sort((a,b)=>a.at-b.at).slice(-80),
       });
     }
     if(url.pathname==="/api/chat/direct" && req.method==="POST"){
@@ -754,6 +763,7 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
         remoteControl?.close(),
         stopChildProcess(appServer?.child),
         stopChildProcess(bridge?.child),
+        providerBridge?.close(),
       ]);
       remoteControl=null;
       await new Promise(resolve=>server.close(resolve));
