@@ -709,7 +709,7 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
         state:{projects:state.projects(),settings:state.settings(),threadMeta:state.listThreadMeta()},
         git:await gitInfo(cwd).catch(error=>({error:error.message})),
         terminalSessions:mock?[]:terminals.list(),
-        logs:(appServer?.logs||[]).slice(-100),
+        logs:[...(providerBridgeLogs||[]),...(appServer?.logs||[])].sort((a,b)=>a.at-b.at).slice(-100),
       });
     }
     if(url.pathname==="/api/stats") return json(res,200,statsSnapshot());
