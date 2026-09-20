@@ -89,6 +89,11 @@ export function createHandler(deps: HandlerDeps): (request: Request) => Promise<
           return openAIError(405, "method not allowed", "invalid_request_error", "");
         }
         return healthz(deps, startedAt);
+      case "/trebell/session-state":
+        if (request.method !== "GET") {
+          return openAIError(405, "method not allowed", "invalid_request_error", "");
+        }
+        return json(200, { sessions: deps.tokens.snapshots() });
       case "/v1/models":
         if (request.method !== "GET") {
           return openAIError(405, "method not allowed", "invalid_request_error", "");

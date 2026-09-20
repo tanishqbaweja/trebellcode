@@ -13,6 +13,12 @@ test("GUI server exposes mock bootstrap, Freebuff-only models, and health", asyn
     assert.ok(models.models.length>=1);
     assert.ok(models.models.every(id=>id.startsWith("freebuff/")));
 
+    const overview=await fetch(gui.url+"/api/freebuff/overview?model=freebuff/deepseek/deepseek-v4-flash&timezone=UTC").then(r=>r.json());
+    assert.equal(overview.loggedIn,true);
+    assert.equal(overview.derived.balance,86);
+    assert.equal(overview.derived.selectedPrice.current,10);
+    assert.equal(overview.streak.streak,6);
+
     const health=await fetch(gui.url+"/api/health").then(r=>r.json());
     assert.equal(health.ok,true);
   } finally {

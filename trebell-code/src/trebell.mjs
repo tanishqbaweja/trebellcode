@@ -6,7 +6,7 @@ import { credentialsPath, codexBin, freebuffEntrypoint, trebellHome } from "./pa
 import { chooseModel, health, isLoggedIn, listModels, logout, runLogin, startBridge } from "./freebuff.mjs";
 import { runCodex } from "./codex.mjs";
 
-export const VERSION = "0.3.0";
+export const VERSION = "0.4.0";
 
 export function printHelp() {
   console.log(`Trebell Code ${VERSION}

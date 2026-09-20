@@ -6,6 +6,7 @@ import {
   Link2, ListTodo, MemoryStick, MessageSquarePlus, Mic, MonitorDot, MoreHorizontal,
   Network, PanelRight, Play, Plus, Search, Send, Settings, Share2, Shell,
   ShieldCheck, Sparkles, SquareTerminal, WandSparkles, Wifi, X, Zap,
+  Coins, Flame, Clock3, RefreshCw, CircleDollarSign,
 } from "lucide-react";
 import { CodexRpcClient } from "./rpc.js";
 
@@ -34,6 +35,39 @@ const TOOL_META = [
   ["Browser", Globe2],
   ["Edit Files", FileCode2],
 ];
+
+
+function freebuffPrice(freebuff, model) {
+  return freebuff?.derived?.priceByModel?.[model] || (freebuff?.derived?.selectedModel===model ? freebuff?.derived?.selectedPrice : null);
+}
+
+function modelLabel(model, freebuff) {
+  const clean=model.replace(/^freebuff\//,"");
+  const price=freebuffPrice(freebuff,model);
+  if(!price) return clean;
+  if(price.dynamic) return `${clean} · dynamic`;
+  if(typeof price.current==="number") return `${clean} · ${price.current} FB/h${price.offPeakActive ? " off-peak" : ""}`;
+  return clean;
+}
+
+function FreebuffSummary({freebuff, model, openDetails}) {
+  const balance=freebuff?.derived?.balance;
+  const price=freebuffPrice(freebuff,model);
+  const status=freebuff?.derived?.sessionStatus || "none";
+  const streak=freebuff?.streak?.streak;
+  return (
+    <button className="freebuff-card" onClick={openDetails} data-testid="freebuff-card">
+      <div className="freebuff-card-head"><span><Coins size={17}/> Freebucks</span><b>{typeof balance==="number" ? balance : "—"}</b></div>
+      <div className="freebuff-mini-grid">
+        <div><small>Model</small><strong>{model ? model.replace(/^freebuff\//,"").split("/").at(-1) : "—"}</strong></div>
+        <div><small>Price</small><strong>{price?.dynamic ? "Dynamic" : typeof price?.current==="number" ? `${price.current} FB/h` : "—"}</strong></div>
+        <div><small>Session</small><strong className={status==="active" ? "good" : ""}>{status}</strong></div>
+        <div><small>Streak</small><strong>{typeof streak==="number" ? `${streak}d` : "—"}</strong></div>
+      </div>
+      <span className="freebuff-detail-link">View Freebuff account <span>→</span></span>
+    </button>
+  );
+}
 
 function relativeTime(epoch) {
   if (!epoch) return "";
@@ -93,6 +127,7 @@ function Sidebar({ section, setSection, threads, activeThreadId, openThread, que
     ["agent", Bot, "Agent Mode"],
     ["projects", Folder, "Projects"],
     ["templates", LayoutTemplate, "Templates"],
+    ["freebuff", CircleDollarSign, "Freebuff"],
     ["settings", Settings, "Settings"],
   ];
   const filtered = threads.filter((thread) => titleOf(thread).toLowerCase().includes(query.toLowerCase()));
@@ -211,7 +246,7 @@ function Timeline({ events, assistantText, openPanel }) {
   );
 }
 
-function Composer({ prompt, setPrompt, send, running, model, setModel, models, webSearch, setWebSearch, loggedIn, login, projectPath }) {
+function Composer({ prompt, setPrompt, send, running, model, setModel, models, webSearch, setWebSearch, loggedIn, login, projectPath, freebuff }) {
   return (
     <div className="composer-wrap">
       <textarea
@@ -234,7 +269,7 @@ function Composer({ prompt, setPrompt, send, running, model, setModel, models, w
             <button className="login-btn" onClick={login}>Sign in to Freebuff</button>
           ) : (
             <select data-testid="model-picker" value={model} onChange={(e)=>setModel(e.target.value)} aria-label="Freebuff model">
-              {models.map((id)=><option key={id} value={id}>{id.replace(/^freebuff\//,"")}</option>)}
+              {models.map((id)=><option key={id} value={id}>{modelLabel(id,freebuff)}</option>)}
             </select>
           )}
           <button className="mic-btn"><Mic size={18}/></button>
@@ -245,7 +280,7 @@ function Composer({ prompt, setPrompt, send, running, model, setModel, models, w
   );
 }
 
-function RightRail({ running, stats, events, approvals, resolveApproval, openPanel }) {
+function RightRail({ running, stats, events, approvals, resolveApproval, openPanel, freebuff, model, setSection }) {
   const completed = events.filter(e=>e.status==="done").length;
   const total = Math.max(events.length,1);
   return (
@@ -269,6 +304,7 @@ function RightRail({ running, stats, events, approvals, resolveApproval, openPan
           </div>
         </div>
       )}
+      <FreebuffSummary freebuff={freebuff} model={model} openDetails={()=>setSection("freebuff")}/>
       <div className="stats-card">
         <Stat icon={Cpu} label="CPU" value={stats.cpu ?? "—"}/>
         <Stat icon={MemoryStick} label="Memory" value={stats.memory ?? "—"}/>
@@ -292,15 +328,15 @@ function Stat({icon:Icon,label,value}) {
   return <div className="stat-row"><Icon size={17}/><span>{label}</span><strong>{value}</strong></div>;
 }
 
-function Panel({ panel, close, events, projectPath }) {
+function Panel({ panel, close, events, projectPath, freebuff, model }) {
   if (!panel) return null;
   const shellEvent = events.find(e=>e.command);
   return (
     <div className="drawer" data-testid="drawer">
       <div className="drawer-head">
         <div>
-          {panel==="terminal" ? <SquareTerminal size={18}/> : panel==="diff" ? <FileDiff size={18}/> : <Files size={18}/>}
-          <strong>{panel==="terminal" ? "Terminal" : panel==="diff" ? "Changes" : "Workspace"}</strong>
+          {panel==="terminal" ? <SquareTerminal size={18}/> : panel==="diff" ? <FileDiff size={18}/> : panel==="freebuff" ? <Coins size={18}/> : <Files size={18}/>}
+          <strong>{panel==="terminal" ? "Terminal" : panel==="diff" ? "Changes" : panel==="freebuff" ? "Freebuff" : "Workspace"}</strong>
         </div>
         <button onClick={close}><X size={18}/></button>
       </div>
@@ -309,6 +345,19 @@ function Panel({ panel, close, events, projectPath }) {
         <div className="diff-view">
           <div className="diff-file"><span>src/agent.ts</span><b>+24 −6</b></div>
           <pre><span className="minus">- const provider = "openai";</span>{"\n"}<span className="plus">+ const provider = "freebuff";</span>{"\n"}<span className="plus">+ const model = selectedFreebuffModel;</span></pre>
+        </div>
+      )}
+      {panel==="freebuff" && (
+        <div className="freebuff-panel">
+          <div className="fb-balance"><small>Available Freebucks</small><strong>{freebuff?.derived?.balance ?? "—"}</strong></div>
+          <div className="fb-kpis">
+            <div><span>Selected model</span><b>{model?.replace(/^freebuff\//,"") || "—"}</b></div>
+            <div><span>Hourly price</span><b>{freebuffPrice(freebuff,model)?.current ?? "—"} FB</b></div>
+            <div><span>Session</span><b>{freebuff?.derived?.sessionStatus || "none"}</b></div>
+            <div><span>Streak</span><b>{freebuff?.streak?.streak ?? "—"} days</b></div>
+          </div>
+          <h4>Rate limit</h4>
+          <pre className="fb-json">{freebuff?.derived?.rateLimit ? JSON.stringify(freebuff.derived.rateLimit,null,2) : "No live rate-limit data yet."}</pre>
         </div>
       )}
       {panel==="files" && (
@@ -326,12 +375,13 @@ function Panel({ panel, close, events, projectPath }) {
   );
 }
 
-function SecondaryView({ section, setSection, projectPath, setProjectPath, sandbox, setSandbox, approvalPolicy, setApprovalPolicy, loggedIn, login, logout }) {
+function SecondaryView({ section, setSection, projectPath, setProjectPath, sandbox, setSandbox, approvalPolicy, setApprovalPolicy, loggedIn, login, logout, freebuff, model, refreshFreebuff }) {
   if (section==="chat" || section==="new" || section==="agent") return null;
   const content = {
     projects: ["Projects", "Choose the local workspace Trebell Code should operate in."],
     templates: ["Templates", "Start common agentic workflows with sensible defaults."],
     settings: ["Settings", "Configure local execution, approvals, and Freebuff authentication."],
+    freebuff: ["Freebuff", "Your live account, Freebucks, model pricing, session and usage state."],
     history: ["Conversation history", "Browse every Trebell Code thread stored by the Codex runtime."],
   }[section] || ["Trebell Code", ""];
   return (
@@ -354,6 +404,34 @@ function SecondaryView({ section, setSection, projectPath, setProjectPath, sandb
           ["Autonomous build", BrainCircuit, "Run a multi-step build until validation passes."],
         ].map(([name,Icon,desc])=><button key={name}><Icon size={22}/><strong>{name}</strong><span>{desc}</span></button>)}
       </div>}
+      {section==="freebuff" && (
+        <div className="freebuff-page">
+          <div className="fb-hero">
+            <div><span>Freebucks balance</span><strong>{freebuff?.derived?.balance ?? "—"}</strong><small>{freebuff?.user?.email || "Signed in to Freebuff"}</small></div>
+            <button onClick={refreshFreebuff}><RefreshCw size={15}/> Refresh</button>
+          </div>
+          <div className="fb-dashboard-grid">
+            <div className="fb-dashboard-card"><Coins size={19}/><span>Selected model</span><strong>{model?.replace(/^freebuff\//,"") || "—"}</strong><small>{freebuffPrice(freebuff,model)?.current != null ? `${freebuffPrice(freebuff,model).current} Freebucks/hour` : freebuffPrice(freebuff,model)?.dynamic ? "Server-priced offer" : "Price unavailable"}</small></div>
+            <div className="fb-dashboard-card"><Clock3 size={19}/><span>Session</span><strong>{freebuff?.derived?.sessionStatus || "none"}</strong><small>{freebuff?.derived?.activeModel?.replace(/^freebuff\//,"") || "No active model"}</small></div>
+            <div className="fb-dashboard-card"><Flame size={19}/><span>Usage streak</span><strong>{freebuff?.streak?.streak ?? "—"} days</strong><small>{freebuff?.streak?.freebucksDailyBonus != null ? `+${freebuff.streak.freebucksDailyBonus} daily bonus` : "Bonus data unavailable"}</small></div>
+            <div className="fb-dashboard-card"><Gauge size={19}/><span>Rate limit</span><strong>{freebuff?.derived?.rateLimit?.remaining ?? "—"}</strong><small>{freebuff?.derived?.rateLimit?.limit != null ? `of ${freebuff.derived.rateLimit.limit} remaining` : "Live server limits"}</small></div>
+          </div>
+          {freebuff?.derived?.selectedPrice?.offPeakActive && <div className="fb-offpeak"><Zap size={15}/> Off-peak pricing is active for the selected model.</div>}
+          {freebuff?.errors?.session && <div className="fb-warning">Session endpoint returned HTTP {freebuff.errors.session.status}. Account data may be incomplete.</div>}
+          <div className="fb-model-table">
+            <div className="fb-table-head"><span>Freebuff model</span><span>Freebucks/hour</span><span>Source</span></div>
+            {Object.entries(freebuff?.derived?.priceByModel || {}).map(([id,price])=>(
+              <div className={id===model ? "selected" : ""} key={id}><span>{id.replace(/^freebuff\//,"")}</span><span>{price.dynamic ? "Dynamic" : price.current ?? "—"}</span><span>{price.source==="server" ? "Live" : "Fallback"}</span></div>
+            ))}
+          </div>
+          <div className="fb-raw">
+            <h3>Session details</h3>
+            <div><span>Instance</span><code>{freebuff?.instanceId || "—"}</code></div>
+            <div><span>Admitted</span><code>{freebuff?.derived?.admittedAt || "—"}</code></div>
+            <div><span>Timezone</span><code>{freebuff?.derived?.timezone || "—"}</code></div>
+          </div>
+        </div>
+      )}
       {section==="settings" && (
         <div className="settings-grid">
           <div className="settings-card">
@@ -396,9 +474,19 @@ export default function App() {
   const [projectPath,setProjectPath]=useState("");
   const [sandbox,setSandbox]=useState("workspace-write");
   const [approvalPolicy,setApprovalPolicy]=useState("on-request");
+  const [freebuff,setFreebuff]=useState({loggedIn:false,user:null,session:null,streak:null,derived:null});
   const demoTimers=useRef([]);
 
   const activeTitle = titleOf(activeThread || {name:lastPrompt || "New Trebell task"});
+  const timezone = useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",[]);
+
+  async function refreshFreebuff(modelOverride=model){
+    if(!(bootstrap.loggedIn || bootstrap.mock)) return;
+    const params=new URLSearchParams({timezone});
+    if(modelOverride) params.set("model",modelOverride);
+    const data=await fetch(`/api/freebuff/overview?${params}`).then(r=>r.json()).catch(()=>null);
+    if(data) setFreebuff(data);
+  }
 
   useEffect(()=>{
     let cancelled=false;
@@ -422,7 +510,12 @@ export default function App() {
         "freebuff/test/coding-fast",
       ] : [];
       setModels(fallback);
-      setModel(fallback[0] || "");
+      const first=fallback[0] || "";
+      setModel(first);
+      const params=new URLSearchParams({timezone});
+      if(first) params.set("model",first);
+      const overview=await fetch(`/api/freebuff/overview?${params}`).then(r=>r.json()).catch(()=>null);
+      if(!cancelled && overview) setFreebuff(overview);
     })();
     return ()=>{cancelled=true; demoTimers.current.forEach(clearTimeout);};
   },[]);
@@ -474,6 +567,25 @@ export default function App() {
     },1500);
     return ()=>clearInterval(timer);
   },[]);
+
+  useEffect(()=>{
+    if(!(bootstrap.loggedIn || bootstrap.mock)) return;
+    refreshFreebuff(model);
+    const timer=setInterval(()=>refreshFreebuff(model),15000);
+    return ()=>clearInterval(timer);
+  },[bootstrap.loggedIn,bootstrap.mock,model,timezone]);
+
+  useEffect(()=>{
+    if(!running || !(bootstrap.loggedIn || bootstrap.mock)) return;
+    const ping=()=>{
+      const params=new URLSearchParams({timezone});
+      if(model) params.set("model",model);
+      fetch(`/api/freebuff/heartbeat?${params}`,{method:"POST"}).catch(()=>{});
+    };
+    ping();
+    const timer=setInterval(ping,45000);
+    return ()=>clearInterval(timer);
+  },[running,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
 
   function handleNotification(message){
     const p=message.params || {};
@@ -633,7 +745,12 @@ export default function App() {
         const modelData=await fetch("/api/models").then(r=>r.json()).catch(()=>({models:[]}));
         const freebuff=(modelData.models||[]).filter(x=>x.startsWith("freebuff/"));
         setModels(freebuff);
-        setModel(freebuff[0]||"");
+        const first=freebuff[0]||"";
+        setModel(first);
+        const params=new URLSearchParams({timezone});
+        if(first) params.set("model",first);
+        const overview=await fetch(`/api/freebuff/overview?${params}`).then(r=>r.json()).catch(()=>null);
+        if(overview) setFreebuff(overview);
       }
     },1500);
     setTimeout(()=>clearInterval(poll),120000);
@@ -644,6 +761,7 @@ export default function App() {
     setBootstrap(prev=>({...prev,loggedIn:false}));
     setModels([]);
     setModel("");
+    setFreebuff({loggedIn:false,user:null,session:null,streak:null,derived:null});
   }
 
   const statusLabel=bootstrap.mock?"Demo":rpcStatus==="connected"?"Local":"Connecting";
@@ -652,7 +770,7 @@ export default function App() {
       <Sidebar section={section} setSection={setSection} threads={threads} activeThreadId={activeThread?.id} openThread={openThread} query={query} setQuery={setQuery} newChat={newChat}/>
       <main className="main-frame">
         <div className="window-bar"><span>{statusLabel}</span><div><button aria-label="Minimize" onClick={()=>window.trebellDesktop?.minimize?.()}>—</button><button aria-label="Maximize" onClick={()=>window.trebellDesktop?.maximize?.()}>□</button><button aria-label="Close" className="window-close" onClick={()=>window.trebellDesktop?.close?.()}>×</button></div></div>
-        <SecondaryView section={section} setSection={setSection} projectPath={projectPath} setProjectPath={setProjectPath} sandbox={sandbox} setSandbox={setSandbox} approvalPolicy={approvalPolicy} setApprovalPolicy={setApprovalPolicy} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout}/>
+        <SecondaryView section={section} setSection={setSection} projectPath={projectPath} setProjectPath={setProjectPath} sandbox={sandbox} setSandbox={setSandbox} approvalPolicy={approvalPolicy} setApprovalPolicy={setApprovalPolicy} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} freebuff={freebuff} model={model} refreshFreebuff={()=>refreshFreebuff(model)}/>
         {(section==="chat" || section==="agent" || section==="new") && <>
           <Topbar title={activeTitle} running={running} stop={stop} openPanel={setPanel}/>
           <div className="conversation-scroll">
@@ -669,11 +787,11 @@ export default function App() {
               </div>
             </div>}
           </div>
-          <Composer prompt={prompt} setPrompt={setPrompt} send={send} running={running} model={model} setModel={setModel} models={models} webSearch={webSearch} setWebSearch={setWebSearch} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} projectPath={projectPath}/>
+          <Composer prompt={prompt} setPrompt={setPrompt} send={send} running={running} model={model} setModel={setModel} models={models} webSearch={webSearch} setWebSearch={setWebSearch} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} projectPath={projectPath} freebuff={freebuff}/>
         </>}
       </main>
-      <RightRail running={running} stats={stats} events={events} approvals={approvals} resolveApproval={resolveApproval} openPanel={setPanel}/>
-      <Panel panel={panel} close={()=>setPanel(null)} events={events} projectPath={projectPath}/>
+      <RightRail running={running} stats={stats} events={events} approvals={approvals} resolveApproval={resolveApproval} openPanel={setPanel} freebuff={freebuff} model={model} setSection={setSection}/>
+      <Panel panel={panel} close={()=>setPanel(null)} events={events} projectPath={projectPath} freebuff={freebuff} model={model}/>
     </div>
   );
 }

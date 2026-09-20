@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 import { codexBin, codexHome, packageRoot } from "./paths.mjs";
 import { DEFAULT_PORT, ensureCodexConfig } from "./config.mjs";
 import { health, isLoggedIn, listModels, logout, runLogin, startBridge } from "./freebuff.mjs";
+import { getFreebuffOverview } from "./freebuff-product.mjs";
 
 const MIME = {
   ".html":"text/html; charset=utf-8",
@@ -116,8 +117,67 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
         appServerReady:mock || Boolean(appServer && appServer.exitCode===null),
         wsUrl:mock ? null : `ws://127.0.0.1:${appPort}`,
         cwd:process.cwd(),
-        version:"0.3.0",
+        version:"0.4.0",
       });
+    }
+    if(url.pathname==="/api/freebuff/overview"){
+      const model=url.searchParams.get("model") || "";
+      const timezone=url.searchParams.get("timezone") || "UTC";
+      if(mock) return json(res,200,{
+        loggedIn:true,
+        user:{name:"Tanishq",email:"tanishq@example.com"},
+        instanceId:"mock-instance",
+        proxySession:{status:"active",model:model.replace(/^freebuff\//,"") || "deepseek/deepseek-v4-flash",instanceId:"mock-instance"},
+        session:{
+          status:"active",
+          admittedAt:new Date(Date.now()-11*60_000).toISOString(),
+          freebucks:{balance:86},
+          prices:{"deepseek/deepseek-v4-flash":10,"z-ai/glm-5.3-flash":5,"google/gemini-3.8-flash":50},
+          rateLimitsByModel:{"deepseek/deepseek-v4-flash":{remaining:73,limit:100}},
+          offPeakOffers:{active:true},
+        },
+        streak:{streak:6,todayUsed:true,lastUsageDate:new Date().toISOString().slice(0,10),timeZone:timezone,freebucksDailyBonus:10},
+        errors:{session:null,streak:null},
+        derived:{
+          balance:86,
+          selectedModel:model || "freebuff/deepseek/deepseek-v4-flash",
+          activeModel:model || "freebuff/deepseek/deepseek-v4-flash",
+          selectedPrice:{model:(model || "freebuff/deepseek/deepseek-v4-flash").replace(/^freebuff\//,""),current:10,peak:15,offPeak:10,offPeakActive:true,source:"server"},
+          priceByModel:{
+            "freebuff/deepseek/deepseek-v4-flash":{current:10,peak:15,offPeak:10,offPeakActive:true,source:"server"},
+            "freebuff/z-ai/glm-5.3-flash":{current:5,offPeakActive:false,source:"server"},
+            "freebuff/google/gemini-3.8-flash":{current:50,offPeakActive:false,source:"server"}
+          },
+          rateLimit:{remaining:73,limit:100},
+          sessionStatus:"active",
+          admittedAt:new Date(Date.now()-11*60_000).toISOString(),
+          expiresAt:null,
+          firstTabDiscount:null,
+          offPeakOffers:{active:true},
+          resetTime:null,
+          timezone,
+        }
+      });
+      if(!isLoggedIn(env)) return json(res,200,{loggedIn:false,user:null,session:null,streak:null,derived:null});
+      try{
+        await ensureBridge();
+        const overview=await getFreebuffOverview({model,timezone,bridgePort:DEFAULT_PORT,env});
+        return json(res,200,overview);
+      }catch(error){
+        return json(res,503,{loggedIn:true,error:error instanceof Error?error.message:String(error)});
+      }
+    }
+    if(url.pathname==="/api/freebuff/heartbeat" && req.method==="POST"){
+      const model=url.searchParams.get("model") || "";
+      const timezone=url.searchParams.get("timezone") || "UTC";
+      if(mock) return json(res,200,{ok:true});
+      if(!isLoggedIn(env)) return json(res,401,{ok:false,error:"not_logged_in"});
+      try{
+        const overview=await getFreebuffOverview({model,timezone,heartbeat:true,bridgePort:DEFAULT_PORT,env});
+        return json(res,200,{ok:true,overview});
+      }catch(error){
+        return json(res,503,{ok:false,error:error instanceof Error?error.message:String(error)});
+      }
     }
     if(url.pathname==="/api/models"){
       if(mock) return json(res,200,{models:fakeModels()});

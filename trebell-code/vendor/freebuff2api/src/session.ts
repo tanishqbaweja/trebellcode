@@ -38,6 +38,7 @@ export class WaitingRoomError extends Error {
 
 export interface SessionSnapshot {
   status: string | null;
+  model: string | null;
   instanceId: string | null;
   position: number | null;
   queueDepth: number | null;
@@ -130,6 +131,7 @@ export class SessionPool {
     const s = this.session;
     return {
       status: s?.status ?? null,
+      model: s?.model ?? null,
       instanceId: s?.instanceId ?? null,
       position: s ? s.position : null,
       queueDepth: s ? s.queueDepth : null,
