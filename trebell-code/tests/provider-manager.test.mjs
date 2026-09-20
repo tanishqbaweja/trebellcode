@@ -19,25 +19,46 @@ test("provider keys are stored separately and never returned by definitions", ()
   assert.match(stored,/ar-secret/);
 });
 
-test("AgentRouter exposes its supported catalog without depending on /v1/models", async () => {
+test("AgentRouter validates the key and loads its live model catalog", async () => {
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
   const env={...process.env,TREBELL_HOME:root};
-  let fetches=0;
-  const manager=new ProviderManager({env,fetchFn:async()=>{fetches++;return new Response("{}");}});
+  let seen=null;
+  const manager=new ProviderManager({env,fetchFn:async(url,init)=>{
+    seen={url,authorization:init?.headers?.Authorization};
+    return new Response(JSON.stringify({object:"list",data:[
+      {id:"gpt-5.5"},
+      {id:"claude-opus-4-8"},
+      {id:"glm-5.1"},
+      {id:"kimi-k2.6"},
+    ]}),{status:200});
+  }});
   const beforeKey=await manager.models("agentrouter");
   assert.equal(beforeKey.error,"API key required");
-  assert.equal(beforeKey.models.length,5);
-  manager.setKey("agentrouter","ar-key");
+  assert.deepEqual(beforeKey.models,[]);
+  manager.setKey("agentrouter",'"ar-key"');
+  assert.equal(manager.key("agentrouter"),"ar-key");
   const result=await manager.models("agentrouter");
-  assert.deepEqual(result.models,[
-    "gpt-5.6-sol",
-    "gpt-6-astra",
-    "claude-opus-4-8",
-    "claude-opus-5",
-    "deepseek-v4-flash",
-  ]);
-  assert.equal(result.source,"static");
-  assert.equal(fetches,0);
+  assert.equal(seen.url,"https://co.agentrouter.org/v1/models");
+  assert.equal(seen.authorization,"Bearer ar-key");
+  assert.deepEqual(result.models,["claude-opus-4-8","glm-5.1","gpt-5.5","kimi-k2.6"]);
+  assert.equal(result.source,"live");
+});
+
+test("AgentRouter chat uses bearer auth without overriding User-Agent", async () => {
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
+  const env={...process.env,TREBELL_HOME:root};
+  let seen=null;
+  const manager=new ProviderManager({env,fetchFn:async(url,init)=>{
+    seen={url,headers:init.headers,body:JSON.parse(init.body)};
+    return new Response(JSON.stringify({choices:[{message:{role:"assistant",content:"ok"}}]}),{status:200,headers:{"content-type":"application/json"}});
+  }});
+  manager.setKey("agentrouter","ar-key");
+  const response=await manager.forwardChat("agentrouter",{model:"gpt-5.5",messages:[{role:"user",content:"hello"}],stream:false});
+  assert.equal(response.status,200);
+  assert.equal(seen.url,"https://co.agentrouter.org/v1/chat/completions");
+  assert.equal(seen.headers.Authorization,"Bearer ar-key");
+  assert.equal(seen.headers["User-Agent"],undefined);
+  assert.equal(seen.body.model,"gpt-5.5");
 });
 
 test("JustWorker and HCNSec expose only their configured model", async () => {
