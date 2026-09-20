@@ -404,10 +404,10 @@ export default function App(){
     if(command==="/compact"){if(activeThread?.id&&rpc)await rpc.request("thread/compact/start",{threadId:activeThread.id});setEvents(prev=>[...prev,{id:"compact-request",kind:"tool",title:"Compacting context",status:"running",raw:{}}]);return true}
     if(command==="/model"){setSection(provider==="freebuff"?"freebuff":"settings");return true}
     if(command==="/terminal"){setPanel("terminal");return true}
-    if(command==="/diff"){setPanel("workspace");return true}
-    if(command==="/git"){setSection("source");return true}
-    if(command==="/preview"){setSection("preview");return true}
-    if(command==="/agents"){setSection("agents");return true}
+    if(command==="/diff"){openRightPanel("diff");return true}
+    if(command==="/git"){openRightPanel("source");return true}
+    if(command==="/preview"){openRightPanel("preview");return true}
+    if(command==="/agents"){openRightPanel("agents");return true}
     if(command==="/new"){await newChat();return true}
     if(command==="/clear"){await newChat();return true}
     if(command==="/plan"){setPrompt("Create a clear execution plan, then carry it out. "+rest.join(" "));return true}
@@ -481,39 +481,112 @@ export default function App(){
   async function onProjectOpen(path){await touchProject(path);setSection("chat");if(rpcStatus==="connected")loadSkills(rpc,path)}
   function onSkill(skill){setPrompt(prev=>(prev?prev+" ":"")+"$"+skill.name+" ")}
 
+  function openRightPanel(tab="files"){setRightPanelTab(tab);setRightPanelOpen(true);setSection("chat")}
+  function navigateSection(next){
+    if(next==="source"){openRightPanel("source");return}
+    if(next==="preview"){openRightPanel("preview");return}
+    if(next==="agents"){openRightPanel("agents");return}
+    setSection(next);
+  }
+
   const activeTitle=titleOf(activeThread);
+  const projectLabel=String(projectPath||activeThread?.cwd||bootstrap.cwd||"Workspace").split(/[\\/]/).filter(Boolean).at(-1)||"Workspace";
+  const providerLabel=({freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider);
+  const completedEvents=events.filter(event=>event.status==="done").length;
+
+  const previewSurface=<PreviewPage
+    onAttachText={async(name,text,meta={})=>addContextAttachment({name,text,kind:meta.kind||"browser",label:meta.label||"Browser context",detail:meta.detail||""})}
+    onAttachImage={async(dataUrl)=>{const d=await api("/api/attachments/blob",{method:"POST",body:{name:"browser-screenshot.png",mime:"image/png",dataBase64:String(dataUrl).split(",")[1]||""}});await addContextPath(d.path,{kind:"browser",label:"Browser screenshot",detail:"PNG capture"})}}
+  />;
+
+  function rightPanelContent(){
+    if(rightPanelTab==="files"||rightPanelTab==="diff")return <WorkspacePanel key={rightPanelTab} defaultTab={rightPanelTab==="diff"?"diff":"files"} projectPath={projectPath} activeThreadId={activeThread?.id} reviewedFiles={reviewedFiles} onReviewedChange={toggleReviewed} onAttachPath={path=>addFiles([path])} onReviewComment={attachReviewComment}/>;
+    if(rightPanelTab==="preview")return previewSurface;
+    if(rightPanelTab==="source")return <SourceControlPanel projectPath={projectPath} model={model} provider={provider} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} linkedPullRequests={activeThread?.id?(threadMeta[activeThread.id]?.linkedPullRequests||[]):[]}/>;
+    if(rightPanelTab==="agents")return <div className="panel-page"><AgentsPage threads={threads} activeThread={activeThread} onOpen={openThread}/></div>;
+    return <div className="runtime-surface">
+      <section className="runtime-summary">
+        <div><span className={"runtime-dot "+(rpcStatus==="connected"?"online":"")}/><div><strong>{running?"Agent working":"Codex harness"}</strong><span>{rpcStatus==="connected"?"Connected locally":rpcStatus}</span></div></div>
+        <small>{completedEvents}/{events.length||1} current activity steps complete</small>
+      </section>
+      <ApprovalCard request={approvals[0]} onResolve={resolveApproval}/>
+      <section className="runtime-grid">
+        <div><span>Provider</span><strong>{providerLabel}</strong></div>
+        <div><span>Provider status</span><strong>{providerReady?"Ready":"Setup required"}</strong></div>
+        <div><span>CPU</span><strong>{stats.cpu||"—"}</strong></div>
+        <div><span>Memory</span><strong>{stats.memory||"—"}</strong></div>
+        <div><span>Disk</span><strong>{stats.disk||"—"}</strong></div>
+        <div><span>Context</span><strong>{tokenLabel(tokenUsage)}</strong></div>
+      </section>
+      {provider==="freebuff"&&<FreebuffMini freebuff={freebuff} model={model} onOpen={()=>setSection("freebuff")}/>}
+      <section className="runtime-activity"><strong>Latest activity</strong><p>{events.find(event=>event.status==="running")?.title||events.at(-1)?.title||"Waiting for a task"}</p></section>
+    </div>;
+  }
 
   return <div className="app-shell">
-    <ThreadSidebar section={section} setSection={setSection} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} onOpen={openThread} onNew={newChat} onThreadAction={threadAction} onMove={moveThreadOrder} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={bulkAction} provider={provider}/>
-    <main className="main-frame">
-      <div className="window-bar"><span>{rpcStatus==="connected"?"Local harness connected":rpcStatus}</span><div><button onClick={()=>window.trebellDesktop?.minimize?.()}>—</button><button onClick={()=>window.trebellDesktop?.maximize?.()}>□</button><button className="window-close" onClick={()=>window.trebellDesktop?.close?.()}>×</button></div></div>
-      {(section==="chat"||section==="new")&&<>
-        <div className="topbar"><div className="task-icon"><Code2 size={24}/></div><div className="task-title"><div><strong>{activeTitle}</strong><button className="ghost-icon" onClick={renameThread}><WandSparkles size={14}/></button></div><span>{gitInfo?.isGit?(gitInfo.branch||"detached")+" · ":""}{running?"Agent working":"Ready"} · {tokenLabel(tokenUsage)}</span>{activeThread?.id&&(threadMeta[activeThread.id]?.linkedPullRequests||[]).length>0&&<div className="linked-prs">{threadMeta[activeThread.id].linkedPullRequests.map(pr=><button key={pr.url} onClick={()=>window.open(pr.url,"_blank")}><GitBranch size={10}/> #{pr.number}</button>)}</div>}</div><div className="top-actions"><button className="btn secondary" onClick={shareThread}><Link2 size={14}/> Copy thread</button><button className="icon-btn" onClick={()=>setPanel("workspace")}><FileCode2 size={15}/></button>{running&&<button className="btn stop" onClick={stop}><CircleStop size={14}/> Stop</button>}</div></div>
-        <div className="conversation-scroll"><Conversation messages={messages} onEditFromHere={editFromHere} onCite={citeAssistant}/><ActivityTimeline events={events} assistantText={assistantText} onOpenPanel={setPanel}/>
-          {queued.map(item=><div className="queued-message" key={item.id}><span>Queued</span><p>{item.text}</p><button onClick={()=>sendQueuedNow(item)}>Send now</button><button onClick={()=>{setPrompt(item.text);setAttachments(item.attachments);setContextChips(item.contextChips||[]);setQueued(prev=>prev.filter(x=>x.id!==item.id))}}>Edit</button></div>)}
-          {!messages.length&&!events.length&&<div className="welcome"><div className="welcome-orb"><Sparkles size={27}/></div><h1>What should Trebell build?</h1><p>{({freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider)} supplies the model. Codex supplies the local agent harness: files, shell, Git, approvals, skills, MCP and durable threads.</p><div className="suggestions"><button onClick={()=>setPrompt("Inspect this project and explain the architecture.")}>Explain codebase</button><button onClick={()=>setPrompt("Find a useful bug, fix it, and run the relevant tests.")}>Fix a bug</button><button onClick={()=>setPrompt("Implement the next missing feature and validate it end-to-end.")}>Ship a feature</button></div></div>}
+    <ThreadSidebar section={section} setSection={navigateSection} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} onOpen={openThread} onNew={newChat} onThreadAction={threadAction} onMove={moveThreadOrder} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={bulkAction} provider={provider}/>
+
+    <div className={"workspace-shell"+(rightPanelOpen?" right-open":"")}>
+      <main className={"main-frame"+(panel==="terminal"?" terminal-open":"")}>
+        <div className="window-bar">
+          <span className="window-drag-space"/>
+          <div className="window-controls"><button onClick={()=>window.trebellDesktop?.minimize?.()}>—</button><button onClick={()=>window.trebellDesktop?.maximize?.()}>□</button><button className="window-close" onClick={()=>window.trebellDesktop?.close?.()}>×</button></div>
         </div>
-        <Composer prompt={prompt} setPrompt={setPrompt} onSend={send} running={running} providerReady={providerReady} provider={provider} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} selectedModels={selectedModels} setSelectedModels={setSelectedModels} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} webSearch={webSearch} setWebSearch={setWebSearch} skills={skills} onSkill={onSkill} onFiles={()=>setPanel("workspace")} settings={settings} onStash={stashPrompt} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode}/>
-      </>}
-      {section==="projects"&&<div className="secondary-page"><h1>Projects</h1><p>Local repositories and workspaces owned by this machine.</p><ProjectsPage currentPath={projectPath} onOpen={onProjectOpen} models={models}/></div>}
-      {section==="source"&&<div className="secondary-page full"><h1>Source Control</h1><p>Branch, commit, worktree and pull-request actions execute locally.</p><SourceControlPanel projectPath={projectPath} model={model} provider={provider} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} linkedPullRequests={activeThread?.id?(threadMeta[activeThread.id]?.linkedPullRequests||[]):[]}/></div>}
-      {section==="agents"&&<div className="secondary-page"><h1>Agents</h1><p>Delegated Codex subagent threads.</p><AgentsPage threads={threads} activeThread={activeThread} onOpen={openThread}/></div>}
-      {section==="preview"&&<div className="secondary-page full"><h1>Preview</h1><p>Preview local development servers or web pages beside the agent.</p><PreviewPage onAttachText={async(name,text,meta={})=>addContextAttachment({name,text,kind:meta.kind||"browser",label:meta.label||"Browser context",detail:meta.detail||""})} onAttachImage={async(dataUrl)=>{const d=await api("/api/attachments/blob",{method:"POST",body:{name:"browser-screenshot.png",mime:"image/png",dataBase64:String(dataUrl).split(",")[1]||""}});await addContextPath(d.path,{kind:"browser",label:"Browser screenshot",detail:"PNG capture"})}}/></div>}
-      {section==="templates"&&<div className="secondary-page"><h1>Templates</h1><p>Real prompts that start normal Trebell turns.</p><div className="template-grid">{[["Ship a feature","Inspect the project, plan a useful feature, implement it, run the relevant tests, fix failures, and summarize the result."],["Fix a bug","Reproduce a meaningful bug in this project, diagnose it, fix it, and validate the fix."],["Review codebase","Map this codebase architecture, important execution paths, risks, and highest-value improvements."],["Refactor safely","Choose a worthwhile refactor, preserve behavior, implement focused changes, and run tests."],["Autonomous build","Take this project to a working validated result. Continue through implementation and test failures until it passes."],["Security review","Review this project for concrete security weaknesses and propose or implement safe fixes."]].map(([name,text])=><button key={name} onClick={()=>{setPrompt(text);setSection("chat")}}><BrainCircuit size={20}/><strong>{name}</strong><span>{text}</span></button>)}</div></div>}
-      {section==="freebuff"&&<div className="secondary-page"><h1>Freebuff</h1><p>Live account, model, Freebucks and session state.</p><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model)}/></div>}
-      {section==="settings"&&<div className="secondary-page full"><h1>Settings</h1><p>Client, project and runtime preferences.</p><SettingsPage settings={settings} onSettings={setSettings} onProviderUpdated={()=>{setProviderRevision(v=>v+1);return refreshProviderModels({resetThread:true})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectPath}/></div>}
-      {section==="history"&&<div className="secondary-page"><h1>Thread history</h1><p>Every unarchived {({freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider)}-backed Codex thread on this machine.</p><div className="history-page">{threads.map(t=><button key={t.id} onClick={()=>openThread(t)}><FileCode2 size={15}/><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><time>{new Date(t.updatedAt*1000).toLocaleString()}</time></button>)}</div></div>}
-    </main>
-    <aside className="right-rail">
-      <div className="agent-card"><div className={"orb "+(running?"orb-active":"")}></div><div><strong>Trebell Agent</strong><span><i className={rpcStatus==="connected"?"online":""}/>{running?"Active":rpcStatus==="connected"?"Ready":"Fallback"}</span></div></div>
-      <div className="progress-card"><div><strong>{running?"Working on it…":"Task progress"}</strong><span>{events.filter(e=>e.status==="done").length} / {events.length||1}</span></div><div className="progress-track"><i style={{width:(events.length?events.filter(e=>e.status==="done").length/events.length*100:8)+"%"}}/></div><p>{events.find(e=>e.status==="running")?.title||events.at(-1)?.title||"Waiting for a task"}</p></div>
-      <ApprovalCard request={approvals[0]} onResolve={resolveApproval}/>
-      {provider==="freebuff"&&<FreebuffMini freebuff={freebuff} model={model} onOpen={()=>setSection("freebuff")}/>} {provider!=="freebuff"&&<div className="stats-card"><div className="stat-row"><Network size={15}/><span>Provider</span><strong>{{agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider}</strong></div><div className="stat-row"><ShieldCheck size={15}/><span>Status</span><strong>{providerReady?"ready":"API key required"}</strong></div></div>}
-      <div className="stats-card"><div className="stat-row"><Cpu size={15}/><span>CPU</span><strong>{stats.cpu||"—"}</strong></div><div className="stat-row"><MemoryStick size={15}/><span>Memory</span><strong>{stats.memory||"—"}</strong></div><div className="stat-row"><HardDrive size={15}/><span>Disk</span><strong>{stats.disk||"—"}</strong></div><div className="stat-row"><Network size={15}/><span>Runtime</span><strong>{rpcStatus}</strong></div></div>
-      <div className="tools-card"><div className="tools-head"><strong>Workspace</strong><ChevronDown size={14}/></div><button onClick={()=>setPanel("terminal")}><SquareTerminal size={16}/><span>Terminal</span><i className="tool-live"/></button><button onClick={()=>setPanel("workspace")}><FolderCode size={16}/><span>Files & diff</span><i className="tool-live"/></button><button onClick={()=>setSection("source")}><GitBranch size={16}/><span>Source control</span><i className="tool-live"/></button><button onClick={()=>setSection("preview")}><Globe2 size={16}/><span>Preview</span><i className="tool-live"/></button></div>
-      <div className="privacy-line"><span/><b>Local harness</b> · {({freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider)} inference</div>
-    </aside>
-    {panel&&<div className="drawer wide" data-testid="drawer"><div className="drawer-head"><strong>{panel==="terminal"?"Terminal":"Workspace"}</strong><button onClick={()=>setPanel(null)}><X size={17}/></button></div>{panel==="terminal"?<TerminalPanel projectPath={projectPath} onAttachExcerpt={attachExcerpt}/>:<WorkspacePanel projectPath={projectPath} activeThreadId={activeThread?.id} reviewedFiles={reviewedFiles} onReviewedChange={toggleReviewed} onAttachPath={path=>addFiles([path])} onReviewComment={attachReviewComment}/>}</div>}
+
+        {(section==="chat"||section==="new")&&<div className="chat-workspace">
+          <header className="workspace-header">
+            <div className="workspace-breadcrumb">
+              <button className="project-crumb" onClick={()=>setSection("projects")}><FolderCode size={14}/><span>{projectLabel}</span></button>
+              <span>/</span>
+              <button className="thread-title-button" onDoubleClick={renameThread} onClick={renameThread} title="Rename thread"><strong>{activeTitle}</strong><ChevronDown size={13}/></button>
+              {activeThread?.id&&(threadMeta[activeThread.id]?.linkedPullRequests||[]).map(pr=><button className="header-pr" key={pr.url} onClick={()=>window.open(pr.url,"_blank")}><GitBranch size={11}/>#{pr.number}</button>)}
+            </div>
+            <div className="workspace-header-actions">
+              {gitInfo?.isGit&&<button className="header-control branch-control" onClick={()=>openRightPanel("source")} title="Source control"><GitBranch size={14}/><span>{gitInfo.branch||"detached"}</span></button>}
+              {running&&<button className="header-control stop-control" onClick={stop}><CircleStop size={14}/><span>Stop</span></button>}
+              <button data-testid="terminal-toggle" className={"header-control icon-only "+(panel==="terminal"?"active":"")} onClick={()=>setPanel(panel==="terminal"?null:"terminal")} aria-label="Toggle terminal" title="Toggle terminal"><PanelBottom size={16}/></button>
+              <button data-testid="right-panel-toggle" className={"header-control icon-only "+(rightPanelOpen?"active":"")} onClick={()=>rightPanelOpen?setRightPanelOpen(false):openRightPanel("files")} aria-label="Open files and diff" title="Toggle workspace panel"><PanelRight size={16}/></button>
+              <button className="header-control icon-only" onClick={shareThread} aria-label="Copy thread" title="Copy thread"><MoreHorizontal size={16}/></button>
+            </div>
+          </header>
+
+          <div className="conversation-scroll">
+            <div className="conversation-column">
+              <Conversation messages={messages} onEditFromHere={editFromHere} onCite={citeAssistant}/>
+              <ActivityTimeline events={events} assistantText={assistantText} onOpenPanel={name=>name==="workspace"?openRightPanel("diff"):setPanel(name)}/>
+              {approvals[0]&&<div className="inline-approval"><ApprovalCard request={approvals[0]} onResolve={resolveApproval}/></div>}
+              {queued.map(item=><div className="queued-message" key={item.id}><span>Queued</span><p>{item.text}</p><button onClick={()=>sendQueuedNow(item)}>Send now</button><button onClick={()=>{setPrompt(item.text);setAttachments(item.attachments);setContextChips(item.contextChips||[]);setQueued(prev=>prev.filter(x=>x.id!==item.id))}}>Edit</button></div>)}
+              {!messages.length&&!events.length&&<div className="welcome">
+                <div className="welcome-mark"><Sparkles size={21}/></div>
+                <h1>What do you want to build?</h1>
+                <p>{providerLabel} supplies inference. Trebell keeps Codex as the local coding-agent harness for files, shell, Git, approvals, skills, MCP, browser control and durable threads.</p>
+                <div className="suggestions">
+                  <button onClick={()=>setPrompt("Inspect this project and explain the architecture.")}>Explain codebase</button>
+                  <button onClick={()=>setPrompt("Find a useful bug, fix it, and run the relevant tests.")}>Fix a bug</button>
+                  <button onClick={()=>setPrompt("Implement the next missing feature and validate it end-to-end.")}>Ship a feature</button>
+                </div>
+              </div>}
+            </div>
+          </div>
+
+          <Composer prompt={prompt} setPrompt={setPrompt} onSend={send} running={running} providerReady={providerReady} provider={provider} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} selectedModels={selectedModels} setSelectedModels={setSelectedModels} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} webSearch={webSearch} setWebSearch={setWebSearch} skills={skills} onSkill={onSkill} onFiles={()=>openRightPanel("files")} settings={settings} onStash={stashPrompt} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode}/>
+
+          {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
+            <div className="terminal-drawer-head"><span><SquareTerminal size={14}/> Terminal</span><div><button onClick={()=>attachExcerpt("")} aria-hidden="true" tabIndex={-1} className="terminal-head-spacer"/><button onClick={()=>setPanel(null)} aria-label="Close terminal"><X size={15}/></button></div></div>
+            <TerminalPanel projectPath={projectPath} onAttachExcerpt={attachExcerpt}/>
+          </div>}
+        </div>}
+
+        {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Local repositories, checkouts and project defaults.</p></div></div><ProjectsPage currentPath={projectPath} onOpen={onProjectOpen} models={models}/></div>}
+        {section==="templates"&&<div className="secondary-page"><h1>Templates</h1><p>Reusable starting points that become normal Trebell turns.</p><div className="template-grid">{[["Ship a feature","Inspect the project, plan a useful feature, implement it, run the relevant tests, fix failures, and summarize the result."],["Fix a bug","Reproduce a meaningful bug in this project, diagnose it, fix it, and validate the fix."],["Review codebase","Map this codebase architecture, important execution paths, risks, and highest-value improvements."],["Refactor safely","Choose a worthwhile refactor, preserve behavior, implement focused changes, and run tests."],["Autonomous build","Take this project to a working validated result. Continue through implementation and test failures until it passes."],["Security review","Review this project for concrete security weaknesses and propose or implement safe fixes."]].map(([name,text])=><button key={name} onClick={()=>{setPrompt(text);setSection("chat")}}><BrainCircuit size={20}/><strong>{name}</strong><span>{text}</span></button>)}</div></div>}
+        {section==="freebuff"&&<div className="secondary-page"><div className="page-header"><div><h1>Freebuff</h1><p>Account, balance, model pricing and session state.</p></div></div><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model)}/></div>}
+        {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>Providers, permissions, desktop behavior and runtime diagnostics.</p></div></div><SettingsPage settings={settings} onSettings={setSettings} onProviderUpdated={()=>{setProviderRevision(v=>v+1);return refreshProviderModels({resetThread:true})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectPath}/></div>}
+        {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Every unarchived {providerLabel}-backed Codex thread on this machine.</p></div></div><div className="history-page">{threads.map(t=><button key={t.id} onClick={()=>openThread(t)}><FileCode2 size={15}/><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><time>{new Date(t.updatedAt*1000).toLocaleString()}</time></button>)}</div></div>}
+      </main>
+
+      {rightPanelOpen&&<RightPanel active={rightPanelTab} onActive={setRightPanelTab} onClose={()=>setRightPanelOpen(false)}>{rightPanelContent()}</RightPanel>}
+    </div>
+
     <QuestionModal request={question?.request} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={pickFiles}/>
   </div>;
 }
