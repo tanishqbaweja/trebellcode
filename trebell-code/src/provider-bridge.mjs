@@ -128,9 +128,11 @@ export async function startProviderBridge({
     server.listen(port, "127.0.0.1", resolve);
   });
 
+  const address = server.address();
+  const boundPort = typeof address === "object" && address ? address.port : port;
   return {
-    port,
-    url: `http://127.0.0.1:${port}`,
+    port: boundPort,
+    url: `http://127.0.0.1:${boundPort}`,
     provider: () => selectedProvider,
     setProvider(value) {
       selectedProvider = normalizeProviderId(value);
