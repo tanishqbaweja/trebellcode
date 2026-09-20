@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { WebSocket } from "ws";
+
+const packageVersion=JSON.parse(await readFile(new URL("../package.json",import.meta.url),"utf8")).version;
 
 const base=process.argv[2] || "http://127.0.0.1:3210";
 
@@ -21,7 +24,7 @@ async function rpc(ws,id,method,params={}) {
 }
 
 const boot=await fetch(base+"/api/bootstrap").then(r=>r.json());
-assert.equal(boot.version,"0.6.0");
+assert.equal(boot.version,packageVersion);
 assert.equal(boot.appServerReady,true);
 assert.match(boot.wsUrl,/\/api\/codex\/ws$/);
 
@@ -33,7 +36,7 @@ try{
     ws.once("error",error=>{clearTimeout(timer);reject(error);});
   });
   await rpc(ws,1,"initialize",{
-    clientInfo:{name:"trebell-installed-test",title:"Trebell Installed Test",version:"0.6.0"},
+    clientInfo:{name:"trebell-installed-test",title:"Trebell Installed Test",version:packageVersion},
     capabilities:{experimentalApi:true},
   });
   ws.send(JSON.stringify({method:"initialized",params:{}}));
