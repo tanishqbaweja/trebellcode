@@ -32,7 +32,7 @@ jobs:
         run: npm run ui:test
       - name: Upload GUI screenshot
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: trebell-code-ui
           path: trebell-code/ui/test-results/trebell-code-ui.png
