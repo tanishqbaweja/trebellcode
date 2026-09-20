@@ -108,6 +108,19 @@ function FreebuffMini({freebuff,model,onOpen}){
   return <button className="freebuff-card" data-testid="freebuff-card" onClick={onOpen}><div className="freebuff-card-head"><span><Coins size={16}/> Freebucks</span><b>{balance??"—"}</b></div><div className="freebuff-mini-grid"><div><small>Model</small><strong>{model?.replace(/^freebuff\//,"").split("/").at(-1)||"—"}</strong></div><div><small>Price</small><strong>{p?.current!=null?p.current+" FB/h":"—"}</strong></div><div><small>Session</small><strong>{freebuff?.derived?.sessionStatus||"none"}</strong></div><div><small>Streak</small><strong>{freebuff?.streak?.streak??"—"}d</strong></div></div></button>;
 }
 
+const SLASH_COMMANDS=[
+  ["/compact","Compact conversation context"],
+  ["/plan","Create a plan, then execute it"],
+  ["/model","Open Freebuff model/account page"],
+  ["/terminal","Open persistent terminal"],
+  ["/diff","Open workspace changes"],
+  ["/git","Open source control"],
+  ["/preview","Open browser preview"],
+  ["/agents","Open delegated agents"],
+  ["/new","Start a new thread"],
+  ["/clear","Reset the current draft/thread view"],
+];
+
 function Composer({prompt,setPrompt,onSend,running,loggedIn,login,models,model,setModel,selectedModels,setSelectedModels,freebuff,attachments,onRemoveAttachment,onPickFiles,onPaste,onDrop,permissionMode,setPermissionMode,webSearch,setWebSearch,skills,onSkill,onFiles,settings,onStash,tokenUsage,workspaceMode,setWorkspaceMode}){
   const [modelsOpen,setModelsOpen]=useState(false);
   const [skillsOpen,setSkillsOpen]=useState(false);
@@ -116,7 +129,11 @@ function Composer({prompt,setPrompt,onSend,running,loggedIn,login,models,model,s
     if(e.key==="ArrowUp"&&!prompt){e.preventDefault();window.dispatchEvent(new CustomEvent("trebell:history",{detail:-1}))}
     if(e.key==="ArrowDown"){window.dispatchEvent(new CustomEvent("trebell:history",{detail:1}))}
   }
+  const slashOpen=prompt.startsWith("/")&&!prompt.includes("\n");
+  const slashQuery=prompt.toLowerCase();
+  const slashItems=slashOpen?SLASH_COMMANDS.filter(([cmd])=>cmd.startsWith(slashQuery.split(/\s/)[0])):[];
   return <div className="composer-wrap" onDragOver={e=>e.preventDefault()} onDrop={onDrop}>
+    {slashOpen&&slashItems.length>0&&<div className="slash-menu">{slashItems.map(([cmd,desc])=><button key={cmd} onMouseDown={e=>{e.preventDefault();setPrompt(cmd+" ")}}><strong>{cmd}</strong><span>{desc}</span></button>)}</div>}
     <div className="attachment-shelf">{attachments.map(path=><span key={path}><Paperclip size={11}/>{String(path).split(/[\\/]/).pop()}<button onClick={()=>onRemoveAttachment(path)}><X size={10}/></button></span>)}</div>
     <textarea data-testid="composer" value={prompt} onChange={e=>setPrompt(e.target.value)} onKeyDown={keyDown} onPaste={onPaste} placeholder={loggedIn?(running?(settings.followUpMode==="steer"?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…"):"Sign in to Freebuff to start…"} disabled={!loggedIn}/>
     <div className="composer-bar"><div className="composer-left">
@@ -157,6 +174,10 @@ export default function App(){
   const [selectedThreadIds,setSelectedThreadIds]=useState(new Set());
   const rpcRef=useRef(null); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const displayThreads=searchResults||threads;
+  function desktopNotify(title,body){
+    if(settings.notifications===false)return;
+    window.trebellDesktop?.notify?.({title,body,silent:!settings.notificationSound});
+  }
 
   useEffect(()=>{document.documentElement.dataset.theme=settings.appearance||"dark"},[settings.appearance]);
 
@@ -222,9 +243,9 @@ export default function App(){
   useEffect(()=>{if(!running&&queued.length){const next=queued[0];setQueued(prev=>prev.slice(1));startTurn(next.text,next.attachments,next.model||model).catch(error=>setEvents(prev=>[...prev,{id:"queue-error-"+Date.now(),kind:"error",title:error.message,status:"done"}]))}},[running,queued]);
 
   function handleServerRequest(client,message){
-    if(message.method==="item/tool/requestUserInput"){setQuestion({client,request:message});return}
+    if(message.method==="item/tool/requestUserInput"){setQuestion({client,request:message});desktopNotify("Trebell Code needs input","The running agent asked you a question.");return}
     if(message.method==="item/tool/call"){client.respond(message.id,{contentItems:[{type:"inputText",text:"No client-defined dynamic tool is registered."}],success:false});return}
-    if(message.method.includes("requestApproval")||message.method==="applyPatchApproval"||message.method==="execCommandApproval"){setApprovals(prev=>[...prev,message]);return}
+    if(message.method.includes("requestApproval")||message.method==="applyPatchApproval"||message.method==="execCommandApproval"){setApprovals(prev=>[...prev,message]);desktopNotify("Approval required",message.params?.reason||message.params?.command||"Trebell Code is waiting for permission.");return}
     client.reject(message.id,-32601,"Unsupported Trebell client request: "+message.method);
   }
   function handleNotification(message){
@@ -233,7 +254,7 @@ export default function App(){
     else if(message.method==="thread/name/updated")setThreads(prev=>prev.map(t=>t.id===p.threadId?{...t,name:p.name}:t));
     else if(message.method==="thread/reverted"&&activeThread?.id===p.threadId)reloadActiveThread();
     else if(message.method==="turn/started"){const id=p.turn?.id||p.turnId;setRunning(true);setActiveTurnId(id);setMessages(prev=>{const index=[...prev].reverse().findIndex(m=>m.role==="user"&&!m.turnId);if(index<0)return prev;const real=prev.length-1-index;return prev.map((m,i)=>i===real?{...m,turnId:id}:m)})}
-    else if(message.method==="turn/completed"){setRunning(false);setActiveTurnId(null);setEvents(prev=>prev.map(e=>e.status==="running"?{...e,status:"done"}:e));loadThreads(rpcRef.current).catch(()=>{})}
+    else if(message.method==="turn/completed"){setRunning(false);setActiveTurnId(null);setEvents(prev=>prev.map(e=>e.status==="running"?{...e,status:"done"}:e));loadThreads(rpcRef.current).catch(()=>{});desktopNotify("Trebell Code finished",titleOf(activeThread)+" is ready for review.")}
     else if(message.method==="turn/plan/updated"){const plan=(p.plan||[]).map((s,i)=>({id:"plan-"+i,kind:"plan",title:s.step||s.description||s.text||"Plan step",status:s.status==="completed"?"done":s.status==="inProgress"?"running":"pending",raw:s}));setEvents(prev=>[...prev.filter(e=>e.kind!=="plan"),...plan])}
     else if(message.method==="item/started"&&p.item){const item=normalizeItem(p.item);setEvents(prev=>[...prev.filter(e=>e.id!==item.id),item])}
     else if(message.method==="item/completed"&&p.item){if(p.item.type==="agentMessage"&&p.item.text?.trim()){setMessages(prev=>prev.some(m=>m.id===p.item.id)?prev:[...prev,{id:p.item.id,role:"assistant",text:p.item.text,turnId:p.turnId||activeTurnId}]);setAssistantText("")}const item=normalizeItem({...p.item,status:"completed"});setEvents(prev=>prev.some(e=>e.id===item.id)?prev.map(e=>e.id===item.id?{...e,...item}:e):[...prev,item])}
@@ -243,7 +264,7 @@ export default function App(){
     else if(message.method==="turn/diff/updated")setEvents(prev=>[...prev,{id:"diff-"+Date.now(),kind:"fileChange",title:"Workspace diff updated",status:"done",raw:p.diff||p}]);
     else if(message.method==="thread/tokenUsage/updated")setTokenUsage(p.tokenUsage||null);
     else if(message.method==="thread/compacted")setEvents(prev=>[...prev,{id:"compact-"+Date.now(),kind:"tool",title:"Context compacted",status:"done",raw:p}]);
-    else if(message.method==="error"){setEvents(prev=>[...prev,{id:"error-"+Date.now(),kind:"error",title:p.message||"Agent error",status:"done",raw:p}]);setRunning(false)}
+    else if(message.method==="error"){setEvents(prev=>[...prev,{id:"error-"+Date.now(),kind:"error",title:p.message||"Agent error",status:"done",raw:p}]);setRunning(false);desktopNotify("Trebell Code error",p.message||"The agent stopped with an error.")}
   }
 
   async function updateThreadMeta(threadId,patch){const meta=await api("/api/thread-meta",{method:"POST",body:{threadId,patch}}).catch(()=>({...threadMeta[threadId],...patch}));setThreadMeta(prev=>({...prev,[threadId]:meta}));return meta}
@@ -291,8 +312,16 @@ export default function App(){
   async function handleSpecial(text){
     if(!text.startsWith("/"))return null;const [command,...rest]=text.split(/\s+/);
     if(command==="/compact"){if(activeThread?.id&&rpc)await rpc.request("thread/compact/start",{threadId:activeThread.id});setEvents(prev=>[...prev,{id:"compact-request",kind:"tool",title:"Compacting context",status:"running",raw:{}}]);return true}
-    if(command==="/model"){setSection("freebuff");return true}if(command==="/terminal"){setPanel("terminal");return true}if(command==="/diff"){setPanel("workspace");return true}if(command==="/clear"){newChat();return true}
-    if(command==="/plan"){setPrompt("Create a clear execution plan, then carry it out. "+rest.join(" "));return true}return false;
+    if(command==="/model"){setSection("freebuff");return true}
+    if(command==="/terminal"){setPanel("terminal");return true}
+    if(command==="/diff"){setPanel("workspace");return true}
+    if(command==="/git"){setSection("source");return true}
+    if(command==="/preview"){setSection("preview");return true}
+    if(command==="/agents"){setSection("agents");return true}
+    if(command==="/new"){await newChat();return true}
+    if(command==="/clear"){await newChat();return true}
+    if(command==="/plan"){setPrompt("Create a clear execution plan, then carry it out. "+rest.join(" "));return true}
+    return false;
   }
   async function send(){
     const text=prompt.trim();if(!text)return;const special=await handleSpecial(text);if(special===true){setPrompt("");return}

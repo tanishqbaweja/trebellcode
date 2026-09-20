@@ -12,6 +12,8 @@ const DEFAULT_STATE = Object.freeze({
     defaultPermissionMode: "supervised",
     autoPull: false,
     appearance: "dark",
+    notifications: true,
+    notificationSound: false,
     keyboardShortcuts: {},
   },
   stashes: [],

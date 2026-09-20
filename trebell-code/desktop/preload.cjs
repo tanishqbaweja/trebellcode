@@ -7,4 +7,5 @@ contextBridge.exposeInMainWorld("trebellDesktop", {
   platform: process.platform,
   pickDirectory: () => ipcRenderer.invoke("workspace:pickDirectory"),
   pickFiles: () => ipcRenderer.invoke("workspace:pickFiles"),
+  notify: (payload) => ipcRenderer.send("desktop:notify", payload),
 });

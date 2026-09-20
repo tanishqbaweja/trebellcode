@@ -173,3 +173,7 @@ html[data-theme="black"] body,html[data-theme="black"] .app-shell{background:#00
 
 .secondary-page.full{padding:36px 40px}.secondary-page.full .source-control,.secondary-page.full .preview-page{min-height:calc(100vh - 175px)}
 @media(max-width:1400px){.workspace-body{grid-template-columns:210px 1fr}.pr-layout{grid-template-columns:270px 1fr}.sc-grid{grid-template-columns:1fr}.clone-card{grid-template-columns:28px 150px 1fr auto}}
+
+.slash-menu{position:absolute;left:14px;bottom:108px;width:320px;max-height:280px;overflow:auto;z-index:90;border:1px solid #393f50;background:#0d1119;border-radius:11px;padding:6px;box-shadow:0 20px 70px rgba(0,0,0,.55)}
+.slash-menu button{width:100%;min-height:39px;border:0;background:none;border-radius:7px;color:#b9becb;display:grid;grid-template-columns:88px 1fr;align-items:center;text-align:left;padding:5px 8px}
+.slash-menu button:hover{background:#1a1f2a}.slash-menu strong{font:10px Consolas,monospace;color:#c9a9ef}.slash-menu span{font-size:8px;color:#747b8c}

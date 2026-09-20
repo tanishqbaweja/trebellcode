@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, dialog } from "electron";
+import { app, BrowserWindow, ipcMain, shell, dialog, Notification } from "electron";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createGuiServer } from "../src/gui-server.mjs";
@@ -89,6 +89,19 @@ if(!lock){
     windowRef.isMaximized() ? windowRef.unmaximize() : windowRef.maximize();
   });
   ipcMain.on("window:close",()=>windowRef?.close());
+  ipcMain.on("desktop:notify",(_event,payload={})=>{
+    if(!Notification.isSupported()) return;
+    const title=String(payload.title||"Trebell Code").slice(0,120);
+    const body=String(payload.body||"").slice(0,600);
+    const notification=new Notification({title,body,silent:Boolean(payload.silent)});
+    notification.on("click",()=>{
+      if(!windowRef) return;
+      if(windowRef.isMinimized()) windowRef.restore();
+      windowRef.show();
+      windowRef.focus();
+    });
+    notification.show();
+  });
   ipcMain.handle("workspace:pickDirectory",async()=>{
     const result=await dialog.showOpenDialog(windowRef,{properties:["openDirectory","createDirectory"]});
     return result.canceled ? null : result.filePaths[0] || null;

@@ -18,16 +18,16 @@ Trebell keeps its own visual identity and architecture.
 - [x] Archive thread
 - [x] Hydrate saved user/assistant history
 - [x] Stop/interrupt active turn
-- [ ] Pin / reorder threads
-- [ ] Active / settled / snoozed thread sections
-- [ ] Snooze and wake
-- [ ] Bulk thread actions
-- [ ] Background thread start
-- [ ] Multi-model fan-out (Freebuff models only)
-- [ ] New worktree / new thread in current worktree
-- [ ] Branch-aware thread metadata
-- [ ] Thread search across message contents
-- [ ] Subagent / delegated-agent inspector
+- [x] Pin / reorder threads
+- [x] Active / settled / snoozed thread sections
+- [x] Snooze and wake
+- [x] Bulk thread actions
+- [x] Background thread start
+- [x] Multi-model fan-out (Freebuff models only)
+- [x] New worktree / new thread in current worktree
+- [x] Branch-aware thread metadata
+- [x] Thread search across message contents
+- [x] Subagent / delegated-agent inspector
 
 ## Composer and context
 
@@ -35,25 +35,25 @@ Trebell keeps its own visual identity and architecture.
 - [x] File picker
 - [x] Project/workspace picker
 - [x] Permission/sandbox settings
-- [ ] Composer-level permission mode picker
-- [ ] Up to 8 attachments with upload/status UI
-- [ ] Drag/drop attachments onto composer and thread rows
-- [ ] Paste image/file support
-- [ ] Large-paste to text attachment
-- [ ] Queued follow-up messages while agent is running
-- [ ] Queue vs steer behavior
-- [ ] Prompt history recall with ArrowUp/ArrowDown
-- [ ] Edit-from-here / rewind
-- [ ] Prompt stash
-- [ ] Slash commands
-- [ ] Skills picker / $ mention
+- [x] Composer-level permission mode picker
+- [x] Up to 8 attachments with upload/status UI
+- [x] Drag/drop attachments onto composer
+- [x] Paste image/file support
+- [x] Large-paste to text attachment
+- [x] Queued follow-up messages while agent is running
+- [x] Queue vs steer behavior
+- [x] Prompt history recall with ArrowUp/ArrowDown
+- [x] Edit-from-here / rewind
+- [x] Prompt stash
+- [x] Slash commands
+- [x] Skills picker / $ mention
 - [ ] Inline context chips
-- [ ] File mentions
-- [ ] Terminal excerpt context
+- [x] File mentions
+- [x] Terminal excerpt context
 - [ ] Diff/review-comment context
 - [ ] Assistant response citations
-- [ ] Pull-request context chips
-- [ ] Context meter / compact action
+- [x] Pull-request attachment context
+- [x] Context meter / compact action
 - [ ] Functional voice input (do not show enabled until implemented)
 
 ## Agent activity and approvals
@@ -66,56 +66,56 @@ Trebell keeps its own visual identity and architecture.
 - [x] Shell output activity
 - [x] File-change activity
 - [x] Tool/MCP activity events
-- [ ] Rich expandable tool-call cards
-- [ ] Full command + stdout/stderr inspection
-- [ ] Question UI with options and custom answers
-- [ ] Attachments in question answers
+- [x] Rich expandable tool-call cards
+- [x] Full command + stdout/stderr inspection
+- [x] Question UI with options and custom answers
+- [x] Attachments in question answers
 - [ ] Remembered/session approvals where supported
-- [ ] Background activity/subagent timeline
+- [x] Background activity/subagent inspector
 
 ## Terminal
 
 - [x] Manual command execution through Codex command/exec
-- [ ] Real PTY terminal sessions
-- [ ] Multiple terminals/tabs
-- [ ] Resize/input streaming
-- [ ] Persistent bounded scrollback
-- [ ] Reconnect to running terminals
-- [ ] Terminal excerpts attachable to composer
-- [ ] Terminal working-directory tracking
+- [x] Real PTY terminal sessions
+- [x] Multiple terminals/tabs
+- [x] Input streaming and PTY resize backend
+- [x] Bounded terminal scrollback
+- [x] Reconnect to running terminals
+- [x] Terminal excerpts attachable to composer
+- [x] Terminal working-directory tracking
 
 ## Files, diffs and checkpoints
 
 - [x] Real workspace tree
 - [x] File preview
 - [x] Real Git status/diff
-- [ ] Syntax-highlighted file viewer
-- [ ] Search files
-- [ ] File edit/open-in-editor actions
+- [x] Syntax-highlighted file viewer
+- [x] Search files
+- [x] File edit/save actions
 - [ ] Diff review comments
-- [ ] Mark reviewed files
-- [ ] Turn checkpoints
-- [ ] Revert conversation only
-- [ ] Revert conversation + workspace
-- [ ] Hidden-Git-ref checkpoint management
+- [x] Mark reviewed files
+- [x] Turn checkpoints
+- [x] Revert conversation only
+- [x] Revert conversation + workspace
+- [x] Hidden-Git-ref checkpoint management
 
 ## Projects, Git and worktrees
 
 - [x] Open local project
-- [ ] Add/clone project
-- [ ] Recent/imported projects
+- [x] Add/clone project
+- [x] Recent projects
 - [ ] Project groups / multiple checkouts
-- [ ] Worktree creation/removal
-- [ ] Workspace-mode defaults
-- [ ] Branch selector
-- [ ] Commit
-- [ ] Push
-- [ ] Pull/fetch
-- [ ] Automatic safe pull
-- [ ] Generate commit message with Freebuff
-- [ ] Create pull request
-- [ ] PR review UI
-- [ ] PR comments/reviewers/check status
+- [x] Worktree creation/removal
+- [x] Workspace-mode selection
+- [x] Branch selector
+- [x] Commit
+- [x] Push
+- [x] Pull/fetch
+- [x] Automatic safe pull
+- [x] Generate commit message with Freebuff
+- [x] Create pull request
+- [x] PR review UI
+- [x] PR comments/review/check status
 - [ ] Linked pull requests
 - [ ] PR stacks
 - [ ] Merge/rebase stack
@@ -146,20 +146,20 @@ Trebell keeps its own visual identity and architecture.
 - [x] Local runtime health
 - [x] CPU/memory/temp-disk status
 - [x] Clean child-process shutdown
-- [ ] Keyboard-shortcut editor
-- [ ] Appearance/theme controls
+- [x] Keyboard-shortcut editor
+- [x] Appearance/theme controls
 - [ ] Project overrides/inheritance
-- [ ] Update checker + in-app updater
+- [x] Update checker; installer handoff opens the release
 - [ ] Background service mode
-- [ ] Diagnostics/log viewer
-- [ ] Native notifications
+- [x] Diagnostics/log viewer
+- [x] Native notifications
 - [ ] Remote environment control
 - [ ] WSL/SSH environments
 - [ ] Mobile/remote control surface
 
 ## Browser/preview tools
 
-- [ ] Browser preview panel
+- [x] Browser preview panel
 - [ ] Agent browser session
 - [ ] Page element picker
 - [ ] Screenshot/region capture context
