@@ -788,10 +788,17 @@ export default function App() {
       const argv=bootstrap.platform==="win32"
         ? ["cmd.exe","/d","/s","/c",command]
         : ["sh","-lc",command];
+      const cwd=projectPath||bootstrap.cwd||null;
+      const sandboxPolicy=sandbox==="danger-full-access"
+        ? {type:"dangerFullAccess"}
+        : sandbox==="read-only"
+          ? {type:"readOnly",networkAccess:false}
+          : {type:"workspaceWrite",writableRoots:cwd?[cwd]:[],networkAccess:false,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
       const result=await rpc.request("command/exec",{
         command:argv,
-        cwd:projectPath||bootstrap.cwd||null,
+        cwd,
         timeoutMs:120000,
+        sandboxPolicy,
       });
       setTerminalOutput(prev=>prev+(result.stdout||"")+(result.stderr||"")+"\n[exit "+result.exitCode+"]");
     }catch(error){
