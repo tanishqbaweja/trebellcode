@@ -10,6 +10,46 @@ let agentBrowser=null;
 let tray=null;
 let backgroundEnabled=false;
 
+const MIN_ZOOM_FACTOR=0.7;
+const MAX_ZOOM_FACTOR=2.5;
+const ZOOM_STEP=0.1;
+
+function clampZoomFactor(value){
+  const numeric=Number(value);
+  if(!Number.isFinite(numeric)) return 1;
+  return Math.min(MAX_ZOOM_FACTOR,Math.max(MIN_ZOOM_FACTOR,Math.round(numeric*100)/100));
+}
+
+function setMainZoomFactor(value,{persist=true}={}){
+  const factor=clampZoomFactor(value);
+  if(windowRef&&!windowRef.isDestroyed()) windowRef.webContents.setZoomFactor(factor);
+  if(persist) saveDesktopPrefs({...loadDesktopPrefs(),zoomFactor:factor});
+  return factor;
+}
+
+function installMainZoomControls(win){
+  const wc=win.webContents;
+  wc.on("zoom-changed",(event,direction)=>{
+    event.preventDefault();
+    const delta=direction==="in"?ZOOM_STEP:-ZOOM_STEP;
+    setMainZoomFactor(wc.getZoomFactor()+delta);
+  });
+  wc.on("before-input-event",(event,input)=>{
+    if(input.type!=="keyDown"||!input.control) return;
+    const key=String(input.key||"").toLowerCase();
+    if(key==="0"){
+      event.preventDefault();
+      setMainZoomFactor(1);
+    }else if(key==="+"||key==="="){
+      event.preventDefault();
+      setMainZoomFactor(wc.getZoomFactor()+ZOOM_STEP);
+    }else if(key==="-"){
+      event.preventDefault();
+      setMainZoomFactor(wc.getZoomFactor()-ZOOM_STEP);
+    }
+  });
+}
+
 function nativeCodexPath(){
   if(!app.isPackaged) return null;
   const root=join(process.resourcesPath,"app.asar.unpacked","node_modules","@openai");
@@ -232,11 +272,13 @@ async function createWindow(){
   });
 
   windowRef.removeMenu();
+  installMainZoomControls(windowRef);
   windowRef.webContents.setWindowOpenHandler(({url})=>{
     shell.openExternal(url);
     return {action:"deny"};
   });
   await windowRef.loadURL(gui.url);
+  setMainZoomFactor(loadDesktopPrefs().zoomFactor||1,{persist:false});
   windowRef.once("ready-to-show",()=>{
     if(process.argv.includes("--background")&&backgroundEnabled){ensureTray();return}
     windowRef?.show();
@@ -301,6 +343,9 @@ if(!lock){
   ipcMain.handle("browser:type",async(_event,payload)=>browserType(payload?.ref,payload?.text));
   ipcMain.handle("browser:screenshot",async()=>browserScreenshot());
   ipcMain.handle("desktop:screenshot",async()=>desktopScreenshot());
+  ipcMain.handle("desktop:zoom:get",()=>({factor:windowRef?.webContents?.getZoomFactor?.()||1}));
+  ipcMain.handle("desktop:zoom:set",(_event,value)=>({factor:setMainZoomFactor(value)}));
+  ipcMain.handle("desktop:zoom:reset",()=>({factor:setMainZoomFactor(1)}));
   ipcMain.handle("browser:importCookies",async(_event,payload)=>importBrowserCookies(payload));
   ipcMain.handle("browser:close",async()=>{if(agentBrowser&&!agentBrowser.isDestroyed())agentBrowser.close();agentBrowser=null;return {ok:true};});
 
