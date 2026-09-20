@@ -34,11 +34,11 @@ trebell --provider vyceai --model claude-sonnet-4-6
 | --- | --- | --- |
 | Freebuff | local `freebuff2api` bridge | authenticated Freebuff |
 | AgentRouter | local Trebell Responses bridge | `https://co.agentrouter.org/v1/chat/completions` |
-| JustWorker.icu | local Trebell Responses bridge | `https://api.justwoker.icu/v1/chat/completions` |
+| JustWorker.icu | local Trebell Responses bridge | Anthropic-compatible `https://api.justwoker.icu/v1/messages` |
 | HCNSec.cn | local Trebell Responses bridge | `https://api.hcnsec.cn/v1/chat/completions` |
 | VyceAi | local Trebell Responses bridge | `https://vyceai.com/v1/chat/completions` |
 
-Current Codex no longer accepts `wire_api = "chat"`. Trebell therefore always configures Codex with `wire_api = "responses"`. For the four chat-compatible providers, a loopback compatibility service accepts Codex `/v1/responses` requests, translates them into Chat Completions requests, and translates streamed text/function tool calls back into Responses API SSE events.
+Current Codex no longer accepts `wire_api = "chat"`. Trebell therefore always configures Codex with `wire_api = "responses"`. The loopback compatibility service accepts Codex `/v1/responses` requests and translates them to each upstream protocol: AgentRouter/HCNSec/VyceAi use Chat Completions, while JustWorker uses its Anthropic-compatible Messages endpoint. Trebell then translates streamed text and function/tool calls back into the full Responses API event lifecycle.
 
 The GUI model selector is replaced whenever the provider changes, so models from another provider cannot remain selected. Non-Freebuff API keys are stored separately from normal UI settings and are used only by Trebell's provider layer; the keys are not written into Codex `config.toml` or returned by the provider-status API.
 
