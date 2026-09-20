@@ -7,6 +7,7 @@ const PROVIDER_LABELS={
   agentrouter:"AgentRouter",
   justworker:"JustWorker.icu",
   hcnsec:"HCNSec.cn",
+  vyceai:"VyceAi",
 };
 
 export default function SettingsPage({settings,onSettings,onProviderUpdated,runtime,rpcStatus,loggedIn,login,logout,projectPath}){
@@ -80,6 +81,7 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
             <option value="agentrouter">AgentRouter</option>
             <option value="justworker">JustWorker.icu</option>
             <option value="hcnsec">HCNSec.cn</option>
+            <option value="vyceai">VyceAi</option>
           </select>
         </label>
         {selected==="freebuff"?<>
@@ -93,7 +95,7 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
             <button data-testid="save-provider-key" className="setting-action" onClick={saveProviderKey} disabled={!apiKey.trim()}>Save API key</button>
             {selectedStatus?.hasKey&&<button onClick={clearProviderKey}>Remove key</button>}
           </div>
-          <p className="provider-note">{selected==="agentrouter"?"Models are loaded live from AgentRouter /v1/models for this key.":selected==="justworker"?"Available model: claude-opus-4-8.":"Available model: glm-5.3."}</p>
+          <p className="provider-note">{selected==="agentrouter"?"Models are loaded live from AgentRouter /v1/models for this key.":selected==="vyceai"?"Models are loaded live from Vyce AI /v1/models for this key.":selected==="justworker"?"Available model: claude-opus-4-8.":"Available model: glm-5.3."}</p>
         </>}
         <p data-testid="provider-status"><strong>{PROVIDER_LABELS[selected]}</strong> · {selectedStatus?.hasKey||selected==="freebuff"?(providerInfo?.ready?"ready":"configured"):"API key required"}{providerMessage?" · "+providerMessage:""}</p>
       </div>
