@@ -1,12 +1,14 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { platform } from "node:os";
 import { ensureCodexConfig, DEFAULT_PORT, FALLBACK_MODEL } from "./config.mjs";
-import { credentialsPath, codexBin, freebuffEntrypoint, trebellHome } from "./paths.mjs";
+import { credentialsPath, codexBin, freebuffEntrypoint, packageRoot, trebellHome } from "./paths.mjs";
 import { chooseModel, health, isLoggedIn, listModels, logout, runLogin, startBridge } from "./freebuff.mjs";
 import { runCodex } from "./codex.mjs";
+import { TrebellStateStore } from "./trebell-state.mjs";
+import { ProviderManager, normalizeProviderId } from "./provider-manager.mjs";
 
-export const VERSION = "0.6.0";
+export const VERSION = (()=>{try{return String(JSON.parse(readFileSync(new URL("../package.json", import.meta.url),"utf8")).version||"0.0.0")}catch{return "0.0.0"}})();
 
 export function printHelp() {
   console.log(`Trebell Code ${VERSION}
@@ -21,8 +23,9 @@ Usage:
   trebell doctor               check the local Trebell Code installation\n  trebell gui                  launch the Trebell Code graphical harness
 
 Run options:
-  --model <id>                 select a Freebuff model
-  --port <port>                local bridge port (default 23333)
+  --model <id>                 select a model for the active provider
+  --provider <id>              freebuff|agentrouter|justworker|hcnsec|vyceai
+  --port <port>                local Freebuff bridge port (default 23333)
   --no-login-check             run even when no saved credential is present
   --help                       show this help
 
@@ -32,8 +35,9 @@ Environment:
   TREBELL_CODEX_BIN            override runtime path (also useful for tests)
   TREBELL_DISABLE_PTY=1        disable terminal branding shim
 
-Trebell Code uses the Apache-2.0 Codex runtime for agent/tool execution and the
-MIT-licensed freebuff2api bridge for Freebuff model access.
+Trebell Code uses the Apache-2.0 Codex runtime for agent/tool execution.
+Inference can be supplied by Freebuff, AgentRouter, JustWorker.icu, HCNSec.cn,
+or VyceAi. Freebuff access uses the bundled MIT-licensed freebuff2api bridge.
 `);
 }
 
@@ -50,6 +54,7 @@ function openUrl(url) {
 export function parseRunArgs(args) {
   let model = null;
   let port = DEFAULT_PORT;
+  let provider = null;
   let loginCheck = true;
   const forwarded = [];
   let passthrough = false;
@@ -65,6 +70,9 @@ export function parseRunArgs(args) {
     } else if (arg === "--model" || arg === "-m") {
       model = args[++i];
       if (!model) throw new Error(`${arg} requires a model id`);
+    } else if (arg === "--provider") {
+      provider = normalizeProviderId(args[++i]);
+      if (!args[i]) throw new Error("--provider requires a provider id");
     } else if (arg === "--port") {
       const raw = args[++i];
       port = Number.parseInt(raw, 10);
@@ -75,7 +83,7 @@ export function parseRunArgs(args) {
       forwarded.push(arg);
     }
   }
-  return { model, port, loginCheck, forwarded };
+  return { model, provider, port, loginCheck, forwarded };
 }
 
 async function stopBridge(bridge) {
@@ -96,36 +104,64 @@ async function stopBridge(bridge) {
 
 async function runCommand(args) {
   const parsed = parseRunArgs(args);
-  ensureCodexConfig({ port: parsed.port });
+  const state = new TrebellStateStore(process.env);
+  const providers = new ProviderManager({ env: process.env });
+  const provider = normalizeProviderId(parsed.provider || state.settings().modelProvider || "freebuff");
+  ensureCodexConfig({ port: parsed.port, provider });
 
-  if (parsed.loginCheck && !isLoggedIn()) {
-    console.log("Trebell Code needs a Freebuff sign-in before the first run.");
-    console.log("Starting sign-in now…\n");
-    const loginCode = await runLogin([], { port: parsed.port });
-    if (loginCode !== 0) return loginCode;
+  if (provider === "freebuff") {
+    if (parsed.loginCheck && !isLoggedIn()) {
+      console.log("Trebell Code needs a Freebuff sign-in before the first Freebuff run.");
+      console.log("Starting sign-in now…\n");
+      const loginCode = await runLogin([], { port: parsed.port });
+      if (loginCode !== 0) return loginCode;
+    }
+
+    const bridge = await startBridge({ port: parsed.port });
+    try {
+      const selectedModel = (await chooseModel({ requested: parsed.model, port: parsed.port })) || FALLBACK_MODEL;
+      console.log(`Trebell Code · provider: Freebuff · model: ${selectedModel}`);
+      return await runCodex({ model: selectedModel, provider, forwarded: parsed.forwarded });
+    } finally {
+      await stopBridge(bridge);
+    }
   }
 
-  const bridge = await startBridge({ port: parsed.port });
-  try {
-    const selectedModel = (await chooseModel({ requested: parsed.model, port: parsed.port })) || FALLBACK_MODEL;
-    console.log(`Trebell Code · model: ${selectedModel}`);
-    return await runCodex({ model: selectedModel, forwarded: parsed.forwarded });
-  } finally {
-    await stopBridge(bridge);
-  }
+  if (!providers.hasKey(provider)) throw new Error(`${providers.get(provider).name} API key is not configured. Add it in Trebell Settings first.`);
+  const catalog = await providers.models(provider);
+  const models = catalog.models || [];
+  if (!models.length) throw new Error(`No models are available for ${providers.get(provider).name}.`);
+  if (parsed.model && !models.includes(parsed.model)) throw new Error(`Model "${parsed.model}" is not available for ${providers.get(provider).name}.`);
+  const selectedModel = parsed.model || models[0];
+  console.log(`Trebell Code · provider: ${providers.get(provider).name} · model: ${selectedModel}`);
+  return await runCodex({
+    model: selectedModel,
+    provider,
+    forwarded: parsed.forwarded,
+    env: providers.childEnv(provider, process.env),
+  });
 }
 
 async function modelsCommand(args) {
   const parsed = parseRunArgs(args);
-  if (!isLoggedIn()) throw new Error("Not logged in. Run: trebell login");
-  const bridge = await startBridge({ port: parsed.port, quiet: true });
-  try {
-    const models = await listModels(parsed.port);
-    for (const model of models) console.log(model);
-    return 0;
-  } finally {
-    await stopBridge(bridge);
+  const state = new TrebellStateStore(process.env);
+  const providers = new ProviderManager({ env: process.env });
+  const provider = normalizeProviderId(parsed.provider || state.settings().modelProvider || "freebuff");
+  if (provider === "freebuff") {
+    if (!isLoggedIn()) throw new Error("Not logged in. Run: trebell login");
+    const bridge = await startBridge({ port: parsed.port, quiet: true });
+    try {
+      const models = await listModels(parsed.port);
+      for (const model of models) console.log(model);
+      return 0;
+    } finally {
+      await stopBridge(bridge);
+    }
   }
+  if (!providers.hasKey(provider)) throw new Error(`${providers.get(provider).name} API key is not configured.`);
+  const result = await providers.models(provider);
+  for (const model of result.models || []) console.log(model);
+  return 0;
 }
 
 export async function doctor(env = process.env) {
