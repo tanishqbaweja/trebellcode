@@ -52,19 +52,19 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   const providerSelector=page.getByTestId("provider-selector");
 
   await providerSelector.selectOption("justworker");
-  await page.getByText("Current thread",{exact:true}).click();
+  await page.getByRole("button",{name:"Threads"}).click();
   await expect(page.getByTestId("model-picker").locator("option")).toHaveCount(1);
   await expect(page.getByTestId("model-picker")).toHaveValue("claude-opus-4-8");
 
   await page.getByText("Settings",{exact:true}).first().click();
   await providerSelector.selectOption("hcnsec");
-  await page.getByText("Current thread",{exact:true}).click();
+  await page.getByRole("button",{name:"Threads"}).click();
   await expect(page.getByTestId("model-picker").locator("option")).toHaveCount(1);
   await expect(page.getByTestId("model-picker")).toHaveValue("glm-5.3");
 
   await page.getByText("Settings",{exact:true}).first().click();
   await providerSelector.selectOption("vyceai");
-  await page.getByText("Current thread",{exact:true}).click();
+  await page.getByRole("button",{name:"Threads"}).click();
   await expect(page.getByTestId("model-picker").locator("option")).toHaveCount(4);
   await expect(page.getByTestId("model-picker").locator("option")).toHaveText([
     "claude-sonnet-4-6",
@@ -75,7 +75,7 @@ test("Trebell Code renders the harness and scopes models to the selected provide
 
   await page.getByText("Settings",{exact:true}).first().click();
   await providerSelector.selectOption("agentrouter");
-  await page.getByText("Current thread",{exact:true}).click();
+  await page.getByRole("button",{name:"Threads"}).click();
   await expect(page.getByTestId("model-picker").locator("option")).toHaveCount(4);
   await expect(page.getByTestId("model-picker").locator("option")).toHaveText([
     "claude-opus-4-8",
@@ -86,7 +86,7 @@ test("Trebell Code renders the harness and scopes models to the selected provide
 
   await page.getByText("Settings",{exact:true}).first().click();
   await providerSelector.selectOption("freebuff");
-  await page.getByText("Current thread",{exact:true}).click();
+  await page.getByRole("button",{name:"Threads"}).click();
   await expect(page.getByTestId("model-picker").locator("option")).toHaveCount(3);
   await expect(page.getByTestId("freebuff-card")).toBeVisible();
 
