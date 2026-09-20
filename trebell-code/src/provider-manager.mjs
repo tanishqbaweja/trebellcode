@@ -187,23 +187,28 @@ export class ProviderManager {
     };
   }
 
-  async directChat(providerId, { model, prompt }) {
+  async forwardChat(providerId, chatBody, { signal } = {}) {
     const provider = this.get(providerId);
-    if (provider.id === "freebuff") throw new Error("Freebuff direct chat is handled by the local bridge.");
+    if (provider.id === "freebuff") throw new Error("Freebuff chat is handled by the local freebuff2api bridge.");
     const key = this.key(provider.id);
     if (!key) throw new Error(`${provider.name} API key is not configured.`);
-    const response = await this.fetchFn(provider.baseUrl + "/chat/completions", {
+    return await this.fetchFn(provider.baseUrl + "/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: "user", content: prompt }],
-        stream: false,
-      }),
-      signal: AbortSignal.timeout(300_000),
+      body: JSON.stringify(chatBody),
+      signal: signal || AbortSignal.timeout(300_000),
+    });
+  }
+
+  async directChat(providerId, { model, prompt }) {
+    const provider = this.get(providerId);
+    const response = await this.forwardChat(provider.id, {
+      model,
+      messages: [{ role: "user", content: prompt }],
+      stream: false,
     });
     const raw = await response.text();
     if (!response.ok) throw new Error(`${provider.name} HTTP ${response.status}: ${raw.slice(0, 1200)}`);
