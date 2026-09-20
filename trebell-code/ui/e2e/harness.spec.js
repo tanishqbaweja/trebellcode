@@ -13,7 +13,7 @@ test("Trebell Code renders functional harness surfaces and completes a Freebuff 
   await page.getByTestId("send").click();
 
   await expect(page.getByText("Mock Freebuff reply: Build and validate a private local converter.")).toBeVisible({timeout:10000});
-  await expect(page.getByText("Freebuff direct response")).toBeVisible();
+  await expect(page.getByRole("group").getByText("Freebuff direct response")).toBeVisible();
 
   await page.getByText("Files & diff").click();
   await expect(page.getByTestId("drawer")).toBeVisible();
