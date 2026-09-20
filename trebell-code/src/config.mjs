@@ -24,7 +24,7 @@ model_provider = "freebuff"
 [model_providers.freebuff]
 name = "Trebell Freebuff"
 base_url = "http://127.0.0.1:${port}/v1"
-wire_api = "chat"
+wire_api = "responses"
 requires_openai_auth = false
 request_max_retries = 2
 stream_max_retries = 2
