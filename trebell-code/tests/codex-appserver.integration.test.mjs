@@ -84,6 +84,6 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
   } finally {
     try{ws?.close();}catch{}
     await gui.close();
-    await rm(home,{recursive:true,force:true});
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
   }
 });
