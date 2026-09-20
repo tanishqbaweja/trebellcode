@@ -1,4 +1,5 @@
 name: Publish Trebell Code Desktop v0.3.0
+# Rebuild after fixing the Codex Windows npm alias.
 
 on:
   push:
