@@ -57,9 +57,13 @@ test("Chat SSE is translated back into Responses SSE with tool calls", async () 
 
   assert.equal(forwarded.model,"glm-5.3");
   const text=await response.text();
+  assert.match(text,/response\.output_item\.added/);
+  assert.match(text,/response\.content_part\.added/);
   assert.match(text,/response\.output_text\.delta/);
   assert.match(text,/Hello /);
   assert.match(text,/world/);
+  assert.match(text,/response\.output_text\.done/);
+  assert.match(text,/response\.content_part\.done/);
   assert.match(text,/response\.output_item\.done/);
   assert.match(text,/"type":"function_call"/);
   assert.match(text,/"call_id":"call_7"/);
@@ -111,4 +115,27 @@ test("Provider bridge exposes Responses API while forwarding Chat Completions up
   }finally{
     await bridge.close();
   }
+});
+
+
+test("stream=true always returns Responses SSE even when upstream answers with JSON", async () => {
+  const response=await adaptResponsesBody({
+    model:"glm-5.3",
+    input:[{type:"message",role:"user",content:[{type:"input_text",text:"hello"}]}],
+    stream:true,
+  },async()=>Response.json({
+    id:"chatcmpl-json",
+    model:"glm-5.3",
+    choices:[{message:{role:"assistant",content:"json-fallback-ok"},finish_reason:"stop"}],
+    usage:{prompt_tokens:4,completion_tokens:3,total_tokens:7},
+  }));
+
+  assert.match(response.headers.get("content-type")||"",/text\/event-stream/);
+  const text=await response.text();
+  assert.match(text,/response\.created/);
+  assert.match(text,/response\.output_item\.added/);
+  assert.match(text,/json-fallback-ok/);
+  assert.match(text,/response\.output_text\.done/);
+  assert.match(text,/response\.completed/);
+  assert.match(text,/"total_tokens":7/);
 });
