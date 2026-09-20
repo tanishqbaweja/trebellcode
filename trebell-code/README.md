@@ -85,3 +85,14 @@ npm run ui:dev
 ```
 
 The Vite dev server proxies `/api` to the local GUI server.
+
+
+## Desktop installer
+
+Trebell Code is also packaged as a native Windows desktop application. End users do not need
+Node.js, npm, or a terminal. The installer bundles Electron, the production Trebell GUI, the
+native Codex harness binary, and the Freebuff compatibility bridge.
+
+After installation, launch **Trebell Code** from the Start Menu or Desktop shortcut. Codex
+remains the local agentic harness only; all model inference is routed through the configured
+Freebuff provider.

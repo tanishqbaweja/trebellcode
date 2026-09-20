@@ -1,7 +1,7 @@
 {
   "name": "trebell-code",
-  "version": "0.2.0",
-  "description": "Trebell Code — Codex agentic harness with Freebuff-only model inference.",
+  "version": "0.3.0",
+  "description": "Trebell Code Desktop — Codex agentic harness with Freebuff-only model inference.",
   "type": "module",
   "license": "Apache-2.0",
   "bin": {
@@ -16,7 +16,10 @@
     "ui:build": "vite build --config ui/vite.config.mjs",
     "gui:server": "node src/gui-server.mjs",
     "gui": "npm run ui:build && node src/gui-server.mjs --open",
-    "ui:test": "playwright test -c ui/playwright.config.mjs"
+    "ui:test": "playwright test -c ui/playwright.config.mjs",
+    "bridge:build": "esbuild vendor/freebuff2api/src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=vendor/freebuff2api/dist/index.mjs",
+    "desktop:dir": "npm run bridge:build && npm run ui:build && electron-builder --dir",
+    "desktop:dist": "npm run bridge:build && npm run ui:build && electron-builder --win nsis --x64"
   },
   "engines": {
     "node": ">=22"
@@ -32,6 +35,53 @@
   "devDependencies": {
     "@playwright/test": "^1.55.0",
     "@vitejs/plugin-react": "^5.0.2",
-    "vite": "^7.1.5"
+    "vite": "^7.1.5",
+    "electron": "^38.1.2",
+    "electron-builder": "^26.0.12",
+    "esbuild": "^0.25.9"
+  },
+  "main": "desktop/main.mjs",
+  "build": {
+    "appId": "com.trebell.code",
+    "productName": "Trebell Code",
+    "artifactName": "Trebell-Code-Setup-${version}.${ext}",
+    "asar": true,
+    "npmRebuild": false,
+    "directories": {
+      "output": "desktop-dist"
+    },
+    "files": [
+      "desktop/**/*",
+      "src/**/*",
+      "ui/dist/**/*",
+      "vendor/freebuff2api/dist/**/*",
+      "package.json",
+      "README.md",
+      "THIRD_PARTY_NOTICES.md"
+    ],
+    "asarUnpack": [
+      "node_modules/@openai/codex-win32-x64/**/*",
+      "node_modules/@openai/codex-win32-arm64/**/*",
+      "vendor/freebuff2api/dist/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Trebell Code",
+      "uninstallDisplayName": "Trebell Code"
+    }
   }
 }

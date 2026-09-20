@@ -20,7 +20,8 @@ export function credentialsPath(env = process.env) {
   return join(freebuffConfigDir(env), "credentials.json");
 }
 
-export function freebuffEntrypoint() {
+export function freebuffEntrypoint(env = process.env) {
+  if (env.TREBELL_FREEBUFF_ENTRYPOINT?.trim()) return env.TREBELL_FREEBUFF_ENTRYPOINT.trim();
   return join(packageRoot, "vendor", "freebuff2api", "src", "index.ts");
 }
 

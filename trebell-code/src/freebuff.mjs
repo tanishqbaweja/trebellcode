@@ -25,17 +25,28 @@ export function logout(env = process.env) {
   if (existsSync(path)) rmSync(path, { force: true });
 }
 
-function spawnBridge(args, { port = DEFAULT_PORT, env = process.env, stdio = "pipe" } = {}) {
-  return spawn(process.execPath, [
-    "--import",
-    "tsx",
-    freebuffEntrypoint(),
-    ...args,
-  ], {
-    env: bridgeEnv({ port, env }),
+function spawnBridge(args, { port = DEFAULT_PORT, env = process.env, stdio = "pipe", onOutput = null } = {}) {
+  const entrypoint = freebuffEntrypoint(env);
+  const runtimeArgs = entrypoint.endsWith(".ts")
+    ? ["--import", "tsx", entrypoint, ...args]
+    : [entrypoint, ...args];
+
+  const childEnv = bridgeEnv({ port, env });
+  if (env.TREBELL_ELECTRON_AS_NODE === "1" || process.versions.electron) {
+    childEnv.ELECTRON_RUN_AS_NODE = "1";
+  }
+
+  const child = spawn(process.execPath, runtimeArgs, {
+    env: childEnv,
     stdio,
     windowsHide: true,
   });
+
+  if (onOutput) {
+    child.stdout?.on("data", (chunk) => onOutput(String(chunk), "stdout"));
+    child.stderr?.on("data", (chunk) => onOutput(String(chunk), "stderr"));
+  }
+  return child;
 }
 
 function pipeRebranded(child) {
@@ -45,7 +56,7 @@ function pipeRebranded(child) {
 
 export async function runLogin(args = [], options = {}) {
   const child = spawnBridge(["login", ...args], options);
-  pipeRebranded(child);
+  if (!options.onOutput) pipeRebranded(child);
   return await new Promise((resolve, reject) => {
     child.once("error", reject);
     child.once("exit", (code, signal) => {

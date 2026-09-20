@@ -429,20 +429,42 @@ export default function App() {
 
   useEffect(()=>{
     if(!bootstrap.wsUrl || bootstrap.mock) return;
-    const client=new CodexRpcClient(bootstrap.wsUrl,{
-      onStatus:setRpcStatus,
-      onNotification:(message)=>handleNotification(message),
-      onServerRequest:(message)=>setApprovals(prev=>[...prev,message]),
-    });
-    setRpc(client);
-    client.connect().then(async()=>{
-      const listed=await client.request("thread/list",{limit:40,modelProviders:["freebuff"],sortKey:"updated_at",sortDirection:"desc"}).catch(()=>({data:[]}));
-      setThreads(listed?.data || []);
-    }).catch((error)=>{
-      console.error(error);
-      setRpcStatus("error");
-    });
-    return ()=>client.close();
+    let disposed=false;
+    let client=null;
+    let retryTimer=null;
+
+    const connect=async(attempt=0)=>{
+      if(disposed) return;
+      client=new CodexRpcClient(bootstrap.wsUrl,{
+        onStatus:setRpcStatus,
+        onNotification:(message)=>handleNotification(message),
+        onServerRequest:(message)=>setApprovals(prev=>[...prev,message]),
+      });
+      setRpc(client);
+      try{
+        await client.connect();
+        if(disposed) return;
+        const listed=await client.request("thread/list",{limit:40,modelProviders:["freebuff"],sortKey:"updated_at",sortDirection:"desc"}).catch(()=>({data:[]}));
+        if(!disposed) setThreads(listed?.data || []);
+      }catch(error){
+        client.close();
+        if(disposed) return;
+        if(attempt<30){
+          setRpcStatus("connecting");
+          retryTimer=setTimeout(()=>connect(attempt+1),500);
+        }else{
+          console.error(error);
+          setRpcStatus("error");
+        }
+      }
+    };
+
+    connect();
+    return ()=>{
+      disposed=true;
+      clearTimeout(retryTimer);
+      client?.close();
+    };
   },[bootstrap.wsUrl, bootstrap.mock]);
 
   useEffect(()=>{
@@ -629,7 +651,7 @@ export default function App() {
     <div className="app-shell">
       <Sidebar section={section} setSection={setSection} threads={threads} activeThreadId={activeThread?.id} openThread={openThread} query={query} setQuery={setQuery} newChat={newChat}/>
       <main className="main-frame">
-        <div className="window-bar"><span>{statusLabel}</span><div><button>—</button><button>□</button><button>×</button></div></div>
+        <div className="window-bar"><span>{statusLabel}</span><div><button aria-label="Minimize" onClick={()=>window.trebellDesktop?.minimize?.()}>—</button><button aria-label="Maximize" onClick={()=>window.trebellDesktop?.maximize?.()}>□</button><button aria-label="Close" className="window-close" onClick={()=>window.trebellDesktop?.close?.()}>×</button></div></div>
         <SecondaryView section={section} setSection={setSection} projectPath={projectPath} setProjectPath={setProjectPath} sandbox={sandbox} setSandbox={setSandbox} approvalPolicy={approvalPolicy} setApprovalPolicy={setApprovalPolicy} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout}/>
         {(section==="chat" || section==="agent" || section==="new") && <>
           <Topbar title={activeTitle} running={running} stop={stop} openPanel={setPanel}/>

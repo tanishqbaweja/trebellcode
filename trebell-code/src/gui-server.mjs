@@ -116,7 +116,7 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
         appServerReady:mock || Boolean(appServer && appServer.exitCode===null),
         wsUrl:mock ? null : `ws://127.0.0.1:${appPort}`,
         cwd:process.cwd(),
-        version:"0.2.0",
+        version:"0.3.0",
       });
     }
     if(url.pathname==="/api/models"){
@@ -133,7 +133,19 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
     if(url.pathname==="/api/login/start" && req.method==="POST"){
       if(mock) return json(res,202,{started:true});
       if(!loginPromise){
-        loginPromise=runLogin([],{port:DEFAULT_PORT,env})
+        let opened=false;
+        loginPromise=runLogin([],{
+          port:DEFAULT_PORT,
+          env,
+          onOutput:(chunk)=>{
+            if(opened) return;
+            const match=String(chunk).match(/https:\/\/[^\s]+/);
+            if(match){
+              opened=true;
+              try{ openBrowser(match[0]); }catch{}
+            }
+          },
+        })
           .then(async code=>{ if(code===0) await ensureBridge(); return code; })
           .finally(()=>{loginPromise=null;});
       }
