@@ -139,3 +139,33 @@ test("stream=true always returns Responses SSE even when upstream answers with J
   assert.match(text,/response\.completed/);
   assert.match(text,/"total_tokens":7/);
 });
+
+
+test("provider bridge forwards incoming Codex User-Agent to AgentRouter", async () => {
+  let seenOptions=null;
+  const providerManager={
+    hasKey(provider){return provider==="agentrouter";},
+    async models(){return {models:["gpt-5.5"]};},
+    async forwardChat(provider,body,options){
+      assert.equal(provider,"agentrouter");
+      seenOptions=options;
+      return Response.json({choices:[{message:{role:"assistant",content:"ok"}}]});
+    },
+  };
+  const bridge=await startProviderBridge({port:0,providerManager,provider:"agentrouter"});
+  try{
+    const response=await fetch(bridge.url+"/v1/responses",{
+      method:"POST",
+      headers:{"content-type":"application/json","user-agent":"codex_cli_rs/9.9.9"},
+      body:JSON.stringify({
+        model:"gpt-5.5",
+        input:[{type:"message",role:"user",content:[{type:"input_text",text:"hello"}]}],
+        stream:false,
+      }),
+    });
+    assert.equal(response.status,200);
+    assert.equal(seenOptions?.userAgent,"codex_cli_rs/9.9.9");
+  }finally{
+    await bridge.close();
+  }
+});
