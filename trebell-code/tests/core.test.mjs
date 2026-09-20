@@ -18,11 +18,11 @@ test("Trebell paths are isolated from ~/.codex and ~/.config/freebuff2api", () =
   assert.equal(freebuffConfigDir(env), join(root, "freebuff2api"));
 });
 
-test("Codex provider config points to local freebuff2api using chat wire API", () => {
+test("Codex provider config points to local freebuff2api using responses wire API", () => {
   const text = renderCodexConfig({ port: 24444 });
   assert.match(text, /model_provider = "freebuff"/);
   assert.match(text, /base_url = "http:\/\/127\.0\.0\.1:24444\/v1"/);
-  assert.match(text, /wire_api = "chat"/);
+  assert.match(text, /wire_api = "responses"/);
   assert.match(text, /requires_openai_auth = false/);
 });
 
