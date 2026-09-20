@@ -14,6 +14,8 @@ const fixture = createServer((req,res)=>{
   <input name="q" placeholder="Type here" />
   <button id="go" onclick="document.querySelector('#result').textContent='clicked:'+document.querySelector('input[name=q]').value">Commit</button>
   <p id="result">idle</p>
+  <p id="cookie">cookie:none</p>
+  <script>document.querySelector('#cookie').textContent='cookie:'+(document.cookie.match(/(?:^|; )trebell_test=([^;]*)/)?.[1]||'none')</script>
 </body>
 </html>`);
 });
@@ -61,11 +63,15 @@ try {
   await mainPage.evaluate(()=>window.trebellDesktop.notify({title:"Trebell installer validation",body:"Native notification IPC is reachable.",silent:true}));
 
   const fixtureUrl=`http://127.0.0.1:${fixturePort}`;
+  const cookieImport=await mainPage.evaluate(url=>window.trebellDesktop.browser.importCookies({cookies:[{url,name:"trebell_test",value:"cookie-ok",path:"/"}]}),fixtureUrl);
+  if(!cookieImport?.ok||cookieImport.imported!==1||cookieImport.failed!==0)throw new Error("Agent browser cookie import failed.");
+
   const opened=await mainPage.evaluate(url=>window.trebellDesktop.browser.navigate(url),fixtureUrl);
   if(!opened?.ok) throw new Error("Agent browser failed to navigate.");
 
   let snapshot=await mainPage.evaluate(()=>window.trebellDesktop.browser.snapshot());
   if(snapshot?.title!=="Trebell Browser Fixture") throw new Error("Agent browser snapshot returned the wrong document.");
+  if(!snapshot?.text?.includes("cookie:cookie-ok")) throw new Error("Imported cookie was not visible inside the isolated agent browser session.");
   const input=snapshot.elements?.find(element=>element.name==="q");
   const button=snapshot.elements?.find(element=>element.tag==="button"&&element.text==="Commit");
   if(!input?.ref||!button?.ref) throw new Error("Agent browser did not expose addressable fixture elements.");
@@ -100,7 +106,7 @@ try {
   console.log(JSON.stringify({
     ok:true,
     background:{initial,afterEnable,afterDisable},
-    browser:{url:snapshot.url,title:snapshot.title,elements:snapshot.elements?.length||0,screenshotBytes:screenshot.dataUrl.length},
+    browser:{url:snapshot.url,title:snapshot.title,elements:snapshot.elements?.length||0,screenshotBytes:screenshot.dataUrl.length,cookieImport},
     voice,
   },null,2));
 } finally {

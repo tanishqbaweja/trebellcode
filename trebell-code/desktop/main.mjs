@@ -92,6 +92,55 @@ function normalizeBrowserUrl(value){
   return /^https?:\/\//i.test(raw)?raw:"http://"+raw;
 }
 
+function normalizeSameSite(value){
+  const clean=String(value||"").trim().toLowerCase().replace(/[ -]+/g,"_");
+  if(clean==="strict")return "strict";
+  if(clean==="lax")return "lax";
+  if(clean==="none"||clean==="no_restriction")return "no_restriction";
+  return "unspecified";
+}
+
+function normalizeImportedCookie(raw={}){
+  const name=String(raw.name||"").trim();
+  if(!name)throw new Error("Cookie name is required");
+  const domain=String(raw.domain||"").trim().replace(/^\./,"");
+  const pathValue=String(raw.path||"/");
+  const source=String(raw.url||"").trim()||(domain?((raw.secure?"https":"http")+"://"+domain+(pathValue.startsWith("/")?pathValue:"/"+pathValue)):"");
+  if(!source)throw new Error("Cookie needs a url or domain");
+  const url=normalizeBrowserUrl(source);
+  if(!/^https?:\/\//i.test(url))throw new Error("Only HTTP(S) cookies can be imported");
+  const cookie={url,name,value:String(raw.value??"")};
+  if(raw.domain)cookie.domain=String(raw.domain);
+  if(raw.path)cookie.path=pathValue;
+  if(raw.secure!=null)cookie.secure=Boolean(raw.secure);
+  if(raw.httpOnly!=null)cookie.httpOnly=Boolean(raw.httpOnly);
+  if(raw.sameSite!=null)cookie.sameSite=normalizeSameSite(raw.sameSite);
+  const expiration=Number(raw.expirationDate??raw.expires??raw.expiration);
+  if(Number.isFinite(expiration)&&expiration>0)cookie.expirationDate=expiration>1e12?expiration/1000:expiration;
+  return cookie;
+}
+
+async function importBrowserCookies(payload={}){
+  let cookies=Array.isArray(payload?.cookies)?payload.cookies:null;
+  let source="provided";
+  if(!cookies){
+    const picked=await dialog.showOpenDialog(windowRef,{title:"Import cookies into Trebell Agent Browser",properties:["openFile"],filters:[{name:"Cookie JSON",extensions:["json"]},{name:"All files",extensions:["*"]}]});
+    if(picked.canceled||!picked.filePaths[0])return {ok:false,canceled:true,imported:0,failed:0,errors:[]};
+    const parsed=JSON.parse(readFileSync(picked.filePaths[0],"utf8"));
+    cookies=Array.isArray(parsed)?parsed:(Array.isArray(parsed?.cookies)?parsed.cookies:null);
+    source="file";
+  }
+  if(!Array.isArray(cookies))throw new Error("Cookie JSON must be an array or an object with a cookies array.");
+  const browser=await ensureAgentBrowser();
+  let imported=0;
+  const errors=[];
+  for(const raw of cookies.slice(0,5000)){
+    try{await browser.webContents.session.cookies.set(normalizeImportedCookie(raw));imported++}
+    catch(error){errors.push(String(error?.message||error))}
+  }
+  return {ok:true,canceled:false,source,imported,failed:errors.length,errors:errors.slice(0,10)};
+}
+
 async function ensureAgentBrowser({show=false}={}){
   if(agentBrowser&&!agentBrowser.isDestroyed()){
     if(show){agentBrowser.show();agentBrowser.focus();}
@@ -100,7 +149,7 @@ async function ensureAgentBrowser({show=false}={}){
   agentBrowser=new BrowserWindow({
     width:1280,height:860,show,title:"Trebell Agent Browser",
     backgroundColor:"#0a0d14",autoHideMenuBar:true,
-    webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true},
+    webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,partition:"persist:trebell-agent-browser"},
   });
   agentBrowser.removeMenu();
   agentBrowser.webContents.setWindowOpenHandler(({url})=>{
@@ -235,6 +284,7 @@ if(!lock){
   ipcMain.handle("browser:click",async(_event,ref)=>browserClick(ref));
   ipcMain.handle("browser:type",async(_event,payload)=>browserType(payload?.ref,payload?.text));
   ipcMain.handle("browser:screenshot",async()=>browserScreenshot());
+  ipcMain.handle("browser:importCookies",async(_event,payload)=>importBrowserCookies(payload));
   ipcMain.handle("browser:close",async()=>{if(agentBrowser&&!agentBrowser.isDestroyed())agentBrowser.close();agentBrowser=null;return {ok:true};});
 
   app.whenReady().then(async()=>{

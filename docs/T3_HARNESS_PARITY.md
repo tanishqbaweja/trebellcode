@@ -164,7 +164,7 @@ Trebell keeps its own visual identity and architecture.
 - [x] Page element inspector / context picker
 - [x] Browser screenshot context
 - [x] Preview annotations
-- [ ] Browser profile/cookie import
+- [x] Browser cookie import (explicit user-selected JSON into the isolated Trebell browser session)
 
 ## Implementation standard
 

@@ -3,7 +3,7 @@ import { test, expect } from "@playwright/test";
 test("Trebell Code renders functional harness surfaces and completes a Freebuff turn", async ({ page }) => {
   await page.addInitScript(()=>{
     const snapshot={url:"http://fixture.local",title:"Preview fixture",text:"Checkout",elements:[{ref:"e7",tag:"button",text:"Submit order",href:""}]};
-    Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{browser:{navigate:async()=>({ok:true}),show:async()=>({ok:true}),snapshot:async()=>snapshot,screenshot:async()=>({dataUrl:"data:image/png;base64,iVBORw0KGgo="}),close:async()=>({ok:true})}}});
+    Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{browser:{navigate:async()=>({ok:true}),show:async()=>({ok:true}),snapshot:async()=>snapshot,screenshot:async()=>({dataUrl:"data:image/png;base64,iVBORw0KGgo="}),importCookies:async()=>({ok:true,imported:2,failed:0}),close:async()=>({ok:true})}}});
   });
   await page.goto("/");
   await expect(page.getByText("Trebell Code").first()).toBeVisible();
@@ -34,6 +34,8 @@ test("Trebell Code renders functional harness surfaces and completes a Freebuff 
   await page.getByText("Preview",{exact:true}).first().click();
   await expect(page.getByRole("heading",{name:"Preview"})).toBeVisible();
   await page.getByRole("button",{name:"Open agent browser"}).click();
+  await page.getByRole("button",{name:"Import cookies"}).click();
+  await expect(page.getByTestId("browser-cookie-status")).toHaveText("Imported 2 cookies");
   await page.getByRole("button",{name:/Submit order/}).click();
   await page.getByTestId("preview-annotation").locator("textarea").fill("Use this button to submit the checkout flow.");
   await page.getByRole("button",{name:"Attach annotation"}).click();
