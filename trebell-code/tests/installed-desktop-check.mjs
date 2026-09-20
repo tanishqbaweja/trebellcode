@@ -118,6 +118,17 @@ try {
   if(!desktopSnapshot?.dataUrl?.startsWith("data:image/png;base64,")) throw new Error("Desktop snapshot is not a PNG data URL.");
   if(!(desktopSnapshot.width>0&&desktopSnapshot.height>0)) throw new Error("Desktop snapshot dimensions are invalid.");
 
+  await mainPage.evaluate(()=>window.trebellDesktop.zoom.reset());
+  const zoomBefore=(await mainPage.evaluate(()=>window.trebellDesktop.zoom.get())).factor;
+  await mainPage.keyboard.down("Control");
+  await mainPage.mouse.wheel(0,-600);
+  await mainPage.keyboard.up("Control");
+  await mainPage.waitForTimeout(250);
+  const zoomAfter=(await mainPage.evaluate(()=>window.trebellDesktop.zoom.get())).factor;
+  if(!(zoomAfter>zoomBefore)) throw new Error(`Ctrl+mouse-wheel up did not increase app zoom: ${zoomBefore} -> ${zoomAfter}`);
+  const zoomReset=(await mainPage.evaluate(()=>window.trebellDesktop.zoom.reset())).factor;
+  if(Math.abs(zoomReset-1)>0.001) throw new Error("Desktop zoom reset did not return to 100%.");
+
   const voice=await mainPage.evaluate(()=>{
     const supported=Boolean(window.SpeechRecognition||window.webkitSpeechRecognition);
     const button=document.querySelector(".mic-btn");
@@ -138,6 +149,7 @@ try {
     background:{initial,afterEnable,afterDisable},
     browser:{url:snapshot.url,title:snapshot.title,elements:snapshot.elements?.length||0,screenshotBytes:screenshot.dataUrl.length,cookieImport},
     desktopSnapshot:{width:desktopSnapshot.width,height:desktopSnapshot.height,bytes:desktopSnapshot.dataUrl.length},
+    zoom:{before:zoomBefore,afterCtrlWheelUp:zoomAfter,reset:zoomReset},
     voice,
     providerCompatibility:{selected:providerSwitch.selected,runtime:providerRuntime},
   },null,2));
