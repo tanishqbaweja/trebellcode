@@ -21,7 +21,7 @@ async function rpc(ws,id,method,params={}) {
 }
 
 const boot=await fetch(base+"/api/bootstrap").then(r=>r.json());
-assert.equal(boot.version,"0.5.0");
+assert.equal(boot.version,"0.6.0");
 assert.equal(boot.appServerReady,true);
 assert.match(boot.wsUrl,/\/api\/codex\/ws$/);
 
@@ -33,7 +33,7 @@ try{
     ws.once("error",error=>{clearTimeout(timer);reject(error);});
   });
   await rpc(ws,1,"initialize",{
-    clientInfo:{name:"trebell-installed-test",title:"Trebell Installed Test",version:"0.5.0"},
+    clientInfo:{name:"trebell-installed-test",title:"Trebell Installed Test",version:"0.6.0"},
     capabilities:{experimentalApi:true},
   });
   ws.send(JSON.stringify({method:"initialized",params:{}}));
