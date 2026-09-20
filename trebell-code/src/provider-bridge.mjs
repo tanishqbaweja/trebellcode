@@ -94,7 +94,7 @@ export async function startProviderBridge({
           return sendJson(res, 400, { error: { message: "Freebuff uses the dedicated freebuff2api bridge." } });
         }
         const body = await readJson(req);
-        const response = await providerManager.forwardChat(selectedProvider, body);
+        const response = await providerManager.forwardChat(selectedProvider, body, { userAgent: req.headers["user-agent"] });
         if (!response.ok) {
           const details = await response.clone().text().catch(()=>"");
           log(`[provider-bridge] ${selectedProvider} chat upstream HTTP ${response.status}: ${details.slice(0,1200)}\n`);
@@ -110,7 +110,7 @@ export async function startProviderBridge({
         const body = await readJson(req);
         const response = await adaptResponsesBody(
           body,
-          (chatBody) => providerManager.forwardChat(selectedProvider, chatBody),
+          (chatBody) => providerManager.forwardChat(selectedProvider, chatBody, { userAgent: req.headers["user-agent"] }),
         );
         if (!response.ok) {
           const details = await response.clone().text().catch(()=>"");
