@@ -1,3 +1,4 @@
+import { adaptAnthropicResponse, chatToAnthropic } from "./anthropic-chat-adapter.mjs";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { trebellHome } from "./paths.mjs";
@@ -192,11 +193,30 @@ export class ProviderManager {
     if (provider.id === "freebuff") throw new Error("Freebuff chat is handled by the local freebuff2api bridge.");
     const key = this.key(provider.id);
     if (!key) throw new Error(`${provider.name} API key is not configured.`);
+    if (provider.id === "justworker") {
+      const anthropicBody = chatToAnthropic(chatBody);
+      const upstream = await this.fetchFn(provider.baseUrl + "/messages", {
+        method: "POST",
+        headers: {
+          "x-api-key": key,
+          "anthropic-version": "2023-06-01",
+          "Content-Type": "application/json",
+          "Accept": anthropicBody.stream ? "text/event-stream, application/json" : "application/json",
+          "User-Agent": "Trebell-Code/0.9.1",
+        },
+        body: JSON.stringify(anthropicBody),
+        signal: signal || AbortSignal.timeout(300_000),
+      });
+      return await adaptAnthropicResponse(upstream, { stream: anthropicBody.stream, model: chatBody.model });
+    }
+
     return await this.fetchFn(provider.baseUrl + "/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
+        "Accept": chatBody.stream ? "text/event-stream, application/json" : "application/json",
+        "User-Agent": "Trebell-Code/0.9.1",
       },
       body: JSON.stringify(chatBody),
       signal: signal || AbortSignal.timeout(300_000),
