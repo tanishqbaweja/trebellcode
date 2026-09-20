@@ -218,6 +218,25 @@ export default function App(){
 
   useEffect(()=>{document.documentElement.dataset.theme=settings.appearance||"dark"},[settings.appearance]);
 
+  useEffect(()=>{
+    if(!window.trebellDesktop?.zoom)return;
+    let disposed=false;
+    let factor=1;
+    window.trebellDesktop.zoom.get().then(result=>{if(!disposed&&Number.isFinite(Number(result?.factor)))factor=Number(result.factor)}).catch(()=>{});
+    const onWheel=(event)=>{
+      if(!event.ctrlKey&&!event.metaKey)return;
+      event.preventDefault();
+      const direction=Math.sign(Number(event.deltaY)||0);
+      if(direction===0)return;
+      factor=Math.min(2.5,Math.max(0.7,Math.round((factor+(direction<0?0.1:-0.1))*100)/100));
+      window.trebellDesktop.zoom.set(factor).then(result=>{
+        if(!disposed&&Number.isFinite(Number(result?.factor)))factor=Number(result.factor);
+      }).catch(()=>{});
+    };
+    window.addEventListener("wheel",onWheel,{capture:true,passive:false});
+    return()=>{disposed=true;window.removeEventListener("wheel",onWheel,{capture:true})};
+  },[]);
+
   const provider=settings.modelProvider||bootstrap.provider||"freebuff";
   const providerReady=bootstrap.mock||(provider==="freebuff"?Boolean(bootstrap.loggedIn):Boolean(bootstrap.providerReady));
   async function refreshFreebuff(modelOverride=model){
