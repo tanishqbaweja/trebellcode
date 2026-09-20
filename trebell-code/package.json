@@ -1,7 +1,7 @@
 {
   "name": "trebell-code",
-  "version": "0.4.0",
-  "description": "Trebell Code Desktop — Codex agentic harness with Freebuff models, sessions, Freebucks, pricing and account state.",
+  "version": "0.5.0",
+  "description": "Trebell Code Desktop — functional Codex harness UI with Freebuff inference.",
   "type": "module",
   "license": "Apache-2.0",
   "bin": {
@@ -30,7 +30,8 @@
     "tsx": "^4.20.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "lucide-react": "^0.468.0"
+    "lucide-react": "^0.468.0",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",

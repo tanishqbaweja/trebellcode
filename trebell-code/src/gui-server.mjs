@@ -4,6 +4,8 @@ import { statfsSync } from "node:fs";
 import { cpus, freemem, totalmem, tmpdir, loadavg } from "node:os";
 import { extname, join, normalize, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { attachCodexRelay, probeCodexReady, waitForCodexReady } from "./codex-relay.mjs";
+import { workspaceDiff, workspaceFile, workspaceTree } from "./workspace.mjs";
 import { spawn } from "node:child_process";
 import { codexBin, codexHome, packageRoot } from "./paths.mjs";
 import { DEFAULT_PORT, ensureCodexConfig } from "./config.mjs";
@@ -48,9 +50,16 @@ function openBrowser(url){
 }
 
 function startAppServer({appPort,env=process.env,mock=false}){
-  if(mock) return null;
+  if(mock) return { child:null, logs:[], targetUrl:null };
   ensureCodexConfig({port:DEFAULT_PORT,env});
   const command=codexBin(env);
+  const logs=[];
+  const pushLog=(chunk,stream)=>{
+    const line=String(chunk);
+    logs.push({at:Date.now(),stream,text:line});
+    if(logs.length>250) logs.splice(0,logs.length-250);
+    if(env.TREBELL_GUI_DEBUG==="1") (stream==="stderr"?process.stderr:process.stdout).write(chunk);
+  };
   const child=spawn(command,["app-server","--listen",`ws://127.0.0.1:${appPort}`],{
     cwd:process.cwd(),
     env:{...env,CODEX_HOME:codexHome(env)},
@@ -58,10 +67,11 @@ function startAppServer({appPort,env=process.env,mock=false}){
     shell:process.platform==="win32" && !command.toLowerCase().endsWith(".exe"),
     stdio:["ignore","pipe","pipe"],
   });
-  child.stdout?.on("data",chunk=>{ if(process.env.TREBELL_GUI_DEBUG==="1") process.stdout.write(chunk); });
-  child.stderr?.on("data",chunk=>{ if(process.env.TREBELL_GUI_DEBUG==="1") process.stderr.write(chunk); });
-  child.on("exit",(code)=>{ if(code && process.env.TREBELL_GUI_DEBUG==="1") console.error(`Trebell app-server exited with ${code}`); });
-  return child;
+  child.stdout?.on("data",chunk=>pushLog(chunk,"stdout"));
+  child.stderr?.on("data",chunk=>pushLog(chunk,"stderr"));
+  child.on("error",error=>pushLog(error.stack||error.message,"stderr"));
+  child.on("exit",(code,signal)=>pushLog(`app-server exited code=${code} signal=${signal}\n`,"stderr"));
+  return { child, logs, targetUrl:`ws://127.0.0.1:${appPort}` };
 }
 
 function fakeModels(){
@@ -110,15 +120,62 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
   const server=createServer(async(req,res)=>{
     const url=new URL(req.url || "/",`http://127.0.0.1:${port}`);
     if(url.pathname==="/api/bootstrap"){
+      const appServerReady=mock || await probeCodexReady(appPort);
       return json(res,200,{
         mock,
         loggedIn:mock || isLoggedIn(env),
         bridgeReady:mock || await health(DEFAULT_PORT),
-        appServerReady:mock || Boolean(appServer && appServer.exitCode===null),
-        wsUrl:mock ? null : `ws://127.0.0.1:${appPort}`,
+        appServerReady,
+        wsUrl:mock ? null : `ws://127.0.0.1:${port}/api/codex/ws`,
         cwd:process.cwd(),
-        version:"0.4.0",
+        version:"0.5.0",
       });
+    }
+    if(url.pathname==="/api/runtime"){
+      return json(res,200,{
+        appServerReady:mock || await probeCodexReady(appPort),
+        bridgeReady:mock || await health(DEFAULT_PORT),
+        appServerExitCode:appServer?.child?.exitCode ?? null,
+        logs:(appServer?.logs || []).slice(-80),
+      });
+    }
+    if(url.pathname==="/api/chat/direct" && req.method==="POST"){
+      if(!isLoggedIn(env) && !mock) return json(res,401,{error:"Sign in to Freebuff first."});
+      let body="";
+      for await (const chunk of req) body+=chunk;
+      let payload={};
+      try{payload=JSON.parse(body||"{}");}catch{return json(res,400,{error:"Invalid JSON"});}
+      const prompt=String(payload.prompt||"").trim();
+      const model=String(payload.model||"").trim();
+      if(!prompt || !model) return json(res,400,{error:"prompt and model are required"});
+      if(mock) return json(res,200,{text:`Mock Freebuff reply: ${prompt}`,model});
+      try{
+        await ensureBridge();
+        const response=await fetch(`http://127.0.0.1:${DEFAULT_PORT}/v1/chat/completions`,{
+          method:"POST",
+          headers:{"content-type":"application/json"},
+          body:JSON.stringify({model,messages:[{role:"user",content:prompt}],stream:false}),
+          signal:AbortSignal.timeout(300000),
+        });
+        const raw=await response.text();
+        if(!response.ok) return json(res,response.status,{error:raw.slice(0,1200)});
+        const parsed=JSON.parse(raw);
+        const text=parsed?.choices?.[0]?.message?.content ?? "";
+        return json(res,200,{text,model,raw:parsed});
+      }catch(error){
+        return json(res,502,{error:error instanceof Error?error.message:String(error)});
+      }
+    }
+    if(url.pathname==="/api/workspace/tree"){
+      try{return json(res,200,await workspaceTree(url.searchParams.get("path")||process.cwd()));}
+      catch(error){return json(res,400,{error:error instanceof Error?error.message:String(error)});}
+    }
+    if(url.pathname==="/api/workspace/diff"){
+      return json(res,200,await workspaceDiff(url.searchParams.get("path")||process.cwd()));
+    }
+    if(url.pathname==="/api/workspace/file"){
+      try{return json(res,200,await workspaceFile(url.searchParams.get("path")||""));}
+      catch(error){return json(res,400,{error:error instanceof Error?error.message:String(error)});}
     }
     if(url.pathname==="/api/freebuff/overview"){
       const model=url.searchParams.get("model") || "";
@@ -241,16 +298,24 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
     }
   });
 
+  const relay=attachCodexRelay(server,{
+    targetUrl:`ws://127.0.0.1:${appPort}`,
+    enabled:()=>mock || Boolean(appServer?.child && appServer.child.exitCode===null),
+    log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"relay",text:message}),
+  });
+
   await new Promise((resolve,reject)=>{
     server.once("error",reject);
     server.listen(port,"127.0.0.1",resolve);
   });
+  if(!mock) waitForCodexReady(appPort,15000).catch(()=>false);
 
   return {
     url:`http://127.0.0.1:${port}`,
     server,
     close:async()=>{
-      try{appServer?.kill("SIGTERM");}catch{}
+      relay.close();
+      try{appServer?.child?.kill("SIGTERM");}catch{}
       try{bridge?.child?.kill("SIGTERM");}catch{}
       await new Promise(resolve=>server.close(resolve));
     },

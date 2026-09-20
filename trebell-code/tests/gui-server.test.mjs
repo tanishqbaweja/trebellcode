@@ -8,6 +8,7 @@ test("GUI server exposes mock bootstrap, Freebuff-only models, and health", asyn
     const boot=await fetch(gui.url+"/api/bootstrap").then(r=>r.json());
     assert.equal(boot.mock,true);
     assert.equal(boot.loggedIn,true);
+    assert.equal(boot.version,"0.5.0");
 
     const models=await fetch(gui.url+"/api/models").then(r=>r.json());
     assert.ok(models.models.length>=1);

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { app, BrowserWindow, ipcMain, shell, dialog } from "electron";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { createGuiServer } from "../src/gui-server.mjs";
@@ -88,6 +88,14 @@ if(!lock){
     windowRef.isMaximized() ? windowRef.unmaximize() : windowRef.maximize();
   });
   ipcMain.on("window:close",()=>windowRef?.close());
+  ipcMain.handle("workspace:pickDirectory",async()=>{
+    const result=await dialog.showOpenDialog(windowRef,{properties:["openDirectory","createDirectory"]});
+    return result.canceled ? null : result.filePaths[0] || null;
+  });
+  ipcMain.handle("workspace:pickFiles",async()=>{
+    const result=await dialog.showOpenDialog(windowRef,{properties:["openFile","multiSelections"]});
+    return result.canceled ? [] : result.filePaths;
+  });
 
   app.whenReady().then(createWindow).catch((error)=>{
     console.error(error);

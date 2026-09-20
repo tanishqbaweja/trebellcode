@@ -5,4 +5,6 @@ contextBridge.exposeInMainWorld("trebellDesktop", {
   maximize: () => ipcRenderer.send("window:maximize"),
   close: () => ipcRenderer.send("window:close"),
   platform: process.platform,
+  pickDirectory: () => ipcRenderer.invoke("workspace:pickDirectory"),
+  pickFiles: () => ipcRenderer.invoke("workspace:pickFiles"),
 });

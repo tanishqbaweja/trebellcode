@@ -121,7 +121,7 @@ function Brand() {
   );
 }
 
-function Sidebar({ section, setSection, threads, activeThreadId, openThread, query, setQuery, newChat }) {
+function Sidebar({ section, setSection, threads, activeThreadId, openThread, query, setQuery, newChat, archiveThread }) {
   const nav = [
     ["new", MessageSquarePlus, "New Chat"],
     ["agent", Bot, "Agent Mode"],
@@ -147,7 +147,7 @@ function Sidebar({ section, setSection, threads, activeThreadId, openThread, que
         ))}
       </nav>
       <div className="sidebar-rule" />
-      <div className="recent-head"><span>Recent</span><button title="Archive"><Archive size={15}/></button></div>
+      <div className="recent-head"><span>Recent</span><button title="Archive current thread" onClick={archiveThread}><Archive size={15}/></button></div>
       <div className="recent-list">
         {filtered.slice(0,7).map((thread) => (
           <button key={thread.id} className={`recent-item ${thread.id===activeThreadId ? "selected" : ""}`} onClick={()=>openThread(thread)}>
@@ -171,16 +171,16 @@ function Sidebar({ section, setSection, threads, activeThreadId, openThread, que
   );
 }
 
-function Topbar({ title, running, stop, openPanel }) {
+function Topbar({ title, running, stop, openPanel, renameThread, shareThread }) {
   return (
     <div className="topbar">
       <div className="task-icon"><Code2 size={26}/></div>
       <div className="task-title">
-        <div><strong>{title}</strong><button className="ghost-icon" title="Rename"><WandSparkles size={15}/></button></div>
+        <div><strong>{title}</strong><button className="ghost-icon" title="Rename" onClick={renameThread}><WandSparkles size={15}/></button></div>
         <span>{running ? "Agent is working…" : "Ready"}</span>
       </div>
       <div className="top-actions">
-        <button className="btn secondary"><Link2 size={16}/> Share</button>
+        <button className="btn secondary" onClick={shareThread}><Link2 size={16}/> Share</button>
         <button className="icon-btn" title="Open code panel" onClick={()=>openPanel("files")}><Code2 size={17}/></button>
         {running && <button className="btn stop" onClick={stop}><CircleStop size={15}/> Stop</button>}
       </div>
@@ -246,7 +246,7 @@ function Timeline({ events, assistantText, openPanel }) {
   );
 }
 
-function Composer({ prompt, setPrompt, send, running, model, setModel, models, webSearch, setWebSearch, loggedIn, login, projectPath, freebuff }) {
+function Composer({ prompt, setPrompt, send, running, model, setModel, models, webSearch, setWebSearch, loggedIn, login, projectPath, freebuff, attachments, pickFiles, rpcStatus }) {
   return (
     <div className="composer-wrap">
       <textarea
@@ -259,10 +259,10 @@ function Composer({ prompt, setPrompt, send, running, model, setModel, models, w
       />
       <div className="composer-bar">
         <div className="composer-left">
-          <button className="circle-btn" title="Attach files"><Plus size={20}/></button>
+          <button className="circle-btn" title="Attach files" onClick={pickFiles}><Plus size={20}/></button>
           <button className={`pill-btn ${webSearch ? "active" : ""}`} onClick={()=>setWebSearch(!webSearch)}><Globe2 size={16}/> Web Search</button>
           <button className="pill-btn"><WandSparkles size={16}/> Tools</button>
-          <span className="project-chip" title={projectPath}><FolderCode size={14}/>{projectPath ? projectPath.split(/[\\/]/).filter(Boolean).pop() : "workspace"}</span>
+          <span className="project-chip" title={projectPath}><FolderCode size={14}/>{attachments.length ? `${attachments.length} attached` : projectPath ? projectPath.split(/[\\/]/).filter(Boolean).pop() : "workspace"}</span>
         </div>
         <div className="composer-right">
           {!loggedIn ? (
@@ -276,18 +276,19 @@ function Composer({ prompt, setPrompt, send, running, model, setModel, models, w
           <button data-testid="send" className="send-btn" onClick={send} disabled={running || !loggedIn || !prompt.trim()}><Send size={18}/></button>
         </div>
       </div>
+      <div className="composer-status"><span className={rpcStatus==="connected"?"ok":""}/>{rpcStatus==="connected" ? "Agent harness connected" : "Freebuff direct fallback available"}</div>
     </div>
   );
 }
 
-function RightRail({ running, stats, events, approvals, resolveApproval, openPanel, freebuff, model, setSection }) {
+function RightRail({ running, stats, events, approvals, resolveApproval, openPanel, freebuff, model, setSection, rpcStatus }) {
   const completed = events.filter(e=>e.status==="done").length;
   const total = Math.max(events.length,1);
   return (
     <aside className="right-rail">
       <div className="agent-card">
         <Orb active={running}/>
-        <div><strong>Trebell Agent</strong><span><i className={running ? "online" : ""}/>{running ? "Active" : "Idle"}</span></div>
+        <div><strong>Trebell Agent</strong><span><i className={rpcStatus==="connected" ? "online" : ""}/>{running ? "Active" : rpcStatus==="connected" ? "Ready" : "Fallback"}</span></div>
       </div>
       <div className="progress-card">
         <div><strong>{running ? "Working on it…" : "Task progress"}</strong><span>{completed} / {total}</span></div>
@@ -315,7 +316,7 @@ function RightRail({ running, stats, events, approvals, resolveApproval, openPan
         <div className="tools-head"><strong>Tools</strong><ChevronDown size={15}/></div>
         {TOOL_META.map(([name,Icon]) => (
           <button key={name} onClick={()=>openPanel(name==="Shell"?"terminal":name==="Edit Files"?"diff":"files")}>
-            <Icon size={17}/><span>{name}</span><i/>
+            <Icon size={17}/><span>{name}</span><i className={rpcStatus==="connected"?"tool-live":"tool-offline"}/>
           </button>
         ))}
       </div>
@@ -328,7 +329,7 @@ function Stat({icon:Icon,label,value}) {
   return <div className="stat-row"><Icon size={17}/><span>{label}</span><strong>{value}</strong></div>;
 }
 
-function Panel({ panel, close, events, projectPath, freebuff, model }) {
+function Panel({ panel, close, events, projectPath, freebuff, model, workspaceTree, diffText, panelLoading, filePreview, openFile }) {
   if (!panel) return null;
   const shellEvent = events.find(e=>e.command);
   return (
@@ -340,13 +341,8 @@ function Panel({ panel, close, events, projectPath, freebuff, model }) {
         </div>
         <button onClick={close}><X size={18}/></button>
       </div>
-      {panel==="terminal" && <pre className="terminal-view">{shellEvent?.command || "$ Trebell terminal ready\n$"}</pre>}
-      {panel==="diff" && (
-        <div className="diff-view">
-          <div className="diff-file"><span>src/agent.ts</span><b>+24 −6</b></div>
-          <pre><span className="minus">- const provider = "openai";</span>{"\n"}<span className="plus">+ const provider = "freebuff";</span>{"\n"}<span className="plus">+ const model = selectedFreebuffModel;</span></pre>
-        </div>
-      )}
+      {panel==="terminal" && <pre className="terminal-view">{shellEvent?.command || "No shell command has run in this thread yet."}</pre>}
+      {panel==="diff" && <div className="diff-view">{panelLoading ? <p>Loading Git diff…</p> : <pre>{diffText || "Working tree has no unstaged diff, or this workspace is not a Git repository."}</pre>}</div>}
       {panel==="freebuff" && (
         <div className="freebuff-panel">
           <div className="fb-balance"><small>Available Freebucks</small><strong>{freebuff?.derived?.balance ?? "—"}</strong></div>
@@ -363,19 +359,19 @@ function Panel({ panel, close, events, projectPath, freebuff, model }) {
       {panel==="files" && (
         <div className="file-tree">
           <p className="path-label">{projectPath || "Current workspace"}</p>
-          <div><Folder size={16}/> src</div>
-          <div className="indent"><FileCode2 size={15}/> agent.ts</div>
-          <div className="indent"><FileCode2 size={15}/> tools.ts</div>
-          <div><Folder size={16}/> tests</div>
-          <div><FileCode2 size={15}/> package.json</div>
-          <div><FileCode2 size={15}/> README.md</div>
+          {panelLoading ? <p>Loading workspace…</p> : workspaceTree.map(entry=>(
+            <button className="file-entry" key={entry.path} style={{paddingLeft:8+entry.depth*16}} onClick={()=>entry.isFile && openFile(entry.path)}>
+              {entry.isDirectory ? <Folder size={15}/> : <FileCode2 size={15}/>}<span>{entry.name}</span>
+            </button>
+          ))}
+          {filePreview && <pre className="file-preview">{filePreview.content}</pre>}
         </div>
       )}
     </div>
   );
 }
 
-function SecondaryView({ section, setSection, projectPath, setProjectPath, sandbox, setSandbox, approvalPolicy, setApprovalPolicy, loggedIn, login, logout, freebuff, model, refreshFreebuff }) {
+function SecondaryView({ section, setSection, projectPath, setProjectPath, sandbox, setSandbox, approvalPolicy, setApprovalPolicy, loggedIn, login, logout, freebuff, model, refreshFreebuff, browseProject, useTemplate, rpcStatus, runtime }) {
   if (section==="chat" || section==="new" || section==="agent") return null;
   const content = {
     projects: ["Projects", "Choose the local workspace Trebell Code should operate in."],
@@ -390,7 +386,7 @@ function SecondaryView({ section, setSection, projectPath, setProjectPath, sandb
       <h1>{content[0]}</h1><p>{content[1]}</p>
       {section==="projects" && (
         <div className="settings-card">
-          <label>Workspace path<input value={projectPath} onChange={(e)=>setProjectPath(e.target.value)} placeholder="/path/to/project"/></label>
+          <label>Workspace path<div className="project-picker"><input value={projectPath} onChange={(e)=>setProjectPath(e.target.value)} placeholder="/path/to/project"/><button onClick={browseProject}>Browse…</button></div></label>
           <div className="project-demo"><FolderCode size={24}/><div><strong>Current workspace</strong><span>{projectPath || "Not selected"}</span></div></div>
         </div>
       )}
@@ -402,7 +398,7 @@ function SecondaryView({ section, setSection, projectPath, setProjectPath, sandb
           ["Refactor safely", FileDiff, "Refactor with tests and focused diffs."],
           ["Browser task", Globe2, "Research and interact with web resources."],
           ["Autonomous build", BrainCircuit, "Run a multi-step build until validation passes."],
-        ].map(([name,Icon,desc])=><button key={name}><Icon size={22}/><strong>{name}</strong><span>{desc}</span></button>)}
+        ].map(([name,Icon,desc])=><button key={name} onClick={()=>useTemplate(name)}><Icon size={22}/><strong>{name}</strong><span>{desc}</span></button>)}
       </div>}
       {section==="freebuff" && (
         <div className="freebuff-page">
@@ -440,6 +436,10 @@ function SecondaryView({ section, setSection, projectPath, setProjectPath, sandb
             <button className="setting-action" onClick={loggedIn ? logout : login}>{loggedIn ? "Sign out" : "Sign in to Freebuff"}</button>
           </div>
           <div className="settings-card">
+            <h3>Runtime</h3>
+            <p>Harness: <strong>{rpcStatus}</strong><br/>Codex process: <strong>{runtime?.appServerReady ? "ready" : "not ready"}</strong><br/>Freebuff bridge: <strong>{runtime?.bridgeReady ? "ready" : "not ready"}</strong></p>
+          </div>
+          <div className="settings-card">
             <h3>Agent permissions</h3>
             <label>Sandbox<select value={sandbox} onChange={(e)=>setSandbox(e.target.value)}><option value="workspace-write">Workspace write</option><option value="read-only">Read only</option><option value="danger-full-access">Full access</option></select></label>
             <label>Approvals<select value={approvalPolicy} onChange={(e)=>setApprovalPolicy(e.target.value)}><option value="on-request">On request</option><option value="untrusted">Untrusted commands</option><option value="never">Never prompt</option></select></label>
@@ -474,6 +474,12 @@ export default function App() {
   const [projectPath,setProjectPath]=useState("");
   const [sandbox,setSandbox]=useState("workspace-write");
   const [approvalPolicy,setApprovalPolicy]=useState("on-request");
+  const [attachments,setAttachments]=useState([]);
+  const [workspaceEntries,setWorkspaceEntries]=useState([]);
+  const [diffText,setDiffText]=useState("");
+  const [panelLoading,setPanelLoading]=useState(false);
+  const [filePreview,setFilePreview]=useState(null);
+  const [runtime,setRuntime]=useState(null);
   const [freebuff,setFreebuff]=useState({loggedIn:false,user:null,session:null,streak:null,derived:null});
   const demoTimers=useRef([]);
 
@@ -542,7 +548,7 @@ export default function App() {
       }catch(error){
         client.close();
         if(disposed) return;
-        if(attempt<30){
+        if(attempt<120){
           setRpcStatus("connecting");
           retryTimer=setTimeout(()=>connect(attempt+1),500);
         }else{
@@ -562,8 +568,12 @@ export default function App() {
 
   useEffect(()=>{
     const timer=setInterval(async()=>{
-      const value=await fetch("/api/stats").then(r=>r.json()).catch(()=>null);
+      const [value,rt]=await Promise.all([
+        fetch("/api/stats").then(r=>r.json()).catch(()=>null),
+        fetch("/api/runtime").then(r=>r.json()).catch(()=>null),
+      ]);
       if(value) setStats(value);
+      if(rt) setRuntime(rt);
     },1500);
     return ()=>clearInterval(timer);
   },[]);
@@ -634,6 +644,73 @@ export default function App() {
     }
   }
 
+
+  async function browseProject(){
+    const picked=await window.trebellDesktop?.pickDirectory?.();
+    if(picked) setProjectPath(picked);
+  }
+
+  async function pickFiles(){
+    const picked=await window.trebellDesktop?.pickFiles?.();
+    if(Array.isArray(picked) && picked.length) setAttachments(prev=>[...new Set([...prev,...picked])]);
+  }
+
+  function useTemplate(name){
+    const prompts={
+      "Ship a feature":"Implement a useful feature in this project. First inspect the codebase, make a plan, implement it, run the relevant tests, and summarize the changes.",
+      "Fix a bug":"Inspect this project for a reproducible bug, diagnose the root cause, fix it, and run the relevant tests.",
+      "Review a codebase":"Inspect this codebase and explain its architecture, important execution paths, risks, and the highest-value improvements.",
+      "Refactor safely":"Find a worthwhile refactor, preserve behavior, implement it with focused changes, and run tests.",
+      "Browser task":"Use web research where useful to solve the task I give you, and cite what you relied on.",
+      "Autonomous build":"Take the project from its current state to a working validated result. Plan, implement, test, fix failures, and continue until validation passes.",
+    };
+    setPrompt(prompts[name]||"");
+    setSection("chat");
+  }
+
+  async function renameThread(){
+    if(!rpc || rpcStatus!=="connected" || !activeThread?.id) return;
+    const next=window.prompt("Rename thread",titleOf(activeThread));
+    if(!next?.trim()) return;
+    await rpc.request("thread/name/set",{threadId:activeThread.id,name:next.trim()});
+    setActiveThread(prev=>({...prev,name:next.trim()}));
+    setThreads(prev=>prev.map(t=>t.id===activeThread.id?{...t,name:next.trim()}:t));
+  }
+
+  async function archiveThread(){
+    if(!rpc || rpcStatus!=="connected" || !activeThread?.id) return;
+    await rpc.request("thread/archive",{threadId:activeThread.id}).catch(()=>null);
+    setThreads(prev=>prev.filter(t=>t.id!==activeThread.id));
+    await newChat();
+  }
+
+  async function shareThread(){
+    const content=[lastPrompt && `You: ${lastPrompt}`,assistantText && `Trebell Code: ${assistantText}`].filter(Boolean).join("\n\n");
+    if(!content) return;
+    await navigator.clipboard?.writeText(content).catch(()=>{});
+  }
+
+  async function openPanelReal(kind){
+    setPanel(kind);
+    setFilePreview(null);
+    if(kind==="files"){
+      setPanelLoading(true);
+      const data=await fetch(`/api/workspace/tree?path=${encodeURIComponent(projectPath||bootstrap.cwd||"")}`).then(r=>r.json()).catch(()=>({entries:[]}));
+      setWorkspaceEntries(data.entries||[]);
+      setPanelLoading(false);
+    }else if(kind==="diff"){
+      setPanelLoading(true);
+      const data=await fetch(`/api/workspace/diff?path=${encodeURIComponent(projectPath||bootstrap.cwd||"")}`).then(r=>r.json()).catch(()=>({diff:""}));
+      setDiffText([data.status,data.diff].filter(Boolean).join("\n") || data.error || "");
+      setPanelLoading(false);
+    }
+  }
+
+  async function openFile(path){
+    const data=await fetch(`/api/workspace/file?path=${encodeURIComponent(path)}`).then(r=>r.json()).catch(()=>null);
+    if(data?.content!=null) setFilePreview(data);
+  }
+
   async function newChat(){
     setSection("chat");
     setActiveThread(null);
@@ -684,21 +761,28 @@ export default function App() {
     setSection("chat");
 
     if(bootstrap.mock){
-      setEvents(DEMO_EVENTS.map((e,i)=>({...e,status:i===0?"running":"pending"})));
-      DEMO_EVENTS.forEach((event,index)=>{
-        demoTimers.current.push(setTimeout(()=>{
-          setEvents(prev=>prev.map((e,i)=>i<index?{...e,status:"done"}:i===index?{...e,status:index===DEMO_EVENTS.length-1?"done":"running"}:e));
-          if(index===DEMO_EVENTS.length-1){
-            setAssistantText("Implemented the project structure, streaming pipeline, local storage layer, and validation flow. The workspace is ready for review.");
-            setRunning(false);
-          }
-        },450*(index+1)));
-      });
+      try{
+        const response=await fetch("/api/chat/direct",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({prompt:text,model:model||"freebuff/deepseek/deepseek-v4-flash"})});
+        const data=await response.json();
+        setAssistantText(data.text||"");
+        setEvents([{id:"mock-direct",kind:"tool",title:"Freebuff direct path",status:"done"}]);
+      }finally{setRunning(false);}
       return;
     }
 
-    if(!rpc){
-      setRunning(false);
+    if(!rpc || rpcStatus!=="connected"){
+      try{
+        const response=await fetch("/api/chat/direct",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({prompt:text,model})});
+        const data=await response.json();
+        if(!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        setAssistantText(data.text || "");
+        setEvents([{id:"direct-freebuff",kind:"tool",title:"Answered via Freebuff direct fallback",status:"done"}]);
+      }catch(error){
+        setEvents([{id:"send-error",kind:"error",title:error.message,status:"done"}]);
+      }finally{
+        setRunning(false);
+        setAttachments([]);
+      }
       return;
     }
     try{
@@ -708,9 +792,18 @@ export default function App() {
         model:model||null,
         approvalPolicy,
         cwd:projectPath||null,
-        input:[{type:"text",text}],
+        input:[
+        {type:"text",text,text_elements:[]},
+        ...attachments.map(path=>{
+          const lower=path.toLowerCase();
+          if(/\.(png|jpe?g|gif|webp|bmp)$/.test(lower)) return {type:"localImage",path};
+          if(/\.(mp3|wav|m4a|ogg|flac)$/.test(lower)) return {type:"localAudio",path};
+          return {type:"mention",name:path.split(/[\\/]/).pop(),path};
+        }),
+      ],
       });
       setActiveTurnId(result?.turn?.id || null);
+      setAttachments([]);
     }catch(error){
       setRunning(false);
       setEvents([{id:"send-error",kind:"error",title:error.message,status:"done"}]);
@@ -767,12 +860,12 @@ export default function App() {
   const statusLabel=bootstrap.mock?"Demo":rpcStatus==="connected"?"Local":"Connecting";
   return (
     <div className="app-shell">
-      <Sidebar section={section} setSection={setSection} threads={threads} activeThreadId={activeThread?.id} openThread={openThread} query={query} setQuery={setQuery} newChat={newChat}/>
+      <Sidebar section={section} setSection={setSection} threads={threads} activeThreadId={activeThread?.id} openThread={openThread} query={query} setQuery={setQuery} newChat={newChat} archiveThread={archiveThread}/>
       <main className="main-frame">
         <div className="window-bar"><span>{statusLabel}</span><div><button aria-label="Minimize" onClick={()=>window.trebellDesktop?.minimize?.()}>—</button><button aria-label="Maximize" onClick={()=>window.trebellDesktop?.maximize?.()}>□</button><button aria-label="Close" className="window-close" onClick={()=>window.trebellDesktop?.close?.()}>×</button></div></div>
-        <SecondaryView section={section} setSection={setSection} projectPath={projectPath} setProjectPath={setProjectPath} sandbox={sandbox} setSandbox={setSandbox} approvalPolicy={approvalPolicy} setApprovalPolicy={setApprovalPolicy} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} freebuff={freebuff} model={model} refreshFreebuff={()=>refreshFreebuff(model)}/>
+        <SecondaryView section={section} setSection={setSection} projectPath={projectPath} setProjectPath={setProjectPath} sandbox={sandbox} setSandbox={setSandbox} approvalPolicy={approvalPolicy} setApprovalPolicy={setApprovalPolicy} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} freebuff={freebuff} model={model} refreshFreebuff={()=>refreshFreebuff(model)} browseProject={browseProject} useTemplate={useTemplate} rpcStatus={rpcStatus} runtime={runtime}/>
         {(section==="chat" || section==="agent" || section==="new") && <>
-          <Topbar title={activeTitle} running={running} stop={stop} openPanel={setPanel}/>
+          <Topbar title={activeTitle} running={running} stop={stop} openPanel={openPanelReal} renameThread={renameThread} shareThread={shareThread}/>
           <div className="conversation-scroll">
             <UserBubble text={lastPrompt}/>
             {(events.length>0 || running || assistantText) && <Timeline events={events} assistantText={assistantText} openPanel={setPanel}/>}
@@ -787,11 +880,11 @@ export default function App() {
               </div>
             </div>}
           </div>
-          <Composer prompt={prompt} setPrompt={setPrompt} send={send} running={running} model={model} setModel={setModel} models={models} webSearch={webSearch} setWebSearch={setWebSearch} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} projectPath={projectPath} freebuff={freebuff}/>
+          <Composer prompt={prompt} setPrompt={setPrompt} send={send} running={running} model={model} setModel={setModel} models={models} webSearch={webSearch} setWebSearch={setWebSearch} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} projectPath={projectPath} freebuff={freebuff} attachments={attachments} pickFiles={pickFiles} rpcStatus={rpcStatus}/>
         </>}
       </main>
-      <RightRail running={running} stats={stats} events={events} approvals={approvals} resolveApproval={resolveApproval} openPanel={setPanel} freebuff={freebuff} model={model} setSection={setSection}/>
-      <Panel panel={panel} close={()=>setPanel(null)} events={events} projectPath={projectPath} freebuff={freebuff} model={model}/>
+      <RightRail running={running} stats={stats} events={events} approvals={approvals} resolveApproval={resolveApproval} openPanel={openPanelReal} freebuff={freebuff} model={model} setSection={setSection} rpcStatus={rpcStatus}/>
+      <Panel panel={panel} close={()=>setPanel(null)} events={events} projectPath={projectPath} freebuff={freebuff} model={model} workspaceTree={workspaceEntries} diffText={diffText} panelLoading={panelLoading} filePreview={filePreview} openFile={openFile}/>
     </div>
   );
 }
