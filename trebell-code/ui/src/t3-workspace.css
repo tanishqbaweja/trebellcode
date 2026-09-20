@@ -234,3 +234,46 @@ body{min-width:820px;background:var(--t3-bg);color:var(--t3-text)}
   .header-control.branch-control span{display:none}
   .composer-wrap{width:calc(100% - 24px)}
 }
+
+
+/* v1.0 shell refinement: one hierarchy, less permanent chrome */
+.context-panel{margin-top:32px;height:calc(100vh - 32px)}
+.sidebar-titlebar{height:48px;padding-left:11px}
+.sidebar-thread-tools{padding:2px 8px 7px}
+.thread-sections{padding-inline:5px}
+.thread-sections section{margin-bottom:7px}
+.thread-sections h4{height:25px;padding-inline:9px;font-size:10.5px;color:#737880}
+.thread-row{min-height:42px;border-radius:8px}
+.thread-main{height:42px;grid-template-columns:9px minmax(0,1fr);gap:6px;padding:4px 8px}
+.thread-main strong{font-size:11.5px;font-weight:590;letter-spacing:-.08px}
+.thread-main span:not(.thread-status-dot){font-size:9px;margin-top:2px;color:#777d85}
+.sidebar-footer{padding:6px 7px 8px}
+.sidebar-utilities{gap:3px}
+.sidebar-utility{width:32px;height:30px}
+.sidebar-provider{width:100%;height:40px;grid-template-columns:15px minmax(0,1fr) 16px;border:0;background:transparent;text-align:left;cursor:pointer}
+.sidebar-provider:hover{background:#181a1d}
+.sidebar-provider svg{color:#626870}
+.workspace-header{height:46px;padding-left:16px}
+.conversation-scroll{top:46px;bottom:112px;padding:20px 30px 42px}
+.conversation-column{width:min(100%,760px)}
+.user-row{margin-bottom:21px}
+.user-bubble{max-width:min(80%,620px);border-radius:13px;padding:10px 13px;background:#16181b}
+.history-assistant{margin-bottom:24px}
+.agent-block{margin-bottom:24px}
+.composer-wrap{bottom:14px;width:min(calc(100% - 40px),760px);min-height:88px;border-radius:15px;padding:8px 9px 7px;background:rgba(20,22,25,.97);box-shadow:0 14px 36px -25px rgba(0,0,0,.9),inset 0 1px rgba(255,255,255,.02)}
+.composer-wrap textarea{height:40px;min-height:40px;padding:3px 6px 4px;font-size:12.5px}
+.composer-bar{min-height:31px}
+.circle-btn,.mic-btn,.send-btn{width:28px;height:28px}
+.pill-btn,.permission-picker,.workspace-mode,.composer-right select,.login-btn,.stash-btn,.model-count{height:27px}
+.composer-status{padding-top:2px;font-size:7.5px}
+.main-frame.terminal-open .composer-wrap{bottom:calc(34vh + 12px)}
+.main-frame.terminal-open .conversation-scroll{bottom:calc(34vh + 108px)}
+.context-panel-tabs{height:46px;padding-inline:6px}
+.context-panel{grid-template-rows:46px minmax(0,1fr)}
+.runtime-summary,.runtime-grid,.runtime-activity{border-color:#22252a;background:#101214}
+@media(max-width:1120px){
+  .sidebar-utilities{justify-content:space-between}
+}
+@media(max-width:900px){
+  .context-panel{inset:32px 0 0 auto;height:calc(100vh - 32px);margin-top:0}
+}
