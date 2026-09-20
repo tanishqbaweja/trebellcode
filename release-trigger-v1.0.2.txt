@@ -1,0 +1,1 @@
+Publish Trebell Code Desktop v1.0.2 after AgentRouter Codex identity forwarding and real Ctrl+mouse-wheel zoom validation.
