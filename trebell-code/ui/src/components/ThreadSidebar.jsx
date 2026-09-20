@@ -18,7 +18,7 @@ function ThreadRow({thread,active,selected,bulk,onOpen,onSelect,onAction,onMove}
   </div>;
 }
 
-export default function ThreadSidebar({section,setSection,threads,activeThreadId,query,setQuery,onOpen,onNew,onThreadAction,onMove,selectedIds,setSelectedIds,onBulkAction}){
+export default function ThreadSidebar({section,setSection,threads,activeThreadId,query,setQuery,onOpen,onNew,onThreadAction,onMove,selectedIds,setSelectedIds,onBulkAction,provider="freebuff"}){
   const groups={
     Pinned:threads.filter(t=>t.section?.name==="Pinned"),
     Active:threads.filter(t=>!t.section),
@@ -28,11 +28,14 @@ export default function ThreadSidebar({section,setSection,threads,activeThreadId
   const bulk=selectedIds.size>0;
   const nav=[
     ["new",MessageSquarePlus,"New task"],["chat",Code2,"Current thread"],["projects",Folder,"Projects"],["source",GitBranch,"Source Control"],
-    ["agents",Users,"Agents"],["preview",Globe2,"Preview"],["templates",LayoutTemplate,"Templates"],["freebuff",CircleDollarSign,"Freebuff"],["settings",Settings,"Settings"],
+    ["agents",Users,"Agents"],["preview",Globe2,"Preview"],["templates",LayoutTemplate,"Templates"],
+    ...(provider==="freebuff"?[["freebuff",CircleDollarSign,"Freebuff"]]:[]),
+    ["settings",Settings,"Settings"],
   ];
+  const providerLabel={freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider;
   function toggle(id){const next=new Set(selectedIds);next.has(id)?next.delete(id):next.add(id);setSelectedIds(next)}
   return <aside className="sidebar">
-    <div className="brand"><div className="brand-mark">✦</div><div><div className="brand-name">Trebell <span>Code</span></div><div className="brand-tag">Freebuff agent harness</div></div></div>
+    <div className="brand"><div className="brand-mark">✦</div><div><div className="brand-name">Trebell <span>Code</span></div><div className="brand-tag">Multi-provider agent harness</div></div></div>
     <div className="search-box"><Search size={16}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search threads & messages…"/><kbd>Ctrl K</kbd></div>
     <nav className="nav-stack">{nav.map(([id,Icon,label])=><button key={id} className={section===id?"nav-item active":"nav-item"} onClick={()=>id==="new"?onNew():setSection(id)}><Icon size={17}/><span>{label}</span></button>)}</nav>
     <div className="sidebar-rule"/>
@@ -40,6 +43,6 @@ export default function ThreadSidebar({section,setSection,threads,activeThreadId
     {bulk&&<div className="bulk-bar"><button onClick={()=>onBulkAction("pin")}>Pin</button><button onClick={()=>onBulkAction("snooze")}>Snooze</button><button onClick={()=>onBulkAction("settle")}>Settle</button><button onClick={()=>onBulkAction("archive")}>Archive</button></div>}
     <div className="thread-sections">{Object.entries(groups).map(([name,items])=>items.length>0&&<section key={name}><h4>{name}<span>{items.length}</span></h4>{items.map(t=><ThreadRow key={t.id} thread={t} active={t.id===activeThreadId} bulk={bulk} selected={selectedIds.has(t.id)} onOpen={onOpen} onSelect={toggle} onAction={onThreadAction} onMove={onMove}/>)}</section>)}</div>
     <button className="view-all" onClick={()=>setSection("history")}><History size={12}/> Full history</button>
-    <div className="profile-card"><div className="avatar">T</div><div><strong>Trebell Code</strong><span>Local harness · Freebuff model</span></div><button onClick={()=>setSection("settings")}><Settings size={15}/></button></div>
+    <div className="profile-card"><div className="avatar">T</div><div><strong>Trebell Code</strong><span>Local harness · {providerLabel}</span></div><button onClick={()=>setSection("settings")}><Settings size={15}/></button></div>
   </aside>;
 }
