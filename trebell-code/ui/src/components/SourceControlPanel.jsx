@@ -2,7 +2,7 @@ import React,{useEffect,useState} from "react";
 import { GitBranch, GitCommit, GitPullRequest, RefreshCw, Upload, Download, Plus, WandSparkles, ExternalLink, MessageSquare, CheckCircle2 } from "lucide-react";
 import { api } from "../api.js";
 
-export default function SourceControlPanel({projectPath,model,onProjectChange,onAttachPr,onLinkPr,linkedPullRequests=[]}){
+export default function SourceControlPanel({projectPath,model,provider="freebuff",onProjectChange,onAttachPr,onLinkPr,linkedPullRequests=[]}){
   const [info,setInfo]=useState(null);
   const [diagnostics,setDiagnostics]=useState(null);
   const [prs,setPrs]=useState([]);
@@ -106,7 +106,7 @@ export default function SourceControlPanel({projectPath,model,onProjectChange,on
     {error&&<div className="inline-error">{error}</div>}
     <div className="sc-grid">
       <section className="sc-card"><h3>Changes <span>{info?.status?.length||0}</span></h3><div className="status-list">{(info?.status||[]).map(s=><div key={s.path}><code>{s.code}</code><span>{s.path}</span></div>)}{!info?.status?.length&&<p>Working tree clean.</p>}</div>
-        <div className="commit-box"><textarea value={commitMessage} onChange={e=>setCommitMessage(e.target.value)} placeholder="Commit message"/><button onClick={generate} disabled={busy==="generate"}><WandSparkles size={13}/> Generate with Freebuff</button><button className="primary" onClick={()=>action("commit",{message:commitMessage})} disabled={!commitMessage.trim()||!!busy}><GitCommit size={13}/> Commit</button></div>
+        <div className="commit-box"><textarea value={commitMessage} onChange={e=>setCommitMessage(e.target.value)} placeholder="Commit message"/><button onClick={generate} disabled={busy==="generate"}><WandSparkles size={13}/> Generate with {{freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider}</button><button className="primary" onClick={()=>action("commit",{message:commitMessage})} disabled={!commitMessage.trim()||!!busy}><GitCommit size={13}/> Commit</button></div>
       </section>
       <section className="sc-card"><h3>Repository</h3><p>Root: <code>{info?.root}</code></p><p>Upstream: <code>{info?.upstream||"none"}</code></p><p>Git: {diagnostics?.git?.version||"not found"}</p><p>GitHub: {diagnostics?.github?.authenticated?"authenticated":diagnostics?.github?.installed?"not signed in":"gh not installed"}</p>
         <h4>Worktrees</h4>{(info?.worktrees||[]).map(w=><div className="worktree-row" key={w.path}><span>{w.branch||"detached"}</span><code>{w.path}</code>{w.path!==info?.root&&<button onClick={()=>onProjectChange?.(w.path)}>Open</button>}</div>)}
