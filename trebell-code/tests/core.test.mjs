@@ -57,14 +57,18 @@ test("ensureCodexConfig writes into Trebell home", () => {
 test("run arg parser keeps runtime arguments while consuming Trebell flags", () => {
   assert.deepEqual(
     parseRunArgs(["--model", "freebuff/x/y", "--port", "24444", "--", "exec", "hello"]),
-    { model: "freebuff/x/y", port: 24444, loginCheck: true, forwarded: ["exec", "hello"] },
+    { model: "freebuff/x/y", provider: null, port: 24444, loginCheck: true, forwarded: ["exec", "hello"] },
   );
 });
 
-test("Codex args force the Freebuff provider", () => {
+test("Codex args use the selected provider", () => {
   assert.deepEqual(
-    codexArgs({ model: "freebuff/a/b", forwarded: ["exec", "hi"] }),
+    codexArgs({ model: "freebuff/a/b", provider: "freebuff", forwarded: ["exec", "hi"] }),
     ["-c", 'model_provider="freebuff"', "-m", "freebuff/a/b", "exec", "hi"],
+  );
+  assert.deepEqual(
+    codexArgs({ model: "gpt-5.5", provider: "agentrouter", forwarded: ["exec", "hi"] }),
+    ["-c", 'model_provider="agentrouter"', "-m", "gpt-5.5", "exec", "hi"],
   );
 });
 
