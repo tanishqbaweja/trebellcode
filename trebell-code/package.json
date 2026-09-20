@@ -85,6 +85,6 @@
     }
   },
   "optionalDependencies": {
-    "@openai/codex-win32-x64": "0.154.0"
+    "@openai/codex-win32-x64": "npm:@openai/codex@0.154.0-win32-x64"
   }
 }
