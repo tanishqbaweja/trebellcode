@@ -139,7 +139,7 @@ function startAppServer({appPort,env=process.env,mock=false,provider="freebuff"}
 }
 
 function fakeModels(provider="freebuff"){
-  if(provider==="agentrouter") return ["claude-opus-4-8","gpt-5.5","glm-5.2","kimi-k2.6"];
+  if(provider==="agentrouter") return ["gpt-5.6-sol","gpt-6-astra","claude-opus-4-8","claude-opus-5","deepseek-v4-flash"];
   if(provider==="justworker") return ["claude-opus-4-8"];
   if(provider==="hcnsec") return ["glm-5.3"];
   if(provider==="vyceai") return ["claude-sonnet-4-6","gpt-astra","deepseek-v4-flash","auto"];
