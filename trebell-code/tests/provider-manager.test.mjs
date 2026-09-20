@@ -52,7 +52,7 @@ test("AgentRouter validates the key and loads its live model catalog", async () 
   assert.equal(result.source,"live");
 });
 
-test("AgentRouter chat uses bearer auth without overriding User-Agent", async () => {
+test("AgentRouter chat preserves the incoming Codex User-Agent", async () => {
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
   const env={...process.env,TREBELL_HOME:root};
   let seen=null;
@@ -61,11 +61,11 @@ test("AgentRouter chat uses bearer auth without overriding User-Agent", async ()
     return new Response(JSON.stringify({choices:[{message:{role:"assistant",content:"ok"}}]}),{status:200,headers:{"content-type":"application/json"}});
   }});
   manager.setKey("agentrouter","ar-key");
-  const response=await manager.forwardChat("agentrouter",{model:"gpt-5.5",messages:[{role:"user",content:"hello"}],stream:false});
+  const response=await manager.forwardChat("agentrouter",{model:"gpt-5.5",messages:[{role:"user",content:"hello"}],stream:false},{userAgent:"codex_cli_rs/1.2.3"});
   assert.equal(response.status,200);
   assert.equal(seen.url,"https://co.agentrouter.org/v1/chat/completions");
   assert.equal(seen.headers.Authorization,"Bearer ar-key");
-  assert.equal(seen.headers["User-Agent"],undefined);
+  assert.equal(seen.headers["User-Agent"],"codex_cli_rs/1.2.3");
   assert.equal(seen.body.model,"gpt-5.5");
 });
 
@@ -152,4 +152,13 @@ test("HCNSec chat forwarding explicitly requests SSE when Codex streams", async 
   assert.equal(seen.headers.Authorization,"Bearer hc-key");
   assert.match(seen.headers.Accept,/text\/event-stream/);
   assert.equal(seen.body.stream,true);
+});
+
+
+test("provider key normalization strips copied Bearer prefix and invisible characters", () => {
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
+  const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root}});
+  manager.setKey("agentrouter","\uFEFFBearer  ar-live-key\u200B");
+  assert.equal(manager.key("agentrouter"),"ar-live-key");
+  assert.equal(manager.childEnv("agentrouter",{}).AGENTROUTER_API_KEY,"ar-live-key");
 });
