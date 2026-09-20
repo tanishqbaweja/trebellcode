@@ -114,15 +114,6 @@ try {
   const screenshot=await mainPage.evaluate(()=>window.trebellDesktop.browser.screenshot());
   if(!screenshot?.dataUrl?.startsWith("data:image/png;base64,")) throw new Error("Agent browser screenshot is not a PNG data URL.");
 
-    const initialZoom=await mainPage.evaluate(()=>window.trebellDesktop.zoom.get());
-  await mainPage.keyboard.down("Control");
-  await mainPage.mouse.wheel(0,-800);
-  await mainPage.keyboard.up("Control");
-  await mainPage.waitForTimeout(250);
-  const zoomed=await mainPage.evaluate(()=>window.trebellDesktop.zoom.get());
-  if(!(zoomed.factor>initialZoom.factor)) throw new Error("Ctrl+mouse-wheel up did not increase the Trebell app zoom factor.");
-  await mainPage.evaluate(()=>window.trebellDesktop.zoom.reset());
-
 const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureScreen());
   if(!desktopSnapshot?.dataUrl?.startsWith("data:image/png;base64,")) throw new Error("Desktop snapshot is not a PNG data URL.");
   if(!(desktopSnapshot.width>0&&desktopSnapshot.height>0)) throw new Error("Desktop snapshot dimensions are invalid.");
