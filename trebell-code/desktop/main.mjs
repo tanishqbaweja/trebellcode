@@ -1,5 +1,5 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, Notification } from "electron";
-import { existsSync } from "node:fs";
+import { app, BrowserWindow, ipcMain, shell, dialog, Notification, Tray, Menu, nativeImage } from "electron";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createGuiServer } from "../src/gui-server.mjs";
 
@@ -7,6 +7,8 @@ let windowRef=null;
 let gui=null;
 let quitting=false;
 let agentBrowser=null;
+let tray=null;
+let backgroundEnabled=false;
 
 function nativeCodexPath(){
   if(!app.isPackaged) return null;
@@ -37,6 +39,41 @@ function configureBundledRuntime(){
   process.env.TREBELL_ELECTRON_AS_NODE="1";
 }
 
+
+
+function desktopPrefsPath(){return join(app.getPath("userData"),"desktop-prefs.json")}
+function loadDesktopPrefs(){
+  try{return JSON.parse(readFileSync(desktopPrefsPath(),"utf8"))}catch{return{}}
+}
+function saveDesktopPrefs(prefs){
+  try{writeFileSync(desktopPrefsPath(),JSON.stringify(prefs,null,2),"utf8")}catch{}
+}
+function trayIcon(){
+  const svg='<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect rx="8" width="32" height="32" fill="#17111f"/><path d="M8 9h16v4h-6v11h-4V13H8z" fill="#a66cff"/></svg>';
+  const image=nativeImage.createFromDataURL("data:image/svg+xml;base64,"+Buffer.from(svg).toString("base64"));
+  return image.resize({width:16,height:16});
+}
+function ensureTray(){
+  if(tray)return tray;
+  tray=new Tray(trayIcon());
+  tray.setToolTip("Trebell Code");
+  tray.setContextMenu(Menu.buildFromTemplate([
+    {label:"Show Trebell Code",click:()=>{windowRef?.show();windowRef?.focus()}},
+    {label:"Open Agent Browser",click:()=>ensureAgentBrowser({show:true})},
+    {type:"separator"},
+    {label:"Quit Trebell Code",click:()=>{quitting=true;app.quit()}},
+  ]));
+  tray.on("double-click",()=>{windowRef?.show();windowRef?.focus()});
+  return tray;
+}
+function setBackgroundEnabled(value){
+  backgroundEnabled=Boolean(value);
+  saveDesktopPrefs({...loadDesktopPrefs(),backgroundEnabled});
+  if(app.isPackaged)app.setLoginItemSettings({openAtLogin:backgroundEnabled,args:backgroundEnabled?["--background"]:[]});
+  if(backgroundEnabled)ensureTray();
+  else if(tray){tray.destroy();tray=null}
+  return backgroundEnabled;
+}
 
 function normalizeBrowserUrl(value){
   const raw=String(value||"").trim();
@@ -124,7 +161,13 @@ async function createWindow(){
     return {action:"deny"};
   });
   await windowRef.loadURL(gui.url);
-  windowRef.once("ready-to-show",()=>windowRef?.show());
+  windowRef.once("ready-to-show",()=>{
+    if(process.argv.includes("--background")&&backgroundEnabled){ensureTray();return}
+    windowRef?.show();
+  });
+  windowRef.on("close",(event)=>{
+    if(backgroundEnabled&&!quitting){event.preventDefault();windowRef?.hide();ensureTray()}
+  });
   windowRef.on("closed",()=>{windowRef=null;});
 }
 
@@ -145,6 +188,8 @@ if(!lock){
     windowRef.isMaximized() ? windowRef.unmaximize() : windowRef.maximize();
   });
   ipcMain.on("window:close",()=>windowRef?.close());
+  ipcMain.handle("desktop:background:get",()=>({enabled:backgroundEnabled,openAtLogin:app.getLoginItemSettings().openAtLogin}));
+  ipcMain.handle("desktop:background:set",(_event,value)=>({enabled:setBackgroundEnabled(value)}));
   ipcMain.on("desktop:notify",(_event,payload={})=>{
     if(!Notification.isSupported()) return;
     const title=String(payload.title||"Trebell Code").slice(0,120);
@@ -181,7 +226,11 @@ if(!lock){
   ipcMain.handle("browser:screenshot",async()=>browserScreenshot());
   ipcMain.handle("browser:close",async()=>{if(agentBrowser&&!agentBrowser.isDestroyed())agentBrowser.close();agentBrowser=null;return {ok:true};});
 
-  app.whenReady().then(createWindow).catch((error)=>{
+  app.whenReady().then(async()=>{
+    backgroundEnabled=Boolean(loadDesktopPrefs().backgroundEnabled);
+    if(backgroundEnabled)ensureTray();
+    await createWindow();
+  }).catch((error)=>{
     console.error(error);
     app.quit();
   });
@@ -199,6 +248,7 @@ if(!lock){
     event.preventDefault();
     quitting=true;
     try{if(agentBrowser&&!agentBrowser.isDestroyed())agentBrowser.destroy()}catch{}
+    try{tray?.destroy();tray=null}catch{}
     Promise.resolve(gui?.close?.())
       .catch(()=>{})
       .finally(()=>app.quit());

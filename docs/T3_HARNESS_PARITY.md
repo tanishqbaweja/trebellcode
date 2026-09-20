@@ -54,7 +54,7 @@ Trebell keeps its own visual identity and architecture.
 - [x] Assistant response citations
 - [x] Pull-request attachment context
 - [x] Context meter / compact action
-- [ ] Functional voice input (do not show enabled until implemented)
+- [x] Voice dictation when Chromium SpeechRecognition is available; disabled otherwise
 
 ## Agent activity and approvals
 
@@ -150,7 +150,7 @@ Trebell keeps its own visual identity and architecture.
 - [x] Appearance/theme controls
 - [x] Project overrides/inheritance
 - [x] Update checker; installer handoff opens the release
-- [ ] Background service mode
+- [x] Desktop background/tray mode with Windows startup
 - [x] Diagnostics/log viewer
 - [x] Native notifications
 - [ ] Remote environment control

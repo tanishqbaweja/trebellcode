@@ -14,6 +14,7 @@ const DEFAULT_STATE = Object.freeze({
     appearance: "dark",
     notifications: true,
     notificationSound: false,
+    backgroundMode: false,
     keyboardShortcuts: {},
   },
   stashes: [],

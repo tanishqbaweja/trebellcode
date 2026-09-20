@@ -8,6 +8,10 @@ contextBridge.exposeInMainWorld("trebellDesktop", {
   pickDirectory: () => ipcRenderer.invoke("workspace:pickDirectory"),
   pickFiles: () => ipcRenderer.invoke("workspace:pickFiles"),
   notify: (payload) => ipcRenderer.send("desktop:notify", payload),
+  background: {
+    get: () => ipcRenderer.invoke("desktop:background:get"),
+    set: (enabled) => ipcRenderer.invoke("desktop:background:set", enabled),
+  },
   browser: {
     navigate: (url) => ipcRenderer.invoke("browser:navigate", url),
     show: () => ipcRenderer.invoke("browser:show"),

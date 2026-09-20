@@ -2,7 +2,7 @@ import React,{useEffect,useMemo,useRef,useState} from "react";
 import {
   BrainCircuit, Check, ChevronDown, CircleStop, Code2, Cpu, FileCode2, FileDiff, FolderCode,
   GitBranch, Globe2, HardDrive, Link2, ListTodo, MemoryStick, Network, Paperclip, Plus, Send,
-  ShieldCheck, Sparkles, SquareTerminal, WandSparkles, X, Zap, Coins
+  ShieldCheck, Sparkles, SquareTerminal, WandSparkles, X, Zap, Coins, Mic
 } from "lucide-react";
 import { CodexRpcClient } from "./rpc.js";
 import { api } from "./api.js";
@@ -137,6 +137,24 @@ const SLASH_COMMANDS=[
 function Composer({prompt,setPrompt,onSend,running,loggedIn,login,models,modelMeta,model,setModel,selectedModels,setSelectedModels,freebuff,attachments,onRemoveAttachment,onPickFiles,onPaste,onDrop,permissionMode,setPermissionMode,webSearch,setWebSearch,skills,onSkill,onFiles,settings,onStash,tokenUsage,workspaceMode,setWorkspaceMode}){
   const [modelsOpen,setModelsOpen]=useState(false);
   const [skillsOpen,setSkillsOpen]=useState(false);
+  const [listening,setListening]=useState(false);
+  const speechSupported=typeof window!=="undefined"&&Boolean(window.SpeechRecognition||window.webkitSpeechRecognition);
+  function dictate(){
+    if(!speechSupported||listening)return;
+    const Recognition=window.SpeechRecognition||window.webkitSpeechRecognition;
+    const recognition=new Recognition();
+    recognition.lang=navigator.language||"en-US";
+    recognition.interimResults=false;
+    recognition.continuous=false;
+    recognition.onstart=()=>setListening(true);
+    recognition.onend=()=>setListening(false);
+    recognition.onerror=()=>setListening(false);
+    recognition.onresult=(event)=>{
+      const text=[...event.results].map(result=>result[0]?.transcript||"").join(" ").trim();
+      if(text)setPrompt(prev=>(prev&& !/\s$/.test(prev)?prev+" ":"")+text);
+    };
+    recognition.start();
+  }
   function keyDown(e){
     if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();onSend();return}
     if(e.key==="ArrowUp"&&!prompt){e.preventDefault();window.dispatchEvent(new CustomEvent("trebell:history",{detail:-1}))}
@@ -161,6 +179,7 @@ function Composer({prompt,setPrompt,onSend,running,loggedIn,login,models,modelMe
         <select data-testid="model-picker" value={model} onChange={e=>{setModel(e.target.value);setSelectedModels([e.target.value])}}>{models.map(id=><option key={id} value={id}>{modelLabel(id,freebuff)}{modelMeta?.[id]?.agent?" · "+modelMeta[id].agent:""}</option>)}</select>
         <div className="popover-wrap"><button className="model-count" onClick={()=>setModelsOpen(!modelsOpen)}>{selectedModels.length} model{selectedModels.length===1?"":"s"}</button>{modelsOpen&&<div className="mini-popover models">{models.map(id=><label key={id}><input type="checkbox" checked={selectedModels.includes(id)} onChange={()=>setSelectedModels(prev=>prev.includes(id)?(prev.length===1?prev:prev.filter(x=>x!==id)):[...prev,id])}/><span>{modelLabel(id,freebuff)}{modelMeta?.[id]?.agent?" · "+modelMeta[id].agent:""}</span></label>)}</div>}</div>
       </>}
+      <button className={"mic-btn "+(listening?"active":"")} onClick={dictate} disabled={!speechSupported} title={speechSupported?(listening?"Listening…":"Voice dictation"):"Voice dictation is unavailable on this platform"}><Mic size={15}/></button>
       <button className="stash-btn" onClick={onStash} title="Stash or restore prompt">S</button>
       <button data-testid="send" className="send-btn" onClick={onSend} disabled={!loggedIn||!prompt.trim()}>{running&&settings.followUpMode==="queue"?<Plus size={16}/>:<Send size={16}/>}</button>
     </div></div>
@@ -224,6 +243,7 @@ export default function App(){
       setModels(fallback); setModel(initialModel); setSelectedModels(initialModel?[initialModel]:[]);
       if(firstProject?.permissionMode)setPermissionMode(firstProject.permissionMode);
       if(firstProject?.workspaceMode)setWorkspaceMode(firstProject.workspaceMode);
+      if(window.trebellDesktop?.background&&state.settings?.backgroundMode!=null)window.trebellDesktop.background.set(Boolean(state.settings.backgroundMode)).catch?.(()=>{});
       if(initialModel){const p=new URLSearchParams({timezone,model:initialModel});const fb=await api("/api/freebuff/overview?"+p).catch(()=>null);if(fb&&!cancelled)setFreebuff(fb)}
     })(); return()=>{cancelled=true};
   },[]);
