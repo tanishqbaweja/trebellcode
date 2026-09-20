@@ -17,6 +17,7 @@ import { CheckpointService } from "./checkpoint-service.mjs";
 import { TerminalManager } from "./terminal-manager.mjs";
 import { EnvironmentManager } from "./environment-manager.mjs";
 import { createRemoteControlServer } from "./remote-control.mjs";
+import { ProviderManager, normalizeProviderId } from "./provider-manager.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
   .then(text=>String(JSON.parse(text).version||"0.0.0"))
@@ -111,9 +112,9 @@ async function stopChildProcess(child){
   try{child.stderr?.destroy();}catch{}
 }
 
-function startAppServer({appPort,env=process.env,mock=false}){
+function startAppServer({appPort,env=process.env,mock=false,provider="freebuff",providerManager=null}){
   if(mock) return { child:null, logs:[], targetUrl:null };
-  ensureCodexConfig({port:DEFAULT_PORT,env});
+  ensureCodexConfig({port:DEFAULT_PORT,env,provider});
   const command=codexBin(env);
   const logs=[];
   const pushLog=(chunk,stream)=>{
@@ -124,7 +125,9 @@ function startAppServer({appPort,env=process.env,mock=false}){
   };
   const child=spawn(command,["app-server","--listen",`ws://127.0.0.1:${appPort}`],{
     cwd:process.cwd(),
-    env:{...env,CODEX_HOME:codexHome(env)},
+    env:providerManager
+      ? providerManager.childEnv(provider,{...env,CODEX_HOME:codexHome(env)})
+      : {...env,CODEX_HOME:codexHome(env)},
     windowsHide:true,
     shell:process.platform==="win32" && !command.toLowerCase().endsWith(".exe"),
     stdio:["ignore","pipe","pipe"],
@@ -136,7 +139,10 @@ function startAppServer({appPort,env=process.env,mock=false}){
   return { child, logs, targetUrl:`ws://127.0.0.1:${appPort}` };
 }
 
-function fakeModels(){
+function fakeModels(provider="freebuff"){
+  if(provider==="agentrouter") return ["claude-opus-4-8","gpt-5.5","glm-5.2","kimi-k2.6"];
+  if(provider==="justworker") return ["claude-opus-4-8"];
+  if(provider==="hcnsec") return ["glm-5.3"];
   return ["freebuff/deepseek/deepseek-v4-flash","freebuff/test/coding-large","freebuff/test/coding-fast"];
 }
 
@@ -164,16 +170,48 @@ function requireLoad(){
 }
 
 export async function createGuiServer({port=3210,appPort=23456,mock=false,env=process.env}={}){
-  ensureCodexConfig({port:DEFAULT_PORT,env});
   const dist=resolve(packageRoot,"ui","dist");
-  let bridge=null;
-  let appServer=startAppServer({appPort,env,mock});
-  let loginPromise=null;
   const state=new TrebellStateStore(env);
+  const providers=new ProviderManager({env});
+  let selectedProvider=normalizeProviderId(state.settings().modelProvider);
+  if(state.settings().modelProvider!==selectedProvider) state.updateSettings({modelProvider:selectedProvider});
+  ensureCodexConfig({port:DEFAULT_PORT,env,provider:selectedProvider});
+  let bridge=null;
+  let appServer=startAppServer({appPort,env,mock,provider:selectedProvider,providerManager:providers});
+  let loginPromise=null;
   const checkpoints=new CheckpointService({state,env});
   const terminals=mock ? null : new TerminalManager({env});
   const environments=new EnvironmentManager({state,env});
   let remoteControl=null;
+
+  function providerReady(providerId=selectedProvider){
+    return providerId==="freebuff" ? (mock || isLoggedIn(env)) : (mock || providers.hasKey(providerId));
+  }
+
+  async function restartAppServer(providerId=selectedProvider){
+    const next=normalizeProviderId(providerId);
+    await stopChildProcess(appServer?.child);
+    selectedProvider=next;
+    ensureCodexConfig({port:DEFAULT_PORT,env,provider:selectedProvider});
+    appServer=startAppServer({appPort,env,mock,provider:selectedProvider,providerManager:providers});
+    if(!mock) await waitForCodexReady(appPort,15000).catch(()=>false);
+    return selectedProvider;
+  }
+
+  async function selectedModels(){
+    if(mock) return {models:fakeModels(selectedProvider),metadata:{provider:selectedProvider,models:fakeModels(selectedProvider).map(id=>({id,provider:selectedProvider}))}};
+    if(selectedProvider==="freebuff"){
+      if(!isLoggedIn(env)) return {models:[],metadata:{provider:"freebuff",models:[]}};
+      await ensureBridge();
+      const [models,metadata]=await Promise.all([
+        listModels(DEFAULT_PORT),
+        listModelMetadata(DEFAULT_PORT).catch(()=>({registry:null,models:[]})),
+      ]);
+      return {models:models.filter(id=>id.startsWith("freebuff/")),metadata:{...metadata,provider:"freebuff"}};
+    }
+    const result=await providers.models(selectedProvider);
+    return {models:result.models||[],metadata:{provider:selectedProvider,source:result.source,models:result.metadata||[]},error:result.error||null};
+  }
 
   function newRemoteToken(){ return randomBytes(24).toString("base64url"); }
   function remoteInfo(){
@@ -207,12 +245,14 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
       enabled:()=>mock || Boolean(appServer?.child && appServer.child.exitCode===null),
       environments,
       getStatus:async()=>{
-        const ids=mock?fakeModels():await listModels(env).catch(()=>[]);
+        const catalog=await selectedModels().catch(()=>({models:[]}));
         return {
           cwd:process.cwd(),
           loggedIn:mock||isLoggedIn(env),
+          provider:selectedProvider,
+          providerReady:providerReady(),
           appServerReady:mock||await probeCodexReady(appPort),
-          model:ids.find(id=>String(id).startsWith("freebuff/"))||null,
+          model:catalog.models?.[0]||null,
           projects:state.projects(),
         };
       },
@@ -254,9 +294,37 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
       if(req.method==="POST"){
         try{
           const patch=await readJsonBody(req);
+          if("modelProvider" in patch) patch.modelProvider=normalizeProviderId(patch.modelProvider);
+          const previous=selectedProvider;
           const next=state.updateSettings(patch);
+          if("modelProvider" in patch && patch.modelProvider!==previous) await restartAppServer(patch.modelProvider);
           if("remoteAccessEnabled" in patch||"remoteAccessPort" in patch||"remoteAccessToken" in patch) await syncRemoteControl();
           return json(res,200,next);
+        }catch(error){return json(res,400,{error:error.message});}
+      }
+    }
+    if(url.pathname==="/api/providers"){
+      if(req.method==="GET"){
+        return json(res,200,{selected:selectedProvider,providers:providers.definitions(),status:providers.status(selectedProvider),ready:providerReady()});
+      }
+      if(req.method==="POST"){
+        try{
+          const body=await readJsonBody(req);
+          const provider=normalizeProviderId(body.provider||selectedProvider);
+          if("apiKey" in body && provider!=="freebuff") providers.setKey(provider,body.apiKey);
+          const changed=provider!==selectedProvider;
+          if(changed) state.updateSettings({modelProvider:provider});
+          if(changed || ("apiKey" in body && provider===selectedProvider)) await restartAppServer(provider);
+          const catalog=await selectedModels().catch(error=>({models:[],error:error.message}));
+          return json(res,200,{
+            selected:selectedProvider,
+            providers:providers.definitions(),
+            status:providers.status(selectedProvider),
+            ready:providerReady(),
+            models:catalog.models||[],
+            metadata:catalog.metadata||null,
+            error:catalog.error||null,
+          });
         }catch(error){return json(res,400,{error:error.message});}
       }
     }
@@ -445,7 +513,9 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
       return json(res,200,{
         mock,
         loggedIn:mock || isLoggedIn(env),
-        bridgeReady:mock || await health(DEFAULT_PORT),
+        provider:selectedProvider,
+        providerReady:providerReady(),
+        bridgeReady:selectedProvider==="freebuff" ? (mock || await health(DEFAULT_PORT)) : false,
         appServerReady,
         wsUrl:mock ? null : `ws://127.0.0.1:${port}/api/codex/ws`,
         cwd:process.cwd(),
@@ -455,8 +525,10 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
     }
     if(url.pathname==="/api/runtime"){
       return json(res,200,{
+        provider:selectedProvider,
+        providerReady:providerReady(),
         appServerReady:mock || await probeCodexReady(appPort),
-        bridgeReady:mock || await health(DEFAULT_PORT),
+        bridgeReady:selectedProvider==="freebuff" ? (mock || await health(DEFAULT_PORT)) : false,
         appServerExitCode:appServer?.child?.exitCode ?? null,
         logs:(appServer?.logs || []).slice(-80),
       });
@@ -467,7 +539,8 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
         const prompt=String(payload.prompt||"").trim();
         const model=String(payload.model||"").trim();
         if(!prompt||!model) return json(res,400,{error:"prompt and model are required"});
-        return json(res,200,await queryFreebuff(prompt,model));
+        if(selectedProvider==="freebuff") return json(res,200,await queryFreebuff(prompt,model));
+        return json(res,200,await providers.directChat(selectedProvider,{prompt,model}));
       }catch(error){return json(res,502,{error:error instanceof Error?error.message:String(error)});}
     }
     if(url.pathname==="/api/workspace/tree"){
@@ -575,17 +648,11 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
       }
     }
     if(url.pathname==="/api/models"){
-      if(mock) return json(res,200,{models:fakeModels(),metadata:{registry:{source:"mock",modelCount:3},models:fakeModels().map((id,i)=>({id,canonical:id.replace(/^freebuff\//,""),agent:["base2-free-deepseek-flash","base2-free","base2-free"][i]||"base2-free"}))}});
-      if(!isLoggedIn(env)) return json(res,200,{models:[]});
       try{
-        await ensureBridge();
-        const [models,metadata]=await Promise.all([
-          listModels(DEFAULT_PORT),
-          listModelMetadata(DEFAULT_PORT).catch(()=>({registry:null,models:[]})),
-        ]);
-        return json(res,200,{models:models.filter(id=>id.startsWith("freebuff/")),metadata});
+        const catalog=await selectedModels();
+        return json(res,200,{provider:selectedProvider,ready:providerReady(),models:catalog.models||[],metadata:catalog.metadata||null,error:catalog.error||null});
       }catch(error){
-        return json(res,503,{models:[],error:error instanceof Error?error.message:String(error)});
+        return json(res,503,{provider:selectedProvider,ready:providerReady(),models:[],error:error instanceof Error?error.message:String(error)});
       }
     }
     if(url.pathname==="/api/login/start" && req.method==="POST"){
@@ -626,7 +693,7 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
       const cwd=url.searchParams.get("path")||process.cwd();
       return json(res,200,{
         version:TREBELL_VERSION,
-        runtime:{appServerReady:mock||await probeCodexReady(appPort),bridgeReady:mock||await health(DEFAULT_PORT),appServerExitCode:appServer?.child?.exitCode??null},
+        runtime:{provider:selectedProvider,providerReady:providerReady(),appServerReady:mock||await probeCodexReady(appPort),bridgeReady:selectedProvider==="freebuff"?(mock||await health(DEFAULT_PORT)):false,appServerExitCode:appServer?.child?.exitCode??null},
         state:{projects:state.projects(),settings:state.settings(),threadMeta:state.listThreadMeta()},
         git:await gitInfo(cwd).catch(error=>({error:error.message})),
         terminalSessions:mock?[]:terminals.list(),
