@@ -10,7 +10,7 @@ import { workspaceDiff, workspaceFile, workspaceSearch, workspaceTree, workspace
 import { spawn } from "node:child_process";
 import { codexBin, codexHome, packageRoot, trebellHome } from "./paths.mjs";
 import { DEFAULT_PORT, ensureCodexConfig } from "./config.mjs";
-import { health, isLoggedIn, listModels, logout, runLogin, startBridge } from "./freebuff.mjs";
+import { health, isLoggedIn, listModels, listModelMetadata, logout, runLogin, startBridge } from "./freebuff.mjs";
 import { getFreebuffOverview } from "./freebuff-product.mjs";
 import { TrebellStateStore } from "./trebell-state.mjs";
 import { CheckpointService } from "./checkpoint-service.mjs";
@@ -461,12 +461,15 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
       }
     }
     if(url.pathname==="/api/models"){
-      if(mock) return json(res,200,{models:fakeModels()});
+      if(mock) return json(res,200,{models:fakeModels(),metadata:{registry:{source:"mock",modelCount:3},models:fakeModels().map((id,i)=>({id,canonical:id.replace(/^freebuff\//,""),agent:["base2-free-deepseek-flash","base2-free","base2-free"][i]||"base2-free"}))}});
       if(!isLoggedIn(env)) return json(res,200,{models:[]});
       try{
         await ensureBridge();
-        const models=(await listModels(DEFAULT_PORT)).filter(id=>id.startsWith("freebuff/"));
-        return json(res,200,{models});
+        const [models,metadata]=await Promise.all([
+          listModels(DEFAULT_PORT),
+          listModelMetadata(DEFAULT_PORT).catch(()=>({registry:null,models:[]})),
+        ]);
+        return json(res,200,{models:models.filter(id=>id.startsWith("freebuff/")),metadata});
       }catch(error){
         return json(res,503,{models:[],error:error instanceof Error?error.message:String(error)});
       }

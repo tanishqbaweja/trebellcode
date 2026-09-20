@@ -2,7 +2,7 @@ import React from "react";
 import { Coins, Flame, Gauge, Clock3, RefreshCw, Zap } from "lucide-react";
 
 function price(freebuff,model){return freebuff?.derived?.priceByModel?.[model]||(freebuff?.derived?.selectedModel===model?freebuff?.derived?.selectedPrice:null)}
-export default function FreebuffPage({freebuff,model,onRefresh}){
+export default function FreebuffPage({freebuff,model,modelMeta={},onRefresh}){
   const selected=price(freebuff,model);
   return <div className="freebuff-page">
     <div className="fb-hero"><div><span>Freebucks balance</span><strong>{freebuff?.derived?.balance??"—"}</strong><small>{freebuff?.user?.email||"Freebuff account"}</small></div><button onClick={onRefresh}><RefreshCw size={15}/> Refresh</button></div>
@@ -13,7 +13,7 @@ export default function FreebuffPage({freebuff,model,onRefresh}){
       <div className="fb-dashboard-card"><Gauge size={19}/><span>Rate limit</span><strong>{freebuff?.derived?.rateLimit?.remaining??"—"}</strong><small>{freebuff?.derived?.rateLimit?.limit!=null?"of "+freebuff.derived.rateLimit.limit+" remaining":"Live server limits"}</small></div>
     </div>
     {selected?.offPeakActive&&<div className="fb-offpeak"><Zap size={15}/> Off-peak pricing is active.</div>}
-    <div className="fb-model-table"><div className="fb-table-head"><span>Freebuff model</span><span>Freebucks/hour</span><span>Source</span></div>{Object.entries(freebuff?.derived?.priceByModel||{}).map(([id,p])=><div key={id} className={id===model?"selected":""}><span>{id.replace(/^freebuff\//,"")}</span><span>{p.dynamic?"Dynamic":p.current??"—"}</span><span>{p.source==="server"?"Live":"Fallback"}</span></div>)}</div>
+    <div className="fb-model-table"><div className="fb-table-head"><span>Freebuff model / agent</span><span>Freebucks/hour</span><span>Source</span></div>{Object.entries(freebuff?.derived?.priceByModel||{}).map(([id,p])=><div key={id} className={id===model?"selected":""}><span><b>{id.replace(/^freebuff\//,"")}</b><small>{modelMeta[id]?.agent||"Freebuff agent"}</small></span><span>{p.dynamic?"Dynamic":p.current??"—"}</span><span>{p.source==="server"?"Live":"Fallback"}</span></div>)}</div>
     {(freebuff?.session?.notices||freebuff?.session?.offers||freebuff?.session?.consents||freebuff?.derived?.offPeakOffers)&&<div className="fb-product-signals">
       {freebuff?.session?.notices&&<section><h3>Notices</h3><pre>{JSON.stringify(freebuff.session.notices,null,2)}</pre></section>}
       {freebuff?.session?.offers&&<section><h3>Offers</h3><pre>{JSON.stringify(freebuff.session.offers,null,2)}</pre></section>}

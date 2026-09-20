@@ -136,7 +136,7 @@ Trebell keeps its own visual identity and architecture.
 - [x] Off-peak state/offers
 - [x] 45-second heartbeat during active turns
 - [x] Freebuff notices/offers/consent state surfaces when returned by server
-- [ ] Model capability metadata in picker
+- [x] Freebuff serving-agent metadata in picker
 - [x] Context/token usage when available from provider response
 
 ## Settings and desktop

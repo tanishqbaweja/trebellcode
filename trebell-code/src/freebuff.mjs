@@ -128,3 +128,11 @@ export async function chooseModel({ requested, port = DEFAULT_PORT } = {}) {
     return null;
   }
 }
+
+export async function listModelMetadata(port = DEFAULT_PORT, fetchImpl = fetch) {
+  const response = await fetchImpl(`http://127.0.0.1:${port}/trebell/model-meta`, {
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!response.ok) throw new Error(`model metadata failed with HTTP ${response.status}`);
+  return response.json();
+}

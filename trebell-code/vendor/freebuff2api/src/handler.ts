@@ -94,6 +94,18 @@ export function createHandler(deps: HandlerDeps): (request: Request) => Promise<
           return openAIError(405, "method not allowed", "invalid_request_error", "");
         }
         return json(200, { sessions: deps.tokens.snapshots() });
+      case "/trebell/model-meta":
+        if (request.method !== "GET") {
+          return openAIError(405, "method not allowed", "invalid_request_error", "");
+        }
+        return json(200, {
+          registry: deps.registry.status(),
+          models: deps.registry.models().map((id) => ({
+            id,
+            canonical: deps.registry.canonicalModel(id),
+            agent: deps.registry.agentForModel(id) ?? null,
+          })),
+        });
       case "/v1/models":
         if (request.method !== "GET") {
           return openAIError(405, "method not allowed", "invalid_request_error", "");
