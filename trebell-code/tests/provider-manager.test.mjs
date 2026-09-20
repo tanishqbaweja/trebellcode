@@ -19,20 +19,22 @@ test("provider keys are stored separately and never returned by definitions", ()
   assert.match(stored,/ar-secret/);
 });
 
-test("AgentRouter models are loaded live from key-scoped /v1/models", async () => {
+test("AgentRouter exposes its supported catalog without depending on /v1/models", async () => {
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
   const env={...process.env,TREBELL_HOME:root};
-  let seen=null;
-  const manager=new ProviderManager({env,fetchFn:async(url,init)=>{
-    seen={url,authorization:init?.headers?.Authorization};
-    return new Response(JSON.stringify({object:"list",data:[{id:"gpt-5.5"},{id:"claude-opus-4-8"},{id:"gpt-5.5"}]}),{status:200});
-  }});
+  let fetches=0;
+  const manager=new ProviderManager({env,fetchFn:async()=>{fetches++;return new Response("{}");}});
   manager.setKey("agentrouter","ar-key");
   const result=await manager.models("agentrouter");
-  assert.equal(seen.url,"https://co.agentrouter.org/v1/models");
-  assert.equal(seen.authorization,"Bearer ar-key");
-  assert.deepEqual(result.models,["claude-opus-4-8","gpt-5.5"]);
-  assert.equal(result.source,"live");
+  assert.deepEqual(result.models,[
+    "gpt-5.6-sol",
+    "gpt-6-astra",
+    "claude-opus-4-8",
+    "claude-opus-5",
+    "deepseek-v4-flash",
+  ]);
+  assert.equal(result.source,"static");
+  assert.equal(fetches,0);
 });
 
 test("JustWorker and HCNSec expose only their configured model", async () => {
