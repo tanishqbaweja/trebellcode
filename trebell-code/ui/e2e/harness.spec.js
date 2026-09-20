@@ -24,7 +24,8 @@ test("Trebell Code renders functional harness surfaces and completes a Freebuff 
 
   await page.getByText("Files & diff").click();
   await expect(page.getByTestId("drawer")).toBeVisible();
-  await page.getByRole("button",{name:"Workspace"}).click().catch(()=>{});
+  await page.getByTestId("drawer").locator(".drawer-head button").click();
+  await expect(page.getByTestId("drawer")).toBeHidden();
 
   await page.getByText("Projects",{exact:true}).first().click();
   await expect(page.getByRole("heading",{name:"Projects"})).toBeVisible();
