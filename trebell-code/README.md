@@ -33,7 +33,7 @@ trebell --model freebuff/deepseek/deepseek-v4-flash
 2. It starts the bundled freebuff2api bridge on localhost only.
 3. freebuff2api authenticates with the Freebuff account stored under `~/.trebell-code/freebuff2api`.
 4. The Codex runtime is launched with a custom `freebuff` model provider using the OpenAI-compatible Chat Completions wire API exposed by freebuff2api.
-5. The runtime keeps Codex filesystem, shell, approval, MCP, diff, history, and agent behavior. Trebell owns the sign-in, provider configuration, storage paths, command name, and visible terminal branding.\n\nFor compatibility testing, Trebell preserves Freebuff-compatible protocol behavior while deliberately attaching the stable upstream header `x-trebell-client: Trebell-Code/0.1.0`. This keeps the client explicitly attributable instead of relying on hidden behavioral differences.
+5. The runtime keeps Codex filesystem, shell, approval, MCP, diff, history, and agent behavior. Trebell owns the sign-in, provider configuration, storage paths, command name, and visible terminal branding.\n\nFor compatibility testing, Trebell preserves Freebuff-compatible protocol behavior while deliberately attaching the stable upstream header `x-trebell-client: Trebell-Code/0.5.0`. This keeps the client explicitly attributable instead of relying on hidden behavioral differences.
 
 By default Trebell sets `PUBLIC_UPSTREAM_ENABLED=false`, so the bundled bridge uses the authenticated Freebuff route rather than freebuff2api's optional third-party public model routes.
 
