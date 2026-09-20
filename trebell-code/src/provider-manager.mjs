@@ -39,6 +39,14 @@ export const MODEL_PROVIDERS = Object.freeze({
     requiresKey: true,
     staticModels: ["glm-5.3"],
   },
+  vyceai: {
+    id: "vyceai",
+    name: "VyceAi",
+    baseUrl: "https://vyceai.com/v1",
+    wireApi: "chat",
+    envKey: "VYCEAI_API_KEY",
+    requiresKey: true,
+  },
 });
 
 export function normalizeProviderId(value) {
