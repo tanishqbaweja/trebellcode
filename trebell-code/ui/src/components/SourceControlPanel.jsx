@@ -2,12 +2,13 @@ import React,{useEffect,useState} from "react";
 import { GitBranch, GitCommit, GitPullRequest, RefreshCw, Upload, Download, Plus, WandSparkles, ExternalLink, MessageSquare, CheckCircle2 } from "lucide-react";
 import { api } from "../api.js";
 
-export default function SourceControlPanel({projectPath,model,onProjectChange,onAttachPr}){
+export default function SourceControlPanel({projectPath,model,onProjectChange,onAttachPr,onLinkPr,linkedPullRequests=[]}){
   const [info,setInfo]=useState(null);
   const [diagnostics,setDiagnostics]=useState(null);
   const [prs,setPrs]=useState([]);
   const [selectedPr,setSelectedPr]=useState(null);
   const [commitMessage,setCommitMessage]=useState("");
+  const [comment,setComment]=useState("");
   const [busy,setBusy]=useState("");
   const [error,setError]=useState("");
 
@@ -67,7 +68,9 @@ export default function SourceControlPanel({projectPath,model,onProjectChange,on
     <section className="pr-card"><div className="pr-head"><h3>Pull requests</h3><button onClick={refresh}><RefreshCw size={13}/></button><button onClick={async()=>{const title=prompt("PR title",commitMessage||"Trebell Code changes");if(!title)return;const body=prompt("PR description","")||"";try{const d=await api("/api/source-control/pr",{method:"POST",body:{cwd:projectPath,title,body}});if(d.url)window.open(d.url,"_blank");await refresh()}catch(e){setError(e.message)}}}><Plus size={13}/> Create PR</button></div>
       <div className="pr-layout"><div className="pr-list">{prs.map(pr=><button key={pr.number} onClick={()=>openPr(pr)} className={selectedPr?.number===pr.number?"active":""}><GitPullRequest size={14}/><div><strong>#{pr.number} {pr.title}</strong><span>{pr.headRefName} → {pr.baseRefName}</span></div><em>{pr.state}</em></button>)}</div>
       <div className="pr-detail">{selectedPr?<>
-        <h3>#{selectedPr.number} {selectedPr.title}</h3><p>{selectedPr.body||"No description."}</p><div className="pr-actions"><button onClick={()=>window.open(selectedPr.url,"_blank")}><ExternalLink size={12}/> Open</button><button onClick={()=>onAttachPr?.(selectedPr)}><MessageSquare size={12}/> Attach</button><button onClick={()=>prAction("review",{event:"APPROVE",body:"Reviewed in Trebell Code."})}><CheckCircle2 size={12}/> Approve</button><button onClick={()=>prAction("merge",{method:"squash"})}>Merge</button></div>
+        <h3>#{selectedPr.number} {selectedPr.title}</h3><p>{selectedPr.body||"No description."}</p><div className="pr-actions"><button onClick={()=>window.open(selectedPr.url,"_blank")}><ExternalLink size={12}/> Open</button><button onClick={()=>onAttachPr?.(selectedPr)}><MessageSquare size={12}/> Attach</button><button className={linkedPullRequests.some(x=>x.number===selectedPr.number)?"linked":""} onClick={()=>onLinkPr?.(selectedPr)}><GitPullRequest size={12}/> {linkedPullRequests.some(x=>x.number===selectedPr.number)?"Linked":"Link to thread"}</button><button onClick={()=>prAction("review",{event:"APPROVE",body:"Reviewed in Trebell Code."})}><CheckCircle2 size={12}/> Approve</button><button onClick={()=>prAction("merge",{method:"squash"})}>Merge</button></div>
+        <div className="pr-comment"><textarea value={comment} onChange={e=>setComment(e.target.value)} placeholder="Write a pull-request comment…"/><button disabled={!comment.trim()||!!busy} onClick={async()=>{await prAction("comment",{body:comment});setComment("")}}><MessageSquare size={12}/> Comment</button></div>
+        <h4>Reviews</h4><div className="review-list">{(selectedPr.reviews||[]).length?(selectedPr.reviews||[]).map((review,i)=><div key={review.id||i}><strong>{review.author?.login||review.author?.name||"Reviewer"}</strong><span>{review.state||"reviewed"}</span><p>{review.body||""}</p></div>):<p>No reviews yet.</p>}</div>
         <h4>Checks</h4><pre>{JSON.stringify(selectedPr.statusCheckRollup||[],null,2)}</pre>
       </>:<p>Select a pull request to inspect it.</p>}</div></div>
     </section>

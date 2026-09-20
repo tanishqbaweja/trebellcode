@@ -187,8 +187,15 @@ export default function App(){
     const data=await api("/api/freebuff/overview?"+params).catch(()=>null); if(data)setFreebuff(data);
   }
   async function touchProject(path){
-    if(!path)return; setProjectPath(path); await api("/api/projects",{method:"POST",body:{path}}).catch(()=>{});
+    if(!path)return null;
+    setProjectPath(path);
+    const response=await api("/api/projects",{method:"POST",body:{path}}).catch(()=>null);
+    const project=response?.project||null;
+    if(project?.defaultModel&&models.includes(project.defaultModel)){setModel(project.defaultModel);setSelectedModels([project.defaultModel])}
+    if(project?.permissionMode)setPermissionMode(project.permissionMode);
+    if(project?.workspaceMode)setWorkspaceMode(project.workspaceMode);
     if(settings.autoPull)api("/api/git/action",{method:"POST",body:{action:"auto-pull",cwd:path}}).catch(()=>{});
+    return project;
   }
 
   useEffect(()=>{
@@ -196,10 +203,14 @@ export default function App(){
     (async()=>{
       const [boot,state,modelData]=await Promise.all([api("/api/bootstrap").catch(()=>({mock:true,loggedIn:true,cwd:"",platform:""})),api("/api/state").catch(()=>({settings:{},projects:[],threadMeta:{}})),api("/api/models").catch(()=>({models:[]}))]);
       if(cancelled)return; setBootstrap(boot); setSettings(prev=>({...prev,...(state.settings||{})})); setPermissionMode(state.settings?.defaultPermissionMode||"supervised"); setThreadMeta(state.threadMeta||{});
-      setProjectPath(state.projects?.[0]?.path||boot.cwd||"");
+      const firstProject=state.projects?.[0]||null;
+      setProjectPath(firstProject?.path||boot.cwd||"");
       const freeModels=(modelData.models||[]).filter(x=>x.startsWith("freebuff/")); const fallback=freeModels.length?freeModels:(boot.mock?["freebuff/deepseek/deepseek-v4-flash","freebuff/test/coding-large","freebuff/test/coding-fast"]:[]);
-      setModels(fallback); setModel(fallback[0]||""); setSelectedModels(fallback[0]?[fallback[0]]:[]);
-      if(fallback[0]){const p=new URLSearchParams({timezone,model:fallback[0]});const fb=await api("/api/freebuff/overview?"+p).catch(()=>null);if(fb&&!cancelled)setFreebuff(fb)}
+      const initialModel=(firstProject?.defaultModel&&fallback.includes(firstProject.defaultModel))?firstProject.defaultModel:(fallback[0]||"");
+      setModels(fallback); setModel(initialModel); setSelectedModels(initialModel?[initialModel]:[]);
+      if(firstProject?.permissionMode)setPermissionMode(firstProject.permissionMode);
+      if(firstProject?.workspaceMode)setWorkspaceMode(firstProject.workspaceMode);
+      if(initialModel){const p=new URLSearchParams({timezone,model:initialModel});const fb=await api("/api/freebuff/overview?"+p).catch(()=>null);if(fb&&!cancelled)setFreebuff(fb)}
     })(); return()=>{cancelled=true};
   },[]);
 
@@ -348,6 +359,13 @@ export default function App(){
   async function onDrop(e){e.preventDefault();const files=[...(e.dataTransfer?.files||[])];const uploaded=[];for(const f of files.slice(0,8-attachments.length)){try{uploaded.push((await blobAttachment(f)).path)}catch{}}await addFiles(uploaded)}
   async function attachExcerpt(text){if(!text.trim())return;const d=await api("/api/attachments/text",{method:"POST",body:{name:"terminal-context.txt",text}});await addFiles([d.path]);setPanel(null)}
   async function attachPr(pr){const text=["Pull request #"+pr.number+": "+pr.title,pr.url,pr.headRefName+" -> "+pr.baseRefName,pr.body||""].join("\n");const d=await api("/api/attachments/text",{method:"POST",body:{name:"pr-"+pr.number+".txt",text}});await addFiles([d.path]);setSection("chat")}
+  async function linkPr(pr){
+    if(!activeThread?.id)return;
+    const current=threadMeta[activeThread.id]?.linkedPullRequests||[];
+    const exists=current.some(x=>x.number===pr.number&&x.url===pr.url);
+    const next=exists?current.filter(x=>!(x.number===pr.number&&x.url===pr.url)):[...current,{number:pr.number,title:pr.title,url:pr.url,state:pr.state,headRefName:pr.headRefName,baseRefName:pr.baseRefName}];
+    await updateThreadMeta(activeThread.id,{linkedPullRequests:next});
+  }
   async function toggleReviewed(path,value){const next=value?[...new Set([...reviewedFiles,path])]:reviewedFiles.filter(x=>x!==path);setReviewedFiles(next);if(activeThread?.id)await updateThreadMeta(activeThread.id,{reviewedFiles:next})}
   function resolveApproval(request,decision){if(!rpc)return;let result={decision};if(request.method==="item/permissions/requestApproval")result={permissions:request.params?.permissions||{},scope:decision==="acceptForSession"?"session":"turn"};rpc.respond(request.id,result);setApprovals(prev=>prev.filter(x=>x.id!==request.id))}
   async function answerQuestion(answers,files){if(!question)return;const result={};for(const q of question.request.params?.questions||[]){const values=[...(answers[q.id]||[])];if(files.length)values.push("Attached files: "+files.join(", "));result[q.id]={answers:values}}question.client.respond(question.request.id,{answers:result});setQuestion(null)}
@@ -366,15 +384,15 @@ export default function App(){
     <main className="main-frame">
       <div className="window-bar"><span>{rpcStatus==="connected"?"Local harness connected":rpcStatus}</span><div><button onClick={()=>window.trebellDesktop?.minimize?.()}>—</button><button onClick={()=>window.trebellDesktop?.maximize?.()}>□</button><button className="window-close" onClick={()=>window.trebellDesktop?.close?.()}>×</button></div></div>
       {(section==="chat"||section==="new")&&<>
-        <div className="topbar"><div className="task-icon"><Code2 size={24}/></div><div className="task-title"><div><strong>{activeTitle}</strong><button className="ghost-icon" onClick={renameThread}><WandSparkles size={14}/></button></div><span>{gitInfo?.isGit?(gitInfo.branch||"detached")+" · ":""}{running?"Agent working":"Ready"} · {tokenLabel(tokenUsage)}</span></div><div className="top-actions"><button className="btn secondary" onClick={shareThread}><Link2 size={14}/> Copy thread</button><button className="icon-btn" onClick={()=>setPanel("workspace")}><FileCode2 size={15}/></button>{running&&<button className="btn stop" onClick={stop}><CircleStop size={14}/> Stop</button>}</div></div>
+        <div className="topbar"><div className="task-icon"><Code2 size={24}/></div><div className="task-title"><div><strong>{activeTitle}</strong><button className="ghost-icon" onClick={renameThread}><WandSparkles size={14}/></button></div><span>{gitInfo?.isGit?(gitInfo.branch||"detached")+" · ":""}{running?"Agent working":"Ready"} · {tokenLabel(tokenUsage)}</span>{activeThread?.id&&(threadMeta[activeThread.id]?.linkedPullRequests||[]).length>0&&<div className="linked-prs">{threadMeta[activeThread.id].linkedPullRequests.map(pr=><button key={pr.url} onClick={()=>window.open(pr.url,"_blank")}><GitBranch size={10}/> #{pr.number}</button>)}</div>}</div><div className="top-actions"><button className="btn secondary" onClick={shareThread}><Link2 size={14}/> Copy thread</button><button className="icon-btn" onClick={()=>setPanel("workspace")}><FileCode2 size={15}/></button>{running&&<button className="btn stop" onClick={stop}><CircleStop size={14}/> Stop</button>}</div></div>
         <div className="conversation-scroll"><Conversation messages={messages} onEditFromHere={editFromHere}/><ActivityTimeline events={events} assistantText={assistantText} onOpenPanel={setPanel}/>
           {queued.map(item=><div className="queued-message" key={item.id}><span>Queued</span><p>{item.text}</p><button onClick={()=>sendQueuedNow(item)}>Send now</button><button onClick={()=>{setPrompt(item.text);setAttachments(item.attachments);setQueued(prev=>prev.filter(x=>x.id!==item.id))}}>Edit</button></div>)}
           {!messages.length&&!events.length&&<div className="welcome"><div className="welcome-orb"><Sparkles size={27}/></div><h1>What should Trebell build?</h1><p>Freebuff supplies the model. Codex supplies the local agent harness: files, shell, Git, approvals, skills, MCP and durable threads.</p><div className="suggestions"><button onClick={()=>setPrompt("Inspect this project and explain the architecture.")}>Explain codebase</button><button onClick={()=>setPrompt("Find a useful bug, fix it, and run the relevant tests.")}>Fix a bug</button><button onClick={()=>setPrompt("Implement the next missing feature and validate it end-to-end.")}>Ship a feature</button></div></div>}
         </div>
         <Composer prompt={prompt} setPrompt={setPrompt} onSend={send} running={running} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} models={models} model={model} setModel={setModel} selectedModels={selectedModels} setSelectedModels={setSelectedModels} freebuff={freebuff} attachments={attachments} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onPickFiles={pickFiles} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} webSearch={webSearch} setWebSearch={setWebSearch} skills={skills} onSkill={onSkill} onFiles={()=>setPanel("workspace")} settings={settings} onStash={stashPrompt} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode}/>
       </>}
-      {section==="projects"&&<div className="secondary-page"><h1>Projects</h1><p>Local repositories and workspaces owned by this machine.</p><ProjectsPage currentPath={projectPath} onOpen={onProjectOpen}/></div>}
-      {section==="source"&&<div className="secondary-page full"><h1>Source Control</h1><p>Branch, commit, worktree and pull-request actions execute locally.</p><SourceControlPanel projectPath={projectPath} model={model} onProjectChange={onProjectOpen} onAttachPr={attachPr}/></div>}
+      {section==="projects"&&<div className="secondary-page"><h1>Projects</h1><p>Local repositories and workspaces owned by this machine.</p><ProjectsPage currentPath={projectPath} onOpen={onProjectOpen} models={models}/></div>}
+      {section==="source"&&<div className="secondary-page full"><h1>Source Control</h1><p>Branch, commit, worktree and pull-request actions execute locally.</p><SourceControlPanel projectPath={projectPath} model={model} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} linkedPullRequests={activeThread?.id?(threadMeta[activeThread.id]?.linkedPullRequests||[]):[]}/></div>}
       {section==="agents"&&<div className="secondary-page"><h1>Agents</h1><p>Delegated Codex subagent threads.</p><AgentsPage threads={threads} activeThread={activeThread} onOpen={openThread}/></div>}
       {section==="preview"&&<div className="secondary-page full"><h1>Preview</h1><p>Preview local development servers or web pages beside the agent.</p><PreviewPage/></div>}
       {section==="templates"&&<div className="secondary-page"><h1>Templates</h1><p>Real prompts that start normal Trebell turns.</p><div className="template-grid">{[["Ship a feature","Inspect the project, plan a useful feature, implement it, run the relevant tests, fix failures, and summarize the result."],["Fix a bug","Reproduce a meaningful bug in this project, diagnose it, fix it, and validate the fix."],["Review codebase","Map this codebase architecture, important execution paths, risks, and highest-value improvements."],["Refactor safely","Choose a worthwhile refactor, preserve behavior, implement focused changes, and run tests."],["Autonomous build","Take this project to a working validated result. Continue through implementation and test failures until it passes."],["Security review","Review this project for concrete security weaknesses and propose or implement safe fixes."]].map(([name,text])=><button key={name} onClick={()=>{setPrompt(text);setSection("chat")}}><BrainCircuit size={20}/><strong>{name}</strong><span>{text}</span></button>)}</div></div>}

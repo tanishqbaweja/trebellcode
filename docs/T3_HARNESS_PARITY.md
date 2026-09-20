@@ -70,7 +70,7 @@ Trebell keeps its own visual identity and architecture.
 - [x] Full command + stdout/stderr inspection
 - [x] Question UI with options and custom answers
 - [x] Attachments in question answers
-- [ ] Remembered/session approvals where supported
+- [x] Remembered/session approvals where supported
 - [x] Background activity/subagent inspector
 
 ## Terminal
@@ -104,7 +104,7 @@ Trebell keeps its own visual identity and architecture.
 - [x] Open local project
 - [x] Add/clone project
 - [x] Recent projects
-- [ ] Project groups / multiple checkouts
+- [x] Project groups / multiple checkouts
 - [x] Worktree creation/removal
 - [x] Workspace-mode selection
 - [x] Branch selector
@@ -116,10 +116,10 @@ Trebell keeps its own visual identity and architecture.
 - [x] Create pull request
 - [x] PR review UI
 - [x] PR comments/review/check status
-- [ ] Linked pull requests
+- [x] Linked pull requests
 - [ ] PR stacks
 - [ ] Merge/rebase stack
-- [ ] Source-control account diagnostics
+- [x] Source-control account diagnostics
 
 ## Freebuff product state
 
@@ -137,7 +137,7 @@ Trebell keeps its own visual identity and architecture.
 - [x] 45-second heartbeat during active turns
 - [ ] Full Freebuff notices/offers/consent surfaces when returned by server
 - [ ] Model capability metadata in picker
-- [ ] Context/token usage when available from provider response
+- [x] Context/token usage when available from provider response
 
 ## Settings and desktop
 
@@ -148,7 +148,7 @@ Trebell keeps its own visual identity and architecture.
 - [x] Clean child-process shutdown
 - [x] Keyboard-shortcut editor
 - [x] Appearance/theme controls
-- [ ] Project overrides/inheritance
+- [x] Project overrides/inheritance
 - [x] Update checker; installer handoff opens the release
 - [ ] Background service mode
 - [x] Diagnostics/log viewer
