@@ -482,7 +482,7 @@ export default function App(){
   const activeTitle=titleOf(activeThread);
 
   return <div className="app-shell">
-    <ThreadSidebar section={section} setSection={setSection} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} onOpen={openThread} onNew={newChat} onThreadAction={threadAction} onMove={moveThreadOrder} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={bulkAction}/>
+    <ThreadSidebar section={section} setSection={setSection} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} onOpen={openThread} onNew={newChat} onThreadAction={threadAction} onMove={moveThreadOrder} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={bulkAction} provider={provider}/>
     <main className="main-frame">
       <div className="window-bar"><span>{rpcStatus==="connected"?"Local harness connected":rpcStatus}</span><div><button onClick={()=>window.trebellDesktop?.minimize?.()}>—</button><button onClick={()=>window.trebellDesktop?.maximize?.()}>□</button><button className="window-close" onClick={()=>window.trebellDesktop?.close?.()}>×</button></div></div>
       {(section==="chat"||section==="new")&&<>
