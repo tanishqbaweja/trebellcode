@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProviderManager } from "../src/provider-manager.mjs";
@@ -17,6 +17,14 @@ test("provider keys are stored separately and never returned by definitions", ()
   assert.equal("apiKey" in def,false);
   const stored=readFileSync(join(root,"provider-secrets.json"),"utf8");
   assert.match(stored,/ar-secret/);
+});
+
+test("previously stored provider keys with wrapping quotes are normalized on read", () => {
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
+  writeFileSync(join(root,"provider-secrets.json"),JSON.stringify({agentrouter:'"ar-existing-key"'}),"utf8");
+  const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root},fetchFn:async()=>new Response("{}")});
+  assert.equal(manager.key("agentrouter"),"ar-existing-key");
+  assert.equal(manager.childEnv("agentrouter",{}).AGENTROUTER_API_KEY,"ar-existing-key");
 });
 
 test("AgentRouter validates the key and loads its live model catalog", async () => {
