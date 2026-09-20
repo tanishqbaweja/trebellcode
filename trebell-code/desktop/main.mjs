@@ -29,17 +29,6 @@ function setMainZoomFactor(value,{persist=true}={}){
 
 function installMainZoomControls(win){
   const wc=win.webContents;
-  wc.on("before-mouse-event",(event,mouse)=>{
-    if(mouse.type!=="mouseWheel") return;
-    const modifiers=new Set((mouse.modifiers||[]).map(value=>String(value).toLowerCase()));
-    if(!modifiers.has("control")&&!modifiers.has("ctrl")&&!modifiers.has("meta")&&!modifiers.has("command")&&!modifiers.has("cmd")) return;
-    const deltaY=Number(mouse.deltaY||0);
-    const wheelTicksY=Number(mouse.wheelTicksY||0);
-    const direction=deltaY!==0 ? Math.sign(deltaY) : -Math.sign(wheelTicksY);
-    if(direction===0) return;
-    event.preventDefault();
-    setMainZoomFactor(wc.getZoomFactor()+(direction<0?ZOOM_STEP:-ZOOM_STEP));
-  });
   wc.on("before-input-event",(event,input)=>{
     if(input.type!=="keyDown"||(!input.control&&!input.meta)) return;
     const key=String(input.key||"").toLowerCase();
