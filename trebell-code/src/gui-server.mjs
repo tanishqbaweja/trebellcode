@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { statfsSync } from "node:fs";
-import { cpus, freemem, totalmem, tmpdir } from "node:os";
+import { cpus, freemem, totalmem, tmpdir, loadavg } from "node:os";
 import { extname, join, normalize, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
@@ -85,16 +85,9 @@ function statsSnapshot(){
 }
 function requireLoad(){
   try{
-    const [one]=process.platform==="win32" ? [0] : (awaitableLoad());
-    return one||0;
+    if(process.env.TREBELL_TEST_LOAD) return Number(process.env.TREBELL_TEST_LOAD) || 0;
+    return process.platform==="win32" ? 0 : (loadavg()[0] || 0);
   }catch{return 0}
-}
-function awaitableLoad(){
-  // Imported lazily this way to keep the public stats helper deterministic in tests.
-  const osLoad=cpus().length ? Number(process.env.TREBELL_TEST_LOAD || 0) : 0;
-  if(osLoad) return [osLoad];
-  // process.resourceUsage() is process-scoped; loadAverage is preferable for the system card.
-  return [0];
 }
 
 export async function createGuiServer({port=3210,appPort=23456,mock=false,env=process.env}={}){
