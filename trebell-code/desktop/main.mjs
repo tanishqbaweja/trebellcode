@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, Notification, Tray, Menu, nativeImage } from "electron";
+import { app, BrowserWindow, ipcMain, shell, dialog, Notification, Tray, Menu, nativeImage, desktopCapturer, screen } from "electron";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createGuiServer } from "../src/gui-server.mjs";
@@ -189,6 +189,22 @@ async function browserScreenshot(){
   return {dataUrl:"data:image/png;base64,"+image.toPNG().toString("base64"),url:browser.webContents.getURL(),title:browser.webContents.getTitle()};
 }
 
+async function desktopScreenshot(){
+  const display=screen.getPrimaryDisplay();
+  const scale=Math.max(1,Number(display.scaleFactor)||1);
+  const width=Math.max(1,Math.round(display.size.width*scale));
+  const height=Math.max(1,Math.round(display.size.height*scale));
+  const sources=await desktopCapturer.getSources({types:["screen"],thumbnailSize:{width,height}});
+  const source=sources.find(item=>String(item.display_id)===String(display.id))||sources[0];
+  if(!source||source.thumbnail.isEmpty())throw new Error("Desktop screenshot is unavailable.");
+  return {
+    dataUrl:"data:image/png;base64,"+source.thumbnail.toPNG().toString("base64"),
+    width:source.thumbnail.getSize().width,
+    height:source.thumbnail.getSize().height,
+    displayId:String(display.id),
+  };
+}
+
 async function createWindow(){
   configureBundledRuntime();
   try{ process.chdir(app.getPath("home")); }catch{}
@@ -284,6 +300,7 @@ if(!lock){
   ipcMain.handle("browser:click",async(_event,ref)=>browserClick(ref));
   ipcMain.handle("browser:type",async(_event,payload)=>browserType(payload?.ref,payload?.text));
   ipcMain.handle("browser:screenshot",async()=>browserScreenshot());
+  ipcMain.handle("desktop:screenshot",async()=>desktopScreenshot());
   ipcMain.handle("browser:importCookies",async(_event,payload)=>importBrowserCookies(payload));
   ipcMain.handle("browser:close",async()=>{if(agentBrowser&&!agentBrowser.isDestroyed())agentBrowser.close();agentBrowser=null;return {ok:true};});
 
