@@ -134,7 +134,7 @@ const SLASH_COMMANDS=[
   ["/clear","Reset the current draft/thread view"],
 ];
 
-function Composer({prompt,setPrompt,onSend,running,loggedIn,login,models,modelMeta,model,setModel,selectedModels,setSelectedModels,freebuff,attachments,onRemoveAttachment,onPickFiles,onPaste,onDrop,permissionMode,setPermissionMode,webSearch,setWebSearch,skills,onSkill,onFiles,settings,onStash,tokenUsage,workspaceMode,setWorkspaceMode}){
+function Composer({prompt,setPrompt,onSend,running,loggedIn,login,models,modelMeta,model,setModel,selectedModels,setSelectedModels,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onPaste,onDrop,permissionMode,setPermissionMode,webSearch,setWebSearch,skills,onSkill,onFiles,settings,onStash,tokenUsage,workspaceMode,setWorkspaceMode}){
   const [modelsOpen,setModelsOpen]=useState(false);
   const [skillsOpen,setSkillsOpen]=useState(false);
   const [listening,setListening]=useState(false);
@@ -163,9 +163,11 @@ function Composer({prompt,setPrompt,onSend,running,loggedIn,login,models,modelMe
   const slashOpen=prompt.startsWith("/")&&!prompt.includes("\n");
   const slashQuery=prompt.toLowerCase();
   const slashItems=slashOpen?SLASH_COMMANDS.filter(([cmd])=>cmd.startsWith(slashQuery.split(/\s/)[0])):[];
+  const contextPaths=new Set((contextChips||[]).map(chip=>chip.path));
   return <div className="composer-wrap" onDragOver={e=>e.preventDefault()} onDrop={onDrop}>
     {slashOpen&&slashItems.length>0&&<div className="slash-menu">{slashItems.map(([cmd,desc])=><button key={cmd} onMouseDown={e=>{e.preventDefault();setPrompt(cmd+" ")}}><strong>{cmd}</strong><span>{desc}</span></button>)}</div>}
-    <div className="attachment-shelf">{attachments.map(path=><span key={path}><Paperclip size={11}/>{String(path).split(/[\\/]/).pop()}<button onClick={()=>onRemoveAttachment(path)}><X size={10}/></button></span>)}</div>
+    {(contextChips||[]).length>0&&<div className="context-chip-row" data-testid="context-chips">{contextChips.map(chip=><span className={"context-chip kind-"+(chip.kind||"context")} data-testid="context-chip" key={chip.id||chip.path} title={chip.path}><Link2 size={11}/><strong>{chip.label||"Context"}</strong>{chip.detail&&<small>{chip.detail}</small>}<button onClick={()=>onRemoveContext(chip.path)} title="Remove context"><X size={10}/></button></span>)}</div>}
+    <div className="attachment-shelf">{attachments.filter(path=>!contextPaths.has(path)).map(path=><span key={path}><Paperclip size={11}/>{String(path).split(/[\\/]/).pop()}<button onClick={()=>onRemoveAttachment(path)}><X size={10}/></button></span>)}</div>
     <textarea data-testid="composer" value={prompt} onChange={e=>setPrompt(e.target.value)} onKeyDown={keyDown} onPaste={onPaste} placeholder={loggedIn?(running?(settings.followUpMode==="steer"?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…"):"Sign in to Freebuff to start…"} disabled={!loggedIn}/>
     <div className="composer-bar"><div className="composer-left">
       <button className="circle-btn" onClick={onPickFiles}><Plus size={18}/></button>
@@ -195,7 +197,7 @@ export default function App(){
   const [messages,setMessages]=useState([]); const [events,setEvents]=useState([]); const [assistantText,setAssistantText]=useState("");
   const [running,setRunning]=useState(false); const [queued,setQueued]=useState([]);
   const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [section,setSection]=useState("chat");
-  const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]);
+  const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [contextChips,setContextChips]=useState([]);
   const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [selectedModels,setSelectedModels]=useState([]);
   const [freebuff,setFreebuff]=useState({loggedIn:false}); const [skills,setSkills]=useState([]);
   const [settings,setSettings]=useState({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",keyboardShortcuts:{}});
@@ -354,7 +356,7 @@ export default function App(){
   async function moveThreadOrder(thread,direction){const group=threads.filter(t=>(t.section?.name||"Active")===(thread.section?.name||"Active"));const index=group.findIndex(t=>t.id===thread.id);const targetIndex=index+direction;if(targetIndex<0||targetIndex>=group.length)return;const before=direction<0?group[targetIndex].id:(group[targetIndex+1]?.id||null);await rpc.request("thread/section/move",{threadId:thread.id,sectionId:thread.section?.id||null,beforeThreadId:before});await loadThreads(rpc)}
   async function bulkAction(action){for(const id of selectedThreadIds){const thread=threads.find(t=>t.id===id);if(thread)await threadAction(thread,action)}setSelectedThreadIds(new Set())}
 
-  async function newChat(){setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([]);setPrompt("");setTokenUsage(null);setCheckpointByTurn({})}
+  async function newChat(){setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([]);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({})}
   async function openThread(thread){
     setSection("chat");setEvents([]);setAssistantText("");setActiveThread(thread);setProjectPath(thread.cwd||projectPath);if(!rpc||rpcStatus!=="connected")return;
     const [resumed,cp]=await Promise.all([rpc.request("thread/resume",{threadId:thread.id,model:model||null,modelProvider:"freebuff",cwd:thread.cwd||null,excludeTurns:false}).catch(()=>null),api("/api/checkpoints?threadId="+encodeURIComponent(thread.id)).catch(()=>({checkpoints:[]}))]);
@@ -377,7 +379,7 @@ export default function App(){
     const checkpoint=await api("/api/checkpoints",{method:"POST",body:{cwd,threadId:thread.id,label:text.slice(0,80)}}).catch(()=>null);const p=presetFor(permissionMode);
     const sandboxPolicy=p.sandbox==="danger-full-access"?{type:"dangerFullAccess"}:p.sandbox==="read-only"?{type:"readOnly",networkAccess:false}:{type:"workspaceWrite",writableRoots:[cwd],networkAccess:webSearch,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
     const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,cwd,approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths)});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);
-    setMessages(prev=>prev.map(m=>m.id===clientId?{...m,turnId,checkpointId:checkpoint?.id||null}:m));if(checkpoint?.id&&turnId){await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}}).catch(()=>{});setCheckpointByTurn(prev=>({...prev,[turnId]:{...checkpoint,turnId}}))}setAttachments([]);return{thread,turnId};
+    setMessages(prev=>prev.map(m=>m.id===clientId?{...m,turnId,checkpointId:checkpoint?.id||null}:m));if(checkpoint?.id&&turnId){await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}}).catch(()=>{});setCheckpointByTurn(prev=>({...prev,[turnId]:{...checkpoint,turnId}}))}setAttachments([]);setContextChips([]);return{thread,turnId};
   }
   async function handleSpecial(text){
     if(!text.startsWith("/"))return null;const [command,...rest]=text.split(/\s+/);
@@ -396,11 +398,11 @@ export default function App(){
   async function send(){
     const text=prompt.trim();if(!text)return;const special=await handleSpecial(text);if(special===true){setPrompt("");return}
     if(running){
-      if(settings.followUpMode==="steer"&&rpc&&activeThread&&activeTurnId){await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(text,attachments)});setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text,turnId:activeTurnId}]);setPrompt("");setAttachments([]);return}
-      setQueued(prev=>[...prev,{id:crypto.randomUUID(),text,attachments:[...attachments],model}]);setPrompt("");setAttachments([]);return;
+      if(settings.followUpMode==="steer"&&rpc&&activeThread&&activeTurnId){await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(text,attachments)});setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text,turnId:activeTurnId}]);setPrompt("");setAttachments([]);setContextChips([]);return}
+      setQueued(prev=>[...prev,{id:crypto.randomUUID(),text,attachments:[...attachments],contextChips:[...contextChips],model}]);setPrompt("");setAttachments([]);setContextChips([]);return;
     }
     setPrompt("");setPromptHistoryIndex(-1);setSection("chat");
-    if(bootstrap.mock||!rpc||rpcStatus!=="connected"){setMessages(prev=>[...prev,{id:"user-"+Date.now(),role:"user",text}]);setRunning(true);try{const d=await api("/api/chat/direct",{method:"POST",body:{prompt:text,model}});setMessages(prev=>[...prev,{id:"assistant-"+Date.now(),role:"assistant",text:d.text||""}]);setEvents([{id:"fallback",kind:"tool",title:"Freebuff direct response",status:"done",raw:{}}])}catch(e){setEvents([{id:"error",kind:"error",title:e.message,status:"done",raw:{}}])}finally{setRunning(false);setAttachments([])}return}
+    if(bootstrap.mock||!rpc||rpcStatus!=="connected"){setMessages(prev=>[...prev,{id:"user-"+Date.now(),role:"user",text}]);setRunning(true);try{const d=await api("/api/chat/direct",{method:"POST",body:{prompt:text,model}});setMessages(prev=>[...prev,{id:"assistant-"+Date.now(),role:"assistant",text:d.text||""}]);setEvents([{id:"fallback",kind:"tool",title:"Freebuff direct response",status:"done",raw:{}}])}catch(e){setEvents([{id:"error",kind:"error",title:e.message,status:"done",raw:{}}])}finally{setRunning(false);setAttachments([]);setContextChips([])}return}
     if(!activeThread&&selectedModels.length>1){
       const info=await api("/api/git/info?path="+encodeURIComponent(projectPath));if(!info.isGit){setEvents([{id:"multi-error",kind:"error",title:"Multi-model fan-out requires a Git project so each model gets its own worktree.",status:"done",raw:{}}]);return}
       const created=[];for(const id of selectedModels){const cwd=await prepareWorktree(projectPath,id);const thread=await createThreadFor(id,cwd);created.push(thread);await startTurn(text,attachments,id,thread,cwd)}setThreads(prev=>[...created,...prev.filter(t=>!created.some(c=>c.id===t.id))]);if(created[0])await openThread(created[0]);return;
@@ -410,28 +412,39 @@ export default function App(){
   async function sendQueuedNow(item){setQueued(prev=>prev.filter(q=>q.id!==item.id));if(running&&rpc&&activeThread&&activeTurnId){await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments)});setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,turnId:activeTurnId}])}else await startTurn(item.text,item.attachments,item.model||model)}
   async function stop(){if(rpc&&activeThread?.id&&activeTurnId)await rpc.request("turn/interrupt",{threadId:activeThread.id,turnId:activeTurnId}).catch(()=>{});const returned=queued.map(q=>q.text).join("\n\n");if(returned)setPrompt(prev=>prev?prev+"\n\n"+returned:returned);setQueued([]);setRunning(false)}
   async function editFromHere(message){if(!rpc||!activeThread?.id||!message.turnId)return;const restoreFiles=confirm("Also restore workspace files to the checkpoint before this turn?\n\nOK = conversation + files\nCancel = conversation only");if(restoreFiles&&message.checkpointId)await api("/api/checkpoints/restore",{method:"POST",body:{id:message.checkpointId}}).catch(e=>alert(e.message));await rpc.request("thread/revert",{threadId:activeThread.id,beforeTurnId:message.turnId});setPrompt(message.text);await reloadActiveThread()}
-  async function stashPrompt(){if(prompt.trim()||attachments.length){await api("/api/stashes",{method:"POST",body:{text:prompt,attachments,projectPath}});setPrompt("");setAttachments([]);return}const d=await api("/api/stashes").catch(()=>({stashes:[]}));const stash=d.stashes?.[0];if(stash){setPrompt(stash.text||"");setAttachments(stash.attachments||[]);await api("/api/stashes?id="+encodeURIComponent(stash.id),{method:"DELETE"})}}
+  async function stashPrompt(){
+    if(prompt.trim()||attachments.length){await api("/api/stashes",{method:"POST",body:{text:prompt,attachments,contextChips,projectPath}});setPrompt("");setAttachments([]);setContextChips([]);return}
+    const d=await api("/api/stashes").catch(()=>({stashes:[]}));const stash=d.stashes?.[0];if(stash){setPrompt(stash.text||"");setAttachments(stash.attachments||[]);setContextChips(stash.contextChips||[]);await api("/api/stashes?id="+encodeURIComponent(stash.id),{method:"DELETE"})}
+  }
   async function addFiles(paths){setAttachments(prev=>[...new Set([...prev,...paths])].slice(0,8))}
+  async function addContextPath(path,{kind="context",label="Context",detail=""}={}){
+    if(!path)return null;
+    if(!attachments.includes(path)&&attachments.length>=8)throw new Error("Composer supports up to 8 attachments/context items.");
+    await addFiles([path]);
+    setContextChips(prev=>[...prev.filter(chip=>chip.path!==path),{id:crypto.randomUUID(),path,kind,label,detail}].slice(-8));
+    return path;
+  }
+  async function addContextAttachment({name,text,kind="context",label="Context",detail=""}){const d=await api("/api/attachments/text",{method:"POST",body:{name,text}});return addContextPath(d.path,{kind,label,detail})}
+  function removeContext(path){setContextChips(prev=>prev.filter(chip=>chip.path!==path));setAttachments(prev=>prev.filter(item=>item!==path))}
   async function pickFiles(){const p=await window.trebellDesktop?.pickFiles?.();if(p?.length){await addFiles(p);return p}return[]}
   async function blobAttachment(file){const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(",")[1]||"");reader.onerror=reject;reader.readAsDataURL(file)});return api("/api/attachments/blob",{method:"POST",body:{name:file.name,mime:file.type,dataBase64:data}})}
   async function onPaste(e){const files=[...(e.clipboardData?.files||[])];if(files.length){e.preventDefault();const uploaded=[];for(const f of files.slice(0,8-attachments.length)){try{uploaded.push((await blobAttachment(f)).path)}catch{}}await addFiles(uploaded);return}const text=e.clipboardData?.getData("text/plain")||"";if(text.length>=32768){e.preventDefault();const d=await api("/api/attachments/text",{method:"POST",body:{name:"pasted-context.txt",text}});await addFiles([d.path])}}
   async function onDrop(e){e.preventDefault();const files=[...(e.dataTransfer?.files||[])];const uploaded=[];for(const f of files.slice(0,8-attachments.length)){try{uploaded.push((await blobAttachment(f)).path)}catch{}}await addFiles(uploaded)}
-  async function attachExcerpt(text){if(!text.trim())return;const d=await api("/api/attachments/text",{method:"POST",body:{name:"terminal-context.txt",text}});await addFiles([d.path]);setPanel(null)}
+  async function attachExcerpt(text){if(!text.trim())return;await addContextAttachment({name:"terminal-context.txt",text,kind:"terminal",label:"Terminal excerpt",detail:text.split(/\r?\n/).length+" lines"});setPanel(null)}
   async function citeAssistant(message){
     if(!message?.text?.trim())return;
     const text=["Assistant response citation",activeThread?.name||activeThread?.id||"current thread","",message.text].join("\n");
-    const d=await api("/api/attachments/text",{method:"POST",body:{name:"assistant-citation.txt",text}});
-    await addFiles([d.path]);
+    await addContextAttachment({name:"assistant-citation.txt",text,kind:"citation",label:"Assistant citation",detail:activeThread?.name||"Current thread"});
     setPrompt(prev=>(prev?prev+" ":"")+"Use the attached assistant citation as context. ");
   }
   async function attachReviewComment(path,comment){
     const text=["Code review comment","File: "+path,"",comment].join("\n");
-    const d=await api("/api/attachments/text",{method:"POST",body:{name:"review-"+String(path).split(/[\\/]/).pop()+".txt",text}});
-    await addFiles([d.path]);
+    const filename=String(path).split(/[\\/]/).pop();
+    await addContextAttachment({name:"review-"+filename+".txt",text,kind:"review",label:"Review: "+filename,detail:comment.slice(0,70)});
     setPrompt(prev=>(prev?prev+" ":"")+"Address the attached review comment. ");
     setPanel(null);setSection("chat");
   }
-  async function attachPr(pr){const text=["Pull request #"+pr.number+": "+pr.title,pr.url,pr.headRefName+" -> "+pr.baseRefName,pr.body||""].join("\n");const d=await api("/api/attachments/text",{method:"POST",body:{name:"pr-"+pr.number+".txt",text}});await addFiles([d.path]);setSection("chat")}
+  async function attachPr(pr){const text=["Pull request #"+pr.number+": "+pr.title,pr.url,pr.headRefName+" -> "+pr.baseRefName,pr.body||""].join("\n");await addContextAttachment({name:"pr-"+pr.number+".txt",text,kind:"pr",label:"PR #"+pr.number,detail:pr.title});setSection("chat")}
   async function linkPr(pr){
     if(!activeThread?.id)return;
     const current=threadMeta[activeThread.id]?.linkedPullRequests||[];
@@ -459,15 +472,15 @@ export default function App(){
       {(section==="chat"||section==="new")&&<>
         <div className="topbar"><div className="task-icon"><Code2 size={24}/></div><div className="task-title"><div><strong>{activeTitle}</strong><button className="ghost-icon" onClick={renameThread}><WandSparkles size={14}/></button></div><span>{gitInfo?.isGit?(gitInfo.branch||"detached")+" · ":""}{running?"Agent working":"Ready"} · {tokenLabel(tokenUsage)}</span>{activeThread?.id&&(threadMeta[activeThread.id]?.linkedPullRequests||[]).length>0&&<div className="linked-prs">{threadMeta[activeThread.id].linkedPullRequests.map(pr=><button key={pr.url} onClick={()=>window.open(pr.url,"_blank")}><GitBranch size={10}/> #{pr.number}</button>)}</div>}</div><div className="top-actions"><button className="btn secondary" onClick={shareThread}><Link2 size={14}/> Copy thread</button><button className="icon-btn" onClick={()=>setPanel("workspace")}><FileCode2 size={15}/></button>{running&&<button className="btn stop" onClick={stop}><CircleStop size={14}/> Stop</button>}</div></div>
         <div className="conversation-scroll"><Conversation messages={messages} onEditFromHere={editFromHere} onCite={citeAssistant}/><ActivityTimeline events={events} assistantText={assistantText} onOpenPanel={setPanel}/>
-          {queued.map(item=><div className="queued-message" key={item.id}><span>Queued</span><p>{item.text}</p><button onClick={()=>sendQueuedNow(item)}>Send now</button><button onClick={()=>{setPrompt(item.text);setAttachments(item.attachments);setQueued(prev=>prev.filter(x=>x.id!==item.id))}}>Edit</button></div>)}
+          {queued.map(item=><div className="queued-message" key={item.id}><span>Queued</span><p>{item.text}</p><button onClick={()=>sendQueuedNow(item)}>Send now</button><button onClick={()=>{setPrompt(item.text);setAttachments(item.attachments);setContextChips(item.contextChips||[]);setQueued(prev=>prev.filter(x=>x.id!==item.id))}}>Edit</button></div>)}
           {!messages.length&&!events.length&&<div className="welcome"><div className="welcome-orb"><Sparkles size={27}/></div><h1>What should Trebell build?</h1><p>Freebuff supplies the model. Codex supplies the local agent harness: files, shell, Git, approvals, skills, MCP and durable threads.</p><div className="suggestions"><button onClick={()=>setPrompt("Inspect this project and explain the architecture.")}>Explain codebase</button><button onClick={()=>setPrompt("Find a useful bug, fix it, and run the relevant tests.")}>Fix a bug</button><button onClick={()=>setPrompt("Implement the next missing feature and validate it end-to-end.")}>Ship a feature</button></div></div>}
         </div>
-        <Composer prompt={prompt} setPrompt={setPrompt} onSend={send} running={running} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} models={models} modelMeta={modelMeta} model={model} setModel={setModel} selectedModels={selectedModels} setSelectedModels={setSelectedModels} freebuff={freebuff} attachments={attachments} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onPickFiles={pickFiles} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} webSearch={webSearch} setWebSearch={setWebSearch} skills={skills} onSkill={onSkill} onFiles={()=>setPanel("workspace")} settings={settings} onStash={stashPrompt} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode}/>
+        <Composer prompt={prompt} setPrompt={setPrompt} onSend={send} running={running} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} models={models} modelMeta={modelMeta} model={model} setModel={setModel} selectedModels={selectedModels} setSelectedModels={setSelectedModels} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} webSearch={webSearch} setWebSearch={setWebSearch} skills={skills} onSkill={onSkill} onFiles={()=>setPanel("workspace")} settings={settings} onStash={stashPrompt} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode}/>
       </>}
       {section==="projects"&&<div className="secondary-page"><h1>Projects</h1><p>Local repositories and workspaces owned by this machine.</p><ProjectsPage currentPath={projectPath} onOpen={onProjectOpen} models={models}/></div>}
       {section==="source"&&<div className="secondary-page full"><h1>Source Control</h1><p>Branch, commit, worktree and pull-request actions execute locally.</p><SourceControlPanel projectPath={projectPath} model={model} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} linkedPullRequests={activeThread?.id?(threadMeta[activeThread.id]?.linkedPullRequests||[]):[]}/></div>}
       {section==="agents"&&<div className="secondary-page"><h1>Agents</h1><p>Delegated Codex subagent threads.</p><AgentsPage threads={threads} activeThread={activeThread} onOpen={openThread}/></div>}
-      {section==="preview"&&<div className="secondary-page full"><h1>Preview</h1><p>Preview local development servers or web pages beside the agent.</p><PreviewPage onAttachText={async(name,text)=>{const d=await api("/api/attachments/text",{method:"POST",body:{name,text}});await addFiles([d.path])}} onAttachImage={async(dataUrl)=>{const d=await api("/api/attachments/blob",{method:"POST",body:{name:"browser-screenshot.png",mime:"image/png",dataBase64:String(dataUrl).split(",")[1]||""}});await addFiles([d.path])}}/></div>}
+      {section==="preview"&&<div className="secondary-page full"><h1>Preview</h1><p>Preview local development servers or web pages beside the agent.</p><PreviewPage onAttachText={async(name,text,meta={})=>addContextAttachment({name,text,kind:meta.kind||"browser",label:meta.label||"Browser context",detail:meta.detail||""})} onAttachImage={async(dataUrl)=>{const d=await api("/api/attachments/blob",{method:"POST",body:{name:"browser-screenshot.png",mime:"image/png",dataBase64:String(dataUrl).split(",")[1]||""}});await addContextPath(d.path,{kind:"browser",label:"Browser screenshot",detail:"PNG capture"})}}/></div>}
       {section==="templates"&&<div className="secondary-page"><h1>Templates</h1><p>Real prompts that start normal Trebell turns.</p><div className="template-grid">{[["Ship a feature","Inspect the project, plan a useful feature, implement it, run the relevant tests, fix failures, and summarize the result."],["Fix a bug","Reproduce a meaningful bug in this project, diagnose it, fix it, and validate the fix."],["Review codebase","Map this codebase architecture, important execution paths, risks, and highest-value improvements."],["Refactor safely","Choose a worthwhile refactor, preserve behavior, implement focused changes, and run tests."],["Autonomous build","Take this project to a working validated result. Continue through implementation and test failures until it passes."],["Security review","Review this project for concrete security weaknesses and propose or implement safe fixes."]].map(([name,text])=><button key={name} onClick={()=>{setPrompt(text);setSection("chat")}}><BrainCircuit size={20}/><strong>{name}</strong><span>{text}</span></button>)}</div></div>}
       {section==="freebuff"&&<div className="secondary-page"><h1>Freebuff</h1><p>Live account, model, Freebucks and session state.</p><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model)}/></div>}
       {section==="settings"&&<div className="secondary-page full"><h1>Settings</h1><p>Client, project and runtime preferences.</p><SettingsPage settings={settings} onSettings={setSettings} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectPath}/></div>}

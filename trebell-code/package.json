@@ -1,7 +1,7 @@
 {
   "name": "trebell-code",
-  "version": "0.7.0",
-  "description": "Trebell Code Desktop — T3-style local agent harness with Freebuff inference and an agent-controlled browser.",
+  "version": "0.8.0",
+  "description": "Trebell Code Desktop — T3-style local agent harness with Freebuff inference, semantic context chips, and an annotated agent-controlled browser.",
   "type": "module",
   "license": "Apache-2.0",
   "bin": {

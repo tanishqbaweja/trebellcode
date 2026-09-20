@@ -87,8 +87,8 @@ export class TrebellStateStore {
     return clone(next);
   }
   listThreadMeta(){ return clone(this.state.threadMeta); }
-  addStash({text="",attachments=[],projectPath=null}={}){
-    const stash={id:randomUUID(),text,attachments,projectPath,createdAt:Date.now()};
+  addStash({text="",attachments=[],contextChips=[],projectPath=null}={}){
+    const stash={id:randomUUID(),text,attachments,contextChips,projectPath,createdAt:Date.now()};
     this.state.stashes.unshift(stash);
     this.state.stashes=this.state.stashes.slice(0,50);
     this.#save();

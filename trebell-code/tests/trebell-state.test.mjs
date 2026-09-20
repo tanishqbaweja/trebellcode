@@ -12,10 +12,11 @@ test("Trebell UI state persists project, thread metadata and stashes", async()=>
     const state=new TrebellStateStore(env);
     const project=state.touchProject(join(home,"project"),{name:"Project A"});
     state.updateThreadMeta("thread-1",{pinned:true,snoozedUntil:123});
-    state.addStash({text:"hello",projectPath:project.path});
+    state.addStash({text:"hello",attachments:["context.txt"],contextChips:[{id:"ctx-1",path:"context.txt",kind:"review",label:"Review: context.txt"}],projectPath:project.path});
     const again=new TrebellStateStore(env);
     assert.equal(again.projects()[0].name,"Project A");
     assert.equal(again.threadMeta("thread-1").pinned,true);
     assert.equal(again.listStashes()[0].text,"hello");
+    assert.deepEqual(again.listStashes()[0].contextChips,[{id:"ctx-1",path:"context.txt",kind:"review",label:"Review: context.txt"}]);
   }finally{await rm(home,{recursive:true,force:true});}
 });

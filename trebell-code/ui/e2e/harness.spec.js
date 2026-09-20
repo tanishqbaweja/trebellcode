@@ -1,6 +1,10 @@
 import { test, expect } from "@playwright/test";
 
 test("Trebell Code renders functional harness surfaces and completes a Freebuff turn", async ({ page }) => {
+  await page.addInitScript(()=>{
+    const snapshot={url:"http://fixture.local",title:"Preview fixture",text:"Checkout",elements:[{ref:"e7",tag:"button",text:"Submit order",href:""}]};
+    Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{browser:{navigate:async()=>({ok:true}),show:async()=>({ok:true}),snapshot:async()=>snapshot,screenshot:async()=>({dataUrl:"data:image/png;base64,iVBORw0KGgo="}),close:async()=>({ok:true})}}});
+  });
   await page.goto("/");
   await expect(page.getByText("Trebell Code").first()).toBeVisible();
   await expect(page.getByTestId("model-picker")).toBeVisible();
@@ -15,6 +19,9 @@ test("Trebell Code renders functional harness surfaces and completes a Freebuff 
   await expect(page.getByText("Mock Freebuff reply: Build and validate a private local converter.")).toBeVisible({timeout:10000});
   await expect(page.getByRole("group").getByText("Freebuff direct response")).toBeVisible();
 
+  await page.getByRole("button",{name:"Cite response"}).click();
+  await expect(page.getByTestId("context-chips")).toContainText("Assistant citation");
+
   await page.getByText("Files & diff").click();
   await expect(page.getByTestId("drawer")).toBeVisible();
   await page.getByRole("button",{name:"Workspace"}).click().catch(()=>{});
@@ -22,6 +29,14 @@ test("Trebell Code renders functional harness surfaces and completes a Freebuff 
   await page.getByText("Projects",{exact:true}).first().click();
   await expect(page.getByRole("heading",{name:"Projects"})).toBeVisible();
   await expect(page.getByText("Clone repository")).toBeVisible();
+
+  await page.getByText("Preview",{exact:true}).first().click();
+  await expect(page.getByRole("heading",{name:"Preview"})).toBeVisible();
+  await page.getByRole("button",{name:"Open agent browser"}).click();
+  await page.getByRole("button",{name:/Submit order/}).click();
+  await page.getByTestId("preview-annotation").locator("textarea").fill("Use this button to submit the checkout flow.");
+  await page.getByRole("button",{name:"Attach annotation"}).click();
+  await expect(page.getByTestId("preview-annotation")).toContainText("Annotation attached");
 
   await page.getByText("Freebuff",{exact:true}).first().click();
   await expect(page.getByRole("heading",{name:"Freebuff"})).toBeVisible();

@@ -47,7 +47,7 @@ Trebell keeps its own visual identity and architecture.
 - [x] Prompt stash
 - [x] Slash commands
 - [x] Skills picker / $ mention
-- [ ] Inline context chips
+- [x] Inline context chips
 - [x] File mentions
 - [x] Terminal excerpt context
 - [x] Diff/review-comment context
@@ -163,7 +163,7 @@ Trebell keeps its own visual identity and architecture.
 - [x] Agent browser session
 - [x] Page element inspector / context picker
 - [x] Browser screenshot context
-- [ ] Preview annotations
+- [x] Preview annotations
 - [ ] Browser profile/cookie import
 
 ## Implementation standard
