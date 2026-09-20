@@ -21,7 +21,7 @@ export function credentialsPath(env = process.env) {
 }
 
 export function freebuffEntrypoint() {
-  return join(packageRoot, "vendor", "freebuff2api", "src", "index.ts");
+  return join(packageRoot, "node_modules", "freebuff2api", "dist", "index.js");
 }
 
 export function codexBin(env = process.env, platform = process.platform) {
