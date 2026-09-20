@@ -25,7 +25,7 @@ test("Trebell Code renders the harness and scopes models to the selected provide
 
   await page.getByTestId("right-panel-toggle").click();
   await expect(page.getByTestId("right-panel")).toBeVisible();
-  await page.getByRole("button",{name:"Diff"}).click();
+  await page.getByTestId("right-panel").getByRole("button",{name:"Diff"}).click();
   await expect(page.getByText("Changes",{exact:true}).first()).toBeVisible();
   await page.getByRole("button",{name:"Close right panel"}).click();
   await expect(page.getByTestId("right-panel")).toBeHidden();
