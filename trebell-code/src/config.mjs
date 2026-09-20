@@ -10,6 +10,7 @@ const PROVIDERS = {
   agentrouter: { name: "AgentRouter", baseUrl: () => "https://co.agentrouter.org/v1", wireApi: "chat", envKey: "AGENTROUTER_API_KEY" },
   justworker: { name: "JustWorker.icu", baseUrl: () => "https://api.justwoker.icu/v1", wireApi: "chat", envKey: "JUSTWORKER_API_KEY" },
   hcnsec: { name: "HCNSec.cn", baseUrl: () => "https://api.hcnsec.cn/v1", wireApi: "chat", envKey: "HCNSEC_API_KEY" },
+  vyceai: { name: "VyceAi", baseUrl: () => "https://vyceai.com/v1", wireApi: "chat", envKey: "VYCEAI_API_KEY" },
 };
 
 export function ensureDirs(env = process.env) {
