@@ -1,6 +1,6 @@
 # Trebell Code
 
-Trebell Code is a terminal coding agent distribution that keeps the Codex agent/tool runtime while routing model traffic through Freebuff using a bundled, pinned copy of **freebuff2api**.
+Trebell Code uses Codex strictly as the local agentic harness: threads, planning, tools, shell execution, filesystem edits, approvals, MCP, diffs, and history. Model inference is supplied by Freebuff through the bundled **freebuff2api** compatibility bridge.
 
 The user-facing command is `trebell` (or `trebell-code`), Trebell configuration lives under `~/.trebell-code`, and Freebuff sign-in is handled by the same device-code flow used by freebuff2api.
 
@@ -22,6 +22,10 @@ trebell login
 trebell models
 trebell --model freebuff/deepseek/deepseek-v4-flash
 ```
+
+## Provider contract
+
+**Codex is the harness, not the model provider.** Trebell Code forces the harness to the `freebuff` provider in both CLI and GUI flows. The GUI model picker is populated only from `freebuff/*` model IDs returned by the local Freebuff bridge. Trebell Code does not intentionally fall back to OpenAI model inference.
 
 ## What happens when you run it
 
