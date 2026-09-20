@@ -65,7 +65,9 @@ function clone(value) {
 }
 
 function normalizeProviderKey(value) {
-  let key = String(value || "").trim();
+  let key = String(value || "")
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, "")
+    .trim();
   if (key.length >= 2) {
     const first = key[0];
     const last = key[key.length - 1];
@@ -73,6 +75,7 @@ function normalizeProviderKey(value) {
       key = key.slice(1, -1).trim();
     }
   }
+  key = key.replace(/^Bearer\s+/i, "").trim();
   return key;
 }
 
@@ -202,7 +205,7 @@ export class ProviderManager {
     };
   }
 
-  async forwardChat(providerId, chatBody, { signal } = {}) {
+  async forwardChat(providerId, chatBody, { signal, userAgent } = {}) {
     const provider = this.get(providerId);
     if (provider.id === "freebuff") throw new Error("Freebuff chat is handled by the local freebuff2api bridge.");
     const key = this.key(provider.id);
@@ -229,10 +232,14 @@ export class ProviderManager {
       "Content-Type": "application/json",
       "Accept": chatBody.stream ? "text/event-stream, application/json" : "application/json",
     };
-    // AgentRouter performs client fingerprint checks. Its Codex/OpenAI-compatible
-    // endpoint does not require a custom User-Agent, and overriding it can cause
-    // an otherwise-valid key to be rejected at the edge.
-    if (provider.id !== "agentrouter") headers["User-Agent"] = TREBELL_USER_AGENT;
+    if (provider.id === "agentrouter") {
+      // AgentRouter explicitly supports Codex. Preserve the actual Codex client
+      // identity seen by Trebell's loopback bridge rather than dropping it.
+      // Some gateways apply client-specific routing/auth policies.
+      if (userAgent) headers["User-Agent"] = String(userAgent);
+    } else {
+      headers["User-Agent"] = TREBELL_USER_AGENT;
+    }
 
     return await this.fetchFn(provider.baseUrl + "/chat/completions", {
       method: "POST",
