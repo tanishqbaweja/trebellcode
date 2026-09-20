@@ -18,32 +18,22 @@ test("Trebell paths are isolated from ~/.codex and ~/.config/freebuff2api", () =
   assert.equal(freebuffConfigDir(env), join(root, "freebuff2api"));
 });
 
-test("Codex provider config supports Freebuff and OpenAI-compatible providers", () => {
+test("Codex provider config always uses the Responses API", () => {
   const freebuff = renderCodexConfig({ port: 24444, provider: "freebuff" });
   assert.match(freebuff, /model_provider = "freebuff"/);
   assert.match(freebuff, /base_url = "http:\/\/127\.0\.0\.1:24444\/v1"/);
   assert.match(freebuff, /wire_api = "responses"/);
   assert.match(freebuff, /requires_openai_auth = false/);
 
-  const router = renderCodexConfig({ provider: "agentrouter" });
-  assert.match(router, /model_provider = "agentrouter"/);
-  assert.match(router, /base_url = "https:\/\/co\.agentrouter\.org\/v1"/);
-  assert.match(router, /env_key = "AGENTROUTER_API_KEY"/);
-  assert.match(router, /wire_api = "chat"/);
-
-  const worker = renderCodexConfig({ provider: "justworker" });
-  assert.match(worker, /base_url = "https:\/\/api\.justwoker\.icu\/v1"/);
-  assert.match(worker, /env_key = "JUSTWORKER_API_KEY"/);
-
-  const hcn = renderCodexConfig({ provider: "hcnsec" });
-  assert.match(hcn, /base_url = "https:\/\/api\.hcnsec\.cn\/v1"/);
-  assert.match(hcn, /env_key = "HCNSEC_API_KEY"/);
-
-  const vyce = renderCodexConfig({ provider: "vyceai" });
-  assert.match(vyce, /model_provider = "vyceai"/);
-  assert.match(vyce, /base_url = "https:\/\/vyceai\.com\/v1"/);
-  assert.match(vyce, /env_key = "VYCEAI_API_KEY"/);
-  assert.match(vyce, /wire_api = "chat"/);
+  for (const provider of ["agentrouter","justworker","hcnsec","vyceai"]) {
+    const text = renderCodexConfig({ provider });
+    assert.match(text, new RegExp(`model_provider = "${provider}"`));
+    assert.match(text, /base_url = "http:\/\/127\.0\.0\.1:23334\/v1"/);
+    assert.match(text, /wire_api = "responses"/);
+    assert.match(text, /requires_openai_auth = false/);
+    assert.doesNotMatch(text, /wire_api = "chat"/);
+    assert.doesNotMatch(text, /env_key\s*=/);
+  }
 });
 
 test("ensureCodexConfig writes into Trebell home", () => {
@@ -52,6 +42,19 @@ test("ensureCodexConfig writes into Trebell home", () => {
   const path = ensureCodexConfig({ port: 23333, provider: "agentrouter", env });
   assert.equal(path, join(root, "codex", "config.toml"));
   assert.match(readFileSync(path, "utf8"), /AgentRouter/);
+});
+
+test("ensureCodexConfig replaces legacy chat provider config", () => {
+  const root = mkdtempSync(join(tmpdir(), "trebell-test-"));
+  const env = { ...process.env, TREBELL_HOME: root };
+  const codexDir = join(root, "codex");
+  const path = ensureCodexConfig({ provider: "agentrouter", env });
+  writeFileSync(path, `model_provider = "agentrouter"\n[model_providers.agentrouter]\nbase_url = "https://co.agentrouter.org/v1"\nwire_api = "chat"\n`);
+  ensureCodexConfig({ provider: "agentrouter", env });
+  const text = readFileSync(path, "utf8");
+  assert.match(text, /base_url = "http:\/\/127\.0\.0\.1:23334\/v1"/);
+  assert.match(text, /wire_api = "responses"/);
+  assert.doesNotMatch(text, /wire_api = "chat"/);
 });
 
 test("run arg parser keeps runtime arguments while consuming Trebell flags", () => {
