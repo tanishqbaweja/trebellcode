@@ -1,0 +1,123 @@
+name: Publish Trebell Code v0.2.0
+
+on:
+  push:
+    paths:
+      - ".github/workflows/release-v0.2.0.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install and validate Trebell Code
+        working-directory: trebell-code
+        run: |
+          npm install --no-audit --no-fund
+          npm test
+          npm run smoke:bridge
+          npm run ui:build
+          ./node_modules/.bin/codex --version
+          TREBELL_HOME="$RUNNER_TEMP/trebell" node ./bin/trebell.mjs doctor
+
+      - name: Build focused release bundles
+        run: |
+          set -euxo pipefail
+          VERSION="0.2.0"
+          STAGE="$RUNNER_TEMP/trebell-code-$VERSION"
+          mkdir -p "$STAGE"
+
+          rsync -a             --exclude node_modules             --exclude ui/test-results             --exclude ui/playwright-report             trebell-code/ "$STAGE/"
+
+          cp LICENSE "$STAGE/LICENSE"
+          if [ -f NOTICE ]; then cp NOTICE "$STAGE/NOTICE"; fi
+
+          cat > "$STAGE/RELEASE.txt" <<'EOF'
+          Trebell Code v0.2.0
+
+          Runtime architecture:
+          - Codex supplies the local agentic harness only: threads, planning, shell,
+            file editing, approvals, MCP, diffs, history, and execution orchestration.
+          - Freebuff supplies model inference.
+          - Trebell Code configures Codex's custom model provider as "freebuff".
+          - The GUI model picker displays only freebuff/* models returned by the local
+            Freebuff bridge.
+
+          Quick start:
+            npm install
+            npm link
+            trebell gui
+
+          Node.js 22+ is required.
+          EOF
+
+          mkdir -p release
+          tar -C "$RUNNER_TEMP" -czf "release/trebell-code-v$VERSION.tar.gz" "trebell-code-$VERSION"
+          (cd "$RUNNER_TEMP" && zip -qr "$GITHUB_WORKSPACE/release/trebell-code-v$VERSION.zip" "trebell-code-$VERSION")
+
+      - name: Write release notes
+        run: |
+          cat > release-notes.md <<'EOF'
+          ## Trebell Code v0.2.0
+
+          First GUI-enabled Trebell Code release.
+
+          ### Architecture
+          **Codex is used only as the agentic harness. Freebuff is the model provider.**
+
+          Codex provides the local orchestration layer: threads, turns, planning,
+          shell execution, filesystem edits, approvals, MCP/tool calls, diffs,
+          history, and interruption. Inference is routed through the Trebell
+          Freebuff provider bridge, and the GUI exposes only `freebuff/*` models.
+
+          ### Included
+          - Trebell Code desktop-style React/Vite agent interface
+          - Freebuff signup/login integration
+          - Freebuff-only model picker
+          - Codex app-server JSON-RPC GUI client
+          - Persistent threads/history
+          - Plans and live agent activity
+          - Shell/command events
+          - File edits and diff viewer
+          - Approval prompts
+          - MCP/tool activity
+          - Workspace/project controls
+          - Stop/interrupt
+          - Local CPU, memory, disk and runtime status
+          - Responses API compatibility adapter for the Freebuff bridge
+          - Trebell-specific config and storage under `~/.trebell-code`
+
+          ### Run
+          ```bash
+          npm install
+          npm link
+          trebell gui
+          ```
+
+          Node.js 22+ is required.
+
+          The attached ZIP and tar.gz are focused Trebell Code bundles with the
+          production GUI already built. GitHub's automatic source archives contain
+          the complete repository, including the upstream Codex source tree.
+          EOF
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view v0.2.0 >/dev/null 2>&1; then
+            echo "v0.2.0 already exists"
+            exit 0
+          fi
+
+          gh release create v0.2.0             release/trebell-code-v0.2.0.zip             release/trebell-code-v0.2.0.tar.gz             --target "$GITHUB_SHA"             --title "Trebell Code v0.2.0"             --notes-file release-notes.md
