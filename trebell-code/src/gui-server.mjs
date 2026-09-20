@@ -467,7 +467,9 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
         const body=await readJsonBody(req);
         const diff=await workspaceDiff(body.cwd||process.cwd());
         const prompt=`Write one concise Git commit subject (imperative, <=72 chars) for this change. Return only the subject.\n\nStatus:\n${diff.status}\n\nDiff:\n${diff.diff.slice(0,60000)}`;
-        const answer=await queryFreebuff(prompt,body.model);
+        const answer=selectedProvider==="freebuff"
+          ? await queryFreebuff(prompt,body.model)
+          : await providers.directChat(selectedProvider,{prompt,model:body.model});
         return json(res,200,{message:answer.text.trim().split(/\r?\n/)[0].replace(/^["']|["']$/g,"")});
       }catch(error){return json(res,400,{error:error.message});}
     }
