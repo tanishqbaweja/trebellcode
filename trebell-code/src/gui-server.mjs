@@ -11,6 +11,13 @@ import { codexBin, codexHome, packageRoot } from "./paths.mjs";
 import { DEFAULT_PORT, ensureCodexConfig } from "./config.mjs";
 import { health, isLoggedIn, listModels, logout, runLogin, startBridge } from "./freebuff.mjs";
 import { getFreebuffOverview } from "./freebuff-product.mjs";
+import { TrebellStateStore } from "./trebell-state.mjs";
+import { CheckpointService } from "./checkpoint-service.mjs";
+import { TerminalManager } from "./terminal-manager.mjs";
+import {
+  gitInfo, cloneRepository, createBranch, switchBranch, commitAll, fetchRepo, pullRepo, pushRepo,
+  safeAutoPull, createWorktree, removeWorktree, sourceControlDiagnostics, listPullRequests, createPullRequest,
+} from "./git-service.mjs";
 
 const MIME = {
   ".html":"text/html; charset=utf-8",
@@ -27,6 +34,16 @@ const json = (res,status,body) => {
   res.writeHead(status,{"content-type":"application/json; charset=utf-8","content-length":String(data.length),"cache-control":"no-store"});
   res.end(data);
 };
+
+async function readJsonBody(req,maxBytes=2*1024*1024){
+  let body="";
+  for await (const chunk of req){
+    body+=chunk;
+    if(Buffer.byteLength(body,"utf8")>maxBytes) throw new Error("request_too_large");
+  }
+  if(!body) return {};
+  try{return JSON.parse(body)}catch{throw new Error("invalid_json")}
+}
 
 function parseArgs(argv){
   const out={port:Number(process.env.TREBELL_GUI_PORT||3210),appPort:Number(process.env.TREBELL_APP_SERVER_PORT||23456),open:false,mock:process.env.TREBELL_GUI_MOCK==="1"};
@@ -131,6 +148,9 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
   let bridge=null;
   let appServer=startAppServer({appPort,env,mock});
   let loginPromise=null;
+  const state=new TrebellStateStore(env);
+  const checkpoints=new CheckpointService({state,env});
+  const terminals=mock ? null : new TerminalManager({env});
 
   async function ensureBridge(){
     if(mock) return null;
@@ -143,6 +163,128 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
 
   const server=createServer(async(req,res)=>{
     const url=new URL(req.url || "/",`http://127.0.0.1:${port}`);
+
+    if(url.pathname==="/api/state" && req.method==="GET") return json(res,200,state.snapshot());
+    if(url.pathname==="/api/settings"){
+      if(req.method==="GET") return json(res,200,state.settings());
+      if(req.method==="POST"){
+        try{return json(res,200,state.updateSettings(await readJsonBody(req)));}
+        catch(error){return json(res,400,{error:error.message});}
+      }
+    }
+    if(url.pathname==="/api/projects"){
+      if(req.method==="GET") return json(res,200,{projects:state.projects()});
+      if(req.method==="POST"){
+        try{
+          const body=await readJsonBody(req);
+          if(!body.path) return json(res,400,{error:"path is required"});
+          const project=state.touchProject(resolve(body.path),body);
+          return json(res,200,{project});
+        }catch(error){return json(res,400,{error:error.message});}
+      }
+      if(req.method==="DELETE"){
+        const id=url.searchParams.get("id"); if(id) state.removeProject(id);
+        return json(res,200,{ok:true});
+      }
+    }
+    if(url.pathname==="/api/thread-meta"){
+      const id=url.searchParams.get("threadId");
+      if(req.method==="GET") return json(res,200,id?state.threadMeta(id):state.listThreadMeta());
+      if(req.method==="POST"){
+        try{
+          const body=await readJsonBody(req);
+          if(!body.threadId) return json(res,400,{error:"threadId is required"});
+          return json(res,200,state.updateThreadMeta(body.threadId,body.patch||{}));
+        }catch(error){return json(res,400,{error:error.message});}
+      }
+    }
+    if(url.pathname==="/api/stashes"){
+      if(req.method==="GET") return json(res,200,{stashes:state.listStashes()});
+      if(req.method==="POST"){
+        try{return json(res,200,{stash:state.addStash(await readJsonBody(req))});}
+        catch(error){return json(res,400,{error:error.message});}
+      }
+      if(req.method==="DELETE"){
+        const id=url.searchParams.get("id"); if(id) state.removeStash(id);
+        return json(res,200,{ok:true});
+      }
+    }
+    if(url.pathname==="/api/git/info"){
+      try{return json(res,200,await gitInfo(url.searchParams.get("path")||process.cwd()));}
+      catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/git/action" && req.method==="POST"){
+      try{
+        const body=await readJsonBody(req);
+        const cwd=body.cwd||process.cwd();
+        let result;
+        switch(body.action){
+          case "clone": result=await cloneRepository(body.url,body.destination); state.touchProject(result.root||body.destination); break;
+          case "branch-create": result=await createBranch(cwd,body.name,{checkout:body.checkout!==false,startPoint:body.startPoint||null}); break;
+          case "branch-switch": result=await switchBranch(cwd,body.name); break;
+          case "commit": result=await commitAll(cwd,body.message||"Trebell Code changes"); break;
+          case "fetch": result=await fetchRepo(cwd); break;
+          case "pull": result=await pullRepo(cwd); break;
+          case "push": result=await pushRepo(cwd,{setUpstream:Boolean(body.setUpstream)}); break;
+          case "auto-pull": result=await safeAutoPull(cwd); break;
+          case "worktree-create": result=await createWorktree(cwd,{branch:body.branch,path:body.path,baseBranch:body.baseBranch||null}); state.touchProject(result.worktree); break;
+          case "worktree-remove": result=await removeWorktree(cwd,body.path,{force:Boolean(body.force)}); break;
+          default:return json(res,400,{error:"unknown git action"});
+        }
+        return json(res,200,{ok:true,result});
+      }catch(error){return json(res,400,{ok:false,error:error.message});}
+    }
+    if(url.pathname==="/api/source-control/diagnostics"){
+      try{return json(res,200,await sourceControlDiagnostics(url.searchParams.get("path")||process.cwd()));}
+      catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/source-control/prs"){
+      return json(res,200,await listPullRequests(url.searchParams.get("path")||process.cwd()));
+    }
+    if(url.pathname==="/api/source-control/pr" && req.method==="POST"){
+      try{
+        const body=await readJsonBody(req);
+        return json(res,200,{ok:true,...await createPullRequest(body.cwd||process.cwd(),body)});
+      }catch(error){return json(res,400,{ok:false,error:error.message});}
+    }
+    if(url.pathname==="/api/checkpoints"){
+      if(req.method==="GET") return json(res,200,{checkpoints:checkpoints.list(url.searchParams.get("threadId")||null)});
+      if(req.method==="POST"){
+        try{
+          const body=await readJsonBody(req);
+          return json(res,200,await checkpoints.create(body));
+        }catch(error){return json(res,400,{error:error.message});}
+      }
+    }
+    if(url.pathname==="/api/checkpoints/link" && req.method==="POST"){
+      try{
+        const body=await readJsonBody(req);
+        return json(res,200,{checkpoint:checkpoints.link(body.id,body.patch||{})});
+      }catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/checkpoints/restore" && req.method==="POST"){
+      try{
+        const body=await readJsonBody(req);
+        return json(res,200,await checkpoints.restore(body.id));
+      }catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/terminal/sessions"){
+      if(mock){
+        if(req.method==="GET") return json(res,200,{sessions:[]});
+        if(req.method==="POST") return json(res,200,{session:{id:"mock-terminal",name:"Terminal",cwd:process.cwd(),buffer:"",running:true}});
+        if(req.method==="DELETE") return json(res,200,{ok:true});
+      }
+      if(req.method==="GET") return json(res,200,{sessions:terminals.list()});
+      if(req.method==="POST"){
+        try{return json(res,200,{session:await terminals.create(await readJsonBody(req))});}
+        catch(error){return json(res,400,{error:error.message});}
+      }
+      if(req.method==="DELETE"){
+        const id=url.searchParams.get("id"); if(id) await terminals.close(id);
+        return json(res,200,{ok:true});
+      }
+    }
+
     if(url.pathname==="/api/bootstrap"){
       const appServerReady=mock || await probeCodexReady(appPort);
       return json(res,200,{
@@ -323,6 +465,7 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
     }
   });
 
+  const terminalWs=terminals?.attachWebSocket(server);
   const relay=attachCodexRelay(server,{
     targetUrl:`ws://127.0.0.1:${appPort}`,
     enabled:()=>mock || Boolean(appServer?.child && appServer.child.exitCode===null),
@@ -340,7 +483,9 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
     server,
     close:async()=>{
       relay.close();
+      terminalWs?.close();
       await Promise.allSettled([
+        terminals?.shutdown(),
         stopChildProcess(appServer?.child),
         stopChildProcess(bridge?.child),
       ]);
