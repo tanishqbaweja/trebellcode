@@ -5,6 +5,7 @@ import { createGuiServer } from "../src/gui-server.mjs";
 
 let windowRef=null;
 let gui=null;
+let quitting=false;
 
 function nativeCodexPath(){
   if(!app.isPackaged) return null;
@@ -110,7 +111,12 @@ if(!lock){
     if(BrowserWindow.getAllWindows().length===0) createWindow();
   });
 
-  app.on("before-quit",()=>{
-    gui?.close?.().catch(()=>{});
+  app.on("before-quit",(event)=>{
+    if(quitting) return;
+    event.preventDefault();
+    quitting=true;
+    Promise.resolve(gui?.close?.())
+      .catch(()=>{})
+      .finally(()=>app.quit());
   });
 }
