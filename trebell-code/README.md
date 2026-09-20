@@ -20,7 +20,7 @@ When Freebuff is selected, the first `trebell` run starts Freebuff sign-in autom
 trebell signup
 trebell login
 trebell models
-trebell --provider agentrouter --model gpt-5.5
+trebell --provider agentrouter --model gpt-5.6-sol
 trebell --provider justworker --model claude-opus-4-8
 trebell --provider hcnsec --model glm-5.3
 trebell --provider vyceai --model claude-sonnet-4-6
@@ -91,7 +91,7 @@ trebell gui
 The GUI talks directly to Codex app-server over localhost WebSocket JSON-RPC, so thread history,
 turns, plan updates, shell commands, file changes, diffs, approvals, MCP activity, stop/interrupt,
 and tool events are surfaced from the real Codex runtime rather than simulated by the UI.
-The GUI's model picker is scoped to the active provider. Freebuff is loaded from the local bridge, AgentRouter and VyceAi use their authenticated live `/v1/models` endpoints, and JustWorker/HCNSec use the documented single-model catalogs.
+The GUI's model picker is scoped to the active provider. Freebuff is loaded from the local bridge, AgentRouter uses its supported five-model catalog, VyceAi uses its authenticated live `/v1/models` endpoint, and JustWorker/HCNSec use their documented single-model catalogs.
 
 For frontend-only development:
 
