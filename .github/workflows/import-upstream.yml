@@ -1,0 +1,107 @@
+name: Import Codex upstream and apply Trebell layer
+
+on:
+  push:
+    paths:
+      - ".github/workflows/import-upstream.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Back up Trebell integration layer
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/trebell-layer/.github/workflows
+          cp -R bin src tests /tmp/trebell-layer/
+          cp package.json README.md THIRD_PARTY_NOTICES.md /tmp/trebell-layer/
+          cp .github/workflows/ci.yml /tmp/trebell-layer/.github/workflows/trebell-ci.yml
+
+      - name: Reset main onto OpenAI Codex upstream
+        run: |
+          set -euxo pipefail
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/openai/codex.git
+          git fetch upstream main
+          git reset --hard upstream/main
+
+      - name: Add Trebell Code distribution and rebrand visible product strings
+        run: |
+          set -euxo pipefail
+          rm -rf trebell-code
+          mkdir -p trebell-code
+          cp -R /tmp/trebell-layer/bin /tmp/trebell-layer/src /tmp/trebell-layer/tests trebell-code/
+          cp /tmp/trebell-layer/package.json /tmp/trebell-layer/README.md /tmp/trebell-layer/THIRD_PARTY_NOTICES.md trebell-code/
+          cp /tmp/trebell-layer/.github/workflows/trebell-ci.yml .github/workflows/trebell-ci.yml
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          allowed = {
+              ".rs", ".md", ".toml", ".json", ".js", ".mjs", ".ts", ".tsx",
+              ".yml", ".yaml", ".nix", ".bzl", ".py", ".sh"
+          }
+          replacements = [
+              ("OpenAI Codex", "Trebell Code"),
+              ("Codex CLI", "Trebell Code"),
+          ]
+          skipped = {".git", "target", "node_modules", "trebell-code"}
+          for path in Path(".").rglob("*"):
+              if not path.is_file() or any(part in skipped for part in path.parts):
+                  continue
+              if path.suffix.lower() not in allowed and path.name not in {"README", "NOTICE"}:
+                  continue
+              try:
+                  text = path.read_text(encoding="utf-8")
+              except UnicodeDecodeError:
+                  continue
+              changed = text
+              for old, new in replacements:
+                  changed = changed.replace(old, new)
+              if changed != text:
+                  path.write_text(changed, encoding="utf-8")
+          PY
+
+          cat > TREBELL.md <<'EOF'
+          # Trebell Code
+
+          This repository is based on the Apache-2.0 licensed OpenAI Codex source tree.
+          Trebell Code adds a user-facing distribution under `trebell-code/` that:
+
+          - uses the Codex agent/tool runtime,
+          - stores Trebell state under `~/.trebell-code`,
+          - signs users into Freebuff,
+          - starts freebuff2api locally on `127.0.0.1`,
+          - configures Codex's custom model-provider support to use that bridge,
+          - exposes the commands `trebell` and `trebell-code`.
+
+          Install the Trebell distribution with:
+
+          ```bash
+          cd trebell-code
+          npm install
+          npm link
+          trebell
+          ```
+
+          Upstream copyright, license, and NOTICE material is intentionally retained.
+          EOF
+
+      - name: Commit Trebell Code fork
+        run: |
+          set -euxo pipefail
+          git config user.name "Trebell Code Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "Trebell Code: Freebuff-enabled Codex distribution"
+          git push --force origin HEAD:main
