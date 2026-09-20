@@ -1,4 +1,4 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { basename, join, resolve } from "node:path";
@@ -65,4 +65,23 @@ export async function workspaceFile(filePath, maxBytes = 512_000) {
   if (info.size > maxBytes) throw new Error(`File is too large to preview (${Math.ceil(info.size/1024)} KB)`);
   const content = await readFile(absolute, "utf8");
   return { path: absolute, name: basename(absolute), content, size: info.size };
+}
+
+
+export async function workspaceSearch(root, query, { limit = 100 } = {}) {
+  const absolute=resolve(root||process.cwd());
+  const needle=String(query||"").trim().toLowerCase();
+  if(!needle) return {root:absolute,items:[]};
+  const tree=await workspaceTree(absolute,{depth:8,limit:3000});
+  const items=tree.entries
+    .filter(entry=>entry.isFile && (entry.name.toLowerCase().includes(needle)||entry.relativePath.toLowerCase().includes(needle)))
+    .slice(0,limit);
+  return {root:absolute,items};
+}
+
+export async function workspaceWriteFile(filePath, content) {
+  const absolute=resolve(filePath);
+  await mkdir(join(absolute,".."),{recursive:true}).catch(()=>{});
+  await writeFile(absolute,String(content??""),"utf8");
+  return workspaceFile(absolute,2*1024*1024);
 }

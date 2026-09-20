@@ -127,3 +127,27 @@ export async function createPullRequest(cwd,{title,body="",base=null,draft=false
   const result=await run("gh",args,{cwd});
   return {url:result.stdout.trim()};
 }
+
+export async function pullRequestDetail(cwd,number){
+  const result=await run("gh",["pr","view",String(number),"--json","number,title,body,state,isDraft,url,headRefName,baseRefName,author,reviewDecision,statusCheckRollup,comments,reviews,files,commits"],{cwd,allowFailure:true,maxBuffer:8*1024*1024});
+  if(!result.ok) return {ok:false,error:(result.stderr||result.stdout).trim(),item:null};
+  try{return {ok:true,item:JSON.parse(result.stdout)}}catch{return {ok:false,error:"Could not parse gh output",item:null}}
+}
+export async function commentOnPullRequest(cwd,number,body){
+  const result=await run("gh",["pr","comment",String(number),"--body",body],{cwd});
+  return {ok:true,url:result.stdout.trim()};
+}
+export async function reviewPullRequest(cwd,number,{event="COMMENT",body=""}={}){
+  const flag=event==="APPROVE"?"--approve":event==="REQUEST_CHANGES"?"--request-changes":"--comment";
+  const args=["pr","review",String(number),flag];
+  if(body) args.push("--body",body);
+  await run("gh",args,{cwd});
+  return {ok:true};
+}
+export async function mergePullRequest(cwd,number,{method="squash",auto=false}={}){
+  const flag=method==="merge"?"--merge":method==="rebase"?"--rebase":"--squash";
+  const args=["pr","merge",String(number),flag];
+  if(auto) args.push("--auto"); else args.push("--delete-branch");
+  const result=await run("gh",args,{cwd});
+  return {ok:true,output:(result.stdout||result.stderr).trim()};
+}

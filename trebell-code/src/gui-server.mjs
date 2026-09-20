@@ -1,13 +1,14 @@
 import { createServer } from "node:http";
-import { readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { statfsSync } from "node:fs";
 import { cpus, freemem, totalmem, tmpdir, loadavg } from "node:os";
-import { extname, join, normalize, resolve } from "node:path";
+import { basename, extname, join, normalize, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { randomUUID } from "node:crypto";
 import { attachCodexRelay, probeCodexReady, waitForCodexReady } from "./codex-relay.mjs";
-import { workspaceDiff, workspaceFile, workspaceTree } from "./workspace.mjs";
+import { workspaceDiff, workspaceFile, workspaceSearch, workspaceTree, workspaceWriteFile } from "./workspace.mjs";
 import { spawn } from "node:child_process";
-import { codexBin, codexHome, packageRoot } from "./paths.mjs";
+import { codexBin, codexHome, packageRoot, trebellHome } from "./paths.mjs";
 import { DEFAULT_PORT, ensureCodexConfig } from "./config.mjs";
 import { health, isLoggedIn, listModels, logout, runLogin, startBridge } from "./freebuff.mjs";
 import { getFreebuffOverview } from "./freebuff-product.mjs";
@@ -17,6 +18,7 @@ import { TerminalManager } from "./terminal-manager.mjs";
 import {
   gitInfo, cloneRepository, createBranch, switchBranch, commitAll, fetchRepo, pullRepo, pushRepo,
   safeAutoPull, createWorktree, removeWorktree, sourceControlDiagnostics, listPullRequests, createPullRequest,
+  pullRequestDetail, commentOnPullRequest, reviewPullRequest, mergePullRequest,
 } from "./git-service.mjs";
 
 const MIME = {
@@ -159,6 +161,22 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
     bridge=await startBridge({port:DEFAULT_PORT,env,quiet:true});
     return bridge;
   }
+
+  async function queryFreebuff(prompt,model){
+    if(mock) return {text:`Mock Freebuff reply: ${prompt}`,model};
+    if(!isLoggedIn(env)) throw new Error("Sign in to Freebuff first.");
+    await ensureBridge();
+    const response=await fetch(`http://127.0.0.1:${DEFAULT_PORT}/v1/chat/completions`,{
+      method:"POST",
+      headers:{"content-type":"application/json"},
+      body:JSON.stringify({model,messages:[{role:"user",content:prompt}],stream:false}),
+      signal:AbortSignal.timeout(300000),
+    });
+    const raw=await response.text();
+    if(!response.ok) throw new Error(raw.slice(0,1200)||`Freebuff HTTP ${response.status}`);
+    const parsed=JSON.parse(raw);
+    return {text:parsed?.choices?.[0]?.message?.content ?? "",model,raw:parsed};
+  }
   if(!mock && isLoggedIn(env)) ensureBridge().catch(()=>{});
 
   const server=createServer(async(req,res)=>{
@@ -247,6 +265,28 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
         return json(res,200,{ok:true,...await createPullRequest(body.cwd||process.cwd(),body)});
       }catch(error){return json(res,400,{ok:false,error:error.message});}
     }
+    if(url.pathname==="/api/source-control/pr-detail"){
+      return json(res,200,await pullRequestDetail(url.searchParams.get("path")||process.cwd(),url.searchParams.get("number")));
+    }
+    if(url.pathname==="/api/source-control/pr-action" && req.method==="POST"){
+      try{
+        const body=await readJsonBody(req);
+        const cwd=body.cwd||process.cwd();
+        if(body.action==="comment") return json(res,200,await commentOnPullRequest(cwd,body.number,body.body||""));
+        if(body.action==="review") return json(res,200,await reviewPullRequest(cwd,body.number,{event:body.event,body:body.body||""}));
+        if(body.action==="merge") return json(res,200,await mergePullRequest(cwd,body.number,{method:body.method,auto:Boolean(body.auto)}));
+        return json(res,400,{error:"unknown PR action"});
+      }catch(error){return json(res,400,{ok:false,error:error.message});}
+    }
+    if(url.pathname==="/api/git/commit-message" && req.method==="POST"){
+      try{
+        const body=await readJsonBody(req);
+        const diff=await workspaceDiff(body.cwd||process.cwd());
+        const prompt=`Write one concise Git commit subject (imperative, <=72 chars) for this change. Return only the subject.\n\nStatus:\n${diff.status}\n\nDiff:\n${diff.diff.slice(0,60000)}`;
+        const answer=await queryFreebuff(prompt,body.model);
+        return json(res,200,{message:answer.text.trim().split(/\r?\n/)[0].replace(/^["']|["']$/g,"")});
+      }catch(error){return json(res,400,{error:error.message});}
+    }
     if(url.pathname==="/api/checkpoints"){
       if(req.method==="GET") return json(res,200,{checkpoints:checkpoints.list(url.searchParams.get("threadId")||null)});
       if(req.method==="POST"){
@@ -295,7 +335,7 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
         wsUrl:mock ? null : `ws://127.0.0.1:${port}/api/codex/ws`,
         cwd:process.cwd(),
         platform:process.platform,
-        version:"0.5.0",
+        version:"0.6.0",
       });
     }
     if(url.pathname==="/api/runtime"){
@@ -307,31 +347,13 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
       });
     }
     if(url.pathname==="/api/chat/direct" && req.method==="POST"){
-      if(!isLoggedIn(env) && !mock) return json(res,401,{error:"Sign in to Freebuff first."});
-      let body="";
-      for await (const chunk of req) body+=chunk;
-      let payload={};
-      try{payload=JSON.parse(body||"{}");}catch{return json(res,400,{error:"Invalid JSON"});}
-      const prompt=String(payload.prompt||"").trim();
-      const model=String(payload.model||"").trim();
-      if(!prompt || !model) return json(res,400,{error:"prompt and model are required"});
-      if(mock) return json(res,200,{text:`Mock Freebuff reply: ${prompt}`,model});
       try{
-        await ensureBridge();
-        const response=await fetch(`http://127.0.0.1:${DEFAULT_PORT}/v1/chat/completions`,{
-          method:"POST",
-          headers:{"content-type":"application/json"},
-          body:JSON.stringify({model,messages:[{role:"user",content:prompt}],stream:false}),
-          signal:AbortSignal.timeout(300000),
-        });
-        const raw=await response.text();
-        if(!response.ok) return json(res,response.status,{error:raw.slice(0,1200)});
-        const parsed=JSON.parse(raw);
-        const text=parsed?.choices?.[0]?.message?.content ?? "";
-        return json(res,200,{text,model,raw:parsed});
-      }catch(error){
-        return json(res,502,{error:error instanceof Error?error.message:String(error)});
-      }
+        const payload=await readJsonBody(req);
+        const prompt=String(payload.prompt||"").trim();
+        const model=String(payload.model||"").trim();
+        if(!prompt||!model) return json(res,400,{error:"prompt and model are required"});
+        return json(res,200,await queryFreebuff(prompt,model));
+      }catch(error){return json(res,502,{error:error instanceof Error?error.message:String(error)});}
     }
     if(url.pathname==="/api/workspace/tree"){
       try{return json(res,200,await workspaceTree(url.searchParams.get("path")||process.cwd()));}
@@ -341,8 +363,29 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
       return json(res,200,await workspaceDiff(url.searchParams.get("path")||process.cwd()));
     }
     if(url.pathname==="/api/workspace/file"){
+      if(req.method==="PUT"){
+        try{
+          const body=await readJsonBody(req,4*1024*1024);
+          return json(res,200,await workspaceWriteFile(body.path,body.content));
+        }catch(error){return json(res,400,{error:error instanceof Error?error.message:String(error)});}
+      }
       try{return json(res,200,await workspaceFile(url.searchParams.get("path")||""));}
       catch(error){return json(res,400,{error:error instanceof Error?error.message:String(error)});}
+    }
+    if(url.pathname==="/api/workspace/search"){
+      try{return json(res,200,await workspaceSearch(url.searchParams.get("path")||process.cwd(),url.searchParams.get("q")||""));}
+      catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/attachments/text" && req.method==="POST"){
+      try{
+        const body=await readJsonBody(req,4*1024*1024);
+        const dir=join(trebellHome(env),"attachments");
+        await mkdir(dir,{recursive:true});
+        const safe=String(body.name||"pasted-context.txt").replace(/[^a-zA-Z0-9._-]/g,"_").slice(-80);
+        const path=join(dir,`${Date.now()}-${randomUUID().slice(0,8)}-${safe}`);
+        await writeFile(path,String(body.text||""),"utf8");
+        return json(res,200,{path,name:basename(path),size:Buffer.byteLength(String(body.text||""),"utf8")});
+      }catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/freebuff/overview"){
       const model=url.searchParams.get("model") || "";
@@ -440,6 +483,24 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
       try{bridge?.child?.kill("SIGTERM");}catch{}
       bridge=null;
       return json(res,200,{ok:true});
+    }
+    if(url.pathname==="/api/update/check"){
+      try{
+        const response=await fetch("https://api.github.com/repos/tanishqbaweja/trebellcode/releases/latest",{headers:{"User-Agent":"Trebell-Code/0.6.0"},signal:AbortSignal.timeout(8000)});
+        const item=await response.json();
+        return json(res,response.ok?200:502,{current:"0.6.0",latest:item.tag_name||null,url:item.html_url||null,name:item.name||null});
+      }catch(error){return json(res,502,{current:"0.6.0",error:error.message});}
+    }
+    if(url.pathname==="/api/diagnostics"){
+      const cwd=url.searchParams.get("path")||process.cwd();
+      return json(res,200,{
+        version:"0.6.0",
+        runtime:{appServerReady:mock||await probeCodexReady(appPort),bridgeReady:mock||await health(DEFAULT_PORT),appServerExitCode:appServer?.child?.exitCode??null},
+        state:{projects:state.projects(),settings:state.settings(),threadMeta:state.listThreadMeta()},
+        git:await gitInfo(cwd).catch(error=>({error:error.message})),
+        terminalSessions:mock?[]:terminals.list(),
+        logs:(appServer?.logs||[]).slice(-100),
+      });
     }
     if(url.pathname==="/api/stats") return json(res,200,statsSnapshot());
     if(url.pathname==="/api/health") return json(res,200,{ok:true});
