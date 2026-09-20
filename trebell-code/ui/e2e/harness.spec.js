@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-test("Trebell Code harness renders and runs a complete demo turn", async ({ page }) => {
+test("Trebell Code renders functional harness surfaces and completes a Freebuff turn", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByText("Trebell Code").first()).toBeVisible();
   await expect(page.getByTestId("model-picker")).toBeVisible();
@@ -13,9 +13,23 @@ test("Trebell Code harness renders and runs a complete demo turn", async ({ page
   await page.getByTestId("send").click();
 
   await expect(page.getByText("Mock Freebuff reply: Build and validate a private local converter.")).toBeVisible({timeout:10000});
-  await expect(page.getByRole("main").getByText("Freebuff direct path")).toBeVisible();
+  await expect(page.getByText("Freebuff direct response")).toBeVisible();
 
-  await page.getByText("Edit Files").click();
+  await page.getByText("Files & diff").click();
   await expect(page.getByTestId("drawer")).toBeVisible();
+  await page.getByRole("button",{name:"Workspace"}).click().catch(()=>{});
+
+  await page.getByText("Projects",{exact:true}).first().click();
+  await expect(page.getByRole("heading",{name:"Projects"})).toBeVisible();
+  await expect(page.getByText("Clone repository")).toBeVisible();
+
+  await page.getByText("Freebuff",{exact:true}).first().click();
+  await expect(page.getByRole("heading",{name:"Freebuff"})).toBeVisible();
+  await expect(page.getByText("Freebucks balance")).toBeVisible();
+
+  await page.getByText("Settings",{exact:true}).first().click();
+  await expect(page.getByRole("heading",{name:"Settings"})).toBeVisible();
+  await expect(page.getByText("Follow-up behavior")).toBeVisible();
+
   await page.screenshot({path:"test-results/trebell-code-ui.png",fullPage:true});
 });
