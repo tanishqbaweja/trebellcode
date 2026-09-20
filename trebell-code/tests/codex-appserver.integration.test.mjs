@@ -69,6 +69,17 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
       sortDirection:"desc",
     });
     assert.ok(Array.isArray(threads.data));
+
+    const command=process.platform==="win32"
+      ? ["cmd.exe","/d","/s","/c","echo trebell-relay-ok"]
+      : ["sh","-lc","printf trebell-relay-ok"];
+    const executed=await rpc(ws,3,"command/exec",{
+      command,
+      cwd:process.cwd(),
+      timeoutMs:10000,
+    });
+    assert.equal(executed.exitCode,0);
+    assert.match(executed.stdout,/trebell-relay-ok/);
   } finally {
     try{ws?.close();}catch{}
     await gui.close();
