@@ -63,7 +63,7 @@ export const CLI_USER_AGENT = "Bun/1.3.14";
 // Stable, explicit identity signal retained on every upstream request so
 // Trebell Code stays distinguishable even while matching Freebuff protocol behavior.
 export const TREBELL_CLIENT_HEADER = "x-trebell-client";
-export const TREBELL_CLIENT_VALUE = "Trebell-Code/0.4.0";
+export const TREBELL_CLIENT_VALUE = "Trebell-Code/0.5.0";
 
 export interface UpstreamClientOptions {
   baseURL: string;
