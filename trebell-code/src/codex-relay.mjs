@@ -24,6 +24,7 @@ export function attachCodexRelay(httpServer, {
   targetUrl,
   path = "/api/codex/ws",
   enabled = () => true,
+  authorize = () => true,
   log = () => {},
 } = {}) {
   const wss = new WebSocketServer({ noServer: true });
@@ -32,6 +33,13 @@ export function attachCodexRelay(httpServer, {
   httpServer.on("upgrade", (request, socket, head) => {
     const url = new URL(request.url || "/", "http://127.0.0.1");
     if (url.pathname !== path) return;
+    let authorized=false;
+    try { authorized=Boolean(authorize(request,url)); } catch {}
+    if (!authorized) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
     if (!enabled()) {
       socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
       socket.destroy();
