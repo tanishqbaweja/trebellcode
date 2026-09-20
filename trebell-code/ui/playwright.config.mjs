@@ -10,8 +10,8 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   webServer: {
-    command: "TREBELL_GUI_MOCK=1 node ../src/gui-server.mjs --port 3210",
-    cwd: new URL("./e2e", import.meta.url).pathname,
+    command: "TREBELL_GUI_MOCK=1 node src/gui-server.mjs --port 3210",
+    cwd: new URL("../", import.meta.url).pathname,
     url: "http://127.0.0.1:3210/api/health",
     reuseExistingServer: false,
     timeout: 20000,
