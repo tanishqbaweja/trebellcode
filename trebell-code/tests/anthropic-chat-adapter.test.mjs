@@ -44,7 +44,7 @@ test("Anthropic SSE converts to OpenAI chat SSE including tool calls",async()=>{
   const text=await response.text();
   assert.match(text,/"content":"hello"/);
   assert.match(text,/"name":"shell"/);
-  assert.match(text,/\"cmd\":\"ls\"/);
+  assert.ok(text.includes('\\\"cmd\\\":\\\"ls\\\"'));
   assert.match(text,/"finish_reason":"tool_calls"/);
   assert.match(text,/\[DONE\]/);
 });
