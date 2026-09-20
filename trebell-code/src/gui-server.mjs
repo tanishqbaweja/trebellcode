@@ -4,7 +4,7 @@ import { statfsSync } from "node:fs";
 import { cpus, freemem, totalmem, tmpdir, loadavg } from "node:os";
 import { basename, extname, join, normalize, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { randomUUID } from "node:crypto";
+import { randomUUID, randomBytes } from "node:crypto";
 import { attachCodexRelay, probeCodexReady, waitForCodexReady } from "./codex-relay.mjs";
 import { workspaceDiff, workspaceFile, workspaceSearch, workspaceTree, workspaceWriteFile } from "./workspace.mjs";
 import { spawn } from "node:child_process";
@@ -15,6 +15,8 @@ import { getFreebuffOverview } from "./freebuff-product.mjs";
 import { TrebellStateStore } from "./trebell-state.mjs";
 import { CheckpointService } from "./checkpoint-service.mjs";
 import { TerminalManager } from "./terminal-manager.mjs";
+import { EnvironmentManager } from "./environment-manager.mjs";
+import { createRemoteControlServer } from "./remote-control.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
   .then(text=>String(JSON.parse(text).version||"0.0.0"))
@@ -170,6 +172,53 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
   const state=new TrebellStateStore(env);
   const checkpoints=new CheckpointService({state,env});
   const terminals=mock ? null : new TerminalManager({env});
+  const environments=new EnvironmentManager({state,env});
+  let remoteControl=null;
+
+  function newRemoteToken(){ return randomBytes(24).toString("base64url"); }
+  function remoteInfo(){
+    const settings=state.settings();
+    return {
+      enabled:Boolean(settings.remoteAccessEnabled),
+      running:Boolean(remoteControl),
+      port:Number(settings.remoteAccessPort||3211),
+      token:settings.remoteAccessToken||"",
+      urls:remoteControl?.urls||[],
+    };
+  }
+  async function syncRemoteControl(){
+    const settings=state.settings();
+    if(!settings.remoteAccessEnabled){
+      if(remoteControl){await remoteControl.close().catch(()=>{});remoteControl=null}
+      return remoteInfo();
+    }
+    let token=settings.remoteAccessToken;
+    if(!token){
+      token=newRemoteToken();
+      state.updateSettings({remoteAccessToken:token});
+    }
+    if(remoteControl){await remoteControl.close().catch(()=>{});remoteControl=null}
+    const remotePort=Math.max(1024,Math.min(65535,Number(settings.remoteAccessPort)||3211));
+    remoteControl=await createRemoteControlServer({
+      port:remotePort,
+      token,
+      version:TREBELL_VERSION,
+      appPort,
+      enabled:()=>mock || Boolean(appServer?.child && appServer.child.exitCode===null),
+      environments,
+      getStatus:async()=>{
+        const ids=mock?fakeModels():await listModels(env).catch(()=>[]);
+        return {
+          cwd:process.cwd(),
+          loggedIn:mock||isLoggedIn(env),
+          appServerReady:mock||await probeCodexReady(appPort),
+          model:ids.find(id=>String(id).startsWith("freebuff/"))||null,
+          projects:state.projects(),
+        };
+      },
+    });
+    return remoteInfo();
+  }
 
   async function ensureBridge(){
     if(mock) return null;
@@ -203,8 +252,56 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
     if(url.pathname==="/api/settings"){
       if(req.method==="GET") return json(res,200,state.settings());
       if(req.method==="POST"){
-        try{return json(res,200,state.updateSettings(await readJsonBody(req)));}
+        try{
+          const patch=await readJsonBody(req);
+          const next=state.updateSettings(patch);
+          if("remoteAccessEnabled" in patch||"remoteAccessPort" in patch||"remoteAccessToken" in patch) await syncRemoteControl();
+          return json(res,200,next);
+        }catch(error){return json(res,400,{error:error.message});}
+      }
+    }
+    if(url.pathname==="/api/environments"){
+      if(req.method==="GET"){
+        try{return json(res,200,await environments.discover());}
         catch(error){return json(res,400,{error:error.message});}
+      }
+      if(req.method==="POST"){
+        try{return json(res,200,{profile:environments.upsert(await readJsonBody(req))});}
+        catch(error){return json(res,400,{error:error.message});}
+      }
+      if(req.method==="DELETE"){
+        const id=url.searchParams.get("id");
+        return json(res,200,{ok:id?environments.remove(id):false});
+      }
+    }
+    if(url.pathname==="/api/environment/probe"&&req.method==="POST"){
+      try{
+        const body=await readJsonBody(req);
+        return json(res,200,await environments.probe(body.id));
+      }catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/environment/execute"&&req.method==="POST"){
+      try{
+        const body=await readJsonBody(req);
+        return json(res,200,await environments.execute(body.id,body));
+      }catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/remote-access"){
+      if(req.method==="GET") return json(res,200,remoteInfo());
+      if(req.method==="POST"){
+        try{
+          const body=await readJsonBody(req);
+          const patch={};
+          if("enabled" in body) patch.remoteAccessEnabled=Boolean(body.enabled);
+          if("port" in body){
+            const remotePort=Number(body.port);
+            if(!Number.isInteger(remotePort)||remotePort<1024||remotePort>65535) throw new Error("Remote access port must be between 1024 and 65535");
+            patch.remoteAccessPort=remotePort;
+          }
+          if(body.regenerateToken||(!state.settings().remoteAccessToken&&body.enabled)) patch.remoteAccessToken=newRemoteToken();
+          if(Object.keys(patch).length) state.updateSettings(patch);
+          return json(res,200,await syncRemoteControl());
+        }catch(error){return json(res,400,{error:error.message});}
       }
     }
     if(url.pathname==="/api/projects"){
@@ -572,6 +669,9 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
     server.listen(port,"127.0.0.1",resolve);
   });
   if(!mock) waitForCodexReady(appPort,15000).catch(()=>false);
+  if(state.settings().remoteAccessEnabled) await syncRemoteControl().catch(error=>{
+    appServer?.logs?.push({at:Date.now(),stream:"remote",text:"remote access failed: "+error.message+"\n"});
+  });
 
   return {
     url:`http://127.0.0.1:${port}`,
@@ -581,9 +681,11 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
       terminalWs?.close();
       await Promise.allSettled([
         terminals?.shutdown(),
+        remoteControl?.close(),
         stopChildProcess(appServer?.child),
         stopChildProcess(bridge?.child),
       ]);
+      remoteControl=null;
       await new Promise(resolve=>server.close(resolve));
     },
   };
