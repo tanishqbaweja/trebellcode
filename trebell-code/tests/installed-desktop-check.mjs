@@ -1,0 +1,109 @@
+import { chromium } from "@playwright/test";
+import { createServer } from "node:http";
+
+const cdpUrl = process.env.TREBELL_CDP_URL || "http://127.0.0.1:9333";
+const fixturePort = Number(process.env.TREBELL_BROWSER_FIXTURE_PORT || 33333);
+
+const fixture = createServer((req,res)=>{
+  res.writeHead(200,{"content-type":"text/html; charset=utf-8"});
+  res.end(`<!doctype html>
+<html>
+<head><title>Trebell Browser Fixture</title></head>
+<body>
+  <h1>Agent Browser Fixture</h1>
+  <input name="q" placeholder="Type here" />
+  <button id="go" onclick="document.querySelector('#result').textContent='clicked:'+document.querySelector('input[name=q]').value">Commit</button>
+  <p id="result">idle</p>
+</body>
+</html>`);
+});
+
+await new Promise((resolve,reject)=>{
+  fixture.once("error",reject);
+  fixture.listen(fixturePort,"127.0.0.1",resolve);
+});
+
+let browser;
+try {
+  let lastError;
+  for(let attempt=0;attempt<40;attempt++){
+    try{
+      browser=await chromium.connectOverCDP(cdpUrl);
+      break;
+    }catch(error){
+      lastError=error;
+      await new Promise(r=>setTimeout(r,500));
+    }
+  }
+  if(!browser) throw lastError || new Error("Could not connect to installed Trebell Code over CDP.");
+
+  let mainPage=null;
+  for(let attempt=0;attempt<40&&!mainPage;attempt++){
+    const pages=browser.contexts().flatMap(context=>context.pages());
+    for(const page of pages){
+      const hasBridge=await page.evaluate(()=>Boolean(window.trebellDesktop?.background&&window.trebellDesktop?.browser)).catch(()=>false);
+      if(hasBridge){mainPage=page;break;}
+    }
+    if(!mainPage) await new Promise(r=>setTimeout(r,250));
+  }
+  if(!mainPage) throw new Error("Installed Trebell renderer did not expose the desktop preload bridge.");
+
+  const initial=await mainPage.evaluate(()=>window.trebellDesktop.background.get());
+  if(typeof initial?.enabled!=="boolean") throw new Error("Background-mode state is unavailable.");
+
+  const enabled=await mainPage.evaluate(()=>window.trebellDesktop.background.set(true));
+  if(enabled?.enabled!==true) throw new Error("Background mode did not enable.");
+
+  const afterEnable=await mainPage.evaluate(()=>window.trebellDesktop.background.get());
+  if(afterEnable?.enabled!==true) throw new Error("Background mode was not persisted in the desktop runtime.");
+  if(afterEnable?.openAtLogin!==true) throw new Error("Windows startup registration did not become active.");
+
+  await mainPage.evaluate(()=>window.trebellDesktop.notify({title:"Trebell installer validation",body:"Native notification IPC is reachable.",silent:true}));
+
+  const fixtureUrl=`http://127.0.0.1:${fixturePort}`;
+  const opened=await mainPage.evaluate(url=>window.trebellDesktop.browser.navigate(url),fixtureUrl);
+  if(!opened?.ok) throw new Error("Agent browser failed to navigate.");
+
+  let snapshot=await mainPage.evaluate(()=>window.trebellDesktop.browser.snapshot());
+  if(snapshot?.title!=="Trebell Browser Fixture") throw new Error("Agent browser snapshot returned the wrong document.");
+  const input=snapshot.elements?.find(element=>element.name==="q");
+  const button=snapshot.elements?.find(element=>element.tag==="button"&&element.text==="Commit");
+  if(!input?.ref||!button?.ref) throw new Error("Agent browser did not expose addressable fixture elements.");
+
+  const typed=await mainPage.evaluate(({ref,text})=>window.trebellDesktop.browser.type(ref,text),{ref:input.ref,text:"hello"});
+  if(!typed?.ok||typed.value!=="hello") throw new Error("Agent browser type operation failed.");
+
+  const clicked=await mainPage.evaluate(ref=>window.trebellDesktop.browser.click(ref),button.ref);
+  if(!clicked?.ok) throw new Error("Agent browser click operation failed.");
+
+  snapshot=await mainPage.evaluate(()=>window.trebellDesktop.browser.snapshot());
+  if(!snapshot?.text?.includes("clicked:hello")) throw new Error("Agent browser click did not affect the page.");
+
+  const screenshot=await mainPage.evaluate(()=>window.trebellDesktop.browser.screenshot());
+  if(!screenshot?.dataUrl?.startsWith("data:image/png;base64,")) throw new Error("Agent browser screenshot is not a PNG data URL.");
+
+  const voice=await mainPage.evaluate(()=>{
+    const supported=Boolean(window.SpeechRecognition||window.webkitSpeechRecognition);
+    const button=document.querySelector(".mic-btn");
+    return {supported,disabled:button?button.disabled:null};
+  });
+  if(voice.disabled===null) throw new Error("Voice dictation control was not rendered.");
+  if(voice.supported===voice.disabled) throw new Error("Voice dictation availability is not reflected by the UI.");
+
+  const disabled=await mainPage.evaluate(()=>window.trebellDesktop.background.set(false));
+  if(disabled?.enabled!==false) throw new Error("Background mode did not disable after validation.");
+  const afterDisable=await mainPage.evaluate(()=>window.trebellDesktop.background.get());
+  if(afterDisable?.enabled!==false||afterDisable?.openAtLogin!==false) throw new Error("Windows startup registration was not cleaned up.");
+
+  await mainPage.evaluate(()=>window.trebellDesktop.browser.close());
+
+  console.log(JSON.stringify({
+    ok:true,
+    background:{initial,afterEnable,afterDisable},
+    browser:{url:snapshot.url,title:snapshot.title,elements:snapshot.elements?.length||0,screenshotBytes:screenshot.dataUrl.length},
+    voice,
+  },null,2));
+} finally {
+  try{await browser?.close();}catch{}
+  await new Promise(resolve=>fixture.close(()=>resolve()));
+}
