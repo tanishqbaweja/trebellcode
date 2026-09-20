@@ -1,0 +1,2 @@
+Trebell Code Desktop v0.7.0 release trigger
+Validated application base: f5955be2fa934f7636353774b3642b02a69b0d2f
