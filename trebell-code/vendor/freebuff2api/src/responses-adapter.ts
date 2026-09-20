@@ -294,7 +294,7 @@ export async function adaptResponsesRequest(
   }
   const chatBody = responsesRequestToChat(body);
   const headers = new Headers(request.headers);
-  headers.set("x-trebell-client", "Trebell-Code/0.5.0");
+  headers.set("x-trebell-client", "Trebell-Code/0.6.0");
   const chatRequest = new Request(new URL("/v1/chat/completions", request.url), {
     method: "POST",
     headers,
