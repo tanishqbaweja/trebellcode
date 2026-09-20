@@ -24,6 +24,9 @@ test("AgentRouter exposes its supported catalog without depending on /v1/models"
   const env={...process.env,TREBELL_HOME:root};
   let fetches=0;
   const manager=new ProviderManager({env,fetchFn:async()=>{fetches++;return new Response("{}");}});
+  const beforeKey=await manager.models("agentrouter");
+  assert.equal(beforeKey.error,"API key required");
+  assert.equal(beforeKey.models.length,5);
   manager.setKey("agentrouter","ar-key");
   const result=await manager.models("agentrouter");
   assert.deepEqual(result.models,[
@@ -40,10 +43,12 @@ test("AgentRouter exposes its supported catalog without depending on /v1/models"
 test("JustWorker and HCNSec expose only their configured model", async () => {
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
   const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root}});
-  manager.setKey("justworker","jw");
-  manager.setKey("hcnsec","hc");
   assert.deepEqual((await manager.models("justworker")).models,["claude-opus-4-8"]);
   assert.deepEqual((await manager.models("hcnsec")).models,["glm-5.3"]);
+  manager.setKey("justworker","jw");
+  manager.setKey("hcnsec","hc");
+  assert.equal((await manager.models("justworker")).error,undefined);
+  assert.equal((await manager.models("hcnsec")).error,undefined);
 });
 
 
