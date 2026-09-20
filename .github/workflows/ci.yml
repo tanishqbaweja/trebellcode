@@ -6,21 +6,26 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: trebell-code
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
       - run: npm install --no-audit --no-fund
       - run: npm test
-      - name: Smoke-test vendored freebuff2api CLI
-        run: npm run smoke:bridge
-      - name: Smoke-test Trebell CLI
-        run: |
-          node ./bin/trebell.mjs --help
-          TREBELL_HOME="$RUNNER_TEMP/trebell" node ./bin/trebell.mjs doctor || true
+      - run: npm run smoke:bridge
+      - run: node ./bin/trebell.mjs --help
+      - name: Verify Codex runtime is installed
+        run: ./node_modules/.bin/codex --version
+      - name: Doctor smoke test
+        run: TREBELL_HOME="$RUNNER_TEMP/trebell" node ./bin/trebell.mjs doctor

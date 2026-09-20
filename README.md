@@ -1,58 +1,81 @@
-# Trebell Code
+<p align="center"><strong>Trebell Code</strong> is a coding agent from OpenAI that runs locally on your computer.
+<p align="center">
+  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Trebell Code splash" width="80%" />
+</p>
+</br>
+If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
+</br>If you want the desktop app experience, run <code>codex app</code> or visit <a href="https://chatgpt.com/codex?app-landing-page=true">the Codex App page</a>.
+</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
 
-Trebell Code is a terminal coding agent distribution that keeps the Codex agent/tool runtime while routing model traffic through Freebuff using a bundled, pinned copy of **freebuff2api**.
+---
 
-The user-facing command is `trebell` (or `trebell-code`), Trebell configuration lives under `~/.trebell-code`, and Freebuff sign-in is handled by the same device-code flow used by freebuff2api.
+## Quickstart
 
-## Install
+### Installing and running Trebell Code
 
-```bash
-npm install
-npm link
-trebell
+Run the following on Mac or Linux to install Trebell Code:
+
+```shell
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
 ```
 
-Requirements: Node.js 22 or newer.
+Run the following on Windows to install Trebell Code:
 
-The first `trebell` run starts Freebuff sign-in automatically. You can also run:
-
-```bash
-trebell signup
-trebell login
-trebell models
-trebell --model freebuff/deepseek/deepseek-v4-flash
+```shell
+powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
 ```
 
-## What happens when you run it
+The standalone installers download from `https://releases.openai.com/codex` by default and fall back to GitHub Releases if a metadata or asset download is unavailable. To force GitHub Releases, set `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM` to `false` (`0` and `no` are also accepted):
 
-1. Trebell Code creates `~/.trebell-code/codex/config.toml`.
-2. It starts the bundled freebuff2api bridge on localhost only.
-3. freebuff2api authenticates with the Freebuff account stored under `~/.trebell-code/freebuff2api`.
-4. The Codex runtime is launched with a custom `freebuff` model provider using the OpenAI-compatible Chat Completions wire API exposed by freebuff2api.
-5. The runtime keeps Codex filesystem, shell, approval, MCP, diff, history, and agent behavior. Trebell owns the sign-in, provider configuration, storage paths, command name, and visible terminal branding.
-
-By default Trebell sets `PUBLIC_UPSTREAM_ENABLED=false`, so the bundled bridge uses the authenticated Freebuff route rather than freebuff2api's optional third-party public model routes.
-
-## Useful commands
-
-```text
-trebell                 start Trebell Code
-trebell login           Freebuff device-code login
-trebell login --force   refresh/switch the Freebuff login
-trebell signup          open Freebuff sign-up/login in a browser
-trebell logout          remove the local credential
-trebell models          show currently available models
-trebell doctor          check installation
+```shell
+curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false sh
 ```
 
-Set `TREBELL_HOME` to relocate all Trebell state. Set `TREBELL_MODEL` to choose a default model.
+```powershell
+$env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM='false'; irm https://chatgpt.com/codex/install.ps1 | iex
+```
 
-## Licensing
+Trebell Code can also be installed via the following package managers:
 
-Trebell Code's wrapper code is Apache-2.0.
+```shell
+# Install using npm
+npm install -g @openai/codex
+```
 
-The agent runtime is OpenAI Codex, Apache-2.0 licensed. Trebell Code retains the required upstream notices and does not claim ownership of that upstream implementation.
+```shell
+# Install using Homebrew
+brew install --cask codex
+```
 
-The bundled Freebuff compatibility bridge is derived from **chenjh16/freebuff2api**, MIT licensed. Its original license is retained under `vendor/freebuff2api/LICENSE`.
+Then simply run `codex` to get started.
 
-See `NOTICE` and `THIRD_PARTY_NOTICES.md`.
+<details>
+<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
+
+Each GitHub Release contains many executables, but in practice, you likely want one of these:
+
+- macOS
+  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
+  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
+- Linux
+  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
+  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
+
+Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
+
+</details>
+
+### Using Codex with your ChatGPT plan
+
+Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
+
+You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
+
+## Docs
+
+- [**Codex Documentation**](https://developers.openai.com/codex)
+- [**Contributing**](./docs/contributing.md)
+- [**Installing & building**](./docs/install.md)
+- [**Open source fund**](./docs/open-source-fund.md)
+
+This repository is licensed under the [Apache-2.0 License](LICENSE).
