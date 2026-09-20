@@ -8,7 +8,8 @@ Trebell keeps its own visual identity and architecture.
 - Codex is used only as the local agent/harness runtime: threads, turns, tools, shell, file edits, approvals, diffs, checkpoints/history, MCP, and orchestration.
 - Inference is selectable per Trebell Settings: Freebuff, AgentRouter, JustWorker.icu, HCNSec.cn, or VyceAi.
 - The model picker is provider-scoped: Freebuff uses its bridge catalog; AgentRouter and VyceAi load the authenticated `/v1/models` list; JustWorker exposes `claude-opus-4-8`; HCNSec exposes `glm-5.3`.
-- API keys for non-Freebuff providers are stored separately from normal UI settings and injected into the Codex app-server environment rather than written into `config.toml`.
+- Codex is always configured with `wire_api = "responses"`. Non-Freebuff providers run through a Trebell loopback Responses→Chat compatibility bridge because current Codex no longer accepts `wire_api = "chat"`.
+- API keys for non-Freebuff providers are stored separately from normal UI settings and used by the compatibility bridge rather than written into Codex `config.toml`.
 - Freebuff account/session/Freebucks surfaces remain available when Freebuff is selected.
 - No UI control is considered implemented until it is backed by a real local or selected-provider action/state.
 
