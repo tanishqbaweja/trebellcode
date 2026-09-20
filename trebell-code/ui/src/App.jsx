@@ -180,7 +180,7 @@ function Sidebar({ section, setSection, threads, activeThreadId, openThread, que
       <div className="profile-card">
         <div className="avatar">T</div>
         <div><strong>Tanishq</strong><span>Build what matters.</span></div>
-        <button><MoreHorizontal size={18}/></button>
+        <button title="Open settings" onClick={()=>setSection("settings")}><MoreHorizontal size={18}/></button>
       </div>
     </aside>
   );
@@ -400,7 +400,7 @@ function Panel({ panel, close, events, projectPath, freebuff, model, workspaceTr
   );
 }
 
-function SecondaryView({ section, setSection, projectPath, setProjectPath, sandbox, setSandbox, approvalPolicy, setApprovalPolicy, loggedIn, login, logout, freebuff, model, refreshFreebuff, browseProject, useTemplate, rpcStatus, runtime }) {
+function SecondaryView({ section, setSection, projectPath, setProjectPath, sandbox, setSandbox, approvalPolicy, setApprovalPolicy, loggedIn, login, logout, freebuff, model, refreshFreebuff, browseProject, useTemplate, rpcStatus, runtime, threads, openThread }) {
   if (section==="chat" || section==="new" || section==="agent") return null;
   const content = {
     projects: ["Projects", "Choose the local workspace Trebell Code should operate in."],
@@ -475,7 +475,10 @@ function SecondaryView({ section, setSection, projectPath, setProjectPath, sandb
           </div>
         </div>
       )}
-      {section==="history" && <div className="empty-state"><History size={34}/><strong>Your Codex thread history appears in the sidebar.</strong><span>Search, resume, archive, and rename threads from Trebell Code.</span></div>}
+      {section==="history" && <div className="history-page">
+        {threads.length===0 ? <div className="empty-state"><History size={34}/><strong>No saved threads yet.</strong><span>Completed Trebell conversations will appear here.</span></div> :
+          threads.map(thread=><button key={thread.id} onClick={()=>openThread(thread)}><FileCode2 size={16}/><div><strong>{titleOf(thread)}</strong><span>{thread.preview || thread.cwd || "Trebell Code thread"}</span></div><time>{relativeTime(thread.updatedAt)}</time></button>)}
+      </div>}
     </div>
   );
 }
@@ -971,7 +974,7 @@ export default function App() {
       <Sidebar section={section} setSection={setSection} threads={threads} activeThreadId={activeThread?.id} openThread={openThread} query={query} setQuery={setQuery} newChat={newChat} archiveThread={archiveThread}/>
       <main className="main-frame">
         <div className="window-bar"><span>{statusLabel}</span><div><button aria-label="Minimize" onClick={()=>window.trebellDesktop?.minimize?.()}>—</button><button aria-label="Maximize" onClick={()=>window.trebellDesktop?.maximize?.()}>□</button><button aria-label="Close" className="window-close" onClick={()=>window.trebellDesktop?.close?.()}>×</button></div></div>
-        <SecondaryView section={section} setSection={setSection} projectPath={projectPath} setProjectPath={setProjectPath} sandbox={sandbox} setSandbox={setSandbox} approvalPolicy={approvalPolicy} setApprovalPolicy={setApprovalPolicy} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} freebuff={freebuff} model={model} refreshFreebuff={()=>refreshFreebuff(model)} browseProject={browseProject} useTemplate={useTemplate} rpcStatus={rpcStatus} runtime={runtime}/>
+        <SecondaryView section={section} setSection={setSection} projectPath={projectPath} setProjectPath={setProjectPath} sandbox={sandbox} setSandbox={setSandbox} approvalPolicy={approvalPolicy} setApprovalPolicy={setApprovalPolicy} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} freebuff={freebuff} model={model} refreshFreebuff={()=>refreshFreebuff(model)} browseProject={browseProject} useTemplate={useTemplate} rpcStatus={rpcStatus} runtime={runtime} threads={threads} openThread={openThread}/>
         {(section==="chat" || section==="agent" || section==="new") && <>
           <Topbar title={activeTitle} running={running} stop={stop} openPanel={openPanelReal} renameThread={renameThread} shareThread={shareThread}/>
           <div className="conversation-scroll">
