@@ -6,9 +6,11 @@ Trebell keeps its own visual identity and architecture.
 ## Provider rule
 
 - Codex is used only as the local agent/harness runtime: threads, turns, tools, shell, file edits, approvals, diffs, checkpoints/history, MCP, and orchestration.
-- Freebuff is the model provider.
-- Trebell exposes only Freebuff models and Freebuff account/session/Freebucks state.
-- No UI control is considered implemented until it is backed by a real local or Freebuff action/state.
+- Inference is selectable per Trebell Settings: Freebuff, AgentRouter, JustWorker.icu, HCNSec.cn, or VyceAi.
+- The model picker is provider-scoped: Freebuff uses its bridge catalog; AgentRouter and VyceAi load the authenticated `/v1/models` list; JustWorker exposes `claude-opus-4-8`; HCNSec exposes `glm-5.3`.
+- API keys for non-Freebuff providers are stored separately from normal UI settings and injected into the Codex app-server environment rather than written into `config.toml`.
+- Freebuff account/session/Freebucks surfaces remain available when Freebuff is selected.
+- No UI control is considered implemented until it is backed by a real local or selected-provider action/state.
 
 ## Core thread/workspace experience
 
@@ -23,7 +25,7 @@ Trebell keeps its own visual identity and architecture.
 - [x] Snooze and wake
 - [x] Bulk thread actions
 - [x] Background thread start
-- [x] Multi-model fan-out (Freebuff models only)
+- [x] Multi-model fan-out (models from the active provider only)
 - [x] New worktree / new thread in current worktree
 - [x] Branch-aware thread metadata
 - [x] Thread search across message contents
@@ -31,7 +33,7 @@ Trebell keeps its own visual identity and architecture.
 
 ## Composer and context
 
-- [x] Freebuff model picker
+- [x] Provider selector + provider-scoped model picker
 - [x] File picker
 - [x] Project/workspace picker
 - [x] Permission/sandbox settings
@@ -112,7 +114,7 @@ Trebell keeps its own visual identity and architecture.
 - [x] Push
 - [x] Pull/fetch
 - [x] Automatic safe pull
-- [x] Generate commit message with Freebuff
+- [x] Generate commit message with the selected inference provider
 - [x] Create pull request
 - [x] PR review UI
 - [x] PR comments/review/check status
