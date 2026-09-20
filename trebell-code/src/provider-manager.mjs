@@ -20,13 +20,6 @@ export const MODEL_PROVIDERS = Object.freeze({
     wireApi: "chat",
     envKey: "AGENTROUTER_API_KEY",
     requiresKey: true,
-    staticModels: [
-      "gpt-5.6-sol",
-      "gpt-6-astra",
-      "claude-opus-4-8",
-      "claude-opus-5",
-      "deepseek-v4-flash",
-    ],
   },
   justworker: {
     id: "justworker",
@@ -123,7 +116,14 @@ export class ProviderManager {
   setKey(providerId, value) {
     const provider = this.get(providerId);
     if (!provider.requiresKey) throw new Error(`${provider.name} does not use an API key here.`);
-    const key = String(value || "").trim();
+    let key = String(value || "").trim();
+    if (key.length >= 2) {
+      const first = key[0];
+      const last = key[key.length - 1];
+      if ((first === '"' && last === '"') || (first === "'" && last === "'") || (first === "`" && last === "`")) {
+        key = key.slice(1, -1).trim();
+      }
+    }
     if (key) this.secrets[provider.id] = key;
     else delete this.secrets[provider.id];
     this.#save();
@@ -219,14 +219,19 @@ export class ProviderManager {
       return await adaptAnthropicResponse(upstream, { stream: anthropicBody.stream, model: chatBody.model });
     }
 
+    const headers = {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+      "Accept": chatBody.stream ? "text/event-stream, application/json" : "application/json",
+    };
+    // AgentRouter performs client fingerprint checks. Its Codex/OpenAI-compatible
+    // endpoint does not require a custom User-Agent, and overriding it can cause
+    // an otherwise-valid key to be rejected at the edge.
+    if (provider.id !== "agentrouter") headers["User-Agent"] = TREBELL_USER_AGENT;
+
     return await this.fetchFn(provider.baseUrl + "/chat/completions", {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-        "Accept": chatBody.stream ? "text/event-stream, application/json" : "application/json",
-        "User-Agent": TREBELL_USER_AGENT,
-      },
+      headers,
       body: JSON.stringify(chatBody),
       signal: signal || AbortSignal.timeout(300_000),
     });
