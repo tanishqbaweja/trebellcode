@@ -72,6 +72,18 @@ function openBrowser(url){
   child.unref();
 }
 
+async function waitForChildExit(child,timeoutMs=3000){
+  if(!child || child.exitCode!==null) return;
+  await Promise.race([
+    new Promise(resolve=>{
+      const done=()=>resolve();
+      child.once("exit",done);
+      child.once("close",done);
+    }),
+    new Promise(resolve=>setTimeout(resolve,timeoutMs)),
+  ]);
+}
+
 async function stopChildProcess(child){
   if(!child || child.exitCode!==null) return;
   const pid=child.pid;
@@ -83,13 +95,14 @@ async function stopChildProcess(child){
         killer.once("error",resolve);
         setTimeout(resolve,3000);
       });
+      await waitForChildExit(child,3000);
     }else{
       child.kill("SIGTERM");
-      await Promise.race([
-        new Promise(resolve=>child.once("exit",resolve)),
-        new Promise(resolve=>setTimeout(resolve,1500)),
-      ]);
-      if(child.exitCode===null) child.kill("SIGKILL");
+      await waitForChildExit(child,1500);
+      if(child.exitCode===null){
+        child.kill("SIGKILL");
+        await waitForChildExit(child,1500);
+      }
     }
   }catch{}
   try{child.stdout?.destroy();}catch{}
