@@ -384,7 +384,20 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
         const safe=String(body.name||"pasted-context.txt").replace(/[^a-zA-Z0-9._-]/g,"_").slice(-80);
         const path=join(dir,`${Date.now()}-${randomUUID().slice(0,8)}-${safe}`);
         await writeFile(path,String(body.text||""),"utf8");
-        return json(res,200,{path,name:basename(path),size:Buffer.byteLength(String(body.text||""),"utf8")});
+        return json(res,200,{path,name:basename(path),size:Buffer.byteLength(String(body.text||""),"utf8"),mime:"text/plain"});
+      }catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/attachments/blob" && req.method==="POST"){
+      try{
+        const body=await readJsonBody(req,24*1024*1024);
+        const data=Buffer.from(String(body.dataBase64||""),"base64");
+        if(data.length>15*1024*1024) return json(res,413,{error:"Attachment is larger than 15 MB"});
+        const dir=join(trebellHome(env),"attachments");
+        await mkdir(dir,{recursive:true});
+        const safe=String(body.name||"attachment.bin").replace(/[^a-zA-Z0-9._-]/g,"_").slice(-80);
+        const path=join(dir,`${Date.now()}-${randomUUID().slice(0,8)}-${safe}`);
+        await writeFile(path,data);
+        return json(res,200,{path,name:basename(path),size:data.length,mime:body.mime||"application/octet-stream"});
       }catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/freebuff/overview"){
