@@ -39,7 +39,7 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await expect(page.getByRole("heading",{name:"Projects"})).toBeVisible();
   await expect(page.getByText("Clone repository")).toBeVisible();
 
-  await page.getByRole("button",{name:"Preview"}).click();
+  await page.getByRole("button",{name:"Browser"}).click();
   await expect(page.getByTestId("right-panel")).toBeVisible();
   await page.getByRole("button",{name:"Open agent browser"}).click();
   await page.getByRole("button",{name:"Import cookies"}).click();
