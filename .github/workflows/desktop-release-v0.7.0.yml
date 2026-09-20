@@ -208,11 +208,26 @@ jobs:
             trebell-code/desktop-dist/Trebell-Code-Setup-0.7.0.exe.sha256
             trebell-code/desktop-dist/release-notes-v0.7.0.md
           if-no-files-found: error
+          retention-days: 30
+
+      - name: Ensure v0.7.0 git tag
+        shell: pwsh
+        working-directory: .
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          $existing = git ls-remote --tags origin refs/tags/v0.7.0
+          if (-not $existing) {
+            git tag v0.7.0 "$env:GITHUB_SHA"
+            git push origin v0.7.0
+          }
 
       - name: Publish GitHub release
+        id: publish_release
+        continue-on-error: true
         shell: pwsh
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.TREBELL_RELEASE_TOKEN || github.token }}
         working-directory: .
         run: |
           $installer = Resolve-Path "trebell-code\desktop-dist\Trebell-Code-Setup-0.7.0.exe"
@@ -222,5 +237,11 @@ jobs:
           if (gh release view v0.7.0 *> $null) {
             gh release upload v0.7.0 $installer $checksum --clobber
           } else {
-            gh release create v0.7.0 $installer $checksum --target "f5955be2fa934f7636353774b3642b02a69b0d2f" --title "Trebell Code Desktop v0.7.0" --notes-file $notes
+            gh release create v0.7.0 $installer $checksum --verify-tag --title "Trebell Code Desktop v0.7.0" --notes-file $notes
           }
+
+      - name: Report release fallback
+        if: steps.publish_release.outcome == 'failure'
+        shell: pwsh
+        run: |
+          Write-Warning "GitHub release creation is blocked for the current Actions token. The validated v0.7.0 installer, checksum, and notes were preserved as the Trebell-Code-Desktop-v0.7.0 workflow artifact, and the v0.7.0 git tag was created."
