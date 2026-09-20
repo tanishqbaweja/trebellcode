@@ -156,9 +156,9 @@ Trebell keeps its own visual identity and architecture.
 - [x] Desktop background/tray mode with Windows startup
 - [x] Diagnostics/log viewer
 - [x] Native notifications
-- [ ] Remote environment control
-- [ ] WSL/SSH environments
-- [ ] Mobile/remote control surface
+- [x] Remote environment control
+- [x] WSL/SSH environments
+- [x] Mobile/remote control surface
 
 ## Browser/preview tools
 
@@ -166,6 +166,7 @@ Trebell keeps its own visual identity and architecture.
 - [x] Agent browser session
 - [x] Page element inspector / context picker
 - [x] Browser screenshot context
+- [x] Desktop Snap Shot context (explicit user-triggered primary-display capture)
 - [x] Preview annotations
 - [x] Browser cookie import (explicit user-selected JSON into the isolated Trebell browser session)
 
