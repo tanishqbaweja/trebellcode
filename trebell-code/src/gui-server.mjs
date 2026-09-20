@@ -49,6 +49,30 @@ function openBrowser(url){
   child.unref();
 }
 
+async function stopChildProcess(child){
+  if(!child || child.exitCode!==null) return;
+  const pid=child.pid;
+  try{
+    if(process.platform==="win32" && pid){
+      await new Promise(resolve=>{
+        const killer=spawn("taskkill",["/PID",String(pid),"/T","/F"],{windowsHide:true,stdio:"ignore"});
+        killer.once("exit",resolve);
+        killer.once("error",resolve);
+        setTimeout(resolve,3000);
+      });
+    }else{
+      child.kill("SIGTERM");
+      await Promise.race([
+        new Promise(resolve=>child.once("exit",resolve)),
+        new Promise(resolve=>setTimeout(resolve,1500)),
+      ]);
+      if(child.exitCode===null) child.kill("SIGKILL");
+    }
+  }catch{}
+  try{child.stdout?.destroy();}catch{}
+  try{child.stderr?.destroy();}catch{}
+}
+
 function startAppServer({appPort,env=process.env,mock=false}){
   if(mock) return { child:null, logs:[], targetUrl:null };
   ensureCodexConfig({port:DEFAULT_PORT,env});
@@ -316,8 +340,10 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
     server,
     close:async()=>{
       relay.close();
-      try{appServer?.child?.kill("SIGTERM");}catch{}
-      try{bridge?.child?.kill("SIGTERM");}catch{}
+      await Promise.allSettled([
+        stopChildProcess(appServer?.child),
+        stopChildProcess(bridge?.child),
+      ]);
       await new Promise(resolve=>server.close(resolve));
     },
   };
