@@ -78,6 +78,21 @@ function relativeTime(epoch) {
   return `${Math.floor(delta/86400)}d ago`;
 }
 
+function historyFromThread(thread) {
+  const out=[];
+  for(const turn of thread?.turns || []){
+    for(const item of turn?.items || []){
+      if(item?.type==="userMessage"){
+        const text=(item.content||[]).filter(x=>x?.type==="text").map(x=>x.text).join("\n").trim();
+        if(text) out.push({id:item.id,role:"user",text});
+      }else if(item?.type==="agentMessage" && item.text?.trim()){
+        out.push({id:item.id,role:"assistant",text:item.text});
+      }
+    }
+  }
+  return out;
+}
+
 function titleOf(thread) {
   return thread.name || thread.preview || "Untitled task";
 }
@@ -201,6 +216,13 @@ function UserBubble({ text }) {
   );
 }
 
+function ConversationMessages({messages}) {
+  return <div className="conversation-history">{messages.map(message=>message.role==="user"
+    ? <UserBubble key={message.id} text={message.text}/>
+    : <div className="history-assistant" key={message.id}><div className="agent-star small"><Sparkles size={13}/></div><div>{message.text}</div></div>
+  )}</div>;
+}
+
 function EventIcon({ kind, status }) {
   if (status==="done") return <Check size={15}/>;
   if (kind==="commandExecution") return <SquareTerminal size={14}/>;
@@ -314,11 +336,12 @@ function RightRail({ running, stats, events, approvals, resolveApproval, openPan
       </div>
       <div className="tools-card">
         <div className="tools-head"><strong>Tools</strong><ChevronDown size={15}/></div>
-        {TOOL_META.map(([name,Icon]) => (
-          <button key={name} onClick={()=>openPanel(name==="Shell"?"terminal":name==="Edit Files"?"diff":"files")}>
+        {TOOL_META.map(([name,Icon]) => {
+          const target=name==="Shell"?"terminal":name==="File System"?"files":name==="Edit Files"?"diff":null;
+          return <button key={name} onClick={()=>target && openPanel(target)} disabled={!target} title={target ? "Open "+name : name+" is invoked by the agent during a turn"}>
             <Icon size={17}/><span>{name}</span><i className={rpcStatus==="connected"?"tool-live":"tool-offline"}/>
-          </button>
-        ))}
+          </button>;
+        })}
       </div>
       <div className="privacy-line"><span/><b>Private</b> · Local · Powerful</div>
     </aside>
@@ -329,7 +352,7 @@ function Stat({icon:Icon,label,value}) {
   return <div className="stat-row"><Icon size={17}/><span>{label}</span><strong>{value}</strong></div>;
 }
 
-function Panel({ panel, close, events, projectPath, freebuff, model, workspaceTree, diffText, panelLoading, filePreview, openFile }) {
+function Panel({ panel, close, events, projectPath, freebuff, model, workspaceTree, diffText, panelLoading, filePreview, openFile, terminalCommand, setTerminalCommand, terminalOutput, runTerminal, terminalRunning }) {
   if (!panel) return null;
   const shellEvent = events.find(e=>e.command);
   return (
@@ -341,7 +364,13 @@ function Panel({ panel, close, events, projectPath, freebuff, model, workspaceTr
         </div>
         <button onClick={close}><X size={18}/></button>
       </div>
-      {panel==="terminal" && <pre className="terminal-view">{shellEvent?.command || "No shell command has run in this thread yet."}</pre>}
+      {panel==="terminal" && <div className="terminal-shell">
+        <pre className="terminal-view">{terminalOutput || shellEvent?.command || "Trebell terminal ready."}</pre>
+        <form className="terminal-input" onSubmit={(e)=>{e.preventDefault();runTerminal();}}>
+          <span>$</span><input value={terminalCommand} onChange={(e)=>setTerminalCommand(e.target.value)} placeholder="Run a command in the current workspace…" autoFocus/>
+          <button disabled={terminalRunning || !terminalCommand.trim()}>{terminalRunning ? "Running…" : "Run"}</button>
+        </form>
+      </div>}
       {panel==="diff" && <div className="diff-view">{panelLoading ? <p>Loading Git diff…</p> : <pre>{diffText || "Working tree has no unstaged diff, or this workspace is not a Git repository."}</pre>}</div>}
       {panel==="freebuff" && (
         <div className="freebuff-panel">
@@ -480,6 +509,10 @@ export default function App() {
   const [panelLoading,setPanelLoading]=useState(false);
   const [filePreview,setFilePreview]=useState(null);
   const [runtime,setRuntime]=useState(null);
+  const [messages,setMessages]=useState([]);
+  const [terminalCommand,setTerminalCommand]=useState("");
+  const [terminalOutput,setTerminalOutput]=useState("");
+  const [terminalRunning,setTerminalRunning]=useState(false);
   const [freebuff,setFreebuff]=useState({loggedIn:false,user:null,session:null,streak:null,derived:null});
   const demoTimers=useRef([]);
 
@@ -504,8 +537,8 @@ export default function App() {
       if(data.mock){
         setThreads(DEMO_THREADS);
         setActiveThread(DEMO_THREADS[0]);
-        setLastPrompt("Build a private browser converter for large video files. Keep memory usage under 250 MB and use OPFS for temporary storage.");
-        setEvents(DEMO_EVENTS);
+        setLastPrompt("");
+        setEvents([]);
       }
       const modelData=await fetch("/api/models").then(r=>r.json()).catch(()=>({models:[]}));
       if(cancelled) return;
@@ -624,6 +657,10 @@ export default function App() {
       const item=normalizeItem(p.item);
       setEvents(prev=>[...prev.filter(e=>e.id!==item.id),item]);
     } else if(message.method==="item/completed" && p.item){
+      if(p.item.type==="agentMessage" && p.item.text?.trim()){
+        setMessages(prev=>prev.some(m=>m.id===p.item.id)?prev:[...prev,{id:p.item.id,role:"assistant",text:p.item.text}]);
+        setAssistantText("");
+      }
       const item=normalizeItem({...p.item,status:"completed"});
       setEvents(prev=>{
         const exists=prev.some(e=>e.id===item.id);
@@ -685,7 +722,7 @@ export default function App() {
   }
 
   async function shareThread(){
-    const content=[lastPrompt && `You: ${lastPrompt}`,assistantText && `Trebell Code: ${assistantText}`].filter(Boolean).join("\n\n");
+    const content=[...messages,...(assistantText?[{role:"assistant",text:assistantText}]:[])].map(m=>(m.role==="user"?"You":"Trebell Code")+": "+m.text).join("\n\n");
     if(!content) return;
     await navigator.clipboard?.writeText(content).catch(()=>{});
   }
@@ -711,12 +748,36 @@ export default function App() {
     if(data?.content!=null) setFilePreview(data);
   }
 
+  async function runTerminal(){
+    const command=terminalCommand.trim();
+    if(!command || !rpc || rpcStatus!=="connected") return;
+    setTerminalRunning(true);
+    setTerminalOutput(prev=>prev ? prev+"\n\n$ "+command+"\n" : "$ "+command+"\n");
+    try{
+      const argv=bootstrap.platform==="win32"
+        ? ["cmd.exe","/d","/s","/c",command]
+        : ["sh","-lc",command];
+      const result=await rpc.request("command/exec",{
+        command:argv,
+        cwd:projectPath||bootstrap.cwd||null,
+        timeoutMs:120000,
+      });
+      setTerminalOutput(prev=>prev+(result.stdout||"")+(result.stderr||"")+"\n[exit "+result.exitCode+"]");
+    }catch(error){
+      setTerminalOutput(prev=>prev+"\n"+error.message);
+    }finally{
+      setTerminalRunning(false);
+      setTerminalCommand("");
+    }
+  }
+
   async function newChat(){
     setSection("chat");
     setActiveThread(null);
     setActiveTurnId(null);
     setEvents([]);
     setAssistantText("");
+    setMessages([]);
     setLastPrompt("");
     setPrompt("");
   }
@@ -729,7 +790,10 @@ export default function App() {
     setAssistantText("");
     if(rpc){
       const resumed=await rpc.request("thread/resume",{threadId:thread.id,model:model||null,modelProvider:"freebuff",cwd:projectPath||null,excludeTurns:false}).catch(()=>null);
-      if(resumed?.thread) setActiveThread(resumed.thread);
+      if(resumed?.thread){
+        setActiveThread(resumed.thread);
+        setMessages(historyFromThread(resumed.thread));
+      }
     }
   }
 
@@ -756,6 +820,7 @@ export default function App() {
     setPrompt("");
     setLastPrompt(text);
     setAssistantText("");
+    setMessages(prev=>[...prev,{id:"user-"+Date.now(),role:"user",text}]);
     setEvents([]);
     setRunning(true);
     setSection("chat");
@@ -764,7 +829,8 @@ export default function App() {
       try{
         const response=await fetch("/api/chat/direct",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({prompt:text,model:model||"freebuff/deepseek/deepseek-v4-flash"})});
         const data=await response.json();
-        setAssistantText(data.text||"");
+        setAssistantText("");
+        if(data.text) setMessages(prev=>[...prev,{id:"assistant-"+Date.now(),role:"assistant",text:data.text}]);
         setEvents([{id:"mock-direct",kind:"tool",title:"Freebuff direct path",status:"done"}]);
       }finally{setRunning(false);}
       return;
@@ -775,7 +841,8 @@ export default function App() {
         const response=await fetch("/api/chat/direct",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({prompt:text,model})});
         const data=await response.json();
         if(!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-        setAssistantText(data.text || "");
+        setAssistantText("");
+        if(data.text) setMessages(prev=>[...prev,{id:"assistant-"+Date.now(),role:"assistant",text:data.text}]);
         setEvents([{id:"direct-freebuff",kind:"tool",title:"Answered via Freebuff direct fallback",status:"done"}]);
       }catch(error){
         setEvents([{id:"send-error",kind:"error",title:error.message,status:"done"}]);
@@ -884,7 +951,7 @@ export default function App() {
         </>}
       </main>
       <RightRail running={running} stats={stats} events={events} approvals={approvals} resolveApproval={resolveApproval} openPanel={openPanelReal} freebuff={freebuff} model={model} setSection={setSection} rpcStatus={rpcStatus}/>
-      <Panel panel={panel} close={()=>setPanel(null)} events={events} projectPath={projectPath} freebuff={freebuff} model={model} workspaceTree={workspaceEntries} diffText={diffText} panelLoading={panelLoading} filePreview={filePreview} openFile={openFile}/>
+      <Panel panel={panel} close={()=>setPanel(null)} events={events} projectPath={projectPath} freebuff={freebuff} model={model} workspaceTree={workspaceEntries} diffText={diffText} panelLoading={panelLoading} filePreview={filePreview} openFile={openFile} terminalCommand={terminalCommand} setTerminalCommand={setTerminalCommand} terminalOutput={terminalOutput} runTerminal={runTerminal} terminalRunning={terminalRunning}/>
     </div>
   );
 }

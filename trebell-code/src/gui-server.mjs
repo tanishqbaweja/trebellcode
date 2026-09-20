@@ -128,6 +128,7 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
         appServerReady,
         wsUrl:mock ? null : `ws://127.0.0.1:${port}/api/codex/ws`,
         cwd:process.cwd(),
+        platform:process.platform,
         version:"0.5.0",
       });
     }

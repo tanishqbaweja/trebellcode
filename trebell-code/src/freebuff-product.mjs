@@ -200,8 +200,8 @@ export async function getFreebuffOverview({
     "x-freebuff-first-tab-discount": "0",
     "x-freebuff-multi-session": "1",
     "x-freebuff-instance-id": instanceId,
-    "x-trebell-client": "Trebell-Code/0.4.0",
-    "User-Agent": "Trebell-Code/0.4.0",
+    "x-trebell-client": "Trebell-Code/0.5.0",
+    "User-Agent": "Trebell-Code/0.5.0",
   };
 
   const sessionHeaders = {
