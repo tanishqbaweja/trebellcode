@@ -199,6 +199,16 @@ jobs:
           This build is unsigned, so Windows SmartScreen may display an Unknown publisher warning.
           '@ | Set-Content -Path "desktop-dist\release-notes-v0.7.0.md" -Encoding utf8
 
+      - name: Upload validated installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Trebell-Code-Desktop-v0.7.0
+          path: |
+            trebell-code/desktop-dist/Trebell-Code-Setup-0.7.0.exe
+            trebell-code/desktop-dist/Trebell-Code-Setup-0.7.0.exe.sha256
+            trebell-code/desktop-dist/release-notes-v0.7.0.md
+          if-no-files-found: error
+
       - name: Publish GitHub release
         shell: pwsh
         env:
@@ -212,5 +222,5 @@ jobs:
           if (gh release view v0.7.0 *> $null) {
             gh release upload v0.7.0 $installer $checksum --clobber
           } else {
-            gh release create v0.7.0 $installer $checksum --target "$env:GITHUB_SHA" --title "Trebell Code Desktop v0.7.0" --notes-file $notes
+            gh release create v0.7.0 $installer $checksum --target "f5955be2fa934f7636353774b3642b02a69b0d2f" --title "Trebell Code Desktop v0.7.0" --notes-file $notes
           }
