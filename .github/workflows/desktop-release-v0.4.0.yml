@@ -1,0 +1,162 @@
+name: Publish Trebell Code Desktop v0.4.0
+
+on:
+  push:
+    paths:
+      - ".github/workflows/desktop-release-v0.4.0.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: trebell-code
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Run Trebell tests
+        run: npm test
+
+      - name: Build Freebuff bridge and GUI
+        run: |
+          npm run bridge:build
+          npm run ui:build
+
+      - name: Build Windows installer
+        run: npx electron-builder --win nsis --x64 --publish never
+
+      - name: Verify bundled Codex harness
+        shell: pwsh
+        run: |
+          $codex = Get-ChildItem -Path "desktop-dist\win-unpacked\resources\app.asar.unpacked\node_modules\@openai\codex-win32-x64" -Filter codex.exe -Recurse | Select-Object -First 1
+          if (-not $codex) { throw "Bundled Codex harness binary was not found." }
+          & $codex.FullName --version
+          if ($LASTEXITCODE -ne 0) { throw "Bundled Codex harness failed to execute." }
+
+      - name: Install generated Trebell Code installer
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path "desktop-dist" -Filter "Trebell-Code-Setup-0.4.0.exe" | Select-Object -First 1
+          if (-not $installer) { throw "Trebell Code installer was not generated." }
+          $proc = Start-Process -FilePath $installer.FullName -ArgumentList "/S" -PassThru -Wait
+          if ($proc.ExitCode -ne 0) { throw "Installer exited with code $($proc.ExitCode)" }
+
+      - name: Launch installed app and verify local harness
+        shell: pwsh
+        run: |
+          $installed = Get-ChildItem -Path "$env:LOCALAPPDATA\Programs" -Filter "Trebell Code.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $installed) { throw "Installed Trebell Code executable was not found." }
+
+          $env:TREBELL_GUI_PORT = "3210"
+          $env:TREBELL_APP_SERVER_PORT = "23456"
+          $env:TREBELL_GUI_DEBUG = "1"
+
+          $app = Start-Process -FilePath $installed.FullName -PassThru
+          try {
+            $ok = $false
+            for ($i = 0; $i -lt 40; $i++) {
+              Start-Sleep -Milliseconds 500
+              try {
+                $boot = Invoke-RestMethod -Uri "http://127.0.0.1:3210/api/bootstrap" -TimeoutSec 2
+                if ($boot.appServerReady -eq $true -and $boot.version -eq "0.4.0") {
+                  $ok = $true
+                  break
+                }
+              } catch {}
+            }
+            if (-not $ok) { throw "Installed Trebell Code did not start its bundled Codex harness." }
+
+            $health = Invoke-RestMethod -Uri "http://127.0.0.1:3210/api/health" -TimeoutSec 2
+            if ($health.ok -ne $true) { throw "Installed Trebell GUI health check failed." }
+
+            $overview = Invoke-RestMethod -Uri "http://127.0.0.1:3210/api/freebuff/overview?model=freebuff/deepseek/deepseek-v4-flash&timezone=UTC" -TimeoutSec 3
+            if ($null -eq $overview.loggedIn) { throw "Freebuff overview endpoint is missing." }
+          }
+          finally {
+            Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
+            Get-Process codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Create checksum
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path "desktop-dist" -Filter "Trebell-Code-Setup-0.4.0.exe" | Select-Object -First 1
+          $hash = (Get-FileHash -Algorithm SHA256 $installer.FullName).Hash.ToLower()
+          "$hash  $($installer.Name)" | Set-Content -Path "desktop-dist\Trebell-Code-Setup-0.4.0.exe.sha256" -Encoding ascii
+          Write-Host "SHA256: $hash"
+
+      - name: Write release notes
+        shell: pwsh
+        run: |
+          @'
+          ## Trebell Code Desktop v0.4.0
+
+          This release brings Freebuff's account/session experience into Trebell Code while keeping Codex as the local agentic harness.
+
+          ### New Freebuff UI
+          - live Freebucks balance
+          - selected Freebuff model
+          - Freebucks/hour in the model picker
+          - active Freebuff session/model
+          - live session state
+          - usage streak and daily bonus
+          - rate-limit information
+          - server-pushed prices when available
+          - documented model-price fallback when live prices are absent
+          - off-peak indication
+          - Freebuff account page inside Trebell Code
+          - 15-second account/session refresh
+          - 45-second heartbeat while an agent turn is actively running
+
+          ### Architecture
+          Codex remains the local execution harness only: threads, planning, tools, shell, filesystem edits, approvals, MCP, diffs and history.
+          Freebuff remains the model and account/session provider.
+
+          ### Install
+          Download **Trebell-Code-Setup-0.4.0.exe**, run it, and launch Trebell Code from the Start Menu or Desktop shortcut.
+
+          No Node.js or npm installation is required.
+
+          ### Validation
+          The release is installed and launched on a clean Windows GitHub runner. The workflow verifies:
+          - Trebell unit tests
+          - Freebuff account/pricing normalization tests
+          - production bridge/UI builds
+          - bundled native Codex harness
+          - NSIS installation
+          - installed desktop application startup
+          - Codex app-server startup
+          - Trebell health endpoint
+          - Freebuff overview endpoint
+
+          This build is currently unsigned, so Windows SmartScreen may show an Unknown publisher warning.
+          '@ | Set-Content -Path "desktop-dist\release-notes-v0.4.0.md" -Encoding utf8
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: .
+        run: |
+          $installer = Resolve-Path "trebell-code\desktop-dist\Trebell-Code-Setup-0.4.0.exe"
+          $checksum = Resolve-Path "trebell-code\desktop-dist\Trebell-Code-Setup-0.4.0.exe.sha256"
+          $notes = Resolve-Path "trebell-code\desktop-dist\release-notes-v0.4.0.md"
+
+          if (gh release view v0.4.0 *> $null) {
+            gh release upload v0.4.0 $installer $checksum --clobber
+          } else {
+            gh release create v0.4.0 $installer $checksum --target "$env:GITHUB_SHA" --title "Trebell Code Desktop v0.4.0" --notes-file $notes
+          }
