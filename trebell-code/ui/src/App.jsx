@@ -268,7 +268,7 @@ function Timeline({ events, assistantText, openPanel }) {
   );
 }
 
-function Composer({ prompt, setPrompt, send, running, model, setModel, models, webSearch, setWebSearch, loggedIn, login, projectPath, freebuff, attachments, pickFiles, rpcStatus }) {
+function Composer({ prompt, setPrompt, send, running, model, setModel, models, webSearch, setWebSearch, loggedIn, login, projectPath, freebuff, attachments, pickFiles, rpcStatus, openTools }) {
   return (
     <div className="composer-wrap">
       <textarea
@@ -283,7 +283,7 @@ function Composer({ prompt, setPrompt, send, running, model, setModel, models, w
         <div className="composer-left">
           <button className="circle-btn" title="Attach files" onClick={pickFiles}><Plus size={20}/></button>
           <button className={`pill-btn ${webSearch ? "active" : ""}`} onClick={()=>setWebSearch(!webSearch)}><Globe2 size={16}/> Web Search</button>
-          <button className="pill-btn"><WandSparkles size={16}/> Tools</button>
+          <button className="pill-btn" onClick={openTools}><WandSparkles size={16}/> Tools</button>
           <span className="project-chip" title={projectPath}><FolderCode size={14}/>{attachments.length ? `${attachments.length} attached` : projectPath ? projectPath.split(/[\\/]/).filter(Boolean).pop() : "workspace"}</span>
         </div>
         <div className="composer-right">
@@ -294,7 +294,7 @@ function Composer({ prompt, setPrompt, send, running, model, setModel, models, w
               {models.map((id)=><option key={id} value={id}>{modelLabel(id,freebuff)}</option>)}
             </select>
           )}
-          <button className="mic-btn"><Mic size={18}/></button>
+          <button className="mic-btn" disabled title="Voice input is not configured yet"><Mic size={18}/></button>
           <button data-testid="send" className="send-btn" onClick={send} disabled={running || !loggedIn || !prompt.trim()}><Send size={18}/></button>
         </div>
       </div>
@@ -570,7 +570,7 @@ export default function App() {
       client=new CodexRpcClient(bootstrap.wsUrl,{
         onStatus:setRpcStatus,
         onNotification:(message)=>handleNotification(message),
-        onServerRequest:(message)=>setApprovals(prev=>[...prev,message]),
+        onServerRequest:(message)=>handleServerRequest(client,message),
       });
       setRpc(client);
       try{
@@ -629,6 +629,37 @@ export default function App() {
     const timer=setInterval(ping,45000);
     return ()=>clearInterval(timer);
   },[running,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
+
+  function handleServerRequest(client,message){
+    if(message.method==="item/tool/requestUserInput"){
+      const answers={};
+      for(const question of message.params?.questions || []){
+        const options=(question.options||[]).map(option=>option.label || option.value || String(option));
+        const suffix=options.length ? "\nOptions: "+options.join(", ") : "";
+        const answer=window.prompt((question.header ? question.header+"\n" : "")+question.question+suffix,"");
+        if(answer===null){
+          answers[question.id]={answers:[]};
+        }else{
+          answers[question.id]={answers:[answer]};
+        }
+      }
+      client.respond(message.id,{answers});
+      return;
+    }
+    if(message.method==="item/tool/call"){
+      client.respond(message.id,{contentItems:[{type:"inputText",text:"Trebell Code does not expose a client-defined dynamic tool for this call."}],success:false});
+      return;
+    }
+    if(message.method==="item/commandExecution/requestApproval" ||
+       message.method==="item/fileChange/requestApproval" ||
+       message.method==="item/permissions/requestApproval" ||
+       message.method==="applyPatchApproval" ||
+       message.method==="execCommandApproval"){
+      setApprovals(prev=>[...prev,message]);
+      return;
+    }
+    client.reject(message.id,-32601,"Unsupported Trebell client request: "+message.method);
+  }
 
   function handleNotification(message){
     const p=message.params || {};
@@ -807,6 +838,9 @@ export default function App() {
       sandbox,
       ephemeral:false,
       threadSource:"trebell-code",
+      developerInstructions:webSearch
+        ? "Web research is allowed when useful to the task."
+        : "Do not use web search or browser research for this thread unless the user explicitly asks to re-enable it.",
     });
     const thread=result.thread;
     setActiveThread(thread);
@@ -947,7 +981,7 @@ export default function App() {
               </div>
             </div>}
           </div>
-          <Composer prompt={prompt} setPrompt={setPrompt} send={send} running={running} model={model} setModel={setModel} models={models} webSearch={webSearch} setWebSearch={setWebSearch} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} projectPath={projectPath} freebuff={freebuff} attachments={attachments} pickFiles={pickFiles} rpcStatus={rpcStatus}/>
+          <Composer prompt={prompt} setPrompt={setPrompt} send={send} running={running} model={model} setModel={setModel} models={models} webSearch={webSearch} setWebSearch={setWebSearch} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} projectPath={projectPath} freebuff={freebuff} attachments={attachments} pickFiles={pickFiles} rpcStatus={rpcStatus} openTools={()=>setSection("settings")}/>
         </>}
       </main>
       <RightRail running={running} stats={stats} events={events} approvals={approvals} resolveApproval={resolveApproval} openPanel={openPanelReal} freebuff={freebuff} model={model} setSection={setSection} rpcStatus={rpcStatus}/>
