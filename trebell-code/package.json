@@ -1,7 +1,7 @@
 {
   "name": "trebell-code",
-  "version": "0.9.0",
-  "description": "Trebell Code Desktop — T3-style local Codex agent harness with selectable Freebuff, AgentRouter, JustWorker, HCNSec, and Vyce AI inference.",
+  "version": "0.9.1",
+  "description": "Trebell Code Desktop — local Codex agent harness with selectable providers and a Responses compatibility bridge for chat-only inference APIs.",
   "type": "module",
   "license": "Apache-2.0",
   "bin": {
