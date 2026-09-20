@@ -9,7 +9,7 @@ name: Publish Trebell Code Desktop v0.7.0
 on:
   push:
     paths:
-      - ".github/workflows/desktop-release-v0.7.0.yml"
+      - "release-trigger-v0.7.0.txt"
   workflow_dispatch:
 
 permissions:
