@@ -64,21 +64,42 @@ jobs:
           $env:TREBELL_APP_SERVER_PORT = "23456"
           $env:TREBELL_GUI_DEBUG = "1"
 
-          $app = Start-Process -FilePath $installed.FullName -ArgumentList "--remote-debugging-port=9333" -PassThru
+          $stdout = "$env:RUNNER_TEMP\trebell-installed.stdout.log"
+          $stderr = "$env:RUNNER_TEMP\trebell-installed.stderr.log"
+          $app = Start-Process -FilePath $installed.FullName -ArgumentList "--remote-debugging-port=9333" -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
           $app.Id | Set-Content "$env:RUNNER_TEMP\trebell-installed.pid"
 
           $ready = $false
-          for ($i = 0; $i -lt 100; $i++) {
+          $lastBoot = $null
+          $lastProbeError = $null
+          for ($i = 0; $i -lt 160; $i++) {
             Start-Sleep -Milliseconds 500
             try {
               $boot = Invoke-RestMethod -Uri "http://127.0.0.1:3210/api/bootstrap" -TimeoutSec 2
+              $lastBoot = $boot
               if ($boot.appServerReady -eq $true -and $boot.version -eq "0.7.0") {
                 $ready = $true
                 break
               }
-            } catch {}
+            } catch {
+              $lastProbeError = $_.Exception.Message
+            }
+            if ($app.HasExited) { break }
           }
-          if (-not $ready) { throw "Installed Trebell Code never reached Codex app-server ready state." }
+
+          if (-not $ready) {
+            Write-Host "Installed process exited: $($app.HasExited)"
+            if ($app.HasExited) { Write-Host "Installed process exit code: $($app.ExitCode)" }
+            if ($lastBoot) { Write-Host "Last bootstrap: $($lastBoot | ConvertTo-Json -Depth 8 -Compress)" }
+            if ($lastProbeError) { Write-Host "Last bootstrap probe error: $lastProbeError" }
+            try {
+              $runtime = Invoke-RestMethod -Uri "http://127.0.0.1:3210/api/runtime" -TimeoutSec 3
+              Write-Host "Runtime: $($runtime | ConvertTo-Json -Depth 8 -Compress)"
+            } catch { Write-Host "Runtime probe failed: $($_.Exception.Message)" }
+            if (Test-Path $stdout) { Write-Host "--- Trebell stdout ---"; Get-Content $stdout -Tail 300 }
+            if (Test-Path $stderr) { Write-Host "--- Trebell stderr ---"; Get-Content $stderr -Tail 300 }
+            throw "Installed Trebell Code never reached Codex app-server ready state."
+          }
 
       - name: Verify installed Codex browser relay and command execution
         run: node tests/installed-relay-check.mjs http://127.0.0.1:3210
