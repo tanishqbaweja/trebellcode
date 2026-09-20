@@ -2,7 +2,7 @@ import React,{useEffect,useMemo,useRef,useState} from "react";
 import {
   BrainCircuit, Check, ChevronDown, CircleStop, Code2, Cpu, FileCode2, FileDiff, FolderCode,
   GitBranch, Globe2, HardDrive, Link2, ListTodo, MemoryStick, Network, Paperclip, Plus, Send,
-  ShieldCheck, Sparkles, SquareTerminal, WandSparkles, X, Zap, Coins, Mic,
+  ShieldCheck, Sparkles, SquareTerminal, WandSparkles, X, Zap, Coins, Mic, Camera,
   PanelRight, PanelBottom, MoreHorizontal
 } from "lucide-react";
 import { CodexRpcClient } from "./rpc.js";
@@ -136,7 +136,7 @@ const SLASH_COMMANDS=[
   ["/clear","Reset the current draft/thread view"],
 ];
 
-function Composer({prompt,setPrompt,onSend,running,providerReady,provider,login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels,setSelectedModels,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onPaste,onDrop,permissionMode,setPermissionMode,webSearch,setWebSearch,skills,onSkill,onFiles,settings,onStash,tokenUsage,workspaceMode,setWorkspaceMode}){
+function Composer({prompt,setPrompt,onSend,running,providerReady,provider,login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels,setSelectedModels,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,permissionMode,setPermissionMode,webSearch,setWebSearch,skills,onSkill,onFiles,settings,onStash,tokenUsage,workspaceMode,setWorkspaceMode}){
   const [modelsOpen,setModelsOpen]=useState(false);
   const [skillsOpen,setSkillsOpen]=useState(false);
   const [listening,setListening]=useState(false);
@@ -175,6 +175,7 @@ function Composer({prompt,setPrompt,onSend,running,providerReady,provider,login,
       <button className="circle-btn" onClick={onPickFiles}><Plus size={18}/></button>
       <button className={"pill-btn "+(webSearch?"active":"")} onClick={()=>setWebSearch(!webSearch)}><Globe2 size={14}/> Web</button>
       <button className="pill-btn" onClick={onFiles}><FileCode2 size={14}/> Files</button>
+      {window.trebellDesktop?.captureScreen&&<button className="circle-btn" onClick={onCaptureScreen} title="Capture desktop screenshot" aria-label="Capture desktop screenshot"><Camera size={15}/></button>}
       <div className="popover-wrap"><button className="pill-btn" onClick={()=>setSkillsOpen(!skillsOpen)}><WandSparkles size={14}/> Skills</button>{skillsOpen&&<div className="mini-popover">{skills.length?skills.map(s=><button key={s.path} onClick={()=>{onSkill(s);setSkillsOpen(false)}}><strong>{"$"}{s.name}</strong><span>{s.description}</span></button>):<p>No enabled skills found.</p>}</div>}</div>
       <select className="permission-picker" value={permissionMode} onChange={e=>setPermissionMode(e.target.value)}><option value="supervised">Supervised</option><option value="auto">Auto</option><option value="full">Full access</option><option value="read-only">Read only</option></select>
       <select className="workspace-mode" value={workspaceMode} onChange={e=>setWorkspaceMode(e.target.value)}><option value="current">Current workspace</option><option value="worktree">New worktree</option></select>
@@ -446,6 +447,12 @@ export default function App(){
   function removeContext(path){setContextChips(prev=>prev.filter(chip=>chip.path!==path));setAttachments(prev=>prev.filter(item=>item!==path))}
   async function pickFiles(){const p=await window.trebellDesktop?.pickFiles?.();if(p?.length){await addFiles(p);return p}return[]}
   async function blobAttachment(file){const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(",")[1]||"");reader.onerror=reject;reader.readAsDataURL(file)});return api("/api/attachments/blob",{method:"POST",body:{name:file.name,mime:file.type,dataBase64:data}})}
+  async function captureDesktop(){
+    const shot=await window.trebellDesktop?.captureScreen?.();
+    if(!shot?.dataUrl)throw new Error("Desktop screenshot is unavailable.");
+    const d=await api("/api/attachments/blob",{method:"POST",body:{name:"desktop-snapshot.png",mime:"image/png",dataBase64:String(shot.dataUrl).split(",")[1]||""}});
+    await addContextPath(d.path,{kind:"computer",label:"Desktop snapshot",detail:(shot.width&&shot.height)?shot.width+"×"+shot.height:"PNG capture"});
+  }
   async function onPaste(e){const files=[...(e.clipboardData?.files||[])];if(files.length){e.preventDefault();const uploaded=[];for(const f of files.slice(0,8-attachments.length)){try{uploaded.push((await blobAttachment(f)).path)}catch{}}await addFiles(uploaded);return}const text=e.clipboardData?.getData("text/plain")||"";if(text.length>=32768){e.preventDefault();const d=await api("/api/attachments/text",{method:"POST",body:{name:"pasted-context.txt",text}});await addFiles([d.path])}}
   async function onDrop(e){e.preventDefault();const files=[...(e.dataTransfer?.files||[])];const uploaded=[];for(const f of files.slice(0,8-attachments.length)){try{uploaded.push((await blobAttachment(f)).path)}catch{}}await addFiles(uploaded)}
   async function attachExcerpt(text){if(!text.trim())return;await addContextAttachment({name:"terminal-context.txt",text,kind:"terminal",label:"Terminal excerpt",detail:text.split(/\r?\n/).length+" lines"});setPanel(null)}
@@ -569,7 +576,7 @@ export default function App(){
             </div>
           </div>
 
-          <Composer prompt={prompt} setPrompt={setPrompt} onSend={send} running={running} providerReady={providerReady} provider={provider} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} selectedModels={selectedModels} setSelectedModels={setSelectedModels} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} webSearch={webSearch} setWebSearch={setWebSearch} skills={skills} onSkill={onSkill} onFiles={()=>openRightPanel("files")} settings={settings} onStash={stashPrompt} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode}/>
+          <Composer prompt={prompt} setPrompt={setPrompt} onSend={send} running={running} providerReady={providerReady} provider={provider} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} selectedModels={selectedModels} setSelectedModels={setSelectedModels} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onCaptureScreen={()=>captureDesktop().catch(error=>setEvents(prev=>[...prev,{id:"screen-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} webSearch={webSearch} setWebSearch={setWebSearch} skills={skills} onSkill={onSkill} onFiles={()=>openRightPanel("files")} settings={settings} onStash={stashPrompt} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="terminal-drawer-head"><span><SquareTerminal size={14}/> Terminal</span><div><button onClick={()=>attachExcerpt("")} aria-hidden="true" tabIndex={-1} className="terminal-head-spacer"/><button onClick={()=>setPanel(null)} aria-label="Close terminal"><X size={15}/></button></div></div>
