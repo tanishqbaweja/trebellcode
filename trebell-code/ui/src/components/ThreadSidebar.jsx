@@ -1,6 +1,6 @@
 import React from "react";
 import {
-  Archive, Bot, CircleDollarSign, Clock3, Folder, GitBranch, Globe2, History,
+  Archive, Bot, Clock3, Folder, Globe2, History,
   MoreHorizontal, Pin, Plus, Search, Settings, SlidersHorizontal
 } from "lucide-react";
 
@@ -93,14 +93,12 @@ export default function ThreadSidebar({
     <div className="sidebar-footer">
       <div className="sidebar-utilities">
         <UtilityButton Icon={Folder} label="Projects" active={section==="projects"} onClick={()=>setSection("projects")}/>
-        <UtilityButton Icon={GitBranch} label="Source Control" active={section==="source"} onClick={()=>setSection("source")}/>
-        <UtilityButton Icon={Globe2} label="Preview" active={section==="preview"} onClick={()=>setSection("preview")}/>
+        <UtilityButton Icon={Globe2} label="Browser" active={section==="preview"} onClick={()=>setSection("preview")}/>
         <UtilityButton Icon={Bot} label="Agents" active={section==="agents"} onClick={()=>setSection("agents")}/>
-        {provider==="freebuff"&&<UtilityButton Icon={CircleDollarSign} label="Freebuff" active={section==="freebuff"} onClick={()=>setSection("freebuff")}/>}
         <UtilityButton Icon={History} label="History" active={section==="history"} onClick={()=>setSection("history")}/>
         <UtilityButton Icon={Settings} label="Settings" active={section==="settings"} onClick={()=>setSection("settings")}/>
       </div>
-      <div className="sidebar-provider"><span className="provider-dot"/><div><strong>{providerLabel}</strong><span>Codex harness</span></div></div>
+      <button className="sidebar-provider" onClick={()=>setSection(provider==="freebuff"?"freebuff":"settings")} title={"Configure "+providerLabel}><span className="provider-dot"/><div><strong>{providerLabel}</strong><span>via Codex harness</span></div><MoreHorizontal size={13}/></button>
     </div>
   </aside>;
 }
