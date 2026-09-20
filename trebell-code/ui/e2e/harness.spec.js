@@ -13,7 +13,7 @@ test("Trebell Code harness renders and runs a complete demo turn", async ({ page
   await page.getByTestId("send").click();
 
   await expect(page.getByText("Mock Freebuff reply: Build and validate a private local converter.")).toBeVisible({timeout:10000});
-  await expect(page.getByText("Freebuff direct path")).toBeVisible();
+  await expect(page.getByRole("main").getByText("Freebuff direct path")).toBeVisible();
 
   await page.getByText("Edit Files").click();
   await expect(page.getByTestId("drawer")).toBeVisible();
