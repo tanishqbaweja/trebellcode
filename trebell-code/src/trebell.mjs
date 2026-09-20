@@ -7,6 +7,7 @@ import { chooseModel, health, isLoggedIn, listModels, logout, runLogin, startBri
 import { runCodex } from "./codex.mjs";
 import { TrebellStateStore } from "./trebell-state.mjs";
 import { ProviderManager, normalizeProviderId } from "./provider-manager.mjs";
+import { startProviderBridge } from "./provider-bridge.mjs";
 
 export const VERSION = (()=>{try{return String(JSON.parse(readFileSync(new URL("../package.json", import.meta.url),"utf8")).version||"0.0.0")}catch{return "0.0.0"}})();
 
@@ -133,13 +134,18 @@ async function runCommand(args) {
   if (!models.length) throw new Error(`No models are available for ${providers.get(provider).name}.`);
   if (parsed.model && !models.includes(parsed.model)) throw new Error(`Model "${parsed.model}" is not available for ${providers.get(provider).name}.`);
   const selectedModel = parsed.model || models[0];
-  console.log(`Trebell Code · provider: ${providers.get(provider).name} · model: ${selectedModel}`);
-  return await runCodex({
-    model: selectedModel,
-    provider,
-    forwarded: parsed.forwarded,
-    env: providers.childEnv(provider, process.env),
-  });
+  const compatibilityBridge = await startProviderBridge({ providerManager: providers, provider });
+  try {
+    console.log(`Trebell Code · provider: ${providers.get(provider).name} · model: ${selectedModel}`);
+    return await runCodex({
+      model: selectedModel,
+      provider,
+      forwarded: parsed.forwarded,
+      env: process.env,
+    });
+  } finally {
+    await compatibilityBridge.close().catch(()=>{});
+  }
 }
 
 async function modelsCommand(args) {
