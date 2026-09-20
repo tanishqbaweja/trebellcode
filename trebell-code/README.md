@@ -26,7 +26,7 @@ trebell --model freebuff/deepseek/deepseek-v4-flash
 ## What happens when you run it
 
 1. Trebell Code creates `~/.trebell-code/codex/config.toml`.
-2. It starts the freebuff2api bridge on localhost only.
+2. It starts the bundled freebuff2api bridge on localhost only.
 3. freebuff2api authenticates with the Freebuff account stored under `~/.trebell-code/freebuff2api`.
 4. The Codex runtime is launched with a custom `freebuff` model provider using the OpenAI-compatible Chat Completions wire API exposed by freebuff2api.
 5. The runtime keeps Codex filesystem, shell, approval, MCP, diff, history, and agent behavior. Trebell owns the sign-in, provider configuration, storage paths, command name, and visible terminal branding.
