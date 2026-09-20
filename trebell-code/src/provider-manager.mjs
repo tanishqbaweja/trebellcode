@@ -1,3 +1,4 @@
+import { TREBELL_USER_AGENT } from "./version.mjs";
 import { adaptAnthropicResponse, chatToAnthropic } from "./anthropic-chat-adapter.mjs";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -210,7 +211,7 @@ export class ProviderManager {
           "anthropic-version": "2023-06-01",
           "Content-Type": "application/json",
           "Accept": anthropicBody.stream ? "text/event-stream, application/json" : "application/json",
-          "User-Agent": "Trebell-Code/0.9.1",
+          "User-Agent": TREBELL_USER_AGENT,
         },
         body: JSON.stringify(anthropicBody),
         signal: signal || AbortSignal.timeout(300_000),
@@ -224,7 +225,7 @@ export class ProviderManager {
         Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
         "Accept": chatBody.stream ? "text/event-stream, application/json" : "application/json",
-        "User-Agent": "Trebell-Code/0.9.1",
+        "User-Agent": TREBELL_USER_AGENT,
       },
       body: JSON.stringify(chatBody),
       signal: signal || AbortSignal.timeout(300_000),
