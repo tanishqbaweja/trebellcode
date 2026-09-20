@@ -156,15 +156,16 @@ export class ProviderManager {
   async models(providerId) {
     const provider = this.get(providerId);
     if (provider.id === "freebuff") return { models: [], source: "freebuff" };
-    if (provider.requiresKey && !this.hasKey(provider.id)) {
-      return { models: [], source: "none", error: "API key required" };
-    }
     if (provider.staticModels) {
       return {
         models: [...provider.staticModels],
         source: "static",
         metadata: provider.staticModels.map((id) => ({ id, provider: provider.id })),
+        ...(provider.requiresKey && !this.hasKey(provider.id) ? { error: "API key required" } : {}),
       };
+    }
+    if (provider.requiresKey && !this.hasKey(provider.id)) {
+      return { models: [], source: "none", error: "API key required" };
     }
 
     const response = await this.fetchFn(provider.baseUrl + "/models", {
