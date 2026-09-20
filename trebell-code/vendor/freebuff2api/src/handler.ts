@@ -19,6 +19,7 @@ import type { RunManager } from "./runs.ts";
 import { TOKEN_COOLDOWN_MS, WaitingRoomError, tokenLabel, type TokenManager } from "./session.ts";
 import { UpstreamError, type UpstreamClient } from "./upstream.ts";
 import { isPublicUpstreamFallbackStatus, type PublicUpstreamRouterLike } from "./public-upstream.ts";
+import { adaptResponsesRequest } from "./responses-adapter.ts";
 
 export { DEFAULT_MAX_BODY_BYTES };
 
@@ -95,6 +96,8 @@ export function createHandler(deps: HandlerDeps): (request: Request) => Promise<
         return models(deps, startedAt);
       case "/v1/chat/completions":
         return chatCompletions(deps, request);
+      case "/v1/responses":
+        return adaptResponsesRequest(request, (chatRequest) => chatCompletions(deps, chatRequest));
       case "/v1/images/generations":
         return imageGenerations(deps, request);
       default:
