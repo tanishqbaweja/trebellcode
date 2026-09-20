@@ -33,12 +33,13 @@ test("Responses request is translated to chat messages and function tools", () =
 
 test("Chat SSE is translated back into Responses SSE with tool calls", async () => {
   const encoder=new TextEncoder();
+  const event=(value)=>`data: ${JSON.stringify(value)}\n\n`;
   const source=new ReadableStream({
     start(controller){
-      controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"Hello "}}]}\n\n'));
-      controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"world"}}]}\n\n'));
-      controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_7","function":{"name":"shell","arguments":"{\"cmd\":\"ls\"}"}}]}}]}\n\n'));
-      controller.enqueue(encoder.encode('data: {"choices":[{"delta":{}}],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}}\n\n'));
+      controller.enqueue(encoder.encode(event({choices:[{delta:{content:"Hello "}}]})));
+      controller.enqueue(encoder.encode(event({choices:[{delta:{content:"world"}}]})));
+      controller.enqueue(encoder.encode(event({choices:[{delta:{tool_calls:[{index:0,id:"call_7",function:{name:"shell",arguments:JSON.stringify({cmd:"ls"})}}]}}]})));
+      controller.enqueue(encoder.encode(event({choices:[{delta:{}}],usage:{prompt_tokens:10,completion_tokens:4,total_tokens:14}})));
       controller.enqueue(encoder.encode('data: [DONE]\n\n'));
       controller.close();
     },
