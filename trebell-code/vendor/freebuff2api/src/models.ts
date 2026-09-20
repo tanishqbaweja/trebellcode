@@ -156,13 +156,28 @@ export class ModelRegistry {
           ),
         ),
       ]);
-      const agentModels = parseFreeAgents(files[0], files.slice(1).join("\n"));
+      const constantsSource = files.slice(1).join("\n");
+      const agentModels = parseFreeAgents(files[0], constantsSource);
       if (agentModels.size === 0) {
         this.log("[models] parsed 0 agents from upstream source; using fallback");
         return false;
       }
+      const pickerModels = parseFreebuffPickerModels(constantsSource);
+      if (pickerModels.size === 0) {
+        this.log("[models] parsed 0 public picker models from upstream source; keeping fallback");
+        return false;
+      }
+      const publicAgentModels = new Map<string, string[]>();
+      for (const [agent, models] of agentModels) {
+        const publicModels = models.filter((model) => pickerModels.has(model));
+        if (publicModels.length > 0) publicAgentModels.set(agent, publicModels);
+      }
+      if (publicAgentModels.size === 0) {
+        this.log("[models] no public picker models had routable agents; keeping fallback");
+        return false;
+      }
       const before = new Set(this.allModels);
-      this.applyMapping(agentModels, "remote");
+      this.applyMapping(publicAgentModels, "remote");
       const added = [...this.allModels].filter((model) => !before.has(model));
       const removed = [...before].filter((model) => !this.allModels.includes(model));
       if (added.length > 0 || removed.length > 0) {
@@ -338,6 +353,74 @@ class ConstantResolver {
 
     return null;
   }
+}
+
+
+function stripTypeScriptComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/.*$/gm, "");
+}
+
+function findBalancedBracket(source: string, openIndex: number): number {
+  let depth = 0;
+  let inString: string | null = null;
+  for (let i = openIndex; i < source.length; i++) {
+    const ch = source[i];
+    if (inString) {
+      if (ch === "\\") i++;
+      else if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") {
+      inString = ch;
+      continue;
+    }
+    if (ch === "[") depth++;
+    else if (ch === "]") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Parse only the models Freebuff exposes in its regular FREEBUFF_MODELS picker.
+ *
+ * free-agents.ts also contains provisioned, early-access, retired, specialist,
+ * and staff-only roots. Those are valid server-side mappings but must not be
+ * advertised by Trebell's normal model picker. In particular, z-ai/glm-5.3 is
+ * provisioned while z-ai/glm-5.3-flash is the public picker model.
+ */
+export function parseFreebuffPickerModels(constantsSource: string): Set<string> {
+  const resolver = new ConstantResolver(constantsSource);
+  const modelObjectIds = new Map<string, string>();
+  const objectRe = /(?:export\s+)?const\s+([A-Za-z0-9_]+)\s*=\s*\{/g;
+  for (const match of constantsSource.matchAll(objectRe)) {
+    const start = (match.index ?? 0) + match[0].length - 1;
+    const end = findBalancedBrace(constantsSource, start);
+    if (end === -1) continue;
+    const body = constantsSource.slice(start, end + 1);
+    const idMatch = /\bid\s*:\s*('(?:[^'\\]|\\.)*'|[A-Za-z_][A-Za-z0-9_.]*)/.exec(body);
+    if (!idMatch) continue;
+    const id = resolver.resolve(idMatch[1]);
+    if (id) modelObjectIds.set(match[1], id);
+  }
+
+  const arrayMatch = /export\s+const\s+FREEBUFF_MODELS\s*=\s*\[/.exec(constantsSource);
+  if (!arrayMatch || arrayMatch.index === undefined) return new Set();
+  const start = arrayMatch.index + arrayMatch[0].length - 1;
+  const end = findBalancedBracket(constantsSource, start);
+  if (end === -1) return new Set();
+
+  const body = stripTypeScriptComments(constantsSource.slice(start + 1, end));
+  const result = new Set<string>();
+  for (const token of body.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) {
+    const id = modelObjectIds.get(token);
+    if (id) result.add(id);
+  }
+  return result;
 }
 
 /** Parse `'agentId': new Set([ ... ])` blocks from free-agents.ts. */
