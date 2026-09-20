@@ -83,5 +83,8 @@
       "shortcutName": "Trebell Code",
       "uninstallDisplayName": "Trebell Code"
     }
+  },
+  "optionalDependencies": {
+    "@openai/codex-win32-x64": "0.154.0"
   }
 }
