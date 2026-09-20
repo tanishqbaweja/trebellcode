@@ -66,10 +66,21 @@ function ensureTray(){
   tray.on("double-click",()=>{windowRef?.show();windowRef?.focus()});
   return tray;
 }
+const BACKGROUND_LOGIN_ARGS=["--background"];
+
+function backgroundLoginSettings(){
+  if(!app.isPackaged)return {openAtLogin:false,executableWillLaunchAtLogin:false,launchItems:[]};
+  return app.getLoginItemSettings({args:BACKGROUND_LOGIN_ARGS});
+}
+
 function setBackgroundEnabled(value){
   backgroundEnabled=Boolean(value);
   saveDesktopPrefs({...loadDesktopPrefs(),backgroundEnabled});
-  if(app.isPackaged)app.setLoginItemSettings({openAtLogin:backgroundEnabled,args:backgroundEnabled?["--background"]:[]});
+  if(app.isPackaged)app.setLoginItemSettings({
+    openAtLogin:backgroundEnabled,
+    args:BACKGROUND_LOGIN_ARGS,
+    enabled:backgroundEnabled,
+  });
   if(backgroundEnabled)ensureTray();
   else if(tray){tray.destroy();tray=null}
   return backgroundEnabled;
@@ -188,7 +199,7 @@ if(!lock){
     windowRef.isMaximized() ? windowRef.unmaximize() : windowRef.maximize();
   });
   ipcMain.on("window:close",()=>windowRef?.close());
-  ipcMain.handle("desktop:background:get",()=>({enabled:backgroundEnabled,openAtLogin:app.getLoginItemSettings().openAtLogin}));
+  ipcMain.handle("desktop:background:get",()=>({enabled:backgroundEnabled,...backgroundLoginSettings()}));
   ipcMain.handle("desktop:background:set",(_event,value)=>({enabled:setBackgroundEnabled(value)}));
   ipcMain.on("desktop:notify",(_event,payload={})=>{
     if(!Notification.isSupported()) return;
