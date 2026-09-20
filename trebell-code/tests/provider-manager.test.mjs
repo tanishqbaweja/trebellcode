@@ -65,3 +65,55 @@ test("Vyce AI models are loaded live from /v1/models", async () => {
   assert.deepEqual(result.models,["auto","claude-sonnet-4-6","deepseek-v4-flash","gpt-astra"]);
   assert.equal(result.source,"live");
 });
+
+
+test("JustWorker uses the documented Anthropic-compatible messages endpoint", async () => {
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
+  const env={...process.env,TREBELL_HOME:root};
+  let seen=null;
+  const manager=new ProviderManager({env,fetchFn:async(url,init)=>{
+    seen={url,headers:init.headers,body:JSON.parse(init.body)};
+    return new Response(JSON.stringify({
+      id:"msg_jw",
+      type:"message",
+      role:"assistant",
+      model:"claude-opus-4-8",
+      content:[{type:"text",text:"justworker-ok"}],
+      stop_reason:"end_turn",
+      usage:{input_tokens:4,output_tokens:2},
+    }),{status:200,headers:{"content-type":"application/json"}});
+  }});
+  manager.setKey("justworker","jw-key");
+  const response=await manager.forwardChat("justworker",{
+    model:"claude-opus-4-8",
+    messages:[{role:"user",content:"hello"}],
+    stream:false,
+  });
+  const payload=await response.json();
+  assert.equal(seen.url,"https://api.justwoker.icu/v1/messages");
+  assert.equal(seen.headers["x-api-key"],"jw-key");
+  assert.equal(seen.headers["anthropic-version"],"2023-06-01");
+  assert.equal(seen.body.messages[0].content[0].text,"hello");
+  assert.equal(payload.choices[0].message.content,"justworker-ok");
+});
+
+test("HCNSec chat forwarding explicitly requests SSE when Codex streams", async () => {
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
+  const env={...process.env,TREBELL_HOME:root};
+  let seen=null;
+  const manager=new ProviderManager({env,fetchFn:async(url,init)=>{
+    seen={url,headers:init.headers,body:JSON.parse(init.body)};
+    return new Response('data: [DONE]\\n\\n',{status:200,headers:{"content-type":"text/event-stream"}});
+  }});
+  manager.setKey("hcnsec","hc-key");
+  const response=await manager.forwardChat("hcnsec",{
+    model:"glm-5.3",
+    messages:[{role:"user",content:"hello"}],
+    stream:true,
+  });
+  assert.equal(response.status,200);
+  assert.equal(seen.url,"https://api.hcnsec.cn/v1/chat/completions");
+  assert.equal(seen.headers.Authorization,"Bearer hc-key");
+  assert.match(seen.headers.Accept,/text\/event-stream/);
+  assert.equal(seen.body.stream,true);
+});
