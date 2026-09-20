@@ -60,6 +60,11 @@ function parseRetryAfterMs(value: string | null): number | undefined {
  */
 export const CLI_USER_AGENT = "Bun/1.3.14";
 
+// Stable, explicit identity signal retained on every upstream request so
+// Trebell Code stays distinguishable even while matching Freebuff protocol behavior.
+export const TREBELL_CLIENT_HEADER = "x-trebell-client";
+export const TREBELL_CLIENT_VALUE = "Trebell-Code/0.1.0";
+
 export interface UpstreamClientOptions {
   baseURL: string;
   requestTimeoutMs: number;
@@ -104,6 +109,7 @@ export class UpstreamClient {
       "User-Agent": this.userAgent,
       ...(this.actingUserId ? { "x-freebuff-acting-user-id": this.actingUserId } : {}),
       ...opts.headers,
+      [TREBELL_CLIENT_HEADER]: TREBELL_CLIENT_VALUE,
     };
     if (opts.body !== undefined && headers["Content-Type"] === undefined) {
       headers["Content-Type"] = "application/json";
