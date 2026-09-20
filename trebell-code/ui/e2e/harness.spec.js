@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-test("Trebell Code renders functional harness surfaces and completes a Freebuff turn", async ({ page }) => {
+test("Trebell Code renders the harness and scopes models to the selected provider", async ({ page }) => {
   await page.addInitScript(()=>{
     const snapshot={url:"http://fixture.local",title:"Preview fixture",text:"Checkout",elements:[{ref:"e7",tag:"button",text:"Submit order",href:""}]};
     Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{browser:{navigate:async()=>({ok:true}),show:async()=>({ok:true}),snapshot:async()=>snapshot,screenshot:async()=>({dataUrl:"data:image/png;base64,iVBORw0KGgo="}),importCookies:async()=>({ok:true,imported:2,failed:0}),close:async()=>({ok:true})}}});
@@ -48,6 +48,47 @@ test("Trebell Code renders functional harness surfaces and completes a Freebuff 
   await page.getByText("Settings",{exact:true}).first().click();
   await expect(page.getByRole("heading",{name:"Settings"})).toBeVisible();
   await expect(page.getByText("Follow-up behavior")).toBeVisible();
+
+  const providerSelector=page.getByTestId("provider-selector");
+
+  await providerSelector.selectOption("justworker");
+  await page.getByText("Current thread",{exact:true}).click();
+  await expect(page.getByTestId("model-picker").locator("option")).toHaveCount(1);
+  await expect(page.getByTestId("model-picker")).toHaveValue("claude-opus-4-8");
+
+  await page.getByText("Settings",{exact:true}).first().click();
+  await providerSelector.selectOption("hcnsec");
+  await page.getByText("Current thread",{exact:true}).click();
+  await expect(page.getByTestId("model-picker").locator("option")).toHaveCount(1);
+  await expect(page.getByTestId("model-picker")).toHaveValue("glm-5.3");
+
+  await page.getByText("Settings",{exact:true}).first().click();
+  await providerSelector.selectOption("vyceai");
+  await page.getByText("Current thread",{exact:true}).click();
+  await expect(page.getByTestId("model-picker").locator("option")).toHaveCount(4);
+  await expect(page.getByTestId("model-picker").locator("option")).toHaveText([
+    "claude-sonnet-4-6",
+    "gpt-astra",
+    "deepseek-v4-flash",
+    "auto",
+  ]);
+
+  await page.getByText("Settings",{exact:true}).first().click();
+  await providerSelector.selectOption("agentrouter");
+  await page.getByText("Current thread",{exact:true}).click();
+  await expect(page.getByTestId("model-picker").locator("option")).toHaveCount(4);
+  await expect(page.getByTestId("model-picker").locator("option")).toHaveText([
+    "claude-opus-4-8",
+    "gpt-5.5",
+    "glm-5.2",
+    "kimi-k2.6",
+  ]);
+
+  await page.getByText("Settings",{exact:true}).first().click();
+  await providerSelector.selectOption("freebuff");
+  await page.getByText("Current thread",{exact:true}).click();
+  await expect(page.getByTestId("model-picker").locator("option")).toHaveCount(3);
+  await expect(page.getByTestId("freebuff-card")).toBeVisible();
 
   await page.screenshot({path:"test-results/trebell-code-ui.png",fullPage:true});
 });
