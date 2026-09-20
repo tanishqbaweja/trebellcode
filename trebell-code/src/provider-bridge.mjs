@@ -95,6 +95,10 @@ export async function startProviderBridge({
         }
         const body = await readJson(req);
         const response = await providerManager.forwardChat(selectedProvider, body);
+        if (!response.ok) {
+          const details = await response.clone().text().catch(()=>"");
+          log(`[provider-bridge] ${selectedProvider} chat upstream HTTP ${response.status}: ${details.slice(0,1200)}\n`);
+        }
         return await writeWebResponse(res, response);
       }
 
@@ -108,6 +112,10 @@ export async function startProviderBridge({
           body,
           (chatBody) => providerManager.forwardChat(selectedProvider, chatBody),
         );
+        if (!response.ok) {
+          const details = await response.clone().text().catch(()=>"");
+          log(`[provider-bridge] ${selectedProvider} Responses upstream HTTP ${response.status}: ${details.slice(0,1200)}\n`);
+        }
         return await writeWebResponse(res, response);
       }
 
