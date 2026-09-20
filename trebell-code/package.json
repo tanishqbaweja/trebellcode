@@ -1,7 +1,7 @@
 {
   "name": "trebell-code",
-  "version": "0.5.0",
-  "description": "Trebell Code Desktop — functional Codex harness UI with Freebuff inference.",
+  "version": "0.6.0",
+  "description": "Trebell Code Desktop — full local agent harness control surface with Freebuff inference.",
   "type": "module",
   "license": "Apache-2.0",
   "bin": {
@@ -47,7 +47,7 @@
     "productName": "Trebell Code",
     "artifactName": "Trebell-Code-Setup-${version}.${ext}",
     "asar": true,
-    "npmRebuild": false,
+    "npmRebuild": true,
     "directories": {
       "output": "desktop-dist"
     },
@@ -63,7 +63,8 @@
     "asarUnpack": [
       "node_modules/@openai/codex-win32-x64/**/*",
       "node_modules/@openai/codex-win32-arm64/**/*",
-      "vendor/freebuff2api/dist/**/*"
+      "vendor/freebuff2api/dist/**/*",
+      "node_modules/node-pty/**/*"
     ],
     "win": {
       "target": [

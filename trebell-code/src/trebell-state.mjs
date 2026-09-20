@@ -1,0 +1,117 @@
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { trebellHome } from "./paths.mjs";
+
+const DEFAULT_STATE = Object.freeze({
+  version: 1,
+  projects: [],
+  threadMeta: {},
+  settings: {
+    followUpMode: "queue",
+    defaultPermissionMode: "supervised",
+    autoPull: false,
+    appearance: "dark",
+    keyboardShortcuts: {},
+  },
+  stashes: [],
+  checkpoints: [],
+});
+
+function clone(value){ return JSON.parse(JSON.stringify(value)); }
+
+export class TrebellStateStore {
+  constructor(env=process.env){
+    this.path=join(trebellHome(env),"ui-state.json");
+    mkdirSync(dirname(this.path),{recursive:true});
+    this.state=this.#load();
+  }
+  #load(){
+    try{
+      const parsed=JSON.parse(readFileSync(this.path,"utf8"));
+      return {
+        ...clone(DEFAULT_STATE),
+        ...parsed,
+        settings:{...clone(DEFAULT_STATE.settings),...(parsed.settings||{})},
+        projects:Array.isArray(parsed.projects)?parsed.projects:[],
+        threadMeta:parsed.threadMeta&&typeof parsed.threadMeta==="object"?parsed.threadMeta:{},
+        stashes:Array.isArray(parsed.stashes)?parsed.stashes:[],
+        checkpoints:Array.isArray(parsed.checkpoints)?parsed.checkpoints:[],
+      };
+    }catch{return clone(DEFAULT_STATE);}
+  }
+  #save(){
+    const tmp=this.path+".tmp";
+    writeFileSync(tmp,JSON.stringify(this.state,null,2),{encoding:"utf8",mode:0o600});
+    renameSync(tmp,this.path);
+  }
+  snapshot(){ return clone(this.state); }
+  settings(){ return clone(this.state.settings); }
+  updateSettings(patch={}){
+    this.state.settings={...this.state.settings,...patch};
+    this.#save();
+    return this.settings();
+  }
+  projects(){ return clone(this.state.projects).sort((a,b)=>(b.lastOpenedAt||0)-(a.lastOpenedAt||0)); }
+  touchProject(path,{name=null,defaultModel=null,permissionMode=null,workspaceMode=null}={}){
+    const now=Date.now();
+    let project=this.state.projects.find(p=>p.path===path);
+    if(!project){
+      project={id:randomUUID(),path,name:name||path.split(/[\\/]/).filter(Boolean).pop()||path,createdAt:now,lastOpenedAt:now};
+      this.state.projects.push(project);
+    }
+    project.lastOpenedAt=now;
+    if(name!=null) project.name=name;
+    if(defaultModel!=null) project.defaultModel=defaultModel;
+    if(permissionMode!=null) project.permissionMode=permissionMode;
+    if(workspaceMode!=null) project.workspaceMode=workspaceMode;
+    this.#save();
+    return clone(project);
+  }
+  removeProject(id){
+    this.state.projects=this.state.projects.filter(p=>p.id!==id);
+    this.#save();
+  }
+  threadMeta(threadId){
+    return clone(this.state.threadMeta[threadId]||{});
+  }
+  updateThreadMeta(threadId,patch={}){
+    const current=this.state.threadMeta[threadId]||{};
+    const next={...current,...patch,updatedAt:Date.now()};
+    for(const [key,value] of Object.entries(next)) if(value===undefined) delete next[key];
+    this.state.threadMeta[threadId]=next;
+    this.#save();
+    return clone(next);
+  }
+  listThreadMeta(){ return clone(this.state.threadMeta); }
+  addStash({text="",attachments=[],projectPath=null}={}){
+    const stash={id:randomUUID(),text,attachments,projectPath,createdAt:Date.now()};
+    this.state.stashes.unshift(stash);
+    this.state.stashes=this.state.stashes.slice(0,50);
+    this.#save();
+    return clone(stash);
+  }
+  listStashes(){ return clone(this.state.stashes); }
+  removeStash(id){
+    this.state.stashes=this.state.stashes.filter(s=>s.id!==id);
+    this.#save();
+  }
+  addCheckpoint(checkpoint){
+    const item={id:checkpoint.id||randomUUID(),createdAt:Date.now(),...checkpoint};
+    this.state.checkpoints.unshift(item);
+    this.state.checkpoints=this.state.checkpoints.slice(0,200);
+    this.#save();
+    return clone(item);
+  }
+  updateCheckpoint(id,patch){
+    const item=this.state.checkpoints.find(c=>c.id===id);
+    if(!item) return null;
+    Object.assign(item,patch);
+    this.#save();
+    return clone(item);
+  }
+  checkpoints(threadId=null){
+    const items=threadId?this.state.checkpoints.filter(c=>c.threadId===threadId):this.state.checkpoints;
+    return clone(items);
+  }
+}
