@@ -54,7 +54,7 @@ function startAppServer({appPort,env=process.env,mock=false}){
     cwd:process.cwd(),
     env:{...env,CODEX_HOME:codexHome(env)},
     windowsHide:true,
-    shell:process.platform==="win32",
+    shell:process.platform==="win32" && !command.toLowerCase().endsWith(".exe"),
     stdio:["ignore","pipe","pipe"],
   });
   child.stdout?.on("data",chunk=>{ if(process.env.TREBELL_GUI_DEBUG==="1") process.stdout.write(chunk); });
