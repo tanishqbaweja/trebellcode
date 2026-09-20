@@ -3,6 +3,7 @@ name: Publish Trebell Code Desktop v0.7.0
 # Runtime and tests now share package.json as the version source.
 # Windows shutdown validation waits for Codex child exit before cleanup.
 # Installed relay validation derives its expected version from package metadata.
+# Windows login-item reads use the same --background args as registration.
 
 on:
   push:
