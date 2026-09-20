@@ -64,6 +64,18 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function normalizeProviderKey(value) {
+  let key = String(value || "").trim();
+  if (key.length >= 2) {
+    const first = key[0];
+    const last = key[key.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'") || (first === "`" && last === "`")) {
+      key = key.slice(1, -1).trim();
+    }
+  }
+  return key;
+}
+
 export class ProviderManager {
   constructor({ env = process.env, fetchFn = fetch } = {}) {
     this.env = env;
@@ -106,7 +118,7 @@ export class ProviderManager {
   key(providerId) {
     const provider = this.get(providerId);
     if (!provider.requiresKey) return "";
-    return String(this.secrets[provider.id] || this.env[provider.envKey] || "").trim();
+    return normalizeProviderKey(this.secrets[provider.id] || this.env[provider.envKey] || "");
   }
 
   hasKey(providerId) {
@@ -116,14 +128,7 @@ export class ProviderManager {
   setKey(providerId, value) {
     const provider = this.get(providerId);
     if (!provider.requiresKey) throw new Error(`${provider.name} does not use an API key here.`);
-    let key = String(value || "").trim();
-    if (key.length >= 2) {
-      const first = key[0];
-      const last = key[key.length - 1];
-      if ((first === '"' && last === '"') || (first === "'" && last === "'") || (first === "`" && last === "`")) {
-        key = key.slice(1, -1).trim();
-      }
-    }
+    const key = normalizeProviderKey(value);
     if (key) this.secrets[provider.id] = key;
     else delete this.secrets[provider.id];
     this.#save();
