@@ -11,9 +11,9 @@ function childEnv(env = process.env) {
   return next;
 }
 
-export function codexArgs({ model, forwarded = [] } = {}) {
+export function codexArgs({ model, provider = "freebuff", forwarded = [] } = {}) {
   const base = [
-    "-c", 'model_provider="freebuff"',
+    "-c", `model_provider="${provider}"`,
   ];
   if (model) base.push("-m", model);
   return [...base, ...forwarded];
@@ -75,13 +75,13 @@ async function runInherited(command, args, env) {
   });
 }
 
-export async function runCodex({ model, forwarded = [], env = process.env } = {}) {
+export async function runCodex({ model, provider = "freebuff", forwarded = [], env = process.env } = {}) {
   const command = codexBin(env);
   if (!existsSync(command) && !env.TREBELL_CODEX_BIN) {
     throw new Error(`Codex runtime was not installed at ${command}. Run npm install in Trebell Code.`);
   }
 
-  const args = codexArgs({ model, forwarded });
+  const args = codexArgs({ model, provider, forwarded });
   const nextEnv = childEnv(env);
 
   if (process.stdin.isTTY && process.stdout.isTTY && env.TREBELL_DISABLE_PTY !== "1") {
