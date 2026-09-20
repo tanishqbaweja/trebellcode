@@ -15,6 +15,10 @@ import { getFreebuffOverview } from "./freebuff-product.mjs";
 import { TrebellStateStore } from "./trebell-state.mjs";
 import { CheckpointService } from "./checkpoint-service.mjs";
 import { TerminalManager } from "./terminal-manager.mjs";
+
+const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
+  .then(text=>String(JSON.parse(text).version||"0.0.0"))
+  .catch(()=>"0.0.0");
 import {
   gitInfo, cloneRepository, createBranch, switchBranch, commitAll, fetchRepo, pullRepo, pushRepo,
   safeAutoPull, createWorktree, removeWorktree, sourceControlDiagnostics, listPullRequests, createPullRequest,
@@ -336,7 +340,7 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
         wsUrl:mock ? null : `ws://127.0.0.1:${port}/api/codex/ws`,
         cwd:process.cwd(),
         platform:process.platform,
-        version:"0.6.0",
+        version:TREBELL_VERSION,
       });
     }
     if(url.pathname==="/api/runtime"){
@@ -503,15 +507,15 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
     }
     if(url.pathname==="/api/update/check"){
       try{
-        const response=await fetch("https://api.github.com/repos/tanishqbaweja/trebellcode/releases/latest",{headers:{"User-Agent":"Trebell-Code/0.6.0"},signal:AbortSignal.timeout(8000)});
+        const response=await fetch("https://api.github.com/repos/tanishqbaweja/trebellcode/releases/latest",{headers:{"User-Agent":"Trebell-Code/"+TREBELL_VERSION},signal:AbortSignal.timeout(8000)});
         const item=await response.json();
-        return json(res,response.ok?200:502,{current:"0.6.0",latest:item.tag_name||null,url:item.html_url||null,name:item.name||null});
-      }catch(error){return json(res,502,{current:"0.6.0",error:error.message});}
+        return json(res,response.ok?200:502,{current:TREBELL_VERSION,latest:item.tag_name||null,url:item.html_url||null,name:item.name||null});
+      }catch(error){return json(res,502,{current:TREBELL_VERSION,error:error.message});}
     }
     if(url.pathname==="/api/diagnostics"){
       const cwd=url.searchParams.get("path")||process.cwd();
       return json(res,200,{
-        version:"0.6.0",
+        version:TREBELL_VERSION,
         runtime:{appServerReady:mock||await probeCodexReady(appPort),bridgeReady:mock||await health(DEFAULT_PORT),appServerExitCode:appServer?.child?.exitCode??null},
         state:{projects:state.projects(),settings:state.settings(),threadMeta:state.listThreadMeta()},
         git:await gitInfo(cwd).catch(error=>({error:error.message})),
