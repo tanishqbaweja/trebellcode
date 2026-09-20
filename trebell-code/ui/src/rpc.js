@@ -33,7 +33,7 @@ export class CodexRpcClient {
     });
 
     await this.request("initialize", {
-      clientInfo: { name: "trebell-code", title: "Trebell Code", version: "0.5.0" },
+      clientInfo: { name: "trebell-code", title: "Trebell Code", version: "0.6.0" },
       capabilities: { experimentalApi: true },
     });
     this.notify("initialized", {});
