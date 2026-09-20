@@ -37,7 +37,16 @@ jobs:
           Write-Host "Validating Trebell Code v$($pkg.version)"
 
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        shell: pwsh
+        run: |
+          $attempts = 3
+          for ($i = 1; $i -le $attempts; $i++) {
+            Write-Host "npm install attempt $i/$attempts"
+            npm install --no-audit --no-fund
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($i -eq $attempts) { throw "npm install failed after $attempts attempts." }
+            Start-Sleep -Seconds (5 * $i)
+          }
 
       - name: Run harness tests
         run: npm test
