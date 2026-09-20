@@ -9,7 +9,7 @@
     "trebell-code": "./bin/trebell.mjs"
   },
   "scripts": {
-    "test": "node --test tests/*.test.mjs",
+    "test": "node --import tsx --test tests/*.test.mjs",
     "doctor": "node ./bin/trebell.mjs doctor",
     "smoke:bridge": "node --import tsx ./vendor/freebuff2api/src/index.ts --help"
   },
