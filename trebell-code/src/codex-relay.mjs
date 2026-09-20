@@ -1,3 +1,4 @@
+import { TREBELL_USER_AGENT } from "./version.mjs";
 import { WebSocket, WebSocketServer } from "ws";
 
 export async function probeCodexReady(port, fetchImpl = fetch) {
@@ -49,8 +50,8 @@ export function attachCodexRelay(httpServer, {
     wss.handleUpgrade(request, socket, head, (browserSocket) => {
       const upstream = new WebSocket(targetUrl, {
         headers: {
-          "User-Agent": "Trebell-Code/0.5.0",
-          "x-trebell-client": "Trebell-Code/0.5.0",
+          "User-Agent": TREBELL_USER_AGENT,
+          "x-trebell-client": TREBELL_USER_AGENT,
         },
       });
       const queued = [];
