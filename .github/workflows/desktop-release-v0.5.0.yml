@@ -1,5 +1,5 @@
 name: Publish Trebell Code Desktop v0.5.0
-# Re-run after Windows child-process cleanup fix.
+# Re-run after Windows child-process cleanup and Electron shutdown fixes.
 
 on:
   push:
