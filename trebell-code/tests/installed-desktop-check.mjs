@@ -114,6 +114,10 @@ try {
   const screenshot=await mainPage.evaluate(()=>window.trebellDesktop.browser.screenshot());
   if(!screenshot?.dataUrl?.startsWith("data:image/png;base64,")) throw new Error("Agent browser screenshot is not a PNG data URL.");
 
+  const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureScreen());
+  if(!desktopSnapshot?.dataUrl?.startsWith("data:image/png;base64,")) throw new Error("Desktop snapshot is not a PNG data URL.");
+  if(!(desktopSnapshot.width>0&&desktopSnapshot.height>0)) throw new Error("Desktop snapshot dimensions are invalid.");
+
   const voice=await mainPage.evaluate(()=>{
     const supported=Boolean(window.SpeechRecognition||window.webkitSpeechRecognition);
     const button=document.querySelector(".mic-btn");
@@ -133,6 +137,7 @@ try {
     ok:true,
     background:{initial,afterEnable,afterDisable},
     browser:{url:snapshot.url,title:snapshot.title,elements:snapshot.elements?.length||0,screenshotBytes:screenshot.dataUrl.length,cookieImport},
+    desktopSnapshot:{width:desktopSnapshot.width,height:desktopSnapshot.height,bytes:desktopSnapshot.dataUrl.length},
     voice,
     providerCompatibility:{selected:providerSwitch.selected,runtime:providerRuntime},
   },null,2));
