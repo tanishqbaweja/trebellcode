@@ -143,6 +143,7 @@ function fakeModels(provider="freebuff"){
   if(provider==="agentrouter") return ["claude-opus-4-8","gpt-5.5","glm-5.2","kimi-k2.6"];
   if(provider==="justworker") return ["claude-opus-4-8"];
   if(provider==="hcnsec") return ["glm-5.3"];
+  if(provider==="vyceai") return ["claude-sonnet-4-6","gpt-astra","deepseek-v4-flash","auto"];
   return ["freebuff/deepseek/deepseek-v4-flash","freebuff/test/coding-large","freebuff/test/coding-fast"];
 }
 
