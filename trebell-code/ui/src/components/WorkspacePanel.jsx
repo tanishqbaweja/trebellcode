@@ -11,8 +11,8 @@ function languageFor(name=""){
   return Prism.languages.javascript;
 }
 
-export default function WorkspacePanel({projectPath,reviewedFiles=[],onReviewedChange,onAttachPath,onReviewComment}){
-  const [tab,setTab]=useState("files");
+export default function WorkspacePanel({projectPath,defaultTab="files",reviewedFiles=[],onReviewedChange,onAttachPath,onReviewComment}){
+  const [tab,setTab]=useState(defaultTab==="diff"?"diff":"files");
   const [entries,setEntries]=useState([]);
   const [query,setQuery]=useState("");
   const [searchResults,setSearchResults]=useState([]);
@@ -33,6 +33,7 @@ export default function WorkspacePanel({projectPath,reviewedFiles=[],onReviewedC
     setDiff(data);setLoading(false);
   }
   useEffect(()=>{refreshTree();refreshDiff();setFile(null);},[projectPath]);
+  useEffect(()=>{setTab(defaultTab==="diff"?"diff":"files")},[defaultTab]);
 
   useEffect(()=>{
     if(!query.trim()){setSearchResults([]);return;}
