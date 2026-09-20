@@ -30,22 +30,24 @@ trebell --provider vyceai --model claude-sonnet-4-6
 
 **Codex is the harness, not the model provider.** Trebell Code configures Codex to use exactly the provider selected in Settings.
 
-| Provider | Codex base URL | Model catalog |
+| Provider | Codex-facing base URL | Upstream |
 | --- | --- | --- |
-| Freebuff | local `freebuff2api` bridge | live authenticated Freebuff catalog |
-| AgentRouter | `https://co.agentrouter.org/v1` | live `GET /v1/models` for the configured key |
-| JustWorker.icu | `https://api.justwoker.icu/v1` | `claude-opus-4-8` |
-| HCNSec.cn | `https://api.hcnsec.cn/v1` | `glm-5.3` |
-| VyceAi | `https://vyceai.com/v1` | live `GET /v1/models` for the configured key |
+| Freebuff | local `freebuff2api` bridge | authenticated Freebuff |
+| AgentRouter | local Trebell Responses bridge | `https://co.agentrouter.org/v1/chat/completions` |
+| JustWorker.icu | local Trebell Responses bridge | `https://api.justwoker.icu/v1/chat/completions` |
+| HCNSec.cn | local Trebell Responses bridge | `https://api.hcnsec.cn/v1/chat/completions` |
+| VyceAi | local Trebell Responses bridge | `https://vyceai.com/v1/chat/completions` |
 
-The GUI model selector is replaced whenever the provider changes, so models from another provider cannot remain selected. Non-Freebuff API keys are stored separately from normal UI settings and are injected into the Codex app-server environment; the keys are not written into Codex `config.toml` or returned by the provider-status API.
+Current Codex no longer accepts `wire_api = "chat"`. Trebell therefore always configures Codex with `wire_api = "responses"`. For the four chat-compatible providers, a loopback compatibility service accepts Codex `/v1/responses` requests, translates them into Chat Completions requests, and translates streamed text/function tool calls back into Responses API SSE events.
+
+The GUI model selector is replaced whenever the provider changes, so models from another provider cannot remain selected. Non-Freebuff API keys are stored separately from normal UI settings and are used only by Trebell's provider layer; the keys are not written into Codex `config.toml` or returned by the provider-status API.
 
 ## What happens when you run it
 
 1. Trebell Code creates `~/.trebell-code/codex/config.toml` for the selected inference provider.
 2. For Freebuff, it starts the bundled freebuff2api bridge on localhost and uses the authenticated Freebuff session under `~/.trebell-code/freebuff2api`.
-3. For AgentRouter, JustWorker, HCNSec, or VyceAi, Trebell injects that provider's saved key into the Codex app-server environment and Codex talks to the provider's OpenAI-compatible endpoint directly.
-4. Changing provider or provider credentials restarts the isolated Codex app-server and reconnects the desktop JSON-RPC relay.
+3. For AgentRouter, JustWorker, HCNSec, or VyceAi, Trebell starts a loopback Responses compatibility bridge on `127.0.0.1:23334`. Codex sends modern Responses API traffic there and the bridge forwards translated Chat Completions requests upstream with the saved provider key.
+4. Changing provider or provider credentials retargets the compatibility bridge, restarts the isolated Codex app-server, and reconnects the desktop JSON-RPC relay.
 5. The runtime keeps Codex filesystem, shell, approval, MCP, diff, history, and agent behavior regardless of which inference provider is active.\n\nFor compatibility testing, Trebell preserves Freebuff-compatible protocol behavior while deliberately attaching the stable upstream header `x-trebell-client: Trebell-Code/0.5.0`. This keeps the client explicitly attributable instead of relying on hidden behavioral differences.
 
 By default Trebell sets `PUBLIC_UPSTREAM_ENABLED=false`, so the bundled bridge uses the authenticated Freebuff route rather than freebuff2api's optional third-party public model routes.
