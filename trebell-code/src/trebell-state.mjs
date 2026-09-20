@@ -16,7 +16,11 @@ const DEFAULT_STATE = Object.freeze({
     notificationSound: false,
     backgroundMode: false,
     keyboardShortcuts: {},
+    remoteAccessEnabled: false,
+    remoteAccessPort: 3211,
+    remoteAccessToken: "",
   },
+  environments: [],
   stashes: [],
   checkpoints: [],
 });
@@ -38,6 +42,7 @@ export class TrebellStateStore {
         settings:{...clone(DEFAULT_STATE.settings),...(parsed.settings||{})},
         projects:Array.isArray(parsed.projects)?parsed.projects:[],
         threadMeta:parsed.threadMeta&&typeof parsed.threadMeta==="object"?parsed.threadMeta:{},
+        environments:Array.isArray(parsed.environments)?parsed.environments:[],
         stashes:Array.isArray(parsed.stashes)?parsed.stashes:[],
         checkpoints:Array.isArray(parsed.checkpoints)?parsed.checkpoints:[],
       };
@@ -54,6 +59,24 @@ export class TrebellStateStore {
     this.state.settings={...this.state.settings,...patch};
     this.#save();
     return this.settings();
+  }
+  environments(){ return clone(this.state.environments); }
+  upsertEnvironment(profile={}){
+    const id=String(profile.id||randomUUID());
+    let item=this.state.environments.find(x=>x.id===id);
+    if(item) Object.assign(item,profile,{id,updatedAt:Date.now()});
+    else{
+      item={...profile,id,createdAt:Number(profile.createdAt)||Date.now(),updatedAt:Date.now()};
+      this.state.environments.push(item);
+    }
+    this.#save();
+    return clone(item);
+  }
+  removeEnvironment(id){
+    const before=this.state.environments.length;
+    this.state.environments=this.state.environments.filter(x=>x.id!==id);
+    if(this.state.environments.length!==before)this.#save();
+    return before!==this.state.environments.length;
   }
   projects(){ return clone(this.state.projects).sort((a,b)=>(b.lastOpenedAt||0)-(a.lastOpenedAt||0)); }
   touchProject(path,{name=null,defaultModel=null,permissionMode=null,workspaceMode=null}={}){
