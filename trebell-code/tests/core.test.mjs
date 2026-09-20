@@ -38,6 +38,12 @@ test("Codex provider config supports Freebuff and OpenAI-compatible providers", 
   const hcn = renderCodexConfig({ provider: "hcnsec" });
   assert.match(hcn, /base_url = "https:\/\/api\.hcnsec\.cn\/v1"/);
   assert.match(hcn, /env_key = "HCNSEC_API_KEY"/);
+
+  const vyce = renderCodexConfig({ provider: "vyceai" });
+  assert.match(vyce, /model_provider = "vyceai"/);
+  assert.match(vyce, /base_url = "https:\/\/vyceai\.com\/v1"/);
+  assert.match(vyce, /env_key = "VYCEAI_API_KEY"/);
+  assert.match(vyce, /wire_api = "chat"/);
 });
 
 test("ensureCodexConfig writes into Trebell home", () => {
