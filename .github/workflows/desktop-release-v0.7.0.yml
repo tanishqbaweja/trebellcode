@@ -1,5 +1,6 @@
 name: Publish Trebell Code Desktop v0.7.0
 # Release gate verifies the package.json version through the installed app.
+# Runtime and tests now share package.json as the version source.
 
 on:
   push:
