@@ -1,8 +1,8 @@
 # Trebell Code
 
-Trebell Code uses Codex strictly as the local agentic harness: threads, planning, tools, shell execution, filesystem edits, approvals, MCP, diffs, and history. Model inference is supplied by Freebuff through the bundled **freebuff2api** compatibility bridge.
+Trebell Code uses Codex strictly as the local agentic harness: threads, planning, tools, shell execution, filesystem edits, approvals, MCP, diffs, and history. Model inference is selectable in Settings: **Freebuff, AgentRouter, JustWorker.icu, HCNSec.cn, or VyceAi**.
 
-The user-facing command is `trebell` (or `trebell-code`), Trebell configuration lives under `~/.trebell-code`, and Freebuff sign-in is handled by the same device-code flow used by freebuff2api.
+The user-facing command is `trebell` (or `trebell-code`) and Trebell configuration lives under `~/.trebell-code`. Freebuff sign-in uses the bundled **freebuff2api** compatibility bridge; the other providers use their own API keys.
 
 ## Install
 
@@ -14,26 +14,39 @@ trebell
 
 Requirements: Node.js 22 or newer.
 
-The first `trebell` run starts Freebuff sign-in automatically. You can also run:
+When Freebuff is selected, the first `trebell` run starts Freebuff sign-in automatically. Other providers are configured from the desktop Settings page with an API key.
 
 ```bash
 trebell signup
 trebell login
 trebell models
-trebell --model freebuff/deepseek/deepseek-v4-flash
+trebell --provider agentrouter --model gpt-5.5
+trebell --provider justworker --model claude-opus-4-8
+trebell --provider hcnsec --model glm-5.3
+trebell --provider vyceai --model claude-sonnet-4-6
 ```
 
 ## Provider contract
 
-**Codex is the harness, not the model provider.** Trebell Code forces the harness to the `freebuff` provider in both CLI and GUI flows. The GUI model picker is populated only from `freebuff/*` model IDs returned by the local Freebuff bridge. Trebell Code does not intentionally fall back to OpenAI model inference.
+**Codex is the harness, not the model provider.** Trebell Code configures Codex to use exactly the provider selected in Settings.
+
+| Provider | Codex base URL | Model catalog |
+| --- | --- | --- |
+| Freebuff | local `freebuff2api` bridge | live authenticated Freebuff catalog |
+| AgentRouter | `https://co.agentrouter.org/v1` | live `GET /v1/models` for the configured key |
+| JustWorker.icu | `https://api.justwoker.icu/v1` | `claude-opus-4-8` |
+| HCNSec.cn | `https://api.hcnsec.cn/v1` | `glm-5.3` |
+| VyceAi | `https://vyceai.com/v1` | live `GET /v1/models` for the configured key |
+
+The GUI model selector is replaced whenever the provider changes, so models from another provider cannot remain selected. Non-Freebuff API keys are stored separately from normal UI settings and are injected into the Codex app-server environment; the keys are not written into Codex `config.toml` or returned by the provider-status API.
 
 ## What happens when you run it
 
-1. Trebell Code creates `~/.trebell-code/codex/config.toml`.
-2. It starts the bundled freebuff2api bridge on localhost only.
-3. freebuff2api authenticates with the Freebuff account stored under `~/.trebell-code/freebuff2api`.
-4. The Codex runtime is launched with a custom `freebuff` model provider using the OpenAI-compatible Chat Completions wire API exposed by freebuff2api.
-5. The runtime keeps Codex filesystem, shell, approval, MCP, diff, history, and agent behavior. Trebell owns the sign-in, provider configuration, storage paths, command name, and visible terminal branding.\n\nFor compatibility testing, Trebell preserves Freebuff-compatible protocol behavior while deliberately attaching the stable upstream header `x-trebell-client: Trebell-Code/0.5.0`. This keeps the client explicitly attributable instead of relying on hidden behavioral differences.
+1. Trebell Code creates `~/.trebell-code/codex/config.toml` for the selected inference provider.
+2. For Freebuff, it starts the bundled freebuff2api bridge on localhost and uses the authenticated Freebuff session under `~/.trebell-code/freebuff2api`.
+3. For AgentRouter, JustWorker, HCNSec, or VyceAi, Trebell injects that provider's saved key into the Codex app-server environment and Codex talks to the provider's OpenAI-compatible endpoint directly.
+4. Changing provider or provider credentials restarts the isolated Codex app-server and reconnects the desktop JSON-RPC relay.
+5. The runtime keeps Codex filesystem, shell, approval, MCP, diff, history, and agent behavior regardless of which inference provider is active.\n\nFor compatibility testing, Trebell preserves Freebuff-compatible protocol behavior while deliberately attaching the stable upstream header `x-trebell-client: Trebell-Code/0.5.0`. This keeps the client explicitly attributable instead of relying on hidden behavioral differences.
 
 By default Trebell sets `PUBLIC_UPSTREAM_ENABLED=false`, so the bundled bridge uses the authenticated Freebuff route rather than freebuff2api's optional third-party public model routes.
 
@@ -45,7 +58,8 @@ trebell login           Freebuff device-code login
 trebell login --force   refresh/switch the Freebuff login
 trebell signup          open Freebuff sign-up/login in a browser
 trebell logout          remove the local credential
-trebell models          show currently available models
+trebell models          show models for the active provider
+trebell --provider ID    override the saved provider for this CLI run
 trebell doctor          check installation
 ```
 
@@ -75,7 +89,7 @@ trebell gui
 The GUI talks directly to Codex app-server over localhost WebSocket JSON-RPC, so thread history,
 turns, plan updates, shell commands, file changes, diffs, approvals, MCP activity, stop/interrupt,
 and tool events are surfaced from the real Codex runtime rather than simulated by the UI.
-The GUI's model picker is populated only from `GET /v1/models` on the local Freebuff bridge.
+The GUI's model picker is scoped to the active provider. Freebuff is loaded from the local bridge, AgentRouter and VyceAi use their authenticated live `/v1/models` endpoints, and JustWorker/HCNSec use the documented single-model catalogs.
 
 For frontend-only development:
 
@@ -94,5 +108,5 @@ Node.js, npm, or a terminal. The installer bundles Electron, the production Treb
 native Codex harness binary, and the Freebuff compatibility bridge.
 
 After installation, launch **Trebell Code** from the Start Menu or Desktop shortcut. Codex
-remains the local agentic harness only; all model inference is routed through the configured
-Freebuff provider.
+remains the local agentic harness only; model inference is routed through the provider selected
+in Settings.
