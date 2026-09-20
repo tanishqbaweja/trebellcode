@@ -43,3 +43,25 @@ test("JustWorker and HCNSec expose only their configured model", async () => {
   assert.deepEqual((await manager.models("justworker")).models,["claude-opus-4-8"]);
   assert.deepEqual((await manager.models("hcnsec")).models,["glm-5.3"]);
 });
+
+
+test("Vyce AI models are loaded live from /v1/models", async () => {
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
+  const env={...process.env,TREBELL_HOME:root};
+  let seen=null;
+  const manager=new ProviderManager({env,fetchFn:async(url,init)=>{
+    seen={url,authorization:init?.headers?.Authorization};
+    return new Response(JSON.stringify({object:"list",data:[
+      {id:"claude-sonnet-4-6"},
+      {id:"gpt-astra"},
+      {id:"deepseek-v4-flash"},
+      {id:"auto"},
+    ]}),{status:200});
+  }});
+  manager.setKey("vyceai","sk-vyce");
+  const result=await manager.models("vyceai");
+  assert.equal(seen.url,"https://vyceai.com/v1/models");
+  assert.equal(seen.authorization,"Bearer sk-vyce");
+  assert.deepEqual(result.models,["auto","claude-sonnet-4-6","deepseek-v4-flash","gpt-astra"]);
+  assert.equal(result.source,"live");
+});
