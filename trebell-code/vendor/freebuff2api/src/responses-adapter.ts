@@ -2,6 +2,19 @@ import { randomUUID } from "node:crypto";
 
 type Json = Record<string, any>;
 
+function splitNamespacedTool(name: string): { name: string; namespace?: string } {
+  const marker = name.indexOf("__");
+  if (marker <= 0 || marker >= name.length - 2) return { name };
+  return { namespace: name.slice(0, marker), name: name.slice(marker + 2) };
+}
+
+function responsesToolName(tool: any): string {
+  if (typeof tool?.namespace === "string" && tool.namespace && typeof tool?.name === "string") {
+    return `${tool.namespace}__${tool.name}`;
+  }
+  return typeof tool?.name === "string" ? tool.name : "tool";
+}
+
 function contentToChat(content: any): any {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -54,7 +67,7 @@ export function responsesRequestToChat(body: Json): Json {
           id: item.call_id || item.id || randomUUID(),
           type: "function",
           function: {
-            name: item.name || "tool",
+            name: responsesToolName(item),
             arguments: typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments ?? {}),
           },
         }],
@@ -145,10 +158,11 @@ export function chatCompletionToResponse(body: any, responseId = `resp_${randomU
   if (Array.isArray(message.tool_calls)) {
     for (const call of message.tool_calls) {
       if (call?.type !== "function") continue;
+      const split = splitNamespacedTool(call.function?.name || "tool");
       output.push({
         type: "function_call",
         call_id: call.id || `call_${randomUUID()}`,
-        name: call.function?.name || "tool",
+        ...split,
         arguments: call.function?.arguments || "{}",
       });
     }
@@ -231,12 +245,13 @@ export function chatSseToResponsesStream(source: ReadableStream<Uint8Array>): Re
           })));
         }
         for (const call of [...toolCalls.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v)) {
+          const split = splitNamespacedTool(call.name || "tool");
           controller.enqueue(encoder.encode(sseEvent("response.output_item.done", {
             type: "response.output_item.done",
             item: {
               type: "function_call",
               call_id: call.id,
-              name: call.name || "tool",
+              ...split,
               arguments: call.arguments || "{}",
             },
           })));
@@ -278,9 +293,11 @@ export async function adaptResponsesRequest(
     });
   }
   const chatBody = responsesRequestToChat(body);
+  const headers = new Headers(request.headers);
+  headers.set("x-trebell-client", "Trebell-Code/0.1.0");
   const chatRequest = new Request(new URL("/v1/chat/completions", request.url), {
     method: "POST",
-    headers: request.headers,
+    headers,
     body: JSON.stringify(chatBody),
     signal: request.signal,
   });
