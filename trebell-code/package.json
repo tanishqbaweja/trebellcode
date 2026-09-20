@@ -1,7 +1,7 @@
 {
   "name": "trebell-code",
-  "version": "0.1.0",
-  "description": "Trebell Code — Codex tooling with Freebuff-backed inference via freebuff2api.",
+  "version": "0.2.0",
+  "description": "Trebell Code — Codex agentic harness with Freebuff-only model inference.",
   "type": "module",
   "license": "Apache-2.0",
   "bin": {
