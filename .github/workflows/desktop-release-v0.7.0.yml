@@ -56,7 +56,7 @@ jobs:
           $proc = Start-Process -FilePath $installer.FullName -ArgumentList "/S" -PassThru -Wait
           if ($proc.ExitCode -ne 0) { throw "Installer exited with code $($proc.ExitCode)" }
 
-      - name: Launch installed desktop application
+      - name: Launch and validate installed desktop application
         shell: pwsh
         run: |
           $installed = Get-ChildItem -Path "$env:LOCALAPPDATA\Programs" -Filter "Trebell Code.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -65,75 +65,74 @@ jobs:
           $env:TREBELL_GUI_PORT = "3210"
           $env:TREBELL_APP_SERVER_PORT = "23456"
           $env:TREBELL_GUI_DEBUG = "1"
+          $env:TREBELL_CDP_URL = "http://127.0.0.1:9333"
 
           $stdout = "$env:RUNNER_TEMP\trebell-installed.stdout.log"
           $stderr = "$env:RUNNER_TEMP\trebell-installed.stderr.log"
           $app = Start-Process -FilePath $installed.FullName -ArgumentList "--remote-debugging-port=9333" -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
           $app.Id | Set-Content "$env:RUNNER_TEMP\trebell-installed.pid"
 
-          $ready = $false
-          $lastBoot = $null
-          $lastProbeError = $null
-          for ($i = 0; $i -lt 160; $i++) {
-            Start-Sleep -Milliseconds 500
-            try {
-              $boot = Invoke-RestMethod -Uri "http://127.0.0.1:3210/api/bootstrap" -TimeoutSec 2
-              $lastBoot = $boot
-              if ($boot.appServerReady -eq $true -and $boot.version -eq "0.7.0") {
-                $ready = $true
-                break
+          try {
+            $ready = $false
+            $lastBoot = $null
+            $lastProbeError = $null
+            for ($i = 0; $i -lt 160; $i++) {
+              Start-Sleep -Milliseconds 500
+              try {
+                $boot = Invoke-RestMethod -Uri "http://127.0.0.1:3210/api/bootstrap" -TimeoutSec 2
+                $lastBoot = $boot
+                if ($boot.appServerReady -eq $true -and $boot.version -eq "0.7.0") {
+                  $ready = $true
+                  break
+                }
+              } catch {
+                $lastProbeError = $_.Exception.Message
               }
-            } catch {
-              $lastProbeError = $_.Exception.Message
+              if ($app.HasExited) { break }
             }
-            if ($app.HasExited) { break }
-          }
 
-          if (-not $ready) {
+            if (-not $ready) {
+              if ($lastBoot) { Write-Host "Last bootstrap: $($lastBoot | ConvertTo-Json -Depth 8 -Compress)" }
+              if ($lastProbeError) { Write-Host "Last bootstrap probe error: $lastProbeError" }
+              throw "Installed Trebell Code never reached Codex app-server ready state."
+            }
+
+            Write-Host "Installed Trebell Code v$($lastBoot.version) is ready."
+
+            node tests/installed-relay-check.mjs http://127.0.0.1:3210
+            if ($LASTEXITCODE -ne 0) { throw "Installed Codex relay/command validation failed with exit code $LASTEXITCODE." }
+
+            $payload = @{ name = "Installer validation"; cols = 100; rows = 24 } | ConvertTo-Json
+            $session = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:3210/api/terminal/sessions" -ContentType "application/json" -Body $payload -TimeoutSec 10
+            if (-not $session.session.id) { throw "PTY terminal session was not created." }
+            if ($session.session.running -ne $true) { throw "PTY terminal did not start." }
+            Invoke-RestMethod -Method Delete -Uri ("http://127.0.0.1:3210/api/terminal/sessions?id=" + [uri]::EscapeDataString($session.session.id)) -TimeoutSec 10 | Out-Null
+
+            $runtime = Invoke-RestMethod -Uri "http://127.0.0.1:3210/api/runtime" -TimeoutSec 3
+            if ($runtime.appServerReady -ne $true) { throw "Installed runtime reports Codex app-server not ready." }
+
+            $tree = Invoke-RestMethod -Uri "http://127.0.0.1:3210/api/workspace/tree" -TimeoutSec 5
+            if ($null -eq $tree.entries) { throw "Workspace tree endpoint is unavailable." }
+
+            $diagnostics = Invoke-RestMethod -Uri "http://127.0.0.1:3210/api/diagnostics" -TimeoutSec 5
+            if ($diagnostics.version -ne "0.7.0") { throw "Diagnostics returned the wrong version: $($diagnostics.version)" }
+
+            $health = Invoke-RestMethod -Uri "http://127.0.0.1:3210/api/health" -TimeoutSec 3
+            if ($health.ok -ne $true) { throw "Trebell GUI health check failed." }
+
+            node tests/installed-desktop-check.mjs
+            if ($LASTEXITCODE -ne 0) { throw "Installed desktop/browser validation failed with exit code $LASTEXITCODE." }
+          } catch {
             Write-Host "Installed process exited: $($app.HasExited)"
             if ($app.HasExited) { Write-Host "Installed process exit code: $($app.ExitCode)" }
-            if ($lastBoot) { Write-Host "Last bootstrap: $($lastBoot | ConvertTo-Json -Depth 8 -Compress)" }
-            if ($lastProbeError) { Write-Host "Last bootstrap probe error: $lastProbeError" }
             try {
               $runtime = Invoke-RestMethod -Uri "http://127.0.0.1:3210/api/runtime" -TimeoutSec 3
               Write-Host "Runtime: $($runtime | ConvertTo-Json -Depth 8 -Compress)"
             } catch { Write-Host "Runtime probe failed: $($_.Exception.Message)" }
             if (Test-Path $stdout) { Write-Host "--- Trebell stdout ---"; Get-Content $stdout -Tail 300 }
             if (Test-Path $stderr) { Write-Host "--- Trebell stderr ---"; Get-Content $stderr -Tail 300 }
-            throw "Installed Trebell Code never reached Codex app-server ready state."
+            throw
           }
-
-      - name: Verify installed Codex browser relay and command execution
-        run: node tests/installed-relay-check.mjs http://127.0.0.1:3210
-
-      - name: Verify installed desktop browser, background, startup, notification, and voice surfaces
-        env:
-          TREBELL_CDP_URL: http://127.0.0.1:9333
-        run: node tests/installed-desktop-check.mjs
-
-      - name: Verify installed PTY terminal
-        shell: pwsh
-        run: |
-          $payload = @{ name = "Installer validation"; cols = 100; rows = 24 } | ConvertTo-Json
-          $session = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:3210/api/terminal/sessions" -ContentType "application/json" -Body $payload -TimeoutSec 10
-          if (-not $session.session.id) { throw "PTY terminal session was not created." }
-          if ($session.session.running -ne $true) { throw "PTY terminal did not start." }
-          Invoke-RestMethod -Method Delete -Uri ("http://127.0.0.1:3210/api/terminal/sessions?id=" + [uri]::EscapeDataString($session.session.id)) -TimeoutSec 10 | Out-Null
-
-      - name: Verify installed project, diagnostics, workspace, and health APIs
-        shell: pwsh
-        run: |
-          $runtime = Invoke-RestMethod -Uri "http://127.0.0.1:3210/api/runtime" -TimeoutSec 3
-          if ($runtime.appServerReady -ne $true) { throw "Installed runtime reports Codex app-server not ready." }
-
-          $tree = Invoke-RestMethod -Uri "http://127.0.0.1:3210/api/workspace/tree" -TimeoutSec 5
-          if ($null -eq $tree.entries) { throw "Workspace tree endpoint is unavailable." }
-
-          $diagnostics = Invoke-RestMethod -Uri "http://127.0.0.1:3210/api/diagnostics" -TimeoutSec 5
-          if ($diagnostics.version -ne "0.7.0") { throw "Diagnostics returned the wrong version." }
-
-          $health = Invoke-RestMethod -Uri "http://127.0.0.1:3210/api/health" -TimeoutSec 3
-          if ($health.ok -ne $true) { throw "Trebell GUI health check failed." }
 
       - name: Stop installed application
         if: always()
