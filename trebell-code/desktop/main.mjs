@@ -49,7 +49,7 @@ async function createWindow(){
     backgroundColor:"#080a11",
     autoHideMenuBar:true,
     webPreferences:{
-      preload:join(import.meta.dirname,"preload.mjs"),
+      preload:join(import.meta.dirname,"preload.cjs"),
       contextIsolation:true,
       nodeIntegration:false,
       sandbox:true,
