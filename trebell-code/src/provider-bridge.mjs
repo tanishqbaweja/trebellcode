@@ -1,8 +1,9 @@
 import { createServer } from "node:http";
 import { adaptResponsesBody } from "./responses-chat-adapter.mjs";
 import { normalizeProviderId } from "./provider-manager.mjs";
+import { PROVIDER_COMPAT_PORT } from "./config.mjs";
 
-export const PROVIDER_COMPAT_PORT = 23334;
+export { PROVIDER_COMPAT_PORT };
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
 
 function sendJson(res, status, value) {
