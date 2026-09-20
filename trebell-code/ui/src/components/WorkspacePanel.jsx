@@ -11,7 +11,7 @@ function languageFor(name=""){
   return Prism.languages.javascript;
 }
 
-export default function WorkspacePanel({projectPath,reviewedFiles=[],onReviewedChange,onAttachPath}){
+export default function WorkspacePanel({projectPath,reviewedFiles=[],onReviewedChange,onAttachPath,onReviewComment}){
   const [tab,setTab]=useState("files");
   const [entries,setEntries]=useState([]);
   const [query,setQuery]=useState("");
@@ -65,7 +65,7 @@ export default function WorkspacePanel({projectPath,reviewedFiles=[],onReviewedC
       </div>
     </div>}
     {tab==="diff"&&<div className="changes-view">
-      <div className="changed-files">{changedPaths.map(path=><button key={path} onClick={()=>onReviewedChange?.(path,!reviewedFiles.includes(path))} className={reviewedFiles.includes(path)?"reviewed":""}><span>{reviewedFiles.includes(path)?<Check size={12}/>:<FileDiff size={12}/>}</span>{path}</button>)}</div>
+      <div className="changed-files">{changedPaths.map(path=><div className={reviewedFiles.includes(path)?"changed-file-row reviewed":"changed-file-row"} key={path}><button onClick={()=>onReviewedChange?.(path,!reviewedFiles.includes(path))}><span>{reviewedFiles.includes(path)?<Check size={12}/>:<FileDiff size={12}/>}</span>{path}</button><button className="review-comment" title="Add review comment as context" onClick={()=>{const comment=prompt("Review comment for "+path);if(comment?.trim())onReviewComment?.(path,comment.trim())}}>+</button></div>)}</div>
       <pre className="git-diff">{diff.diff||diff.error||"No unstaged diff."}</pre>
     </div>}
   </div>;

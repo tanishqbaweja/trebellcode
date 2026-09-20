@@ -18,7 +18,7 @@ import { TerminalManager } from "./terminal-manager.mjs";
 import {
   gitInfo, cloneRepository, createBranch, switchBranch, commitAll, fetchRepo, pullRepo, pushRepo,
   safeAutoPull, createWorktree, removeWorktree, sourceControlDiagnostics, listPullRequests, createPullRequest,
-  pullRequestDetail, commentOnPullRequest, reviewPullRequest, mergePullRequest,
+  pullRequestDetail, commentOnPullRequest, reviewPullRequest, mergePullRequest, updatePullRequestBranch,
 } from "./git-service.mjs";
 
 const MIME = {
@@ -275,6 +275,7 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
         if(body.action==="comment") return json(res,200,await commentOnPullRequest(cwd,body.number,body.body||""));
         if(body.action==="review") return json(res,200,await reviewPullRequest(cwd,body.number,{event:body.event,body:body.body||""}));
         if(body.action==="merge") return json(res,200,await mergePullRequest(cwd,body.number,{method:body.method,auto:Boolean(body.auto)}));
+        if(body.action==="update-branch") return json(res,200,await updatePullRequestBranch(cwd,body.number,{rebase:body.rebase!==false}));
         return json(res,400,{error:"unknown PR action"});
       }catch(error){return json(res,400,{ok:false,error:error.message});}
     }

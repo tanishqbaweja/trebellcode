@@ -14,6 +14,12 @@ export default function FreebuffPage({freebuff,model,onRefresh}){
     </div>
     {selected?.offPeakActive&&<div className="fb-offpeak"><Zap size={15}/> Off-peak pricing is active.</div>}
     <div className="fb-model-table"><div className="fb-table-head"><span>Freebuff model</span><span>Freebucks/hour</span><span>Source</span></div>{Object.entries(freebuff?.derived?.priceByModel||{}).map(([id,p])=><div key={id} className={id===model?"selected":""}><span>{id.replace(/^freebuff\//,"")}</span><span>{p.dynamic?"Dynamic":p.current??"—"}</span><span>{p.source==="server"?"Live":"Fallback"}</span></div>)}</div>
+    {(freebuff?.session?.notices||freebuff?.session?.offers||freebuff?.session?.consents||freebuff?.derived?.offPeakOffers)&&<div className="fb-product-signals">
+      {freebuff?.session?.notices&&<section><h3>Notices</h3><pre>{JSON.stringify(freebuff.session.notices,null,2)}</pre></section>}
+      {freebuff?.session?.offers&&<section><h3>Offers</h3><pre>{JSON.stringify(freebuff.session.offers,null,2)}</pre></section>}
+      {freebuff?.derived?.offPeakOffers&&<section><h3>Off-peak offers</h3><pre>{JSON.stringify(freebuff.derived.offPeakOffers,null,2)}</pre></section>}
+      {(freebuff?.session?.consents||freebuff?.session?.walletConsent)&&<section><h3>Consent state</h3><pre>{JSON.stringify(freebuff.session.consents||freebuff.session.walletConsent,null,2)}</pre></section>}
+    </div>}
     <div className="fb-raw"><h3>Session details</h3><div><span>Instance</span><code>{freebuff?.instanceId||"—"}</code></div><div><span>Admitted</span><code>{freebuff?.derived?.admittedAt||"—"}</code></div><div><span>Reset</span><code>{freebuff?.derived?.resetTime||"—"}</code></div><div><span>Timezone</span><code>{freebuff?.derived?.timezone||"—"}</code></div></div>
   </div>;
 }

@@ -47,6 +47,54 @@ export default function SourceControlPanel({projectPath,model,onProjectChange,on
     }catch(e){setError(e.message)}finally{setBusy("")}
   }
 
+  function stackFor(pr){
+    if(!pr)return[];
+    const byHead=new Map(prs.map(x=>[x.headRefName,x]));
+    const byBase=new Map();
+    for(const item of prs){
+      const list=byBase.get(item.baseRefName)||[];
+      list.push(item);byBase.set(item.baseRefName,list);
+    }
+    const seen=new Set([pr.number]);
+    const below=[];
+    let cur=pr;
+    while(cur?.baseRefName&&byHead.has(cur.baseRefName)){
+      const parent=byHead.get(cur.baseRefName);
+      if(seen.has(parent.number))break;
+      seen.add(parent.number);below.unshift(parent);cur=parent;
+    }
+    const above=[];
+    cur=pr;
+    while(true){
+      const children=(byBase.get(cur.headRefName)||[]).filter(x=>!seen.has(x.number));
+      if(children.length!==1)break;
+      const child=children[0];seen.add(child.number);above.push(child);cur=child;
+    }
+    return [...below,pr,...above];
+  }
+
+  async function stackAction(kind){
+    const stack=stackFor(selectedPr);
+    if(stack.length<2)return;
+    const label=stack.map(pr=>"#"+pr.number).join(" → ");
+    if(!confirm((kind==="merge"?"Merge":"Rebase")+" stack "+label+"?"))return;
+    setBusy(kind+"-stack");setError("");
+    try{
+      if(kind==="merge"){
+        for(const pr of stack){
+          await api("/api/source-control/pr-action",{method:"POST",body:{cwd:projectPath,number:pr.number,action:"merge",method:"squash"}});
+        }
+      }else{
+        for(const pr of stack.slice(1)){
+          await api("/api/source-control/pr-action",{method:"POST",body:{cwd:projectPath,number:pr.number,action:"update-branch",rebase:true}});
+        }
+      }
+      await refresh();
+      if(selectedPr)await openPr(selectedPr);
+    }catch(e){setError(e.message)}
+    finally{setBusy("")}
+  }
+
   if(!projectPath)return <div className="empty-state">Open a project to use source control.</div>;
   if(info&&!info.isGit)return <div className="source-control"><div className="empty-state"><GitBranch size={28}/><strong>Not a Git repository</strong><span>{projectPath}</span></div></div>;
 
@@ -68,7 +116,9 @@ export default function SourceControlPanel({projectPath,model,onProjectChange,on
     <section className="pr-card"><div className="pr-head"><h3>Pull requests</h3><button onClick={refresh}><RefreshCw size={13}/></button><button onClick={async()=>{const title=prompt("PR title",commitMessage||"Trebell Code changes");if(!title)return;const body=prompt("PR description","")||"";try{const d=await api("/api/source-control/pr",{method:"POST",body:{cwd:projectPath,title,body}});if(d.url)window.open(d.url,"_blank");await refresh()}catch(e){setError(e.message)}}}><Plus size={13}/> Create PR</button></div>
       <div className="pr-layout"><div className="pr-list">{prs.map(pr=><button key={pr.number} onClick={()=>openPr(pr)} className={selectedPr?.number===pr.number?"active":""}><GitPullRequest size={14}/><div><strong>#{pr.number} {pr.title}</strong><span>{pr.headRefName} → {pr.baseRefName}</span></div><em>{pr.state}</em></button>)}</div>
       <div className="pr-detail">{selectedPr?<>
-        <h3>#{selectedPr.number} {selectedPr.title}</h3><p>{selectedPr.body||"No description."}</p><div className="pr-actions"><button onClick={()=>window.open(selectedPr.url,"_blank")}><ExternalLink size={12}/> Open</button><button onClick={()=>onAttachPr?.(selectedPr)}><MessageSquare size={12}/> Attach</button><button className={linkedPullRequests.some(x=>x.number===selectedPr.number)?"linked":""} onClick={()=>onLinkPr?.(selectedPr)}><GitPullRequest size={12}/> {linkedPullRequests.some(x=>x.number===selectedPr.number)?"Linked":"Link to thread"}</button><button onClick={()=>prAction("review",{event:"APPROVE",body:"Reviewed in Trebell Code."})}><CheckCircle2 size={12}/> Approve</button><button onClick={()=>prAction("merge",{method:"squash"})}>Merge</button></div>
+        <h3>#{selectedPr.number} {selectedPr.title}</h3><p>{selectedPr.body||"No description."}</p>
+        {stackFor(selectedPr).length>1&&<div className="pr-stack"><strong>Stack</strong><span>{stackFor(selectedPr).map(pr=>"#"+pr.number).join(" → ")}</span><div><button onClick={()=>stackAction("rebase")} disabled={!!busy}>Rebase stack</button><button onClick={()=>stackAction("merge")} disabled={!!busy}>Merge stack</button></div></div>}
+        <div className="pr-actions"><button onClick={()=>window.open(selectedPr.url,"_blank")}><ExternalLink size={12}/> Open</button><button onClick={()=>onAttachPr?.(selectedPr)}><MessageSquare size={12}/> Attach</button><button className={linkedPullRequests.some(x=>x.number===selectedPr.number)?"linked":""} onClick={()=>onLinkPr?.(selectedPr)}><GitPullRequest size={12}/> {linkedPullRequests.some(x=>x.number===selectedPr.number)?"Linked":"Link to thread"}</button><button onClick={()=>prAction("review",{event:"APPROVE",body:"Reviewed in Trebell Code."})}><CheckCircle2 size={12}/> Approve</button><button onClick={()=>prAction("merge",{method:"squash"})}>Merge</button></div>
         <div className="pr-comment"><textarea value={comment} onChange={e=>setComment(e.target.value)} placeholder="Write a pull-request comment…"/><button disabled={!comment.trim()||!!busy} onClick={async()=>{await prAction("comment",{body:comment});setComment("")}}><MessageSquare size={12}/> Comment</button></div>
         <h4>Reviews</h4><div className="review-list">{(selectedPr.reviews||[]).length?(selectedPr.reviews||[]).map((review,i)=><div key={review.id||i}><strong>{review.author?.login||review.author?.name||"Reviewer"}</strong><span>{review.state||"reviewed"}</span><p>{review.body||""}</p></div>):<p>No reviews yet.</p>}</div>
         <h4>Checks</h4><pre>{JSON.stringify(selectedPr.statusCheckRollup||[],null,2)}</pre>

@@ -151,3 +151,11 @@ export async function mergePullRequest(cwd,number,{method="squash",auto=false}={
   const result=await run("gh",args,{cwd});
   return {ok:true,output:(result.stdout||result.stderr).trim()};
 }
+
+export async function updatePullRequestBranch(cwd,number,{rebase=true}={}){
+  const args=["pr","update-branch",String(number)];
+  if(rebase) args.push("--rebase");
+  const result=await run("gh",args,{cwd,allowFailure:true,maxBuffer:4*1024*1024});
+  if(!result.ok) throw new Error((result.stderr||result.stdout||"Could not update PR branch").trim());
+  return {ok:true,output:(result.stdout||result.stderr).trim()};
+}

@@ -94,8 +94,8 @@ function ActivityTimeline({events,assistantText,onOpenPanel}){
     </details>)}
   </div>{assistantText&&<div className="assistant-answer">{assistantText}</div>}</div>;
 }
-function Conversation({messages,onEditFromHere}){
-  return <div className="conversation-history">{messages.map(m=>m.role==="user"?<div className="user-row" key={m.id}><div className="user-bubble"><p>{m.text}</p>{m.turnId&&<button className="message-action" onClick={()=>onEditFromHere(m)}>Edit from here</button>}</div></div>:<div className="history-assistant" key={m.id}><div className="agent-star small"><Sparkles size={12}/></div><div>{m.text}</div></div>)}</div>;
+function Conversation({messages,onEditFromHere,onCite}){
+  return <div className="conversation-history">{messages.map(m=>m.role==="user"?<div className="user-row" key={m.id}><div className="user-bubble"><p>{m.text}</p>{m.turnId&&<button className="message-action" onClick={()=>onEditFromHere(m)}>Edit from here</button>}</div></div>:<div className="history-assistant" key={m.id}><div className="agent-star small"><Sparkles size={12}/></div><div><div className="assistant-message-text">{m.text}</div><button className="message-action" onClick={()=>onCite?.(m)}>Cite response</button></div></div>)}</div>;
 }
 function ApprovalCard({request,onResolve}){
   if(!request)return null;
@@ -358,6 +358,20 @@ export default function App(){
   async function onPaste(e){const files=[...(e.clipboardData?.files||[])];if(files.length){e.preventDefault();const uploaded=[];for(const f of files.slice(0,8-attachments.length)){try{uploaded.push((await blobAttachment(f)).path)}catch{}}await addFiles(uploaded);return}const text=e.clipboardData?.getData("text/plain")||"";if(text.length>=32768){e.preventDefault();const d=await api("/api/attachments/text",{method:"POST",body:{name:"pasted-context.txt",text}});await addFiles([d.path])}}
   async function onDrop(e){e.preventDefault();const files=[...(e.dataTransfer?.files||[])];const uploaded=[];for(const f of files.slice(0,8-attachments.length)){try{uploaded.push((await blobAttachment(f)).path)}catch{}}await addFiles(uploaded)}
   async function attachExcerpt(text){if(!text.trim())return;const d=await api("/api/attachments/text",{method:"POST",body:{name:"terminal-context.txt",text}});await addFiles([d.path]);setPanel(null)}
+  async function citeAssistant(message){
+    if(!message?.text?.trim())return;
+    const text=["Assistant response citation",activeThread?.name||activeThread?.id||"current thread","",message.text].join("\n");
+    const d=await api("/api/attachments/text",{method:"POST",body:{name:"assistant-citation.txt",text}});
+    await addFiles([d.path]);
+    setPrompt(prev=>(prev?prev+" ":"")+"Use the attached assistant citation as context. ");
+  }
+  async function attachReviewComment(path,comment){
+    const text=["Code review comment","File: "+path,"",comment].join("\n");
+    const d=await api("/api/attachments/text",{method:"POST",body:{name:"review-"+String(path).split(/[\\/]/).pop()+".txt",text}});
+    await addFiles([d.path]);
+    setPrompt(prev=>(prev?prev+" ":"")+"Address the attached review comment. ");
+    setPanel(null);setSection("chat");
+  }
   async function attachPr(pr){const text=["Pull request #"+pr.number+": "+pr.title,pr.url,pr.headRefName+" -> "+pr.baseRefName,pr.body||""].join("\n");const d=await api("/api/attachments/text",{method:"POST",body:{name:"pr-"+pr.number+".txt",text}});await addFiles([d.path]);setSection("chat")}
   async function linkPr(pr){
     if(!activeThread?.id)return;
@@ -385,7 +399,7 @@ export default function App(){
       <div className="window-bar"><span>{rpcStatus==="connected"?"Local harness connected":rpcStatus}</span><div><button onClick={()=>window.trebellDesktop?.minimize?.()}>—</button><button onClick={()=>window.trebellDesktop?.maximize?.()}>□</button><button className="window-close" onClick={()=>window.trebellDesktop?.close?.()}>×</button></div></div>
       {(section==="chat"||section==="new")&&<>
         <div className="topbar"><div className="task-icon"><Code2 size={24}/></div><div className="task-title"><div><strong>{activeTitle}</strong><button className="ghost-icon" onClick={renameThread}><WandSparkles size={14}/></button></div><span>{gitInfo?.isGit?(gitInfo.branch||"detached")+" · ":""}{running?"Agent working":"Ready"} · {tokenLabel(tokenUsage)}</span>{activeThread?.id&&(threadMeta[activeThread.id]?.linkedPullRequests||[]).length>0&&<div className="linked-prs">{threadMeta[activeThread.id].linkedPullRequests.map(pr=><button key={pr.url} onClick={()=>window.open(pr.url,"_blank")}><GitBranch size={10}/> #{pr.number}</button>)}</div>}</div><div className="top-actions"><button className="btn secondary" onClick={shareThread}><Link2 size={14}/> Copy thread</button><button className="icon-btn" onClick={()=>setPanel("workspace")}><FileCode2 size={15}/></button>{running&&<button className="btn stop" onClick={stop}><CircleStop size={14}/> Stop</button>}</div></div>
-        <div className="conversation-scroll"><Conversation messages={messages} onEditFromHere={editFromHere}/><ActivityTimeline events={events} assistantText={assistantText} onOpenPanel={setPanel}/>
+        <div className="conversation-scroll"><Conversation messages={messages} onEditFromHere={editFromHere} onCite={citeAssistant}/><ActivityTimeline events={events} assistantText={assistantText} onOpenPanel={setPanel}/>
           {queued.map(item=><div className="queued-message" key={item.id}><span>Queued</span><p>{item.text}</p><button onClick={()=>sendQueuedNow(item)}>Send now</button><button onClick={()=>{setPrompt(item.text);setAttachments(item.attachments);setQueued(prev=>prev.filter(x=>x.id!==item.id))}}>Edit</button></div>)}
           {!messages.length&&!events.length&&<div className="welcome"><div className="welcome-orb"><Sparkles size={27}/></div><h1>What should Trebell build?</h1><p>Freebuff supplies the model. Codex supplies the local agent harness: files, shell, Git, approvals, skills, MCP and durable threads.</p><div className="suggestions"><button onClick={()=>setPrompt("Inspect this project and explain the architecture.")}>Explain codebase</button><button onClick={()=>setPrompt("Find a useful bug, fix it, and run the relevant tests.")}>Fix a bug</button><button onClick={()=>setPrompt("Implement the next missing feature and validate it end-to-end.")}>Ship a feature</button></div></div>}
         </div>
@@ -409,7 +423,7 @@ export default function App(){
       <div className="tools-card"><div className="tools-head"><strong>Workspace</strong><ChevronDown size={14}/></div><button onClick={()=>setPanel("terminal")}><SquareTerminal size={16}/><span>Terminal</span><i className="tool-live"/></button><button onClick={()=>setPanel("workspace")}><FolderCode size={16}/><span>Files & diff</span><i className="tool-live"/></button><button onClick={()=>setSection("source")}><GitBranch size={16}/><span>Source control</span><i className="tool-live"/></button><button onClick={()=>setSection("preview")}><Globe2 size={16}/><span>Preview</span><i className="tool-live"/></button></div>
       <div className="privacy-line"><span/><b>Local harness</b> · Freebuff inference</div>
     </aside>
-    {panel&&<div className="drawer wide" data-testid="drawer"><div className="drawer-head"><strong>{panel==="terminal"?"Terminal":"Workspace"}</strong><button onClick={()=>setPanel(null)}><X size={17}/></button></div>{panel==="terminal"?<TerminalPanel projectPath={projectPath} onAttachExcerpt={attachExcerpt}/>:<WorkspacePanel projectPath={projectPath} activeThreadId={activeThread?.id} reviewedFiles={reviewedFiles} onReviewedChange={toggleReviewed} onAttachPath={path=>addFiles([path])}/>}</div>}
+    {panel&&<div className="drawer wide" data-testid="drawer"><div className="drawer-head"><strong>{panel==="terminal"?"Terminal":"Workspace"}</strong><button onClick={()=>setPanel(null)}><X size={17}/></button></div>{panel==="terminal"?<TerminalPanel projectPath={projectPath} onAttachExcerpt={attachExcerpt}/>:<WorkspacePanel projectPath={projectPath} activeThreadId={activeThread?.id} reviewedFiles={reviewedFiles} onReviewedChange={toggleReviewed} onAttachPath={path=>addFiles([path])} onReviewComment={attachReviewComment}/>}</div>}
     <QuestionModal request={question?.request} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={pickFiles}/>
   </div>;
 }

@@ -50,8 +50,8 @@ Trebell keeps its own visual identity and architecture.
 - [ ] Inline context chips
 - [x] File mentions
 - [x] Terminal excerpt context
-- [ ] Diff/review-comment context
-- [ ] Assistant response citations
+- [x] Diff/review-comment context
+- [x] Assistant response citations
 - [x] Pull-request attachment context
 - [x] Context meter / compact action
 - [ ] Functional voice input (do not show enabled until implemented)
@@ -92,7 +92,7 @@ Trebell keeps its own visual identity and architecture.
 - [x] Syntax-highlighted file viewer
 - [x] Search files
 - [x] File edit/save actions
-- [ ] Diff review comments
+- [x] Diff review comments
 - [x] Mark reviewed files
 - [x] Turn checkpoints
 - [x] Revert conversation only
@@ -117,8 +117,8 @@ Trebell keeps its own visual identity and architecture.
 - [x] PR review UI
 - [x] PR comments/review/check status
 - [x] Linked pull requests
-- [ ] PR stacks
-- [ ] Merge/rebase stack
+- [x] PR stacks
+- [x] Merge/rebase stack
 - [x] Source-control account diagnostics
 
 ## Freebuff product state
@@ -135,7 +135,7 @@ Trebell keeps its own visual identity and architecture.
 - [x] Rate-limit display
 - [x] Off-peak state/offers
 - [x] 45-second heartbeat during active turns
-- [ ] Full Freebuff notices/offers/consent surfaces when returned by server
+- [x] Freebuff notices/offers/consent state surfaces when returned by server
 - [ ] Model capability metadata in picker
 - [x] Context/token usage when available from provider response
 
