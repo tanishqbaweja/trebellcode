@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { createGuiServer } from "../src/gui-server.mjs";
+
+const packageVersion=JSON.parse(await readFile(new URL("../package.json",import.meta.url),"utf8")).version;
 
 test("GUI server exposes mock bootstrap, Freebuff-only models, and health", async () => {
   const gui=await createGuiServer({port:33210,appPort:33456,mock:true});
@@ -8,7 +11,7 @@ test("GUI server exposes mock bootstrap, Freebuff-only models, and health", asyn
     const boot=await fetch(gui.url+"/api/bootstrap").then(r=>r.json());
     assert.equal(boot.mock,true);
     assert.equal(boot.loggedIn,true);
-    assert.equal(boot.version,"0.6.0");
+    assert.equal(boot.version,packageVersion);
 
     const models=await fetch(gui.url+"/api/models").then(r=>r.json());
     assert.ok(models.models.length>=1);
