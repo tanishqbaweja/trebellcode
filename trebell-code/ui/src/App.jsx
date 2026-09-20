@@ -17,6 +17,19 @@ import PreviewPage from "./components/PreviewPage.jsx";
 import SettingsPage from "./components/SettingsPage.jsx";
 import FreebuffPage from "./components/FreebuffPage.jsx";
 
+const TREBELL_BROWSER_TOOLS=[{
+  type:"namespace",
+  name:"trebell_browser",
+  description:"Control Trebell Code's isolated desktop browser session for web research and testing.",
+  tools:[
+    {type:"function",name:"open",description:"Navigate the Trebell browser to a URL.",inputSchema:{type:"object",properties:{url:{type:"string"}},required:["url"],additionalProperties:false}},
+    {type:"function",name:"snapshot",description:"Inspect current page text and interactive elements. Returns refs for click/type.",inputSchema:{type:"object",properties:{},additionalProperties:false}},
+    {type:"function",name:"click",description:"Click an element from the latest snapshot by ref.",inputSchema:{type:"object",properties:{ref:{type:"string"}},required:["ref"],additionalProperties:false}},
+    {type:"function",name:"type",description:"Set text in an input or editable element from the latest snapshot.",inputSchema:{type:"object",properties:{ref:{type:"string"},text:{type:"string"}},required:["ref","text"],additionalProperties:false}},
+    {type:"function",name:"screenshot",description:"Capture the current page as an image visible to the model.",inputSchema:{type:"object",properties:{},additionalProperties:false}}
+  ]
+}];
+
 function titleOf(thread){return thread?.name||thread?.preview||"New Trebell task"}
 function modelLabel(id,freebuff){
   const clean=String(id||"").replace(/^freebuff\//,"");
@@ -256,7 +269,32 @@ export default function App(){
 
   function handleServerRequest(client,message){
     if(message.method==="item/tool/requestUserInput"){setQuestion({client,request:message});desktopNotify("Trebell Code needs input","The running agent asked you a question.");return}
-    if(message.method==="item/tool/call"){client.respond(message.id,{contentItems:[{type:"inputText",text:"No client-defined dynamic tool is registered."}],success:false});return}
+    if(message.method==="item/tool/call"){
+      const p=message.params||{};
+      if(p.namespace==="trebell_browser"){
+        (async()=>{
+          try{
+            if(!window.trebellDesktop?.browser)throw new Error("Agent browser is only available in the desktop app.");
+            let result;
+            if(p.tool==="open")result=await window.trebellDesktop.browser.navigate(p.arguments?.url);
+            else if(p.tool==="snapshot")result=await window.trebellDesktop.browser.snapshot();
+            else if(p.tool==="click")result=await window.trebellDesktop.browser.click(p.arguments?.ref);
+            else if(p.tool==="type")result=await window.trebellDesktop.browser.type(p.arguments?.ref,p.arguments?.text);
+            else if(p.tool==="screenshot"){
+              const shot=await window.trebellDesktop.browser.screenshot();
+              client.respond(message.id,{contentItems:[{type:"inputImage",imageUrl:shot.dataUrl},{type:"inputText",text:JSON.stringify({url:shot.url,title:shot.title})}],success:true});
+              return;
+            }else throw new Error("Unknown Trebell browser tool: "+p.tool);
+            client.respond(message.id,{contentItems:[{type:"inputText",text:JSON.stringify(result)}],success:true});
+          }catch(error){
+            client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false});
+          }
+        })();
+        return;
+      }
+      client.respond(message.id,{contentItems:[{type:"inputText",text:"No client-defined dynamic tool is registered for "+(p.namespace||"default")+"/"+p.tool}],success:false});
+      return;
+    }
     if(message.method.includes("requestApproval")||message.method==="applyPatchApproval"||message.method==="execCommandApproval"){setApprovals(prev=>[...prev,message]);desktopNotify("Approval required",message.params?.reason||message.params?.command||"Trebell Code is waiting for permission.");return}
     client.reject(message.id,-32601,"Unsupported Trebell client request: "+message.method);
   }
@@ -310,7 +348,7 @@ export default function App(){
     const slug=String(modelId||"model").replace(/[^a-zA-Z0-9]+/g,"-").replace(/^-|-$/g,"").slice(-24)||"agent";const stamp=Date.now().toString(36);const branch="trebell/"+slug+"-"+stamp;const path=info.root+"-trebell-"+slug+"-"+stamp;
     const result=await api("/api/git/action",{method:"POST",body:{action:"worktree-create",cwd:info.root,branch,path,baseBranch:info.branch}});return result.result?.worktree||path;
   }
-  async function createThreadFor(modelId,cwd){const p=presetFor(permissionMode);const result=await rpc.request("thread/start",{model:modelId,modelProvider:"freebuff",cwd,approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",developerInstructions:webSearch?"Web research is allowed when useful.":"Do not use web search unless the user explicitly requests it."});return result.thread}
+  async function createThreadFor(modelId,cwd){const p=presetFor(permissionMode);const result=await rpc.request("thread/start",{model:modelId,modelProvider:"freebuff",cwd,approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools:TREBELL_BROWSER_TOOLS,developerInstructions:webSearch?"Web research is allowed when useful. You may use trebell_browser for interactive pages.":"Do not use web search or trebell_browser unless the user explicitly requests it."});return result.thread}
   function inputsFor(text,paths){return [{type:"text",text,text_elements:[]},...(paths||[]).map(path=>{const lower=String(path).toLowerCase();if(/\.(png|jpe?g|gif|webp|bmp)$/.test(lower))return{type:"localImage",path};if(/\.(mp3|wav|m4a|ogg|flac)$/.test(lower))return{type:"localAudio",path};return{type:"mention",name:String(path).split(/[\\/]/).pop(),path}})]}
   async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null){
     if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");let thread=threadOverride||activeThread;let cwd=cwdOverride||projectPath||bootstrap.cwd;
@@ -409,7 +447,7 @@ export default function App(){
       {section==="projects"&&<div className="secondary-page"><h1>Projects</h1><p>Local repositories and workspaces owned by this machine.</p><ProjectsPage currentPath={projectPath} onOpen={onProjectOpen} models={models}/></div>}
       {section==="source"&&<div className="secondary-page full"><h1>Source Control</h1><p>Branch, commit, worktree and pull-request actions execute locally.</p><SourceControlPanel projectPath={projectPath} model={model} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} linkedPullRequests={activeThread?.id?(threadMeta[activeThread.id]?.linkedPullRequests||[]):[]}/></div>}
       {section==="agents"&&<div className="secondary-page"><h1>Agents</h1><p>Delegated Codex subagent threads.</p><AgentsPage threads={threads} activeThread={activeThread} onOpen={openThread}/></div>}
-      {section==="preview"&&<div className="secondary-page full"><h1>Preview</h1><p>Preview local development servers or web pages beside the agent.</p><PreviewPage/></div>}
+      {section==="preview"&&<div className="secondary-page full"><h1>Preview</h1><p>Preview local development servers or web pages beside the agent.</p><PreviewPage onAttachText={async(name,text)=>{const d=await api("/api/attachments/text",{method:"POST",body:{name,text}});await addFiles([d.path])}} onAttachImage={async(dataUrl)=>{const d=await api("/api/attachments/blob",{method:"POST",body:{name:"browser-screenshot.png",mime:"image/png",dataBase64:String(dataUrl).split(",")[1]||""}});await addFiles([d.path])}}/></div>}
       {section==="templates"&&<div className="secondary-page"><h1>Templates</h1><p>Real prompts that start normal Trebell turns.</p><div className="template-grid">{[["Ship a feature","Inspect the project, plan a useful feature, implement it, run the relevant tests, fix failures, and summarize the result."],["Fix a bug","Reproduce a meaningful bug in this project, diagnose it, fix it, and validate the fix."],["Review codebase","Map this codebase architecture, important execution paths, risks, and highest-value improvements."],["Refactor safely","Choose a worthwhile refactor, preserve behavior, implement focused changes, and run tests."],["Autonomous build","Take this project to a working validated result. Continue through implementation and test failures until it passes."],["Security review","Review this project for concrete security weaknesses and propose or implement safe fixes."]].map(([name,text])=><button key={name} onClick={()=>{setPrompt(text);setSection("chat")}}><BrainCircuit size={20}/><strong>{name}</strong><span>{text}</span></button>)}</div></div>}
       {section==="freebuff"&&<div className="secondary-page"><h1>Freebuff</h1><p>Live account, model, Freebucks and session state.</p><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model)}/></div>}
       {section==="settings"&&<div className="secondary-page full"><h1>Settings</h1><p>Client, project and runtime preferences.</p><SettingsPage settings={settings} onSettings={setSettings} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectPath}/></div>}

@@ -6,6 +6,7 @@ import { createGuiServer } from "../src/gui-server.mjs";
 let windowRef=null;
 let gui=null;
 let quitting=false;
+let agentBrowser=null;
 
 function nativeCodexPath(){
   if(!app.isPackaged) return null;
@@ -34,6 +35,61 @@ function configureBundledRuntime(){
   process.env.TREBELL_CODEX_BIN=codex;
   process.env.TREBELL_FREEBUFF_ENTRYPOINT=bridge;
   process.env.TREBELL_ELECTRON_AS_NODE="1";
+}
+
+
+function normalizeBrowserUrl(value){
+  const raw=String(value||"").trim();
+  if(!raw)throw new Error("URL is required");
+  return /^https?:\/\//i.test(raw)?raw:"http://"+raw;
+}
+
+async function ensureAgentBrowser({show=false}={}){
+  if(agentBrowser&&!agentBrowser.isDestroyed()){
+    if(show){agentBrowser.show();agentBrowser.focus();}
+    return agentBrowser;
+  }
+  agentBrowser=new BrowserWindow({
+    width:1280,height:860,show,title:"Trebell Agent Browser",
+    backgroundColor:"#0a0d14",autoHideMenuBar:true,
+    webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true},
+  });
+  agentBrowser.removeMenu();
+  agentBrowser.webContents.setWindowOpenHandler(({url})=>{
+    agentBrowser.loadURL(url).catch(()=>{});
+    return {action:"deny"};
+  });
+  agentBrowser.on("closed",()=>{agentBrowser=null;});
+  return agentBrowser;
+}
+
+async function browserSnapshot(){
+  const browser=await ensureAgentBrowser();
+  const script='(() => {'+
+    'const visible=(el)=>{const r=el.getBoundingClientRect();const s=getComputedStyle(el);return r.width>0&&r.height>0&&s.visibility!=="hidden"&&s.display!=="none";};'+
+    'const nodes=[...document.querySelectorAll("a,button,input,textarea,select,[role=button],[role=link],[contenteditable=true]")].filter(visible).slice(0,220);'+
+    'const elements=nodes.map((el,index)=>{const ref="e"+(index+1);el.setAttribute("data-trebell-ref",ref);return {ref,tag:el.tagName.toLowerCase(),type:el.getAttribute("type"),role:el.getAttribute("role"),text:(el.innerText||el.getAttribute("aria-label")||el.getAttribute("placeholder")||el.value||"").trim().slice(0,300),href:el.href||null,name:el.getAttribute("name"),disabled:Boolean(el.disabled)};});'+
+    'return {url:location.href,title:document.title,text:(document.body?.innerText||"").slice(0,24000),elements};'+
+  '})()';
+  return await browser.webContents.executeJavaScript(script,true);
+}
+
+async function browserClick(ref){
+  const browser=await ensureAgentBrowser();
+  const script='(() => {const ref='+JSON.stringify(String(ref||""))+';const el=[...document.querySelectorAll("[data-trebell-ref]")].find(x=>x.getAttribute("data-trebell-ref")===ref);if(!el)return {ok:false,error:"element_not_found"};el.scrollIntoView({block:"center",inline:"center"});el.focus?.();el.click();return {ok:true,url:location.href};})()';
+  return await browser.webContents.executeJavaScript(script,true);
+}
+
+async function browserType(ref,text){
+  const browser=await ensureAgentBrowser();
+  const script='(() => {const ref='+JSON.stringify(String(ref||""))+';const value='+JSON.stringify(String(text||""))+';const el=[...document.querySelectorAll("[data-trebell-ref]")].find(x=>x.getAttribute("data-trebell-ref")===ref);if(!el)return {ok:false,error:"element_not_found"};el.scrollIntoView({block:"center"});el.focus?.();if("value" in el)el.value=value;else el.textContent=value;el.dispatchEvent(new Event("input",{bubbles:true}));el.dispatchEvent(new Event("change",{bubbles:true}));return {ok:true,value};})()';
+  return await browser.webContents.executeJavaScript(script,true);
+}
+
+async function browserScreenshot(){
+  const browser=await ensureAgentBrowser();
+  const image=await browser.webContents.capturePage();
+  return {dataUrl:"data:image/png;base64,"+image.toPNG().toString("base64"),url:browser.webContents.getURL(),title:browser.webContents.getTitle()};
 }
 
 async function createWindow(){
@@ -110,6 +166,20 @@ if(!lock){
     const result=await dialog.showOpenDialog(windowRef,{properties:["openFile","multiSelections"]});
     return result.canceled ? [] : result.filePaths;
   });
+  ipcMain.handle("browser:navigate",async(_event,url)=>{
+    const browser=await ensureAgentBrowser();
+    await browser.loadURL(normalizeBrowserUrl(url));
+    return {ok:true,url:browser.webContents.getURL(),title:browser.webContents.getTitle()};
+  });
+  ipcMain.handle("browser:show",async()=>{
+    const browser=await ensureAgentBrowser({show:true});
+    return {ok:true,url:browser.webContents.getURL(),title:browser.webContents.getTitle()};
+  });
+  ipcMain.handle("browser:snapshot",async()=>browserSnapshot());
+  ipcMain.handle("browser:click",async(_event,ref)=>browserClick(ref));
+  ipcMain.handle("browser:type",async(_event,payload)=>browserType(payload?.ref,payload?.text));
+  ipcMain.handle("browser:screenshot",async()=>browserScreenshot());
+  ipcMain.handle("browser:close",async()=>{if(agentBrowser&&!agentBrowser.isDestroyed())agentBrowser.close();agentBrowser=null;return {ok:true};});
 
   app.whenReady().then(createWindow).catch((error)=>{
     console.error(error);
@@ -128,6 +198,7 @@ if(!lock){
     if(quitting) return;
     event.preventDefault();
     quitting=true;
+    try{if(agentBrowser&&!agentBrowser.isDestroyed())agentBrowser.destroy()}catch{}
     Promise.resolve(gui?.close?.())
       .catch(()=>{})
       .finally(()=>app.quit());

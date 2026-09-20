@@ -160,9 +160,9 @@ Trebell keeps its own visual identity and architecture.
 ## Browser/preview tools
 
 - [x] Browser preview panel
-- [ ] Agent browser session
-- [ ] Page element picker
-- [ ] Screenshot/region capture context
+- [x] Agent browser session
+- [x] Page element inspector / context picker
+- [x] Browser screenshot context
 - [ ] Preview annotations
 - [ ] Browser profile/cookie import
 
