@@ -22,10 +22,10 @@ jobs:
       - name: Back up Trebell integration layer
         run: |
           set -euxo pipefail
-          mkdir -p /tmp/trebell-layer/.github/workflows
+          mkdir -p /tmp/trebell-layer
           cp -R bin src tests /tmp/trebell-layer/
           cp package.json README.md THIRD_PARTY_NOTICES.md /tmp/trebell-layer/
-          cp .github/workflows/ci.yml /tmp/trebell-layer/.github/workflows/trebell-ci.yml
+          cp -R .github/workflows /tmp/trebell-layer/workflows
 
       - name: Reset main onto OpenAI Codex upstream
         run: |
@@ -42,7 +42,9 @@ jobs:
           mkdir -p trebell-code
           cp -R /tmp/trebell-layer/bin /tmp/trebell-layer/src /tmp/trebell-layer/tests trebell-code/
           cp /tmp/trebell-layer/package.json /tmp/trebell-layer/README.md /tmp/trebell-layer/THIRD_PARTY_NOTICES.md trebell-code/
-          cp /tmp/trebell-layer/.github/workflows/trebell-ci.yml .github/workflows/trebell-ci.yml
+          rm -rf .github/workflows
+          mkdir -p .github
+          cp -R /tmp/trebell-layer/workflows .github/
 
           python3 - <<'PY'
           from pathlib import Path
