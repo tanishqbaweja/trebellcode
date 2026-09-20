@@ -18,6 +18,7 @@ const RAW_SOURCE_URL =
 const CONSTANT_FILES = [
   "freebuff-models.ts",
   "freebuff-model-ids.ts",
+  "freebuff-model-entitlements.ts",
   "gemini.ts",
   "anthropic.ts",
   "model-config.ts",
@@ -25,30 +26,16 @@ const CONSTANT_FILES = [
 
 const REFRESH_INTERVAL_MS = 6 * 3_600_000; // 6h
 
-// Curated fallback using current model ids from the upstream source
-// (verified 2026-08-06). Keeps the proxy usable if the fetch fails.
+// Curated fallback using the regular Freebuff picker catalog
+// (verified 2026-09-20). Provisioned, early-access, retired, specialist, and
+// staff-only roots are intentionally excluded.
 const FALLBACK_AGENT_MODELS: Record<string, string[]> = {
-  "base2-free": [
-    "minimax/minimax-m3",
-    "openai/gpt-5.6-luna",
-    "deepseek/deepseek-v4-pro",
-    "deepseek/deepseek-v4-flash",
-    "mimo/mimo-v2.5",
-  ],
-  "base2-free-deepseek": ["deepseek/deepseek-v4-pro"],
+  "base2-free-glm-5-3-flash": ["z-ai/glm-5.3-flash"],
   "base2-free-deepseek-flash": ["deepseek/deepseek-v4-flash"],
-  "base2-free-mimo": ["mimo/mimo-v2.5"],
-  "base2-free-minimax-m3": ["minimax/minimax-m3"],
   "base2-free-luna": ["openai/gpt-5.6-luna"],
-  "base2-free-glm": ["z-ai/glm-5.2"],
-  "file-picker": ["google/gemini-3.5-flash-lite"],
-  "file-picker-max": ["google/gemini-3.5-flash-lite"],
-  "file-lister": ["google/gemini-3.5-flash-lite"],
-  "researcher-web": ["google/gemini-3.5-flash-lite"],
-  "researcher-docs": ["google/gemini-3.5-flash-lite"],
-  "basher": ["google/gemini-3.5-flash-lite"],
-  "editor-lite": ["minimax/minimax-m3"],
-  "code-reviewer-lite": ["minimax/minimax-m3"],
+  "base2-free-mimo": ["mimo/mimo-v2.5"],
+  "base2-free-solar-pro4": ["upstage/solar-pro4"],
+  "base2-free-muse-spark": ["meta/muse-spark-1.2-contributor"],
 };
 
 export interface ModelRegistryStatus {
