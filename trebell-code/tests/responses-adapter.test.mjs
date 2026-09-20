@@ -88,3 +88,45 @@ test("Chat Completion SSE converts text and tool calls to Responses SSE", async 
   assert.match(text, /response\.completed/);
   assert.match(text, /"total_tokens":5/);
 });
+
+
+test("namespace tool names round-trip through Chat Completions", () => {
+  const converted = responsesRequestToChat({
+    model: "freebuff/test/model",
+    input: [{
+      type: "function_call",
+      namespace: "mcp_files",
+      call_id: "call_ns",
+      name: "read_file",
+      arguments: "{\"path\":\"a.txt\"}",
+    }],
+    tools: [{
+      type: "namespace",
+      name: "mcp_files",
+      description: "File tools",
+      tools: [{
+        type: "function",
+        name: "read_file",
+        description: "Read a file",
+        parameters: { type: "object" },
+      }],
+    }],
+  });
+  assert.equal(converted.messages[0].tool_calls[0].function.name, "mcp_files__read_file");
+  assert.equal(converted.tools[0].function.name, "mcp_files__read_file");
+
+  const response = chatCompletionToResponse({
+    choices: [{
+      message: {
+        tool_calls: [{
+          id: "call_ns",
+          type: "function",
+          function: { name: "mcp_files__read_file", arguments: "{\"path\":\"a.txt\"}" },
+        }],
+      },
+    }],
+  }, "resp_ns");
+
+  assert.equal(response.output[0].namespace, "mcp_files");
+  assert.equal(response.output[0].name, "read_file");
+});
