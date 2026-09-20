@@ -77,8 +77,9 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
       command,
       cwd:process.cwd(),
       timeoutMs:10000,
+      sandboxPolicy:{type:"dangerFullAccess"},
     });
-    assert.equal(executed.exitCode,0);
+    assert.equal(executed.exitCode,0,JSON.stringify(executed));
     assert.match(executed.stdout,/trebell-relay-ok/);
   } finally {
     try{ws?.close();}catch{}
