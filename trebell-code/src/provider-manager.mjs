@@ -19,6 +19,13 @@ export const MODEL_PROVIDERS = Object.freeze({
     wireApi: "chat",
     envKey: "AGENTROUTER_API_KEY",
     requiresKey: true,
+    staticModels: [
+      "gpt-5.6-sol",
+      "gpt-6-astra",
+      "claude-opus-4-8",
+      "claude-opus-5",
+      "deepseek-v4-flash",
+    ],
   },
   justworker: {
     id: "justworker",
