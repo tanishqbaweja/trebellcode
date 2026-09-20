@@ -19,6 +19,7 @@ const DEFAULT_STATE = Object.freeze({
     remoteAccessEnabled: false,
     remoteAccessPort: 3211,
     remoteAccessToken: "",
+    modelProvider: "freebuff",
   },
   environments: [],
   stashes: [],
