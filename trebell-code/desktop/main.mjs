@@ -43,6 +43,11 @@ function installMainZoomControls(win){
       setMainZoomFactor(wc.getZoomFactor()-ZOOM_STEP);
     }
   });
+  wc.on("zoom-changed",(event,direction)=>{
+    event.preventDefault();
+    const delta=direction==="in"?ZOOM_STEP:-ZOOM_STEP;
+    setMainZoomFactor(wc.getZoomFactor()+delta);
+  });
 }
 
 function nativeCodexPath(){
