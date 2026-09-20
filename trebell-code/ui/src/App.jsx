@@ -2,7 +2,8 @@ import React,{useEffect,useMemo,useRef,useState} from "react";
 import {
   BrainCircuit, Check, ChevronDown, CircleStop, Code2, Cpu, FileCode2, FileDiff, FolderCode,
   GitBranch, Globe2, HardDrive, Link2, ListTodo, MemoryStick, Network, Paperclip, Plus, Send,
-  ShieldCheck, Sparkles, SquareTerminal, WandSparkles, X, Zap, Coins, Mic
+  ShieldCheck, Sparkles, SquareTerminal, WandSparkles, X, Zap, Coins, Mic,
+  PanelRight, PanelBottom, MoreHorizontal
 } from "lucide-react";
 import { CodexRpcClient } from "./rpc.js";
 import { api } from "./api.js";
@@ -16,6 +17,7 @@ import AgentsPage from "./components/AgentsPage.jsx";
 import PreviewPage from "./components/PreviewPage.jsx";
 import SettingsPage from "./components/SettingsPage.jsx";
 import FreebuffPage from "./components/FreebuffPage.jsx";
+import RightPanel from "./components/RightPanel.jsx";
 
 const TREBELL_BROWSER_TOOLS=[{
   type:"namespace",
@@ -204,7 +206,7 @@ export default function App(){
   const [permissionMode,setPermissionMode]=useState("supervised"); const [webSearch,setWebSearch]=useState(true); const [workspaceMode,setWorkspaceMode]=useState("current");
   const [projectPath,setProjectPath]=useState(""); const [gitInfo,setGitInfo]=useState(null); const [stats,setStats]=useState({}); const [runtime,setRuntime]=useState({});
   const [approvals,setApprovals]=useState([]); const [question,setQuestion]=useState(null); const [tokenUsage,setTokenUsage]=useState(null);
-  const [panel,setPanel]=useState(null); const [reviewedFiles,setReviewedFiles]=useState([]); const [checkpointByTurn,setCheckpointByTurn]=useState({});
+  const [panel,setPanel]=useState(null); const [rightPanelOpen,setRightPanelOpen]=useState(false); const [rightPanelTab,setRightPanelTab]=useState("files"); const [reviewedFiles,setReviewedFiles]=useState([]); const [checkpointByTurn,setCheckpointByTurn]=useState({});
   const [selectedThreadIds,setSelectedThreadIds]=useState(new Set()); const [providerRevision,setProviderRevision]=useState(0);
   const rpcRef=useRef(null); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const displayThreads=searchResults||threads;
