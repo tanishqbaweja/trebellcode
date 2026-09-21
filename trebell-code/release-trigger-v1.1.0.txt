@@ -1,4 +1,0 @@
-Trebell Code v1.1.0 release trigger
-2026-09-21
-canonical-branding-final-head
-source-head-before-trigger=a29ee90e191e5ca3d0f479d55f0b0bff5c5ac2c8
