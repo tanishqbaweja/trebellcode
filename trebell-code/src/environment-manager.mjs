@@ -86,6 +86,7 @@ export class EnvironmentManager {
   }
 
   list(){ return this.state.environments(); }
+  get(id){ return this.state.environments().find(x=>x.id===id)||null; }
 
   upsert(profile){
     const existing=profile?.id?this.state.environments().find(x=>x.id===profile.id):null;
@@ -116,6 +117,38 @@ export class EnvironmentManager {
   async discover(){
     const capabilities=await this.capabilities();
     return {capabilities,profiles:this.list()};
+  }
+
+  spawnSession(id,{command,cwd=null,stdio=["ignore","pipe","pipe"]}={}){
+    const profile=this.get(id);
+    if(!profile) throw new Error("Environment profile was not found");
+    const text=String(command||"").trim();
+    if(!text) throw new Error("command is required");
+    const working=String(cwd??profile.cwd??"").trim();
+    let executable,args;
+
+    if(profile.type==="local"){
+      executable=this.platform==="win32"?"cmd.exe":"/bin/sh";
+      args=this.platform==="win32"?["/d","/s","/c",text]:["-lc",text];
+      return spawn(executable,args,{cwd:working||undefined,env:this.env,windowsHide:true,stdio});
+    }
+    if(profile.type==="wsl"){
+      if(this.platform!=="win32") throw new Error("WSL environments are available only on Windows");
+      executable="wsl.exe";
+      args=[];
+      if(profile.distro) args.push("-d",profile.distro);
+      args.push("--","bash","-lc",working?("cd "+quotePosix(working)+" && "+text):text);
+      return spawn(executable,args,{env:this.env,windowsHide:true,stdio});
+    }
+    if(profile.type==="ssh"){
+      executable=this.platform==="win32"?"ssh.exe":"ssh";
+      args=["-o","BatchMode=yes","-o","ConnectTimeout=8","-o","ServerAliveInterval=15","-p",String(normalizedPort(profile.port))];
+      if(profile.identityFile) args.push("-i",profile.identityFile);
+      const target=profile.user?(profile.user+"@"+profile.host):profile.host;
+      args.push(target,working?("cd "+quotePosix(working)+" && "+text):text);
+      return spawn(executable,args,{env:this.env,windowsHide:true,stdio});
+    }
+    throw new Error("Unsupported environment type");
   }
 
   async execute(id,{command,cwd=null,timeoutMs=30000}={}){
