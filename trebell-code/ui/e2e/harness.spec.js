@@ -57,7 +57,7 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await page.getByRole("button",{name:"Close terminal"}).click();
   await expect(page.getByTestId("drawer")).toBeHidden();
 
-  await page.getByRole("button",{name:"Projects"}).click();
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Projects"})).toBeVisible();
   await expect(page.getByText("Clone repository")).toBeVisible();
 
