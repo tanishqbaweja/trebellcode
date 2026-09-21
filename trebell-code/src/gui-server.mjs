@@ -221,6 +221,27 @@ function requireLoad(){
   }catch{return 0}
 }
 
+const COMMON_PREVIEW_PORTS=[3000,3001,4173,4200,4321,5000,5173,5174,8000,8080,8081,8787,8888];
+
+async function discoverPreviewServers(){
+  const checks=COMMON_PREVIEW_PORTS.map(async port=>{
+    const url=`http://127.0.0.1:${port}/`;
+    try{
+      const response=await fetch(url,{redirect:"manual",signal:AbortSignal.timeout(650)});
+      const contentType=String(response.headers.get("content-type")||"").toLowerCase();
+      return {
+        host:"localhost",
+        port,
+        url:`http://localhost:${port}`,
+        status:response.status,
+        contentType:contentType.split(";")[0]||null,
+        web:contentType.includes("text/html")||contentType.includes("application/xhtml+xml")||response.status<500,
+      };
+    }catch{return null}
+  });
+  return (await Promise.all(checks)).filter(Boolean).filter(item=>item.web).sort((a,b)=>a.port-b.port);
+}
+
 export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",mock=false,env=process.env}={}){
   const dist=resolve(packageRoot,"ui","dist");
   const state=new TrebellStateStore(env);
@@ -496,6 +517,26 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return json(res,200,{ok:true});
       }
     }
+    if(url.pathname==="/api/project-script/run"&&req.method==="POST"){
+      try{
+        const body=await readJsonBody(req);
+        const projectPath=resolve(body.path||process.cwd());
+        const project=state.projects().find(item=>resolve(item.path)===projectPath);
+        if(!project) return json(res,404,{error:"Project was not found"});
+        const script=(project.scripts||[]).find(item=>item.id===String(body.scriptId||""));
+        if(!script) return json(res,404,{error:"Project action was not found"});
+        if(mock){
+          return json(res,200,{ok:true,script,session:{id:"mock-project-action",name:script.name,cwd:projectPath,running:true},previewUrl:script.previewUrl||null});
+        }
+        const session=await terminals.create({cwd:projectPath,name:script.name||"Project action",cols:120,rows:32});
+        await terminals.write(session.id,String(script.command||"")+(process.platform==="win32"?"\r":"\n"));
+        return json(res,200,{ok:true,script,session:terminals.snapshot(session.id),previewUrl:script.previewUrl||null});
+      }catch(error){return json(res,400,{ok:false,error:error.message});}
+    }
+    if(url.pathname==="/api/preview/servers"&&req.method==="GET"){
+      try{return json(res,200,{servers:await discoverPreviewServers()});}
+      catch(error){return json(res,200,{servers:[],error:error.message});}
+    }
     if(url.pathname==="/api/thread-meta"){
       const id=url.searchParams.get("threadId");
       if(req.method==="GET") return json(res,200,id?state.threadMeta(id):state.listThreadMeta());
@@ -536,7 +577,25 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           case "pull": result=await pullRepo(cwd); break;
           case "push": result=await pushRepo(cwd,{setUpstream:Boolean(body.setUpstream)}); break;
           case "auto-pull": result=await safeAutoPull(cwd); break;
-          case "worktree-create": result=await createWorktree(cwd,{branch:body.branch,path:body.path,baseBranch:body.baseBranch||null}); state.touchProject(result.worktree); break;
+          case "worktree-create": {
+            const sourceProject=state.projects().find(item=>resolve(item.path)===resolve(cwd))||null;
+            result=await createWorktree(cwd,{branch:body.branch,path:body.path,baseBranch:body.baseBranch||null});
+            const inherited=sourceProject?{
+              defaultModel:sourceProject.defaultModel??null,
+              permissionMode:sourceProject.permissionMode??null,
+              workspaceMode:sourceProject.workspaceMode??null,
+              scripts:sourceProject.scripts||[],
+              preferredScriptId:sourceProject.preferredScriptId??null,
+            }:{};
+            state.touchProject(result.worktree,inherited);
+            const setup=(sourceProject?.scripts||[]).find(script=>script.runOnWorktreeCreate);
+            if(setup&&!mock&&terminals){
+              const session=await terminals.create({cwd:result.worktree,name:`${setup.name||"Setup"} · setup`,cols:120,rows:32});
+              await terminals.write(session.id,String(setup.command||"")+(process.platform==="win32"?"\r":"\n"));
+              result={...result,setup:{scriptId:setup.id,session:terminals.snapshot(session.id)}};
+            }
+            break;
+          }
           case "worktree-remove": result=await removeWorktree(cwd,body.path,{force:Boolean(body.force)}); break;
           default:return json(res,400,{error:"unknown git action"});
         }
