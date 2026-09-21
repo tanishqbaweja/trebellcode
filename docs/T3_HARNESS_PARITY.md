@@ -33,8 +33,8 @@ Status:
 | Compact context | **Complete** | Uses `thread/compact/start`. |
 | Revert conversation | **Complete** | Uses `thread/revert`. |
 | Workspace checkpoint restore | **Complete** | Trebell snapshots Git/workspace state around turns. |
-| Thread goals API | **Missing** | Codex `thread/goal/*` exists but Trebell does not expose a goal editor yet. |
-| Persistent thread attachments API | **Partial** | Composer/context attachments work; Codex `thread/attachment/*` is not yet the persistence layer. |
+| Thread goals API | **Complete** | Goal tab uses Codex `thread/goal/get`, `set` and `clear`, including pause/resume/complete state and budget usage. |
+| Persistent thread attachments API | **Partial** | Linked pull requests now persist through Codex `thread/attachment/*` with a local compatibility fallback. Turn file/context inputs remain direct composer inputs. |
 
 ## Agent tools
 
@@ -58,7 +58,7 @@ Status:
 | Desktop screenshot | **Complete** | Primary display capture is available to users and the agent. |
 | Desktop Computer Use | **Complete** | Windows coordinate screenshot/move/click/scroll/type/key tools. Mutating input is restricted to Full access mode. |
 | Code review | **Complete** | Uses Codex `review/start` for uncommitted changes. |
-| Subagents / delegated threads | **Partial** | Child threads are displayed and Codex can create delegated work; Trebell does not yet expose every collaboration-mode control. |
+| Subagents / delegated threads | **Complete** | Child threads are displayed and the Agents panel exposes live Codex collaboration-mode presets through `collaborationMode/list` and `thread/settings/update`. |
 | Image generation tool | **Partial** | Provider capability is reported; Trebell does not add a separate image-generation UI when the selected provider lacks it. |
 
 ## Permissions and safety
@@ -79,8 +79,8 @@ Status:
 | Capability | Trebell | Notes |
 |---|---|---|
 | Local environment | **Complete** | Native Windows/local workspace. |
-| WSL environment profiles | **Complete** | Discovery, persisted profiles and connectivity probe UI. |
-| SSH environment profiles | **Complete** | Persisted host/user/port/key/cwd profiles with probe/execute backend. |
+| WSL environment profiles | **Partial** | Discovery, persisted profiles and connectivity probes work; normal Codex turns are not yet routed through a WSL exec-server. |
+| SSH environment profiles | **Partial** | Persisted host/user/port/key/cwd profiles and command probes work; normal Codex turns are not yet routed through a remote exec-server. |
 | Environment UI | **Complete** | New Environments surface shows host capabilities and profiles. |
 | LAN remote access | **Complete** | Token-protected mobile/web remote control is configurable in the desktop UI. |
 | Background/tray mode | **Complete** | Can stay running after the desktop window closes. |
@@ -99,9 +99,9 @@ Status:
 | Context chips | **Complete** | Files, browser annotations, terminal excerpts, PRs and review comments can be attached. |
 | Slash commands | **Complete** | Includes compact/model/terminal/diff/git/preview/agents/review/new/clear/plan. |
 | Voice dictation | **Complete** | Uses platform Web Speech support when available. |
-| Command palette | **Partial** | Slash commands and shortcuts exist; there is not yet a T3-style universal command palette. |
+| Command palette | **Complete** | Ctrl/Cmd+K opens a searchable command/thread palette for navigation and core harness actions. |
 | Keybinding editor | **Partial** | Core shortcuts are editable; conditional/fully remappable T3 keybinding grammar is not implemented. |
-| Welcome wizard | **Missing** | Setup is handled through Settings/Projects instead of a dedicated first-run wizard. |
+| Welcome wizard | **Complete** | Fresh installs get a focused workspace/provider/permission setup flow; existing installs are migrated without interruption. |
 | Appearance themes | **Complete** | Dark/midnight/black. |
 
 ## Codex app-server v2 surface
@@ -129,10 +129,10 @@ Trebell intentionally does **not** duplicate every app-server RPC into a button.
 - desktop/browser control — Trebell dynamic tool namespaces provide explicit Electron/Windows implementations.
 
 ### Not currently surfaced
-- thread goals
-- Codex persistent thread-attachment CRUD
+- full Codex attachment persistence for every transient composer file/context item
 - advanced realtime/thread subscription APIs
-- every experimental collaboration/environment/capability-root control
+- remote exec-server routing for the Trebell WSL/SSH profiles
+- every experimental capability-root control
 - ChatGPT-account-specific billing/rate-limit/account workflows, because Trebell intentionally uses independent inference providers
 
 These items should remain **not complete** until a real Trebell workflow exists.
@@ -140,10 +140,9 @@ These items should remain **not complete** until a real Trebell workflow exists.
 ## T3-specific gaps still worth doing
 
 1. Multi-forge pull-request UI beyond GitHub.
-2. A universal command palette and richer keybinding conditions.
-3. First-run/welcome setup flow.
-4. Richer subagent/collaboration controls.
-5. Optional migration from Trebell attachment metadata to Codex `thread/attachment/*`.
-6. Thread goal editing if Codex goals become useful in the normal desktop workflow.
+2. Richer conditional keybinding grammar beyond the editable core shortcuts.
+3. Route normal Codex turns through configured WSL/SSH exec-server environments, not only probe/execute profiles.
+4. Persist every transient composer file/context item through Codex attachments where that improves cross-client continuity.
+5. App-specific connector onboarding where Codex exposes a stable client workflow.
 
 Everything else should be evaluated as a user workflow, not by counting upstream RPC methods.
