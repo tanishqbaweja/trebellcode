@@ -141,30 +141,39 @@ test("stream=true always returns Responses SSE even when upstream answers with J
 });
 
 
-test("provider bridge forwards incoming Codex User-Agent to AgentRouter", async () => {
-  let seenOptions=null;
+test("provider bridge passes AgentRouter Responses through directly", async () => {
+  let seenBody=null;
   const providerManager={
     hasKey(provider){return provider==="agentrouter";},
-    async models(){return {models:["gpt-5.5"]};},
-    async forwardChat(provider,body,options){
+    async models(){return {models:["deepseek-v4-flash"]};},
+    async forwardResponses(provider,body){
       assert.equal(provider,"agentrouter");
-      seenOptions=options;
-      return Response.json({choices:[{message:{role:"assistant",content:"ok"}}]});
+      seenBody=body;
+      return Response.json({
+        id:"resp_ar",
+        object:"response",
+        model:body.model,
+        output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"ok"}]}],
+      });
     },
   };
   const bridge=await startProviderBridge({port:0,providerManager,provider:"agentrouter"});
   try{
     const response=await fetch(bridge.url+"/v1/responses",{
       method:"POST",
-      headers:{"content-type":"application/json","user-agent":"codex_cli_rs/9.9.9"},
+      headers:{"content-type":"application/json","user-agent":"generic-client/1.0"},
       body:JSON.stringify({
-        model:"gpt-5.5",
-        input:[{type:"message",role:"user",content:[{type:"input_text",text:"hello"}]}],
+        model:"deepseek-v4-flash",
+        input:"hello",
         stream:false,
       }),
     });
     assert.equal(response.status,200);
-    assert.equal(seenOptions?.userAgent,"codex_cli_rs/9.9.9");
+    const json=await response.json();
+    assert.equal(json.object,"response");
+    assert.equal(json.model,"deepseek-v4-flash");
+    assert.equal(seenBody.model,"deepseek-v4-flash");
+    assert.equal(seenBody.input,"hello");
   }finally{
     await bridge.close();
   }
