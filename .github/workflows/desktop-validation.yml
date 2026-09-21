@@ -9,6 +9,7 @@ on:
       - "trebell-code/build/**"
       - "trebell-code/desktop/**"
       - "trebell-code/src/**"
+      - "trebell-code/scripts/**"
       - "trebell-code/ui/index.html"
       - "trebell-code/ui/public/**"
       - "trebell-code/ui/src/**"
