@@ -39,12 +39,14 @@ test("project actions persist, sanitize, inherit preference, and allow clearing 
         previewUrl:"http://localhost:5173",
         autoOpenPreview:true,
         runOnWorktreeCreate:true,
+        waitForSetup:true,
       }],
       preferredScriptId:"dev",
     });
     assert.equal(saved.scripts.length,1);
     assert.equal(saved.scripts[0].command,"npm run dev");
     assert.equal(saved.scripts[0].runOnWorktreeCreate,true);
+    assert.equal(saved.scripts[0].waitForSetup,true);
     assert.equal(saved.preferredScriptId,"dev");
 
     const cleared=state.touchProject(projectPath,{defaultModel:null,permissionMode:null,workspaceMode:null});
