@@ -22,7 +22,7 @@ function trimBuffer(text){
 export class TerminalManager extends EventEmitter{
   constructor({env=process.env}={}){
     super();
-    this.env=env; this.sessions=new Map(); this.pending=new Map(); this.nextRid=1; this.clients=new Map();
+    this.env=env; this.sessions=new Map(); this.pending=new Map(); this.nextRid=1; this.clients=new Map(); this.exitWaiters=new Map();
     this.#startWorker();
   }
   #startWorker(){
@@ -42,6 +42,9 @@ export class TerminalManager extends EventEmitter{
         for(const ws of this.clients.get(msg.id)||[]) if(ws.readyState===ws.OPEN) ws.send(JSON.stringify({type:"output",data:msg.data}));
       }else if(msg.type==="exit"){
         const session=this.sessions.get(msg.id); if(session){session.running=false;session.exitCode=msg.exitCode;session.updatedAt=Date.now();}
+        const waiters=this.exitWaiters.get(msg.id)||[];
+        this.exitWaiters.delete(msg.id);
+        for(const resolve of waiters)resolve({exitCode:msg.exitCode,signal:msg.signal});
         for(const ws of this.clients.get(msg.id)||[]) if(ws.readyState===ws.OPEN) ws.send(JSON.stringify({type:"exit",exitCode:msg.exitCode,signal:msg.signal}));
       }
     });
@@ -64,6 +67,21 @@ export class TerminalManager extends EventEmitter{
   #public(s){return {id:s.id,name:s.name,cwd:s.cwd,cols:s.cols,rows:s.rows,pid:s.pid,running:s.running,exitCode:s.exitCode,createdAt:s.createdAt,updatedAt:s.updatedAt,buffer:s.buffer};}
   async write(id,data){await this.#rpc("write",{id,data});}
   async resize(id,cols,rows){await this.#rpc("resize",{id,cols,rows});const s=this.sessions.get(id);if(s){s.cols=cols;s.rows=rows;}}
+  async waitForExit(id,{timeoutMs=30*60_000}={}){
+    const session=this.sessions.get(id);
+    if(!session)return {exitCode:null,signal:null,missing:true};
+    if(!session.running)return {exitCode:session.exitCode,signal:null};
+    return new Promise(resolve=>{
+      const list=this.exitWaiters.get(id)||[];
+      const done=result=>{clearTimeout(timer);resolve(result)};
+      list.push(done);this.exitWaiters.set(id,list);
+      const timer=setTimeout(()=>{
+        const current=this.exitWaiters.get(id)||[];
+        this.exitWaiters.set(id,current.filter(item=>item!==done));
+        resolve({exitCode:null,signal:null,timeout:true});
+      },Math.max(1000,Number(timeoutMs)||30*60_000));
+    });
+  }
   async close(id){await this.#rpc("kill",{id}).catch(()=>{});this.sessions.delete(id);}
   attachWebSocket(server,path="/api/terminal/ws"){
     const wss=new WebSocketServer({noServer:true});
