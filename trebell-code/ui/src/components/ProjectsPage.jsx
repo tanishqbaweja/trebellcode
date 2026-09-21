@@ -1,5 +1,5 @@
 import React,{useEffect,useMemo,useState} from "react";
-import { Check, ExternalLink, FolderCode, GitBranch, Layers3, Pencil, Play, Plus, RefreshCw, SquareTerminal, Trash2, X } from "lucide-react";
+import { Check, Download, ExternalLink, FolderCode, GitBranch, Layers3, Pencil, Play, Plus, RefreshCw, SquareTerminal, Trash2, X } from "lucide-react";
 import { api } from "../api.js";
 
 function blankScript(){
@@ -12,13 +12,17 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
   const [busy,setBusy]=useState(false);
   const [editor,setEditor]=useState(null);
   const [error,setError]=useState("");
+  const [suggestionsOpen,setSuggestionsOpen]=useState({});
 
   async function refresh(){
     const d=await api("/api/projects").catch(()=>({projects:[]}));
     const enriched=await Promise.all((d.projects||[]).map(async project=>{
-      const git=await api("/api/git/info?path="+encodeURIComponent(project.path)).catch(()=>null);
+      const [git,suggested]=await Promise.all([
+        api("/api/git/info?path="+encodeURIComponent(project.path)).catch(()=>null),
+        api("/api/project-actions/suggestions?path="+encodeURIComponent(project.path)).catch(()=>({scripts:[],t3:{present:false},packageManager:null})),
+      ]);
       const remote=git?.remotes?.find(r=>r.kind==="fetch")?.url||null;
-      return {...project,scripts:Array.isArray(project.scripts)?project.scripts:[],git,remote};
+      return {...project,scripts:Array.isArray(project.scripts)?project.scripts:[],git,remote,suggested};
     }));
     setProjects(enriched);
   }
@@ -104,6 +108,37 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
     finally{setBusy(false)}
   }
 
+  function importableScripts(project){
+    const existingCommands=new Set(project.scripts.map(script=>script.command));
+    const existingNames=new Set(project.scripts.map(script=>script.name.toLowerCase()));
+    return (project.suggested?.scripts||[]).filter(script=>!existingCommands.has(script.command)&&!existingNames.has(String(script.name||"").toLowerCase()));
+  }
+
+  async function importScript(project,suggestion){
+    const item={
+      id:crypto.randomUUID(),
+      name:suggestion.name,
+      command:suggestion.command,
+      previewUrl:suggestion.previewUrl||null,
+      autoOpenPreview:Boolean(suggestion.autoOpenPreview),
+      runOnWorktreeCreate:Boolean(suggestion.runOnWorktreeCreate),
+    };
+    await saveProject(project,{scripts:[...project.scripts,item],preferredScriptId:project.preferredScriptId||item.id});
+  }
+
+  async function importAll(project){
+    const items=importableScripts(project).map(suggestion=>({
+      id:crypto.randomUUID(),
+      name:suggestion.name,
+      command:suggestion.command,
+      previewUrl:suggestion.previewUrl||null,
+      autoOpenPreview:Boolean(suggestion.autoOpenPreview),
+      runOnWorktreeCreate:Boolean(suggestion.runOnWorktreeCreate),
+    }));
+    if(!items.length)return;
+    await saveProject(project,{scripts:[...project.scripts,...items],preferredScriptId:project.preferredScriptId||items[0].id});
+  }
+
   const groups=useMemo(()=>{
     const map=new Map();
     for(const project of projects){
@@ -130,7 +165,12 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
         </div>
 
         <div className="project-actions">
-          <div className="project-actions-head"><span><SquareTerminal size={13}/> Project actions</span><button onClick={()=>editScript(p)}><Plus size={12}/> Add action</button></div>
+          <div className="project-actions-head"><span><SquareTerminal size={13}/> Project actions</span><div>{importableScripts(p).length>0&&<button onClick={()=>setSuggestionsOpen(current=>({...current,[p.id]:!current[p.id]}))}><Download size={12}/> Import {importableScripts(p).length}</button>}<button onClick={()=>editScript(p)}><Plus size={12}/> Add action</button></div></div>
+          {p.suggested?.t3?.present&&<div className="project-config-hint"><strong>t3.json detected</strong><span>{p.suggested.t3.defaultThreadEnvMode?"Default workspace: "+p.suggested.t3.defaultThreadEnvMode:"Shared project actions available"}</span>{p.suggested.t3.defaultThreadEnvMode&&p.workspaceMode!==p.suggested.t3.defaultThreadEnvMode&&<button onClick={()=>saveProject(p,{workspaceMode:p.suggested.t3.defaultThreadEnvMode})}>Use default</button>}</div>}
+          {suggestionsOpen[p.id]&&importableScripts(p).length>0&&<div className="project-import-list">
+            <div className="project-import-head"><span>Discovered actions</span><button onClick={()=>importAll(p)}>Import all</button></div>
+            {importableScripts(p).map(script=><div key={script.source+":"+script.id}><span><strong>{script.name}</strong><small>{script.command}</small></span><em>{script.source}</em><button onClick={()=>importScript(p,script)}><Download size={11}/> Import</button></div>)}
+          </div>}
           {p.scripts.length?<div className="project-action-list">{p.scripts.map(script=><div className="project-action-row" key={script.id}>
             <button className="project-action-run" disabled={busy} onClick={()=>runScript(p,script)}><Play size={12}/><span><strong>{script.name}</strong><small>{script.command}</small></span>{script.runOnWorktreeCreate&&<em>setup</em>}</button>
             {script.previewUrl&&<button title="Open preview" onClick={()=>onOpenPreview?.(script.previewUrl)}><ExternalLink size={12}/></button>}
