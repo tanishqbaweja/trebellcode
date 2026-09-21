@@ -18,11 +18,6 @@ const outputs=[
   join(root,"ui","public","favicon.png"),
 ];
 for(const target of outputs){
-  mkdirSync(target.slice(0,target.lastIndexOf(/[\\/]/.test(target)?"\\":"/")), {recursive:true});
-}
-
-// dirname without adding another dependency/import.
-for(const target of outputs){
   const slash=Math.max(target.lastIndexOf("/"),target.lastIndexOf("\\"));
   mkdirSync(target.slice(0,slash),{recursive:true});
   writeFileSync(target,png);
