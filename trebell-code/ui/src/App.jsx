@@ -24,6 +24,7 @@ import CommandPalette from "./components/CommandPalette.jsx";
 import GoalPanel from "./components/GoalPanel.jsx";
 import OnboardingModal from "./components/OnboardingModal.jsx";
 import OpenInPicker from "./components/OpenInPicker.jsx";
+import WorktreeSetupCard from "./components/WorktreeSetupCard.jsx";
 import { resolveKeybinding } from "./keybindings.js";
 
 const MAX_COMPOSER_ATTACHMENTS=100;
@@ -232,6 +233,7 @@ export default function App(){
   const [panel,setPanel]=useState(null); const [rightPanelOpen,setRightPanelOpen]=useState(false); const [rightPanelTab,setRightPanelTab]=useState("files"); const [reviewedFiles,setReviewedFiles]=useState([]); const [checkpointByTurn,setCheckpointByTurn]=useState({});
   const [selectedThreadIds,setSelectedThreadIds]=useState(new Set()); const [providerRevision,setProviderRevision]=useState(0);
   const [goal,setGoal]=useState(null); const [linkedPullRequests,setLinkedPullRequests]=useState([]);
+  const [worktreeSetup,setWorktreeSetup]=useState(null);
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false);
   const rpcRef=useRef(null); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const displayThreads=searchResults||threads;
@@ -288,6 +290,7 @@ export default function App(){
     setProjectPath(path);
     const response=await api("/api/projects",{method:"POST",body:{path}}).catch(()=>null);
     const project=response?.project||null;
+    setCurrentProject(project);
     if(project?.defaultModel&&models.includes(project.defaultModel))setModel(project.defaultModel)
     if(project?.permissionMode)setPermissionMode(project.permissionMode);
     if(project?.workspaceMode)setWorkspaceMode(project.workspaceMode);
@@ -510,9 +513,11 @@ export default function App(){
     if(activeThread?.id===threadId){setGoal(goalData?.goal||null);setLinkedPullRequests(pullRequests)}
     return {goal:goalData?.goal||null,pullRequests};
   }
-  async function newChat(){setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([]);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([])}
+  async function newChat(){setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([]);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null)}
   async function openThread(thread){
-    setSection("chat");setEvents([]);setAssistantText("");setActiveThread(thread);setProjectPath(thread.cwd||projectPath);if(!rpc||rpcStatus!=="connected")return;
+    setSection("chat");setEvents([]);setAssistantText("");setWorktreeSetup(null);setActiveThread(thread);
+    if(thread.cwd)await touchProject(thread.cwd);else setProjectPath(projectPath);
+    if(!rpc||rpcStatus!=="connected")return;
     const [resumed,cp,goalData,attachmentData]=await Promise.all([
       rpc.request("thread/resume",{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null,excludeTurns:false}).catch(()=>null),
       api("/api/checkpoints?threadId="+encodeURIComponent(thread.id)).catch(()=>({checkpoints:[]})),
@@ -526,6 +531,22 @@ export default function App(){
     setLinkedPullRequests(persisted.length?persisted:(meta.linkedPullRequests||[]));
   }
   async function reloadActiveThread(){if(activeThread)await openThread(activeThread)}
+  async function monitorWorktreeSetup(sessionId,{timeoutMs=30*60_000}={}){
+    const started=Date.now();
+    while(Date.now()-started<timeoutMs){
+      const data=await api("/api/terminal/sessions").catch(()=>({sessions:[]}));
+      const session=(data.sessions||[]).find(item=>item.id===sessionId);
+      if(session&&!session.running){
+        const failed=session.exitCode!==0;
+        setWorktreeSetup(prev=>prev?.sessionId===sessionId?{...prev,phase:failed?"failed":"done",detail:failed?`Setup exited with code ${session.exitCode??"unknown"}`:"Setup completed",exitCode:session.exitCode}:prev);
+        return {exitCode:session.exitCode};
+      }
+      await new Promise(resolve=>setTimeout(resolve,700));
+    }
+    setWorktreeSetup(prev=>prev?.sessionId===sessionId?{...prev,phase:"failed",detail:"Setup is still running after 30 minutes."}:prev);
+    return {timeout:true,exitCode:null};
+  }
+
   async function prepareWorktree(basePath,modelId){
     if(workspaceMode!=="worktree")return basePath;
     const info=await api("/api/git/info?path="+encodeURIComponent(basePath));
@@ -534,17 +555,40 @@ export default function App(){
     const stamp=Date.now().toString(36);
     const branch="trebell/"+slug+"-"+stamp;
     const path=info.root+"-trebell-"+slug+"-"+stamp;
-    const response=await api("/api/git/action",{method:"POST",body:{action:"worktree-create",cwd:info.root,branch,path,baseBranch:info.branch}});
-    const worktree=response.result?.worktree||path;
-    await touchProject(worktree);
-    if(response.result?.setup?.session?.id){
-      setPanel("terminal");
-      setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:response.result.setup.session.id})),0);
+    setWorktreeSetup({phase:"creating",branch,path,scriptName:null,sessionId:null,detail:"Creating an isolated Git worktree"});
+    try{
+      const response=await api("/api/git/action",{method:"POST",body:{action:"worktree-create",cwd:info.root,branch,path,baseBranch:info.branch}});
+      const worktree=response.result?.worktree||path;
+      await touchProject(worktree);
+      const setup=response.result?.setup||null;
+      if(setup?.session?.id){
+        setWorktreeSetup({
+          phase:"running",
+          branch,
+          path:worktree,
+          scriptName:setup.scriptName||"Setup",
+          sessionId:setup.session.id,
+          waitForSetup:Boolean(setup.waitForSetup),
+          detail:setup.waitForSetup?"Agent will start after setup completes":"Setup is running in the background",
+        });
+        setPanel("terminal");
+        setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:setup.session.id})),0);
+        const completion=monitorWorktreeSetup(setup.session.id);
+        if(setup.waitForSetup){
+          const settled=await completion;
+          if(settled.timeout)throw new Error("Worktree setup is still running after 30 minutes. The agent was not started.");
+          if(settled.exitCode!==0)throw new Error(`Worktree setup failed with exit code ${settled.exitCode??"unknown"}. Fix the setup terminal, then retry.`);
+        }else{
+          completion.catch(()=>{});
+        }
+      }else{
+        setWorktreeSetup({phase:"done",branch,path:worktree,scriptName:null,sessionId:null,detail:"Worktree created"});
+      }
+      return worktree;
+    }catch(error){
+      setWorktreeSetup(prev=>({...prev,phase:"failed",detail:error.message||String(error)}));
+      throw error;
     }
-    const completion=response.result?.setup?.completion;
-    if(response.result?.setup?.waitForSetup&&completion?.timeout)throw new Error("Worktree setup is still running after 30 minutes. The agent was not started.");
-    if(response.result?.setup?.waitForSetup&&completion&&completion.exitCode!==0)throw new Error(`Worktree setup failed with exit code ${completion.exitCode??"unknown"}. Fix the setup terminal, then retry.`);
-    return worktree;
   }
   async function createThreadFor(modelId,cwd){const p=presetFor(permissionMode);const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools:[...TREBELL_BROWSER_TOOLS,...TREBELL_COMPUTER_TOOLS],developerInstructions:webSearch?"Web research is allowed when useful. You may use trebell_browser for interactive pages.":"Do not use web search or trebell_browser unless the user explicitly requests it."});return result.thread}
   function inputsFor(text,paths){return [{type:"text",text,text_elements:[]},...(paths||[]).map(path=>{const lower=String(path).toLowerCase();if(/\.(png|jpe?g|gif|webp|bmp)$/.test(lower))return{type:"localImage",path};if(/\.(mp3|wav|m4a|ogg|flac)$/.test(lower))return{type:"localAudio",path};return{type:"mention",name:String(path).split(/[\\/]/).pop(),path}})]}
@@ -776,6 +820,7 @@ export default function App(){
 
           <div className="conversation-scroll">
             <div className="conversation-column">
+              <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
               <Conversation messages={messages} onEditFromHere={editFromHere} onCite={citeAssistant}/>
               <ActivityTimeline events={events} assistantText={assistantText} onOpenPanel={name=>name==="workspace"?openRightPanel("diff"):setPanel(name)}/>
               {approvals[0]&&<div className="inline-approval"><ApprovalCard request={approvals[0]} onResolve={resolveApproval}/></div>}
