@@ -1,6 +1,7 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, Notification, Tray, Menu, nativeImage, desktopCapturer, screen } from "electron";
+import { app, BrowserWindow, ipcMain, shell, dialog, Notification, Tray, Menu, nativeImage, desktopCapturer, screen, clipboard } from "electron";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { execFile } from "node:child_process";
 import { createGuiServer } from "../src/gui-server.mjs";
 
 let windowRef=null;
@@ -242,7 +243,112 @@ async function desktopScreenshot(){
     width:source.thumbnail.getSize().width,
     height:source.thumbnail.getSize().height,
     displayId:String(display.id),
+    originX:display.bounds.x,
+    originY:display.bounds.y,
+    scaleFactor:scale,
   };
+}
+
+function powershell(script,{timeout=10000}={}){
+  if(process.platform!=="win32")return Promise.reject(new Error("Computer use is currently available on Windows only."));
+  const encoded=Buffer.from(String(script),"utf16le").toString("base64");
+  return new Promise((resolve,reject)=>{
+    execFile("powershell.exe",["-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-EncodedCommand",encoded],{windowsHide:true,timeout},(error,stdout,stderr)=>{
+      if(error){reject(new Error(String(stderr||error.message||error).trim()));return}
+      resolve(String(stdout||"").trim());
+    });
+  });
+}
+
+function primaryComputerPoint(x,y){
+  const display=screen.getPrimaryDisplay();
+  const scale=Math.max(1,Number(display.scaleFactor)||1);
+  const pixelWidth=Math.max(1,Math.round(display.size.width*scale));
+  const pixelHeight=Math.max(1,Math.round(display.size.height*scale));
+  const px=Math.min(pixelWidth-1,Math.max(0,Math.round(Number(x)||0)));
+  const py=Math.min(pixelHeight-1,Math.max(0,Math.round(Number(y)||0)));
+  return {
+    x:Math.round(display.bounds.x+px/scale),
+    y:Math.round(display.bounds.y+py/scale),
+    pixelX:px,
+    pixelY:py,
+    scaleFactor:scale,
+    displayId:String(display.id),
+  };
+}
+
+const COMPUTER_INPUT_TYPE=String.raw`
+using System;
+using System.Runtime.InteropServices;
+public static class TrebellInput {
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, int data, UIntPtr extra);
+}
+`;
+
+async function computerMove(x,y){
+  const point=primaryComputerPoint(x,y);
+  await powershell(`Add-Type -TypeDefinition @'
+${COMPUTER_INPUT_TYPE}
+'@
+[TrebellInput]::SetCursorPos(${point.x},${point.y}) | Out-Null`);
+  return {ok:true,...point};
+}
+
+async function computerClick(payload={}){
+  const point=primaryComputerPoint(payload.x,payload.y);
+  const button=String(payload.button||"left").toLowerCase();
+  const count=Math.min(3,Math.max(1,Math.round(Number(payload.count)||1)));
+  const flags=button==="right"?[0x0008,0x0010]:button==="middle"?[0x0020,0x0040]:[0x0002,0x0004];
+  await powershell(`Add-Type -TypeDefinition @'
+${COMPUTER_INPUT_TYPE}
+'@
+[TrebellInput]::SetCursorPos(${point.x},${point.y}) | Out-Null
+1..${count} | ForEach-Object {
+  [TrebellInput]::mouse_event(${flags[0]},0,0,0,[UIntPtr]::Zero)
+  [TrebellInput]::mouse_event(${flags[1]},0,0,0,[UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 70
+}`);
+  return {ok:true,button,count,...point};
+}
+
+async function computerScroll(delta){
+  const amount=Math.max(-12000,Math.min(12000,Math.round(Number(delta)||0)));
+  await powershell(`Add-Type -TypeDefinition @'
+${COMPUTER_INPUT_TYPE}
+'@
+[TrebellInput]::mouse_event(0x0800,0,0,${amount},[UIntPtr]::Zero)`);
+  return {ok:true,delta:amount};
+}
+
+const SEND_KEY_MAP=Object.freeze({
+  ENTER:"{ENTER}",TAB:"{TAB}",ESC:"{ESC}",ESCAPE:"{ESC}",SPACE:" ",
+  UP:"{UP}",DOWN:"{DOWN}",LEFT:"{LEFT}",RIGHT:"{RIGHT}",
+  HOME:"{HOME}",END:"{END}",PAGEUP:"{PGUP}",PAGEDOWN:"{PGDN}",
+  BACKSPACE:"{BACKSPACE}",DELETE:"{DELETE}",
+  "CTRL+A":"^a","CTRL+C":"^c","CTRL+V":"^v","CTRL+X":"^x","CTRL+Z":"^z","CTRL+Y":"^y",
+  "CTRL+S":"^s","CTRL+F":"^f","CTRL+L":"^l","ALT+TAB":"%{TAB}","ALT+F4":"%{F4}",
+});
+
+async function computerKey(value){
+  const key=String(value||"").trim().toUpperCase();
+  const sequence=SEND_KEY_MAP[key];
+  if(!sequence)throw new Error("Unsupported computer key: "+key);
+  const escaped=sequence.replace(/'/g,"''");
+  await powershell(`Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('${escaped}')`);
+  return {ok:true,key};
+}
+
+async function computerType(text){
+  const value=String(text??"");
+  const previous=clipboard.readText();
+  clipboard.writeText(value);
+  try{
+    await computerKey("CTRL+V");
+  }finally{
+    setTimeout(()=>{try{if(clipboard.readText()===value)clipboard.writeText(previous)}catch{}},120);
+  }
+  return {ok:true,length:value.length};
 }
 
 async function createWindow(){
@@ -343,6 +449,12 @@ if(!lock){
   ipcMain.handle("browser:type",async(_event,payload)=>browserType(payload?.ref,payload?.text));
   ipcMain.handle("browser:screenshot",async()=>browserScreenshot());
   ipcMain.handle("desktop:screenshot",async()=>desktopScreenshot());
+  ipcMain.handle("computer:screenshot",async()=>desktopScreenshot());
+  ipcMain.handle("computer:move",async(_event,payload={})=>computerMove(payload.x,payload.y));
+  ipcMain.handle("computer:click",async(_event,payload={})=>computerClick(payload));
+  ipcMain.handle("computer:scroll",async(_event,payload={})=>computerScroll(payload.delta));
+  ipcMain.handle("computer:type",async(_event,payload={})=>computerType(payload.text));
+  ipcMain.handle("computer:key",async(_event,payload={})=>computerKey(payload.key));
   ipcMain.handle("desktop:zoom:get",()=>({factor:windowRef?.webContents?.getZoomFactor?.()||1}));
   ipcMain.handle("desktop:zoom:set",(_event,value)=>({factor:setMainZoomFactor(value)}));
   ipcMain.handle("desktop:zoom:reset",()=>({factor:setMainZoomFactor(1)}));
