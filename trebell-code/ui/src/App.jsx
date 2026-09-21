@@ -328,7 +328,7 @@ export default function App(){
   useEffect(()=>{
     if(!bootstrap.wsUrl||bootstrap.mock)return; let disposed=false,retryTimer=null,client=null;
     const connect=async(attempt=0)=>{
-      client=new CodexRpcClient(bootstrap.wsUrl,{onStatus:setRpcStatus,onNotification:handleNotification,onServerRequest:m=>handleServerRequest(client,m)}); rpcRef.current=client;setRpc(client);
+      client=new CodexRpcClient(bootstrap.wsUrl,{clientVersion:bootstrap.version||"0.0.0",onStatus:setRpcStatus,onNotification:handleNotification,onServerRequest:m=>handleServerRequest(client,m)}); rpcRef.current=client;setRpc(client);
       try{await client.connect();if(disposed)return;await ensureSections(client);await loadThreads(client);await loadSkills(client,projectPath)}
       catch(error){client.close();if(disposed)return;if(attempt<120){setRpcStatus("connecting");retryTimer=setTimeout(()=>connect(attempt+1),500)}else setRpcStatus("error")}
     };
