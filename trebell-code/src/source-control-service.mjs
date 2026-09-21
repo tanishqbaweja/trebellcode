@@ -1,5 +1,8 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join as pathJoin } from "node:path";
 import { gitInfo } from "./git-service.mjs";
 
 const execFileAsync=promisify(execFile);
@@ -95,21 +98,92 @@ async function defaultBaseBranch(cwd){
   const info=await gitInfo(cwd);return info.branches.includes("main")?"main":info.branches.includes("master")?"master":info.branch||"main";
 }
 
-async function teaContext(ctx){
+function fjKeyPaths(){
+  const home=homedir();
+  if(process.platform==="win32"){
+    const appData=process.env.APPDATA||pathJoin(home,"AppData","Roaming");
+    return ["forgejo-cli","Cyborus"].map(org=>pathJoin(appData,org,"forgejo-cli","data","keys.json"));
+  }
+  if(process.platform==="darwin"){
+    return ["forgejo-cli","Cyborus"].map(org=>pathJoin(home,"Library","Application Support",org+".forgejo-cli","keys.json"));
+  }
+  const dataHome=process.env.XDG_DATA_HOME&&process.env.XDG_DATA_HOME.startsWith("/")
+    ? process.env.XDG_DATA_HOME
+    : pathJoin(home,".local","share");
+  return [pathJoin(dataHome,"forgejo-cli","keys.json")];
+}
+
+async function readFjKeys(){
+  for(const path of fjKeyPaths()){
+    try{
+      const parsed=JSON.parse(await readFile(path,"utf8"));
+      if(parsed&&typeof parsed==="object"&&parsed.hosts&&typeof parsed.hosts==="object")return parsed;
+    }catch{}
+  }
+  return {hosts:{},aliases:{}};
+}
+
+function resolveFjAccount(ctx,keys){
+  const remoteHost=String(ctx.remote?.host||"").toLowerCase();
+  const remoteHostname=String(ctx.remote?.hostname||remoteHost.split(":")[0]||"").toLowerCase();
+  const hosts=Object.entries(keys.hosts||{});
+  const aliases=Object.entries(keys.aliases||{});
+  let key=hosts.find(([host])=>host.toLowerCase()===remoteHost)?.[0]||null;
+  if(!key){
+    const aliasTarget=aliases.find(([alias])=>alias.toLowerCase()===remoteHost)?.[1];
+    if(aliasTarget&&keys.hosts?.[aliasTarget])key=aliasTarget;
+  }
+  if(!key){
+    const matches=hosts.filter(([host])=>host.toLowerCase().split(":")[0]===remoteHostname);
+    if(matches.length===1)key=matches[0][0];
+  }
+  if(!key)return null;
+  const token=String(keys.hosts?.[key]?.token||"").trim();
+  if(!token)return null;
+  const rawRemote=String(ctx.remoteUrl||"");
+  const scheme=/^http:\/\//i.test(rawRemote)?"http":"https";
+  return {host:key,token,baseUrl:`${scheme}://${key}`};
+}
+
+async function forgejoContext(ctx){
+  const fj=await run("fj",["version"],{cwd:ctx.info.root,allowFailure:true,timeout:10000});
+  if(fj.ok){
+    const keys=await readFjKeys();
+    const account=resolveFjAccount(ctx,keys);
+    const parts=ctx.repository.split("/").filter(Boolean);
+    if(account&&parts.length===2){
+      return {command:"fj",token:account.token,repository:parts.join("/"),baseUrl:account.baseUrl};
+    }
+  }
+
   const listed=await run("tea",["login","list","--output","json"],{cwd:ctx.info.root,allowFailure:true});
-  if(!listed.ok)throw new Error("Forgejo/Gitea support requires tea 0.16+ with `tea login add`.");
+  if(!listed.ok){
+    throw new Error("Forgejo/Gitea support needs a matching `fj` login or tea 0.16+ with `tea login add`.");
+  }
   const logins=parseJson(listed.stdout,[])||[]; const host=(ctx.remote?.host||"").toLowerCase();
   const login=logins.find(x=>{const r=parseRemoteUrl(x.url);return r&&(r.host===host||String(x.ssh_host||"").toLowerCase()===host)})||logins.find(x=>String(x.default)==="true")||logins[0];
-  if(!login)throw new Error("No Forgejo/Gitea login matches this repository. Run `tea login add`.");
+  if(!login)throw new Error("No Forgejo/Gitea login matches this repository. Configure `fj` or run `tea login add`.");
   const loginRemote=parseRemoteUrl(login.url); let repository=ctx.repository;
   if(loginRemote?.path&&repository.startsWith(loginRemote.path+"/"))repository=repository.slice(loginRemote.path.length+1);
   if(repository.split("/").length>2)repository=repository.split("/").slice(-2).join("/");
   if(repository.split("/").length!==2)throw new Error("Could not resolve Forgejo/Gitea owner/repository from the Git remote.");
-  return {login,repository,baseUrl:String(login.url).replace(/\/+$/,"")};
+  return {command:"tea",login,repository,baseUrl:String(login.url).replace(/\/+$/,"")};
 }
 
-async function teaApi(ctx,path,{method="GET",body}={}){
-  const target=await teaContext(ctx);
+async function forgejoApi(ctx,path,{method="GET",body}={}){
+  const target=await forgejoContext(ctx);
+  if(target.command==="fj"){
+    const base=new URL(target.baseUrl.replace(/\/+$/,"")+"/api/v1/");
+    const url=new URL(String(path||"").replace(/^\/+/,""),base);
+    if(url.origin!==base.origin||!url.pathname.startsWith(base.pathname))throw new Error("Invalid Forgejo API path.");
+    const headers={Accept:"application/json",Authorization:`token ${target.token}`};
+    if(body!==undefined)headers["Content-Type"]="application/json";
+    const response=await fetch(url,{method,headers,body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(30000),redirect:"manual"});
+    const text=await response.text();
+    if(!response.ok)throw new Error(`Forgejo HTTP ${response.status}: ${text.slice(0,800)}`);
+    return {target,data:text?parseJson(text,text):null};
+  }
+
   const args=["api","--include","--login",target.login.name,"--repo",target.repository,"--method",method];
   if(body!==undefined)args.push("--data","@-");
   args.push(`${target.baseUrl}/api/v1/${path}`);
@@ -181,7 +255,7 @@ export async function listPullRequests(cwd,{provider=null}={}){
     const r=await run("glab",["mr","list","--per-page","50","--output","json"],{cwd:ctx.info.root,allowFailure:true,maxBuffer:4*1024*1024});
     if(!r.ok)return {ok:false,provider:ctx.provider,capabilities:ctx.capabilities,error:(r.stderr||r.stdout).trim(),items:[]};items=(parseJson(r.stdout,[])||[]).map(normalizeGitLab);
   }else if(ctx.provider==="forgejo"){
-    const t=await teaContext(ctx);const r=await teaApi(ctx,`repos/${t.repository}/pulls?state=open&sort=recentupdate&limit=50&page=1`);items=(Array.isArray(r.data)?r.data:[]).map(normalizeForgejo);
+    const t=await forgejoContext(ctx);const r=await forgejoApi(ctx,`repos/${t.repository}/pulls?state=open&sort=recentupdate&limit=50&page=1`);items=(Array.isArray(r.data)?r.data:[]).map(normalizeForgejo);
   }else if(ctx.provider==="bitbucket"){
     const data=await bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests?state=OPEN&pagelen=50&sort=-updated_on`);items=(data.values||[]).map(normalizeBitbucket);
   }else if(ctx.provider==="azure-devops"){
@@ -196,7 +270,7 @@ export async function createPullRequest(cwd,{provider=null,title,body="",base=nu
   if(ctx.provider==="github"){const args=["pr","create","--title",title,"--body",body];if(baseBranch)args.push("--base",baseBranch);if(draft)args.push("--draft");const r=await run("gh",args,{cwd:ctx.info.root});return {provider:ctx.provider,url:r.stdout.trim()}}
   if(ctx.provider==="gitlab"){const args=["mr","create","--title",title,"--description",body,"--target-branch",baseBranch,"--yes"];if(draft)args.push("--draft");const r=await run("glab",args,{cwd:ctx.info.root});return {provider:ctx.provider,url:(r.stdout.match(/https?:\/\/\S+/)||[])[0]||r.stdout.trim()}}
   const branch=ctx.info.branch;if(!branch)throw new Error("Check out a source branch before creating a change request.");
-  if(ctx.provider==="forgejo"){const t=await teaContext(ctx);const r=await teaApi(ctx,`repos/${t.repository}/pulls`,{method:"POST",body:{base:baseBranch,head:branch,title,body}});return {provider:ctx.provider,url:r.data?.html_url||r.data?.url||""}}
+  if(ctx.provider==="forgejo"){const t=await forgejoContext(ctx);const r=await forgejoApi(ctx,`repos/${t.repository}/pulls`,{method:"POST",body:{base:baseBranch,head:branch,title,body}});return {provider:ctx.provider,url:r.data?.html_url||r.data?.url||""}}
   if(ctx.provider==="bitbucket"){const data=await bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests`,{method:"POST",body:{title,description:body,source:{branch:{name:branch}},destination:{branch:{name:baseBranch}}}});return {provider:ctx.provider,url:data.links?.html?.href||""}}
   if(ctx.provider==="azure-devops"){const r=await run("az",["repos","pr","create","--only-show-errors","--detect","true","--target-branch",baseBranch,"--source-branch",branch,"--title",title,"--description",body,"--output","json"],{cwd:ctx.info.root,timeout:60000});const data=parseJson(r.stdout,{});return {provider:ctx.provider,url:data._links?.web?.href||data.repository?.webUrl||data.url||""}}
 }
@@ -205,7 +279,7 @@ export async function pullRequestDetail(cwd,number,{provider=null}={}){
   const ctx=await sourceContext(cwd,provider);let item;
   if(ctx.provider==="github"){const r=await run("gh",["pr","view",String(number),"--json","number,title,body,state,isDraft,url,headRefName,baseRefName,author,reviewDecision,statusCheckRollup,comments,reviews,files,commits"],{cwd:ctx.info.root,allowFailure:true,maxBuffer:8*1024*1024});if(!r.ok)return {ok:false,provider:ctx.provider,capabilities:ctx.capabilities,error:(r.stderr||r.stdout).trim(),item:null};item={...parseJson(r.stdout,{}),provider:"github"}}
   else if(ctx.provider==="gitlab"){const data=await glabApi(ctx,`projects/${encodeURIComponent(ctx.repository)}/merge_requests/${Number(number)}`);item=normalizeGitLab(data);const notes=await glabApi(ctx,`projects/${encodeURIComponent(ctx.repository)}/merge_requests/${Number(number)}/notes?per_page=100`).catch(()=>[]);item.comments=(Array.isArray(notes)?notes:[]).map(n=>({id:n.id,body:n.body,author:actor(n.author)}))}
-  else if(ctx.provider==="forgejo"){const t=await teaContext(ctx);const r=await teaApi(ctx,`repos/${t.repository}/pulls/${Number(number)}`);item=normalizeForgejo(r.data);const reviews=await teaApi(ctx,`repos/${t.repository}/pulls/${Number(number)}/reviews`).catch(()=>({data:[]}));item.reviews=(Array.isArray(reviews.data)?reviews.data:[]).map(x=>({id:x.id,author:actor(x.user),state:x.state||"REVIEWED",body:x.body||""}))}
+  else if(ctx.provider==="forgejo"){const t=await forgejoContext(ctx);const r=await forgejoApi(ctx,`repos/${t.repository}/pulls/${Number(number)}`);item=normalizeForgejo(r.data);const reviews=await forgejoApi(ctx,`repos/${t.repository}/pulls/${Number(number)}/reviews`).catch(()=>({data:[]}));item.reviews=(Array.isArray(reviews.data)?reviews.data:[]).map(x=>({id:x.id,author:actor(x.user),state:x.state||"REVIEWED",body:x.body||""}))}
   else if(ctx.provider==="bitbucket"){const data=await bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests/${Number(number)}`);item=normalizeBitbucket(data);const comments=await bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests/${Number(number)}/comments?pagelen=100`).catch(()=>({values:[]}));item.comments=(comments.values||[]).map(x=>({id:x.id,body:x.content?.raw||"",author:actor(x.user)}))}
   else {const r=await run("az",["repos","pr","show","--detect","true","--id",String(number),"--only-show-errors","--output","json"],{cwd:ctx.info.root,allowFailure:true,timeout:60000});if(!r.ok)return {ok:false,provider:ctx.provider,capabilities:ctx.capabilities,error:(r.stderr||r.stdout).trim(),item:null};item=normalizeAzure(parseJson(r.stdout,{}))}
   return {ok:true,provider:ctx.provider,capabilities:ctx.capabilities,item};
@@ -215,7 +289,7 @@ export async function commentOnPullRequest(cwd,number,body,{provider=null}={}){
   const ctx=await sourceContext(cwd,provider);
   if(ctx.provider==="github"){const r=await run("gh",["pr","comment",String(number),"--body",body],{cwd:ctx.info.root});return {ok:true,provider:ctx.provider,url:r.stdout.trim()}}
   if(ctx.provider==="gitlab"){await glabApi(ctx,`projects/${encodeURIComponent(ctx.repository)}/merge_requests/${Number(number)}/notes`,{method:"POST",body:{body}});return {ok:true,provider:ctx.provider}}
-  if(ctx.provider==="forgejo"){const t=await teaContext(ctx);await teaApi(ctx,`repos/${t.repository}/issues/${Number(number)}/comments`,{method:"POST",body:{body}});return {ok:true,provider:ctx.provider}}
+  if(ctx.provider==="forgejo"){const t=await forgejoContext(ctx);await forgejoApi(ctx,`repos/${t.repository}/issues/${Number(number)}/comments`,{method:"POST",body:{body}});return {ok:true,provider:ctx.provider}}
   if(ctx.provider==="bitbucket"){await bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests/${Number(number)}/comments`,{method:"POST",body:{content:{raw:body}}});return {ok:true,provider:ctx.provider}}
   throw new Error("Azure DevOps PR comments are not exposed by the installed CLI path yet.");
 }
@@ -224,7 +298,7 @@ export async function reviewPullRequest(cwd,number,{provider=null,event="COMMENT
   const ctx=await sourceContext(cwd,provider);const verdict=String(event||"COMMENT").toUpperCase();
   if(ctx.provider==="github"){const flag=verdict==="APPROVE"?"--approve":verdict==="REQUEST_CHANGES"?"--request-changes":"--comment";const args=["pr","review",String(number),flag];if(body)args.push("--body",body);await run("gh",args,{cwd:ctx.info.root});return {ok:true,provider:ctx.provider}}
   if(ctx.provider==="gitlab"){if(body)await commentOnPullRequest(cwd,number,body,{provider:ctx.provider});if(verdict==="APPROVE")await glabApi(ctx,`projects/${encodeURIComponent(ctx.repository)}/merge_requests/${Number(number)}/approve`,{method:"POST"});else if(verdict==="REQUEST_CHANGES")throw new Error("GitLab does not have a changes-requested review verdict.");return {ok:true,provider:ctx.provider}}
-  if(ctx.provider==="forgejo"){const t=await teaContext(ctx);const pr=(await teaApi(ctx,`repos/${t.repository}/pulls/${Number(number)}`)).data;await teaApi(ctx,`repos/${t.repository}/pulls/${Number(number)}/reviews`,{method:"POST",body:{event:verdict==="APPROVE"?"APPROVED":verdict==="REQUEST_CHANGES"?"REQUEST_CHANGES":"COMMENT",body,commit_id:pr.head?.sha,comments:[]}});return {ok:true,provider:ctx.provider}}
+  if(ctx.provider==="forgejo"){const t=await forgejoContext(ctx);const pr=(await forgejoApi(ctx,`repos/${t.repository}/pulls/${Number(number)}`)).data;await forgejoApi(ctx,`repos/${t.repository}/pulls/${Number(number)}/reviews`,{method:"POST",body:{event:verdict==="APPROVE"?"APPROVED":verdict==="REQUEST_CHANGES"?"REQUEST_CHANGES":"COMMENT",body,commit_id:pr.head?.sha,comments:[]}});return {ok:true,provider:ctx.provider}}
   if(ctx.provider==="bitbucket"){if(body)await commentOnPullRequest(cwd,number,body,{provider:ctx.provider});const suffix=verdict==="REQUEST_CHANGES"?"request-changes":verdict==="APPROVE"?"approve":null;if(suffix)await bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests/${Number(number)}/${suffix}`,{method:"POST"});return {ok:true,provider:ctx.provider}}
   const vote=verdict==="APPROVE"?"approve":verdict==="REQUEST_CHANGES"?"reject":"reset";await run("az",["repos","pr","set-vote","--detect","true","--id",String(number),"--vote",vote,"--only-show-errors"],{cwd:ctx.info.root,timeout:60000});return {ok:true,provider:ctx.provider};
 }
@@ -233,7 +307,7 @@ export async function mergePullRequest(cwd,number,{provider=null,method="squash"
   const ctx=await sourceContext(cwd,provider);
   if(ctx.provider==="github"){const flag=method==="merge"?"--merge":method==="rebase"?"--rebase":"--squash";const args=["pr","merge",String(number),flag];if(auto)args.push("--auto");else args.push("--delete-branch");const r=await run("gh",args,{cwd:ctx.info.root});return {ok:true,provider:ctx.provider,output:(r.stdout||r.stderr).trim()}}
   if(ctx.provider==="gitlab"){const args=["mr","merge",String(number),"--auto-merge="+(auto?"true":"false"),"--yes"];if(method==="squash")args.push("--squash");if(method==="rebase")args.push("--rebase");const r=await run("glab",args,{cwd:ctx.info.root});return {ok:true,provider:ctx.provider,output:(r.stdout||r.stderr).trim()}}
-  if(ctx.provider==="forgejo"){const t=await teaContext(ctx);await teaApi(ctx,`repos/${t.repository}/pulls/${Number(number)}/merge`,{method:"POST",body:{Do:method==="rebase"?"rebase":method==="squash"?"squash":"merge"}});return {ok:true,provider:ctx.provider}}
+  if(ctx.provider==="forgejo"){const t=await forgejoContext(ctx);await forgejoApi(ctx,`repos/${t.repository}/pulls/${Number(number)}/merge`,{method:"POST",body:{Do:method==="rebase"?"rebase":method==="squash"?"squash":"merge"}});return {ok:true,provider:ctx.provider}}
   if(ctx.provider==="bitbucket"){const strategy=method==="rebase"?"rebase_fast_forward":method==="squash"?"squash":"merge_commit";await bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests/${Number(number)}/merge`,{method:"POST",body:{merge_strategy:strategy}});return {ok:true,provider:ctx.provider}}
   const args=["repos","pr","update","--detect","true","--id",String(number),"--status","completed","--delete-source-branch","true","--only-show-errors"];if(method==="squash")args.push("--squash","true");const r=await run("az",args,{cwd:ctx.info.root,timeout:60000});return {ok:true,provider:ctx.provider,output:(r.stdout||r.stderr).trim()};
 }
@@ -242,7 +316,7 @@ export async function updatePullRequestBranch(cwd,number,{provider=null,rebase=t
   const ctx=await sourceContext(cwd,provider);
   if(ctx.provider==="github"){const args=["pr","update-branch",String(number)];if(rebase)args.push("--rebase");const r=await run("gh",args,{cwd:ctx.info.root,allowFailure:true,maxBuffer:4*1024*1024});if(!r.ok)throw new Error((r.stderr||r.stdout||"Could not update PR branch").trim());return {ok:true,provider:ctx.provider,output:(r.stdout||r.stderr).trim()}}
   if(ctx.provider==="gitlab"){const r=await run("glab",["mr","rebase",String(number)],{cwd:ctx.info.root});return {ok:true,provider:ctx.provider,output:(r.stdout||r.stderr).trim()}}
-  if(ctx.provider==="forgejo"){const t=await teaContext(ctx);await teaApi(ctx,`repos/${t.repository}/pulls/${Number(number)}/update?style=${rebase?"rebase":"merge"}`,{method:"POST"});return {ok:true,provider:ctx.provider}}
+  if(ctx.provider==="forgejo"){const t=await forgejoContext(ctx);await forgejoApi(ctx,`repos/${t.repository}/pulls/${Number(number)}/update?style=${rebase?"rebase":"merge"}`,{method:"POST"});return {ok:true,provider:ctx.provider}}
   throw new Error(`${ctx.provider} does not expose a safe update-branch action here.`);
 }
 
