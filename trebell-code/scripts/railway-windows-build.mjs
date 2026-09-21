@@ -13,8 +13,9 @@ function run(command,args,env={}){
   execFileSync(command,args,{cwd:root,stdio:"inherit",env:{...process.env,...env}});
 }
 
+run("dpkg",["--add-architecture","i386"]);
 run("apt-get",["update"]);
-run("apt-get",["install","-y","wine64","wine"]);
+run("apt-get",["install","-y","wine","wine64","wine32:i386","xvfb","xauth"]);
 run(npmBin,["install","--no-audit","--no-fund","--include=optional"]);
 
 const winCodex=join(root,"node_modules","@openai","codex-win32-x64");
@@ -25,7 +26,7 @@ if(!existsSync(winCodex)){
 run(npmBin,["run","prepare:icon"]);
 run(npmBin,["run","bridge:build"]);
 run(npmBin,["run","ui:build"]);
-run(npxBin,["electron-builder","--win","nsis","--x64","--config.npmRebuild=false"]);
+run("xvfb-run",["-a",npxBin,"electron-builder","--win","nsis","--x64","--config.npmRebuild=false"],{WINEARCH:"win64"});
 
 const name="Trebell-Code-Setup-1.1.0.exe";
 const installer=join(root,"desktop-dist",name);
