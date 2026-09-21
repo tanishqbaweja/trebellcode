@@ -52,6 +52,6 @@ writeFileSync(join(downloads,"release.json"),JSON.stringify({
   version:"1.1.0",
   bytes:bytes.length,
   sha256,
-  sourceSha:process.env.TB_SOURCE_SHA||process.env.RAILWAY_GIT_COMMIT_SHA||null,
+  sourceSha:process.env.RAILWAY_GIT_COMMIT_SHA||process.env.TB_SOURCE_SHA||null,
 },null,2));
-console.log("TREBELL_WINDOWS_INSTALLER_PASS",JSON.stringify({name,bytes:bytes.length,sha256,sourceSha:process.env.TB_SOURCE_SHA||process.env.RAILWAY_GIT_COMMIT_SHA||null}));
+console.log("TREBELL_WINDOWS_INSTALLER_PASS",JSON.stringify({name,bytes:bytes.length,sha256,sourceSha:process.env.RAILWAY_GIT_COMMIT_SHA||process.env.TB_SOURCE_SHA||null}));
