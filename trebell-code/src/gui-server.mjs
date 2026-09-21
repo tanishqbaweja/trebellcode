@@ -16,6 +16,7 @@ import { TrebellStateStore } from "./trebell-state.mjs";
 import { CheckpointService } from "./checkpoint-service.mjs";
 import { TerminalManager } from "./terminal-manager.mjs";
 import { EnvironmentManager } from "./environment-manager.mjs";
+import { startRemoteAppServer } from "./environment-app-server.mjs";
 import { createRemoteControlServer } from "./remote-control.mjs";
 import { ProviderManager, normalizeProviderId } from "./provider-manager.mjs";
 import { startProviderBridge } from "./provider-bridge.mjs";
@@ -113,8 +114,31 @@ async function stopChildProcess(child){
   try{child.stderr?.destroy();}catch{}
 }
 
-function startAppServer({appPort,env=process.env,mock=false,provider="freebuff"}){
-  if(mock) return { child:null, logs:[], targetUrl:null };
+async function startAppServer({appPort,env=process.env,mock=false,provider="freebuff",environments=null,environmentId=null}){
+  if(mock) return { child:null, logs:[], targetUrl:null, readyUrl:null, environment:null };
+  if(environmentId&&environments){
+    const profile=environments.get(environmentId);
+    if(profile&&profile.type!=="local"){
+      try{
+        return await startRemoteAppServer({
+          environments,
+          environmentId,
+          appPort,
+          provider,
+          debug:env.TREBELL_GUI_DEBUG==="1",
+        });
+      }catch(error){
+        return {
+          child:null,
+          logs:[{at:Date.now(),stream:"environment",text:(error?.stack||error?.message||String(error))+"\n"}],
+          targetUrl:()=>appServer?.targetUrl||`ws://127.0.0.1:${appPort}`,
+          readyUrl:null,
+          environment:{id:profile.id,name:profile.name,type:profile.type},
+          error:error instanceof Error?error.message:String(error),
+        };
+      }
+    }
+  }
   ensureCodexConfig({port:DEFAULT_PORT,env,provider});
   const command=codexBin(env);
   const logs=[];
@@ -135,7 +159,32 @@ function startAppServer({appPort,env=process.env,mock=false,provider="freebuff"}
   child.stderr?.on("data",chunk=>pushLog(chunk,"stderr"));
   child.on("error",error=>pushLog(error.stack||error.message,"stderr"));
   child.on("exit",(code,signal)=>pushLog(`app-server exited code=${code} signal=${signal}\n`,"stderr"));
-  return { child, logs, targetUrl:`ws://127.0.0.1:${appPort}` };
+  return { child, logs, targetUrl:`ws://127.0.0.1:${appPort}`, readyUrl:`http://127.0.0.1:${appPort}/readyz`, environment:null };
+}
+
+async function appServerReady(instance,appPort){
+  if(instance?.readyUrl){
+    try{
+      const response=await fetch(instance.readyUrl,{signal:AbortSignal.timeout(1200)});
+      return response.ok;
+    }catch{return false}
+  }
+  return instance?.child ? await probeCodexReady(appPort) : false;
+}
+
+async function waitForAppServer(instance,appPort,timeoutMs=15000){
+  if(!instance?.readyUrl) return instance?.child ? await waitForCodexReady(appPort,timeoutMs).catch(()=>false) : false;
+  const started=Date.now();
+  while(Date.now()-started<timeoutMs){
+    if(await appServerReady(instance,appPort))return true;
+    await new Promise(resolve=>setTimeout(resolve,180));
+  }
+  return false;
+}
+
+async function stopAppServer(instance){
+  await stopChildProcess(instance?.child);
+  try{await instance?.close?.()}catch{}
 }
 
 function fakeModels(provider="freebuff"){
@@ -186,11 +235,18 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   });
   ensureCodexConfig({port:DEFAULT_PORT,env,provider:selectedProvider});
   let bridge=null;
-  let appServer=startAppServer({appPort,env,mock,provider:selectedProvider});
   let loginPromise=null;
   const checkpoints=new CheckpointService({state,env});
   const terminals=mock ? null : new TerminalManager({env});
   const environments=new EnvironmentManager({state,env});
+  let appServer=await startAppServer({
+    appPort,
+    env,
+    mock,
+    provider:selectedProvider,
+    environments,
+    environmentId:state.settings().activeEnvironmentId||null,
+  });
   let remoteControl=null;
 
   function providerReady(providerId=selectedProvider){
@@ -199,12 +255,19 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
 
   async function restartAppServer(providerId=selectedProvider){
     const next=normalizeProviderId(providerId);
-    await stopChildProcess(appServer?.child);
+    await stopAppServer(appServer);
     selectedProvider=next;
     providerBridge?.setProvider(selectedProvider);
     ensureCodexConfig({port:DEFAULT_PORT,env,provider:selectedProvider});
-    appServer=startAppServer({appPort,env,mock,provider:selectedProvider});
-    if(!mock) await waitForCodexReady(appPort,15000).catch(()=>false);
+    appServer=await startAppServer({
+      appPort,
+      env,
+      mock,
+      provider:selectedProvider,
+      environments,
+      environmentId:state.settings().activeEnvironmentId||null,
+    });
+    if(!mock) await waitForAppServer(appServer,appPort,15000).catch(()=>false);
     return selectedProvider;
   }
 
@@ -261,7 +324,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           loggedIn:mock||isLoggedIn(env),
           provider:selectedProvider,
           providerReady:providerReady(),
-          appServerReady:mock||await probeCodexReady(appPort),
+          appServerReady:mock||await appServerReady(appServer,appPort),
           model:catalog.models?.[0]||null,
           projects:state.projects(),
         };
@@ -352,7 +415,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     }
     if(url.pathname==="/api/environments"){
       if(req.method==="GET"){
-        try{return json(res,200,await environments.discover());}
+        try{const discovered=await environments.discover();return json(res,200,{...discovered,activeEnvironmentId:state.settings().activeEnvironmentId||null,activeEnvironment:environments.get(state.settings().activeEnvironmentId)||null});}
         catch(error){return json(res,400,{error:error.message});}
       }
       if(req.method==="POST"){
@@ -361,8 +424,29 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       }
       if(req.method==="DELETE"){
         const id=url.searchParams.get("id");
-        return json(res,200,{ok:id?environments.remove(id):false});
+        const wasActive=Boolean(id&&state.settings().activeEnvironmentId===id);
+        const ok=id?environments.remove(id):false;
+        if(wasActive){
+          state.updateSettings({activeEnvironmentId:null});
+          await restartAppServer(selectedProvider);
+        }
+        return json(res,200,{ok,activeEnvironmentId:state.settings().activeEnvironmentId||null});
       }
+    }
+    if(url.pathname==="/api/environment/activate"&&req.method==="POST"){
+      try{
+        const body=await readJsonBody(req);
+        const id=body.id?String(body.id):null;
+        if(id&&!environments.get(id)) throw new Error("Environment profile was not found");
+        state.updateSettings({activeEnvironmentId:id});
+        await restartAppServer(selectedProvider);
+        return json(res,200,{
+          activeEnvironmentId:id,
+          activeEnvironment:id?environments.get(id):null,
+          appServerReady:mock||await appServerReady(appServer,appPort),
+          error:appServer?.error||null,
+        });
+      }catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/environment/probe"&&req.method==="POST"){
       try{
@@ -533,7 +617,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     }
 
     if(url.pathname==="/api/bootstrap"){
-      const appServerReady=mock || await probeCodexReady(appPort);
+      const appServerReady=mock || await appServerReady(appServer,appPort);
       return json(res,200,{
         mock,
         loggedIn:mock || isLoggedIn(env),
@@ -547,15 +631,19 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         cwd:process.cwd(),
         platform:process.platform,
         version:TREBELL_VERSION,
+        activeEnvironment:appServer?.environment||null,
+        appServerError:appServer?.error||null,
       });
     }
     if(url.pathname==="/api/runtime"){
       return json(res,200,{
         provider:selectedProvider,
         providerReady:providerReady(),
-        appServerReady:mock || await probeCodexReady(appPort),
+        appServerReady:mock || await appServerReady(appServer,appPort),
         bridgeReady:selectedProvider==="freebuff" ? (mock || await health(DEFAULT_PORT)) : false,
         appServerExitCode:appServer?.child?.exitCode ?? null,
+        activeEnvironment:appServer?.environment||null,
+        appServerError:appServer?.error||null,
         logs:[...(providerBridgeLogs||[]),...(appServer?.logs||[])].sort((a,b)=>a.at-b.at).slice(-80),
       });
     }
@@ -719,7 +807,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       const cwd=url.searchParams.get("path")||process.cwd();
       return json(res,200,{
         version:TREBELL_VERSION,
-        runtime:{provider:selectedProvider,providerReady:providerReady(),appServerReady:mock||await probeCodexReady(appPort),bridgeReady:selectedProvider==="freebuff"?(mock||await health(DEFAULT_PORT)):false,appServerExitCode:appServer?.child?.exitCode??null},
+        runtime:{provider:selectedProvider,providerReady:providerReady(),appServerReady:mock||await appServerReady(appServer,appPort),bridgeReady:selectedProvider==="freebuff"?(mock||await health(DEFAULT_PORT)):false,appServerExitCode:appServer?.child?.exitCode??null},
         state:{projects:state.projects(),settings:state.settings(),threadMeta:state.listThreadMeta()},
         git:await gitInfo(cwd).catch(error=>({error:error.message})),
         terminalSessions:mock?[]:terminals.list(),
@@ -775,7 +863,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       await Promise.allSettled([
         terminals?.shutdown(),
         remoteControl?.close(),
-        stopChildProcess(appServer?.child),
+        stopAppServer(appServer),
         stopChildProcess(bridge?.child),
         providerBridge?.close(),
       ]);
