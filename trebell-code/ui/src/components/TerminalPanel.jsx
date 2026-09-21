@@ -12,12 +12,19 @@ export default function TerminalPanel({projectPath,onAttachExcerpt}){
   const socket=useRef(null);
   const outputRef=useRef(null);
 
-  async function refresh(){
+  async function refresh(preferredId=null){
     const data=await api("/api/terminal/sessions").catch(()=>({sessions:[]}));
     setSessions(data.sessions||[]);
-    if(!activeId && data.sessions?.[0]) setActiveId(data.sessions[0].id);
+    const target=preferredId||(activeId&&data.sessions?.some(session=>session.id===activeId)?activeId:null)||data.sessions?.[0]?.id||null;
+    setActiveId(target);
+    return data.sessions||[];
   }
   useEffect(()=>{refresh();},[]);
+  useEffect(()=>{
+    const onRefresh=event=>refresh(event.detail||null);
+    window.addEventListener("trebell:terminal-refresh",onRefresh);
+    return()=>window.removeEventListener("trebell:terminal-refresh",onRefresh);
+  },[activeId]);
 
   useEffect(()=>{
     socket.current?.close();
