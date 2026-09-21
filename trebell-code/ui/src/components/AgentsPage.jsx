@@ -1,18 +1,46 @@
-import React,{useEffect,useState} from "react";
-import { Archive, Bot, GitBranch, RefreshCw, Trash2, UsersRound } from "lucide-react";
+import React,{useEffect,useMemo,useState} from "react";
+import { Archive, Bot, Check, CircleAlert, GitBranch, RefreshCw, Trash2, UsersRound } from "lucide-react";
 
-export default function AgentsPage({threads,onOpen,onAction,rpc,rpcStatus,activeThread,model}){
-  const children=threads.filter(t=>t.parentThreadId);
+function statusOf(thread){
+  const type=thread?.status?.type||"notLoaded";
+  if(type==="active")return {key:"working",label:"Working"};
+  if(type==="idle")return {key:"idle",label:"Idle · resumable"};
+  if(type==="systemError")return {key:"error",label:"Error"};
+  return {key:"sleeping",label:"Not loaded"};
+}
+function ageLabel(epoch){
+  if(!epoch)return "";
+  const seconds=Math.max(0,Math.floor(Date.now()/1000-Number(epoch)));
+  if(seconds<60)return seconds+"s";
+  if(seconds<3600)return Math.floor(seconds/60)+"m";
+  if(seconds<86400)return Math.floor(seconds/3600)+"h";
+  return Math.floor(seconds/86400)+"d";
+}
+
+export default function AgentsPage({threads,onOpen,onAction,onRefreshThreads,rpc,rpcStatus,activeThread,model}){
+  const children=useMemo(()=>threads.filter(t=>t.parentThreadId),[threads]);
+  const currentChildren=useMemo(()=>activeThread?.id?children.filter(t=>t.parentThreadId===activeThread.id):[],[children,activeThread?.id]);
+  const otherChildren=useMemo(()=>activeThread?.id?children.filter(t=>t.parentThreadId!==activeThread.id):children,[children,activeThread?.id]);
   const [modes,setModes]=useState([]);
   const [selected,setSelected]=useState("");
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState("");
 
+  const counts=useMemo(()=>{
+    const result={working:0,idle:0,error:0,sleeping:0};
+    for(const thread of children)result[statusOf(thread).key]++;
+    return result;
+  },[children]);
+
   async function refresh(){
-    if(!rpc||rpcStatus!=="connected"){setModes([]);return}
     setError("");
-    try{const result=await rpc.request("collaborationMode/list",{});setModes(result?.data||[])}
-    catch(e){setModes([]);setError(e.message||String(e))}
+    try{
+      const jobs=[];
+      if(rpc&&rpcStatus==="connected")jobs.push(rpc.request("collaborationMode/list",{}).then(result=>setModes(result?.data||[])));
+      else setModes([]);
+      if(onRefreshThreads)jobs.push(Promise.resolve(onRefreshThreads()));
+      await Promise.all(jobs);
+    }catch(e){setError(e.message||String(e))}
   }
   useEffect(()=>{refresh()},[rpc,rpcStatus,activeThread?.id]);
 
@@ -36,24 +64,49 @@ export default function AgentsPage({threads,onOpen,onAction,rpc,rpcStatus,active
   async function agentAction(thread,action){
     if(!onAction||busy)return;
     setBusy(true);setError("");
-    try{await onAction(thread,action)}
+    try{await onAction(thread,action);await onRefreshThreads?.()}
     catch(e){setError(e.message||String(e))}
     finally{setBusy(false)}
   }
 
+  function renderAgents(items){
+    return <div className="agent-list">{items.map(t=>{
+      const status=statusOf(t);
+      const flags=t.status?.type==="active"?(t.status.activeFlags||[]):[];
+      return <div className="agent-row" key={t.id}>
+        <button className="agent-open" onClick={()=>onOpen(t)}>
+          <span className={"agent-status-dot "+status.key}/>
+          <div>
+            <strong>{t.name||t.agentNickname||t.preview||"Subagent"}</strong>
+            <span>{t.agentRole||"agent"} · {status.label}{flags.length?" · "+flags.join(", "):""}</span>
+            <small>{(t.model||model||"model").replace(/^freebuff\//,"")} · updated {ageLabel(t.updatedAt)} ago · parent {t.parentThreadId?.slice(0,8)}</small>
+          </div>
+          {status.key==="error"?<CircleAlert size={13}/>:status.key==="idle"?<Check size={13}/>:<GitBranch size={13}/>}
+        </button>
+        <div className="agent-actions">
+          <button title="Archive agent thread" aria-label="Archive agent thread" onClick={()=>agentAction(t,"archive")} disabled={busy}><Archive size={13}/></button>
+          <button className="danger" title="Delete agent thread" aria-label="Delete agent thread" onClick={()=>agentAction(t,"delete")} disabled={busy}><Trash2 size={13}/></button>
+        </div>
+      </div>;
+    })}</div>;
+  }
+
   return <div className="agents-page">
-    <div className="agent-summary"><Bot size={24}/><div><strong>Delegated agents</strong><span>Subagents created by Codex appear here with their own durable threads. Finished agents can be archived or deleted directly.</span></div></div>
+    <div className="agent-summary">
+      <Bot size={24}/>
+      <div><strong>Delegated agents</strong><span>Live Codex subagent threads, grouped around the thread you are working in.</span></div>
+      <button className="agent-refresh" onClick={refresh} disabled={busy}><RefreshCw size={13}/></button>
+    </div>
+    <div className="agent-fleet-stats">
+      <span className="working">{counts.working} working</span><span>{counts.idle} idle</span><span>{counts.sleeping} sleeping</span>{counts.error>0&&<span className="error">{counts.error} error</span>}
+    </div>
     <section className="collaboration-card">
       <div className="collaboration-head"><div><UsersRound size={15}/><span><strong>Collaboration mode</strong><small>Choose how Codex coordinates work for this thread.</small></span></div><button onClick={refresh} disabled={busy||rpcStatus!=="connected"}><RefreshCw size={12}/></button></div>
       {!activeThread?.id?<p>Start or open a thread to select a collaboration mode.</p>:modes.length?<div className="collaboration-modes">{modes.map(mask=><button key={mask.name} className={selected===mask.name?"active":""} onClick={()=>applyMode(mask)} disabled={busy}><strong>{mask.name}</strong><span>{mask.mode||"default"}{mask.model?" · "+mask.model:""}{mask.reasoning_effort?" · "+mask.reasoning_effort:""}</span></button>)}</div>:<p>{error||"No collaboration presets were reported by this Codex runtime."}</p>}
     </section>
     {error&&<p className="provider-status-error">{error}</p>}
-    {children.length===0?<div className="empty-state">No subagent threads yet.</div>:<div className="agent-list">{children.map(t=><div className="agent-row" key={t.id}>
-      <button className="agent-open" onClick={()=>onOpen(t)}><Bot size={17}/><div><strong>{t.name||t.agentNickname||t.preview||"Subagent"}</strong><span>{t.agentRole||"agent"} · parent {t.parentThreadId?.slice(0,8)}</span></div><GitBranch size={13}/></button>
-      <div className="agent-actions">
-        <button title="Archive agent thread" aria-label="Archive agent thread" onClick={()=>agentAction(t,"archive")} disabled={busy}><Archive size={13}/></button>
-        <button className="danger" title="Delete agent thread" aria-label="Delete agent thread" onClick={()=>agentAction(t,"delete")} disabled={busy}><Trash2 size={13}/></button>
-      </div>
-    </div>)}</div>}
+    {currentChildren.length>0&&<section className="agent-group"><h4>Current thread <span>{currentChildren.length}</span></h4>{renderAgents(currentChildren)}</section>}
+    {otherChildren.length>0&&<section className="agent-group"><h4>{activeThread?.id?"Other agents":"All agents"} <span>{otherChildren.length}</span></h4>{renderAgents(otherChildren)}</section>}
+    {children.length===0&&<div className="empty-state">No subagent threads yet. When Codex delegates work, agents appear here with their live runtime status.</div>}
   </div>;
 }
