@@ -99,9 +99,9 @@ function presetFor(mode){
 function pullRequestIdentity(pr){
   try{
     const url=new URL(pr?.url||"");
-    const bits=url.pathname.split("/").filter(Boolean);
-    return JSON.stringify([url.hostname.toLowerCase(),String(bits[0]||"").toLowerCase(),String(bits[1]||"").toLowerCase(),Number(pr?.number)||0]);
-  }catch{return "pull-request:"+(pr?.url||pr?.number||"unknown")}
+    const path=url.pathname.replace(/\/+$/,"").toLowerCase();
+    return JSON.stringify([String(pr?.provider||"").toLowerCase(),url.hostname.toLowerCase(),path,Number(pr?.number)||0]);
+  }catch{return JSON.stringify([String(pr?.provider||"").toLowerCase(),String(pr?.url||""),Number(pr?.number)||0])}
 }
 function tokenLabel(tokenUsage){
   const total=tokenUsage?.total?.totalTokens;
