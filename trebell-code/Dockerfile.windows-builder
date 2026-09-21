@@ -1,0 +1,14 @@
+FROM electronuserland/builder:wine
+
+WORKDIR /app/trebell-code
+COPY . .
+
+ENV TREBELL_PREBUILT_WINE=1
+
+RUN node scripts/railway-windows-build.mjs
+
+ENV TREBELL_GUI_MOCK=1
+ENV TREBELL_GUI_PUBLIC=1
+ENV TREBELL_GUI_HOST=0.0.0.0
+
+CMD ["sh","-lc","node src/gui-server.mjs --port ${PORT:-8080}"]
