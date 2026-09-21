@@ -301,15 +301,17 @@ export default function App(){
       if(cancelled)return; setBootstrap(boot); setSettings(prev=>({...prev,...(state.settings||{})})); setPermissionMode(state.settings?.defaultPermissionMode||"supervised"); setThreadMeta(state.threadMeta||{});
       const firstProject=state.projects?.[0]||null;
       const environmentCwd=boot.activeEnvironment?.cwd||"";
-      setCurrentProject(firstProject);
-      setProjectPath(environmentCwd||firstProject?.path||boot.cwd||"");
+      const initialPath=environmentCwd||firstProject?.path||boot.cwd||"";
+      const initialProject=(state.projects||[]).find(project=>String(project.path)===String(initialPath))||firstProject;
+      setCurrentProject(initialProject);
+      setProjectPath(initialPath);
       const availableModels=modelData.models||[];
       setModelError(modelData.error||"");
       setModelMeta(Object.fromEntries((modelData.metadata?.models||[]).map(item=>[item.id,item]))); const fallback=availableModels.length?availableModels:(boot.mock?["freebuff/deepseek/deepseek-v4-flash","freebuff/test/coding-large","freebuff/test/coding-fast"]:[]);
-      const initialModel=(firstProject?.defaultModel&&fallback.includes(firstProject.defaultModel))?firstProject.defaultModel:(fallback[0]||"");
+      const initialModel=(initialProject?.defaultModel&&fallback.includes(initialProject.defaultModel))?initialProject.defaultModel:(fallback[0]||"");
       setModels(fallback); setModel(initialModel);
-      if(firstProject?.permissionMode)setPermissionMode(firstProject.permissionMode);
-      if(firstProject?.workspaceMode)setWorkspaceMode(firstProject.workspaceMode);
+      if(initialProject?.permissionMode)setPermissionMode(initialProject.permissionMode);
+      if(initialProject?.workspaceMode)setWorkspaceMode(initialProject.workspaceMode);
       if(window.trebellDesktop?.background&&state.settings?.backgroundMode!=null)window.trebellDesktop.background.set(Boolean(state.settings.backgroundMode)).catch?.(()=>{});
       if((state.settings?.modelProvider||boot.provider||"freebuff")==="freebuff"&&initialModel){const p=new URLSearchParams({timezone,model:initialModel});const fb=await api("/api/freebuff/overview?"+p).catch(()=>null);if(fb&&!cancelled)setFreebuff(fb)}
       if(!cancelled)setInitialLoaded(true);
@@ -524,9 +526,21 @@ export default function App(){
   }
   async function reloadActiveThread(){if(activeThread)await openThread(activeThread)}
   async function prepareWorktree(basePath,modelId){
-    if(workspaceMode!=="worktree")return basePath;const info=await api("/api/git/info?path="+encodeURIComponent(basePath));if(!info.isGit)throw new Error("New worktree mode requires a Git project.");
-    const slug=String(modelId||"model").replace(/[^a-zA-Z0-9]+/g,"-").replace(/^-|-$/g,"").slice(-24)||"agent";const stamp=Date.now().toString(36);const branch="trebell/"+slug+"-"+stamp;const path=info.root+"-trebell-"+slug+"-"+stamp;
-    const result=await api("/api/git/action",{method:"POST",body:{action:"worktree-create",cwd:info.root,branch,path,baseBranch:info.branch}});return result.result?.worktree||path;
+    if(workspaceMode!=="worktree")return basePath;
+    const info=await api("/api/git/info?path="+encodeURIComponent(basePath));
+    if(!info.isGit)throw new Error("New worktree mode requires a Git project.");
+    const slug=String(modelId||"model").replace(/[^a-zA-Z0-9]+/g,"-").replace(/^-|-$/g,"").slice(-24)||"agent";
+    const stamp=Date.now().toString(36);
+    const branch="trebell/"+slug+"-"+stamp;
+    const path=info.root+"-trebell-"+slug+"-"+stamp;
+    const response=await api("/api/git/action",{method:"POST",body:{action:"worktree-create",cwd:info.root,branch,path,baseBranch:info.branch}});
+    const worktree=response.result?.worktree||path;
+    await touchProject(worktree);
+    if(response.result?.setup?.session?.id){
+      setPanel("terminal");
+      setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:response.result.setup.session.id})),0);
+    }
+    return worktree;
   }
   async function createThreadFor(modelId,cwd){const p=presetFor(permissionMode);const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools:[...TREBELL_BROWSER_TOOLS,...TREBELL_COMPUTER_TOOLS],developerInstructions:webSearch?"Web research is allowed when useful. You may use trebell_browser for interactive pages.":"Do not use web search or trebell_browser unless the user explicitly requests it."});return result.thread}
   function inputsFor(text,paths){return [{type:"text",text,text_elements:[]},...(paths||[]).map(path=>{const lower=String(path).toLowerCase();if(/\.(png|jpe?g|gif|webp|bmp)$/.test(lower))return{type:"localImage",path};if(/\.(mp3|wav|m4a|ogg|flac)$/.test(lower))return{type:"localAudio",path};return{type:"mention",name:String(path).split(/[\\/]/).pop(),path}})]}
