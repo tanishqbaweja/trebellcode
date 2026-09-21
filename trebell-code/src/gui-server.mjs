@@ -272,6 +272,15 @@ async function readOptionalJson(path,{jsonc=false}={}){
   }catch{return null}
 }
 
+function commandShellSpec(command,env=process.env){
+  if(process.platform==="win32"){
+    const shell=env.COMSPEC||"cmd.exe";
+    return {shell,args:["/d","/s","/c",String(command||"")]};
+  }
+  const shell=env.SHELL||"/bin/bash";
+  return {shell,args:["-lc",String(command||"")]};
+}
+
 async function projectActionSuggestions(projectPath){
   const root=resolve(projectPath);
   const [t3,pkg,pnpmLock,yarnLock,bunLock,bunLockb]=await Promise.all([
@@ -663,8 +672,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
             state.touchProject(result.worktree,inherited);
             const setup=(sourceProject?.scripts||[]).find(script=>script.runOnWorktreeCreate);
             if(setup&&!mock&&terminals){
-              const session=await terminals.create({cwd:result.worktree,name:`${setup.name||"Setup"} · setup`,cols:120,rows:32});
-              await terminals.write(session.id,String(setup.command||"")+"\r");
+              const spec=commandShellSpec(setup.command,env);
+              const session=await terminals.create({cwd:result.worktree,name:`${setup.name||"Setup"} · setup`,cols:120,rows:32,shell:spec.shell,args:spec.args});
               const completion=setup.waitForSetup?await terminals.waitForExit(session.id,{timeoutMs:30*60_000}):null;
               result={...result,setup:{scriptId:setup.id,scriptName:setup.name,waitForSetup:Boolean(setup.waitForSetup),session:terminals.snapshot(session.id),completion}};
             }
