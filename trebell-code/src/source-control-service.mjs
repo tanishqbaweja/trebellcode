@@ -320,4 +320,4 @@ export async function updatePullRequestBranch(cwd,number,{provider=null,rebase=t
   throw new Error(`${ctx.provider} does not expose a safe update-branch action here.`);
 }
 
-export { CAPABILITIES, PROVIDERS };
+export { CAPABILITIES, PROVIDERS, resolveFjAccount };
