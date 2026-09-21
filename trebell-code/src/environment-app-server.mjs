@@ -91,7 +91,7 @@ export async function startRemoteAppServer({
     const proxy=await createProviderProxy(network.host,localProviderPort);
     const baseUrl=`http://${network.host}:${proxy.port}/v1`;
     const listen=`ws://0.0.0.0:${appPort}`;
-    const command="exec "+shellJoin(["codex",...remoteCodexArgs({provider,baseUrl,listen})]);
+    const command="exec "+shellJoin([profile.codexPath||"codex",...remoteCodexArgs({provider,baseUrl,listen})]);
     let child;
     try{
       child=environments.spawnSession(environmentId,{command,cwd:profile.cwd||null});
@@ -115,7 +115,7 @@ export async function startRemoteAppServer({
     const remoteAppPort=appPort;
     const baseUrl=`http://127.0.0.1:${remoteProviderPort}/v1`;
     const listen=`ws://127.0.0.1:${remoteAppPort}`;
-    const remoteCommand=(profile.cwd?"cd "+quotePosix(profile.cwd)+" && ":"")+"exec "+shellJoin(["codex",...remoteCodexArgs({provider,baseUrl,listen})]);
+    const remoteCommand=(profile.cwd?"cd "+quotePosix(profile.cwd)+" && ":"")+"exec "+shellJoin([profile.codexPath||"codex",...remoteCodexArgs({provider,baseUrl,listen})]);
     const executable=process.platform==="win32"?"ssh.exe":"ssh";
     const args=[
       "-o","BatchMode=yes",
