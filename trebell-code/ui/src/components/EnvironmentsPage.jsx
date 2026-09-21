@@ -3,7 +3,7 @@ import { Globe2, Laptop2, Plus, RefreshCw, Server, Trash2 } from "lucide-react";
 import { api } from "../api.js";
 
 export default function EnvironmentsPage(){
-  const [data,setData]=useState({profiles:[],capabilities:{local:{available:true},ssh:{available:false},wsl:{available:false,distros:[]}}});
+  const [data,setData]=useState({profiles:[],activeEnvironmentId:null,activeEnvironment:null,capabilities:{local:{available:true},ssh:{available:false},wsl:{available:false,distros:[]}}});
   const [remote,setRemote]=useState({enabled:false,running:false,port:3211,token:"",urls:[]});
   const [draft,setDraft]=useState({type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:""});
   const [busy,setBusy]=useState("");
@@ -25,6 +25,15 @@ export default function EnvironmentsPage(){
     }catch(e){setMessage(e.message)}finally{setBusy("")}
   }
   async function remove(id){await api("/api/environments?id="+encodeURIComponent(id),{method:"DELETE"});await refresh()}
+  async function activate(id){
+    setBusy("activate:"+(id||"local"));setMessage("");
+    try{
+      const result=await api("/api/environment/activate",{method:"POST",body:{id:id||null}});
+      if(result.error)throw new Error(result.error);
+      setMessage(result.appServerReady?"Agent environment switched. Reconnecting…":"Environment selected, but Codex did not become ready.");
+      setTimeout(()=>window.location.reload(),120);
+    }catch(e){setMessage(e.message)}finally{setBusy("")}
+  }
   async function probe(id){
     setBusy("probe:"+id);setMessage("");
     try{const r=await api("/api/environment/probe",{method:"POST",body:{id}});setMessage((r.ok?"Connected":"Probe failed")+" · "+(r.stdout||r.stderr||"").trim())}
@@ -37,13 +46,15 @@ export default function EnvironmentsPage(){
   }
 
   return <div className="environments-page">
-    <div className="capabilities-toolbar"><div><h2>Environments & remote access</h2><p>Run Trebell against local Windows workspaces, WSL distributions or SSH machines. Remote access exposes the same desktop harness to another device on your LAN behind a bearer token.</p></div><button onClick={refresh}><RefreshCw size={13}/> Refresh</button></div>
+    <div className="capabilities-toolbar"><div><h2>Environments & remote access</h2><p>Run the actual Codex agent session on local Windows, inside WSL, or on an SSH machine. Remote access separately exposes this desktop harness to another device on your LAN behind a bearer token.</p></div><button onClick={refresh}><RefreshCw size={13}/> Refresh</button></div>
     {message&&<div className="inline-status">{message}</div>}
     <div className="environment-grid">
       <section className="capability-card">
         <div className="capability-card-head"><span><Laptop2 size={15}/><strong>Configured environments</strong></span><em>{data.profiles.length}</em></div>
-        <div className="environment-list">{data.profiles.map(profile=><div key={profile.id}><div><strong>{profile.name}</strong><span>{profile.type.toUpperCase()} · {profile.cwd||profile.host||profile.distro||"default"}</span></div><div><button onClick={()=>probe(profile.id)} disabled={!!busy}>Test</button><button className="danger" onClick={()=>remove(profile.id)}><Trash2 size={12}/></button></div></div>)}</div>
-        {!data.profiles.length&&<p>No saved environments. Local project folders still work normally.</p>}
+        <div className="environment-list">
+          <div><div><strong>Local machine</strong><span>WINDOWS · Trebell desktop host</span></div><div>{!data.activeEnvironmentId?<em className="ok">active</em>:<button onClick={()=>activate(null)} disabled={!!busy}>Use for agent</button>}</div></div>
+          {data.profiles.map(profile=><div key={profile.id}><div><strong>{profile.name}</strong><span>{profile.type.toUpperCase()} · {profile.cwd||profile.host||profile.distro||"default"}</span></div><div>{data.activeEnvironmentId===profile.id?<em className="ok">agent active</em>:<button onClick={()=>activate(profile.id)} disabled={!!busy}>Use for agent</button>}<button onClick={()=>probe(profile.id)} disabled={!!busy}>Test</button><button className="danger" onClick={()=>remove(profile.id)} disabled={data.activeEnvironmentId===profile.id}><Trash2 size={12}/></button></div></div>)}</div>
+        {!data.profiles.length&&<p>No saved remote environments. The local Windows agent is active by default.</p>}
       </section>
       <section className="capability-card environment-create">
         <div className="capability-card-head"><span><Plus size={15}/><strong>Add environment</strong></span></div>
