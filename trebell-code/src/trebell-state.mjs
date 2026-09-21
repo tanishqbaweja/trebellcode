@@ -16,6 +16,7 @@ const DEFAULT_STATE = Object.freeze({
     notificationSound: false,
     backgroundMode: false,
     keyboardShortcuts: {},
+    keybindingRules: [],
     remoteAccessEnabled: false,
     remoteAccessPort: 3211,
     remoteAccessToken: "",
