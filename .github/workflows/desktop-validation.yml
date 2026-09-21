@@ -5,9 +5,14 @@ on:
     paths:
       - ".github/workflows/desktop-validation.yml"
       - "trebell-code/package.json"
+      - "trebell-code/branding/**"
+      - "trebell-code/build/**"
       - "trebell-code/desktop/**"
       - "trebell-code/src/**"
+      - "trebell-code/ui/index.html"
+      - "trebell-code/ui/public/**"
       - "trebell-code/ui/src/**"
+      - "trebell-code/tests/*.test.mjs"
       - "trebell-code/tests/installed-*.mjs"
   workflow_dispatch:
 
