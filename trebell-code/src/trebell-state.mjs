@@ -87,11 +87,11 @@ export class TrebellStateStore {
     return before!==this.state.environments.length;
   }
   projects(){ return clone(this.state.projects).sort((a,b)=>(b.lastOpenedAt||0)-(a.lastOpenedAt||0)); }
-  touchProject(path,{name=null,defaultModel=null,permissionMode=null,workspaceMode=null}={}){
+  touchProject(path,{name=null,defaultModel=null,permissionMode=null,workspaceMode=null,scripts=null,preferredScriptId=undefined}={}){
     const now=Date.now();
     let project=this.state.projects.find(p=>p.path===path);
     if(!project){
-      project={id:randomUUID(),path,name:name||path.split(/[\\/]/).filter(Boolean).pop()||path,createdAt:now,lastOpenedAt:now};
+      project={id:randomUUID(),path,name:name||path.split(/[\\/]/).filter(Boolean).pop()||path,createdAt:now,lastOpenedAt:now,scripts:[]};
       this.state.projects.push(project);
     }
     project.lastOpenedAt=now;
@@ -99,6 +99,18 @@ export class TrebellStateStore {
     if(defaultModel!=null) project.defaultModel=defaultModel;
     if(permissionMode!=null) project.permissionMode=permissionMode;
     if(workspaceMode!=null) project.workspaceMode=workspaceMode;
+    if(Array.isArray(scripts)){
+      project.scripts=scripts.slice(0,30).map((script,index)=>({
+        id:String(script?.id||randomUUID()),
+        name:String(script?.name||`Action ${index+1}`).trim().slice(0,80)||`Action ${index+1}`,
+        command:String(script?.command||"").trim().slice(0,8000),
+        previewUrl:script?.previewUrl?String(script.previewUrl).trim().slice(0,1000):null,
+        autoOpenPreview:Boolean(script?.autoOpenPreview),
+        runOnWorktreeCreate:Boolean(script?.runOnWorktreeCreate),
+      })).filter(script=>script.command);
+    }else if(!Array.isArray(project.scripts)) project.scripts=[];
+    if(preferredScriptId!==undefined) project.preferredScriptId=preferredScriptId?String(preferredScriptId):null;
+    if(project.preferredScriptId&&!project.scripts.some(script=>script.id===project.preferredScriptId))project.preferredScriptId=null;
     this.#save();
     return clone(project);
   }
