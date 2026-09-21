@@ -26,7 +26,7 @@ test("canonical Trebell icon drives Windows packaging, favicon and every in-app 
   }
 
   const pkg=JSON.parse(readFileSync(join(root,"package.json"),"utf8"));
-  assert.equal(pkg.build?.win?.icon,"build/icon.svg","Windows packaging must use the canonical Trebell icon.");
+  assert.equal(pkg.build?.win?.icon,"build/icon.png","Windows packaging must use the materialized canonical Trebell icon.");\n  assert.match(pkg.scripts?.["desktop:dist"]||"",/prepare:icon/,"Desktop packaging must materialize the canonical icon before electron-builder.");
 
   const index=readFileSync(join(root,"ui","index.html"),"utf8");
   const app=readFileSync(join(root,"ui","src","App.jsx"),"utf8");
