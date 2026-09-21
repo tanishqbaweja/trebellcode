@@ -92,7 +92,7 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await expect(page.getByTestId("model-picker").locator("option")).toHaveText([
     "claude-sonnet-4-6",
     "gpt-astra",
-    "deepseek-v4-flash",
+    "deepseek-v4.1",
     "auto",
   ]);
 

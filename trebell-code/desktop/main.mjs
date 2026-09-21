@@ -89,10 +89,21 @@ function loadDesktopPrefs(){
 function saveDesktopPrefs(prefs){
   try{writeFileSync(desktopPrefsPath(),JSON.stringify(prefs,null,2),"utf8")}catch{}
 }
+let brandIconCache=null;
+function brandIconDataUrl(){
+  const root=join(import.meta.dirname,"..","branding");
+  const encoded=[1,2,3,4].map(index=>readFileSync(join(root,`icon.part${index}.b64`),"utf8").trim()).join("");
+  return "data:image/png;base64,"+encoded;
+}
+function appIcon(){
+  if(brandIconCache&&!brandIconCache.isEmpty())return brandIconCache;
+  const image=nativeImage.createFromDataURL(brandIconDataUrl());
+  if(image.isEmpty())throw new Error("Bundled Trebell Code icon is invalid.");
+  brandIconCache=image;
+  return image;
+}
 function trayIcon(){
-  const svg='<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect rx="8" width="32" height="32" fill="#17111f"/><path d="M8 9h16v4h-6v11h-4V13H8z" fill="#a66cff"/></svg>';
-  const image=nativeImage.createFromDataURL("data:image/svg+xml;base64,"+Buffer.from(svg).toString("base64"));
-  return image.resize({width:16,height:16});
+  return appIcon().resize({width:16,height:16});
 }
 function ensureTray(){
   if(tray)return tray;
@@ -189,6 +200,7 @@ async function ensureAgentBrowser({show=false}={}){
   }
   agentBrowser=new BrowserWindow({
     width:1280,height:860,show,title:"Trebell Agent Browser",
+    icon:appIcon(),
     backgroundColor:"#0a0d14",autoHideMenuBar:true,
     webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,partition:"persist:trebell-agent-browser"},
   });
@@ -367,6 +379,7 @@ async function createWindow(){
     minHeight:720,
     frame:false,
     show:false,
+    icon:appIcon(),
     backgroundColor:"#080a11",
     autoHideMenuBar:true,
     webPreferences:{
@@ -418,7 +431,7 @@ if(!lock){
     if(!Notification.isSupported()) return;
     const title=String(payload.title||"Trebell Code").slice(0,120);
     const body=String(payload.body||"").slice(0,600);
-    const notification=new Notification({title,body,silent:Boolean(payload.silent)});
+    const notification=new Notification({title,body,silent:Boolean(payload.silent),icon:appIcon()});
     notification.on("click",()=>{
       if(!windowRef) return;
       if(windowRef.isMinimized()) windowRef.restore();
@@ -462,6 +475,7 @@ if(!lock){
   ipcMain.handle("browser:close",async()=>{if(agentBrowser&&!agentBrowser.isDestroyed())agentBrowser.close();agentBrowser=null;return {ok:true};});
 
   app.whenReady().then(async()=>{
+    if(process.platform==="win32")app.setAppUserModelId("com.trebell.code");
     backgroundEnabled=Boolean(loadDesktopPrefs().backgroundEnabled);
     if(backgroundEnabled)ensureTray();
     await createWindow();

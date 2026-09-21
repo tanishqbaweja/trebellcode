@@ -72,6 +72,10 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
   const selectedStatus=providerInfo?.providers?.find(p=>p.id===selected)||providerInfo?.status;
   return <div className="settings-page">
     <div className="settings-grid">
+      <div className="settings-card about-card">
+        <div className="about-brand"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/><div><h3>Trebell Code</h3><p>Desktop coding-agent harness</p></div></div>
+        <span className="about-version">v{diagnostics?.version||update?.current||"1.1.0"}</span>
+      </div>
       <div className="settings-card provider-settings-card">
         <h3>Model provider</h3>
         <p>Codex stays as the local agent harness. Choose which inference service powers its turns.</p>

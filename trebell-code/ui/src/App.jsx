@@ -655,7 +655,7 @@ export default function App(){
               {approvals[0]&&<div className="inline-approval"><ApprovalCard request={approvals[0]} onResolve={resolveApproval}/></div>}
               {queued.map(item=><div className="queued-message" key={item.id}><span>Queued</span><p>{item.text}</p><button onClick={()=>sendQueuedNow(item)}>Send now</button><button onClick={()=>{setPrompt(item.text);setAttachments(item.attachments);setContextChips(item.contextChips||[]);setQueued(prev=>prev.filter(x=>x.id!==item.id))}}>Edit</button></div>)}
               {!messages.length&&!events.length&&<div className="welcome">
-                <div className="welcome-mark"><Sparkles size={21}/></div>
+                <div className="welcome-mark"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/></div>
                 <h1>What do you want to build?</h1>
                 <p>{providerLabel} supplies inference. Trebell keeps Codex as the local coding-agent harness for files, shell, Git, approvals, skills, MCP, browser control and durable threads.</p>
                 <div className="suggestions">

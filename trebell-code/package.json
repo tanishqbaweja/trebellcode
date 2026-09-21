@@ -1,6 +1,6 @@
 {
   "name": "trebell-code",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Trebell Code Desktop — a provider-agnostic Codex agent harness with browser automation, desktop snapshot context, Git/worktree workflows, remote environments, and Responses compatibility for third-party inference APIs.",
   "type": "module",
   "license": "Apache-2.0",
@@ -19,7 +19,8 @@
     "ui:test": "playwright test -c ui/playwright.config.mjs",
     "bridge:build": "esbuild vendor/freebuff2api/src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=vendor/freebuff2api/dist/index.mjs",
     "desktop:dir": "npm run bridge:build && npm run ui:build && electron-builder --dir",
-    "desktop:dist": "npm run bridge:build && npm run ui:build && electron-builder --win nsis --x64"
+    "desktop:dist": "npm run bridge:build && npm run ui:build && electron-builder --win nsis --x64",
+    "test:vyce": "node tests/live-vyce-smoke.mjs"
   },
   "engines": {
     "node": ">=22"
@@ -50,13 +51,15 @@
     "asar": true,
     "npmRebuild": true,
     "directories": {
-      "output": "desktop-dist"
+      "output": "desktop-dist",
+      "buildResources": "build"
     },
     "files": [
       "desktop/**/*",
       "src/**/*",
       "ui/dist/**/*",
       "vendor/freebuff2api/dist/**/*",
+      "branding/**/*",
       "package.json",
       "README.md",
       "THIRD_PARTY_NOTICES.md"
@@ -75,7 +78,8 @@
             "x64"
           ]
         }
-      ]
+      ],
+      "icon": "build/icon.svg"
     },
     "nsis": {
       "oneClick": false,

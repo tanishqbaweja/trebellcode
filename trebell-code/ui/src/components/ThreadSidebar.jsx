@@ -64,7 +64,7 @@ export default function ThreadSidebar({
   return <aside className="sidebar">
     <div className="sidebar-titlebar">
       <button className="sidebar-brand" onClick={()=>setSection("chat")} aria-label="Threads">
-        <span className="brand-mark">T</span><strong>Trebell <em>Code</em></strong>
+        <img className="brand-mark" src="/trebell-code-icon.svg" alt="" aria-hidden="true"/><strong>Trebell <em>Code</em></strong>
       </button>
       <button className="sidebar-new-thread" onClick={onNew} aria-label="New thread" title="New thread"><Plus size={16}/></button>
     </div>

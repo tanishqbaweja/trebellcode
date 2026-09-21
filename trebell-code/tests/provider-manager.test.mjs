@@ -96,7 +96,7 @@ test("Vyce AI models are loaded live from /v1/models", async () => {
     return new Response(JSON.stringify({object:"list",data:[
       {id:"claude-sonnet-4-6"},
       {id:"gpt-astra"},
-      {id:"deepseek-v4-flash"},
+      {id:"deepseek-v4.1"},
       {id:"auto"},
     ]}),{status:200});
   }});
@@ -104,7 +104,7 @@ test("Vyce AI models are loaded live from /v1/models", async () => {
   const result=await manager.models("vyceai");
   assert.equal(seen.url,"https://vyceai.com/v1/models");
   assert.equal(seen.authorization,"Bearer sk-vyce");
-  assert.deepEqual(result.models,["auto","claude-sonnet-4-6","deepseek-v4-flash","gpt-astra"]);
+  assert.deepEqual(result.models,["auto","claude-sonnet-4-6","deepseek-v4.1","gpt-astra"]);
   assert.equal(result.source,"live");
 });
 
