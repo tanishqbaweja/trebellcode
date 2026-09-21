@@ -131,7 +131,7 @@ async function startAppServer({appPort,env=process.env,mock=false,provider="free
         return {
           child:null,
           logs:[{at:Date.now(),stream:"environment",text:(error?.stack||error?.message||String(error))+"\n"}],
-          targetUrl:()=>appServer?.targetUrl||`ws://127.0.0.1:${appPort}`,
+          targetUrl:`ws://127.0.0.1:${appPort}`,
           readyUrl:null,
           environment:{id:profile.id,name:profile.name,type:profile.type},
           error:error instanceof Error?error.message:String(error),
@@ -840,7 +840,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
 
   const terminalWs=terminals?.attachWebSocket(server);
   const relay=attachCodexRelay(server,{
-    targetUrl:`ws://127.0.0.1:${appPort}`,
+    targetUrl:()=>appServer?.targetUrl||`ws://127.0.0.1:${appPort}`,
     enabled:()=>mock || Boolean(appServer?.child && appServer.child.exitCode===null),
     log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"relay",text:message}),
   });
@@ -849,7 +849,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     server.once("error",reject);
     server.listen(port,host,resolve);
   });
-  if(!mock) waitForCodexReady(appPort,15000).catch(()=>false);
+  if(!mock) waitForAppServer(appServer,appPort,15000).catch(()=>false);
   if(state.settings().remoteAccessEnabled) await syncRemoteControl().catch(error=>{
     appServer?.logs?.push({at:Date.now(),stream:"remote",text:"remote access failed: "+error.message+"\n"});
   });
