@@ -1,8 +1,8 @@
 import { createServer } from "node:http";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { statfsSync } from "node:fs";
+import { createReadStream, statfsSync } from "node:fs";
 import { cpus, freemem, totalmem, tmpdir, loadavg } from "node:os";
-import { basename, extname, join, normalize, resolve } from "node:path";
+import { basename, extname, join, normalize, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { randomUUID, randomBytes } from "node:crypto";
 import { attachCodexRelay, probeCodexReady, waitForCodexReady } from "./codex-relay.mjs";
@@ -40,6 +40,23 @@ const MIME = {
   ".json":"application/json; charset=utf-8",
   ".svg":"image/svg+xml",
   ".png":"image/png",
+  ".jpg":"image/jpeg",
+  ".jpeg":"image/jpeg",
+  ".gif":"image/gif",
+  ".webp":"image/webp",
+  ".bmp":"image/bmp",
+  ".pdf":"application/pdf",
+  ".mp3":"audio/mpeg",
+  ".wav":"audio/wav",
+  ".m4a":"audio/mp4",
+  ".ogg":"audio/ogg",
+  ".flac":"audio/flac",
+  ".mp4":"video/mp4",
+  ".webm":"video/webm",
+  ".mov":"video/quicktime",
+  ".md":"text/markdown; charset=utf-8",
+  ".csv":"text/csv; charset=utf-8",
+  ".tsv":"text/tab-separated-values; charset=utf-8",
   ".ico":"image/x-icon",
 };
 
@@ -808,6 +825,30 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     }
     if(url.pathname==="/api/workspace/diff"){
       return json(res,200,await workspaceDiff(url.searchParams.get("path")||process.cwd()));
+    }
+    if(url.pathname==="/api/workspace/raw"&&(req.method==="GET"||req.method==="HEAD")){
+      try{
+        const root=resolve(url.searchParams.get("root")||process.cwd());
+        const requested=resolve(url.searchParams.get("path")||"");
+        if(requested!==root&&!requested.startsWith(root+sep))return json(res,403,{error:"File is outside the active workspace"});
+        const info=await stat(requested);
+        if(!info.isFile())return json(res,404,{error:"Not a file"});
+        const type=MIME[extname(requested).toLowerCase()]||"application/octet-stream";
+        const range=String(req.headers.range||"").match(/^bytes=(\d*)-(\d*)$/);
+        const common={"content-type":type,"accept-ranges":"bytes","cache-control":"no-store","content-disposition":`inline; filename="${basename(requested).replace(/"/g,"")}"`};
+        if(range){
+          let start=range[1]?Number(range[1]):0;
+          let end=range[2]?Number(range[2]):info.size-1;
+          if(!range[1]&&range[2]){const suffix=Number(range[2]);start=Math.max(0,info.size-suffix);end=info.size-1}
+          start=Math.max(0,Math.min(start,info.size-1));end=Math.max(start,Math.min(end,info.size-1));
+          res.writeHead(206,{...common,"content-range":`bytes ${start}-${end}/${info.size}`,"content-length":String(end-start+1)});
+          if(req.method==="HEAD")return res.end();
+          return createReadStream(requested,{start,end}).pipe(res);
+        }
+        res.writeHead(200,{...common,"content-length":String(info.size)});
+        if(req.method==="HEAD")return res.end();
+        return createReadStream(requested).pipe(res);
+      }catch(error){return json(res,404,{error:error instanceof Error?error.message:String(error)});}
     }
     if(url.pathname==="/api/workspace/file"){
       if(req.method==="PUT"){
