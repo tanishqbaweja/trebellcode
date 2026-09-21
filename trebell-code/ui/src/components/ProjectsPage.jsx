@@ -67,7 +67,7 @@ export default function ProjectsPage({currentPath,onOpen,models=[]}){
         <button className="project-remove" onClick={async()=>{await api("/api/projects?id="+encodeURIComponent(p.id),{method:"DELETE"});refresh()}}><Trash2 size={13}/></button>
         <div className="project-overrides">
           <label>Model<select value={p.defaultModel||""} onChange={e=>saveProject(p,{defaultModel:e.target.value||null})}><option value="">Inherit client default</option>{models.map(id=><option key={id} value={id}>{id.replace(/^freebuff\//,"")}</option>)}</select></label>
-          <label>Permissions<select value={p.permissionMode||""} onChange={e=>saveProject(p,{permissionMode:e.target.value||null})}><option value="">Inherit</option><option value="supervised">Supervised</option><option value="auto">Auto</option><option value="full">Full access</option><option value="read-only">Read only</option></select></label>
+          <label>Permissions<select value={p.permissionMode||""} onChange={e=>saveProject(p,{permissionMode:e.target.value||null})}><option value="">Inherit</option><option value="supervised">Supervised</option><option value="edits">Auto-accept edits</option><option value="auto">Auto</option><option value="full">Full access</option><option value="read-only">Read only</option></select></label>
           <label>Workspace<select value={p.workspaceMode||""} onChange={e=>saveProject(p,{workspaceMode:e.target.value||null})}><option value="">Inherit</option><option value="current">Current checkout</option><option value="worktree">New worktree</option></select></label>
         </div>
       </div>)}</div>
