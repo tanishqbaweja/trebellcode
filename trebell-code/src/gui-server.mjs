@@ -617,14 +617,14 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     }
 
     if(url.pathname==="/api/bootstrap"){
-      const appServerReady=mock || await appServerReady(appServer,appPort);
+      const appReady=mock || await appServerReady(appServer,appPort);
       return json(res,200,{
         mock,
         loggedIn:mock || isLoggedIn(env),
         provider:selectedProvider,
         providerReady:providerReady(),
         bridgeReady:selectedProvider==="freebuff" ? (mock || await health(DEFAULT_PORT)) : false,
-        appServerReady,
+        appServerReady:appReady,
         wsUrl:mock ? null : (env.TREBELL_GUI_PUBLIC==="1"
           ? `${String(req.headers["x-forwarded-proto"]||"https").split(",")[0].trim()==="https"?"wss":"ws"}://${String(req.headers["x-forwarded-host"]||req.headers.host||"").split(",")[0].trim()}/api/codex/ws`
           : `ws://127.0.0.1:${port}/api/codex/ws`),
