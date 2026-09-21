@@ -56,7 +56,7 @@ async function readJsonBody(req,maxBytes=2*1024*1024){
 }
 
 function parseArgs(argv){
-  const out={port:Number(process.env.TREBELL_GUI_PORT||3210),appPort:Number(process.env.TREBELL_APP_SERVER_PORT||23456),open:false,mock:process.env.TREBELL_GUI_MOCK==="1"};
+  const out={port:Number(process.env.PORT||process.env.TREBELL_GUI_PORT||3210),appPort:Number(process.env.TREBELL_APP_SERVER_PORT||23456),host:process.env.TREBELL_GUI_HOST||"127.0.0.1",open:false,mock:process.env.TREBELL_GUI_MOCK==="1"};
   for(let i=0;i<argv.length;i++){
     if(argv[i]==="--port") out.port=Number(argv[++i]);
     else if(argv[i]==="--app-port") out.appPort=Number(argv[++i]);
@@ -169,7 +169,7 @@ function requireLoad(){
   }catch{return 0}
 }
 
-export async function createGuiServer({port=3210,appPort=23456,mock=false,env=process.env}={}){
+export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",mock=false,env=process.env}={}){
   const dist=resolve(packageRoot,"ui","dist");
   const state=new TrebellStateStore(env);
   const providers=new ProviderManager({env});
@@ -541,7 +541,9 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
         providerReady:providerReady(),
         bridgeReady:selectedProvider==="freebuff" ? (mock || await health(DEFAULT_PORT)) : false,
         appServerReady,
-        wsUrl:mock ? null : `ws://127.0.0.1:${port}/api/codex/ws`,
+        wsUrl:mock ? null : (env.TREBELL_GUI_PUBLIC==="1"
+          ? `${String(req.headers["x-forwarded-proto"]||"https").split(",")[0].trim()==="https"?"wss":"ws"}://${String(req.headers["x-forwarded-host"]||req.headers.host||"").split(",")[0].trim()}/api/codex/ws`
+          : `ws://127.0.0.1:${port}/api/codex/ws`),
         cwd:process.cwd(),
         platform:process.platform,
         version:TREBELL_VERSION,
@@ -757,7 +759,7 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
 
   await new Promise((resolve,reject)=>{
     server.once("error",reject);
-    server.listen(port,"127.0.0.1",resolve);
+    server.listen(port,host,resolve);
   });
   if(!mock) waitForCodexReady(appPort,15000).catch(()=>false);
   if(state.settings().remoteAccessEnabled) await syncRemoteControl().catch(error=>{
@@ -765,7 +767,7 @@ export async function createGuiServer({port=3210,appPort=23456,mock=false,env=pr
   });
 
   return {
-    url:`http://127.0.0.1:${port}`,
+    url:`http://${host==="0.0.0.0"?"127.0.0.1":host}:${port}`,
     server,
     close:async()=>{
       relay.close();
