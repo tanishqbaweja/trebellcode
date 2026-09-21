@@ -16,6 +16,13 @@ function Require-Command([string]$Name, [string]$Help) {
   }
 }
 
+function Invoke-Native([string]$File, [string[]]$Arguments) {
+  & $File @Arguments
+  if ($LASTEXITCODE -ne 0) {
+    throw "$File failed with exit code $LASTEXITCODE."
+  }
+}
+
 Require-Command "node" "Install Node.js 22 or newer."
 Require-Command "npm" "Install Node.js 22 or newer."
 
@@ -33,24 +40,24 @@ Write-Host "Version: $Version"
 Write-Host "Tag:     $Tag"
 
 Write-Host "`n[1/6] Installing dependencies..." -ForegroundColor Cyan
-npm install --no-audit --no-fund --include=optional
+Invoke-Native "npm" @("install","--no-audit","--no-fund","--include=optional")
 
 if (-not $SkipTests) {
   Write-Host "`n[2/6] Running unit/integration tests..." -ForegroundColor Cyan
-  npm test
+  Invoke-Native "npm" @("test")
 } else {
   Write-Host "`n[2/6] Tests skipped by request." -ForegroundColor Yellow
 }
 
 Write-Host "`n[3/6] Preparing canonical app icon..." -ForegroundColor Cyan
-npm run prepare:icon
+Invoke-Native "npm" @("run","prepare:icon")
 
 Write-Host "`n[4/6] Building provider bridge and UI..." -ForegroundColor Cyan
-npm run bridge:build
-npm run ui:build
+Invoke-Native "npm" @("run","bridge:build")
+Invoke-Native "npm" @("run","ui:build")
 
 Write-Host "`n[5/6] Building Windows x64 NSIS installer..." -ForegroundColor Cyan
-npx electron-builder --win nsis --x64
+Invoke-Native "npx" @("electron-builder","--win","nsis","--x64")
 
 $InstallerName = "Trebell-Code-Setup-$Version.exe"
 $Installer = Join-Path $Root "desktop-dist\$InstallerName"
@@ -80,7 +87,8 @@ Write-Host "Bytes:  $Size"
 if ($Publish) {
   Write-Host "`n[6/6] Publishing GitHub release..." -ForegroundColor Cyan
   Require-Command "gh" "Install GitHub CLI, then run 'gh auth login'."
-  gh auth status | Out-Null
+  & gh auth status | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw "GitHub CLI is not authenticated. Run gh auth login." }
   $RepoRoot = Resolve-Path (Join-Path $Root "..")
   Push-Location $RepoRoot
   try {
@@ -90,11 +98,11 @@ if ($Publish) {
     $Notes = Join-Path $Root "RELEASE_NOTES_v$Version.md"
     if ($Existing) {
       Write-Host "Release $Tag already exists; replacing installer asset."
-      gh release upload $Tag $Installer $MetaPath --repo tanishqbaweja/trebellcode --clobber
+      Invoke-Native "gh" @("release","upload",$Tag,$Installer,$MetaPath,"--repo","tanishqbaweja/trebellcode","--clobber")
     } else {
       $Args = @("release","create",$Tag,$Installer,$MetaPath,"--repo","tanishqbaweja/trebellcode","--title","Trebell Code $Version","--target","main")
       if (Test-Path $Notes) { $Args += @("--notes-file",$Notes) } else { $Args += @("--generate-notes") }
-      & gh @Args
+      Invoke-Native "gh" $Args
     }
   } finally { Pop-Location }
   Write-Host "Published $Tag." -ForegroundColor Green
