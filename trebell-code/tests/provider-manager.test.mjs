@@ -32,7 +32,7 @@ test("AgentRouter validates the key and loads its live model catalog", async () 
   const env={...process.env,TREBELL_HOME:root};
   let seen=null;
   const manager=new ProviderManager({env,fetchFn:async(url,init)=>{
-    seen={url,authorization:init?.headers?.Authorization};
+    seen={url,headers:init?.headers};
     return new Response(JSON.stringify({object:"list",data:[
       {id:"gpt-5.5"},
       {id:"claude-opus-4-8"},
@@ -46,13 +46,17 @@ test("AgentRouter validates the key and loads its live model catalog", async () 
   manager.setKey("agentrouter",'"ar-key"');
   assert.equal(manager.key("agentrouter"),"ar-key");
   const result=await manager.models("agentrouter");
-  assert.equal(seen.url,"https://co.agentrouter.org/v1/models");
-  assert.equal(seen.authorization,"Bearer ar-key");
+  assert.equal(seen.url,"https://agentrouter.org/v1/models");
+  assert.equal(seen.headers.Authorization,"Bearer ar-key");
+  assert.equal(seen.headers["Content-Type"],"application/json");
+  assert.equal(seen.headers["User-Agent"],"codex_cli_rs/0.149.1");
+  assert.equal(seen.headers.originator,"codex_cli_rs");
+  assert.equal(seen.headers.version,"0.149.1");
   assert.deepEqual(result.models,["claude-opus-4-8","glm-5.1","gpt-5.5","kimi-k2.6"]);
   assert.equal(result.source,"live");
 });
 
-test("AgentRouter chat preserves the incoming Codex User-Agent", async () => {
+test("AgentRouter chat always uses the required Codex fingerprint", async () => {
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
   const env={...process.env,TREBELL_HOME:root};
   let seen=null;
@@ -61,11 +65,13 @@ test("AgentRouter chat preserves the incoming Codex User-Agent", async () => {
     return new Response(JSON.stringify({choices:[{message:{role:"assistant",content:"ok"}}]}),{status:200,headers:{"content-type":"application/json"}});
   }});
   manager.setKey("agentrouter","ar-key");
-  const response=await manager.forwardChat("agentrouter",{model:"gpt-5.5",messages:[{role:"user",content:"hello"}],stream:false},{userAgent:"codex_cli_rs/1.2.3"});
+  const response=await manager.forwardChat("agentrouter",{model:"gpt-5.5",messages:[{role:"user",content:"hello"}],stream:false},{userAgent:"generic-client/1.0"});
   assert.equal(response.status,200);
-  assert.equal(seen.url,"https://co.agentrouter.org/v1/chat/completions");
+  assert.equal(seen.url,"https://agentrouter.org/v1/chat/completions");
   assert.equal(seen.headers.Authorization,"Bearer ar-key");
-  assert.equal(seen.headers["User-Agent"],"codex_cli_rs/1.2.3");
+  assert.equal(seen.headers["User-Agent"],"codex_cli_rs/0.149.1");
+  assert.equal(seen.headers.originator,"codex_cli_rs");
+  assert.equal(seen.headers.version,"0.149.1");
   assert.equal(seen.body.model,"gpt-5.5");
 });
 
@@ -161,4 +167,29 @@ test("provider key normalization strips copied Bearer prefix and invisible chara
   manager.setKey("agentrouter","\uFEFFBearer  ar-live-key\u200B");
   assert.equal(manager.key("agentrouter"),"ar-live-key");
   assert.equal(manager.childEnv("agentrouter",{}).AGENTROUTER_API_KEY,"ar-live-key");
+});
+
+
+test("AgentRouter Responses uses the required Codex fingerprint", async () => {
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
+  const env={...process.env,TREBELL_HOME:root};
+  let seen=null;
+  const manager=new ProviderManager({env,fetchFn:async(url,init)=>{
+    seen={url,headers:init.headers,body:JSON.parse(init.body)};
+    return new Response(JSON.stringify({id:"resp_1",object:"response",output:[]}),{status:200,headers:{"content-type":"application/json"}});
+  }});
+  manager.setKey("agentrouter","ar-key");
+  const response=await manager.forwardResponses("agentrouter",{
+    model:"deepseek-v4-flash",
+    input:"hello",
+    stream:false,
+  });
+  assert.equal(response.status,200);
+  assert.equal(seen.url,"https://agentrouter.org/v1/responses");
+  assert.equal(seen.headers.Authorization,"Bearer ar-key");
+  assert.equal(seen.headers["Content-Type"],"application/json");
+  assert.equal(seen.headers["User-Agent"],"codex_cli_rs/0.149.1");
+  assert.equal(seen.headers.originator,"codex_cli_rs");
+  assert.equal(seen.headers.version,"0.149.1");
+  assert.equal(seen.body.model,"deepseek-v4-flash");
 });
