@@ -25,6 +25,8 @@ import GoalPanel from "./components/GoalPanel.jsx";
 import OnboardingModal from "./components/OnboardingModal.jsx";
 import { resolveKeybinding } from "./keybindings.js";
 
+const MAX_COMPOSER_ATTACHMENTS=100;
+
 const TREBELL_BROWSER_TOOLS=[{
   type:"namespace",
   name:"trebell_browser",
@@ -570,12 +572,12 @@ export default function App(){
     if(prompt.trim()||attachments.length){await api("/api/stashes",{method:"POST",body:{text:prompt,attachments,contextChips,projectPath}});setPrompt("");setAttachments([]);setContextChips([]);return}
     const d=await api("/api/stashes").catch(()=>({stashes:[]}));const stash=d.stashes?.[0];if(stash){setPrompt(stash.text||"");setAttachments(stash.attachments||[]);setContextChips(stash.contextChips||[]);await api("/api/stashes?id="+encodeURIComponent(stash.id),{method:"DELETE"})}
   }
-  async function addFiles(paths){setAttachments(prev=>[...new Set([...prev,...paths])].slice(0,8))}
+  async function addFiles(paths){setAttachments(prev=>[...new Set([...prev,...paths])].slice(0,MAX_COMPOSER_ATTACHMENTS))}
   async function addContextPath(path,{kind="context",label="Context",detail=""}={}){
     if(!path)return null;
-    if(!attachments.includes(path)&&attachments.length>=8)throw new Error("Composer supports up to 8 attachments/context items.");
+    if(!attachments.includes(path)&&attachments.length>=MAX_COMPOSER_ATTACHMENTS)throw new Error(`Composer supports up to ${MAX_COMPOSER_ATTACHMENTS} attachments/context items.`);
     await addFiles([path]);
-    setContextChips(prev=>[...prev.filter(chip=>chip.path!==path),{id:crypto.randomUUID(),path,kind,label,detail}].slice(-8));
+    setContextChips(prev=>[...prev.filter(chip=>chip.path!==path),{id:crypto.randomUUID(),path,kind,label,detail}].slice(-MAX_COMPOSER_ATTACHMENTS));
     return path;
   }
   async function addContextAttachment({name,text,kind="context",label="Context",detail=""}){const d=await api("/api/attachments/text",{method:"POST",body:{name,text}});return addContextPath(d.path,{kind,label,detail})}
@@ -588,8 +590,8 @@ export default function App(){
     const d=await api("/api/attachments/blob",{method:"POST",body:{name:"desktop-snapshot.png",mime:"image/png",dataBase64:String(shot.dataUrl).split(",")[1]||""}});
     await addContextPath(d.path,{kind:"computer",label:"Desktop snapshot",detail:(shot.width&&shot.height)?shot.width+"×"+shot.height:"PNG capture"});
   }
-  async function onPaste(e){const files=[...(e.clipboardData?.files||[])];if(files.length){e.preventDefault();const uploaded=[];for(const f of files.slice(0,8-attachments.length)){try{uploaded.push((await blobAttachment(f)).path)}catch{}}await addFiles(uploaded);return}const text=e.clipboardData?.getData("text/plain")||"";if(text.length>=32768){e.preventDefault();const d=await api("/api/attachments/text",{method:"POST",body:{name:"pasted-context.txt",text}});await addFiles([d.path])}}
-  async function onDrop(e){e.preventDefault();const files=[...(e.dataTransfer?.files||[])];const uploaded=[];for(const f of files.slice(0,8-attachments.length)){try{uploaded.push((await blobAttachment(f)).path)}catch{}}await addFiles(uploaded)}
+  async function onPaste(e){const files=[...(e.clipboardData?.files||[])];if(files.length){e.preventDefault();const uploaded=[];for(const f of files.slice(0,Math.max(0,MAX_COMPOSER_ATTACHMENTS-attachments.length))){try{uploaded.push((await blobAttachment(f)).path)}catch{}}await addFiles(uploaded);return}const text=e.clipboardData?.getData("text/plain")||"";if(text.length>=32768){e.preventDefault();const d=await api("/api/attachments/text",{method:"POST",body:{name:"pasted-context.txt",text}});await addFiles([d.path])}}
+  async function onDrop(e){e.preventDefault();const files=[...(e.dataTransfer?.files||[])];const uploaded=[];for(const f of files.slice(0,Math.max(0,MAX_COMPOSER_ATTACHMENTS-attachments.length))){try{uploaded.push((await blobAttachment(f)).path)}catch{}}await addFiles(uploaded)}
   async function attachExcerpt(text){if(!text.trim())return;await addContextAttachment({name:"terminal-context.txt",text,kind:"terminal",label:"Terminal excerpt",detail:text.split(/\r?\n/).length+" lines"});setPanel(null)}
   async function citeAssistant(message){
     if(!message?.text?.trim())return;
@@ -689,7 +691,7 @@ export default function App(){
     if(rightPanelTab==="files"||rightPanelTab==="diff")return <WorkspacePanel key={rightPanelTab} defaultTab={rightPanelTab==="diff"?"diff":"files"} projectPath={projectPath} activeThreadId={activeThread?.id} reviewedFiles={reviewedFiles} onReviewedChange={toggleReviewed} onAttachPath={path=>addFiles([path])} onReviewComment={attachReviewComment}/>;
     if(rightPanelTab==="preview")return previewSurface;
     if(rightPanelTab==="source")return <SourceControlPanel projectPath={projectPath} model={model} provider={provider} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
-    if(rightPanelTab==="agents")return <div className="panel-page"><AgentsPage threads={threads} activeThread={activeThread} onOpen={openThread} rpc={rpc} rpcStatus={rpcStatus} model={model}/></div>;
+    if(rightPanelTab==="agents")return <div className="panel-page"><AgentsPage threads={threads} activeThread={activeThread} onOpen={openThread} onAction={threadAction} rpc={rpc} rpcStatus={rpcStatus} model={model}/></div>;
     if(rightPanelTab==="goal")return <GoalPanel rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={setGoal}/>;
     return <div className="runtime-surface">
       <section className="runtime-summary">
