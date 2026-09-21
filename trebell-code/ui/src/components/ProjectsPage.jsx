@@ -6,7 +6,7 @@ function blankScript(){
   return {id:null,name:"",command:"",previewUrl:"",autoOpenPreview:false,runOnWorktreeCreate:false};
 }
 
-export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPreview,models=[]}){
+export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPreview,onProjectUpdated,models=[]}){
   const [projects,setProjects]=useState([]);
   const [cloneUrl,setCloneUrl]=useState("");
   const [busy,setBusy]=useState(false);
@@ -27,7 +27,8 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
   async function saveProject(project,patch){
     setError("");
     try{
-      await api("/api/projects",{method:"POST",body:{path:project.path,...patch}});
+      const result=await api("/api/projects",{method:"POST",body:{path:project.path,...patch}});
+      onProjectUpdated?.(result.project);
       await refresh();
     }catch(err){setError(err.message||String(err));throw err}
   }
