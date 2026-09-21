@@ -108,6 +108,7 @@ export class TrebellStateStore {
         previewUrl:script?.previewUrl?String(script.previewUrl).trim().slice(0,1000):null,
         autoOpenPreview:Boolean(script?.autoOpenPreview),
         runOnWorktreeCreate:Boolean(script?.runOnWorktreeCreate),
+        waitForSetup:Boolean(script?.waitForSetup),
       })).filter(script=>script.command);
     }else if(!Array.isArray(project.scripts)) project.scripts=[];
     if("preferredScriptId" in patch) project.preferredScriptId=patch.preferredScriptId?String(patch.preferredScriptId):null;
