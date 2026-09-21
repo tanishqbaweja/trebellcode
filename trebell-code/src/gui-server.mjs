@@ -26,9 +26,12 @@ const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
   .catch(()=>"0.0.0");
 import {
   gitInfo, cloneRepository, createBranch, switchBranch, commitAll, fetchRepo, pullRepo, pushRepo,
-  safeAutoPull, createWorktree, removeWorktree, sourceControlDiagnostics, listPullRequests, createPullRequest,
-  pullRequestDetail, commentOnPullRequest, reviewPullRequest, mergePullRequest, updatePullRequestBranch,
+  safeAutoPull, createWorktree, removeWorktree,
 } from "./git-service.mjs";
+import {
+  sourceControlDiagnostics, listPullRequests, createPullRequest, pullRequestDetail,
+  commentOnPullRequest, reviewPullRequest, mergePullRequest, updatePullRequestBranch,
+} from "./source-control-service.mjs";
 
 const MIME = {
   ".html":"text/html; charset=utf-8",
@@ -541,11 +544,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       }catch(error){return json(res,400,{ok:false,error:error.message});}
     }
     if(url.pathname==="/api/source-control/diagnostics"){
-      try{return json(res,200,await sourceControlDiagnostics(url.searchParams.get("path")||process.cwd()));}
+      try{return json(res,200,await sourceControlDiagnostics(url.searchParams.get("path")||process.cwd(),url.searchParams.get("provider")||null));}
       catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/source-control/prs"){
-      return json(res,200,await listPullRequests(url.searchParams.get("path")||process.cwd()));
+      return json(res,200,await listPullRequests(url.searchParams.get("path")||process.cwd(),{provider:url.searchParams.get("provider")||null}));
     }
     if(url.pathname==="/api/source-control/pr" && req.method==="POST"){
       try{
@@ -554,16 +557,16 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       }catch(error){return json(res,400,{ok:false,error:error.message});}
     }
     if(url.pathname==="/api/source-control/pr-detail"){
-      return json(res,200,await pullRequestDetail(url.searchParams.get("path")||process.cwd(),url.searchParams.get("number")));
+      return json(res,200,await pullRequestDetail(url.searchParams.get("path")||process.cwd(),url.searchParams.get("number"),{provider:url.searchParams.get("provider")||null}));
     }
     if(url.pathname==="/api/source-control/pr-action" && req.method==="POST"){
       try{
         const body=await readJsonBody(req);
         const cwd=body.cwd||process.cwd();
-        if(body.action==="comment") return json(res,200,await commentOnPullRequest(cwd,body.number,body.body||""));
-        if(body.action==="review") return json(res,200,await reviewPullRequest(cwd,body.number,{event:body.event,body:body.body||""}));
-        if(body.action==="merge") return json(res,200,await mergePullRequest(cwd,body.number,{method:body.method,auto:Boolean(body.auto)}));
-        if(body.action==="update-branch") return json(res,200,await updatePullRequestBranch(cwd,body.number,{rebase:body.rebase!==false}));
+        if(body.action==="comment") return json(res,200,await commentOnPullRequest(cwd,body.number,body.body||"",{provider:body.provider||null}));
+        if(body.action==="review") return json(res,200,await reviewPullRequest(cwd,body.number,{provider:body.provider||null,event:body.event,body:body.body||""}));
+        if(body.action==="merge") return json(res,200,await mergePullRequest(cwd,body.number,{provider:body.provider||null,method:body.method,auto:Boolean(body.auto)}));
+        if(body.action==="update-branch") return json(res,200,await updatePullRequestBranch(cwd,body.number,{provider:body.provider||null,rebase:body.rebase!==false}));
         return json(res,400,{error:"unknown PR action"});
       }catch(error){return json(res,400,{ok:false,error:error.message});}
     }
