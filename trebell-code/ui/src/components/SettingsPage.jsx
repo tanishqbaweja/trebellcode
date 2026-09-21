@@ -1,6 +1,7 @@
 import React,{useEffect,useState} from "react";
 import { Activity, Download, RefreshCw, ShieldCheck } from "lucide-react";
 import { api } from "../api.js";
+import { KEYBINDING_COMMANDS, normalizeKeybindingRules } from "../keybindings.js";
 
 const PROVIDER_LABELS={
   freebuff:"Freebuff",
@@ -18,6 +19,11 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
   const [apiKey,setApiKey]=useState("");
   const [providerMessage,setProviderMessage]=useState("");
   const selected=settings.modelProvider||"freebuff";
+  const keybindingRules=normalizeKeybindingRules(settings);
+  function updateKeybinding(command,patch){
+    const next=keybindingRules.map(rule=>rule.command===command?{...rule,...patch}:rule);
+    return save({keybindingRules:next});
+  }
 
   async function loadProviders(){
     const info=await api("/api/providers").catch(e=>({error:e.message,providers:[]}));
@@ -110,9 +116,7 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
       <div className="settings-card"><h3>Appearance</h3><div className="appearance-options">{["dark","midnight","black"].map(v=><button key={v} className={settings.appearance===v?"active":""} onClick={()=>save({appearance:v})}>{v}</button>)}</div></div>
       <div className="settings-card"><h3>Desktop notifications</h3><label className="toggle-line"><input type="checkbox" checked={settings.notifications!==false} onChange={e=>save({notifications:e.target.checked})}/> Notify when turns finish or need attention</label><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.notificationSound)} onChange={e=>save({notificationSound:e.target.checked})}/> Allow notification sound</label></div>
       <div className="settings-card"><h3>Background mode</h3><p>Keep Trebell's local harness running in the system tray after the window closes, and start it with Windows.</p><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.backgroundMode)} onChange={async e=>{const enabled=e.target.checked;await window.trebellDesktop?.background?.set?.(enabled);await save({backgroundMode:enabled})}}/> Keep Trebell running in background</label></div>
-      <div className="settings-card"><h3>Keyboard shortcuts</h3><p>Shortcuts are stored locally and used by the desktop client.</p>{[
-        ["newChat","New thread","Ctrl+N"],["search","Command palette","Ctrl+K"],["stash","Stash prompt","Ctrl+S"],["terminal","Terminal","Ctrl+Shift+T"]
-      ].map(([key,label,fallback])=><label key={key}>{label}<input value={settings.keyboardShortcuts?.[key]||fallback} onChange={e=>save({keyboardShortcuts:{...(settings.keyboardShortcuts||{}),[key]:e.target.value}})}/></label>)}</div>
+      <div className="settings-card keybindings-settings"><h3>Keyboard shortcuts</h3><p>Shortcuts can be conditional. For example, <code>threadOpen && !modalOpen</code> means “only when a thread is open and no dialog is covering the app.”</p>{KEYBINDING_COMMANDS.map(command=>{const rule=keybindingRules.find(item=>item.command===command.id);return <div className="keybinding-row" key={command.id}><strong>{command.label}</strong><label>Shortcut<input value={rule?.key||""} onChange={e=>updateKeybinding(command.id,{key:e.target.value})}/></label><label>When<input value={rule?.when||""} placeholder="Always" onChange={e=>updateKeybinding(command.id,{when:e.target.value})}/></label></div>})}<p className="provider-note">Available contexts: chatFocus, terminalFocus, previewFocus, textInputFocus, projectOpen, threadOpen, running, modalOpen, rightPanelOpen, desktop. Combine them with <code>!</code>, <code>&&</code>, <code>||</code> and parentheses.</p></div>
       <div className="settings-card"><h3>Updates</h3>{update?.latest?<p>Current: <strong>{update.current}</strong><br/>Latest: <strong>{update.latest}</strong></p>:<p>{update?.error||"Checking releases…"}</p>}{update?.url&&<button onClick={()=>window.open(update.url,"_blank")}><Download size={13}/> Open latest release</button>}</div>
       <div className="settings-card"><h3>Diagnostics</h3><p>Runtime and project diagnostics are local to this machine.</p><div className="diag-badges"><span className={diagnostics?.runtime?.appServerReady?"ok":""}><Activity size={12}/> Codex</span><span className={diagnostics?.runtime?.providerReady?"ok":""}><ShieldCheck size={12}/> {PROVIDER_LABELS[diagnostics?.runtime?.provider||selected]||"Provider"}</span></div></div>
     </div>
