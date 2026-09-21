@@ -54,21 +54,21 @@ try {
     const response=await fetch("/api/providers",{
       method:"POST",
       headers:{"content-type":"application/json"},
-      body:JSON.stringify({provider:"hcnsec",apiKey:"ci-dummy-key"}),
+      body:JSON.stringify({provider:"vyceai"}),
     });
     return await response.json();
   });
-  if(providerSwitch?.selected!=="hcnsec"||!providerSwitch?.models?.includes("glm-5.3")){
-    throw new Error("Installed app could not switch to the HCNSec provider.");
+  if(providerSwitch?.selected!=="vyceai"||!providerSwitch?.models?.includes("deepseek-v4.1")){
+    throw new Error("Installed app could not switch to Vyce AI with deepseek-v4.1 available.");
   }
   let providerRuntime=null;
   for(let attempt=0;attempt<30;attempt++){
     providerRuntime=await mainPage.evaluate(()=>fetch("/api/runtime").then(r=>r.json())).catch(()=>null);
-    if(providerRuntime?.provider==="hcnsec"&&providerRuntime?.appServerReady)break;
+    if(providerRuntime?.provider==="vyceai"&&providerRuntime?.appServerReady)break;
     await new Promise(r=>setTimeout(r,500));
   }
-  if(providerRuntime?.provider!=="hcnsec"||!providerRuntime?.appServerReady){
-    throw new Error("Bundled Codex rejected the Responses-only HCNSec provider config.");
+  if(providerRuntime?.provider!=="vyceai"||!providerRuntime?.appServerReady){
+    throw new Error("Bundled Codex rejected the Vyce AI provider config.");
   }
   await mainPage.evaluate(()=>fetch("/api/providers",{
     method:"POST",

@@ -1,0 +1,210 @@
+name: Publish Trebell Code Desktop v1.1.0
+
+on:
+  push:
+    paths:
+      - "trebell-code/release-trigger-v1.1.0.txt"
+      - ".github/workflows/desktop-release-v1.1.0.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    timeout-minutes: 50
+    env:
+      VYCEAI_API_KEY: ${{ secrets.VYCEAI_API_KEY || secrets.VYCE_API_KEY }}
+    defaults:
+      run:
+        working-directory: trebell-code
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Verify package version
+        shell: pwsh
+        run: |
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          if ($pkg.version -ne "1.1.0") { throw "Expected package version 1.1.0, got $($pkg.version)" }
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          $attempts = 3
+          for ($i = 1; $i -le $attempts; $i++) {
+            Write-Host "npm install attempt $i/$attempts"
+            npm install --no-audit --no-fund
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($i -eq $attempts) { throw "npm install failed after $attempts attempts." }
+            Start-Sleep -Seconds (5 * $i)
+          }
+
+      - name: Run full Trebell harness tests
+        run: npm test
+
+      - name: Validate Vyce AI with deepseek-v4.1
+        env:
+          TREBELL_TEST_VYCE_API_KEY: ${{ secrets.VYCEAI_API_KEY || secrets.VYCE_API_KEY }}
+        run: npm run test:vyce
+
+      - name: Run Chromium UI E2E
+        shell: pwsh
+        run: |
+          npx playwright install chromium
+          npm run ui:test
+
+      - name: Build Freebuff bridge and Trebell UI
+        run: |
+          npm run bridge:build
+          npm run ui:build
+
+      - name: Build Windows NSIS installer
+        run: npx electron-builder --win nsis --x64 --publish never
+
+      - name: Verify bundled Codex harness
+        shell: pwsh
+        run: |
+          $codex = Get-ChildItem -Path "desktop-dist\win-unpacked\resources\app.asar.unpacked\node_modules\@openai\codex-win32-x64" -Filter codex.exe -Recurse | Select-Object -First 1
+          if (-not $codex) { throw "Bundled Codex harness binary was not found." }
+          & $codex.FullName --version
+          if ($LASTEXITCODE -ne 0) { throw "Bundled Codex harness failed to execute." }
+
+      - name: Install generated Trebell Code
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path "desktop-dist" -Filter "Trebell-Code-Setup-1.1.0.exe" | Select-Object -First 1
+          if (-not $installer) { throw "Trebell Code installer was not generated." }
+          $proc = Start-Process -FilePath $installer.FullName -ArgumentList "/S" -PassThru -Wait
+          if ($proc.ExitCode -ne 0) { throw "Installer exited with code $($proc.ExitCode)" }
+
+      - name: Launch and validate installed desktop application
+        shell: pwsh
+        run: |
+          $installed = Get-ChildItem -Path "$env:LOCALAPPDATA\Programs" -Filter "Trebell Code.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $installed) { throw "Installed Trebell Code executable was not found." }
+
+          $env:TREBELL_GUI_PORT = "3210"
+          $env:TREBELL_APP_SERVER_PORT = "23456"
+          $env:TREBELL_GUI_DEBUG = "1"
+          $env:TREBELL_CDP_URL = "http://127.0.0.1:9333"
+
+          $stdout = "$env:RUNNER_TEMP\trebell-installed.stdout.log"
+          $stderr = "$env:RUNNER_TEMP\trebell-installed.stderr.log"
+          $app = Start-Process -FilePath $installed.FullName -ArgumentList "--remote-debugging-port=9333" -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+          $app.Id | Set-Content "$env:RUNNER_TEMP\trebell-installed.pid"
+
+          try {
+            $ready = $false
+            $lastBoot = $null
+            for ($i = 0; $i -lt 160; $i++) {
+              Start-Sleep -Milliseconds 500
+              try {
+                $boot = Invoke-RestMethod -Uri "http://127.0.0.1:3210/api/bootstrap" -TimeoutSec 2
+                $lastBoot = $boot
+                if ($boot.appServerReady -eq $true -and $boot.version -eq "1.1.0") {
+                  $ready = $true
+                  break
+                }
+              } catch {}
+              if ($app.HasExited) { break }
+            }
+
+            if (-not $ready) {
+              if ($lastBoot) { Write-Host "Last bootstrap: $($lastBoot | ConvertTo-Json -Depth 8 -Compress)" }
+              throw "Installed Trebell Code never reached the expected ready state."
+            }
+
+            node tests/installed-relay-check.mjs http://127.0.0.1:3210
+            if ($LASTEXITCODE -ne 0) { throw "Installed relay validation failed." }
+
+            $payload = @{ name = "Release validation"; cols = 100; rows = 24 } | ConvertTo-Json
+            $session = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:3210/api/terminal/sessions" -ContentType "application/json" -Body $payload -TimeoutSec 10
+            if (-not $session.session.id -or $session.session.running -ne $true) { throw "PTY terminal did not start." }
+            Invoke-RestMethod -Method Delete -Uri ("http://127.0.0.1:3210/api/terminal/sessions?id=" + [uri]::EscapeDataString($session.session.id)) -TimeoutSec 10 | Out-Null
+
+            $runtime = Invoke-RestMethod -Uri "http://127.0.0.1:3210/api/runtime" -TimeoutSec 3
+            if ($runtime.appServerReady -ne $true) { throw "Codex app-server is not ready." }
+
+            $diagnostics = Invoke-RestMethod -Uri "http://127.0.0.1:3210/api/diagnostics" -TimeoutSec 5
+            if ($diagnostics.version -ne "1.1.0") { throw "Diagnostics returned the wrong version: $($diagnostics.version)" }
+
+            $health = Invoke-RestMethod -Uri "http://127.0.0.1:3210/api/health" -TimeoutSec 3
+            if ($health.ok -ne $true) { throw "Trebell GUI health check failed." }
+
+            node tests/installed-desktop-check.mjs
+            if ($LASTEXITCODE -ne 0) { throw "Installed desktop/browser validation failed." }
+          } catch {
+            Write-Host "Installed process exited: $($app.HasExited)"
+            if (Test-Path $stdout) { Write-Host "--- Trebell stdout ---"; Get-Content $stdout -Tail 300 }
+            if (Test-Path $stderr) { Write-Host "--- Trebell stderr ---"; Get-Content $stderr -Tail 300 }
+            throw
+          }
+
+      - name: Stop installed application
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path "$env:RUNNER_TEMP\trebell-installed.pid") {
+            $pidValue = Get-Content "$env:RUNNER_TEMP\trebell-installed.pid" | Select-Object -First 1
+            Stop-Process -Id $pidValue -Force -ErrorAction SilentlyContinue
+          }
+          Get-Process codex -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Get-Process "Trebell Code" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
+      - name: Create installer checksum
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path "desktop-dist" -Filter "Trebell-Code-Setup-1.1.0.exe" | Select-Object -First 1
+          $hash = (Get-FileHash -Algorithm SHA256 $installer.FullName).Hash.ToLower()
+          "$hash  $($installer.Name)" | Set-Content -Path "desktop-dist\Trebell-Code-Setup-1.1.0.exe.sha256" -Encoding ascii
+          Write-Host "SHA256: $hash"
+
+      - name: Write release notes
+        shell: pwsh
+        run: Copy-Item "RELEASE_NOTES_v1.1.0.md" "desktop-dist\release-notes-v1.1.0.md"
+
+      - name: Upload validated installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Trebell-Code-Desktop-v1.1.0
+          path: |
+            trebell-code/desktop-dist/Trebell-Code-Setup-1.1.0.exe
+            trebell-code/desktop-dist/Trebell-Code-Setup-1.1.0.exe.sha256
+            trebell-code/desktop-dist/release-notes-v1.1.0.md
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Ensure v1.1.0 git tag
+        shell: pwsh
+        working-directory: .
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          $existing = git ls-remote --tags origin refs/tags/v1.1.0
+          if (-not $existing) {
+            git tag v1.1.0 "$env:GITHUB_SHA"
+            git push origin v1.1.0
+          }
+
+      - name: Publish GitHub release
+        id: publish_release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.TREBELL_RELEASE_TOKEN || github.token }}
+        working-directory: .
+        run: |
+          $installer = Resolve-Path "trebell-code\desktop-dist\Trebell-Code-Setup-1.1.0.exe"
+          $checksum = Resolve-Path "trebell-code\desktop-dist\Trebell-Code-Setup-1.1.0.exe.sha256"
+          $notes = Resolve-Path "trebell-code\desktop-dist\release-notes-v1.1.0.md"
+
+          if (gh release view v1.1.0 *> $null) {
+            gh release upload v1.1.0 $installer $checksum --clobber
+          } else {
+            gh release create v1.1.0 $installer $checksum --verify-tag --title "Trebell Code Desktop v1.1.0" --notes-file $notes
+          }
