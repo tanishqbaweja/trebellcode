@@ -529,7 +529,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           return json(res,200,{ok:true,script,session:{id:"mock-project-action",name:script.name,cwd:projectPath,running:true},previewUrl:script.previewUrl||null});
         }
         const session=await terminals.create({cwd:projectPath,name:script.name||"Project action",cols:120,rows:32});
-        await terminals.write(session.id,String(script.command||"")+(process.platform==="win32"?"\r":"\n"));
+        await terminals.write(session.id,String(script.command||"")+"\r");
         return json(res,200,{ok:true,script,session:terminals.snapshot(session.id),previewUrl:script.previewUrl||null});
       }catch(error){return json(res,400,{ok:false,error:error.message});}
     }
@@ -591,7 +591,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
             const setup=(sourceProject?.scripts||[]).find(script=>script.runOnWorktreeCreate);
             if(setup&&!mock&&terminals){
               const session=await terminals.create({cwd:result.worktree,name:`${setup.name||"Setup"} · setup`,cols:120,rows:32});
-              await terminals.write(session.id,String(setup.command||"")+(process.platform==="win32"?"\r":"\n"));
+              await terminals.write(session.id,String(setup.command||"")+"\r");
               result={...result,setup:{scriptId:setup.id,session:terminals.snapshot(session.id)}};
             }
             break;
