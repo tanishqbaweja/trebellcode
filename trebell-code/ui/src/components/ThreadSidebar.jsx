@@ -1,7 +1,7 @@
 import React from "react";
 import {
   Archive, Bot, Clock3, Folder, Globe2, History,
-  MoreHorizontal, Pin, Plus, Search, Settings, SlidersHorizontal, Wrench
+  MoreHorizontal, Pin, Plus, Search, Settings, SlidersHorizontal, Wrench, Server
 } from "lucide-react";
 
 function titleOf(thread){return thread.name||thread.preview||"Untitled task"}
@@ -103,6 +103,7 @@ export default function ThreadSidebar({
         <UtilityButton Icon={Bot} label="Agents" active={section==="agents"} onClick={()=>setSection("agents")}/>
         <UtilityButton Icon={History} label="History" active={section==="history"} onClick={()=>setSection("history")}/>
         <UtilityButton Icon={Wrench} label="Tools" active={section==="tools"} onClick={()=>setSection("tools")}/>
+        <UtilityButton Icon={Server} label="Environments" active={section==="environments"} onClick={()=>setSection("environments")}/>
         <UtilityButton Icon={Settings} label="Settings" active={section==="settings"} onClick={()=>setSection("settings")}/>
       </div>
       <button className="sidebar-provider" onClick={()=>setSection(provider==="freebuff"?"freebuff":"settings")} title={"Configure "+providerLabel}><span className="provider-dot"/><div><strong>{providerLabel}</strong><span>via Codex harness</span></div><MoreHorizontal size={13}/></button>
