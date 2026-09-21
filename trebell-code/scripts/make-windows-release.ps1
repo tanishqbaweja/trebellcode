@@ -90,6 +90,21 @@ try {
   }
 
   $DesktopProcess = Start-Process -FilePath $UnpackedExe -ArgumentList "--remote-debugging-port=$CdpPort" -PassThru
+
+  $RuntimeReady = $false
+  for ($Attempt = 0; $Attempt -lt 120; $Attempt++) {
+    if ($DesktopProcess.HasExited) { throw "Unpacked Trebell Code exited before the smoke test could connect." }
+    try {
+      $Boot = Invoke-RestMethod -Uri "http://127.0.0.1:$GuiPort/api/bootstrap" -TimeoutSec 1
+      if ($Boot.appServerReady -eq $true) {
+        $RuntimeReady = $true
+        break
+      }
+    } catch {}
+    Start-Sleep -Milliseconds 250
+  }
+  if (-not $RuntimeReady) { throw "Bundled Codex app-server did not become ready for the Windows smoke test." }
+
   Invoke-Native "node" @("tests/installed-relay-check.mjs","http://127.0.0.1:$GuiPort")
   Invoke-Native "node" @("tests/installed-desktop-check.mjs")
 } finally {
