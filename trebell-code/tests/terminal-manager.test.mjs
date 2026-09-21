@@ -18,3 +18,20 @@ test("persistent terminal worker starts a PTY and retains output",{timeout:20000
     assert.match(terminals.snapshot(session.id).buffer,new RegExp(marker));
   }finally{await terminals.shutdown();}
 });
+
+
+test("terminal manager can await a dedicated command PTY",{timeout:20000},async()=>{
+  const terminals=new TerminalManager();
+  try{
+    const marker="trebell-setup-"+Date.now();
+    const shell=process.platform==="win32"?(process.env.COMSPEC||"cmd.exe"):(process.env.SHELL||"/bin/bash");
+    const args=process.platform==="win32"
+      ? ["/d","/s","/c",`echo ${marker} & exit /b 7`]
+      : ["-lc",`printf '${marker}\\n'; exit 7`];
+    const session=await terminals.create({cwd:process.cwd(),shell,args,name:"Setup test"});
+    const completion=await terminals.waitForExit(session.id,{timeoutMs:10000});
+    assert.equal(completion.exitCode,7);
+    assert.match(terminals.snapshot(session.id).buffer,new RegExp(marker));
+    assert.equal(terminals.snapshot(session.id).running,false);
+  }finally{await terminals.shutdown();}
+});
