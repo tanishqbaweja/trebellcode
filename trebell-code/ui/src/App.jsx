@@ -23,6 +23,7 @@ import EnvironmentsPage from "./components/EnvironmentsPage.jsx";
 import CommandPalette from "./components/CommandPalette.jsx";
 import GoalPanel from "./components/GoalPanel.jsx";
 import OnboardingModal from "./components/OnboardingModal.jsx";
+import { resolveKeybinding } from "./keybindings.js";
 
 const TREBELL_BROWSER_TOOLS=[{
   type:"namespace",
@@ -94,16 +95,6 @@ function presetFor(mode){
   if(mode==="auto")return {sandbox:"workspace-write",approvalPolicy:"untrusted"};
   if(mode==="edits")return {sandbox:"workspace-write",approvalPolicy:"on-request"};
   return {sandbox:"workspace-write",approvalPolicy:"on-request"};
-}
-function shortcutMatch(e,value){
-  if(!value)return false;
-  const parts=value.toLowerCase().split("+").map(x=>x.trim());
-  const key=parts.pop();
-  if(Boolean(parts.includes("ctrl"))!==Boolean(e.ctrlKey))return false;
-  if(Boolean(parts.includes("cmd")||parts.includes("meta"))!==Boolean(e.metaKey))return false;
-  if(Boolean(parts.includes("shift"))!==Boolean(e.shiftKey))return false;
-  if(Boolean(parts.includes("alt"))!==Boolean(e.altKey))return false;
-  return e.key.toLowerCase()===key;
 }
 function pullRequestIdentity(pr){
   try{
@@ -357,7 +348,38 @@ export default function App(){
   },[query,threads,rpc,rpcStatus]);
 
   useEffect(()=>{const onHistory=event=>{const sent=messages.filter(m=>m.role==="user").map(m=>m.text);if(!sent.length)return;let next=promptHistoryIndex;if(event.detail<0)next=Math.min(sent.length-1,next+1);else next=Math.max(-1,next-1);setPromptHistoryIndex(next);setPrompt(next<0?"":sent[sent.length-1-next])};window.addEventListener("trebell:history",onHistory);return()=>window.removeEventListener("trebell:history",onHistory)},[messages,promptHistoryIndex]);
-  useEffect(()=>{const key=e=>{const sc=settings.keyboardShortcuts||{};if(shortcutMatch(e,sc.newChat||"Ctrl+N")){e.preventDefault();newChat()}else if(shortcutMatch(e,sc.search||"Ctrl+K")){e.preventDefault();setPaletteOpen(true)}else if(shortcutMatch(e,sc.stash||"Ctrl+S")){e.preventDefault();stashPrompt()}else if(shortcutMatch(e,sc.terminal||"Ctrl+Shift+T")){e.preventDefault();setPanel("terminal")}};window.addEventListener("keydown",key);return()=>window.removeEventListener("keydown",key)},[settings,prompt,attachments]);
+  useEffect(()=>{
+    const key=event=>{
+      const active=document.activeElement;
+      const context={
+        chatFocus:section==="chat"||section==="new",
+        terminalFocus:Boolean(panel==="terminal"&&active?.closest?.(".terminal-drawer")),
+        previewFocus:section==="preview",
+        textInputFocus:Boolean(active&&["INPUT","TEXTAREA","SELECT"].includes(active.tagName)),
+        projectOpen:Boolean(projectPath),
+        threadOpen:Boolean(activeThread?.id),
+        running:Boolean(running),
+        modalOpen:Boolean(paletteOpen||question||approvals.length||settings.onboardingComplete===false),
+        rightPanelOpen:Boolean(rightPanelOpen),
+        desktop:Boolean(window.trebellDesktop),
+      };
+      const command=resolveKeybinding(event,settings,context);
+      if(!command)return;
+      event.preventDefault();
+      if(command==="newChat")newChat();
+      else if(command==="commandPalette")setPaletteOpen(value=>!value);
+      else if(command==="stash")stashPrompt();
+      else if(command==="terminal")setPanel(value=>value==="terminal"?null:"terminal");
+      else if(command==="files")openRightPanel("files");
+      else if(command==="source")openRightPanel("source");
+      else if(command==="goal"&&activeThread?.id)openRightPanel("goal");
+      else if(command==="projects")setSection("projects");
+      else if(command==="settings")setSection("settings");
+      else if(command==="environments")setSection("environments");
+    };
+    window.addEventListener("keydown",key);
+    return()=>window.removeEventListener("keydown",key);
+  },[settings,prompt,attachments,section,panel,paletteOpen,question,approvals.length,projectPath,activeThread?.id,running,rightPanelOpen]);
   useEffect(()=>{if(!running&&queued.length){const next=queued[0];setQueued(prev=>prev.slice(1));startTurn(next.text,next.attachments,next.model||model).catch(error=>setEvents(prev=>[...prev,{id:"queue-error-"+Date.now(),kind:"error",title:error.message,status:"done"}]))}},[running,queued]);
 
   function handleServerRequest(client,message){
