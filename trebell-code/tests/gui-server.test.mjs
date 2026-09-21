@@ -32,6 +32,9 @@ test("GUI server exposes mock bootstrap, Freebuff-only models, and health", asyn
     assert.equal(actionRun.previewUrl,"http://localhost:5173");
     const previewServers=await fetch(gui.url+"/api/preview/servers").then(r=>r.json());
     assert.ok(Array.isArray(previewServers.servers));
+    const suggested=await fetch(gui.url+"/api/project-actions/suggestions?path="+encodeURIComponent(projectPath)).then(r=>r.json());
+    assert.ok(Array.isArray(suggested.scripts));
+    assert.ok(suggested.scripts.some(script=>script.source==="package.json"));
     const settings=await fetch(gui.url+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({followUpMode:"steer"})}).then(r=>r.json());
     assert.equal(settings.followUpMode,"steer");
     const meta=await fetch(gui.url+"/api/thread-meta",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId:"thread-test",patch:{pinned:true}})}).then(r=>r.json());
