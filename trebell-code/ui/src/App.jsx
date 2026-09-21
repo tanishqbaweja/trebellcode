@@ -298,7 +298,8 @@ export default function App(){
       const [boot,state,modelData]=await Promise.all([api("/api/bootstrap").catch(()=>({mock:true,loggedIn:true,cwd:"",platform:""})),api("/api/state").catch(()=>({settings:{},projects:[],threadMeta:{}})),api("/api/models").catch(error=>({models:[],error:error.message}))]);
       if(cancelled)return; setBootstrap(boot); setSettings(prev=>({...prev,...(state.settings||{})})); setPermissionMode(state.settings?.defaultPermissionMode||"supervised"); setThreadMeta(state.threadMeta||{});
       const firstProject=state.projects?.[0]||null;
-      setProjectPath(firstProject?.path||boot.cwd||"");
+      const environmentCwd=boot.activeEnvironment?.cwd||"";
+      setProjectPath(environmentCwd||firstProject?.path||boot.cwd||"");
       const availableModels=modelData.models||[];
       setModelError(modelData.error||"");
       setModelMeta(Object.fromEntries((modelData.metadata?.models||[]).map(item=>[item.id,item]))); const fallback=availableModels.length?availableModels:(boot.mock?["freebuff/deepseek/deepseek-v4-flash","freebuff/test/coding-large","freebuff/test/coding-fast"]:[]);
