@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain, shell, dialog, Notification, Tray, Menu, nativeImage, desktopCapturer, screen, clipboard } from "electron";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { createGuiServer } from "../src/gui-server.mjs";
@@ -136,6 +136,69 @@ function setBackgroundEnabled(value){
   if(backgroundEnabled)ensureTray();
   else if(tray){tray.destroy();tray=null}
   return backgroundEnabled;
+}
+
+const EDITOR_SPECS=[
+  {id:"cursor",label:"Cursor",commands:["cursor"],windows:[()=>join(process.env.LOCALAPPDATA||"","Programs","cursor","Cursor.exe")]},
+  {id:"vscode",label:"Visual Studio Code",commands:["code"],windows:[()=>join(process.env.LOCALAPPDATA||"","Programs","Microsoft VS Code","Code.exe"),()=>join(process.env.ProgramFiles||"","Microsoft VS Code","Code.exe")]},
+  {id:"vscode-insiders",label:"VS Code Insiders",commands:["code-insiders"],windows:[()=>join(process.env.LOCALAPPDATA||"","Programs","Microsoft VS Code Insiders","Code - Insiders.exe")]},
+  {id:"vscodium",label:"VSCodium",commands:["codium"],windows:[()=>join(process.env.LOCALAPPDATA||"","Programs","VSCodium","VSCodium.exe")]},
+  {id:"windsurf",label:"Windsurf",commands:["windsurf"],windows:[()=>join(process.env.LOCALAPPDATA||"","Programs","Windsurf","Windsurf.exe")]},
+  {id:"zed",label:"Zed",commands:["zed"],windows:[]},
+  {id:"idea",label:"IntelliJ IDEA",commands:["idea","idea64"],windows:[]},
+  {id:"pycharm",label:"PyCharm",commands:["pycharm","pycharm64"],windows:[]},
+  {id:"webstorm",label:"WebStorm",commands:["webstorm","webstorm64"],windows:[]},
+];
+
+function findCommand(command){
+  return new Promise(resolve=>{
+    const finder=process.platform==="win32"?"where":"which";
+    execFile(finder,[command],{windowsHide:true,timeout:2500},(error,stdout)=>{
+      if(error)return resolve(null);
+      const first=String(stdout||"").split(/\r?\n/).map(value=>value.trim()).find(Boolean);
+      resolve(first||null);
+    });
+  });
+}
+
+async function availableEditors(){
+  const items=[];
+  for(const spec of EDITOR_SPECS){
+    let executable=null;
+    if(process.platform==="win32"){
+      for(const candidate of spec.windows.map(factory=>factory()).filter(Boolean)){
+        if(candidate&&!candidate.startsWith("Programs")&&existsSync(candidate)){executable=candidate;break}
+      }
+    }
+    if(!executable){
+      for(const command of spec.commands){
+        executable=await findCommand(command);
+        if(executable)break;
+      }
+    }
+    if(executable)items.push({id:spec.id,label:spec.label,executable});
+  }
+  items.push({id:"file-manager",label:process.platform==="win32"?"File Explorer":process.platform==="darwin"?"Finder":"File Manager",executable:null});
+  return items;
+}
+
+async function openWorkspaceIn(targetPath,editorId){
+  const absolute=String(targetPath||"").trim();
+  if(!absolute)throw new Error("Path is required");
+  if(editorId==="file-manager"){
+    try{
+      const info=statSync(absolute);
+      if(info.isDirectory())await shell.openPath(absolute);
+      else shell.showItemInFolder(absolute);
+    }catch{shell.showItemInFolder(absolute)}
+    return {ok:true,editorId,path:absolute};
+  }
+  const editors=await availableEditors();
+  const editor=editors.find(item=>item.id===editorId);
+  if(!editor?.executable)throw new Error("That editor is not available on this machine.");
+  const child=execFile(editor.executable,[absolute],{windowsHide:true},()=>{});
+  child.unref?.();
+  return {ok:true,editorId,path:absolute};
 }
 
 function normalizeBrowserUrl(value){
@@ -448,6 +511,8 @@ if(!lock){
     const result=await dialog.showOpenDialog(windowRef,{properties:["openFile","multiSelections"]});
     return result.canceled ? [] : result.filePaths;
   });
+  ipcMain.handle("workspace:editors",async()=>({editors:await availableEditors()}));
+  ipcMain.handle("workspace:openIn",async(_event,payload={})=>openWorkspaceIn(payload.path,payload.editorId));
   ipcMain.handle("browser:navigate",async(_event,url)=>{
     const browser=await ensureAgentBrowser();
     await browser.loadURL(normalizeBrowserUrl(url));
