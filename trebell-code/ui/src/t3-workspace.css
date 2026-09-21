@@ -280,3 +280,44 @@ body{min-width:820px;background:var(--t3-bg);color:var(--t3-text)}
 
 .composer-status.error{color:#e78888}
 .provider-status-error{color:#e78888!important}
+
+
+/* v1.1 harness cleanup */
+.project-switcher{width:24px;height:28px;border:0;background:transparent;border-radius:6px;color:#646a72;display:grid;place-items:center;margin-left:-5px}
+.project-switcher:hover{background:var(--t3-hover);color:#d7d9dd}
+.thread-menu{position:absolute;right:5px;top:7px;z-index:8}
+.thread-menu>summary{list-style:none;width:26px;height:26px;border-radius:6px;display:none;place-items:center;color:#777d85;cursor:pointer}
+.thread-menu>summary::-webkit-details-marker{display:none}
+.thread-row:hover .thread-menu>summary,.thread-menu[open]>summary{display:grid}
+.thread-menu>summary:hover,.thread-menu[open]>summary{background:#25282c;color:#d8dadd}
+.thread-menu-popover{position:absolute;right:0;top:29px;width:142px;padding:5px;border:1px solid #2b2e33;border-radius:8px;background:#15171a;box-shadow:0 14px 40px rgba(0,0,0,.45);display:grid;gap:2px}
+.thread-menu-popover button{height:28px;border:0;background:transparent;border-radius:5px;color:#a6abb2;text-align:left;padding:0 9px;font-size:9px}
+.thread-menu-popover button:hover{background:#24272b;color:#f0f1f2}
+.thread-menu-popover button.danger{color:#d68d98}
+.thread-menu-popover button.danger:hover{background:#28181b;color:#efb4bd}
+.capabilities-page{max-width:1080px;margin:0 auto}
+.capabilities-toolbar{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin:2px 0 18px}
+.capabilities-toolbar h2{font-size:20px;margin:0 0 5px;letter-spacing:-.35px}
+.capabilities-toolbar p{max-width:680px;margin:0;color:#727880;font-size:10px;line-height:1.55}
+.capabilities-toolbar>button,.capability-actions button,.capability-list button{height:29px;border:1px solid #2b2e33;background:#15171a;border-radius:7px;color:#a2a8af;padding:0 9px;font-size:9px;display:inline-flex;align-items:center;gap:5px}
+.capabilities-toolbar>button:hover,.capability-actions button:hover,.capability-list button:hover{background:#202328;color:#e2e4e7}
+.capability-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+.capability-card{min-height:120px;border:1px solid #25282c;background:#111315;border-radius:10px;padding:13px}
+.capability-card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;color:#d4d7da}
+.capability-card-head>span{display:flex;align-items:center;gap:7px}.capability-card-head strong{font-size:10.5px}
+.capability-card-head em{font-style:normal;font-size:8.5px;color:#747a82;background:#1b1e22;border-radius:10px;padding:2px 6px}
+.capability-card>p{font-size:9px;color:#737980;line-height:1.5}
+.capability-list{display:grid;gap:4px;max-height:260px;overflow:auto}
+.capability-list>div{min-height:38px;border-radius:7px;background:#0d0f11;padding:6px 8px;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.capability-list>div>div:first-child{min-width:0}.capability-list strong,.capability-list span{display:block}
+.capability-list strong{font-size:9.5px;color:#c9cdd1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.capability-list span{margin-top:2px;font-size:8px;color:#666c74;line-height:1.35}
+.capability-list em{font-style:normal;font-size:8px;color:#747a82;white-space:nowrap}
+.capability-list em.ok,.capability-badges span.ok{color:#79c78d}
+.capability-inline-actions{display:flex;align-items:center;gap:5px}
+.capability-actions{display:flex;justify-content:flex-end;margin:-4px 0 7px}
+.capability-badges{display:flex;gap:5px;flex-wrap:wrap}
+.capability-badges span{font-size:8.5px;color:#777d85;padding:4px 7px;border-radius:999px;background:#0d0f11;border:1px solid #25282c}
+.capability-error{color:#d48690!important;word-break:break-word}
+.feature-list button.active{border-color:#3d6649;background:#152019;color:#8ed09f}
+@media(max-width:900px){.capability-grid{grid-template-columns:1fr}}
