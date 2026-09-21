@@ -136,7 +136,7 @@ const SLASH_COMMANDS=[
   ["/clear","Reset the current draft/thread view"],
 ];
 
-function Composer({prompt,setPrompt,onSend,running,providerReady,provider,login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels,setSelectedModels,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,permissionMode,setPermissionMode,webSearch,setWebSearch,skills,onSkill,onFiles,settings,onStash,tokenUsage,workspaceMode,setWorkspaceMode}){
+function Composer({prompt,setPrompt,onSend,running,providerReady,provider,login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels,setSelectedModels,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,permissionMode,setPermissionMode,webSearch,setWebSearch,skills,onSkill,onFiles,settings,onStash,tokenUsage,workspaceMode,setWorkspaceMode}){
   const [modelsOpen,setModelsOpen]=useState(false);
   const [skillsOpen,setSkillsOpen]=useState(false);
   const [listening,setListening]=useState(false);
@@ -181,14 +181,14 @@ function Composer({prompt,setPrompt,onSend,running,providerReady,provider,login,
       <select className="workspace-mode" value={workspaceMode} onChange={e=>setWorkspaceMode(e.target.value)}><option value="current">Current workspace</option><option value="worktree">New worktree</option></select>
     </div><div className="composer-right">
       {!providerReady?<button className="login-btn" onClick={provider==="freebuff"?login:onConfigureProvider}>{provider==="freebuff"?"Sign in to Freebuff":"Configure "+({agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||"provider")}</button>:<>
-        <select data-testid="model-picker" value={model} onChange={e=>{setModel(e.target.value);setSelectedModels([e.target.value])}}>{models.map(id=><option key={id} value={id}>{modelLabel(id,freebuff)}{modelMeta?.[id]?.agent?" · "+modelMeta[id].agent:""}</option>)}</select>
+        <select data-testid="model-picker" value={model} disabled={!models.length} onChange={e=>{setModel(e.target.value);setSelectedModels([e.target.value])}}>{models.length?models.map(id=><option key={id} value={id}>{modelLabel(id,freebuff)}{modelMeta?.[id]?.agent?" · "+modelMeta[id].agent:""}</option>):<option value="">{modelError?"Provider error":"No models available"}</option>}</select>
         <div className="popover-wrap"><button className="model-count" onClick={()=>setModelsOpen(!modelsOpen)}>{selectedModels.length} model{selectedModels.length===1?"":"s"}</button>{modelsOpen&&<div className="mini-popover models">{models.map(id=><label key={id}><input type="checkbox" checked={selectedModels.includes(id)} onChange={()=>setSelectedModels(prev=>prev.includes(id)?(prev.length===1?prev:prev.filter(x=>x!==id)):[...prev,id])}/><span>{modelLabel(id,freebuff)}{modelMeta?.[id]?.agent?" · "+modelMeta[id].agent:""}</span></label>)}</div>}</div>
       </>}
       <button className={"mic-btn "+(listening?"active":"")} onClick={dictate} disabled={!speechSupported} title={speechSupported?(listening?"Listening…":"Voice dictation"):"Voice dictation is unavailable on this platform"}><Mic size={15}/></button>
       <button className="stash-btn" onClick={onStash} title="Stash or restore prompt">S</button>
       <button data-testid="send" className="send-btn" onClick={onSend} disabled={!providerReady||!prompt.trim()}>{running&&settings.followUpMode==="queue"?<Plus size={16}/>:<Send size={16}/>}</button>
     </div></div>
-    <div className="composer-status"><span>{tokenLabel(tokenUsage)}</span><span>{settings.followUpMode==="steer"?"Steer":"Queue"} follow-ups</span></div>
+    <div className={"composer-status"+(modelError?" error":"")}><span>{modelError||tokenLabel(tokenUsage)}</span><span>{settings.followUpMode==="steer"?"Steer":"Queue"} follow-ups</span></div>
   </div>;
 }
 
@@ -201,7 +201,7 @@ export default function App(){
   const [running,setRunning]=useState(false); const [queued,setQueued]=useState([]);
   const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [section,setSection]=useState("chat");
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [contextChips,setContextChips]=useState([]);
-  const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [selectedModels,setSelectedModels]=useState([]);
+  const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [selectedModels,setSelectedModels]=useState([]); const [modelError,setModelError]=useState("");
   const [freebuff,setFreebuff]=useState({loggedIn:false}); const [skills,setSkills]=useState([]);
   const [settings,setSettings]=useState({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",keyboardShortcuts:{},modelProvider:"freebuff"});
   const [permissionMode,setPermissionMode]=useState("supervised"); const [webSearch,setWebSearch]=useState(true); const [workspaceMode,setWorkspaceMode]=useState("current");
@@ -251,6 +251,7 @@ export default function App(){
     ]);
     if(boot)setBootstrap(boot);
     const ids=d?.models||[];
+    setModelError(d?.error||"");
     setModelMeta(Object.fromEntries((d?.metadata?.models||[]).map(item=>[item.id,item])));
     const next=ids.includes(model)?model:(ids[0]||"");
     setModels(ids);setModel(next);setSelectedModels(next?[next]:[]);
@@ -273,11 +274,12 @@ export default function App(){
   useEffect(()=>{
     let cancelled=false;
     (async()=>{
-      const [boot,state,modelData]=await Promise.all([api("/api/bootstrap").catch(()=>({mock:true,loggedIn:true,cwd:"",platform:""})),api("/api/state").catch(()=>({settings:{},projects:[],threadMeta:{}})),api("/api/models").catch(()=>({models:[]}))]);
+      const [boot,state,modelData]=await Promise.all([api("/api/bootstrap").catch(()=>({mock:true,loggedIn:true,cwd:"",platform:""})),api("/api/state").catch(()=>({settings:{},projects:[],threadMeta:{}})),api("/api/models").catch(error=>({models:[],error:error.message}))]);
       if(cancelled)return; setBootstrap(boot); setSettings(prev=>({...prev,...(state.settings||{})})); setPermissionMode(state.settings?.defaultPermissionMode||"supervised"); setThreadMeta(state.threadMeta||{});
       const firstProject=state.projects?.[0]||null;
       setProjectPath(firstProject?.path||boot.cwd||"");
       const availableModels=modelData.models||[];
+      setModelError(modelData.error||"");
       setModelMeta(Object.fromEntries((modelData.metadata?.models||[]).map(item=>[item.id,item]))); const fallback=availableModels.length?availableModels:(boot.mock?["freebuff/deepseek/deepseek-v4-flash","freebuff/test/coding-large","freebuff/test/coding-fast"]:[]);
       const initialModel=(firstProject?.defaultModel&&fallback.includes(firstProject.defaultModel))?firstProject.defaultModel:(fallback[0]||"");
       setModels(fallback); setModel(initialModel); setSelectedModels(initialModel?[initialModel]:[]);
@@ -595,7 +597,7 @@ export default function App(){
             </div>
           </div>
 
-          <Composer prompt={prompt} setPrompt={setPrompt} onSend={send} running={running} providerReady={providerReady} provider={provider} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} selectedModels={selectedModels} setSelectedModels={setSelectedModels} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onCaptureScreen={()=>captureDesktop().catch(error=>setEvents(prev=>[...prev,{id:"screen-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} webSearch={webSearch} setWebSearch={setWebSearch} skills={skills} onSkill={onSkill} onFiles={()=>openRightPanel("files")} settings={settings} onStash={stashPrompt} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode}/>
+          <Composer prompt={prompt} setPrompt={setPrompt} onSend={send} running={running} providerReady={providerReady} provider={provider} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} selectedModels={selectedModels} setSelectedModels={setSelectedModels} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onCaptureScreen={()=>captureDesktop().catch(error=>setEvents(prev=>[...prev,{id:"screen-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} webSearch={webSearch} setWebSearch={setWebSearch} skills={skills} onSkill={onSkill} onFiles={()=>openRightPanel("files")} settings={settings} onStash={stashPrompt} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="terminal-drawer-head"><span><SquareTerminal size={14}/> Terminal</span><div><button onClick={()=>attachExcerpt("")} aria-hidden="true" tabIndex={-1} className="terminal-head-spacer"/><button onClick={()=>setPanel(null)} aria-label="Close terminal"><X size={15}/></button></div></div>
