@@ -5,6 +5,8 @@ import { api } from "../api.js";
 export default function SourceControlPanel({projectPath,model,provider="freebuff",onProjectChange,onAttachPr,onLinkPr,linkedPullRequests=[]}){
   const [info,setInfo]=useState(null);
   const [diagnostics,setDiagnostics]=useState(null);
+  const [sourceProvider,setSourceProvider]=useState("");
+  const [capabilities,setCapabilities]=useState({create:true,comment:true,review:true,merge:true,updateBranch:true});
   const [prs,setPrs]=useState([]);
   const [selectedPr,setSelectedPr]=useState(null);
   const [commitMessage,setCommitMessage]=useState("");
@@ -12,14 +14,17 @@ export default function SourceControlPanel({projectPath,model,provider="freebuff
   const [busy,setBusy]=useState("");
   const [error,setError]=useState("");
 
-  async function refresh(){
+  async function refresh(providerOverride=sourceProvider){
     if(!projectPath)return;
-    const [i,d,p]=await Promise.all([
+    const [i,d]=await Promise.all([
       api("/api/git/info?path="+encodeURIComponent(projectPath)).catch(e=>({error:e.message,isGit:false})),
-      api("/api/source-control/diagnostics?path="+encodeURIComponent(projectPath)).catch(()=>null),
-      api("/api/source-control/prs?path="+encodeURIComponent(projectPath)).catch(()=>({items:[]})),
+      api("/api/source-control/diagnostics?path="+encodeURIComponent(projectPath)+(providerOverride?"&provider="+encodeURIComponent(providerOverride):"")).catch(()=>null),
     ]);
-    setInfo(i);setDiagnostics(d);setPrs(p.items||[]);
+    setInfo(i);setDiagnostics(d);
+    const chosen=providerOverride||d?.selectedProvider||(d?.detectedProvider&&d.detectedProvider!=="unknown"?d.detectedProvider:"");
+    if(chosen&&!sourceProvider)setSourceProvider(chosen);
+    const p=await api("/api/source-control/prs?path="+encodeURIComponent(projectPath)+(chosen?"&provider="+encodeURIComponent(chosen):"")).catch(e=>({items:[],error:e.message}));
+    setPrs(p.items||[]);if(p.capabilities)setCapabilities(p.capabilities);if(p.error)setError(p.error);
   }
   useEffect(()=>{refresh()},[projectPath]);
 
@@ -36,13 +41,13 @@ export default function SourceControlPanel({projectPath,model,provider="freebuff
     catch(e){setError(e.message)}finally{setBusy("")}
   }
   async function openPr(pr){
-    const d=await api("/api/source-control/pr-detail?path="+encodeURIComponent(projectPath)+"&number="+encodeURIComponent(pr.number)).catch(()=>null);
+    const d=await api("/api/source-control/pr-detail?path="+encodeURIComponent(projectPath)+"&number="+encodeURIComponent(pr.number)+(sourceProvider?"&provider="+encodeURIComponent(sourceProvider):"")).catch(()=>null);
     setSelectedPr(d?.item||pr);
   }
   async function prAction(actionName,extra={}){
     setBusy(actionName);setError("");
     try{
-      await api("/api/source-control/pr-action",{method:"POST",body:{cwd:projectPath,number:selectedPr.number,action:actionName,...extra}});
+      await api("/api/source-control/pr-action",{method:"POST",body:{cwd:projectPath,provider:sourceProvider||null,number:selectedPr.number,action:actionName,...extra}});
       await openPr(selectedPr);await refresh();
     }catch(e){setError(e.message)}finally{setBusy("")}
   }
@@ -82,11 +87,11 @@ export default function SourceControlPanel({projectPath,model,provider="freebuff
     try{
       if(kind==="merge"){
         for(const pr of stack){
-          await api("/api/source-control/pr-action",{method:"POST",body:{cwd:projectPath,number:pr.number,action:"merge",method:"squash"}});
+          await api("/api/source-control/pr-action",{method:"POST",body:{cwd:projectPath,provider:sourceProvider||null,number:pr.number,action:"merge",method:"squash"}});
         }
       }else{
         for(const pr of stack.slice(1)){
-          await api("/api/source-control/pr-action",{method:"POST",body:{cwd:projectPath,number:pr.number,action:"update-branch",rebase:true}});
+          await api("/api/source-control/pr-action",{method:"POST",body:{cwd:projectPath,provider:sourceProvider||null,number:pr.number,action:"update-branch",rebase:true}});
         }
       }
       await refresh();
@@ -108,7 +113,7 @@ export default function SourceControlPanel({projectPath,model,provider="freebuff
       <section className="sc-card"><h3>Changes <span>{info?.status?.length||0}</span></h3><div className="status-list">{(info?.status||[]).map(s=><div key={s.path}><code>{s.code}</code><span>{s.path}</span></div>)}{!info?.status?.length&&<p>Working tree clean.</p>}</div>
         <div className="commit-box"><textarea value={commitMessage} onChange={e=>setCommitMessage(e.target.value)} placeholder="Commit message"/><button onClick={generate} disabled={busy==="generate"}><WandSparkles size={13}/> Generate with {{freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider}</button><button className="primary" onClick={()=>action("commit",{message:commitMessage})} disabled={!commitMessage.trim()||!!busy}><GitCommit size={13}/> Commit</button></div>
       </section>
-      <section className="sc-card"><h3>Repository</h3><p>Root: <code>{info?.root}</code></p><p>Upstream: <code>{info?.upstream||"none"}</code></p><p>Git: {diagnostics?.git?.version||"not found"}</p><p>GitHub: {diagnostics?.github?.authenticated?"authenticated":diagnostics?.github?.installed?"not signed in":"gh not installed"}</p>
+      <section className="sc-card"><h3>Repository</h3><p>Root: <code>{info?.root}</code></p><p>Upstream: <code>{info?.upstream||"none"}</code></p><p>Git: {diagnostics?.git?.version||"not found"}</p><label>Code host<select value={sourceProvider} onChange={e=>{setSourceProvider(e.target.value);setSelectedPr(null);refresh(e.target.value)}}><option value="">Auto detect</option><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="forgejo">Forgejo / Gitea</option><option value="bitbucket">Bitbucket</option><option value="azure-devops">Azure DevOps</option></select></label><p>{sourceProvider?diagnostics?.providers?.[sourceProvider]?.label||sourceProvider:"Detected: "+(diagnostics?.detectedProvider||"unknown")} · {sourceProvider?(diagnostics?.providers?.[sourceProvider]?.authenticated?"authenticated":diagnostics?.providers?.[sourceProvider]?.installed?"needs authentication":"client/credentials missing"):"choose a provider if auto-detection is ambiguous"}</p>
         <h4>Worktrees</h4>{(info?.worktrees||[]).map(w=><div className="worktree-row" key={w.path}><span>{w.branch||"detached"}</span><code>{w.path}</code>{w.path!==info?.root&&<button onClick={()=>onProjectChange?.(w.path)}>Open</button>}</div>)}
         <button onClick={async()=>{const branch=prompt("New worktree branch");if(!branch)return;const path=await window.trebellDesktop?.pickDirectory?.();if(path){await action("worktree-create",{branch,path,baseBranch:info?.branch});onProjectChange?.(path)}}}><Plus size={13}/> Add worktree</button>
       </section>
@@ -118,8 +123,8 @@ export default function SourceControlPanel({projectPath,model,provider="freebuff
       <div className="pr-detail">{selectedPr?<>
         <h3>#{selectedPr.number} {selectedPr.title}</h3><p>{selectedPr.body||"No description."}</p>
         {stackFor(selectedPr).length>1&&<div className="pr-stack"><strong>Stack</strong><span>{stackFor(selectedPr).map(pr=>"#"+pr.number).join(" → ")}</span><div><button onClick={()=>stackAction("rebase")} disabled={!!busy}>Rebase stack</button><button onClick={()=>stackAction("merge")} disabled={!!busy}>Merge stack</button></div></div>}
-        <div className="pr-actions"><button onClick={()=>window.open(selectedPr.url,"_blank")}><ExternalLink size={12}/> Open</button><button onClick={()=>onAttachPr?.(selectedPr)}><MessageSquare size={12}/> Attach</button><button className={linkedPullRequests.some(x=>x.number===selectedPr.number)?"linked":""} onClick={()=>onLinkPr?.(selectedPr)}><GitPullRequest size={12}/> {linkedPullRequests.some(x=>x.number===selectedPr.number)?"Linked":"Link to thread"}</button><button onClick={()=>prAction("review",{event:"APPROVE",body:"Reviewed in Trebell Code."})}><CheckCircle2 size={12}/> Approve</button><button onClick={()=>prAction("merge",{method:"squash"})}>Merge</button></div>
-        <div className="pr-comment"><textarea value={comment} onChange={e=>setComment(e.target.value)} placeholder="Write a pull-request comment…"/><button disabled={!comment.trim()||!!busy} onClick={async()=>{await prAction("comment",{body:comment});setComment("")}}><MessageSquare size={12}/> Comment</button></div>
+        <div className="pr-actions"><button onClick={()=>window.open(selectedPr.url,"_blank")}><ExternalLink size={12}/> Open</button><button onClick={()=>onAttachPr?.(selectedPr)}><MessageSquare size={12}/> Attach</button><button className={linkedPullRequests.some(x=>x.number===selectedPr.number)?"linked":""} onClick={()=>onLinkPr?.(selectedPr)}><GitPullRequest size={12}/> {linkedPullRequests.some(x=>x.number===selectedPr.number)?"Linked":"Link to thread"}</button>{capabilities.review&&<button onClick={()=>prAction("review",{event:"APPROVE",body:"Reviewed in Trebell Code."})}><CheckCircle2 size={12}/> Approve</button>}{capabilities.merge&&<button onClick={()=>prAction("merge",{method:"squash"})}>Merge</button>}</div>
+        {capabilities.comment&&<div className="pr-comment"><textarea value={comment} onChange={e=>setComment(e.target.value)} placeholder="Write a change-request comment…"/><button disabled={!comment.trim()||!!busy} onClick={async()=>{await prAction("comment",{body:comment});setComment("")}}><MessageSquare size={12}/> Comment</button></div>}
         <h4>Reviews</h4><div className="review-list">{(selectedPr.reviews||[]).length?(selectedPr.reviews||[]).map((review,i)=><div key={review.id||i}><strong>{review.author?.login||review.author?.name||"Reviewer"}</strong><span>{review.state||"reviewed"}</span><p>{review.body||""}</p></div>):<p>No reviews yet.</p>}</div>
         <h4>Checks</h4><pre>{JSON.stringify(selectedPr.statusCheckRollup||[],null,2)}</pre>
       </>:<p>Select a pull request to inspect it.</p>}</div></div>
