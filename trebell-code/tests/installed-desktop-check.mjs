@@ -50,31 +50,40 @@ try {
   }
   if(!mainPage) throw new Error("Installed Trebell renderer did not expose the desktop preload bridge.");
 
-  const providerSwitch=await mainPage.evaluate(async()=>{
-    const response=await fetch("/api/providers",{
+  const vyceKeyAvailable=Boolean(
+    process.env.TREBELL_TEST_VYCE_API_KEY||
+    process.env.VYCEAI_API_KEY||
+    process.env.VYCE_API_KEY
+  );
+  let providerCompatibility={skipped:!vyceKeyAvailable,reason:vyceKeyAvailable?null:"No Vyce key supplied to installer validation."};
+  if(vyceKeyAvailable){
+    const providerSwitch=await mainPage.evaluate(async()=>{
+      const response=await fetch("/api/providers",{
+        method:"POST",
+        headers:{"content-type":"application/json"},
+        body:JSON.stringify({provider:"vyceai"}),
+      });
+      return await response.json();
+    });
+    if(providerSwitch?.selected!=="vyceai"||!providerSwitch?.models?.includes("deepseek-v4.1")){
+      throw new Error("Installed app could not switch to Vyce AI with deepseek-v4.1 available.");
+    }
+    let providerRuntime=null;
+    for(let attempt=0;attempt<30;attempt++){
+      providerRuntime=await mainPage.evaluate(()=>fetch("/api/runtime").then(r=>r.json())).catch(()=>null);
+      if(providerRuntime?.provider==="vyceai"&&providerRuntime?.appServerReady)break;
+      await new Promise(r=>setTimeout(r,500));
+    }
+    if(providerRuntime?.provider!=="vyceai"||!providerRuntime?.appServerReady){
+      throw new Error("Bundled Codex rejected the Vyce AI provider config.");
+    }
+    providerCompatibility={skipped:false,selected:providerSwitch.selected,runtime:providerRuntime};
+    await mainPage.evaluate(()=>fetch("/api/providers",{
       method:"POST",
       headers:{"content-type":"application/json"},
-      body:JSON.stringify({provider:"vyceai"}),
-    });
-    return await response.json();
-  });
-  if(providerSwitch?.selected!=="vyceai"||!providerSwitch?.models?.includes("deepseek-v4.1")){
-    throw new Error("Installed app could not switch to Vyce AI with deepseek-v4.1 available.");
+      body:JSON.stringify({provider:"freebuff"}),
+    }).then(r=>r.json()));
   }
-  let providerRuntime=null;
-  for(let attempt=0;attempt<30;attempt++){
-    providerRuntime=await mainPage.evaluate(()=>fetch("/api/runtime").then(r=>r.json())).catch(()=>null);
-    if(providerRuntime?.provider==="vyceai"&&providerRuntime?.appServerReady)break;
-    await new Promise(r=>setTimeout(r,500));
-  }
-  if(providerRuntime?.provider!=="vyceai"||!providerRuntime?.appServerReady){
-    throw new Error("Bundled Codex rejected the Vyce AI provider config.");
-  }
-  await mainPage.evaluate(()=>fetch("/api/providers",{
-    method:"POST",
-    headers:{"content-type":"application/json"},
-    body:JSON.stringify({provider:"freebuff"}),
-  }).then(r=>r.json()));
 
   const initial=await mainPage.evaluate(()=>window.trebellDesktop.background.get());
   if(typeof initial?.enabled!=="boolean") throw new Error("Background-mode state is unavailable.");
@@ -151,7 +160,7 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
     desktopSnapshot:{width:desktopSnapshot.width,height:desktopSnapshot.height,bytes:desktopSnapshot.dataUrl.length},
     zoom:{before:zoomBefore,afterCtrlWheelUp:zoomAfter,reset:zoomReset},
     voice,
-    providerCompatibility:{selected:providerSwitch.selected,runtime:providerRuntime},
+    providerCompatibility,
   },null,2));
 } finally {
   try{await browser?.close();}catch{}
