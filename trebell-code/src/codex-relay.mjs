@@ -48,7 +48,8 @@ export function attachCodexRelay(httpServer, {
     }
 
     wss.handleUpgrade(request, socket, head, (browserSocket) => {
-      const upstream = new WebSocket(targetUrl, {
+      const resolvedTarget=typeof targetUrl==="function"?targetUrl():targetUrl;
+      const upstream = new WebSocket(resolvedTarget, {
         headers: {
           "User-Agent": TREBELL_USER_AGENT,
           "x-trebell-client": TREBELL_USER_AGENT,
