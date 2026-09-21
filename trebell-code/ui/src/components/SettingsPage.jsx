@@ -10,7 +10,7 @@ const PROVIDER_LABELS={
   vyceai:"VyceAi",
 };
 
-export default function SettingsPage({settings,onSettings,onProviderUpdated,runtime,rpcStatus,loggedIn,login,logout,projectPath}){
+export default function SettingsPage({settings,onSettings,onProviderUpdated,runtime,rpcStatus,loggedIn,login,logout,projectPath,modelError}){
   const [update,setUpdate]=useState(null);
   const [diagnostics,setDiagnostics]=useState(null);
   const [loading,setLoading]=useState(false);
@@ -97,7 +97,7 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
           </div>
           <p className="provider-note">{selected==="agentrouter"?"Models are loaded live from AgentRouter /v1/models for this key.":selected==="vyceai"?"Models are loaded live from Vyce AI /v1/models for this key.":selected==="justworker"?"Available model: claude-opus-4-8.":"Available model: glm-5.3."}</p>
         </>}
-        <p data-testid="provider-status"><strong>{PROVIDER_LABELS[selected]}</strong> · {selectedStatus?.hasKey||selected==="freebuff"?(providerInfo?.ready?"ready":"configured"):"API key required"}{providerMessage?" · "+providerMessage:""}</p>
+        <p data-testid="provider-status" className={modelError?"provider-status-error":""}><strong>{PROVIDER_LABELS[selected]}</strong> · {selectedStatus?.hasKey||selected==="freebuff"?(modelError?"provider error":(providerInfo?.ready?"ready":"configured")):"API key required"}{providerMessage?" · "+providerMessage:""}{modelError?" · "+modelError:""}</p>
       </div>
       <div className="settings-card"><h3>Runtime</h3><p>Harness: <strong>{rpcStatus}</strong><br/>Codex app-server: <strong>{runtime?.appServerReady?"ready":"not ready"}</strong><br/>Provider: <strong>{PROVIDER_LABELS[runtime?.provider||selected]||runtime?.provider||selected}</strong>{(runtime?.provider||selected)==="freebuff"&&<><br/>Freebuff bridge: <strong>{runtime?.bridgeReady?"ready":"not ready"}</strong></>}</p><button onClick={refresh}><RefreshCw size={13}/> Refresh diagnostics</button></div>
       <div className="settings-card"><h3>Follow-up behavior</h3><label>While the agent is working<select value={settings.followUpMode||"queue"} onChange={e=>save({followUpMode:e.target.value})}><option value="queue">Queue after current turn</option><option value="steer">Steer current turn immediately</option></select></label></div>
