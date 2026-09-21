@@ -5,6 +5,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root=join(dirname(fileURLToPath(import.meta.url)),"..");
+const nodeBinDir=dirname(process.execPath);
+const npmBin=join(nodeBinDir,"npm");
+const npxBin=join(nodeBinDir,"npx");
 function run(command,args,env={}){
   console.log(">>>",command,...args);
   execFileSync(command,args,{cwd:root,stdio:"inherit",env:{...process.env,...env}});
@@ -12,17 +15,17 @@ function run(command,args,env={}){
 
 run("apt-get",["update"]);
 run("apt-get",["install","-y","wine64","wine"]);
-run("npm",["install","--no-audit","--no-fund","--include=optional"]);
+run(npmBin,["install","--no-audit","--no-fund","--include=optional"]);
 
 const winCodex=join(root,"node_modules","@openai","codex-win32-x64");
 if(!existsSync(winCodex)){
-  run("npm",["install","--force","--no-save","@openai/codex-win32-x64@npm:@openai/codex@0.154.0-win32-x64"]);
+  run(npmBin,["install","--force","--no-save","@openai/codex-win32-x64@npm:@openai/codex@0.154.0-win32-x64"]);
 }
 
-run("npm",["run","prepare:icon"]);
-run("npm",["run","bridge:build"]);
-run("npm",["run","ui:build"]);
-run("npx",["electron-builder","--win","nsis","--x64","--config.npmRebuild=false"]);
+run(npmBin,["run","prepare:icon"]);
+run(npmBin,["run","bridge:build"]);
+run(npmBin,["run","ui:build"]);
+run(npxBin,["electron-builder","--win","nsis","--x64","--config.npmRebuild=false"]);
 
 const name="Trebell-Code-Setup-1.1.0.exe";
 const installer=join(root,"desktop-dist",name);
