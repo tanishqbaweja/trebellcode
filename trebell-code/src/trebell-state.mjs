@@ -20,6 +20,7 @@ const DEFAULT_STATE = Object.freeze({
     remoteAccessPort: 3211,
     remoteAccessToken: "",
     modelProvider: "freebuff",
+    onboardingComplete: false,
   },
   environments: [],
   stashes: [],
@@ -37,11 +38,15 @@ export class TrebellStateStore {
   #load(){
     try{
       const parsed=JSON.parse(readFileSync(this.path,"utf8"));
+      const rawSettings=parsed.settings&&typeof parsed.settings==="object"?parsed.settings:{};
+      const projects=Array.isArray(parsed.projects)?parsed.projects:[];
+      const settings={...clone(DEFAULT_STATE.settings),...rawSettings};
+      if(!Object.prototype.hasOwnProperty.call(rawSettings,"onboardingComplete")&&projects.length>0)settings.onboardingComplete=true;
       return {
         ...clone(DEFAULT_STATE),
         ...parsed,
-        settings:{...clone(DEFAULT_STATE.settings),...(parsed.settings||{})},
-        projects:Array.isArray(parsed.projects)?parsed.projects:[],
+        settings,
+        projects,
         threadMeta:parsed.threadMeta&&typeof parsed.threadMeta==="object"?parsed.threadMeta:{},
         environments:Array.isArray(parsed.environments)?parsed.environments:[],
         stashes:Array.isArray(parsed.stashes)?parsed.stashes:[],
