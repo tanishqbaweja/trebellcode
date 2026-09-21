@@ -242,6 +242,75 @@ async function discoverPreviewServers(){
   return (await Promise.all(checks)).filter(Boolean).filter(item=>item.web).sort((a,b)=>a.port-b.port);
 }
 
+function parseJsonc(text){
+  const source=String(text||"");
+  let clean="",inString=false,escaped=false,lineComment=false,blockComment=false;
+  for(let i=0;i<source.length;i++){
+    const ch=source[i],next=source[i+1];
+    if(lineComment){if(ch==="\n"){lineComment=false;clean+=ch}continue}
+    if(blockComment){if(ch==="*"&&next==="/"){blockComment=false;i++}continue}
+    if(inString){
+      clean+=ch;
+      if(escaped)escaped=false;
+      else if(ch==="\\")escaped=true;
+      else if(ch==='"')inString=false;
+      continue;
+    }
+    if(ch==='"'){inString=true;clean+=ch;continue}
+    if(ch==="/"&&next==="/"){lineComment=true;i++;continue}
+    if(ch==="/"&&next==="*"){blockComment=true;i++;continue}
+    clean+=ch;
+  }
+  clean=clean.replace(/,\s*([}\]])/g,"$1");
+  return JSON.parse(clean);
+}
+
+async function readOptionalJson(path,{jsonc=false}={}){
+  try{
+    const raw=await readFile(path,"utf8");
+    return jsonc?parseJsonc(raw):JSON.parse(raw);
+  }catch{return null}
+}
+
+async function projectActionSuggestions(projectPath){
+  const root=resolve(projectPath);
+  const [t3,pkg,pnpmLock,yarnLock,bunLock,bunLockb]=await Promise.all([
+    readOptionalJson(join(root,"t3.json"),{jsonc:true}),
+    readOptionalJson(join(root,"package.json")),
+    stat(join(root,"pnpm-lock.yaml")).then(()=>true).catch(()=>false),
+    stat(join(root,"yarn.lock")).then(()=>true).catch(()=>false),
+    stat(join(root,"bun.lock")).then(()=>true).catch(()=>false),
+    stat(join(root,"bun.lockb")).then(()=>true).catch(()=>false),
+  ]);
+  const fileScripts=Array.isArray(t3?.scripts)?t3.scripts.slice(0,50).map((script,index)=>({
+    id:`t3-${index}-${String(script?.name||"action").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,32)}`,
+    source:"t3.json",
+    name:String(script?.name||`Action ${index+1}`).trim().slice(0,80),
+    command:String(script?.command||"").trim().slice(0,8000),
+    previewUrl:script?.previewUrl?String(script.previewUrl).trim().slice(0,1000):null,
+    autoOpenPreview:Boolean(script?.autoOpenPreview),
+    runOnWorktreeCreate:Boolean(script?.runOnWorktreeCreate),
+    waitForSetup:script?.runOnWorktreeCreate===true&&script?.async===false,
+  })).filter(script=>script.command):[];
+  const packageManager=pnpmLock?"pnpm":(yarnLock?"yarn":((bunLock||bunLockb)?"bun":"npm"));
+  const packageScripts=Object.entries(pkg?.scripts||{}).slice(0,80).map(([name,command])=>({
+    id:`package-${name}`,
+    source:"package.json",
+    name,
+    command:packageManager==="yarn"?`yarn ${name}`:`${packageManager} run ${name}`,
+    declaredCommand:String(command||""),
+    previewUrl:null,
+    autoOpenPreview:false,
+    runOnWorktreeCreate:false,
+    waitForSetup:false,
+  }));
+  return {
+    t3:{present:Boolean(t3),defaultThreadEnvMode:t3?.defaultThreadEnvMode==="worktree"?"worktree":t3?.defaultThreadEnvMode==="local"?"current":null},
+    packageManager,
+    scripts:[...fileScripts,...packageScripts],
+  };
+}
+
 export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",mock=false,env=process.env}={}){
   const dist=resolve(packageRoot,"ui","dist");
   const state=new TrebellStateStore(env);
@@ -516,6 +585,10 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const id=url.searchParams.get("id"); if(id) state.removeProject(id);
         return json(res,200,{ok:true});
       }
+    }
+    if(url.pathname==="/api/project-actions/suggestions"&&req.method==="GET"){
+      try{return json(res,200,await projectActionSuggestions(url.searchParams.get("path")||process.cwd()));}
+      catch(error){return json(res,400,{scripts:[],error:error.message});}
     }
     if(url.pathname==="/api/project-script/run"&&req.method==="POST"){
       try{
