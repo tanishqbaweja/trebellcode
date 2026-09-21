@@ -321,3 +321,15 @@ body{min-width:820px;background:var(--t3-bg);color:var(--t3-text)}
 .capability-error{color:#d48690!important;word-break:break-word}
 .feature-list button.active{border-color:#3d6649;background:#152019;color:#8ed09f}
 @media(max-width:900px){.capability-grid{grid-template-columns:1fr}}
+
+.environment-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+.environment-create{display:grid;gap:8px}.environment-create label,.remote-access-card label{display:grid;gap:5px;color:#777d84;font-size:8.5px}
+.environment-create input,.environment-create select,.remote-access-card input{height:31px;border:1px solid #2a2d31;background:#0d0f11;border-radius:7px;color:#b9bec4;padding:0 9px;font-size:9px;outline:0}
+.environment-create .primary{height:31px;border:0;border-radius:7px;background:#dddfe2;color:#151618;font-size:9px;display:flex;align-items:center;justify-content:center;gap:5px}
+.environment-two{display:grid;grid-template-columns:1fr 100px;gap:7px}
+.environment-list{display:grid;gap:4px}.environment-list>div{min-height:45px;padding:7px 8px;background:#0d0f11;border-radius:7px;display:flex;align-items:center;justify-content:space-between;gap:9px}
+.environment-list strong,.environment-list span{display:block}.environment-list strong{font-size:9.5px;color:#c8ccd1}.environment-list span{font-size:8px;color:#687078;margin-top:2px}
+.environment-list>div>div:last-child{display:flex;gap:4px}.environment-list button,.remote-access-card button{height:27px;border:1px solid #2b2e33;background:#15171a;border-radius:6px;color:#a0a6ad;font-size:8px;padding:0 8px}
+.environment-list button.danger{color:#d68d98}.remote-urls{display:grid;gap:4px;margin-top:8px}.remote-urls code{padding:6px 7px;border-radius:6px;background:#0b0d0f;color:#8d949c;font-size:8px;word-break:break-all}
+.inline-status{max-width:1080px;margin:0 auto 10px;padding:8px 10px;border:1px solid #2d3136;border-radius:8px;background:#111315;color:#9299a1;font-size:9px;white-space:pre-wrap}
+@media(max-width:900px){.environment-grid{grid-template-columns:1fr}}
