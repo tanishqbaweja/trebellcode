@@ -1,183 +1,149 @@
-# Trebell Code — T3-style harness parity contract
+# Trebell Code Harness Parity Audit
 
-T3 Code (pingdotgg/t3code) is the feature-completeness reference for Trebell Code's desktop control surface.
-Trebell keeps its own visual identity and architecture.
+Updated: 2026-09-21
 
-## Provider rule
+This file is a source-backed audit, not a marketing checklist. It compares the current Trebell desktop implementation against the user-facing workflows in T3 Code and the v2 Codex app-server protocol vendored in this repository.
 
-- Codex is used only as the local agent/harness runtime: threads, turns, tools, shell, file edits, approvals, diffs, checkpoints/history, MCP, and orchestration.
-- Inference is selectable per Trebell Settings: Freebuff, AgentRouter, JustWorker.icu, HCNSec.cn, or VyceAi.
-- The model picker is provider-scoped: Freebuff uses its bridge catalog; AgentRouter and VyceAi load the authenticated `/v1/models` list; JustWorker exposes `claude-opus-4-8`; HCNSec exposes `glm-5.3`.
-- Codex is always configured with `wire_api = "responses"`. Non-Freebuff providers run through a Trebell loopback Responses→Chat compatibility bridge because current Codex no longer accepts `wire_api = "chat"`.
-- API keys for non-Freebuff providers are stored separately from normal UI settings and used by the compatibility bridge rather than written into Codex `config.toml`.
-- Freebuff account/session/Freebucks surfaces remain available when Freebuff is selected.
-- No UI control is considered implemented until it is backed by a real local or selected-provider action/state.
+Status:
+- **Complete** — implemented as a real Trebell workflow.
+- **Partial** — useful implementation exists, but it does not cover the full upstream surface.
+- **Different by design** — Trebell deliberately uses another implementation that provides the same user outcome.
+- **Missing** — not yet surfaced or implemented.
 
-## Core thread/workspace experience
+## Daily coding harness
 
-- [x] New thread
-- [x] Resume/list saved Codex threads
-- [x] Rename thread
-- [x] Archive thread
-- [x] Hydrate saved user/assistant history
-- [x] Stop/interrupt active turn
-- [x] Pin / reorder threads
-- [x] Active / settled / snoozed thread sections
-- [x] Snooze and wake
-- [x] Bulk thread actions
-- [x] Background thread start
-- [x] Multi-model fan-out (models from the active provider only)
-- [x] New worktree / new thread in current worktree
-- [x] Branch-aware thread metadata
-- [x] Thread search across message contents
-- [x] Subagent / delegated-agent inspector
+| Capability | Trebell | Notes |
+|---|---|---|
+| Open/switch local folder | **Complete** | Native folder picker is available directly from the chat workspace header and Projects. |
+| Recent projects | **Complete** | Persistent project list with per-project defaults. |
+| Clone repository | **Complete** | Git clone into a selected local parent folder. |
+| Worktree-per-task | **Complete** | Current checkout / new worktree mode and explicit worktree management. |
+| One model selector | **Complete** | The duplicate multi-model selector was removed from the primary composer. |
+| Provider switching | **Complete** | Freebuff, AgentRouter, JustWorker, HCNSec and VyceAi are managed separately from Codex. |
+| Queue follow-ups | **Complete** | Queue mode preserves follow-up turns while an agent is running. |
+| Steer current turn | **Complete** | Uses Codex `turn/steer`. |
+| Stop/interrupt | **Complete** | Uses `turn/interrupt`. |
+| Durable threads | **Complete** | Uses Codex persisted threads and resume history. |
+| Search threads | **Complete** | Sidebar/server search. |
+| Pin / snooze / settle | **Complete** | Backed by thread sections and local metadata. |
+| Archive thread | **Complete** | Uses `thread/archive`. |
+| Fork thread | **Complete** | Uses Codex `thread/fork`. |
+| Delete thread | **Complete** | Uses Codex `thread/delete`. |
+| Rename thread | **Complete** | Uses `thread/name/set`. |
+| Compact context | **Complete** | Uses `thread/compact/start`. |
+| Revert conversation | **Complete** | Uses `thread/revert`. |
+| Workspace checkpoint restore | **Complete** | Trebell snapshots Git/workspace state around turns. |
+| Thread goals API | **Missing** | Codex `thread/goal/*` exists but Trebell does not expose a goal editor yet. |
+| Persistent thread attachments API | **Partial** | Composer/context attachments work; Codex `thread/attachment/*` is not yet the persistence layer. |
 
-## Composer and context
+## Agent tools
 
-- [x] Provider selector + provider-scoped model picker
-- [x] File picker
-- [x] Project/workspace picker
-- [x] Permission/sandbox settings
-- [x] Composer-level permission mode picker
-- [x] Up to 8 attachments with upload/status UI
-- [x] Drag/drop attachments onto composer
-- [x] Paste image/file support
-- [x] Large-paste to text attachment
-- [x] Queued follow-up messages while agent is running
-- [x] Queue vs steer behavior
-- [x] Prompt history recall with ArrowUp/ArrowDown
-- [x] Edit-from-here / rewind
-- [x] Prompt stash
-- [x] Slash commands
-- [x] Skills picker / $ mention
-- [x] Inline context chips
-- [x] File mentions
-- [x] Terminal excerpt context
-- [x] Diff/review-comment context
-- [x] Assistant response citations
-- [x] Pull-request attachment context
-- [x] Context meter / compact action
-- [x] Voice dictation when Chromium SpeechRecognition is available; disabled otherwise
+| Capability | Trebell | Notes |
+|---|---|---|
+| Shell commands | **Complete** | Codex command execution plus a persistent user PTY. |
+| Persistent terminal tabs | **Complete** | Real PTY sessions over WebSocket. |
+| File read/search/edit | **Complete** | Trebell workspace APIs plus Codex file tooling. |
+| Git status/diff/branches | **Complete** | First-class source-control panel. |
+| Git commit/fetch/pull/push | **Complete** | Implemented with local Git. |
+| Git worktrees | **Complete** | Create/open/remove workflows are supported. |
+| GitHub pull requests | **Complete** | Uses authenticated `gh` CLI for list/read/comment/review/merge/create. |
+| Non-GitHub forge PR workflows | **Partial** | Core Git works everywhere, but PR UI is currently GitHub-specific. T3 supports more forges. |
+| Skills | **Complete** | Codex `skills/list` and composer skill insertion. |
+| MCP tools | **Complete** | Codex runtime owns execution; Trebell now exposes live MCP status, tools/resources counts, reload and OAuth sign-in. |
+| Plugins | **Complete** | Live Codex plugin catalog plus install/uninstall surface. |
+| Apps/connectors | **Partial** | Live Codex app inventory is exposed; app-specific onboarding/config remains Codex-controlled. |
+| Hooks | **Complete** | Live Codex hook inventory is exposed. |
+| Web search | **Complete** | User-controllable web mode and provider capability reporting. |
+| Agent browser | **Complete** | Isolated Electron browser with navigation, DOM refs, click/type, screenshots and cookie import. |
+| Desktop screenshot | **Complete** | Primary display capture is available to users and the agent. |
+| Desktop Computer Use | **Complete** | Windows coordinate screenshot/move/click/scroll/type/key tools. Mutating input is restricted to Full access mode. |
+| Code review | **Complete** | Uses Codex `review/start` for uncommitted changes. |
+| Subagents / delegated threads | **Partial** | Child threads are displayed and Codex can create delegated work; Trebell does not yet expose every collaboration-mode control. |
+| Image generation tool | **Partial** | Provider capability is reported; Trebell does not add a separate image-generation UI when the selected provider lacks it. |
 
-## Agent activity and approvals
+## Permissions and safety
 
-- [x] Live turn/activity events
-- [x] Command approval
-- [x] File-change approval
-- [x] Permission approval
-- [x] Request-user-input handling
-- [x] Shell output activity
-- [x] File-change activity
-- [x] Tool/MCP activity events
-- [x] Rich expandable tool-call cards
-- [x] Full command + stdout/stderr inspection
-- [x] Question UI with options and custom answers
-- [x] Attachments in question answers
-- [x] Remembered/session approvals where supported
-- [x] Background activity/subagent inspector
+| Capability | Trebell | Notes |
+|---|---|---|
+| Supervised mode | **Complete** | Workspace sandbox with explicit approvals. |
+| Auto-accept edits | **Complete** | File-change approvals are automatically accepted while command approvals remain supervised. |
+| Auto mode | **Complete** | Codex untrusted approval mode. |
+| Full access | **Complete** | Danger-full-access / never-ask mode, explicitly selected by the user. |
+| Read-only | **Complete** | Additional Trebell safety mode. |
+| Named Codex permission profiles | **Partial** | Live `permissionProfile/list` inventory is exposed; the composer still uses stable Trebell presets. |
+| Approval UI | **Complete** | Command/file/permission approvals plus user-input questions. |
+| Computer input permission gate | **Complete** | Mouse/keyboard automation is refused unless Full access is selected. |
 
-## Terminal
+## Projects and environments
 
-- [x] Manual command execution through Codex command/exec
-- [x] Real PTY terminal sessions
-- [x] Multiple terminals/tabs
-- [x] Input streaming and PTY resize backend
-- [x] Bounded terminal scrollback
-- [x] Reconnect to running terminals
-- [x] Terminal excerpts attachable to composer
-- [x] Terminal working-directory tracking
+| Capability | Trebell | Notes |
+|---|---|---|
+| Local environment | **Complete** | Native Windows/local workspace. |
+| WSL environment profiles | **Complete** | Discovery, persisted profiles and connectivity probe UI. |
+| SSH environment profiles | **Complete** | Persisted host/user/port/key/cwd profiles with probe/execute backend. |
+| Environment UI | **Complete** | New Environments surface shows host capabilities and profiles. |
+| LAN remote access | **Complete** | Token-protected mobile/web remote control is configurable in the desktop UI. |
+| Background/tray mode | **Complete** | Can stay running after the desktop window closes. |
+| Start with Windows | **Complete** | Managed by background mode. |
+| T3 device/account pairing model | **Different by design** | Trebell currently uses local token-protected LAN remote access rather than T3's device-account infrastructure. |
 
-## Files, diffs and checkpoints
+## Composer and UI
 
-- [x] Real workspace tree
-- [x] File preview
-- [x] Real Git status/diff
-- [x] Syntax-highlighted file viewer
-- [x] Search files
-- [x] File edit/save actions
-- [x] Diff review comments
-- [x] Mark reviewed files
-- [x] Turn checkpoints
-- [x] Revert conversation only
-- [x] Revert conversation + workspace
-- [x] Hidden-Git-ref checkpoint management
+| Capability | Trebell | Notes |
+|---|---|---|
+| Minimal chat workspace | **Complete** | Thread list + conversation + one composer; advanced tools are secondary surfaces. |
+| Single model selector | **Complete** | No second multi-model chooser in chat. |
+| Folder switcher in chat | **Complete** | Clicking the project crumb opens the native folder picker; adjacent control opens recent Projects. |
+| Attach files | **Complete** | Native file picker, drag/drop and paste. |
+| Screenshot attachment | **Complete** | Desktop and browser screenshots. |
+| Context chips | **Complete** | Files, browser annotations, terminal excerpts, PRs and review comments can be attached. |
+| Slash commands | **Complete** | Includes compact/model/terminal/diff/git/preview/agents/review/new/clear/plan. |
+| Voice dictation | **Complete** | Uses platform Web Speech support when available. |
+| Command palette | **Partial** | Slash commands and shortcuts exist; there is not yet a T3-style universal command palette. |
+| Keybinding editor | **Partial** | Core shortcuts are editable; conditional/fully remappable T3 keybinding grammar is not implemented. |
+| Welcome wizard | **Missing** | Setup is handled through Settings/Projects instead of a dedicated first-run wizard. |
+| Appearance themes | **Complete** | Dark/midnight/black. |
 
-## Projects, Git and worktrees
+## Codex app-server v2 surface
 
-- [x] Open local project
-- [x] Add/clone project
-- [x] Recent projects
-- [x] Project groups / multiple checkouts
-- [x] Worktree creation/removal
-- [x] Workspace-mode selection
-- [x] Branch selector
-- [x] Commit
-- [x] Push
-- [x] Pull/fetch
-- [x] Automatic safe pull
-- [x] Generate commit message with the selected inference provider
-- [x] Create pull request
-- [x] PR review UI
-- [x] PR comments/review/check status
-- [x] Linked pull requests
-- [x] PR stacks
-- [x] Merge/rebase stack
-- [x] Source-control account diagnostics
+Trebell intentionally does **not** duplicate every app-server RPC into a button. The desktop should expose workflows, while Codex remains the execution harness.
 
-## Freebuff product state
+### Directly used or surfaced
+- threads: start/resume/list/items/sections/archive/delete/fork/name/revert/compact
+- turns: start/steer/interrupt
+- review: `review/start`
+- skills: `skills/list`
+- permission profiles: `permissionProfile/list`
+- MCP: `mcpServerStatus/list`, reload, OAuth
+- plugins: list/install/uninstall
+- apps: list
+- hooks: list
+- experimental features: list/toggle
+- provider capabilities: read
+- approvals, user-input requests and dynamic tool calls
 
-- [x] Device/login flow
-- [x] Freebucks balance
-- [x] Active Freebuff model
-- [x] Freebucks/hour pricing
-- [x] Live server price preference with documented fallback
-- [x] Session state
-- [x] Active instance/model from proxy session
-- [x] Usage streak
-- [x] Daily bonus
-- [x] Rate-limit display
-- [x] Off-peak state/offers
-- [x] 45-second heartbeat during active turns
-- [x] Freebuff notices/offers/consent state surfaces when returned by server
-- [x] Freebuff serving-agent metadata in picker
-- [x] Context/token usage when available from provider response
+### Available through an equivalent Trebell implementation
+- `fs/*` — Trebell has its own workspace tree/search/read/write/watch-oriented server APIs and UI.
+- `command/exec/*` — Codex command items plus Trebell persistent PTYs provide the user workflow.
+- project/worktree operations — Trebell Git/project manager owns these.
+- desktop/browser control — Trebell dynamic tool namespaces provide explicit Electron/Windows implementations.
 
-## Settings and desktop
+### Not currently surfaced
+- thread goals
+- Codex persistent thread-attachment CRUD
+- advanced realtime/thread subscription APIs
+- every experimental collaboration/environment/capability-root control
+- ChatGPT-account-specific billing/rate-limit/account workflows, because Trebell intentionally uses independent inference providers
 
-- [x] Desktop installer
-- [x] Start Menu/Desktop shortcut
-- [x] Local runtime health
-- [x] CPU/memory/temp-disk status
-- [x] Clean child-process shutdown
-- [x] Keyboard-shortcut editor
-- [x] Appearance/theme controls
-- [x] Project overrides/inheritance
-- [x] Update checker; installer handoff opens the release
-- [x] Desktop background/tray mode with Windows startup
-- [x] Diagnostics/log viewer
-- [x] Native notifications
-- [x] Remote environment control
-- [x] WSL/SSH environments
-- [x] Mobile/remote control surface
+These items should remain **not complete** until a real Trebell workflow exists.
 
-## Browser/preview tools
+## T3-specific gaps still worth doing
 
-- [x] Browser preview panel
-- [x] Agent browser session
-- [x] Page element inspector / context picker
-- [x] Browser screenshot context
-- [x] Desktop Snap Shot context (explicit user-triggered primary-display capture)
-- [x] Preview annotations
-- [x] Browser cookie import (explicit user-selected JSON into the isolated Trebell browser session)
+1. Multi-forge pull-request UI beyond GitHub.
+2. A universal command palette and richer keybinding conditions.
+3. First-run/welcome setup flow.
+4. Richer subagent/collaboration controls.
+5. Optional migration from Trebell attachment metadata to Codex `thread/attachment/*`.
+6. Thread goal editing if Codex goals become useful in the normal desktop workflow.
 
-## Implementation standard
-
-A checkbox can move to complete only when:
-
-1. the UI calls a real backend/runtime action or reads authoritative state,
-2. error and disconnected states are surfaced,
-3. the feature is exercised by at least one automated test,
-4. production builds do not substitute demo/static data,
-5. the installed Windows app is tested where desktop packaging can affect behavior.
-
-Reference: https://github.com/pingdotgg/t3code
+Everything else should be evaluated as a user workflow, not by counting upstream RPC methods.
