@@ -665,7 +665,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
             if(setup&&!mock&&terminals){
               const session=await terminals.create({cwd:result.worktree,name:`${setup.name||"Setup"} · setup`,cols:120,rows:32});
               await terminals.write(session.id,String(setup.command||"")+"\r");
-              result={...result,setup:{scriptId:setup.id,session:terminals.snapshot(session.id)}};
+              const completion=setup.waitForSetup?await terminals.waitForExit(session.id,{timeoutMs:30*60_000}):null;
+              result={...result,setup:{scriptId:setup.id,scriptName:setup.name,waitForSetup:Boolean(setup.waitForSetup),session:terminals.snapshot(session.id),completion}};
             }
             break;
           }
