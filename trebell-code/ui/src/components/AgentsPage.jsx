@@ -1,7 +1,7 @@
 import React,{useEffect,useState} from "react";
-import { Bot, GitBranch, RefreshCw, UsersRound } from "lucide-react";
+import { Archive, Bot, GitBranch, RefreshCw, Trash2, UsersRound } from "lucide-react";
 
-export default function AgentsPage({threads,onOpen,rpc,rpcStatus,activeThread,model}){
+export default function AgentsPage({threads,onOpen,onAction,rpc,rpcStatus,activeThread,model}){
   const children=threads.filter(t=>t.parentThreadId);
   const [modes,setModes]=useState([]);
   const [selected,setSelected]=useState("");
@@ -33,12 +33,27 @@ export default function AgentsPage({threads,onOpen,rpc,rpcStatus,activeThread,mo
     finally{setBusy(false)}
   }
 
+  async function agentAction(thread,action){
+    if(!onAction||busy)return;
+    setBusy(true);setError("");
+    try{await onAction(thread,action)}
+    catch(e){setError(e.message||String(e))}
+    finally{setBusy(false)}
+  }
+
   return <div className="agents-page">
-    <div className="agent-summary"><Bot size={24}/><div><strong>Delegated agents</strong><span>Subagents created by Codex appear here with their own durable threads.</span></div></div>
+    <div className="agent-summary"><Bot size={24}/><div><strong>Delegated agents</strong><span>Subagents created by Codex appear here with their own durable threads. Finished agents can be archived or deleted directly.</span></div></div>
     <section className="collaboration-card">
       <div className="collaboration-head"><div><UsersRound size={15}/><span><strong>Collaboration mode</strong><small>Choose how Codex coordinates work for this thread.</small></span></div><button onClick={refresh} disabled={busy||rpcStatus!=="connected"}><RefreshCw size={12}/></button></div>
       {!activeThread?.id?<p>Start or open a thread to select a collaboration mode.</p>:modes.length?<div className="collaboration-modes">{modes.map(mask=><button key={mask.name} className={selected===mask.name?"active":""} onClick={()=>applyMode(mask)} disabled={busy}><strong>{mask.name}</strong><span>{mask.mode||"default"}{mask.model?" · "+mask.model:""}{mask.reasoning_effort?" · "+mask.reasoning_effort:""}</span></button>)}</div>:<p>{error||"No collaboration presets were reported by this Codex runtime."}</p>}
     </section>
-    {children.length===0?<div className="empty-state">No subagent threads yet.</div>:<div className="agent-list">{children.map(t=><button key={t.id} onClick={()=>onOpen(t)}><Bot size={17}/><div><strong>{t.name||t.agentNickname||t.preview||"Subagent"}</strong><span>{t.agentRole||"agent"} · parent {t.parentThreadId?.slice(0,8)}</span></div><GitBranch size={13}/></button>)}</div>}
+    {error&&<p className="provider-status-error">{error}</p>}
+    {children.length===0?<div className="empty-state">No subagent threads yet.</div>:<div className="agent-list">{children.map(t=><div className="agent-row" key={t.id}>
+      <button className="agent-open" onClick={()=>onOpen(t)}><Bot size={17}/><div><strong>{t.name||t.agentNickname||t.preview||"Subagent"}</strong><span>{t.agentRole||"agent"} · parent {t.parentThreadId?.slice(0,8)}</span></div><GitBranch size={13}/></button>
+      <div className="agent-actions">
+        <button title="Archive agent thread" aria-label="Archive agent thread" onClick={()=>agentAction(t,"archive")} disabled={busy}><Archive size={13}/></button>
+        <button className="danger" title="Delete agent thread" aria-label="Delete agent thread" onClick={()=>agentAction(t,"delete")} disabled={busy}><Trash2 size={13}/></button>
+      </div>
+    </div>)}</div>}
   </div>;
 }
