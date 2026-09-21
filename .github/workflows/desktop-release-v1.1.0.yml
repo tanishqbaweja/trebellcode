@@ -1,10 +1,8 @@
 name: Publish Trebell Code Desktop v1.1.0
 
 on:
-  push:
-    paths:
-      - "trebell-code/release-trigger-v1.1.0.txt"
-      - ".github/workflows/desktop-release-v1.1.0.yml"
+  # GitHub Actions minutes are intentionally not used for this release cycle.
+  # Run manually only after the monthly quota resets.
   workflow_dispatch:
 
 permissions:

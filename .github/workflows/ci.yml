@@ -1,9 +1,8 @@
 name: Trebell Code CI
 
 on:
-  push:
-    branches: ["main"]
-  pull_request:
+  # GitHub Actions minutes are intentionally not used for this release cycle.
+  # Run manually only after the monthly quota resets.
   workflow_dispatch:
 
 permissions:
