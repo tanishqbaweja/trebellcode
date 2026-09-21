@@ -3,7 +3,7 @@ import { Check, Download, ExternalLink, FolderCode, GitBranch, Layers3, Pencil, 
 import { api } from "../api.js";
 
 function blankScript(){
-  return {id:null,name:"",command:"",previewUrl:"",autoOpenPreview:false,runOnWorktreeCreate:false};
+  return {id:null,name:"",command:"",previewUrl:"",autoOpenPreview:false,runOnWorktreeCreate:false,waitForSetup:false};
 }
 
 export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPreview,onProjectUpdated,models=[]}){
@@ -72,6 +72,7 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
       previewUrl:value.previewUrl||"",
       autoOpenPreview:Boolean(value.autoOpenPreview),
       runOnWorktreeCreate:Boolean(value.runOnWorktreeCreate),
+      waitForSetup:Boolean(value.waitForSetup),
     });
   }
 
@@ -84,6 +85,7 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
       previewUrl:editor.previewUrl.trim()||null,
       autoOpenPreview:Boolean(editor.autoOpenPreview),
       runOnWorktreeCreate:Boolean(editor.runOnWorktreeCreate),
+      waitForSetup:Boolean(editor.runOnWorktreeCreate&&editor.waitForSetup),
     };
     const scripts=editor.id
       ? project.scripts.map(script=>script.id===editor.id?item:script)
@@ -122,6 +124,7 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
       previewUrl:suggestion.previewUrl||null,
       autoOpenPreview:Boolean(suggestion.autoOpenPreview),
       runOnWorktreeCreate:Boolean(suggestion.runOnWorktreeCreate),
+      waitForSetup:Boolean(suggestion.waitForSetup),
     };
     await saveProject(project,{scripts:[...project.scripts,item],preferredScriptId:project.preferredScriptId||item.id});
   }
@@ -134,7 +137,8 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
       previewUrl:suggestion.previewUrl||null,
       autoOpenPreview:Boolean(suggestion.autoOpenPreview),
       runOnWorktreeCreate:Boolean(suggestion.runOnWorktreeCreate),
-    }));
+      waitForSetup:Boolean(suggestion.waitForSetup),
+    })).slice(0,Math.max(0,30-project.scripts.length));
     if(!items.length)return;
     await saveProject(project,{scripts:[...project.scripts,...items],preferredScriptId:project.preferredScriptId||items[0].id});
   }
@@ -182,6 +186,7 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
             <input value={editor.command} onChange={e=>setEditor({...editor,command:e.target.value})} placeholder="Command (e.g. npm run dev)"/>
             <input value={editor.previewUrl} onChange={e=>setEditor({...editor,previewUrl:e.target.value})} placeholder="Optional preview URL (e.g. http://localhost:5173)"/>
             <label><input type="checkbox" checked={editor.runOnWorktreeCreate} onChange={e=>setEditor({...editor,runOnWorktreeCreate:e.target.checked})}/> Run automatically when Trebell creates a worktree</label>
+            <label><input type="checkbox" checked={editor.waitForSetup} disabled={!editor.runOnWorktreeCreate} onChange={e=>setEditor({...editor,waitForSetup:e.target.checked})}/> Wait for setup to finish before starting the agent</label>
             <label><input type="checkbox" checked={editor.autoOpenPreview} disabled={!editor.previewUrl.trim()} onChange={e=>setEditor({...editor,autoOpenPreview:e.target.checked})}/> Open preview when this action runs</label>
             <div><button className="primary" disabled={!editor.command.trim()} onClick={()=>submitScript(p)}><Check size={12}/> Save action</button><button onClick={()=>setEditor(null)}><X size={12}/> Cancel</button></div>
           </div>}
