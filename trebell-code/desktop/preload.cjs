@@ -9,6 +9,14 @@ contextBridge.exposeInMainWorld("trebellDesktop", {
   pickFiles: () => ipcRenderer.invoke("workspace:pickFiles"),
   notify: (payload) => ipcRenderer.send("desktop:notify", payload),
   captureScreen: () => ipcRenderer.invoke("desktop:screenshot"),
+  computer: {
+    screenshot: () => ipcRenderer.invoke("computer:screenshot"),
+    move: (x,y) => ipcRenderer.invoke("computer:move", {x,y}),
+    click: (payload) => ipcRenderer.invoke("computer:click", payload),
+    scroll: (delta) => ipcRenderer.invoke("computer:scroll", {delta}),
+    type: (text) => ipcRenderer.invoke("computer:type", {text}),
+    key: (key) => ipcRenderer.invoke("computer:key", {key}),
+  },
   zoom: {
     get: () => ipcRenderer.invoke("desktop:zoom:get"),
     set: (factor) => ipcRenderer.invoke("desktop:zoom:set", factor),
