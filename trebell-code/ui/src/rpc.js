@@ -1,6 +1,7 @@
 export class CodexRpcClient {
-  constructor(url, { onNotification, onServerRequest, onStatus } = {}) {
+  constructor(url, { onNotification, onServerRequest, onStatus, clientVersion = "0.0.0" } = {}) {
     this.url = url;
+    this.clientVersion = clientVersion;
     this.onNotification = onNotification;
     this.onServerRequest = onServerRequest;
     this.onStatus = onStatus;
@@ -33,7 +34,7 @@ export class CodexRpcClient {
     });
 
     await this.request("initialize", {
-      clientInfo: { name: "trebell-code", title: "Trebell Code", version: "0.6.0" },
+      clientInfo: { name: "trebell-code", title: "Trebell Code", version: this.clientVersion },
       capabilities: { experimentalApi: true },
     });
     this.notify("initialized", {});
