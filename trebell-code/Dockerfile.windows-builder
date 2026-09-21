@@ -5,6 +5,7 @@ COPY . .
 
 ENV TREBELL_PREBUILT_WINE=1
 
+RUN npm install --no-audit --no-fund --include=optional && npm test
 RUN node scripts/railway-windows-build.mjs
 
 ENV TREBELL_GUI_MOCK=1
