@@ -14,7 +14,14 @@ test("Trebell Code renders the harness and scopes models to the selected provide
     }});
   });
   await page.goto("/");
+  const onboarding=page.getByTestId("onboarding");
+  if(await onboarding.isVisible().catch(()=>false))await onboarding.getByRole("button",{name:"Finish setup"}).click();
   await expect(page.getByText("Trebell Code").first()).toBeVisible();
+  await page.keyboard.press("Control+k");
+  await expect(page.getByTestId("command-palette")).toBeVisible();
+  await expect(page.getByTestId("command-palette")).toContainText("Open workspace folder");
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("command-palette")).toBeHidden();
   await expect(page.getByTestId("model-picker")).toBeVisible();
   await expect(page.getByTestId("model-picker").locator("option")).toHaveCount(3);
   await expect(page.getByRole("button",{name:"New thread"})).toBeVisible();
