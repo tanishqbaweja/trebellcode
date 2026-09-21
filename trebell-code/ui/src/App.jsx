@@ -18,6 +18,7 @@ import PreviewPage from "./components/PreviewPage.jsx";
 import SettingsPage from "./components/SettingsPage.jsx";
 import FreebuffPage from "./components/FreebuffPage.jsx";
 import RightPanel from "./components/RightPanel.jsx";
+import HarnessToolsPage from "./components/HarnessToolsPage.jsx";
 
 const TREBELL_BROWSER_TOOLS=[{
   type:"namespace",
@@ -147,6 +148,7 @@ const SLASH_COMMANDS=[
   ["/git","Open source control"],
   ["/preview","Open browser preview"],
   ["/agents","Open delegated agents"],
+  ["/review","Review uncommitted workspace changes"],
   ["/new","Start a new thread"],
   ["/clear","Reset the current draft/thread view"],
 ];
@@ -431,6 +433,20 @@ export default function App(){
     if(action==="settle"){await moveThread(thread,"settle");return}
     if(action==="active"){await moveThread(thread,"active");await updateThreadMeta(thread.id,{snoozedUntil:null});return}
     if(action==="snooze"){const mins=Number(prompt("Snooze for how many minutes?","60"));if(!Number.isFinite(mins)||mins<=0)return;await updateThreadMeta(thread.id,{snoozedUntil:Date.now()+mins*60000});await moveThread(thread,"snooze");return}
+    if(action==="fork"){
+      if(!rpc)return;
+      const p=presetFor(permissionMode);
+      const result=await rpc.request("thread/fork",{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||projectPath,approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,threadSource:"trebell-code",excludeTurns:false});
+      if(result?.thread){setThreads(prev=>[result.thread,...prev.filter(t=>t.id!==result.thread.id)]);await openThread(result.thread)}
+      return;
+    }
+    if(action==="delete"){
+      if(!rpc||!confirm("Delete this thread permanently?"))return;
+      await rpc.request("thread/delete",{threadId:thread.id});
+      setThreads(prev=>prev.filter(t=>t.id!==thread.id));
+      if(activeThread?.id===thread.id)await newChat();
+      return;
+    }
     if(action==="archive"){await rpc?.request("thread/archive",{threadId:thread.id});setThreads(prev=>prev.filter(t=>t.id!==thread.id));if(activeThread?.id===thread.id)newChat()}
   }
   async function moveThreadOrder(thread,direction){const group=threads.filter(t=>(t.section?.name||"Active")===(thread.section?.name||"Active"));const index=group.findIndex(t=>t.id===thread.id);const targetIndex=index+direction;if(targetIndex<0||targetIndex>=group.length)return;const before=direction<0?group[targetIndex].id:(group[targetIndex+1]?.id||null);await rpc.request("thread/section/move",{threadId:thread.id,sectionId:thread.section?.id||null,beforeThreadId:before});await loadThreads(rpc)}
@@ -470,6 +486,7 @@ export default function App(){
     if(command==="/git"){openRightPanel("source");return true}
     if(command==="/preview"){openRightPanel("preview");return true}
     if(command==="/agents"){openRightPanel("agents");return true}
+    if(command==="/review"){await startReview();return true}
     if(command==="/new"){await newChat();return true}
     if(command==="/clear"){await newChat();return true}
     if(command==="/plan"){setPrompt("Create a clear execution plan, then carry it out. "+rest.join(" "));return true}
@@ -542,6 +559,13 @@ export default function App(){
   async function logout(){await api("/api/logout",{method:"POST"});setBootstrap(prev=>({...prev,loggedIn:false,providerReady:false}));setModels([]);setModel("");setFreebuff({loggedIn:false})}
   async function renameThread(){if(!rpc||!activeThread)return;const name=prompt("Rename thread",titleOf(activeThread));if(!name?.trim())return;await rpc.request("thread/name/set",{threadId:activeThread.id,name:name.trim()});setActiveThread(prev=>({...prev,name:name.trim()}));setThreads(prev=>prev.map(t=>t.id===activeThread.id?{...t,name:name.trim()}:t))}
   async function shareThread(){const text=messages.map(m=>(m.role==="user"?"You":"Trebell Code")+": "+m.text).join("\n\n");if(text)await navigator.clipboard?.writeText(text).catch(()=>{})}
+  async function startReview(){
+    if(!rpc||!activeThread?.id)throw new Error("Start or open a thread before reviewing.");
+    const result=await rpc.request("review/start",{threadId:activeThread.id,target:{type:"uncommittedChanges"}});
+    if(result?.turn?.id){setRunning(true);setActiveTurnId(result.turn.id)}
+    setEvents(prev=>[...prev,{id:"review-"+Date.now(),kind:"tool",title:"Reviewing uncommitted changes",status:"running",raw:result||{}}]);
+    return result;
+  }
   async function onProjectOpen(path){await touchProject(path);setSection("chat");if(rpcStatus==="connected")loadSkills(rpc,path)}
   async function pickWorkspace(){
     const path=await window.trebellDesktop?.pickDirectory?.();
@@ -615,6 +639,7 @@ export default function App(){
             </div>
             <div className="workspace-header-actions">
               {gitInfo?.isGit&&<button className="header-control branch-control" onClick={()=>openRightPanel("source")} title="Source control"><GitBranch size={14}/><span>{gitInfo.branch||"detached"}</span></button>}
+              {activeThread?.id&&gitInfo?.isGit&&<button className="header-control" onClick={()=>startReview().catch(error=>setEvents(prev=>[...prev,{id:"review-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} title="Review uncommitted changes"><ShieldCheck size={14}/><span>Review</span></button>}
               {running&&<button className="header-control stop-control" onClick={stop}><CircleStop size={14}/><span>Stop</span></button>}
               <button data-testid="terminal-toggle" className={"header-control icon-only "+(panel==="terminal"?"active":"")} onClick={()=>setPanel(panel==="terminal"?null:"terminal")} aria-label="Toggle terminal" title="Toggle terminal"><PanelBottom size={16}/></button>
               <button data-testid="right-panel-toggle" className={"header-control icon-only "+(rightPanelOpen?"active":"")} onClick={()=>rightPanelOpen?setRightPanelOpen(false):openRightPanel("files")} aria-label="Open files and diff" title="Toggle workspace panel"><PanelRight size={16}/></button>
@@ -652,6 +677,7 @@ export default function App(){
         {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Local repositories, checkouts and project defaults.</p></div></div><ProjectsPage currentPath={projectPath} onOpen={onProjectOpen} models={models}/></div>}
         {section==="templates"&&<div className="secondary-page"><h1>Templates</h1><p>Reusable starting points that become normal Trebell turns.</p><div className="template-grid">{[["Ship a feature","Inspect the project, plan a useful feature, implement it, run the relevant tests, fix failures, and summarize the result."],["Fix a bug","Reproduce a meaningful bug in this project, diagnose it, fix it, and validate the fix."],["Review codebase","Map this codebase architecture, important execution paths, risks, and highest-value improvements."],["Refactor safely","Choose a worthwhile refactor, preserve behavior, implement focused changes, and run tests."],["Autonomous build","Take this project to a working validated result. Continue through implementation and test failures until it passes."],["Security review","Review this project for concrete security weaknesses and propose or implement safe fixes."]].map(([name,text])=><button key={name} onClick={()=>{setPrompt(text);setSection("chat")}}><BrainCircuit size={20}/><strong>{name}</strong><span>{text}</span></button>)}</div></div>}
         {section==="freebuff"&&<div className="secondary-page"><div className="page-header"><div><h1>Freebuff</h1><p>Account, balance, model pricing and session state.</p></div></div><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model)}/></div>}
+        {section==="tools"&&<div className="secondary-page full"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills}/></div>}
         {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>Providers, permissions, desktop behavior and runtime diagnostics.</p></div></div><SettingsPage settings={settings} onSettings={setSettings} onProviderUpdated={()=>{setProviderRevision(v=>v+1);return refreshProviderModels({resetThread:true})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectPath} modelError={modelError}/></div>}
         {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Every unarchived {providerLabel}-backed Codex thread on this machine.</p></div></div><div className="history-page">{threads.map(t=><button key={t.id} onClick={()=>openThread(t)}><FileCode2 size={15}/><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><time>{new Date(t.updatedAt*1000).toLocaleString()}</time></button>)}</div></div>}
       </main>
