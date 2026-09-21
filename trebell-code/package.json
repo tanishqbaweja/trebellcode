@@ -12,15 +12,16 @@
     "test": "node --import tsx --test tests/*.test.mjs",
     "doctor": "node ./bin/trebell.mjs doctor",
     "smoke:bridge": "node --import tsx ./vendor/freebuff2api/src/index.ts --help",
-    "ui:dev": "vite --config ui/vite.config.mjs",
-    "ui:build": "vite build --config ui/vite.config.mjs",
+    "ui:dev": "npm run branding:prepare && vite --config ui/vite.config.mjs",
+    "ui:build": "npm run branding:prepare && vite build --config ui/vite.config.mjs",
     "gui:server": "node src/gui-server.mjs",
     "gui": "npm run ui:build && node src/gui-server.mjs --open",
     "ui:test": "playwright test -c ui/playwright.config.mjs",
     "bridge:build": "esbuild vendor/freebuff2api/src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=vendor/freebuff2api/dist/index.mjs",
     "desktop:dir": "npm run bridge:build && npm run ui:build && electron-builder --dir",
     "desktop:dist": "npm run bridge:build && npm run ui:build && electron-builder --win nsis --x64",
-    "test:vyce": "node tests/live-vyce-smoke.mjs"
+    "test:vyce": "node tests/live-vyce-smoke.mjs",
+    "branding:prepare": "node scripts/prepare-branding.mjs"
   },
   "engines": {
     "node": ">=22"
@@ -79,7 +80,7 @@
           ]
         }
       ],
-      "icon": "build/icon.svg"
+      "icon": "build/icon.png"
     },
     "nsis": {
       "oneClick": false,
