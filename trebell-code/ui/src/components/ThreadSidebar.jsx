@@ -1,7 +1,7 @@
 import React from "react";
 import {
   Archive, Bot, Clock3, Folder, Globe2, History,
-  MoreHorizontal, Pin, Plus, Search, Settings, SlidersHorizontal
+  MoreHorizontal, Pin, Plus, Search, Settings, SlidersHorizontal, Wrench
 } from "lucide-react";
 
 function titleOf(thread){return thread.name||thread.preview||"Untitled task"}
@@ -25,13 +25,19 @@ function ThreadRow({thread,active,selected,bulk,onOpen,onSelect,onAction,onMove}
         <span>{thread.model?.replace(/^freebuff\//,"")||"Codex"} · {relativeTime(thread.updatedAt)}</span>
       </div>
     </button>
-    <div className="thread-actions">
-      <button title={section==="Pinned"?"Unpin":"Pin"} onClick={()=>onAction(thread,section==="Pinned"?"active":"pin")}><Pin size={11}/></button>
-      <button title="Snooze" onClick={()=>onAction(thread,"snooze")}><Clock3 size={11}/></button>
-      <button title={section==="Settled"?"Un-settle":"Settle"} onClick={()=>onAction(thread,section==="Settled"?"active":"settle")}><Archive size={11}/></button>
-      <button title="Move up" onClick={()=>onMove(thread,-1)}>↑</button>
-      <button title="Move down" onClick={()=>onMove(thread,1)}>↓</button>
-    </div>
+    <details className="thread-menu">
+      <summary title="Thread actions"><MoreHorizontal size={13}/></summary>
+      <div className="thread-menu-popover">
+        <button onClick={()=>onAction(thread,section==="Pinned"?"active":"pin")}>{section==="Pinned"?"Unpin":"Pin"}</button>
+        <button onClick={()=>onAction(thread,"snooze")}>Snooze</button>
+        <button onClick={()=>onAction(thread,section==="Settled"?"active":"settle")}>{section==="Settled"?"Un-settle":"Settle"}</button>
+        <button onClick={()=>onAction(thread,"fork")}>Fork thread</button>
+        <button onClick={()=>onMove(thread,-1)}>Move up</button>
+        <button onClick={()=>onMove(thread,1)}>Move down</button>
+        <button onClick={()=>onAction(thread,"archive")}>Archive</button>
+        <button className="danger" onClick={()=>onAction(thread,"delete")}>Delete</button>
+      </div>
+    </details>
   </div>;
 }
 
@@ -96,6 +102,7 @@ export default function ThreadSidebar({
         <UtilityButton Icon={Globe2} label="Browser" active={section==="preview"} onClick={()=>setSection("preview")}/>
         <UtilityButton Icon={Bot} label="Agents" active={section==="agents"} onClick={()=>setSection("agents")}/>
         <UtilityButton Icon={History} label="History" active={section==="history"} onClick={()=>setSection("history")}/>
+        <UtilityButton Icon={Wrench} label="Tools" active={section==="tools"} onClick={()=>setSection("tools")}/>
         <UtilityButton Icon={Settings} label="Settings" active={section==="settings"} onClick={()=>setSection("settings")}/>
       </div>
       <button className="sidebar-provider" onClick={()=>setSection(provider==="freebuff"?"freebuff":"settings")} title={"Configure "+providerLabel}><span className="provider-dot"/><div><strong>{providerLabel}</strong><span>via Codex harness</span></div><MoreHorizontal size={13}/></button>
