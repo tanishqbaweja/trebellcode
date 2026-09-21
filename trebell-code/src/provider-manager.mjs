@@ -16,8 +16,8 @@ export const MODEL_PROVIDERS = Object.freeze({
   agentrouter: {
     id: "agentrouter",
     name: "AgentRouter",
-    baseUrl: "https://co.agentrouter.org/v1",
-    wireApi: "chat",
+    baseUrl: "https://agentrouter.org/v1",
+    wireApi: "responses",
     envKey: "AGENTROUTER_API_KEY",
     requiresKey: true,
   },
@@ -62,6 +62,22 @@ function providerSecretsPath(env = process.env) {
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+const AGENTROUTER_CLIENT_VERSION = "0.149.1";
+const AGENTROUTER_CLIENT_HEADERS = Object.freeze({
+  "User-Agent": `codex_cli_rs/${AGENTROUTER_CLIENT_VERSION}`,
+  originator: "codex_cli_rs",
+  version: AGENTROUTER_CLIENT_VERSION,
+});
+
+function agentRouterHeaders(key, { accept = "application/json" } = {}) {
+  return {
+    Authorization: `Bearer ${key}`,
+    "Content-Type": "application/json",
+    Accept: accept,
+    ...AGENTROUTER_CLIENT_HEADERS,
+  };
 }
 
 function normalizeProviderKey(value) {
@@ -177,11 +193,14 @@ export class ProviderManager {
       return { models: [], source: "none", error: "API key required" };
     }
 
+    const key = this.key(provider.id);
     const response = await this.fetchFn(provider.baseUrl + "/models", {
-      headers: {
-        Authorization: `Bearer ${this.key(provider.id)}`,
-        Accept: "application/json",
-      },
+      headers: provider.id === "agentrouter"
+        ? agentRouterHeaders(key)
+        : {
+            Authorization: `Bearer ${key}`,
+            Accept: "application/json",
+          },
       signal: AbortSignal.timeout(12_000),
     });
     const raw = await response.text();
@@ -227,24 +246,39 @@ export class ProviderManager {
       return await adaptAnthropicResponse(upstream, { stream: anthropicBody.stream, model: chatBody.model });
     }
 
-    const headers = {
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
-      "Accept": chatBody.stream ? "text/event-stream, application/json" : "application/json",
-    };
-    if (provider.id === "agentrouter") {
-      // AgentRouter explicitly supports Codex. Preserve the actual Codex client
-      // identity seen by Trebell's loopback bridge rather than dropping it.
-      // Some gateways apply client-specific routing/auth policies.
-      if (userAgent) headers["User-Agent"] = String(userAgent);
-    } else {
-      headers["User-Agent"] = TREBELL_USER_AGENT;
-    }
+    const headers = provider.id === "agentrouter"
+      ? agentRouterHeaders(key, {
+          accept: chatBody.stream ? "text/event-stream, application/json" : "application/json",
+        })
+      : {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/json",
+          "Accept": chatBody.stream ? "text/event-stream, application/json" : "application/json",
+          "User-Agent": TREBELL_USER_AGENT,
+        };
 
     return await this.fetchFn(provider.baseUrl + "/chat/completions", {
       method: "POST",
       headers,
       body: JSON.stringify(chatBody),
+      signal: signal || AbortSignal.timeout(300_000),
+    });
+  }
+
+  async forwardResponses(providerId, responsesBody, { signal } = {}) {
+    const provider = this.get(providerId);
+    if (provider.id !== "agentrouter") {
+      throw new Error(`${provider.name} does not use direct Responses forwarding.`);
+    }
+    const key = this.key(provider.id);
+    if (!key) throw new Error(`${provider.name} API key is not configured.`);
+    const stream = Boolean(responsesBody?.stream);
+    return await this.fetchFn(provider.baseUrl + "/responses", {
+      method: "POST",
+      headers: agentRouterHeaders(key, {
+        accept: stream ? "text/event-stream, application/json" : "application/json",
+      }),
+      body: JSON.stringify(responsesBody),
       signal: signal || AbortSignal.timeout(300_000),
     });
   }
