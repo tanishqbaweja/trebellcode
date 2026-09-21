@@ -4,6 +4,7 @@ import {
   CAPABILITIES,
   detectSourceControlProvider,
   parseRemoteUrl,
+  resolveFjAccount,
 } from "../src/source-control-service.mjs";
 
 test("source control provider detection covers supported forges",()=>{
@@ -36,4 +37,36 @@ test("provider capabilities reflect known host limitations",()=>{
   assert.equal(CAPABILITIES.gitlab.requestChanges,false);
   assert.equal(CAPABILITIES.bitbucket.updateBranch,false);
   assert.equal(CAPABILITIES["azure-devops"].comment,false);
+});
+
+
+test("Forgejo fj account resolution matches direct hosts and SSH aliases",()=>{
+  const keys={
+    hosts:{
+      "forge.example:3000":{type:"Application",token:"secret-token"},
+    },
+    aliases:{
+      "forge-ssh":"forge.example:3000",
+    },
+  };
+  assert.deepEqual(resolveFjAccount({
+    remote:{host:"forge.example:3000",hostname:"forge.example"},
+    remoteUrl:"https://forge.example:3000/acme/widget.git",
+  },keys),{
+    host:"forge.example:3000",
+    token:"secret-token",
+    baseUrl:"https://forge.example:3000",
+  });
+  assert.equal(resolveFjAccount({
+    remote:{host:"forge-ssh",hostname:"forge-ssh"},
+    remoteUrl:"git@forge-ssh:acme/widget.git",
+  },keys)?.host,"forge.example:3000");
+});
+
+test("Forgejo fj account resolution preserves explicit HTTP remotes",()=>{
+  const result=resolveFjAccount({
+    remote:{host:"forge.local:3000",hostname:"forge.local"},
+    remoteUrl:"http://forge.local:3000/acme/widget.git",
+  },{hosts:{"forge.local:3000":{type:"Application",token:"x"}},aliases:{}});
+  assert.equal(result?.baseUrl,"http://forge.local:3000");
 });
