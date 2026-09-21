@@ -21,7 +21,9 @@
     "desktop:dir": "npm run prepare:icon && npm run bridge:build && npm run ui:build && electron-builder --dir",
     "desktop:dist": "npm run prepare:icon && npm run bridge:build && npm run ui:build && electron-builder --win nsis --x64",
     "test:vyce": "node tests/live-vyce-smoke.mjs",
-    "prepare:icon": "node scripts/materialize-icon.mjs"
+    "prepare:icon": "node scripts/materialize-icon.mjs",
+    "release:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make-windows-release.ps1",
+    "release:windows:publish": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make-windows-release.ps1 -Publish"
   },
   "engines": {
     "node": ">=22"
