@@ -112,3 +112,35 @@ native Codex harness binary, and the Freebuff compatibility bridge.
 After installation, launch **Trebell Code** from the Start Menu or Desktop shortcut. Codex
 remains the local agentic harness only; model inference is routed through the provider selected
 in Settings.
+
+
+## Windows installer and GitHub release
+
+Windows packaging is intentionally done on a real Windows machine rather than on Railway.
+
+From `trebell-code`:
+
+```bat
+make-exe.cmd
+```
+
+That installs dependencies, runs the test suite, builds the provider bridge and UI, materializes the official Trebell icon, and creates:
+
+```
+desktop-dist\Trebell-Code-Setup-<version>.exe
+desktop-dist\release.json
+```
+
+To build **and publish** the installer to the GitHub Release for the package version:
+
+```bat
+make-exe.cmd publish
+```
+
+Publishing requires GitHub CLI (`gh`) and a logged-in account with release permission:
+
+```bat
+gh auth login
+```
+
+Equivalent npm commands are `npm run release:windows` and `npm run release:windows:publish`.
