@@ -2,6 +2,7 @@ import React,{useEffect,useMemo,useState} from "react";
 import { Check, FileCode2, FileDiff, FileImage, FileText, Folder, Music2, Paperclip, RefreshCw, Save, Search, Video, X } from "lucide-react";
 import Prism from "prismjs";
 import { api } from "../api.js";
+import OpenInPicker from "./OpenInPicker.jsx";
 
 const IMAGE_EXT=new Set(["png","jpg","jpeg","gif","webp","bmp","svg","ico"]);
 const VIDEO_EXT=new Set(["mp4","webm","mov"]);
@@ -139,7 +140,7 @@ export default function WorkspacePanel({projectPath,defaultTab="files",reviewedF
       <div className="workspace-search"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search files…"/></div>
       <div className="workspace-body">
         <div className="tree-list">{loading?<p>Loading…</p>:source.map(entry=><button key={entry.path} style={{paddingLeft:8+(entry.depth||0)*14}} onClick={()=>entry.isFile&&open(entry.path)}>{entry.isDirectory?<Folder size={14}/>:fileIcon(entry.name)}<span>{entry.relativePath||entry.name}</span>{entry.isFile&&<i onClick={e=>{e.stopPropagation();onAttachPath?.(entry.path)}}><Paperclip size={11}/></i>}</button>)}</div>
-        <div className="file-view">{file&&<div className="file-head"><strong>{file.name}</strong><div><button onClick={()=>onAttachPath?.(file.path)}><Paperclip size={13}/> Attach</button>{editable&&<button onClick={()=>setEdit(v=>!v)}>{edit?<X size={13}/>:<FileCode2 size={13}/>} {edit?"Cancel":"Edit"}</button>}{edit&&<button onClick={save}><Save size={13}/> Save</button>}</div></div>}{preview()}</div>
+        <div className="file-view">{file&&<div className="file-head"><strong>{file.name}</strong><div><OpenInPicker path={file.path} compact/><button onClick={()=>onAttachPath?.(file.path)}><Paperclip size={13}/> Attach</button>{editable&&<button onClick={()=>setEdit(v=>!v)}>{edit?<X size={13}/>:<FileCode2 size={13}/>} {edit?"Cancel":"Edit"}</button>}{edit&&<button onClick={save}><Save size={13}/> Save</button>}</div></div>}{preview()}</div>
       </div>
     </div>}
     {tab==="diff"&&<div className="changes-view">
