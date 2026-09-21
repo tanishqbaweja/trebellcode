@@ -23,6 +23,13 @@ function Invoke-Native([string]$File, [string[]]$Arguments) {
   }
 }
 
+function Get-FreeTcpPort {
+  $Listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback,0)
+  $Listener.Start()
+  try { return ([System.Net.IPEndPoint]$Listener.LocalEndpoint).Port }
+  finally { $Listener.Stop() }
+}
+
 Require-Command "node" "Install Node.js 22 or newer."
 Require-Command "npm" "Install Node.js 22 or newer."
 
@@ -39,24 +46,63 @@ Write-Host "== Trebell Code Windows release ==" -ForegroundColor Cyan
 Write-Host "Version: $Version"
 Write-Host "Tag:     $Tag"
 
-Write-Host "`n[1/6] Installing dependencies..." -ForegroundColor Cyan
+Write-Host "`n[1/8] Installing dependencies..." -ForegroundColor Cyan
 Invoke-Native "npm" @("install","--no-audit","--no-fund","--include=optional")
 
 if (-not $SkipTests) {
-  Write-Host "`n[2/6] Running unit/integration tests..." -ForegroundColor Cyan
+  Write-Host "`n[2/8] Running unit/integration tests..." -ForegroundColor Cyan
   Invoke-Native "npm" @("test")
 } else {
-  Write-Host "`n[2/6] Tests skipped by request." -ForegroundColor Yellow
+  Write-Host "`n[2/8] Tests skipped by request." -ForegroundColor Yellow
 }
 
-Write-Host "`n[3/6] Preparing canonical app icon..." -ForegroundColor Cyan
+Write-Host "`n[3/8] Preparing canonical app icon..." -ForegroundColor Cyan
 Invoke-Native "npm" @("run","prepare:icon")
 
-Write-Host "`n[4/6] Building provider bridge and UI..." -ForegroundColor Cyan
+Write-Host "`n[4/8] Building provider bridge and UI..." -ForegroundColor Cyan
 Invoke-Native "npm" @("run","bridge:build")
 Invoke-Native "npm" @("run","ui:build")
 
-Write-Host "`n[5/6] Building Windows x64 NSIS installer..." -ForegroundColor Cyan
+Write-Host "`n[5/8] Building unpacked Windows app for native smoke tests..." -ForegroundColor Cyan
+Invoke-Native "npx" @("electron-builder","--dir","--win","--x64")
+
+$UnpackedExe = Join-Path $Root "desktop-dist\win-unpacked\Trebell Code.exe"
+if (-not (Test-Path $UnpackedExe)) { throw "Unpacked desktop build was not produced: $UnpackedExe" }
+
+Write-Host "`n[6/8] Running Windows desktop + bundled Codex smoke tests..." -ForegroundColor Cyan
+$GuiPort = Get-FreeTcpPort
+$AppPort = Get-FreeTcpPort
+$CdpPort = Get-FreeTcpPort
+$FixturePort = Get-FreeTcpPort
+$OldGuiPort = $env:TREBELL_GUI_PORT
+$OldAppPort = $env:TREBELL_APP_SERVER_PORT
+$OldCdpUrl = $env:TREBELL_CDP_URL
+$OldFixturePort = $env:TREBELL_BROWSER_FIXTURE_PORT
+$DesktopProcess = $null
+try {
+  $env:TREBELL_GUI_PORT = [string]$GuiPort
+  $env:TREBELL_APP_SERVER_PORT = [string]$AppPort
+  $env:TREBELL_CDP_URL = "http://127.0.0.1:$CdpPort"
+  $env:TREBELL_BROWSER_FIXTURE_PORT = [string]$FixturePort
+
+  if (-not ($env:TREBELL_TEST_VYCE_API_KEY -or $env:VYCEAI_API_KEY -or $env:VYCE_API_KEY)) {
+    Write-Host "No Vyce key is set locally; desktop smoke will test native features and bundled Codex, while Vyce compatibility remains covered by Railway." -ForegroundColor DarkGray
+  }
+
+  $DesktopProcess = Start-Process -FilePath $UnpackedExe -ArgumentList "--remote-debugging-port=$CdpPort" -PassThru
+  Invoke-Native "node" @("tests/installed-relay-check.mjs","http://127.0.0.1:$GuiPort")
+  Invoke-Native "node" @("tests/installed-desktop-check.mjs")
+} finally {
+  if ($DesktopProcess -and -not $DesktopProcess.HasExited) {
+    Stop-Process -Id $DesktopProcess.Id -Force -ErrorAction SilentlyContinue
+  }
+  $env:TREBELL_GUI_PORT = $OldGuiPort
+  $env:TREBELL_APP_SERVER_PORT = $OldAppPort
+  $env:TREBELL_CDP_URL = $OldCdpUrl
+  $env:TREBELL_BROWSER_FIXTURE_PORT = $OldFixturePort
+}
+
+Write-Host "`n[7/8] Building Windows x64 NSIS installer..." -ForegroundColor Cyan
 Invoke-Native "npx" @("electron-builder","--win","nsis","--x64")
 
 $InstallerName = "Trebell-Code-Setup-$Version.exe"
@@ -85,7 +131,7 @@ Write-Host "SHA256: $Hash"
 Write-Host "Bytes:  $Size"
 
 if ($Publish) {
-  Write-Host "`n[6/6] Publishing GitHub release..." -ForegroundColor Cyan
+  Write-Host "`n[8/8] Publishing GitHub release..." -ForegroundColor Cyan
   Require-Command "gh" "Install GitHub CLI, then run 'gh auth login'."
   & gh auth status | Out-Null
   if ($LASTEXITCODE -ne 0) { throw "GitHub CLI is not authenticated. Run gh auth login." }
@@ -107,7 +153,7 @@ if ($Publish) {
   } finally { Pop-Location }
   Write-Host "Published $Tag." -ForegroundColor Green
 } else {
-  Write-Host "`n[6/6] Publish skipped." -ForegroundColor DarkGray
+  Write-Host "`n[8/8] Publish skipped." -ForegroundColor DarkGray
   Write-Host "To build and publish in one command:"
   Write-Host "  .\make-exe.cmd publish"
 }
