@@ -131,7 +131,7 @@ async function bitbucketApi(ctx,path,{method="GET",body}={}){
   const headers={Accept:"application/json",...bitbucketAuthHeaders()};
   if(!headers.Authorization)throw new Error("Bitbucket needs TREBELL_BITBUCKET_ACCESS_TOKEN, or TREBELL_BITBUCKET_EMAIL + TREBELL_BITBUCKET_API_TOKEN.");
   if(body!==undefined)headers["Content-Type"]="application/json";
-  const response=await fetch(`https://api.bitbucket.org/2.0/${path.replace(/^\\/+/, "")}`,{method,headers,body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(30000)});
+  const response=await fetch(`https://api.bitbucket.org/2.0/${path.replace(/^\/+/,"")}`,{method,headers,body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(30000)});
   const text=await response.text();if(!response.ok)throw new Error(`Bitbucket HTTP ${response.status}: ${text.slice(0,800)}`);return parseJson(text,{});
 }
 
