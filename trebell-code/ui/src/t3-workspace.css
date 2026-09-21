@@ -277,3 +277,6 @@ body{min-width:820px;background:var(--t3-bg);color:var(--t3-text)}
 @media(max-width:900px){
   .context-panel{inset:32px 0 0 auto;height:calc(100vh - 32px);margin-top:0}
 }
+
+.composer-status.error{color:#e78888}
+.provider-status-error{color:#e78888!important}
