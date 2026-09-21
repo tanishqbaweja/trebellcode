@@ -103,7 +103,7 @@ export async function startRemoteAppServer({
     return {
       child,
       logs,
-      environment:{id:profile.id,name:profile.name,type:profile.type},
+      environment:{id:profile.id,name:profile.name,type:profile.type,cwd:profile.cwd||""},
       targetUrl:`ws://${network.guest}:${appPort}`,
       readyUrl:`http://${network.guest}:${appPort}/readyz`,
       close:()=>proxy.close(),
@@ -134,7 +134,7 @@ export async function startRemoteAppServer({
     return {
       child,
       logs,
-      environment:{id:profile.id,name:profile.name,type:profile.type},
+      environment:{id:profile.id,name:profile.name,type:profile.type,cwd:profile.cwd||""},
       targetUrl:`ws://127.0.0.1:${appPort}`,
       readyUrl:`http://127.0.0.1:${appPort}/readyz`,
       close:async()=>{},
