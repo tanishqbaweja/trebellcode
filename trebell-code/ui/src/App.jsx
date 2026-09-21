@@ -32,6 +32,20 @@ const TREBELL_BROWSER_TOOLS=[{
   ]
 }];
 
+const TREBELL_COMPUTER_TOOLS=[{
+  type:"namespace",
+  name:"trebell_computer",
+  description:"Control the Windows desktop on the primary display. Screenshot is always available; mouse and keyboard input require Trebell Full access mode.",
+  tools:[
+    {type:"function",name:"screenshot",description:"Capture the primary desktop and return it to the model with coordinate metadata.",inputSchema:{type:"object",properties:{},additionalProperties:false}},
+    {type:"function",name:"move",description:"Move the mouse to screenshot pixel coordinates.",inputSchema:{type:"object",properties:{x:{type:"integer"},y:{type:"integer"}},required:["x","y"],additionalProperties:false}},
+    {type:"function",name:"click",description:"Click at screenshot pixel coordinates.",inputSchema:{type:"object",properties:{x:{type:"integer"},y:{type:"integer"},button:{type:"string",enum:["left","right","middle"]},count:{type:"integer",minimum:1,maximum:3}},required:["x","y"],additionalProperties:false}},
+    {type:"function",name:"scroll",description:"Scroll at the current pointer position. Positive delta scrolls up; negative scrolls down.",inputSchema:{type:"object",properties:{delta:{type:"integer"}},required:["delta"],additionalProperties:false}},
+    {type:"function",name:"type",description:"Type text into the focused desktop application.",inputSchema:{type:"object",properties:{text:{type:"string"}},required:["text"],additionalProperties:false}},
+    {type:"function",name:"key",description:"Send a supported key or shortcut such as ENTER, TAB, ESC, CTRL+A, CTRL+C, CTRL+V, ALT+TAB, UP, DOWN, LEFT, RIGHT.",inputSchema:{type:"object",properties:{key:{type:"string"}},required:["key"],additionalProperties:false}}
+  ]
+}];
+
 function titleOf(thread){return thread?.name||thread?.preview||"New Trebell task"}
 function modelLabel(id,freebuff){
   const clean=String(id||"").replace(/^freebuff\//,"");
@@ -73,6 +87,7 @@ function presetFor(mode){
   if(mode==="full")return {sandbox:"danger-full-access",approvalPolicy:"never"};
   if(mode==="read-only")return {sandbox:"read-only",approvalPolicy:"on-request"};
   if(mode==="auto")return {sandbox:"workspace-write",approvalPolicy:"untrusted"};
+  if(mode==="edits")return {sandbox:"workspace-write",approvalPolicy:"on-request"};
   return {sandbox:"workspace-write",approvalPolicy:"on-request"};
 }
 function shortcutMatch(e,value){
@@ -136,8 +151,7 @@ const SLASH_COMMANDS=[
   ["/clear","Reset the current draft/thread view"],
 ];
 
-function Composer({prompt,setPrompt,onSend,running,providerReady,provider,login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels,setSelectedModels,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,permissionMode,setPermissionMode,webSearch,setWebSearch,skills,onSkill,onFiles,settings,onStash,tokenUsage,workspaceMode,setWorkspaceMode}){
-  const [modelsOpen,setModelsOpen]=useState(false);
+function Composer({prompt,setPrompt,onSend,running,providerReady,provider,login,onConfigureProvider,models,modelMeta,model,setModel,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,permissionMode,setPermissionMode,webSearch,setWebSearch,skills,onSkill,onFiles,settings,onStash,tokenUsage,workspaceMode,setWorkspaceMode}){
   const [skillsOpen,setSkillsOpen]=useState(false);
   const [listening,setListening]=useState(false);
   const speechSupported=typeof window!=="undefined"&&Boolean(window.SpeechRecognition||window.webkitSpeechRecognition);
@@ -177,12 +191,11 @@ function Composer({prompt,setPrompt,onSend,running,providerReady,provider,login,
       <button className="pill-btn" onClick={onFiles}><FileCode2 size={14}/> Files</button>
       {window.trebellDesktop?.captureScreen&&<button className="circle-btn" onClick={onCaptureScreen} title="Capture desktop screenshot" aria-label="Capture desktop screenshot"><Camera size={15}/></button>}
       <div className="popover-wrap"><button className="pill-btn" onClick={()=>setSkillsOpen(!skillsOpen)}><WandSparkles size={14}/> Skills</button>{skillsOpen&&<div className="mini-popover">{skills.length?skills.map(s=><button key={s.path} onClick={()=>{onSkill(s);setSkillsOpen(false)}}><strong>{"$"}{s.name}</strong><span>{s.description}</span></button>):<p>No enabled skills found.</p>}</div>}</div>
-      <select className="permission-picker" value={permissionMode} onChange={e=>setPermissionMode(e.target.value)}><option value="supervised">Supervised</option><option value="auto">Auto</option><option value="full">Full access</option><option value="read-only">Read only</option></select>
+      <select className="permission-picker" value={permissionMode} onChange={e=>setPermissionMode(e.target.value)}><option value="supervised">Supervised</option><option value="edits">Auto-accept edits</option><option value="auto">Auto</option><option value="full">Full access</option><option value="read-only">Read only</option></select>
       <select className="workspace-mode" value={workspaceMode} onChange={e=>setWorkspaceMode(e.target.value)}><option value="current">Current workspace</option><option value="worktree">New worktree</option></select>
     </div><div className="composer-right">
       {!providerReady?<button className="login-btn" onClick={provider==="freebuff"?login:onConfigureProvider}>{provider==="freebuff"?"Sign in to Freebuff":"Configure "+({agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||"provider")}</button>:<>
-        <select data-testid="model-picker" value={model} disabled={!models.length} onChange={e=>{setModel(e.target.value);setSelectedModels([e.target.value])}}>{models.length?models.map(id=><option key={id} value={id}>{modelLabel(id,freebuff)}{modelMeta?.[id]?.agent?" · "+modelMeta[id].agent:""}</option>):<option value="">{modelError?"Provider error":"No models available"}</option>}</select>
-        <div className="popover-wrap"><button className="model-count" onClick={()=>setModelsOpen(!modelsOpen)}>{selectedModels.length} model{selectedModels.length===1?"":"s"}</button>{modelsOpen&&<div className="mini-popover models">{models.map(id=><label key={id}><input type="checkbox" checked={selectedModels.includes(id)} onChange={()=>setSelectedModels(prev=>prev.includes(id)?(prev.length===1?prev:prev.filter(x=>x!==id)):[...prev,id])}/><span>{modelLabel(id,freebuff)}{modelMeta?.[id]?.agent?" · "+modelMeta[id].agent:""}</span></label>)}</div>}</div>
+        <select data-testid="model-picker" value={model} disabled={!models.length} onChange={e=>setModel(e.target.value)}>{models.length?models.map(id=><option key={id} value={id}>{modelLabel(id,freebuff)}{modelMeta?.[id]?.agent?" · "+modelMeta[id].agent:""}</option>):<option value="">{modelError?"Provider error":"No models available"}</option>}</select>
       </>}
       <button className={"mic-btn "+(listening?"active":"")} onClick={dictate} disabled={!speechSupported} title={speechSupported?(listening?"Listening…":"Voice dictation"):"Voice dictation is unavailable on this platform"}><Mic size={15}/></button>
       <button className="stash-btn" onClick={onStash} title="Stash or restore prompt">S</button>
@@ -201,7 +214,7 @@ export default function App(){
   const [running,setRunning]=useState(false); const [queued,setQueued]=useState([]);
   const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [section,setSection]=useState("chat");
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [contextChips,setContextChips]=useState([]);
-  const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [selectedModels,setSelectedModels]=useState([]); const [modelError,setModelError]=useState("");
+  const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [modelError,setModelError]=useState("");
   const [freebuff,setFreebuff]=useState({loggedIn:false}); const [skills,setSkills]=useState([]);
   const [settings,setSettings]=useState({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",keyboardShortcuts:{},modelProvider:"freebuff"});
   const [permissionMode,setPermissionMode]=useState("supervised"); const [webSearch,setWebSearch]=useState(true); const [workspaceMode,setWorkspaceMode]=useState("current");
@@ -254,7 +267,7 @@ export default function App(){
     setModelError(d?.error||"");
     setModelMeta(Object.fromEntries((d?.metadata?.models||[]).map(item=>[item.id,item])));
     const next=ids.includes(model)?model:(ids[0]||"");
-    setModels(ids);setModel(next);setSelectedModels(next?[next]:[]);
+    setModels(ids);setModel(next);
     if(resetThread){setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([])}
     if((boot?.provider||provider)==="freebuff"&&next)refreshFreebuff(next);
     return d;
@@ -264,7 +277,7 @@ export default function App(){
     setProjectPath(path);
     const response=await api("/api/projects",{method:"POST",body:{path}}).catch(()=>null);
     const project=response?.project||null;
-    if(project?.defaultModel&&models.includes(project.defaultModel)){setModel(project.defaultModel);setSelectedModels([project.defaultModel])}
+    if(project?.defaultModel&&models.includes(project.defaultModel))setModel(project.defaultModel)
     if(project?.permissionMode)setPermissionMode(project.permissionMode);
     if(project?.workspaceMode)setWorkspaceMode(project.workspaceMode);
     if(settings.autoPull)api("/api/git/action",{method:"POST",body:{action:"auto-pull",cwd:path}}).catch(()=>{});
@@ -282,7 +295,7 @@ export default function App(){
       setModelError(modelData.error||"");
       setModelMeta(Object.fromEntries((modelData.metadata?.models||[]).map(item=>[item.id,item]))); const fallback=availableModels.length?availableModels:(boot.mock?["freebuff/deepseek/deepseek-v4-flash","freebuff/test/coding-large","freebuff/test/coding-fast"]:[]);
       const initialModel=(firstProject?.defaultModel&&fallback.includes(firstProject.defaultModel))?firstProject.defaultModel:(fallback[0]||"");
-      setModels(fallback); setModel(initialModel); setSelectedModels(initialModel?[initialModel]:[]);
+      setModels(fallback); setModel(initialModel);
       if(firstProject?.permissionMode)setPermissionMode(firstProject.permissionMode);
       if(firstProject?.workspaceMode)setWorkspaceMode(firstProject.workspaceMode);
       if(window.trebellDesktop?.background&&state.settings?.backgroundMode!=null)window.trebellDesktop.background.set(Boolean(state.settings.backgroundMode)).catch?.(()=>{});
@@ -354,9 +367,36 @@ export default function App(){
         })();
         return;
       }
+      if(p.namespace==="trebell_computer"){
+        (async()=>{
+          try{
+            if(!window.trebellDesktop?.computer)throw new Error("Computer use is only available in the Windows desktop app.");
+            const args=p.arguments||{};
+            if(p.tool!=="screenshot"&&permissionMode!=="full")throw new Error("Desktop mouse and keyboard control requires Full access mode.");
+            if(p.tool==="screenshot"){
+              const shot=await window.trebellDesktop.computer.screenshot();
+              client.respond(message.id,{contentItems:[{type:"inputImage",imageUrl:shot.dataUrl},{type:"inputText",text:JSON.stringify({width:shot.width,height:shot.height,displayId:shot.displayId,originX:shot.originX,originY:shot.originY,scaleFactor:shot.scaleFactor})}],success:true});
+              return;
+            }
+            let result;
+            if(p.tool==="move")result=await window.trebellDesktop.computer.move(args.x,args.y);
+            else if(p.tool==="click")result=await window.trebellDesktop.computer.click(args);
+            else if(p.tool==="scroll")result=await window.trebellDesktop.computer.scroll(args.delta);
+            else if(p.tool==="type")result=await window.trebellDesktop.computer.type(args.text);
+            else if(p.tool==="key")result=await window.trebellDesktop.computer.key(args.key);
+            else throw new Error("Unknown Trebell computer tool: "+p.tool);
+            client.respond(message.id,{contentItems:[{type:"inputText",text:JSON.stringify(result)}],success:true});
+          }catch(error){
+            client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false});
+          }
+        })();
+        return;
+      }
       client.respond(message.id,{contentItems:[{type:"inputText",text:"No client-defined dynamic tool is registered for "+(p.namespace||"default")+"/"+p.tool}],success:false});
       return;
     }
+    if(permissionMode==="edits"&&message.method==="item/fileChange/requestApproval"){client.respond(message.id,{decision:"accept"});return}
+    if(permissionMode==="edits"&&message.method==="applyPatchApproval"){client.respond(message.id,{decision:"approved"});return}
     if(message.method.includes("requestApproval")||message.method==="applyPatchApproval"||message.method==="execCommandApproval"){setApprovals(prev=>[...prev,message]);desktopNotify("Approval required",message.params?.reason||message.params?.command||"Trebell Code is waiting for permission.");return}
     client.reject(message.id,-32601,"Unsupported Trebell client request: "+message.method);
   }
@@ -410,7 +450,7 @@ export default function App(){
     const slug=String(modelId||"model").replace(/[^a-zA-Z0-9]+/g,"-").replace(/^-|-$/g,"").slice(-24)||"agent";const stamp=Date.now().toString(36);const branch="trebell/"+slug+"-"+stamp;const path=info.root+"-trebell-"+slug+"-"+stamp;
     const result=await api("/api/git/action",{method:"POST",body:{action:"worktree-create",cwd:info.root,branch,path,baseBranch:info.branch}});return result.result?.worktree||path;
   }
-  async function createThreadFor(modelId,cwd){const p=presetFor(permissionMode);const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools:TREBELL_BROWSER_TOOLS,developerInstructions:webSearch?"Web research is allowed when useful. You may use trebell_browser for interactive pages.":"Do not use web search or trebell_browser unless the user explicitly requests it."});return result.thread}
+  async function createThreadFor(modelId,cwd){const p=presetFor(permissionMode);const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools:[...TREBELL_BROWSER_TOOLS,...TREBELL_COMPUTER_TOOLS],developerInstructions:webSearch?"Web research is allowed when useful. You may use trebell_browser for interactive pages.":"Do not use web search or trebell_browser unless the user explicitly requests it."});return result.thread}
   function inputsFor(text,paths){return [{type:"text",text,text_elements:[]},...(paths||[]).map(path=>{const lower=String(path).toLowerCase();if(/\.(png|jpe?g|gif|webp|bmp)$/.test(lower))return{type:"localImage",path};if(/\.(mp3|wav|m4a|ogg|flac)$/.test(lower))return{type:"localAudio",path};return{type:"mention",name:String(path).split(/[\\/]/).pop(),path}})]}
   async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null){
     if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");let thread=threadOverride||activeThread;let cwd=cwdOverride||projectPath||bootstrap.cwd;
@@ -443,10 +483,6 @@ export default function App(){
     }
     setPrompt("");setPromptHistoryIndex(-1);setSection("chat");
     if(bootstrap.mock||!rpc||rpcStatus!=="connected"){setMessages(prev=>[...prev,{id:"user-"+Date.now(),role:"user",text}]);setRunning(true);try{const d=await api("/api/chat/direct",{method:"POST",body:{prompt:text,model}});setMessages(prev=>[...prev,{id:"assistant-"+Date.now(),role:"assistant",text:d.text||""}]);setEvents([{id:"fallback",kind:"tool",title:({freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||"Provider")+" direct response",status:"done",raw:{}}])}catch(e){setEvents([{id:"error",kind:"error",title:e.message,status:"done",raw:{}}])}finally{setRunning(false);setAttachments([]);setContextChips([])}return}
-    if(!activeThread&&selectedModels.length>1){
-      const info=await api("/api/git/info?path="+encodeURIComponent(projectPath));if(!info.isGit){setEvents([{id:"multi-error",kind:"error",title:"Multi-model fan-out requires a Git project so each model gets its own worktree.",status:"done",raw:{}}]);return}
-      const created=[];for(const id of selectedModels){const cwd=await prepareWorktree(projectPath,id);const thread=await createThreadFor(id,cwd);created.push(thread);await startTurn(text,attachments,id,thread,cwd)}setThreads(prev=>[...created,...prev.filter(t=>!created.some(c=>c.id===t.id))]);if(created[0])await openThread(created[0]);return;
-    }
     await startTurn(text,attachments,model).catch(e=>{setRunning(false);setEvents([{id:"send-error",kind:"error",title:e.message,status:"done",raw:{}}])});
   }
   async function sendQueuedNow(item){setQueued(prev=>prev.filter(q=>q.id!==item.id));if(running&&rpc&&activeThread&&activeTurnId){await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments)});setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,turnId:activeTurnId}])}else await startTurn(item.text,item.attachments,item.model||model)}
@@ -507,6 +543,14 @@ export default function App(){
   async function renameThread(){if(!rpc||!activeThread)return;const name=prompt("Rename thread",titleOf(activeThread));if(!name?.trim())return;await rpc.request("thread/name/set",{threadId:activeThread.id,name:name.trim()});setActiveThread(prev=>({...prev,name:name.trim()}));setThreads(prev=>prev.map(t=>t.id===activeThread.id?{...t,name:name.trim()}:t))}
   async function shareThread(){const text=messages.map(m=>(m.role==="user"?"You":"Trebell Code")+": "+m.text).join("\n\n");if(text)await navigator.clipboard?.writeText(text).catch(()=>{})}
   async function onProjectOpen(path){await touchProject(path);setSection("chat");if(rpcStatus==="connected")loadSkills(rpc,path)}
+  async function pickWorkspace(){
+    const path=await window.trebellDesktop?.pickDirectory?.();
+    if(!path)return;
+    if(activeThread?.id&&String(activeThread.cwd||"")!==String(path)){
+      await newChat();
+    }
+    await onProjectOpen(path);
+  }
   function onSkill(skill){setPrompt(prev=>(prev?prev+" ":"")+"$"+skill.name+" ")}
 
   function openRightPanel(tab="files"){setRightPanelTab(tab);setRightPanelOpen(true);setSection("chat")}
@@ -564,7 +608,7 @@ export default function App(){
         {(section==="chat"||section==="new")&&<div className="chat-workspace">
           <header className="workspace-header">
             <div className="workspace-breadcrumb">
-              <button className="project-crumb" onClick={()=>setSection("projects")}><FolderCode size={14}/><span>{projectLabel}</span></button>
+              <button className="project-crumb" onClick={pickWorkspace} title={projectPath||"Open folder"}><FolderCode size={14}/><span>{projectLabel}</span></button><button className="project-switcher" onClick={()=>setSection("projects")} title="Recent projects"><ChevronDown size={12}/></button>
               <span>/</span>
               <button className="thread-title-button" onDoubleClick={renameThread} onClick={renameThread} title="Rename thread"><strong>{activeTitle}</strong><ChevronDown size={13}/></button>
               {activeThread?.id&&(threadMeta[activeThread.id]?.linkedPullRequests||[]).map(pr=><button className="header-pr" key={pr.url} onClick={()=>window.open(pr.url,"_blank")}><GitBranch size={11}/>#{pr.number}</button>)}
@@ -597,7 +641,7 @@ export default function App(){
             </div>
           </div>
 
-          <Composer prompt={prompt} setPrompt={setPrompt} onSend={send} running={running} providerReady={providerReady} provider={provider} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} selectedModels={selectedModels} setSelectedModels={setSelectedModels} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onCaptureScreen={()=>captureDesktop().catch(error=>setEvents(prev=>[...prev,{id:"screen-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} webSearch={webSearch} setWebSearch={setWebSearch} skills={skills} onSkill={onSkill} onFiles={()=>openRightPanel("files")} settings={settings} onStash={stashPrompt} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode}/>
+          <Composer prompt={prompt} setPrompt={setPrompt} onSend={send} running={running} providerReady={providerReady} provider={provider} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onCaptureScreen={()=>captureDesktop().catch(error=>setEvents(prev=>[...prev,{id:"screen-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} webSearch={webSearch} setWebSearch={setWebSearch} skills={skills} onSkill={onSkill} onFiles={()=>openRightPanel("files")} settings={settings} onStash={stashPrompt} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="terminal-drawer-head"><span><SquareTerminal size={14}/> Terminal</span><div><button onClick={()=>attachExcerpt("")} aria-hidden="true" tabIndex={-1} className="terminal-head-spacer"/><button onClick={()=>setPanel(null)} aria-label="Close terminal"><X size={15}/></button></div></div>
