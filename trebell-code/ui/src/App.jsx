@@ -540,6 +540,9 @@ export default function App(){
       setPanel("terminal");
       setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:response.result.setup.session.id})),0);
     }
+    const completion=response.result?.setup?.completion;
+    if(response.result?.setup?.waitForSetup&&completion?.timeout)throw new Error("Worktree setup is still running after 30 minutes. The agent was not started.");
+    if(response.result?.setup?.waitForSetup&&completion&&completion.exitCode!==0)throw new Error(`Worktree setup failed with exit code ${completion.exitCode??"unknown"}. Fix the setup terminal, then retry.`);
     return worktree;
   }
   async function createThreadFor(modelId,cwd){const p=presetFor(permissionMode);const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools:[...TREBELL_BROWSER_TOOLS,...TREBELL_COMPUTER_TOOLS],developerInstructions:webSearch?"Web research is allowed when useful. You may use trebell_browser for interactive pages.":"Do not use web search or trebell_browser unless the user explicitly requests it."});return result.thread}
