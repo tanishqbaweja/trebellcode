@@ -98,6 +98,23 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
     assert.equal(executed.exitCode,0,JSON.stringify(executed));
     assert.match(executed.stdout,/trebell-relay-ok/);
 
+    const recoveryThread=await rpc(ws,4,"thread/start",{
+      cwd:process.cwd(),
+      modelProvider:"freebuff",
+      approvalPolicy:"never",
+      sandbox:"danger-full-access",
+      ephemeral:true,
+      threadSource:"trebell-code",
+    });
+    const recoveryTurn=await rpc(ws,5,"turn/start",{
+      threadId:recoveryThread.thread.id,
+      input:[],
+      turnTrigger:"trebell-restart-continuation",
+    });
+    assert.ok(recoveryTurn.turn?.id,"Codex must accept an empty-input promptless continuation turn");
+    assert.equal(recoveryTurn.turn.status,"inProgress");
+    await rpcOutcome(ws,6,"turn/interrupt",{threadId:recoveryThread.thread.id,turnId:recoveryTurn.turn.id});
+
     const capabilityCalls=[
       ["account/read",{refreshToken:false}],
       ["account/rateLimits/read",{excludeResetCreditDetails:true}],
@@ -110,7 +127,7 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
       ["modelProvider/capabilities/read",{}],
       ["externalAgentConfig/detect",{includeHome:true,cwds:[process.cwd()],maxSessions:10,maxSessionAgeDays:30}],
     ];
-    let id=10;
+    let id=20;
     for(const [method,params] of capabilityCalls){
       const outcome=await rpcOutcome(ws,id++,method,params);
       if(outcome.ok)continue;

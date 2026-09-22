@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 import { AcpAgentSession } from "../src/acp-agent-session.mjs";
+import { AgentThreadStore } from "../src/agent-thread-store.mjs";
 import { TerminalManager } from "../src/terminal-manager.mjs";
 
 test("agent runtime registry exposes real harnesses and capability-gates configured instances", async () => {
@@ -78,4 +79,26 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",lin
     await terminals.shutdown().catch(()=>{});
     await rm(root,{recursive:true,force:true});
   }
+});
+
+test("external active turns become queued restart recoveries only when enabled", async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-agent-recovery-"));
+  const env={...process.env,TREBELL_HOME:home};
+  try{
+    const first=new AgentThreadStore(env);const thread=first.create({runtime:"opencode",cwd:home,providerSessionId:"ses_saved",model:"fixture/model"});const turn=first.addTurn(thread.id,{inputText:"Keep working"});
+    const restarted=new AgentThreadStore(env);const recovered=restarted.reconcileRestart({continueAfterRestart:true});
+    assert.deepEqual(recovered.map(item=>item.threadId),[thread.id]);
+    const pending=restarted.get(thread.id);assert.equal(pending.recovery?.pending,true);assert.equal(pending.recovery?.turnId,turn.id);assert.equal(pending.turns[0].status,"interrupted");assert.equal(pending.status.type,"idle");
+    const resumed=restarted.restartTurn(thread.id,turn.id);assert.equal(resumed.status,"inProgress");assert.equal(restarted.get(thread.id).status.type,"active");
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
+test("external active turns settle as interrupted errors when restart recovery is disabled", async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-agent-no-recovery-"));
+  const env={...process.env,TREBELL_HOME:home};
+  try{
+    const first=new AgentThreadStore(env);const thread=first.create({runtime:"claude",cwd:home,providerSessionId:"claude-session"});first.addTurn(thread.id,{inputText:"Do work"});
+    const restarted=new AgentThreadStore(env);assert.deepEqual(restarted.reconcileRestart({continueAfterRestart:false}),[]);
+    const settled=restarted.get(thread.id);assert.equal(settled.turns[0].status,"failed");assert.match(settled.turns[0].error?.message||"",/interrupted by a Trebell restart/i);assert.equal(settled.status.type,"systemError");assert.equal(settled.recovery,undefined);
+  }finally{await rm(home,{recursive:true,force:true})}
 });

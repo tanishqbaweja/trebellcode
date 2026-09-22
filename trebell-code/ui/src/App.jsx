@@ -447,6 +447,22 @@ export default function App(){
     if(agentRuntime!=="codex")return;
     if(!path)return; const result=await client.request("skills/list",{cwds:[path]}).catch(()=>({data:[]})); setSkills((result.data||[]).flatMap(x=>x.skills||[]).filter(s=>s.enabled!==false));
   }
+  async function recoverCodexAfterRestart(client){
+    if(agentRuntime!=="codex")return;
+    const recovery=await api("/api/recovery").catch(()=>null);if(!recovery?.enabled||!recovery.items?.length)return;
+    for(const item of recovery.items){
+      try{
+        const resumed=await client.request("thread/resume",{threadId:item.threadId,modelProvider:provider,excludeTurns:false});
+        const previous=(resumed?.thread?.turns||[]).find(turn=>turn.id===item.turnId);
+        if(previous&&["completed","failed","cancelled","interrupted"].includes(previous.status)){
+          await api("/api/recovery",{method:"POST",body:{threadId:item.threadId,action:"clear"}}).catch(()=>{});continue;
+        }
+        await client.request("turn/start",{threadId:item.threadId,input:[],turnTrigger:"trebell-restart-continuation"});
+      }catch(error){
+        await api("/api/recovery",{method:"POST",body:{threadId:item.threadId,action:"failed",message:error.message||String(error)}}).catch(()=>{});
+      }
+    }
+  }
 
   function applyProviderInventory(update={}){
     if(Array.isArray(update.commands))setProviderCommands(update.commands);
@@ -462,7 +478,7 @@ export default function App(){
     if(!bootstrap.wsUrl||bootstrap.mock)return; let disposed=false,retryTimer=null,client=null;
     const connect=async(attempt=0)=>{
       client=new CodexRpcClient(bootstrap.wsUrl,{clientVersion:bootstrap.version||"0.0.0",onStatus:setRpcStatus,onNotification:handleNotification,onServerRequest:m=>handleServerRequest(client,m)}); rpcRef.current=client;setRpc(client);
-      try{await client.connect();if(disposed)return;await ensureSections(client);await loadThreads(client);await loadSkills(client,projectPath)}
+      try{await client.connect();if(disposed)return;await recoverCodexAfterRestart(client);await ensureSections(client);await loadThreads(client);await loadSkills(client,projectPath)}
       catch(error){client.close();if(disposed)return;if(attempt<120){setRpcStatus("connecting");retryTimer=setTimeout(()=>connect(attempt+1),500)}else setRpcStatus("error")}
     };
     connect(); return()=>{disposed=true;clearTimeout(retryTimer);client?.close()};

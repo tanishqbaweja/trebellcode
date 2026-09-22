@@ -22,6 +22,25 @@ export class AgentThreadStore{
     writeFileSync(tmp,JSON.stringify(this.data,null,2),{encoding:"utf8",mode:0o600});
     renameSync(tmp,this.path);
   }
+  reconcileRestart({continueAfterRestart=false}={}){
+    const now=Math.floor(Date.now()/1000);const recoverable=[];let changed=false;
+    for(const thread of this.data.threads){
+      const activeTurn=[...(thread.turns||[])].reverse().find(turn=>["inProgress","running","starting"].includes(turn?.status));
+      const stale=thread.status?.type==="active"||Boolean(activeTurn);
+      if(!stale)continue;
+      changed=true;
+      if(activeTurn&&continueAfterRestart&&thread.providerSessionId){
+        activeTurn.status="interrupted";activeTurn.completedAt=now;activeTurn.durationMs=activeTurn.startedAt?Math.max(0,(now-activeTurn.startedAt)*1000):null;
+        activeTurn.error={message:"Trebell restarted while this turn was running. Recovery is queued."};
+        thread.status={type:"idle"};thread.recovery={pending:true,turnId:activeTurn.id,createdAt:now};recoverable.push({threadId:thread.id,turnId:activeTurn.id,runtime:thread.runtime});
+      }else{
+        if(activeTurn){activeTurn.status="failed";activeTurn.completedAt=now;activeTurn.durationMs=activeTurn.startedAt?Math.max(0,(now-activeTurn.startedAt)*1000):null;activeTurn.error={message:"Agent session was interrupted by a Trebell restart. Send a new message to continue."}}
+        thread.status={type:"systemError"};delete thread.recovery;
+      }
+      thread.updatedAt=now;
+    }
+    if(changed)this.#save();return clone(recoverable);
+  }
   list(runtime=null){
     return clone(this.data.threads.filter(thread=>!runtime||thread.runtime===runtime).sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0)));
   }
@@ -52,6 +71,12 @@ export class AgentThreadStore{
     const thread=this.data.threads.find(item=>item.id===threadId);const turn=thread?.turns?.find(item=>item.id===turnId);if(!turn)return null;
     Object.assign(turn,patch);thread.updatedAt=Math.floor(Date.now()/1000);this.#save();return clone(turn);
   }
+  restartTurn(threadId,turnId){
+    const thread=this.data.threads.find(item=>item.id===threadId);const turn=thread?.turns?.find(item=>item.id===turnId);if(!turn)return null;
+    turn.status="inProgress";turn.completedAt=null;turn.durationMs=null;turn.error=null;thread.status={type:"active",activeFlags:[]};
+    if(thread.recovery)thread.recovery={...thread.recovery,pending:false,startedAt:Math.floor(Date.now()/1000)};
+    thread.updatedAt=Math.floor(Date.now()/1000);this.#save();return clone(turn);
+  }
   addItem(threadId,turnId,item){
     const thread=this.data.threads.find(entry=>entry.id===threadId);const turn=thread?.turns?.find(entry=>entry.id===turnId);if(!turn)return null;
     const index=turn.items.findIndex(entry=>entry.id===item.id);
@@ -62,7 +87,7 @@ export class AgentThreadStore{
     const thread=this.data.threads.find(item=>item.id===threadId);const turn=thread?.turns?.find(item=>item.id===turnId);if(!turn)return null;
     const completedAt=Math.floor(Date.now()/1000);turn.status=status;turn.error=error;turn.completedAt=completedAt;
     turn.durationMs=turn.startedAt?Math.max(0,(completedAt-turn.startedAt)*1000):null;
-    thread.status=status==="failed"?{type:"systemError"}:{type:"idle"};thread.updatedAt=completedAt;this.#save();return clone(turn);
+    thread.status=status==="failed"?{type:"systemError"}:{type:"idle"};delete thread.recovery;thread.updatedAt=completedAt;this.#save();return clone(turn);
   }
   rename(id,name){return this.update(id,{name:String(name||"").trim()||null})}
 }

@@ -70,11 +70,13 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
   const wss=new WebSocketServer({noServer:true});
   const sessions=new Map();
   const socketContexts=new Set();
+  const recoveryInFlight=new Set();
 
   async function ensureSession(thread,context,{permissionMode="supervised",model=null}={}){
     let session=sessions.get(thread.id);
     if(session)return session;
-    const instance=runtimeManager.instances().find(item=>item.id===(thread.runtimeInstanceId||runtimeManager.activeInstance().id))||runtimeManager.activeInstance();
+    const instances=runtimeManager.instances();
+    const instance=instances.find(item=>item.id===thread.runtimeInstanceId)||instances.find(item=>item.kind===thread.runtime)||runtimeManager.activeInstance();
     if(instance.kind==="codex")throw new Error("Codex uses the native Codex relay");
     const environmentId=thread.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null;
     const status=await runtimeManager.probe(instance,{environmentId});if(!status.available)throw new Error(status.message||`${status.name} is unavailable`);
@@ -94,6 +96,40 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
   }
 
   function emit(method,params){for(const context of socketContexts)if(context.ws.readyState===context.ws.OPEN)context.ws.send(JSON.stringify({method,params}))}
+
+  function settlePrompt({thread,turn,session,promptPromise,model=null}){
+    const persistUsage=result=>{
+      const usage=usageFromPromptResult(result,session.__usage);if(!usage)return;const current=threadStore.get(thread.id)||thread;
+      state?.recordUsage?.({runtime:current.runtime||runtimeManager.activeRuntime(),provider:current.providerMeta?.runtimeInstanceId||null,model:current.model||model||null,threadId:thread.id,turnId:turn.id,usage:usage.usage,cost:usage.cost,at:usage.at||Date.now()});
+    };
+    promptPromise.then(result=>{
+      persistUsage(result);
+      const providerMessageId=result?.providerMessageId||result?.userMessageId||null;if(providerMessageId)threadStore.updateTurn(thread.id,turn.id,{providerMessageId});
+      const assistant=String(session.__assistant||"").trim();if(assistant){const item={type:"agentMessage",id:`assistant-${turn.id}`,text:assistant,phase:null,memoryCitation:null,delivery:null,questions:null};threadStore.addItem(thread.id,turn.id,item);emit("item/completed",{threadId:thread.id,turnId:turn.id,item,completedAtMs:Date.now()})}
+      const status=result?.stopReason==="cancelled"?"cancelled":result?.stopReason==="refusal"?"failed":"completed";const completed=threadStore.finishTurn(thread.id,turn.id,{status,error:status==="failed"?{message:"Agent refused the turn"}:null});
+      emit("turn/completed",{threadId:thread.id,turn:completed});emit("thread/status/changed",{threadId:thread.id,status:threadStore.get(thread.id).status});
+    }).catch(error=>{
+      persistUsage(null);
+      const completed=threadStore.finishTurn(thread.id,turn.id,{status:"failed",error:{message:error.message}});emit("error",{threadId:thread.id,turnId:turn.id,message:error.message});emit("turn/completed",{threadId:thread.id,turn:completed});
+    }).finally(()=>recoveryInFlight.delete(thread.id));
+  }
+
+  async function recoverPending(context){
+    if(!state?.settings?.().continueThreadsAfterRestart)return;
+    for(const thread of threadStore.list()){
+      const recovery=thread.recovery;if(!recovery?.pending||!thread.providerSessionId||recoveryInFlight.has(thread.id))continue;
+      recoveryInFlight.add(thread.id);
+      try{
+        const session=await ensureSession(thread,context,{model:thread.model||null});const turn=threadStore.restartTurn(thread.id,recovery.turnId);
+        if(!turn)throw new Error("Interrupted turn was not found");
+        session.__assistant="";session.__usage=null;emit("turn/started",{threadId:thread.id,turn});emit("thread/status/changed",{threadId:thread.id,status:{type:"active",activeFlags:[]}});
+        const prompt=[{type:"text",text:"Continue where you left off."}];
+        settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,{messageId:randomUUID(),agent:thread.agent||null}),model:thread.model||null});
+      }catch(error){
+        const failed=threadStore.finishTurn(thread.id,recovery.turnId,{status:"failed",error:{message:`Could not continue after restart: ${error.message}`}});emit("error",{threadId:thread.id,turnId:recovery.turnId,message:error.message});if(failed)emit("turn/completed",{threadId:thread.id,turn:failed});recoveryInFlight.delete(thread.id);
+      }
+    }
+  }
 
   function handleUpdate(threadId,params){
     const update=params?.update||{};const thread=threadStore.get(threadId);if(!thread)return;const turnId=thread.turns?.at(-1)?.id||null;
@@ -195,21 +231,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const prompt=await acpPrompt(params.input||[]);
       const selectedAgent=Object.prototype.hasOwnProperty.call(params,"agent")?(params.agent||null):(thread.agent||null);
       if(selectedAgent!==thread.agent)threadStore.update(thread.id,{agent:selectedAgent});
-      const promptPromise=session.prompt(prompt,{messageId:randomUUID(),agent:selectedAgent});
-      const persistUsage=result=>{
-        const usage=usageFromPromptResult(result,session.__usage);if(!usage)return;const current=threadStore.get(thread.id)||thread;
-        state?.recordUsage?.({runtime:current.runtime||runtimeManager.activeRuntime(),provider:current.providerMeta?.runtimeInstanceId||null,model:current.model||params.model||null,threadId:thread.id,turnId:turn.id,usage:usage.usage,cost:usage.cost,at:usage.at||Date.now()});
-      };
-      promptPromise.then(result=>{
-        persistUsage(result);
-        const providerMessageId=result?.providerMessageId||result?.userMessageId||null;if(providerMessageId)threadStore.updateTurn(thread.id,turn.id,{providerMessageId});
-        const assistant=String(session.__assistant||"").trim();if(assistant){const item={type:"agentMessage",id:`assistant-${turn.id}`,text:assistant,phase:null,memoryCitation:null,delivery:null,questions:null};threadStore.addItem(thread.id,turn.id,item);emit("item/completed",{threadId:thread.id,turnId:turn.id,item,completedAtMs:Date.now()})}
-        const status=result?.stopReason==="cancelled"?"cancelled":result?.stopReason==="refusal"?"failed":"completed";const completed=threadStore.finishTurn(thread.id,turn.id,{status,error:status==="failed"?{message:"Agent refused the turn"}:null});
-        emit("turn/completed",{threadId:thread.id,turn:completed});emit("thread/status/changed",{threadId:thread.id,status:threadStore.get(thread.id).status});
-      }).catch(error=>{
-        persistUsage(null);
-        const completed=threadStore.finishTurn(thread.id,turn.id,{status:"failed",error:{message:error.message}});emit("error",{threadId:thread.id,turnId:turn.id,message:error.message});emit("turn/completed",{threadId:thread.id,turn:completed});
-      });
+      settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,{messageId:randomUUID(),agent:selectedAgent}),model:params.model||thread.model||null});
       return {turn};
     }
     if(method==="turn/interrupt"){sessions.get(params.threadId)?.cancel();return {ok:true}}
@@ -275,7 +297,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
           const pending=pendingServer.get(message.id);pendingServer.delete(message.id);clearTimeout(pending.timer);message.error?pending.reject(new Error(message.error.message||"Request declined")):pending.resolve(message.result);return;
         }
         if(!message.method)return;
-        if(!Object.prototype.hasOwnProperty.call(message,"id"))return;
+        if(!Object.prototype.hasOwnProperty.call(message,"id")){
+          if(message.method==="initialized")recoverPending(context).catch(error=>log(error?.stack||String(error)));
+          return;
+        }
         try{const result=await request(context,message.method,message.params||{});ws.send(JSON.stringify({id:message.id,result}))}
         catch(error){log(error?.stack||String(error));ws.send(JSON.stringify({id:message.id,error:{code:Number(error?.code)||-32000,message:error instanceof Error?error.message:String(error)}}))}
       });

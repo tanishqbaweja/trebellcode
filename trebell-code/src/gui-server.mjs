@@ -348,6 +348,7 @@ async function projectActionSuggestions(projectPath){
 }
 
 export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",mock=false,env=process.env}={}){
+  const bootId=randomUUID();
   const dist=resolve(packageRoot,"ui","dist");
   const state=new TrebellStateStore(env);
   const remoteAuth=new RemoteAuthStore(env);
@@ -357,6 +358,14 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   const agentRuntimes=new AgentRuntimeManager({state,env,environments});
   const codexThreadModels=new Map();
   const agentThreads=new AgentThreadStore(env);
+  agentThreads.reconcileRestart({continueAfterRestart:Boolean(state.settings().continueThreadsAfterRestart)});
+  for(const [threadId,meta] of Object.entries(state.listThreadMeta())){
+    const recovery=meta?.restartRecovery;
+    if(recovery?.runtime!=="codex"||recovery?.status!=="active"||!recovery.turnId||recovery.bootId===bootId)continue;
+    state.updateThreadMeta(threadId,{restartRecovery:Boolean(state.settings().continueThreadsAfterRestart)
+      ?{...recovery,status:"pending",detectedAt:Date.now()}
+      :{...recovery,status:"interrupted",detectedAt:Date.now(),message:"Codex work was interrupted by a Trebell restart. Send a new message to continue."}});
+  }
   let selectedAgentRuntime=normalizeAgentRuntime(state.settings().agentRuntime);
   if(state.settings().agentRuntime!==selectedAgentRuntime) state.updateSettings({agentRuntime:selectedAgentRuntime,agentRuntimeInstanceId:`${selectedAgentRuntime}-default`});
   let selectedProvider=normalizeProviderId(state.settings().modelProvider);
@@ -388,6 +397,24 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
 
   function providerReady(providerId=selectedProvider){
     return providerId==="freebuff" ? (mock || isLoggedIn(env)) : (mock || providers.hasKey(providerId));
+  }
+  function markCodexTurnActive(threadId,turnId){
+    if(!threadId||!turnId)return;
+    state.updateThreadMeta(threadId,{restartRecovery:{runtime:"codex",bootId,threadId,turnId,status:"active",startedAt:Date.now()}});
+  }
+  function clearCodexRecovery(threadId,status="completed",message=null){
+    if(!threadId)return;
+    const current=state.threadMeta(threadId)?.restartRecovery;
+    state.updateThreadMeta(threadId,{restartRecovery:current?{...current,bootId,status,finishedAt:Date.now(),...(message?{message}:{})}:undefined});
+  }
+  function codexRecoverySnapshot(){
+    const enabled=Boolean(state.settings().continueThreadsAfterRestart);
+    const items=[];
+    for(const [threadId,meta] of Object.entries(state.listThreadMeta())){
+      const recovery=meta?.restartRecovery;
+      if(recovery?.runtime==="codex"&&recovery?.status==="pending"&&recovery.bootId!==bootId&&recovery.turnId)items.push({threadId,turnId:recovery.turnId,startedAt:recovery.startedAt||null});
+    }
+    return {enabled,bootId,items};
   }
 
   async function restartAppServer(providerId=selectedProvider){
@@ -519,6 +546,17 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     const url=new URL(req.url || "/",`http://127.0.0.1:${port}`);
 
     if(url.pathname==="/api/state" && req.method==="GET") return json(res,200,state.snapshot());
+    if(url.pathname==="/api/recovery"){
+      if(req.method==="GET")return json(res,200,codexRecoverySnapshot());
+      if(req.method==="POST"){
+        try{
+          const body=await readJsonBody(req);const threadId=String(body.threadId||"");if(!threadId)throw new Error("threadId is required");
+          const action=String(body.action||"clear");
+          clearCodexRecovery(threadId,action==="failed"?"error":action==="interrupted"?"interrupted":"completed",body.message?String(body.message):null);
+          return json(res,200,codexRecoverySnapshot());
+        }catch(error){return json(res,400,{error:error.message});}
+      }
+    }
     if(url.pathname==="/api/settings"){
       if(req.method==="GET") return json(res,200,state.settings());
       if(req.method==="POST"){
@@ -1189,6 +1227,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       const params=message?.params||{};
       if(message?.method==="thread/started"&&params.thread?.id&&params.thread?.model)codexThreadModels.set(params.thread.id,params.thread.model);
       if(message?.method==="thread/deleted"&&params.threadId)codexThreadModels.delete(params.threadId);
+      if(message?.method==="turn/started")markCodexTurnActive(params.threadId,params.turn?.id||params.turnId);
+      if(message?.method==="turn/completed")clearCodexRecovery(params.threadId,"completed");
       if(message?.method==="thread/tokenUsage/updated"&&params.threadId&&params.turnId){
         state.recordUsage({runtime:"codex",provider:selectedProvider,model:codexThreadModels.get(params.threadId)||null,threadId:params.threadId,turnId:params.turnId,usage:params.tokenUsage?.last||params.tokenUsage?.total||{},cost:params.tokenUsage?.cost||null,at:Date.now()});
       }
