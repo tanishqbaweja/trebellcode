@@ -1,11 +1,13 @@
 import { execFile, spawn } from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { promisify } from "node:util";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join as pathJoin } from "node:path";
-import { gitInfo } from "./git-service.mjs";
+import { gitInfo as localGitInfo } from "./git-service.mjs";
 
 const execFileAsync=promisify(execFile);
+const executionContext=new AsyncLocalStorage();
 const PROVIDERS=["github","gitlab","forgejo","bitbucket","azure-devops"];
 
 const CAPABILITIES={
@@ -16,7 +18,20 @@ const CAPABILITIES={
   "azure-devops":{create:true,comment:false,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:false,checkout:false,reviewers:false,publish:true,viewedFiles:"environment"},
 };
 
+function currentExecutor(){return executionContext.getStore()?.executor||null}
+export async function withSourceControlExecutor(executor,callback){
+  if(!executor)return callback();
+  return executionContext.run({executor},callback);
+}
+
 async function run(command,args,{cwd,timeout=120000,maxBuffer=8*1024*1024,allowFailure=false}={}){
+  const executor=currentExecutor();
+  if(executor?.run){
+    const result=await executor.run(command,args,{cwd,timeout,maxBuffer});
+    const normalized={ok:result?.ok!==false&&Number(result?.code??result?.exitCode??0)===0,stdout:result?.stdout||"",stderr:result?.stderr||"",code:Number(result?.code??result?.exitCode??0)};
+    if(normalized.ok||allowFailure)return normalized;
+    throw new Error((normalized.stderr||normalized.stdout||`${command} failed`).trim());
+  }
   try{
     const result=await execFileAsync(command,args,{cwd,windowsHide:true,timeout,maxBuffer});
     return {ok:true,stdout:result.stdout||"",stderr:result.stderr||""};
@@ -27,6 +42,13 @@ async function run(command,args,{cwd,timeout=120000,maxBuffer=8*1024*1024,allowF
 }
 
 async function runStdin(command,args,input,{cwd,timeout=120000,maxBuffer=8*1024*1024,allowFailure=false}={}){
+  const executor=currentExecutor();
+  if(executor?.runStdin){
+    const result=await executor.runStdin(command,args,input,{cwd,timeout,maxBuffer});
+    const normalized={ok:result?.ok!==false&&Number(result?.code??result?.exitCode??0)===0,stdout:result?.stdout||"",stderr:result?.stderr||"",code:Number(result?.code??result?.exitCode??0)};
+    if(normalized.ok||allowFailure)return normalized;
+    throw new Error((normalized.stderr||normalized.stdout||`${command} failed`).trim());
+  }
   return await new Promise((resolve,reject)=>{
     let stdout="",stderr="",settled=false;
     const child=spawn(command,args,{cwd,windowsHide:true,stdio:["pipe","pipe","pipe"]});
@@ -38,6 +60,114 @@ async function runStdin(command,args,input,{cwd,timeout=120000,maxBuffer=8*1024*
     child.once("close",code=>{if(settled)return;settled=true;clearTimeout(timer);const result={ok:code===0,stdout,stderr,code};if(code===0||allowFailure)resolve(result);else reject(new Error((stderr||stdout||`${command} failed`).trim()))});
     child.stdin.end(input??"");
   });
+}
+
+async function serviceGitInfo(cwd){
+  if(!currentExecutor())return localGitInfo(cwd);
+  const base=String(cwd||"").trim();
+  const rootRes=await run("git",["rev-parse","--show-toplevel"],{cwd:base,allowFailure:true});
+  if(!rootRes.ok)return {isGit:false,cwd:base,root:null,branch:null,branches:[],status:[],remotes:[],worktrees:[]};
+  const root=rootRes.stdout.trim();
+  const branchRes=await run("git",["branch","--show-current"],{cwd:root,allowFailure:true});
+  const branchesRes=await run("git",["for-each-ref","--format=%(refname:short)","refs/heads"],{cwd:root,allowFailure:true});
+  const statusRes=await run("git",["status","--porcelain=v1","-b"],{cwd:root,allowFailure:true});
+  const remoteRes=await run("git",["remote","-v"],{cwd:root,allowFailure:true});
+  const worktreeRes=await run("git",["worktree","list","--porcelain"],{cwd:root,allowFailure:true});
+  const branch=branchRes.stdout.trim();
+  const upstreamRes=branch
+    ?await run("git",["for-each-ref","--format=%(upstream:short)","refs/heads/"+branch],{cwd:root,allowFailure:true})
+    :{ok:false,stdout:""};
+  const statusLines=statusRes.stdout.split(/\r?\n/).filter(Boolean);
+  const remotes=remoteRes.stdout.split(/\r?\n/).filter(Boolean).map(line=>{
+    const match=line.match(/^(\S+)\s+(\S+)\s+\((fetch|push)\)$/);
+    return match?{name:match[1],url:match[2],kind:match[3]}:{raw:line};
+  });
+  const worktrees=[];let current=null;
+  for(const line of worktreeRes.stdout.split(/\r?\n/)){
+    if(line.startsWith("worktree ")){if(current)worktrees.push(current);current={path:line.slice(9)}}
+    else if(current&&line.startsWith("HEAD "))current.head=line.slice(5);
+    else if(current&&line.startsWith("branch "))current.branch=line.slice(7).replace(/^refs\/heads\//,"");
+    else if(current&&line==="bare")current.bare=true;
+  }
+  if(current)worktrees.push(current);
+  return {
+    isGit:true,cwd:base,root,branch:branch||null,
+    upstream:upstreamRes.ok?upstreamRes.stdout.trim()||null:null,
+    branches:branchesRes.stdout.split(/\r?\n/).filter(Boolean),
+    status:statusLines.slice(1).map(line=>({code:line.slice(0,2),path:line.slice(3)})),
+    statusHeader:statusLines[0]||"",
+    remotes,worktrees,
+  };
+}
+
+async function serviceReadFile(path,encoding="utf8"){
+  const executor=currentExecutor();
+  if(executor?.readFile)return executor.readFile(path,encoding);
+  return readFile(path,encoding);
+}
+
+async function serviceRequest(url,options={}){
+  const executor=currentExecutor();
+  if(executor?.request)return executor.request(url,options);
+  const response=await fetch(url,options);
+  const text=await response.text();
+  return {ok:response.ok,status:response.status,text};
+}
+
+export async function sourceControlGitInfo(cwd){
+  return serviceGitInfo(cwd);
+}
+
+export async function sourceControlGitAction(cwd,{action,name=null,message=null,setUpstream=false,startPoint=null,path=null,force=false}={}){
+  const base=String(cwd||"").trim();
+  if(!base)throw new Error("Repository path is required");
+  if(action==="init"){
+    const result=await run("git",["init"],{cwd:base,allowFailure:true});
+    if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not initialize Git").trim());
+    return serviceGitInfo(base);
+  }
+  const info=await serviceGitInfo(base);
+  if(!info.isGit)throw new Error("Not a Git repository");
+  const root=info.root;
+  let result=null;
+  if(action==="branch-create"){
+    const branch=String(name||"").trim();if(!branch)throw new Error("Branch name is required");
+    const args=["checkout","-b",branch];if(startPoint)args.push(String(startPoint));
+    result=await run("git",args,{cwd:root,allowFailure:true});
+  }else if(action==="branch-switch"){
+    const branch=String(name||"").trim();if(!branch)throw new Error("Branch name is required");
+    result=await run("git",["checkout",branch],{cwd:root,allowFailure:true});
+  }else if(action==="commit"){
+    const subject=String(message||"").trim();if(!subject)throw new Error("Commit message is required");
+    const add=await run("git",["add","-A"],{cwd:root,allowFailure:true});
+    if(!add.ok)throw new Error((add.stderr||add.stdout||"Could not stage changes").trim());
+    result=await run("git",["commit","-m",subject],{cwd:root,allowFailure:true});
+  }else if(action==="fetch"){
+    result=await run("git",["fetch","--all","--prune"],{cwd:root,allowFailure:true,timeout:120000});
+  }else if(action==="pull"||action==="auto-pull"){
+    result=await run("git",["pull","--ff-only"],{cwd:root,allowFailure:true,timeout:120000});
+  }else if(action==="push"){
+    const args=["push"];
+    if(setUpstream){
+      if(!info.branch)throw new Error("Cannot set upstream from a detached HEAD");
+      const remote=info.remotes?.find(item=>item.name==="origin"&&item.kind==="push")?.name||info.remotes?.find(item=>item.kind==="push")?.name||"origin";
+      args.push("-u",remote,info.branch);
+    }
+    result=await run("git",args,{cwd:root,allowFailure:true,timeout:120000});
+  }else if(action==="worktree-create"){
+    const branch=String(name||"").trim();const target=String(path||"").trim();
+    if(!branch||!target)throw new Error("Worktree branch and path are required");
+    const args=["worktree","add","-b",branch,target];if(startPoint)args.push(String(startPoint));
+    result=await run("git",args,{cwd:root,allowFailure:true,timeout:120000});
+  }else if(action==="worktree-remove"){
+    const target=String(path||"").trim();if(!target)throw new Error("Worktree path is required");
+    const args=["worktree","remove"];if(force)args.push("--force");args.push(target);
+    result=await run("git",args,{cwd:root,allowFailure:true,timeout:120000});
+  }else{
+    throw new Error("Unsupported source-control Git action");
+  }
+  if(result&&!result.ok)throw new Error((result.stderr||result.stdout||("Git "+action+" failed")).trim());
+  return {info:await serviceGitInfo(root),output:(result?.stdout||result?.stderr||"").trim()};
 }
 
 export function parseRemoteUrl(value=""){
@@ -73,7 +203,7 @@ function repositoryFromRemote(remote,provider){
 function normalizeProvider(value){const id=String(value||"").trim().toLowerCase();return PROVIDERS.includes(id)?id:null}
 
 async function sourceContext(cwd,preferred=null){
-  const info=await gitInfo(cwd);
+  const info=await serviceGitInfo(cwd);
   if(!info.isGit)throw new Error("Workspace is not a Git repository");
   const origin=info.remotes.find(x=>x.name==="origin"&&x.kind==="fetch")||info.remotes.find(x=>x.kind==="fetch");
   const remoteUrl=origin?.url||""; const remote=parseRemoteUrl(remoteUrl);
@@ -108,7 +238,7 @@ async function defaultBaseBranch(cwd){
   const result=await run("git",["symbolic-ref","--quiet","--short","refs/remotes/origin/HEAD"],{cwd,allowFailure:true});
   const value=result.ok?result.stdout.trim().replace(/^origin\//,""):"";
   if(value)return value;
-  const info=await gitInfo(cwd);return info.branches.includes("main")?"main":info.branches.includes("master")?"master":info.branch||"main";
+  const info=await serviceGitInfo(cwd);return info.branches.includes("main")?"main":info.branches.includes("master")?"master":info.branch||"main";
 }
 
 function fjKeyPaths(){
@@ -127,9 +257,14 @@ function fjKeyPaths(){
 }
 
 async function readFjKeys(){
+  const executor=currentExecutor();
+  if(executor?.readFjKeys){
+    const parsed=await executor.readFjKeys();
+    return parsed&&typeof parsed==="object"?parsed:{hosts:{},aliases:{}};
+  }
   for(const path of fjKeyPaths()){
     try{
-      const parsed=JSON.parse(await readFile(path,"utf8"));
+      const parsed=JSON.parse(await serviceReadFile(path,"utf8"));
       if(parsed&&typeof parsed==="object"&&parsed.hosts&&typeof parsed.hosts==="object")return parsed;
     }catch{}
   }
@@ -191,8 +326,8 @@ async function forgejoApi(ctx,path,{method="GET",body}={}){
     if(url.origin!==base.origin||!url.pathname.startsWith(base.pathname))throw new Error("Invalid Forgejo API path.");
     const headers={Accept:"application/json",Authorization:`token ${target.token}`};
     if(body!==undefined)headers["Content-Type"]="application/json";
-    const response=await fetch(url,{method,headers,body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(30000),redirect:"manual"});
-    const text=await response.text();
+    const response=await serviceRequest(url,{method,headers,body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(30000),redirect:"manual"});
+    const text=response.text;
     if(!response.ok)throw new Error(`Forgejo HTTP ${response.status}: ${text.slice(0,800)}`);
     return {target,data:text?parseJson(text,text):null};
   }
@@ -206,20 +341,24 @@ async function forgejoApi(ctx,path,{method="GET",body}={}){
   return {target,data:parseJson(result.stdout,result.stdout)};
 }
 
-function bitbucketAuthHeaders(){
-  const access=process.env.TREBELL_BITBUCKET_ACCESS_TOKEN||process.env.T3CODE_BITBUCKET_ACCESS_TOKEN;
+async function bitbucketAuthHeaders(){
+  const executor=currentExecutor();
+  const values=executor?.env
+    ?await executor.env(["TREBELL_BITBUCKET_ACCESS_TOKEN","T3CODE_BITBUCKET_ACCESS_TOKEN","TREBELL_BITBUCKET_EMAIL","T3CODE_BITBUCKET_EMAIL","TREBELL_BITBUCKET_API_TOKEN","T3CODE_BITBUCKET_API_TOKEN"])
+    :process.env;
+  const access=values.TREBELL_BITBUCKET_ACCESS_TOKEN||values.T3CODE_BITBUCKET_ACCESS_TOKEN;
   if(access)return {Authorization:`Bearer ${access}`};
-  const email=process.env.TREBELL_BITBUCKET_EMAIL||process.env.T3CODE_BITBUCKET_EMAIL;
-  const token=process.env.TREBELL_BITBUCKET_API_TOKEN||process.env.T3CODE_BITBUCKET_API_TOKEN;
+  const email=values.TREBELL_BITBUCKET_EMAIL||values.T3CODE_BITBUCKET_EMAIL;
+  const token=values.TREBELL_BITBUCKET_API_TOKEN||values.T3CODE_BITBUCKET_API_TOKEN;
   if(email&&token)return {Authorization:`Basic ${Buffer.from(email+":"+token).toString("base64")}`};
   return {};
 }
 async function bitbucketApi(ctx,path,{method="GET",body}={}){
-  const headers={Accept:"application/json",...bitbucketAuthHeaders()};
+  const headers={Accept:"application/json",...await bitbucketAuthHeaders()};
   if(!headers.Authorization)throw new Error("Bitbucket needs TREBELL_BITBUCKET_ACCESS_TOKEN, or TREBELL_BITBUCKET_EMAIL + TREBELL_BITBUCKET_API_TOKEN.");
   if(body!==undefined)headers["Content-Type"]="application/json";
-  const response=await fetch(`https://api.bitbucket.org/2.0/${path.replace(/^\/+/,"")}`,{method,headers,body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(30000)});
-  const text=await response.text();if(!response.ok)throw new Error(`Bitbucket HTTP ${response.status}: ${text.slice(0,800)}`);return parseJson(text,{});
+  const response=await serviceRequest(`https://api.bitbucket.org/2.0/${path.replace(/^\/+/,"")}`,{method,headers,body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(30000)});
+  const text=response.text;if(!response.ok)throw new Error(`Bitbucket HTTP ${response.status}: ${text.slice(0,800)}`);return parseJson(text,{});
 }
 
 async function glabApi(ctx,path,{method="GET",body}={}){
@@ -237,7 +376,7 @@ async function cliProbe(command,versionArgs,authArgs,cwd,installHint){
 }
 
 export async function sourceControlDiagnostics(cwd,preferred=null){
-  const info=await gitInfo(cwd); const origin=info.remotes?.find(x=>x.name==="origin"&&x.kind==="fetch")||info.remotes?.find(x=>x.kind==="fetch");
+  const info=await serviceGitInfo(cwd); const origin=info.remotes?.find(x=>x.name==="origin"&&x.kind==="fetch")||info.remotes?.find(x=>x.kind==="fetch");
   const detected=detectSourceControlProvider(origin?.url||"");
   const [git,github,gitlab,tea,fj,azure]=await Promise.all([
     cliProbe("git",["--version"],null,cwd,"Install Git."),
@@ -247,7 +386,7 @@ export async function sourceControlDiagnostics(cwd,preferred=null){
     cliProbe("fj",["version"],["auth","list"],cwd,"Install Forgejo CLI (`fj`) or tea."),
     cliProbe("az",["--version"],["account","show","--query","user.name","-o","tsv"],cwd,"Install Azure CLI + azure-devops extension."),
   ]);
-  const bitHeaders=bitbucketAuthHeaders();
+  const bitHeaders=await bitbucketAuthHeaders();
   const providers={
     github:{...github,label:"GitHub"},
     gitlab:{...gitlab,label:"GitLab"},
@@ -293,12 +432,12 @@ export async function checkoutPullRequest(cwd,number,{provider=null}={}){
   if(ctx.provider==="github"){
     const result=await run("gh",["pr","checkout",String(number)],{cwd:ctx.info.root,allowFailure:true,maxBuffer:4*1024*1024});
     if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not check out pull request").trim());
-    return {ok:true,provider:ctx.provider,info:await gitInfo(ctx.info.root),output:(result.stdout||result.stderr).trim()};
+    return {ok:true,provider:ctx.provider,info:await serviceGitInfo(ctx.info.root),output:(result.stdout||result.stderr).trim()};
   }
   if(ctx.provider==="gitlab"){
     const result=await run("glab",["mr","checkout",String(number)],{cwd:ctx.info.root,allowFailure:true,maxBuffer:4*1024*1024});
     if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not check out merge request").trim());
-    return {ok:true,provider:ctx.provider,info:await gitInfo(ctx.info.root),output:(result.stdout||result.stderr).trim()};
+    return {ok:true,provider:ctx.provider,info:await serviceGitInfo(ctx.info.root),output:(result.stdout||result.stderr).trim()};
   }
   throw new Error(`${ctx.provider} pull-request checkout is not safely supported by the configured client.`);
 }
@@ -314,7 +453,7 @@ export async function requestPullRequestReviewer(cwd,number,reviewer,{provider=n
 }
 
 export async function publishRepository(cwd,{provider="github",name=null,visibility="private"}={}){
-  const info=await gitInfo(cwd);if(!info.isGit)throw new Error("Initialize Git before publishing this project.");
+  const info=await serviceGitInfo(cwd);if(!info.isGit)throw new Error("Initialize Git before publishing this project.");
   if(info.remotes?.some(remote=>remote.name==="origin"))throw new Error("This repository already has an origin remote.");
   const target=parsePublishTarget(provider,name||info.root.split(/[\\/]/).filter(Boolean).pop()||"");const repoName=target.name;
   const privacy=visibility==="public"?"public":"private";
@@ -323,7 +462,7 @@ export async function publishRepository(cwd,{provider="github",name=null,visibil
     const args=["repo","create",target.path,"--source",info.root,"--remote","origin","--"+privacy];if(hasCommits)args.push("--push");
     const result=await run("gh",args,{cwd:info.root,allowFailure:true,timeout:180000,maxBuffer:8*1024*1024});
     if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not publish GitHub repository").trim());
-    return {ok:true,provider,url:(result.stdout.match(/https?:\/\/\S+/)||[])[0]||null,pushed:hasCommits,info:await gitInfo(info.root)};
+    return {ok:true,provider,url:(result.stdout.match(/https?:\/\/\S+/)||[])[0]||null,pushed:hasCommits,info:await serviceGitInfo(info.root)};
   }
   if(provider==="gitlab"){
     let namespaceId=null;
@@ -334,21 +473,21 @@ export async function publishRepository(cwd,{provider="github",name=null,visibil
     const project=parseJson(created.stdout,{});const remote=project.http_url_to_repo||project.ssh_url_to_repo;if(!remote)throw new Error("GitLab created the project but did not return a clone URL.");
     await run("git",["remote","add","origin",remote],{cwd:info.root});
     if(hasCommits)await run("git",["push","-u","origin",branch],{cwd:info.root,timeout:180000});
-    return {ok:true,provider,url:project.web_url||null,pushed:hasCommits,info:await gitInfo(info.root)};
+    return {ok:true,provider,url:project.web_url||null,pushed:hasCommits,info:await serviceGitInfo(info.root)};
   }
   if(provider==="bitbucket"){
     const project=await bitbucketApi(null,`repositories/${encodeURIComponent(target.workspace)}/${encodeURIComponent(repoName)}`,{method:"POST",body:{scm:"git",name:repoName,is_private:privacy!=="public"}});
     const clones=Array.isArray(project.links?.clone)?project.links.clone:[];const remote=clones.find(item=>item.name==="https")?.href||clones.find(item=>item.name==="ssh")?.href;
     if(!remote)throw new Error("Bitbucket created the repository but did not return a clone URL.");
     await run("git",["remote","add","origin",remote],{cwd:info.root});if(hasCommits)await run("git",["push","-u","origin",branch],{cwd:info.root,timeout:180000});
-    return {ok:true,provider,url:project.links?.html?.href||null,pushed:hasCommits,info:await gitInfo(info.root)};
+    return {ok:true,provider,url:project.links?.html?.href||null,pushed:hasCommits,info:await serviceGitInfo(info.root)};
   }
   if(provider==="azure-devops"){
     const created=await run("az",["repos","create","--detect","true","--project",target.project,"--name",repoName,"--only-show-errors","--output","json"],{cwd:info.root,allowFailure:true,timeout:60000,maxBuffer:8*1024*1024});
     if(!created.ok)throw new Error((created.stderr||created.stdout||"Could not create Azure DevOps repository").trim());const project=parseJson(created.stdout,{});const remote=project.remoteUrl||project.sshUrl;
     if(!remote)throw new Error("Azure DevOps created the repository but did not return a clone URL.");
     await run("git",["remote","add","origin",remote],{cwd:info.root});if(hasCommits)await run("git",["push","-u","origin",branch],{cwd:info.root,timeout:180000});
-    return {ok:true,provider,url:project.webUrl||project.url||null,pushed:hasCommits,info:await gitInfo(info.root)};
+    return {ok:true,provider,url:project.webUrl||project.url||null,pushed:hasCommits,info:await serviceGitInfo(info.root)};
   }
   throw new Error(`${provider} repository publishing is not exposed by Trebell yet.`);
 }

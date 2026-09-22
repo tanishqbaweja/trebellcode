@@ -47,6 +47,7 @@ import {
   sourceControlDiagnostics, listPullRequests, createPullRequest, pullRequestDetail,
   commentOnPullRequest, reviewPullRequest, mergePullRequest, updatePullRequestBranch,
   checkoutPullRequest, requestPullRequestReviewer, publishRepository, getPullRequestFilesViewed, setPullRequestFilesViewed,
+  sourceControlGitAction, sourceControlGitInfo, withSourceControlExecutor,
 } from "./source-control-service.mjs";
 import { prViewedKey, updateViewedRecord, viewedStates } from "./pr-viewed-state.mjs";
 
@@ -450,6 +451,70 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       rows:body.rows,
       terminalEnv:body.env||null,
     }));
+  }
+  function sourceControlExecutor(environmentId){
+    const profile=environmentId?environments.get(environmentId):null;
+    if(!profile||profile.type==="local")return null;
+    const normalized=result=>({
+      ok:Number(result?.exitCode??1)===0&&!result?.timedOut,
+      code:Number(result?.exitCode??1),
+      exitCode:Number(result?.exitCode??1),
+      stdout:result?.stdout||"",
+      stderr:result?.stderr||"",
+      timedOut:Boolean(result?.timedOut),
+    });
+    return {
+      run:async(command,args,{cwd,timeout,maxBuffer}={})=>normalized(await environments.executeArgv(environmentId,{command,args,cwd,timeoutMs:timeout,maxOutput:maxBuffer})),
+      runStdin:async(command,args,input,{cwd,timeout,maxBuffer}={})=>normalized(await environments.executeArgvInput(environmentId,{command,args,input,cwd,timeoutMs:timeout,maxOutput:maxBuffer})),
+      readFile:async(path)=>{
+        const result=await environments.executeArgv(environmentId,{command:"cat",args:[String(path)],cwd:"",timeoutMs:12000,maxOutput:4*1024*1024});
+        if(result.exitCode!==0)throw new Error(result.stderr||"Could not read remote file");
+        return result.stdout;
+      },
+      env:async(names)=>{
+        const values={};
+        for(const name of names||[]){
+          const result=await environments.executeArgv(environmentId,{command:"printenv",args:[String(name)],cwd:"",timeoutMs:8000,maxOutput:64*1024});
+          if(result.exitCode===0)values[name]=String(result.stdout||"").trimEnd();
+        }
+        return values;
+      },
+      request:async(url,options={})=>{
+        const method=String(options.method||"GET").toUpperCase();
+        const config=["silent","show-error","max-time = 30","request = "+JSON.stringify(method)];
+        if(options.redirect!=="manual")config.push("location");
+        for(const [name,value] of Object.entries(options.headers||{}))config.push("header = "+JSON.stringify(String(name)+": "+String(value)));
+        config.push("write-out = "+JSON.stringify("\nTREBELL_HTTP_STATUS:%{http_code}"));
+        const args=["--config","-"];
+        if(options.body!==undefined)args.push("--data-raw",String(options.body));
+        args.push(String(url));
+        const result=await environments.executeArgvInput(environmentId,{command:"curl",args,input:config.join("\n")+"\n",cwd:"",timeoutMs:35000,maxOutput:10*1024*1024});
+        if(result.exitCode!==0)throw new Error(result.stderr||"Remote HTTP request failed");
+        const match=String(result.stdout||"").match(/\nTREBELL_HTTP_STATUS:(\d{3})$/);
+        const status=Number(match?.[1]||0);
+        const text=match?result.stdout.slice(0,match.index):result.stdout;
+        return {ok:status>=200&&status<300,status,text};
+      },
+      readFjKeys:async()=>{
+        const command=[
+          "for f in",
+          "\"$HOME/.local/share/forgejo-cli/keys.json\"",
+          "\"$HOME/Library/Application Support/forgejo-cli.forgejo-cli/keys.json\"",
+          "\"$HOME/Library/Application Support/Cyborus.forgejo-cli/keys.json\";",
+          "do if [ -f \"$f\" ]; then cat \"$f\"; exit 0; fi; done; exit 1",
+        ].join(" ");
+        const result=await environments.execute(environmentId,{command,cwd:"",timeoutMs:12000,maxOutput:2*1024*1024});
+        if(result.exitCode!==0)return {hosts:{},aliases:{}};
+        try{return JSON.parse(result.stdout)}catch{return {hosts:{},aliases:{}}}
+      },
+    };
+  }
+  function inSourceControlEnvironment(environmentId,callback){
+    return withSourceControlExecutor(sourceControlExecutor(environmentId),callback);
+  }
+  function remoteEnvironmentProfile(environmentId){
+    const profile=environmentId?environments.get(environmentId):null;
+    return profile&&profile.type!=="local"?profile:null;
   }
   function worktreeUsage(){
     const activePaths=[],referencedPaths=[];
@@ -915,13 +980,55 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       }
     }
     if(url.pathname==="/api/git/info"){
-      try{return json(res,200,await gitInfo(url.searchParams.get("path")||process.cwd()));}
+      try{
+        const environmentId=url.searchParams.has("environmentId")
+          ?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false})
+          :requestedEnvironmentId(null);
+        const profile=remoteEnvironmentProfile(environmentId);
+        const cwd=environmentPath(url.searchParams.get("path")||profile?.cwd||process.cwd(),environmentId);
+        const info=profile
+          ?await inSourceControlEnvironment(environmentId,()=>sourceControlGitInfo(cwd))
+          :await gitInfo(cwd);
+        return json(res,200,{...info,environmentId:environmentId||null,environmentType:profile?.type||"local"});
+      }
       catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/git/action" && req.method==="POST"){
       try{
         const body=await readJsonBody(req);
-        const cwd=body.cwd||process.cwd();
+        const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")
+          ?requestedEnvironmentId(body.environmentId,{fallback:false})
+          :requestedEnvironmentId(null);
+        const remoteProfile=remoteEnvironmentProfile(environmentId);
+        const cwd=environmentPath(body.cwd||remoteProfile?.cwd||process.cwd(),environmentId);
+        if(remoteProfile){
+          if(body.action==="clone")return json(res,400,{error:"Clone into a remote environment from its Terminal or create the project after cloning."});
+          const result=await inSourceControlEnvironment(environmentId,()=>sourceControlGitAction(cwd,{
+            action:body.action,
+            name:body.action==="worktree-create"?body.branch:body.name,
+            message:body.message,
+            setUpstream:Boolean(body.setUpstream),
+            startPoint:body.baseBranch||body.startPoint||null,
+            path:body.path||null,
+            force:Boolean(body.force),
+          }));
+          if(body.action==="init")state.touchProject(cwd,{environmentId});
+          if(body.action==="worktree-create"&&body.path){
+            const sourceProject=state.project(cwd,environmentId);
+            const inherited=sourceProject?{
+              defaultModel:sourceProject.defaultModel??null,
+              permissionMode:sourceProject.permissionMode??null,
+              workspaceMode:sourceProject.workspaceMode??null,
+              worktreeSubmodules:sourceProject.worktreeSubmodules??null,
+              worktreeCleanup:sourceProject.worktreeCleanup??null,
+              icon:sourceProject.icon??null,
+              scripts:sourceProject.scripts||[],
+              preferredScriptId:sourceProject.preferredScriptId??null,
+            }:{};
+            state.touchProject(environmentPath(body.path,environmentId),{...inherited,environmentId});
+          }
+          return json(res,200,{ok:true,result});
+        }
         let result;
         switch(body.action){
           case "clone": result=await cloneRepository(body.url,body.destination); state.touchProject(result.root||body.destination,{environmentId:null}); break;
@@ -964,62 +1071,82 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       }catch(error){return json(res,400,{ok:false,error:error.message});}
     }
     if(url.pathname==="/api/source-control/diagnostics"){
-      try{return json(res,200,await sourceControlDiagnostics(url.searchParams.get("path")||process.cwd(),url.searchParams.get("provider")||null));}
+      try{
+        const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
+        const cwd=environmentPath(url.searchParams.get("path")||remoteEnvironmentProfile(environmentId)?.cwd||process.cwd(),environmentId);
+        return json(res,200,await inSourceControlEnvironment(environmentId,()=>sourceControlDiagnostics(cwd,url.searchParams.get("provider")||null)));
+      }
       catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/source-control/prs"){
-      return json(res,200,await listPullRequests(url.searchParams.get("path")||process.cwd(),{provider:url.searchParams.get("provider")||null}));
+      try{
+        const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
+        const cwd=environmentPath(url.searchParams.get("path")||remoteEnvironmentProfile(environmentId)?.cwd||process.cwd(),environmentId);
+        return json(res,200,await inSourceControlEnvironment(environmentId,()=>listPullRequests(cwd,{provider:url.searchParams.get("provider")||null})));
+      }catch(error){return json(res,400,{ok:false,items:[],error:error.message});}
     }
     if(url.pathname==="/api/source-control/pr" && req.method==="POST"){
       try{
         const body=await readJsonBody(req);
-        return json(res,200,{ok:true,...await createPullRequest(body.cwd||process.cwd(),body)});
+        const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);
+        const cwd=environmentPath(body.cwd||remoteEnvironmentProfile(environmentId)?.cwd||process.cwd(),environmentId);
+        return json(res,200,{ok:true,...await inSourceControlEnvironment(environmentId,()=>createPullRequest(cwd,body))});
       }catch(error){return json(res,400,{ok:false,error:error.message});}
     }
     if(url.pathname==="/api/source-control/publish" && req.method==="POST"){
       try{
         const body=await readJsonBody(req);
-        return json(res,200,await publishRepository(body.cwd||process.cwd(),body));
+        const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);
+        const cwd=environmentPath(body.cwd||remoteEnvironmentProfile(environmentId)?.cwd||process.cwd(),environmentId);
+        return json(res,200,await inSourceControlEnvironment(environmentId,()=>publishRepository(cwd,body)));
       }catch(error){return json(res,400,{ok:false,error:error.message});}
     }
     if(url.pathname==="/api/source-control/pr-detail"){
-      return json(res,200,await pullRequestDetail(url.searchParams.get("path")||process.cwd(),url.searchParams.get("number"),{provider:url.searchParams.get("provider")||null}));
+      try{
+        const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
+        const cwd=environmentPath(url.searchParams.get("path")||remoteEnvironmentProfile(environmentId)?.cwd||process.cwd(),environmentId);
+        return json(res,200,await inSourceControlEnvironment(environmentId,()=>pullRequestDetail(cwd,url.searchParams.get("number"),{provider:url.searchParams.get("provider")||null})));
+      }catch(error){return json(res,400,{ok:false,error:error.message});}
     }
     if(url.pathname==="/api/source-control/pr-viewed"&&req.method==="GET"){
       try{
-        const cwd=url.searchParams.get("path")||process.cwd(),number=url.searchParams.get("number"),provider=url.searchParams.get("provider")||null;
-        const detail=await pullRequestDetail(cwd,number,{provider});if(!detail?.ok||!detail.item)return json(res,400,{error:detail?.error||"Pull request not found"});
-        if(detail.provider==="github")return json(res,200,await getPullRequestFilesViewed(cwd,number,{provider:detail.provider}));
-        const project=state.project(resolve(cwd),null);const key=prViewedKey(detail.provider,number);const record=project?.pullRequestViewedFiles?.[key]||{};
+        const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
+        const cwd=environmentPath(url.searchParams.get("path")||remoteEnvironmentProfile(environmentId)?.cwd||process.cwd(),environmentId),number=url.searchParams.get("number"),provider=url.searchParams.get("provider")||null;
+        const detail=await inSourceControlEnvironment(environmentId,()=>pullRequestDetail(cwd,number,{provider}));if(!detail?.ok||!detail.item)return json(res,400,{error:detail?.error||"Pull request not found"});
+        if(detail.provider==="github")return json(res,200,await inSourceControlEnvironment(environmentId,()=>getPullRequestFilesViewed(cwd,number,{provider:detail.provider})));
+        const project=state.project(cwd,environmentId);const key=prViewedKey(detail.provider,number);const record=project?.pullRequestViewedFiles?.[key]||{};
         return json(res,200,{ok:true,provider:detail.provider,store:"environment",files:viewedStates(detail.item.files||[],record,detail.item.headSha),headSha:detail.item.headSha||null});
       }catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/source-control/pr-viewed"&&req.method==="POST"){
       try{
-        const body=await readJsonBody(req);const cwd=body.cwd||process.cwd(),number=body.number,provider=body.provider||null,updates=Array.isArray(body.files)?body.files:[];
-        const detail=await pullRequestDetail(cwd,number,{provider});if(!detail?.ok||!detail.item)throw new Error(detail?.error||"Pull request not found");
-        if(detail.provider==="github")return json(res,200,await setPullRequestFilesViewed(cwd,number,updates,{provider:detail.provider}));
-        const project=state.project(resolve(cwd),null)||state.touchProject(resolve(cwd),{environmentId:null});const records={...(project.pullRequestViewedFiles||{})};const key=prViewedKey(detail.provider,number);records[key]=updateViewedRecord(detail.item.files||[],records[key]||{},detail.item.headSha,updates);state.touchProject(resolve(cwd),{environmentId:null,pullRequestViewedFiles:records});
+        const body=await readJsonBody(req);const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);const cwd=environmentPath(body.cwd||remoteEnvironmentProfile(environmentId)?.cwd||process.cwd(),environmentId),number=body.number,provider=body.provider||null,updates=Array.isArray(body.files)?body.files:[];
+        const detail=await inSourceControlEnvironment(environmentId,()=>pullRequestDetail(cwd,number,{provider}));if(!detail?.ok||!detail.item)throw new Error(detail?.error||"Pull request not found");
+        if(detail.provider==="github")return json(res,200,await inSourceControlEnvironment(environmentId,()=>setPullRequestFilesViewed(cwd,number,updates,{provider:detail.provider})));
+        const project=state.project(cwd,environmentId)||state.touchProject(cwd,{environmentId});const records={...(project.pullRequestViewedFiles||{})};const key=prViewedKey(detail.provider,number);records[key]=updateViewedRecord(detail.item.files||[],records[key]||{},detail.item.headSha,updates);state.touchProject(cwd,{environmentId,pullRequestViewedFiles:records});
         return json(res,200,{ok:true,provider:detail.provider,store:"environment",files:viewedStates(detail.item.files||[],records[key],detail.item.headSha),headSha:detail.item.headSha||null});
       }catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/source-control/pr-action" && req.method==="POST"){
       try{
         const body=await readJsonBody(req);
-        const cwd=body.cwd||process.cwd();
-        if(body.action==="comment") return json(res,200,await commentOnPullRequest(cwd,body.number,body.body||"",{provider:body.provider||null}));
-        if(body.action==="review") return json(res,200,await reviewPullRequest(cwd,body.number,{provider:body.provider||null,event:body.event,body:body.body||""}));
-        if(body.action==="merge") return json(res,200,await mergePullRequest(cwd,body.number,{provider:body.provider||null,method:body.method,auto:Boolean(body.auto)}));
-        if(body.action==="update-branch") return json(res,200,await updatePullRequestBranch(cwd,body.number,{provider:body.provider||null,rebase:body.rebase!==false}));
-        if(body.action==="checkout") return json(res,200,await checkoutPullRequest(cwd,body.number,{provider:body.provider||null}));
-        if(body.action==="request-reviewer") return json(res,200,await requestPullRequestReviewer(cwd,body.number,body.reviewer,{provider:body.provider||null}));
+        const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);
+        const cwd=environmentPath(body.cwd||remoteEnvironmentProfile(environmentId)?.cwd||process.cwd(),environmentId);
+        if(body.action==="comment") return json(res,200,await inSourceControlEnvironment(environmentId,()=>commentOnPullRequest(cwd,body.number,body.body||"",{provider:body.provider||null})));
+        if(body.action==="review") return json(res,200,await inSourceControlEnvironment(environmentId,()=>reviewPullRequest(cwd,body.number,{provider:body.provider||null,event:body.event,body:body.body||""})));
+        if(body.action==="merge") return json(res,200,await inSourceControlEnvironment(environmentId,()=>mergePullRequest(cwd,body.number,{provider:body.provider||null,method:body.method,auto:Boolean(body.auto)})));
+        if(body.action==="update-branch") return json(res,200,await inSourceControlEnvironment(environmentId,()=>updatePullRequestBranch(cwd,body.number,{provider:body.provider||null,rebase:body.rebase!==false})));
+        if(body.action==="checkout") return json(res,200,await inSourceControlEnvironment(environmentId,()=>checkoutPullRequest(cwd,body.number,{provider:body.provider||null})));
+        if(body.action==="request-reviewer") return json(res,200,await inSourceControlEnvironment(environmentId,()=>requestPullRequestReviewer(cwd,body.number,body.reviewer,{provider:body.provider||null})));
         return json(res,400,{error:"unknown PR action"});
       }catch(error){return json(res,400,{ok:false,error:error.message});}
     }
     if(url.pathname==="/api/git/commit-message" && req.method==="POST"){
       try{
         const body=await readJsonBody(req);
-        const diff=await workspaceDiff(body.cwd||process.cwd());
+        const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);
+        const cwd=environmentPath(body.cwd||remoteEnvironmentProfile(environmentId)?.cwd||process.cwd(),environmentId);
+        const diff=await environmentWorkspaceDiff(cwd,{environments,environmentId});
         const prompt=`Write one concise Git commit subject (imperative, <=72 chars) for this change. Return only the subject.\n\nStatus:\n${diff.status}\n\nDiff:\n${diff.diff.slice(0,60000)}`;
         const answer=selectedProvider==="freebuff"
           ? await queryFreebuff(prompt,body.model)

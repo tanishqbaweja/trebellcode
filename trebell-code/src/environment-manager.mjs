@@ -296,13 +296,13 @@ export class EnvironmentManager {
     return this.spawnSession(id,{command:shellCommand(executable,args),cwd:working||null,stdio});
   }
 
-  async execute(id,{command,cwd=null,timeoutMs=30000}={}){
+  async execute(id,{command,cwd=null,timeoutMs=30000,maxOutput=MAX_OUTPUT}={}){
     const profile=this.state.environments().find(x=>x.id===id);
     if(!profile) throw new Error("Environment profile was not found");
     const text=String(command||"").trim();
     if(!text) throw new Error("command is required");
     const working=String(cwd??profile.cwd??"").trim();
-    let executable,args,options={env:this.env,timeoutMs:Math.min(300000,Math.max(1000,Number(timeoutMs)||30000))};
+    let executable,args,options={env:this.env,timeoutMs:Math.min(300000,Math.max(1000,Number(timeoutMs)||30000)),maxOutput:Math.max(1024,Math.min(16*1024*1024,Number(maxOutput)||MAX_OUTPUT))};
 
     if(profile.type==="local"){
       executable=this.platform==="win32"?"cmd.exe":"/bin/sh";
@@ -330,15 +330,41 @@ export class EnvironmentManager {
     return {...result,profile:{id:profile.id,name:profile.name,type:profile.type},durationMs:Date.now()-startedAt};
   }
 
-  async executeArgv(id,{command,args=[],cwd=null,timeoutMs=30000}={}){
+  async executeArgv(id,{command,args=[],cwd=null,timeoutMs=30000,maxOutput=MAX_OUTPUT}={}){
     const profile=this.get(id);
     if(!profile)throw new Error("Environment profile was not found");
     if(profile.type==="local"){
       const startedAt=Date.now();
-      const result=await runProcess(String(command||""),Array.isArray(args)?args:[],{cwd:String(cwd??profile.cwd??"").trim()||undefined,env:this.env,timeoutMs:Math.min(300000,Math.max(1000,Number(timeoutMs)||30000))});
+      const result=await runProcess(String(command||""),Array.isArray(args)?args:[],{cwd:String(cwd??profile.cwd??"").trim()||undefined,env:this.env,timeoutMs:Math.min(300000,Math.max(1000,Number(timeoutMs)||30000)),maxOutput:Math.max(1024,Math.min(16*1024*1024,Number(maxOutput)||MAX_OUTPUT))});
       return {...result,profile:{id:profile.id,name:profile.name,type:profile.type},durationMs:Date.now()-startedAt};
     }
-    return this.execute(id,{command:shellCommand(String(command||""),Array.isArray(args)?args:[]),cwd,timeoutMs});
+    return this.execute(id,{command:shellCommand(String(command||""),Array.isArray(args)?args:[]),cwd,timeoutMs,maxOutput});
+  }
+
+  async executeArgvInput(id,{command,args=[],input="",cwd=null,timeoutMs=30000,maxOutput=MAX_OUTPUT}={}){
+    const profile=this.get(id);
+    if(!profile)throw new Error("Environment profile was not found");
+    const child=this.spawnArgv(id,{command:String(command||""),args:Array.isArray(args)?args:[],cwd,stdio:["pipe","pipe","pipe"]});
+    const limit=Math.max(1024,Math.min(16*1024*1024,Number(maxOutput)||MAX_OUTPUT));
+    const append=(current,chunk)=>{
+      if(Buffer.byteLength(current,"utf8")>=limit)return current;
+      const next=current+String(chunk);
+      return Buffer.byteLength(next,"utf8")>limit?Buffer.from(next,"utf8").subarray(0,limit).toString("utf8"):next;
+    };
+    return new Promise((resolveInput,reject)=>{
+      let stdout="",stderr="",settled=false,timedOut=false;
+      child.stdout?.on("data",chunk=>{stdout=append(stdout,chunk)});
+      child.stderr?.on("data",chunk=>{stderr=append(stderr,chunk)});
+      const timer=setTimeout(()=>{timedOut=true;try{child.kill("SIGKILL")}catch{}},Math.min(300000,Math.max(1000,Number(timeoutMs)||30000)));
+      const finish=(error,code=null,signal=null)=>{
+        if(settled)return;settled=true;clearTimeout(timer);
+        if(error)reject(error);
+        else resolveInput({exitCode:code??1,signal,stdout,stderr,timedOut,profile:{id:profile.id,name:profile.name,type:profile.type}});
+      };
+      child.once("error",error=>finish(error));
+      child.once("close",(code,signal)=>finish(null,code,signal));
+      child.stdin?.end(Buffer.from(String(input??""),"utf8"));
+    });
   }
 
   async probe(id){

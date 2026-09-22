@@ -10,6 +10,8 @@ import {
   parseRemoteUrl,
   repositoryHasCommits,
   resolveFjAccount,
+  listPullRequests,
+  withSourceControlExecutor,
 } from "../src/source-control-service.mjs";
 import { git } from "../src/git-service.mjs";
 
@@ -97,4 +99,55 @@ test("Forgejo fj account resolution preserves explicit HTTP remotes",()=>{
     remoteUrl:"http://forge.local:3000/acme/widget.git",
   },{hosts:{"forge.local:3000":{type:"Application",token:"x"}},aliases:{}});
   assert.equal(result?.baseUrl,"http://forge.local:3000");
+});
+
+test("source control commands stay inside the supplied environment executor",async()=>{
+  const calls=[];
+  const executor={
+    run:async(command,args,options={})=>{
+      calls.push({command,args:[...args],cwd:options.cwd});
+      if(command==="git"&&args[0]==="rev-parse"&&args[1]==="--show-toplevel")return {ok:true,code:0,stdout:"/srv/app\n",stderr:""};
+      if(command==="git"&&args[0]==="branch")return {ok:true,code:0,stdout:"main\n",stderr:""};
+      if(command==="git"&&args[0]==="for-each-ref"&&args.includes("refs/heads"))return {ok:true,code:0,stdout:"main\n",stderr:""};
+      if(command==="git"&&args[0]==="for-each-ref")return {ok:true,code:0,stdout:"origin/main\n",stderr:""};
+      if(command==="git"&&args[0]==="status")return {ok:true,code:0,stdout:"## main...origin/main\n",stderr:""};
+      if(command==="git"&&args[0]==="remote")return {ok:true,code:0,stdout:"origin\thttps://github.com/acme/widget.git (fetch)\norigin\thttps://github.com/acme/widget.git (push)\n",stderr:""};
+      if(command==="git"&&args[0]==="worktree")return {ok:true,code:0,stdout:"worktree /srv/app\nHEAD abc\nbranch refs/heads/main\n",stderr:""};
+      if(command==="gh"&&args[0]==="pr"&&args[1]==="list")return {ok:true,code:0,stdout:JSON.stringify([{number:7,title:"Remote PR",state:"OPEN",isDraft:false,url:"https://github.com/acme/widget/pull/7"}]),stderr:""};
+      return {ok:false,code:1,stdout:"",stderr:"unexpected command"};
+    },
+  };
+  const result=await withSourceControlExecutor(executor,()=>listPullRequests("/srv/app"));
+  assert.equal(result.ok,true);
+  assert.equal(result.provider,"github");
+  assert.equal(result.items[0].number,7);
+  assert.equal(calls.every(call=>!call.cwd||String(call.cwd).startsWith("/srv/app")),true);
+  assert.equal(calls.some(call=>call.command==="gh"&&call.args[0]==="pr"),true);
+});
+
+test("Bitbucket REST auth and requests come from the environment executor",async()=>{
+  const requests=[];
+  const executor={
+    run:async(command,args)=>{
+      if(command==="git"&&args[0]==="rev-parse"&&args[1]==="--show-toplevel")return {ok:true,code:0,stdout:"/srv/app\n",stderr:""};
+      if(command==="git"&&args[0]==="branch")return {ok:true,code:0,stdout:"main\n",stderr:""};
+      if(command==="git"&&args[0]==="for-each-ref"&&args.includes("refs/heads"))return {ok:true,code:0,stdout:"main\n",stderr:""};
+      if(command==="git"&&args[0]==="for-each-ref")return {ok:true,code:0,stdout:"origin/main\n",stderr:""};
+      if(command==="git"&&args[0]==="status")return {ok:true,code:0,stdout:"## main...origin/main\n",stderr:""};
+      if(command==="git"&&args[0]==="remote")return {ok:true,code:0,stdout:"origin\thttps://bitbucket.org/acme/widget.git (fetch)\norigin\thttps://bitbucket.org/acme/widget.git (push)\n",stderr:""};
+      if(command==="git"&&args[0]==="worktree")return {ok:true,code:0,stdout:"worktree /srv/app\nHEAD abc\nbranch refs/heads/main\n",stderr:""};
+      return {ok:false,code:1,stdout:"",stderr:"unexpected command"};
+    },
+    env:async()=>({TREBELL_BITBUCKET_ACCESS_TOKEN:"remote-token"}),
+    request:async(url,options)=>{
+      requests.push({url:String(url),authorization:options.headers?.Authorization});
+      return {ok:true,status:200,text:JSON.stringify({values:[{id:9,title:"Remote BB PR",state:"OPEN",links:{html:{href:"https://bitbucket.org/acme/widget/pull-requests/9"}},source:{branch:{name:"feature"}},destination:{branch:{name:"main"}},author:{display_name:"Dev"}}]})};
+    },
+  };
+  const result=await withSourceControlExecutor(executor,()=>listPullRequests("/srv/app"));
+  assert.equal(result.provider,"bitbucket");
+  assert.equal(result.items[0].number,9);
+  assert.equal(requests.length,1);
+  assert.equal(requests[0].authorization,"Bearer remote-token");
+  assert.match(requests[0].url,/api\.bitbucket\.org\/2\.0\/repositories\/acme\/widget\/pullrequests/);
 });
