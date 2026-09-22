@@ -134,6 +134,17 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
       assert.notEqual(outcome.error?.code,-32601,`${method} must exist in the bundled Codex app-server`);
       assert.doesNotMatch(String(outcome.error?.message||""),/method not found|unknown method/i,`${method} must be a real capability`);
     }
+    const apps=await rpcOutcome(ws,id++,"app/list",{limit:10,threadId:null,forceRefetch:false});
+    if(apps.ok&&apps.result?.data?.length){
+      const appId=apps.result.data[0].id;
+      const detail=await rpcOutcome(ws,id++,"app/read",{appIds:[appId],threadId:null,includeTools:true});
+      assert.equal(detail.ok,true,detail.error?.message||"app/read failed");
+      assert.equal(detail.result.apps?.[0]?.id,appId);
+      assert.ok(Array.isArray(detail.result.apps?.[0]?.toolSummaries)||detail.result.apps?.[0]?.toolSummaries===null);
+    }else if(!apps.ok){
+      assert.notEqual(apps.error?.code,-32601,"app/list must exist in the bundled Codex app-server");
+      assert.doesNotMatch(String(apps.error?.message||""),/method not found|unknown method/i);
+    }
   } finally {
     try{ws?.close();}catch{}
     await gui.close();

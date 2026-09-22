@@ -14,6 +14,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [marketplaceSource,setMarketplaceSource]=useState("");
   const [migrations,setMigrations]=useState(null);
   const [mcpResult,setMcpResult]=useState(null);
+  const [appDetail,setAppDetail]=useState(null);
   const [toolArgs,setToolArgs]=useState({});
 
   async function call(name,params){
@@ -116,6 +117,13 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     try{const result=await rpc.request("mcpServer/tool/call",{threadId:activeThread.id,server:server.name,tool:toolName,arguments:args});setMcpResult({title:`${server.name} · ${toolName}`,value:result})}
     catch(error){setMcpResult({title:"MCP tool error",value:{error:error.message}})}finally{setBusy("")}
   }
+  async function readApp(app){
+    if(!rpc||!app?.id)return;setBusy("app:"+app.id);setErrors(prev=>({...prev,"app/read":null}));
+    try{
+      const result=await rpc.request("app/read",{appIds:[app.id],threadId:activeThread?.id||null,includeTools:true});
+      const detail=result?.apps?.[0];if(!detail)throw new Error(result?.missingAppIds?.includes(app.id)?"Connector metadata is unavailable":"Codex did not return connector metadata");setAppDetail({...app,...detail});
+    }catch(error){setErrors(prev=>({...prev,"app/read":error.message||String(error)}))}finally{setBusy("")}
+  }
 
   if(rpcStatus!=="connected")return <div className="empty-state"><Wrench size={28}/><strong>Codex harness is not connected</strong><span>Capabilities will appear when app-server is ready.</span></div>;
 
@@ -183,9 +191,10 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       </Section>
 
       <Section title="Apps / connectors" icon={CheckCircle2} count={data.apps.length}>
-        <div className="capability-list">{data.apps.map(app=><div key={app.id}><div><strong>{app.name}</strong><span>{app.description||app.id}</span></div><em className={app.isAccessible&&app.isEnabled?"ok":""}>{app.isEnabled?(app.isAccessible?"ready":"restricted"):"disabled"}</em></div>)}</div>
+        <div className="capability-list">{data.apps.map(app=><div key={app.id}><div><strong>{app.name}</strong><span>{app.description||app.id}</span></div><div className="capability-inline-actions"><em className={app.isAccessible&&app.isEnabled?"ok":""}>{app.isEnabled?(app.isAccessible?"ready":"restricted"):"disabled"}</em><button onClick={()=>readApp(app)} disabled={busy==="app:"+app.id}>Details</button></div></div>)}</div>
         {!data.apps.length&&<p>No app connectors reported by Codex.</p>}
-        <ErrorLine value={errors["app/list"]}/>
+        {appDetail&&<div className="app-detail"><div className="app-detail-head"><div><strong>{appDetail.name}</strong><span>{appDetail.distributionChannel||appDetail.id}</span></div><button onClick={()=>setAppDetail(null)}>Close</button></div>{appDetail.description&&<p>{appDetail.description}</p>}{appDetail.pluginDisplayNames?.length>0&&<p>Provided by: {appDetail.pluginDisplayNames.join(", ")}</p>}{appDetail.installUrl&&<button className="setting-action" onClick={()=>window.open(appDetail.installUrl,"_blank","noopener,noreferrer")}>Open install page</button>}{appDetail.toolSummaries?.length>0&&<div className="app-tools">{appDetail.toolSummaries.map(tool=><div key={tool.name}><div><strong>{tool.title||tool.name}</strong><span>{tool.description||tool.name}</span></div><em className={tool.isEnabled?"ok":""}>{tool.isEnabled?(tool.isReadOnly?"read only":"enabled"):(tool.disabledReason||"disabled")}</em></div>)}</div>}</div>}
+        <ErrorLine value={errors["app/list"]}/><ErrorLine value={errors["app/read"]}/>
       </Section>
 
       <Section title="Hooks" icon={Wrench} count={hookCount}>
