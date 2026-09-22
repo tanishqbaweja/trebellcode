@@ -88,9 +88,17 @@ function normalizeItem(item={}){
   let title=item.title||item.name||item.description||"Agent activity";
   if(type==="commandExecution")title=Array.isArray(item.command)?item.command.join(" "):(item.command||"Running command");
   if(type==="fileChange")title="Editing files";
-  if(type==="mcpToolCall")title=item.tool||item.name||"Using MCP tool";
+  if(type==="mcpToolCall")title=(item.server?item.server+" / ":"")+(item.tool||item.name||"MCP tool");
+  if(type==="dynamicToolCall")title=(item.namespace?item.namespace+" / ":"")+(item.tool||"Dynamic tool");
+  if(type==="collabAgentToolCall")title="Collaboration · "+String(item.tool||"agent task").replace(/([a-z])([A-Z])/g,"$1 $2").toLowerCase();
+  if(type==="subAgentActivity")title="Subagent · "+(item.kind||"activity");
   if(type==="webSearch")title=item.query||"Searching the web";
   if(type==="reasoning")title="Reasoning";
+  if(type==="imageView")title="Viewing image";
+  if(type==="imageGeneration")title="Generating image";
+  if(type==="contextCompaction")title="Compacting context";
+  if(type==="enteredReviewMode")title="Reviewing changes";
+  if(type==="exitedReviewMode")title="Finished review";
   return {id:item.id||crypto.randomUUID(),kind:type,title:String(title).split("\n")[0].slice(0,160),status:item.status==="completed"?"done":item.status||"running",raw:item,output:""};
 }
 function presetFor(mode){
@@ -109,9 +117,10 @@ function pullRequestIdentity(pr){
 }
 function tokenLabel(tokenUsage){
   const total=tokenUsage?.total?.totalTokens;
+  const contextTokens=tokenUsage?.last?.inputTokens;
   const windowSize=tokenUsage?.modelContextWindow;
   if(total==null)return "Context —";
-  if(windowSize)return "Context "+Math.round(total/windowSize*100)+"% · "+total.toLocaleString()+" / "+windowSize.toLocaleString();
+  if(windowSize&&contextTokens!=null)return "Context "+Math.round(contextTokens/windowSize*100)+"% · "+contextTokens.toLocaleString()+" input · "+total.toLocaleString()+" total";
   return "Tokens "+total.toLocaleString();
 }
 
@@ -234,8 +243,9 @@ export default function App(){
   const [selectedThreadIds,setSelectedThreadIds]=useState(new Set()); const [providerRevision,setProviderRevision]=useState(0);
   const [goal,setGoal]=useState(null); const [linkedPullRequests,setLinkedPullRequests]=useState([]);
   const [worktreeSetup,setWorktreeSetup]=useState(null);
+  const [threadTelemetry,setThreadTelemetry]=useState({});
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false);
-  const rpcRef=useRef(null); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
+  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const displayThreads=searchResults||threads;
   function desktopNotify(title,body){
     if(settings.notifications===false)return;
@@ -243,6 +253,17 @@ export default function App(){
   }
 
   useEffect(()=>{document.documentElement.dataset.theme=settings.appearance||"dark"},[settings.appearance]);
+  useEffect(()=>{activeThreadRef.current=activeThread},[activeThread]);
+
+  function updateThreadTelemetry(threadId,patch){
+    if(!threadId)return;
+    setThreadTelemetry(prev=>{
+      const current=prev[threadId]||{};
+      const next=typeof patch==="function"?patch(current):patch;
+      return {...prev,[threadId]:{...current,...next}};
+    });
+  }
+  function notificationIsActive(threadId){return !threadId||threadId===activeThreadRef.current?.id}
 
   useEffect(()=>{
     if(!window.trebellDesktop?.zoom)return;
@@ -265,6 +286,7 @@ export default function App(){
 
   const provider=settings.modelProvider||bootstrap.provider||"freebuff";
   const providerReady=bootstrap.mock||(provider==="freebuff"?Boolean(bootstrap.loggedIn):Boolean(bootstrap.providerReady));
+  useEffect(()=>{setThreadTelemetry({})},[provider]);
   async function refreshFreebuff(modelOverride=model){
     if(provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;
     const params=new URLSearchParams({timezone}); if(modelOverride)params.set("model",modelOverride);
@@ -452,24 +474,74 @@ export default function App(){
   }
   function handleNotification(message){
     const p=message.params||{};
-    if(message.method==="thread/started"&&p.thread){setActiveThread(p.thread);setThreads(prev=>[p.thread,...prev.filter(t=>t.id!==p.thread.id)])}
-    else if(message.method==="thread/name/updated")setThreads(prev=>prev.map(t=>t.id===p.threadId?{...t,name:p.name}:t));
-    else if(message.method==="thread/reverted"&&activeThread?.id===p.threadId)reloadActiveThread();
-    else if(message.method==="turn/started"){const id=p.turn?.id||p.turnId;setRunning(true);setActiveTurnId(id);setMessages(prev=>{const index=[...prev].reverse().findIndex(m=>m.role==="user"&&!m.turnId);if(index<0)return prev;const real=prev.length-1-index;return prev.map((m,i)=>i===real?{...m,turnId:id}:m)})}
-    else if(message.method==="turn/completed"){setRunning(false);setActiveTurnId(null);setEvents(prev=>prev.map(e=>e.status==="running"?{...e,status:"done"}:e));loadThreads(rpcRef.current).catch(()=>{});desktopNotify("Trebell Code finished",titleOf(activeThread)+" is ready for review.")}
-    else if(message.method==="turn/plan/updated"){const plan=(p.plan||[]).map((s,i)=>({id:"plan-"+i,kind:"plan",title:s.step||s.description||s.text||"Plan step",status:s.status==="completed"?"done":s.status==="inProgress"?"running":"pending",raw:s}));setEvents(prev=>[...prev.filter(e=>e.kind!=="plan"),...plan])}
-    else if(message.method==="item/started"&&p.item){const item=normalizeItem(p.item);setEvents(prev=>[...prev.filter(e=>e.id!==item.id),item])}
-    else if(message.method==="item/completed"&&p.item){if(p.item.type==="agentMessage"&&p.item.text?.trim()){setMessages(prev=>prev.some(m=>m.id===p.item.id)?prev:[...prev,{id:p.item.id,role:"assistant",text:p.item.text,turnId:p.turnId||activeTurnId}]);setAssistantText("")}const item=normalizeItem({...p.item,status:"completed"});setEvents(prev=>prev.some(e=>e.id===item.id)?prev.map(e=>e.id===item.id?{...e,...item}:e):[...prev,item])}
-    else if(message.method==="item/agentMessage/delta")setAssistantText(prev=>prev+(p.delta||p.text||""));
-    else if(message.method==="item/commandExecution/outputDelta"){const id=p.itemId||"command";setEvents(prev=>prev.map(e=>e.id===id?{...e,output:(e.output||"")+(p.delta||"")}:e))}
-    else if(message.method==="item/mcpToolCall/progress")setEvents(prev=>[...prev,{id:"mcp-"+Date.now(),kind:"mcpToolCall",title:p.message||"MCP progress",status:"running",raw:p}]);
-    else if(message.method==="turn/diff/updated")setEvents(prev=>[...prev,{id:"diff-"+Date.now(),kind:"fileChange",title:"Workspace diff updated",status:"done",raw:p.diff||p}]);
-    else if(message.method==="thread/tokenUsage/updated")setTokenUsage(p.tokenUsage||null);
-    else if(message.method==="thread/goal/updated"&&activeThread?.id===p.threadId)setGoal(p.goal||null);
-    else if(message.method==="thread/goal/cleared"&&activeThread?.id===p.threadId)setGoal(null);
-    else if(message.method==="thread/attachment/updated"&&activeThread?.id===p.threadId)loadPersistentThreadData(p.threadId).catch(()=>{});
-    else if(message.method==="thread/compacted")setEvents(prev=>[...prev,{id:"compact-"+Date.now(),kind:"tool",title:"Context compacted",status:"done",raw:p}]);
-    else if(message.method==="error"){setEvents(prev=>[...prev,{id:"error-"+Date.now(),kind:"error",title:p.message||"Agent error",status:"done",raw:p}]);setRunning(false);desktopNotify("Trebell Code error",p.message||"The agent stopped with an error.")}
+    const threadId=p.threadId||null;
+    const isCurrent=notificationIsActive(threadId);
+    if(message.method==="thread/started"&&p.thread){
+      setThreads(prev=>[p.thread,...prev.filter(t=>t.id!==p.thread.id)]);
+      if(activeThreadRef.current?.id===p.thread.id)setActiveThread(p.thread);
+    }
+    else if(message.method==="thread/status/changed"&&threadId&&p.status){
+      setThreads(prev=>prev.map(t=>t.id===threadId?{...t,status:p.status,updatedAt:Date.now()/1000}:t));
+      if(isCurrent)setActiveThread(prev=>prev?.id===threadId?{...prev,status:p.status,updatedAt:Date.now()/1000}:prev);
+      updateThreadTelemetry(threadId,{status:p.status,lastActivityAt:Date.now()});
+    }
+    else if(message.method==="thread/name/updated"){
+      setThreads(prev=>prev.map(t=>t.id===p.threadId?{...t,name:p.name}:t));
+      if(isCurrent)setActiveThread(prev=>prev?.id===p.threadId?{...prev,name:p.name}:prev);
+    }
+    else if(message.method==="thread/reverted"&&isCurrent)reloadActiveThread();
+    else if(message.method==="turn/started"){
+      const id=p.turn?.id||p.turnId;
+      updateThreadTelemetry(threadId,{turnId:id||null,turnStartedAtMs:p.turn?.startedAt?Number(p.turn.startedAt)*1000:Date.now(),lastActivityAt:Date.now()});
+      if(isCurrent){
+        setRunning(true);setActiveTurnId(id);
+        setMessages(prev=>{const index=[...prev].reverse().findIndex(m=>m.role==="user"&&!m.turnId);if(index<0)return prev;const real=prev.length-1-index;return prev.map((m,i)=>i===real?{...m,turnId:id}:m)});
+      }
+    }
+    else if(message.method==="turn/completed"){
+      const completedAtMs=p.turn?.completedAt?Number(p.turn.completedAt)*1000:Date.now();
+      updateThreadTelemetry(threadId,{turnId:null,turnStartedAtMs:null,currentActivity:null,lastTurn:{id:p.turn?.id||p.turnId||null,status:p.turn?.status||"completed",durationMs:p.turn?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs});
+      if(isCurrent){
+        setRunning(false);setActiveTurnId(null);setEvents(prev=>prev.map(e=>e.status==="running"?{...e,status:"done"}:e));loadThreads(rpcRef.current).catch(()=>{});desktopNotify("Trebell Code finished",titleOf(activeThreadRef.current)+" is ready for review.");
+      }
+    }
+    else if(message.method==="turn/plan/updated"&&isCurrent){const plan=(p.plan||[]).map((s,i)=>({id:"plan-"+i,kind:"plan",title:s.step||s.description||s.text||"Plan step",status:s.status==="completed"?"done":s.status==="inProgress"?"running":"pending",raw:s}));setEvents(prev=>[...prev.filter(e=>e.kind!=="plan"),...plan])}
+    else if(message.method==="item/started"&&p.item){
+      const item=normalizeItem(p.item);
+      updateThreadTelemetry(threadId,{currentActivity:{id:item.id,kind:item.kind,title:item.title,startedAtMs:p.startedAtMs||Date.now()},lastActivityAt:p.startedAtMs||Date.now()});
+      if(isCurrent)setEvents(prev=>[...prev.filter(e=>e.id!==item.id),item]);
+    }
+    else if(message.method==="item/completed"&&p.item){
+      const item=normalizeItem({...p.item,status:"completed"});
+      const completedAtMs=p.completedAtMs||Date.now();
+      updateThreadTelemetry(threadId,current=>({currentActivity:current.currentActivity?.id===item.id?null:current.currentActivity,lastActivity:{id:item.id,kind:item.kind,title:item.title,durationMs:p.item?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs}));
+      if(isCurrent){
+        if(p.item.type==="agentMessage"&&p.item.text?.trim()){setMessages(prev=>prev.some(m=>m.id===p.item.id)?prev:[...prev,{id:p.item.id,role:"assistant",text:p.item.text,turnId:p.turnId||null}]);setAssistantText("")}
+        setEvents(prev=>prev.some(e=>e.id===item.id)?prev.map(e=>e.id===item.id?{...e,...item}:e):[...prev,item]);
+      }
+    }
+    else if(message.method==="item/agentMessage/delta"&&isCurrent)setAssistantText(prev=>prev+(p.delta||p.text||""));
+    else if(message.method==="item/commandExecution/outputDelta"&&isCurrent){const id=p.itemId||"command";setEvents(prev=>prev.map(e=>e.id===id?{...e,output:(e.output||"")+(p.delta||"")}:e))}
+    else if(message.method==="item/mcpToolCall/progress"){
+      if(threadId)updateThreadTelemetry(threadId,current=>({currentActivity:current.currentActivity?{...current.currentActivity,title:p.message||current.currentActivity.title}:current.currentActivity,lastActivityAt:Date.now()}));
+      if(isCurrent)setEvents(prev=>[...prev,{id:"mcp-"+Date.now(),kind:"mcpToolCall",title:p.message||"MCP progress",status:"running",raw:p}]);
+    }
+    else if(message.method==="turn/diff/updated"&&isCurrent)setEvents(prev=>[...prev,{id:"diff-"+Date.now(),kind:"fileChange",title:"Workspace diff updated",status:"done",raw:p.diff||p}]);
+    else if(message.method==="thread/tokenUsage/updated"){
+      updateThreadTelemetry(threadId,{tokenUsage:p.tokenUsage||null,lastActivityAt:Date.now()});
+      if(isCurrent)setTokenUsage(p.tokenUsage||null);
+    }
+    else if(message.method==="thread/goal/updated"&&isCurrent)setGoal(p.goal||null);
+    else if(message.method==="thread/goal/cleared"&&isCurrent)setGoal(null);
+    else if(message.method==="thread/attachment/updated"&&isCurrent)loadPersistentThreadData(p.threadId).catch(()=>{});
+    else if(message.method==="thread/compacted"){
+      updateThreadTelemetry(threadId,{lastActivity:{kind:"contextCompaction",title:"Context compacted",completedAtMs:Date.now()},lastActivityAt:Date.now()});
+      if(isCurrent)setEvents(prev=>[...prev,{id:"compact-"+Date.now(),kind:"tool",title:"Context compacted",status:"done",raw:p}]);
+    }
+    else if(message.method==="error"){
+      updateThreadTelemetry(threadId,{currentActivity:null,lastError:p.message||"Agent error",lastActivityAt:Date.now()});
+      if(isCurrent){setEvents(prev=>[...prev,{id:"error-"+Date.now(),kind:"error",title:p.message||"Agent error",status:"done",raw:p}]);setRunning(false);desktopNotify("Trebell Code error",p.message||"The agent stopped with an error.")}
+    }
   }
 
   async function updateThreadMeta(threadId,patch){const meta=await api("/api/thread-meta",{method:"POST",body:{threadId,patch}}).catch(()=>({...threadMeta[threadId],...patch}));setThreadMeta(prev=>({...prev,[threadId]:meta}));return meta}
@@ -513,9 +585,9 @@ export default function App(){
     if(activeThread?.id===threadId){setGoal(goalData?.goal||null);setLinkedPullRequests(pullRequests)}
     return {goal:goalData?.goal||null,pullRequests};
   }
-  async function newChat(){setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([]);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null)}
+  async function newChat(){activeThreadRef.current=null;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([]);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null)}
   async function openThread(thread){
-    setSection("chat");setEvents([]);setAssistantText("");setWorktreeSetup(null);setActiveThread(thread);
+    activeThreadRef.current=thread;setSection("chat");setEvents([]);setAssistantText("");setWorktreeSetup(null);setActiveThread(thread);
     if(thread.cwd)await touchProject(thread.cwd);else setProjectPath(projectPath);
     if(!rpc||rpcStatus!=="connected")return;
     const [resumed,cp,goalData,attachmentData]=await Promise.all([
@@ -525,7 +597,7 @@ export default function App(){
       rpc.request("thread/attachment/list",{threadId:thread.id,limit:100}).catch(()=>({data:[]})),
     ]);
     const map=Object.fromEntries((cp.checkpoints||[]).filter(x=>x.turnId).map(x=>[x.turnId,x]));setCheckpointByTurn(map);
-    if(resumed?.thread){setActiveThread(resumed.thread);setMessages(historyFromThread(resumed.thread,map));setProjectPath(resumed.thread.cwd||projectPath)}
+    if(resumed?.thread){activeThreadRef.current=resumed.thread;setActiveThread(resumed.thread);setMessages(historyFromThread(resumed.thread,map));setProjectPath(resumed.thread.cwd||projectPath)}
     const meta=threadMeta[thread.id]||{};setReviewedFiles(meta.reviewedFiles||[]);setGoal(goalData?.goal||null);
     const persisted=(attachmentData?.data||[]).filter(item=>item.attachmentType==="pull_request").map(item=>({...item.payload,__identityKey:item.identityKey}));
     setLinkedPullRequests(persisted.length?persisted:(meta.linkedPullRequests||[]));
@@ -594,7 +666,7 @@ export default function App(){
   function inputsFor(text,paths){return [{type:"text",text,text_elements:[]},...(paths||[]).map(path=>{const lower=String(path).toLowerCase();if(/\.(png|jpe?g|gif|webp|bmp)$/.test(lower))return{type:"localImage",path};if(/\.(mp3|wav|m4a|ogg|flac)$/.test(lower))return{type:"localAudio",path};return{type:"mention",name:String(path).split(/[\\/]/).pop(),path}})]}
   async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null){
     if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");let thread=threadOverride||activeThread;let cwd=cwdOverride||projectPath||bootstrap.cwd;
-    if(!thread){cwd=await prepareWorktree(cwd,modelId);thread=await createThreadFor(modelId,cwd);setActiveThread(thread);setThreads(prev=>[thread,...prev]);setProjectPath(cwd)}
+    if(!thread){cwd=await prepareWorktree(cwd,modelId);thread=await createThreadFor(modelId,cwd);activeThreadRef.current=thread;setActiveThread(thread);setThreads(prev=>[thread,...prev]);setProjectPath(cwd)}
     const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7);setMessages(prev=>[...prev,{id:clientId,role:"user",text}]);setEvents([]);setAssistantText("");setRunning(true);
     const checkpoint=await api("/api/checkpoints",{method:"POST",body:{cwd,threadId:thread.id,label:text.slice(0,80)}}).catch(()=>null);const p=presetFor(permissionMode);
     const sandboxPolicy=p.sandbox==="danger-full-access"?{type:"dangerFullAccess"}:p.sandbox==="read-only"?{type:"readOnly",networkAccess:false}:{type:"workspaceWrite",writableRoots:[cwd],networkAccess:webSearch,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
@@ -766,7 +838,7 @@ export default function App(){
     if(rightPanelTab==="files"||rightPanelTab==="diff")return <WorkspacePanel key={rightPanelTab} defaultTab={rightPanelTab==="diff"?"diff":"files"} projectPath={projectPath} activeThreadId={activeThread?.id} reviewedFiles={reviewedFiles} onReviewedChange={toggleReviewed} onAttachPath={path=>addFiles([path])} onReviewComment={attachReviewComment}/>;
     if(rightPanelTab==="preview")return previewSurface;
     if(rightPanelTab==="source")return <SourceControlPanel projectPath={projectPath} model={model} provider={provider} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
-    if(rightPanelTab==="agents")return <div className="panel-page"><AgentsPage threads={threads} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onRefreshThreads={()=>rpc?loadThreads(rpc):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model}/></div>;
+    if(rightPanelTab==="agents")return <div className="panel-page"><AgentsPage threads={threads} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onRefreshThreads={()=>rpc?loadThreads(rpc):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model} telemetry={threadTelemetry}/></div>;
     if(rightPanelTab==="goal")return <GoalPanel rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={setGoal}/>;
     return <div className="runtime-surface">
       <section className="runtime-summary">

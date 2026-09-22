@@ -1,12 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createGuiServer } from "../src/gui-server.mjs";
 
 const packageVersion=JSON.parse(await readFile(new URL("../package.json",import.meta.url),"utf8")).version;
 
-test("GUI server exposes mock bootstrap, Freebuff-only models, and health", async () => {
-  const gui=await createGuiServer({port:33210,appPort:33456,mock:true});
+test("GUI server exposes mock bootstrap, provider models, and health", async () => {
+  const home=await mkdtemp(join(tmpdir(),"trebell-gui-test-"));
+  const env={...process.env,TREBELL_HOME:home};
+  const gui=await createGuiServer({port:33210,appPort:33456,mock:true,env});
   try{
     const boot=await fetch(gui.url+"/api/bootstrap").then(r=>r.json());
     assert.equal(boot.mock,true);
@@ -15,7 +19,8 @@ test("GUI server exposes mock bootstrap, Freebuff-only models, and health", asyn
 
     const models=await fetch(gui.url+"/api/models").then(r=>r.json());
     assert.ok(models.models.length>=1);
-    assert.ok(models.models.every(id=>id.startsWith("freebuff/")));
+    assert.equal(models.metadata.provider,boot.provider);
+    assert.ok(models.metadata.models.every(model=>model.provider===boot.provider));
 
     const projectsBefore=await fetch(gui.url+"/api/projects").then(r=>r.json());
     assert.ok(Array.isArray(projectsBefore.projects));
@@ -50,5 +55,6 @@ test("GUI server exposes mock bootstrap, Freebuff-only models, and health", asyn
     assert.equal(health.ok,true);
   } finally {
     await gui.close();
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
   }
 });

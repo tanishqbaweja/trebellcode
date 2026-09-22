@@ -47,6 +47,7 @@ export const MODEL_PROVIDERS = Object.freeze({
     baseUrl: "https://vyceai.com/v1",
     wireApi: "chat",
     envKey: "VYCEAI_API_KEY",
+    envKeys: ["VYCEAI_API_KEY", "VYCE_API_KEY"],
     requiresKey: true,
   },
 });
@@ -137,7 +138,8 @@ export class ProviderManager {
   key(providerId) {
     const provider = this.get(providerId);
     if (!provider.requiresKey) return "";
-    return normalizeProviderKey(this.secrets[provider.id] || this.env[provider.envKey] || "");
+    const envValue = (provider.envKeys || [provider.envKey]).map(key => this.env[key]).find(Boolean);
+    return normalizeProviderKey(this.secrets[provider.id] || envValue || "");
   }
 
   hasKey(providerId) {

@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProviderManager } from "../src/provider-manager.mjs";
 
-const apiKey=String(process.env.TREBELL_TEST_VYCE_API_KEY||process.env.VYCEAI_API_KEY||"").trim();
+const apiKey=String(process.env.TREBELL_TEST_VYCE_API_KEY||process.env.VYCEAI_API_KEY||process.env.VYCE_API_KEY||"").trim();
 if(!apiKey){
-  throw new Error("Set TREBELL_TEST_VYCE_API_KEY or VYCEAI_API_KEY before running the live Vyce validation.");
+  throw new Error("Set TREBELL_TEST_VYCE_API_KEY, VYCEAI_API_KEY, or VYCE_API_KEY before running the live Vyce validation.");
 }
 
 const root=mkdtempSync(join(tmpdir(),"trebell-vyce-smoke-"));

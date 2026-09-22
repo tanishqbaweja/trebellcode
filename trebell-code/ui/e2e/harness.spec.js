@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-test("Trebell Code renders the harness and scopes models to the selected provider", async ({ page }) => {
+test("Trebell Code renders the harness and scopes models to the selected provider", async ({ page,request }) => {
   await page.addInitScript(()=>{
     const snapshot={url:"http://fixture.local",title:"Preview fixture",text:"Checkout",elements:[{ref:"e7",tag:"button",text:"Submit order",href:""}]};
     window.__trebellZoomFactor=1;
@@ -13,6 +13,7 @@ test("Trebell Code renders the harness and scopes models to the selected provide
       browser:{navigate:async()=>({ok:true}),show:async()=>({ok:true}),snapshot:async()=>snapshot,screenshot:async()=>({dataUrl:"data:image/png;base64,iVBORw0KGgo="}),importCookies:async()=>({ok:true,imported:2,failed:0}),close:async()=>({ok:true})}
     }});
   });
+  await request.post("/api/settings",{data:{onboardingComplete:true}});
   await page.goto("/");
   const onboarding=page.getByTestId("onboarding");
   if(await onboarding.isVisible().catch(()=>false))await onboarding.getByRole("button",{name:"Finish setup"}).click();

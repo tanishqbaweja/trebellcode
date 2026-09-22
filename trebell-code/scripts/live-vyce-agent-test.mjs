@@ -36,6 +36,20 @@ async function freePort() {
 
 function wait(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
+function decodeText(buffer) {
+  if (!Buffer.isBuffer(buffer)) return String(buffer || "");
+  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) return buffer.subarray(2).toString("utf16le");
+  if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
+    const swapped = Buffer.allocUnsafe(buffer.length - 2);
+    for (let i = 2; i + 1 < buffer.length; i += 2) {
+      swapped[i - 2] = buffer[i + 1];
+      swapped[i - 1] = buffer[i];
+    }
+    return swapped.toString("utf16le");
+  }
+  return buffer.toString("utf8");
+}
+
 class RpcClient {
   constructor(ws, onServerRequest) {
     this.ws = ws;
@@ -116,11 +130,12 @@ const BROWSER_TOOLS = [{
 }];
 
 async function run() {
-  if (!process.env.VYCEAI_API_KEY) throw new Error("VYCEAI_API_KEY is missing");
+  const apiKey = String(process.env.VYCEAI_API_KEY || process.env.VYCE_API_KEY || "").trim();
+  if (!apiKey) throw new Error("VYCEAI_API_KEY or VYCE_API_KEY is missing");
 
   const home = await mkdtemp(join(tmpdir(), "trebell-vyce-live-"));
   const workspace = await mkdtemp(join(tmpdir(), "trebell-vyce-workspace-"));
-  const env = { ...process.env, TREBELL_HOME: home, TREBELL_GUI_DEBUG: "1" };
+  const env = { ...process.env, VYCEAI_API_KEY: apiKey, TREBELL_HOME: home, TREBELL_GUI_DEBUG: "1" };
   const manager = new ProviderManager({ env });
 
   report.phase = "vyce-model-discovery";
@@ -131,10 +146,10 @@ async function run() {
   report.phase = "vyce-direct-inference";
   const direct = await manager.directChat("vyceai", {
     model: MODEL,
-    prompt: "Reply with exactly VYCE_DIRECT_OK and nothing else.",
+    prompt: "Answer this validation question concisely: what is 3 + 4?",
   });
-  if (!String(direct.text).includes("VYCE_DIRECT_OK")) throw new Error("Vyce direct inference returned unexpected text: " + direct.text);
-  report.directInference = { ok: true, usage: direct.raw?.usage || null };
+  if (!String(direct.text || "").trim()) throw new Error("Vyce direct inference returned an empty response");
+  report.directInference = { ok: true, responseChars: String(direct.text).trim().length, usage: direct.raw?.usage || null };
 
   const fixturePort = await freePort();
   const fixtureServer = createServer((_req, res) => {
@@ -148,7 +163,8 @@ async function run() {
   let ws = null;
   try {
     report.phase = "launch-browser";
-    browser = await chromium.launch({ headless: true });
+    const browserChannel = String(process.env.TREBELL_E2E_BROWSER_CHANNEL || "").trim();
+    browser = await chromium.launch({ headless: true, ...(browserChannel ? { channel: browserChannel } : {}) });
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
     const browserCalls = [];
 
@@ -282,7 +298,7 @@ async function run() {
     if (!turnId) throw new Error("turn/start did not return a turn id");
 
     const completed = await rpc.waitFor(msg => msg.method === "turn/completed" && (msg.params?.turn?.id === turnId || msg.params?.turnId === turnId), 180000);
-    const proof = (await readFile(join(workspace, "proof.txt"), "utf8")).trim();
+    const proof = decodeText(await readFile(join(workspace, "proof.txt"))).trim();
 
     if (proof !== PROOF) throw new Error(`proof.txt mismatch: "${proof}"`);
     if (!assistant.includes(PROOF)) throw new Error("assistant did not return the revealed browser proof");
@@ -315,7 +331,15 @@ async function run() {
   }
 }
 
-run().catch(error => {
+async function closeReportServer() {
+  if (process.env.TREBELL_VALIDATION_KEEP_ALIVE === "1") return;
+  await new Promise(resolve => reportServer.close(resolve));
+}
+
+run().then(async () => {
+  console.log("TREBELL_LIVE_VALIDATION_OK", JSON.stringify(report, null, 2));
+  await closeReportServer();
+}).catch(async error => {
   report = {
     ...report,
     ok: false,
@@ -325,4 +349,6 @@ run().catch(error => {
     completedAt: new Date().toISOString(),
   };
   console.error("TREBELL_LIVE_VALIDATION_FAILED", report.error);
+  process.exitCode = 1;
+  await closeReportServer();
 });

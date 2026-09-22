@@ -108,6 +108,13 @@ test("Vyce AI models are loaded live from /v1/models", async () => {
   assert.equal(result.source,"live");
 });
 
+test("Vyce accepts VYCE_API_KEY as an environment alias", () => {
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
+  const manager=new ProviderManager({env:{TREBELL_HOME:root,VYCE_API_KEY:"sk-vyce-alias"},fetchFn:async()=>new Response("{}")});
+  assert.equal(manager.key("vyceai"),"sk-vyce-alias");
+  assert.equal(manager.childEnv("vyceai",{}).VYCEAI_API_KEY,"sk-vyce-alias");
+});
+
 
 test("JustWorker uses the documented Anthropic-compatible messages endpoint", async () => {
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));

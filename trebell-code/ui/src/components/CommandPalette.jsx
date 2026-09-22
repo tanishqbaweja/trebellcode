@@ -6,6 +6,17 @@ export default function CommandPalette({open,onClose,actions=[],threads=[],onOpe
   const [selected,setSelected]=useState(0);
   const inputRef=useRef(null);
   useEffect(()=>{if(!open)return;setQuery("");setSelected(0);const t=setTimeout(()=>inputRef.current?.focus(),0);return()=>clearTimeout(t)},[open]);
+  useEffect(()=>{
+    if(!open)return;
+    const closeOnEscape=event=>{
+      if(event.key!=="Escape")return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose?.();
+    };
+    window.addEventListener("keydown",closeOnEscape,true);
+    return()=>window.removeEventListener("keydown",closeOnEscape,true);
+  },[open,onClose]);
   const items=useMemo(()=>{
     const q=query.trim().toLowerCase();
     const commands=actions.map(action=>({...action,kind:"command"}));

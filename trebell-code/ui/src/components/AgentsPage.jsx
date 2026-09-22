@@ -16,8 +16,34 @@ function ageLabel(epoch){
   if(seconds<86400)return Math.floor(seconds/3600)+"h";
   return Math.floor(seconds/86400)+"d";
 }
+function compactNumber(value){
+  const number=Number(value);
+  if(!Number.isFinite(number))return null;
+  if(number>=1_000_000)return (number/1_000_000).toFixed(number>=10_000_000?0:1).replace(/\.0$/,"")+"m";
+  if(number>=1_000)return (number/1_000).toFixed(number>=100_000?0:1).replace(/\.0$/,"")+"k";
+  return String(number);
+}
+function usageLabel(usage){
+  if(!usage)return "";
+  const parts=[];
+  const total=compactNumber(usage.total?.totalTokens);
+  if(total)parts.push(total+" tokens");
+  const windowSize=Number(usage.modelContextWindow);
+  const input=Number(usage.last?.inputTokens);
+  if(Number.isFinite(windowSize)&&windowSize>0&&Number.isFinite(input))parts.push("ctx "+Math.round(input/windowSize*100)+"%");
+  return parts.join(" · ");
+}
+function phaseLabel(thread,live,status){
+  const flags=thread?.status?.type==="active"?(thread.status.activeFlags||[]):[];
+  if(flags.includes("waitingOnApproval"))return "Waiting for approval";
+  if(flags.includes("waitingOnUserInput"))return "Waiting for input";
+  if(live?.currentActivity?.title)return live.currentActivity.title;
+  if(live?.turnId)return "Working";
+  if(live?.lastError)return "Error · "+live.lastError;
+  return status.label;
+}
 
-export default function AgentsPage({threads,onOpen,onAction,onRefreshThreads,rpc,rpcStatus,activeThread,model}){
+export default function AgentsPage({threads,onOpen,onAction,onRefreshThreads,rpc,rpcStatus,activeThread,model,telemetry={}}){
   const children=useMemo(()=>threads.filter(t=>t.parentThreadId),[threads]);
   const currentChildren=useMemo(()=>activeThread?.id?children.filter(t=>t.parentThreadId===activeThread.id):[],[children,activeThread?.id]);
   const otherChildren=useMemo(()=>activeThread?.id?children.filter(t=>t.parentThreadId!==activeThread.id):children,[children,activeThread?.id]);
@@ -73,13 +99,18 @@ export default function AgentsPage({threads,onOpen,onAction,onRefreshThreads,rpc
     return <div className="agent-list">{items.map(t=>{
       const status=statusOf(t);
       const flags=t.status?.type==="active"?(t.status.activeFlags||[]):[];
+      const live=telemetry[t.id]||{};
+      const phase=phaseLabel(t,live,status);
+      const usage=usageLabel(live.tokenUsage);
+      const activityAge=ageLabel((live.lastActivityAt?live.lastActivityAt/1000:null)||t.updatedAt);
       return <div className="agent-row" key={t.id}>
         <button className="agent-open" onClick={()=>onOpen(t)}>
           <span className={"agent-status-dot "+status.key}/>
           <div>
             <strong>{t.name||t.agentNickname||t.preview||"Subagent"}</strong>
-            <span>{t.agentRole||"agent"} · {status.label}{flags.length?" · "+flags.join(", "):""}</span>
-            <small>{(t.model||model||"model").replace(/^freebuff\//,"")} · updated {ageLabel(t.updatedAt)} ago · parent {t.parentThreadId?.slice(0,8)}</small>
+            <span className="agent-live-phase">{t.agentRole||"agent"} · <b>{phase}</b>{flags.length?" · "+flags.join(", "):""}</span>
+            <small>{(t.model||model||"model").replace(/^freebuff\//,"")}{usage?" · "+usage:""}{activityAge?" · active "+activityAge+" ago":""} · parent {t.parentThreadId?.slice(0,8)}</small>
+            {!live.currentActivity&&live.lastActivity?.title&&<small className="agent-last-activity">Last · {live.lastActivity.title}{live.lastActivity.durationMs!=null?" · "+Math.max(1,Math.round(live.lastActivity.durationMs))+"ms":""}</small>}
           </div>
           {status.key==="error"?<CircleAlert size={13}/>:status.key==="idle"?<Check size={13}/>:<GitBranch size={13}/>}
         </button>
