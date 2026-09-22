@@ -30,6 +30,19 @@ contextBridge.exposeInMainWorld("trebellDesktop", {
     get: () => ipcRenderer.invoke("desktop:background:get"),
     set: (enabled) => ipcRenderer.invoke("desktop:background:set", enabled),
   },
+  snapshots: {
+    get: () => ipcRenderer.invoke("snapshot:get"),
+    configure: (config) => ipcRenderer.invoke("snapshot:configure", config),
+    pending: () => ipcRenderer.invoke("snapshot:pending"),
+    read: (id) => ipcRenderer.invoke("snapshot:read", id),
+    ack: (id) => ipcRenderer.invoke("snapshot:ack", id),
+    capture: () => ipcRenderer.invoke("snapshot:capture"),
+    onCaptured: (handler) => {
+      const listener=(_event,payload)=>handler(payload);
+      ipcRenderer.on("snapshot:captured",listener);
+      return () => ipcRenderer.removeListener("snapshot:captured",listener);
+    },
+  },
   browser: {
     navigate: (url) => ipcRenderer.invoke("browser:navigate", url),
     show: () => ipcRenderer.invoke("browser:show"),

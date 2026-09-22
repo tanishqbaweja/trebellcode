@@ -22,6 +22,8 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
   const [agentMessage,setAgentMessage]=useState("");
   const [instanceDraft,setInstanceDraft]=useState(null);
   const [modelDraft,setModelDraft]=useState({id:"",name:"",effort:"",serviceTier:"",inputPrice:"",outputPrice:"",cacheReadPrice:"",cacheWritePrice:""});
+  const [snapshotInfo,setSnapshotInfo]=useState({enabled:false,shortcut:"CommandOrControl+Shift+S",includeText:false,registered:false,pending:0});
+  const [snapshotMessage,setSnapshotMessage]=useState("");
   const selected=settings.modelProvider||"freebuff";
   const selectedAgent=settings.agentRuntime||runtime?.agentRuntime||"codex";
   const keybindingRules=normalizeKeybindingRules(settings);
@@ -46,7 +48,7 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
       setAgentInfo(result);
       onSettings(await api("/api/settings"));
       setAgentMessage(`${result.selected?.status?.name||kind} selected.`);
-      await onProviderUpdated?.({resetThread:true});
+      await onProviderUpdated?.({agentRuntime:result.selectedRuntime||kind,provider:selected});
     }catch(error){setAgentMessage(error.message)}
   }
   function editInstance(instance=null){
@@ -80,7 +82,7 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
       setApiKey("");
       setProviderMessage("");
       await loadProviders();
-      await onProviderUpdated?.();
+      await onProviderUpdated?.({provider:next.modelProvider||patch.modelProvider,agentRuntime:next.agentRuntime||selectedAgent});
     }
     if("customModels" in patch)await onProviderUpdated?.();
     return next;
@@ -137,6 +139,15 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
       loadAgentRuntimes(),
     ]);
     setUpdate(u);setDiagnostics(d);setLoading(false);
+    if(window.trebellDesktop?.snapshots)window.trebellDesktop.snapshots.get().then(setSnapshotInfo).catch(()=>{});
+  }
+  async function configureSnapshots(patch){
+    if(!window.trebellDesktop?.snapshots)return;
+    setSnapshotMessage("Saving…");
+    try{
+      const next=await window.trebellDesktop.snapshots.configure({...snapshotInfo,...patch});
+      setSnapshotInfo(next);setSnapshotMessage(next.enabled?"SnapShots ready.":"SnapShots disabled.");
+    }catch(error){setSnapshotMessage(error.message||String(error));const current=await window.trebellDesktop.snapshots.get().catch(()=>null);if(current)setSnapshotInfo(current)}
   }
   useEffect(()=>{refresh()},[projectPath]);
   useEffect(()=>{loadProviders()},[selected]);
@@ -225,6 +236,7 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
       {selectedAgent==="codex"&&<div className="settings-card"><h3>Computer use</h3><p>The agent can always inspect a desktop screenshot. Mouse and keyboard control are exposed only when the current thread is in <strong>Full access</strong> mode. This keeps desktop automation explicit instead of silently escalating permissions.</p></div>}
       <div className="settings-card"><h3>Appearance</h3><div className="appearance-options">{["dark","midnight","black"].map(v=><button key={v} className={settings.appearance===v?"active":""} onClick={()=>save({appearance:v})}>{v}</button>)}</div></div>
       <div className="settings-card"><h3>Desktop notifications</h3><label className="toggle-line"><input type="checkbox" checked={settings.notifications!==false} onChange={e=>save({notifications:e.target.checked})}/> Notify when turns finish or need attention</label><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.notificationSound)} onChange={e=>save({notificationSound:e.target.checked})}/> Allow notification sound</label></div>
+      {window.trebellDesktop?.snapshots&&<div className="settings-card snapshot-settings"><h3>SnapShots</h3><p>Capture the foreground window from anywhere and attach it to the current draft. Captures are stored locally until Trebell successfully attaches them.</p><label className="toggle-line"><input type="checkbox" checked={Boolean(snapshotInfo.enabled)} onChange={e=>configureSnapshots({enabled:e.target.checked})}/> Enable global SnapShot shortcut</label><label>Shortcut<input value={snapshotInfo.shortcut||""} onChange={e=>setSnapshotInfo(info=>({...info,shortcut:e.target.value}))} onBlur={()=>snapshotInfo.enabled&&configureSnapshots({shortcut:snapshotInfo.shortcut})} placeholder="CommandOrControl+Shift+S"/></label><label className="toggle-line"><input type="checkbox" checked={Boolean(snapshotInfo.includeText)} onChange={e=>configureSnapshots({includeText:e.target.checked})}/> Include accessibility text and control positions</label><p className="provider-note">App text is off by default because visible UI can contain sensitive information. {snapshotInfo.pending?`${snapshotInfo.pending} capture${snapshotInfo.pending===1?"":"s"} waiting to attach. `:""}{snapshotMessage}</p><div className="provider-key-actions"><button onClick={()=>window.trebellDesktop.snapshots.capture().catch(error=>setSnapshotMessage(error.message))}>Capture now</button><button onClick={()=>configureSnapshots({shortcut:snapshotInfo.shortcut})} disabled={!snapshotInfo.enabled}>Save shortcut</button></div></div>}
       <div className="settings-card"><h3>Devices</h3><p>The Device panel can inspect and control local Android emulators or iOS simulators. Physical phones are not controlled. Agent access is separate and off by default.</p><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.agentDeviceAccess)} onChange={e=>save({agentDeviceAccess:e.target.checked})}/> Allow newly started Codex threads to use simulator tools</label></div>
       <div className="settings-card"><h3>Background mode</h3><p>Keep Trebell's local harness running in the system tray after the window closes, and start it with Windows.</p><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.backgroundMode)} onChange={async e=>{const enabled=e.target.checked;await window.trebellDesktop?.background?.set?.(enabled);await save({backgroundMode:enabled})}}/> Keep Trebell running in background</label></div>
       <div className="settings-card keybindings-settings"><h3>Keyboard shortcuts</h3><p>Shortcuts can be conditional. For example, <code>threadOpen && !modalOpen</code> means “only when a thread is open and no dialog is covering the app.”</p>{KEYBINDING_COMMANDS.map(command=>{const rule=keybindingRules.find(item=>item.command===command.id);return <div className="keybinding-row" key={command.id}><strong>{command.label}</strong><label>Shortcut<input value={rule?.key||""} onChange={e=>updateKeybinding(command.id,{key:e.target.value})}/></label><label>When<input value={rule?.when||""} placeholder="Always" onChange={e=>updateKeybinding(command.id,{when:e.target.value})}/></label></div>})}<p className="provider-note">Available contexts: chatFocus, terminalFocus, previewFocus, textInputFocus, projectOpen, threadOpen, running, modalOpen, rightPanelOpen, desktop. Combine them with <code>!</code>, <code>&&</code>, <code>||</code> and parentheses.</p></div>

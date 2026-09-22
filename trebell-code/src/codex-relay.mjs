@@ -27,6 +27,8 @@ export function attachCodexRelay(httpServer, {
   enabled = () => true,
   authorize = () => true,
   log = () => {},
+  onClientMessage = () => {},
+  onServerMessage = () => {},
 } = {}) {
   const wss = new WebSocketServer({ noServer: true });
   const pairs = new Set();
@@ -60,6 +62,7 @@ export function attachCodexRelay(httpServer, {
       pairs.add(pair);
 
       browserSocket.on("message", (data, isBinary) => {
+        if(!isBinary)try{onClientMessage(JSON.parse(String(data)))}catch{}
         if (upstream.readyState === WebSocket.OPEN) upstream.send(data, { binary: isBinary });
         else if (upstream.readyState === WebSocket.CONNECTING) queued.push([data, isBinary]);
       });
@@ -68,6 +71,7 @@ export function attachCodexRelay(httpServer, {
         for (const [data, isBinary] of queued.splice(0)) upstream.send(data, { binary: isBinary });
       });
       upstream.on("message", (data, isBinary) => {
+        if(!isBinary)try{onServerMessage(JSON.parse(String(data)))}catch{}
         if (browserSocket.readyState === WebSocket.OPEN) browserSocket.send(data, { binary: isBinary });
       });
 

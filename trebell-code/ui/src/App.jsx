@@ -26,6 +26,7 @@ import OnboardingModal from "./components/OnboardingModal.jsx";
 import OpenInPicker from "./components/OpenInPicker.jsx";
 import WorktreeSetupCard from "./components/WorktreeSetupCard.jsx";
 import DevicePanel from "./components/DevicePanel.jsx";
+import UsagePage from "./components/UsagePage.jsx";
 import { resolveKeybinding } from "./keybindings.js";
 
 const MAX_COMPOSER_ATTACHMENTS=100;
@@ -283,7 +284,7 @@ export default function App(){
   const [worktreeSetup,setWorktreeSetup]=useState(null);
   const [threadTelemetry,setThreadTelemetry]=useState({});
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false);
-  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
+  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const displayThreads=searchResults||threads;
   function desktopNotify(title,body){
     if(settings.notifications===false)return;
@@ -322,6 +323,36 @@ export default function App(){
     return()=>{disposed=true;window.removeEventListener("wheel",onWheel,{capture:true})};
   },[]);
 
+  useEffect(()=>{
+    const snapshots=window.trebellDesktop?.snapshots;if(!snapshots)return;
+    let disposed=false;const handling=new Set();
+    const attachCapture=async id=>{
+      if(disposed||!id||handling.has(id))return;handling.add(id);
+      try{
+        const capture=await snapshots.read(id);
+        const safeProcess=String(capture.process||"window").replace(/[^a-zA-Z0-9._-]+/g,"-").slice(0,60)||"window";
+        const uploaded=await api("/api/attachments/blob",{method:"POST",body:{name:`snapshot-${safeProcess}-${capture.createdAt||Date.now()}.png`,mime:"image/png",dataBase64:capture.dataBase64}});
+        const imagePath=uploaded.path;
+        setAttachments(prev=>[...new Set([...prev,imagePath])].slice(-MAX_COMPOSER_ATTACHMENTS));
+        setContextChips(prev=>[...prev.filter(chip=>chip.path!==imagePath),{id:crypto.randomUUID(),path:imagePath,kind:"snapshot",label:`SnapShot: ${capture.process||"App"}`,detail:capture.title||`${capture.width||"?"}×${capture.height||"?"}`}].slice(-MAX_COMPOSER_ATTACHMENTS));
+        if(capture.hasAccessibility&&Array.isArray(capture.accessibility)&&capture.accessibility.length){
+          const context={app:capture.process||null,windowTitle:capture.title||null,bounds:capture.bounds||null,controls:capture.accessibility};
+          try{
+            const metadata=await api("/api/attachments/text",{method:"POST",body:{name:`snapshot-${safeProcess}-ui.json`,text:JSON.stringify(context,null,2)}});
+            setAttachments(prev=>[...new Set([...prev,metadata.path])].slice(-MAX_COMPOSER_ATTACHMENTS));
+            setContextChips(prev=>[...prev.filter(chip=>chip.path!==metadata.path),{id:crypto.randomUUID(),path:metadata.path,kind:"snapshot",label:"SnapShot app text",detail:capture.title||capture.process||"Accessibility context"}].slice(-MAX_COMPOSER_ATTACHMENTS));
+          }catch{}
+        }
+        setSection("chat");await snapshots.ack(id);
+      }catch(error){
+        setEvents(prev=>[...prev,{id:"snapshot-error-"+Date.now(),kind:"error",title:error.message||String(error),status:"done",raw:{snapshotId:id}}]);
+      }finally{handling.delete(id)}
+    };
+    snapshots.pending().then(items=>{for(const item of items||[])attachCapture(item.id)}).catch(()=>{});
+    const unsubscribe=snapshots.onCaptured?.(payload=>attachCapture(payload?.id));
+    return()=>{disposed=true;unsubscribe?.()};
+  },[]);
+
   const agentRuntime=settings.agentRuntime||bootstrap.agentRuntime||"codex";
   const provider=settings.modelProvider||bootstrap.provider||"freebuff";
   const providerReady=bootstrap.mock||(agentRuntime==="codex"?(provider==="freebuff"?Boolean(bootstrap.loggedIn):Boolean(bootstrap.providerReady)):Boolean(bootstrap.agentRuntimeReady));
@@ -331,11 +362,16 @@ export default function App(){
     const params=new URLSearchParams({timezone}); if(modelOverride)params.set("model",modelOverride);
     const data=await api("/api/freebuff/overview?"+params).catch(()=>null); if(data)setFreebuff(data);
   }
-  async function refreshProviderModels({resetThread=false}={}){
+  async function refreshProviderModels({resetThread=false,provider:expectedProvider=null,agentRuntime:expectedRuntime=null}={}){
+    const seq=++modelRefreshSeqRef.current;
+    const targetProvider=expectedProvider||provider;
+    const targetRuntime=expectedRuntime||agentRuntime;
     const [boot,d]=await Promise.all([
       api("/api/bootstrap").catch(()=>null),
       api("/api/models").catch(error=>({models:[],error:error.message})),
     ]);
+    if(seq!==modelRefreshSeqRef.current)return d;
+    if((d?.provider&&d.provider!==targetProvider)||(d?.agentRuntime&&d.agentRuntime!==targetRuntime))return d;
     if(boot)setBootstrap(boot);
     const ids=d?.models||[];
     setModelError(d?.error||"");
@@ -343,7 +379,10 @@ export default function App(){
     const next=ids.includes(model)?model:(ids[0]||"");
     setModels(ids);setModel(next);
     if(resetThread){setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([])}
-    if((boot?.agentRuntime||agentRuntime)==="codex"&&(boot?.provider||provider)==="freebuff"&&next)refreshFreebuff(next);
+    if(targetRuntime==="codex"&&targetProvider==="freebuff"&&next){
+      const params=new URLSearchParams({timezone,model:next});
+      api("/api/freebuff/overview?"+params).then(data=>{if(seq===modelRefreshSeqRef.current&&data)setFreebuff(data)}).catch(()=>{});
+    }
     return d;
   }
   async function touchProject(path){
@@ -917,6 +956,7 @@ export default function App(){
     ...(activeThread?.id&&gitInfo?.isGit?[{id:"review",label:"Review changes",detail:"Ask Codex to review uncommitted changes",onRun:()=>startReview()}]:[]),
     ...(agentRuntime==="codex"?[{id:"tools",label:"Harness capabilities",detail:"Skills, MCP, plugins, apps and hooks",onRun:()=>setSection("tools")}]:[]),
     {id:"environments",label:"Environments",detail:"Local, WSL, SSH and remote access",onRun:()=>setSection("environments")},
+    {id:"usage",label:"Usage",detail:"Tokens and cost across recorded turns",onRun:()=>setSection("usage")},
     {id:"settings",label:"Settings",detail:"Providers, permissions and desktop behavior",onRun:()=>setSection("settings")},
     {id:"copy",label:"Copy conversation",detail:"Copy this thread as text",onRun:shareThread},
   ];
@@ -1016,7 +1056,8 @@ export default function App(){
         {section==="freebuff"&&agentRuntime==="codex"&&provider==="freebuff"&&<div className="secondary-page"><div className="page-header"><div><h1>Freebuff</h1><p>Account, balance, model pricing and session state.</p></div></div><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model)}/></div>}
         {section==="tools"&&agentRuntime==="codex"&&<div className="secondary-page full"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills}/></div>}
         {section==="environments"&&<div className="secondary-page full"><EnvironmentsPage/></div>}
-        {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>Agent harnesses, model providers, permissions and desktop behavior.</p></div></div><SettingsPage settings={settings} onSettings={setSettings} onProviderUpdated={()=>{setProviderRevision(v=>v+1);return refreshProviderModels({resetThread:true})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectPath} modelError={modelError}/></div>}
+        {section==="usage"&&<div className="secondary-page full"><UsagePage settings={settings}/></div>}
+        {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>Agent harnesses, model providers, permissions and desktop behavior.</p></div></div><SettingsPage settings={settings} onSettings={setSettings} onProviderUpdated={(options={})=>{setProviderRevision(v=>v+1);return refreshProviderModels({resetThread:true,...options})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectPath} modelError={modelError}/></div>}
         {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Every unarchived {agentRuntimeLabel} thread stored by Trebell on this machine.</p></div></div><div className="history-page">{threads.map(t=><button key={t.id} onClick={()=>openThread(t)}><FileCode2 size={15}/><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><time>{new Date(t.updatedAt*1000).toLocaleString()}</time></button>)}</div></div>}
       </main>
 

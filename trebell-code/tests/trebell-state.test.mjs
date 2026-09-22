@@ -59,3 +59,25 @@ test("project actions persist, sanitize, inherit preference, and allow clearing 
     assert.equal(again.preferredScriptId,"dev");
   }finally{await rm(home,{recursive:true,force:true});}
 });
+
+test("usage records upsert streaming updates instead of double-counting a turn", async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-state-usage-"));
+  const env={...process.env,TREBELL_HOME:home};
+  try{
+    const state=new TrebellStateStore(env);
+    state.recordUsage({runtime:"opencode",provider:"opencode-default",model:"opencode/big-pickle",threadId:"thread-1",turnId:"turn-1",usage:{totalTokens:100,inputTokens:70,outputTokens:30},cost:{amount:0.01,currency:"USD"},at:Date.now()});
+    state.recordUsage({runtime:"opencode",provider:"opencode-default",model:"opencode/big-pickle",threadId:"thread-1",turnId:"turn-1",usage:{totalTokens:140,inputTokens:90,outputTokens:50},cost:{amount:0.02,currency:"USD"},at:Date.now()});
+    state.recordUsage({runtime:"claude",provider:"claude-default",model:"sonnet",threadId:"thread-2",turnId:"turn-2",usage:{totalTokens:60,inputTokens:40,outputTokens:20},at:Date.now()});
+    const usage=state.usage({days:1});
+    assert.equal(usage.records.length,2);
+    assert.equal(usage.total.totalTokens,200);
+    assert.equal(usage.total.inputTokens,130);
+    assert.equal(usage.total.outputTokens,70);
+    assert.equal(usage.total.costUsd,0.02);
+    assert.equal(usage.models["opencode/big-pickle"].turns,1);
+    const again=new TrebellStateStore(env).usage({days:1});
+    assert.equal(again.records.length,2);
+    assert.equal(again.total.totalTokens,200);
+    assert.equal(new TrebellStateStore(env).clearUsage(),2);
+  }finally{await rm(home,{recursive:true,force:true});}
+});

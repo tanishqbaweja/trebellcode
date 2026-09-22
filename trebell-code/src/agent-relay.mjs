@@ -107,6 +107,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const reasoning=Number(usage.reasoning_tokens??usage.reasoningOutputTokens??0)||0;
       const used=Number(update.used)||(input+output+cached+cacheWrite+reasoning),size=Number(update.size)||0;
       const snapshot={totalTokens:used,inputTokens:input||Math.max(0,used-output-reasoning),cachedInputTokens:cached,cacheWriteInputTokens:cacheWrite,outputTokens:output,reasoningOutputTokens:reasoning};
+      if(turnId)state?.recordUsage?.({runtime:thread.runtime||runtimeManager.activeRuntime(),provider:thread.providerMeta?.runtimeInstanceId||null,model:thread.model||null,threadId,turnId,usage:snapshot,cost:update.cost||null,at:Date.now()});
       emit("thread/tokenUsage/updated",{threadId,turnId,tokenUsage:{total:snapshot,last:snapshot,modelContextWindow:size||null,cost:update.cost||null}});
     }else if(type==="diff"){
       emit("turn/diff/updated",{threadId,turnId,diff:update.diff||[]});

@@ -354,6 +354,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   const providers=new ProviderManager({env});
   const environments=new EnvironmentManager({state,env});
   const agentRuntimes=new AgentRuntimeManager({state,env,environments});
+  const codexThreadModels=new Map();
   const agentThreads=new AgentThreadStore(env);
   let selectedAgentRuntime=normalizeAgentRuntime(state.settings().agentRuntime);
   if(state.settings().agentRuntime!==selectedAgentRuntime) state.updateSettings({agentRuntime:selectedAgentRuntime,agentRuntimeInstanceId:`${selectedAgentRuntime}-default`});
@@ -464,7 +465,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       version:TREBELL_VERSION,
       appPort,
       targetUrl:()=>selectedAgentRuntime==="codex"
-        ? (appServer?.targetUrl||`ws://127.0.0.1:${appPort}`)
+        ? `ws://127.0.0.1:${port}/api/codex/ws`
         : `ws://127.0.0.1:${port}/api/agent/ws`,
       enabled:()=>selectedAgentRuntime==="codex" ? (mock || Boolean(appServer?.child && appServer.child.exitCode===null)) : true,
       environments,
@@ -662,6 +663,10 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     if(url.pathname==="/api/devices"&&req.method==="GET"){
       try{return json(res,200,await devices.list())}
       catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/usage"){
+      if(req.method==="GET")return json(res,200,state.usage({days:Number(url.searchParams.get("days")||30),limit:Number(url.searchParams.get("limit")||1000)}));
+      if(req.method==="DELETE")return json(res,200,{ok:true,cleared:state.clearUsage()});
     }
     if(url.pathname==="/api/device/screenshot"&&req.method==="GET"){
       try{return json(res,200,await devices.screenshot(url.searchParams.get("id")))}
@@ -1077,9 +1082,9 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     if(url.pathname==="/api/models"){
       try{
         const catalog=await selectedModels();
-        return json(res,200,{provider:selectedProvider,ready:providerReady(),models:catalog.models||[],metadata:catalog.metadata||null,error:catalog.error||null});
+        return json(res,200,{provider:selectedProvider,agentRuntime:selectedAgentRuntime,ready:selectedAgentRuntime==="codex"?providerReady():true,models:catalog.models||[],metadata:catalog.metadata||null,error:catalog.error||null});
       }catch(error){
-        return json(res,503,{provider:selectedProvider,ready:providerReady(),models:[],error:error instanceof Error?error.message:String(error)});
+        return json(res,503,{provider:selectedProvider,agentRuntime:selectedAgentRuntime,ready:selectedAgentRuntime==="codex"?providerReady():false,models:[],error:error instanceof Error?error.message:String(error)});
       }
     }
     if(url.pathname==="/api/login/start" && req.method==="POST"){
@@ -1156,6 +1161,19 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     targetUrl:()=>appServer?.targetUrl||`ws://127.0.0.1:${appPort}`,
     enabled:()=>mock || Boolean(appServer?.child && appServer.child.exitCode===null),
     log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"relay",text:message}),
+    onClientMessage:message=>{
+      if(message?.method==="turn/start"){
+        const threadId=message.params?.threadId,model=message.params?.model;if(threadId&&model)codexThreadModels.set(threadId,model);
+      }
+    },
+    onServerMessage:message=>{
+      const params=message?.params||{};
+      if(message?.method==="thread/started"&&params.thread?.id&&params.thread?.model)codexThreadModels.set(params.thread.id,params.thread.model);
+      if(message?.method==="thread/deleted"&&params.threadId)codexThreadModels.delete(params.threadId);
+      if(message?.method==="thread/tokenUsage/updated"&&params.threadId&&params.turnId){
+        state.recordUsage({runtime:"codex",provider:selectedProvider,model:codexThreadModels.get(params.threadId)||null,threadId:params.threadId,turnId:params.turnId,usage:params.tokenUsage?.last||params.tokenUsage?.total||{},cost:params.tokenUsage?.cost||null,at:Date.now()});
+      }
+    },
   });
   const agentRelay=mock?null:attachAgentRelay(server,{
     runtimeManager:agentRuntimes,

@@ -345,6 +345,127 @@ function powershell(script,{timeout=10000}={}){
   });
 }
 
+async function activeWindowInfo({includeText=false}={}){
+  if(process.platform!=="win32")return null;
+  const script=String.raw`
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class TrebellActiveWindow {
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+}
+'@
+$handle=[TrebellActiveWindow]::GetForegroundWindow()
+if($handle -eq [IntPtr]::Zero){ throw 'No foreground window is available.' }
+$titleBuilder=New-Object System.Text.StringBuilder 2048
+[void][TrebellActiveWindow]::GetWindowText($handle,$titleBuilder,$titleBuilder.Capacity)
+[uint32]$processId=0
+[void][TrebellActiveWindow]::GetWindowThreadProcessId($handle,[ref]$processId)
+$rect=New-Object TrebellActiveWindow+RECT
+[void][TrebellActiveWindow]::GetWindowRect($handle,[ref]$rect)
+$proc=Get-Process -Id $processId -ErrorAction SilentlyContinue
+$result=[ordered]@{
+  handle=$handle.ToInt64(); title=$titleBuilder.ToString(); processId=[int]$processId; process=if($proc){$proc.ProcessName}else{$null};
+  bounds=[ordered]@{x=$rect.Left;y=$rect.Top;width=[Math]::Max(1,$rect.Right-$rect.Left);height=[Math]::Max(1,$rect.Bottom-$rect.Top)};
+  accessibility=$null
+}
+${includeText?String.raw`
+try {
+  Add-Type -AssemblyName UIAutomationClient
+  Add-Type -AssemblyName UIAutomationTypes
+  $root=[System.Windows.Automation.AutomationElement]::FromHandle($handle)
+  if($root){
+    $nodes=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+    $items=New-Object System.Collections.ArrayList
+    $limit=[Math]::Min($nodes.Count,250)
+    for($i=0;$i -lt $limit;$i++){
+      try {
+        $node=$nodes.Item($i);$name=$node.Current.Name;$automationId=$node.Current.AutomationId;$type=$node.Current.ControlType.ProgrammaticName
+        if([string]::IsNullOrWhiteSpace($name) -and [string]::IsNullOrWhiteSpace($automationId)){ continue }
+        $box=$node.Current.BoundingRectangle
+        [void]$items.Add([ordered]@{name=$name;automationId=$automationId;controlType=$type;x=[int]$box.X;y=[int]$box.Y;width=[int]$box.Width;height=[int]$box.Height})
+      } catch {}
+    }
+    $result.accessibility=@($items)
+  }
+} catch {}
+`:""}
+$result | ConvertTo-Json -Depth 6 -Compress
+`;
+  const raw=await powershell(script,{timeout:includeText?3500:1800});
+  return JSON.parse(raw);
+}
+
+function snapshotSourceScore(source,info){
+  const sourceName=String(source?.name||"").trim().toLowerCase();
+  const title=String(info?.title||"").trim().toLowerCase();
+  if(title&&sourceName===title)return 100;
+  if(title&&sourceName&&title.includes(sourceName))return 80;
+  if(title&&sourceName&&sourceName.includes(title))return 70;
+  const process=String(info?.process||"").toLowerCase();
+  if(process&&sourceName.includes(process))return 20;
+  return 0;
+}
+
+function pruneSnapshots(max=20){
+  const pending=pendingSnapshots();
+  for(const item of pending.slice(0,Math.max(0,pending.length-max)))ackSnapshot(item.id);
+}
+
+async function captureActiveSnapshot(){
+  const info=await activeWindowInfo({includeText:Boolean(snapshotConfig.includeText)});
+  if(!info)throw new Error("Active-window capture is unavailable on this platform.");
+  const display=screen.getDisplayMatching(info.bounds||{x:0,y:0,width:1,height:1});
+  const scale=Math.max(1,Number(display?.scaleFactor)||1);
+  const requestedWidth=Math.min(4096,Math.max(640,Math.round(Number(info.bounds?.width||1600)*scale)));
+  const requestedHeight=Math.min(4096,Math.max(480,Math.round(Number(info.bounds?.height||1000)*scale)));
+  const sources=await desktopCapturer.getSources({types:["window"],thumbnailSize:{width:requestedWidth,height:requestedHeight},fetchWindowIcons:true});
+  const source=[...sources].sort((a,b)=>snapshotSourceScore(b,info)-snapshotSourceScore(a,info))[0];
+  if(!source||source.thumbnail.isEmpty()||snapshotSourceScore(source,info)===0)throw new Error(`Could not match the active window${info.title?` (${info.title})`:""} to a capturable source.`);
+  const id=`snapshot-${Date.now()}-${Math.random().toString(36).slice(2,9)}`;
+  const paths=snapshotPaths(id);const image=source.thumbnail.toPNG();const size=source.thumbnail.getSize();
+  const meta={
+    id,createdAt:Date.now(),title:info.title||source.name||"Active window",process:info.process||null,processId:info.processId||null,bounds:info.bounds||null,
+    width:size.width,height:size.height,accessibility:Array.isArray(info.accessibility)?info.accessibility:null,
+    hasAccessibility:Array.isArray(info.accessibility)&&info.accessibility.length>0,
+  };
+  writeFileSync(paths.png,image);writeFileSync(paths.json,JSON.stringify(meta,null,2),{encoding:"utf8",mode:0o600});pruneSnapshots(20);
+  if(windowRef&&!windowRef.isDestroyed()){
+    if(windowRef.isMinimized())windowRef.restore();windowRef.show();windowRef.focus();
+    windowRef.webContents.send("snapshot:captured",{id});
+  }
+  return meta;
+}
+
+let registeredSnapshotShortcut=null;
+function applySnapshotConfig(input={}, {persist=true}={}){
+  const next={
+    enabled:Boolean(input.enabled),
+    shortcut:String(input.shortcut||snapshotConfig.shortcut||"CommandOrControl+Shift+S").trim().slice(0,120)||"CommandOrControl+Shift+S",
+    includeText:Boolean(input.includeText),
+  };
+  const previous={...snapshotConfig};
+  if(registeredSnapshotShortcut){globalShortcut.unregister(registeredSnapshotShortcut);registeredSnapshotShortcut=null}
+  if(next.enabled){
+    const ok=globalShortcut.register(next.shortcut,()=>captureActiveSnapshot().catch(error=>{
+      if(Notification.isSupported())new Notification({title:"Trebell SnapShot",body:error.message||String(error),silent:true,icon:appIcon()}).show();
+    }));
+    if(!ok){
+      if(previous.enabled&&previous.shortcut){const restored=globalShortcut.register(previous.shortcut,()=>captureActiveSnapshot().catch(()=>{}));if(restored)registeredSnapshotShortcut=previous.shortcut}
+      throw new Error(`Shortcut ${next.shortcut} is already reserved by another application.`);
+    }
+    registeredSnapshotShortcut=next.shortcut;
+  }
+  snapshotConfig=next;
+  if(persist)saveDesktopPrefs({...loadDesktopPrefs(),snapshotConfig});
+  return {...snapshotConfig,registered:Boolean(registeredSnapshotShortcut)};
+}
+
 function primaryComputerPoint(x,y){
   const display=screen.getPrimaryDisplay();
   const scale=Math.max(1,Number(display.scaleFactor)||1);
@@ -500,6 +621,12 @@ if(!lock){
   ipcMain.on("window:close",()=>windowRef?.close());
   ipcMain.handle("desktop:background:get",()=>({enabled:backgroundEnabled,...backgroundLoginSettings()}));
   ipcMain.handle("desktop:background:set",(_event,value)=>({enabled:setBackgroundEnabled(value)}));
+  ipcMain.handle("snapshot:get",()=>({...snapshotConfig,registered:Boolean(registeredSnapshotShortcut),platform:process.platform,pending:pendingSnapshots().length}));
+  ipcMain.handle("snapshot:configure",(_event,config={})=>applySnapshotConfig(config));
+  ipcMain.handle("snapshot:pending",()=>pendingSnapshots());
+  ipcMain.handle("snapshot:read",(_event,id)=>readSnapshot(id));
+  ipcMain.handle("snapshot:ack",(_event,id)=>ackSnapshot(id));
+  ipcMain.handle("snapshot:capture",()=>captureActiveSnapshot());
   ipcMain.on("desktop:notify",(_event,payload={})=>{
     if(!Notification.isSupported()) return;
     const title=String(payload.title||"Trebell Code").slice(0,120);
@@ -551,7 +678,10 @@ if(!lock){
 
   app.whenReady().then(async()=>{
     if(process.platform==="win32")app.setAppUserModelId("com.trebell.code");
-    backgroundEnabled=Boolean(loadDesktopPrefs().backgroundEnabled);
+    const prefs=loadDesktopPrefs();
+    backgroundEnabled=Boolean(prefs.backgroundEnabled);
+    snapshotConfig={...snapshotConfig,...(prefs.snapshotConfig||{})};
+    if(snapshotConfig.enabled){try{applySnapshotConfig(snapshotConfig,{persist:false})}catch(error){snapshotConfig={...snapshotConfig,enabled:false};saveDesktopPrefs({...prefs,snapshotConfig});console.error("SnapShot shortcut disabled:",error.message)}}
     if(backgroundEnabled)ensureTray();
     await createWindow();
   }).catch((error)=>{
@@ -573,6 +703,7 @@ if(!lock){
     quitting=true;
     try{if(agentBrowser&&!agentBrowser.isDestroyed())agentBrowser.destroy()}catch{}
     try{tray?.destroy();tray=null}catch{}
+    try{if(registeredSnapshotShortcut)globalShortcut.unregister(registeredSnapshotShortcut);registeredSnapshotShortcut=null}catch{}
     Promise.resolve(gui?.close?.())
       .catch(()=>{})
       .finally(()=>app.quit());

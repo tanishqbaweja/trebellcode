@@ -1,6 +1,6 @@
 import React from "react";
 import {
-  Archive, Bot, Clock3, Folder, Globe2, History,
+  Archive, BarChart3, Bot, Clock3, Folder, Globe2, History,
   MoreHorizontal, Pin, Plus, Search, Settings, SlidersHorizontal, Wrench, Server
 } from "lucide-react";
 
@@ -103,6 +103,7 @@ export default function ThreadSidebar({
         <UtilityButton Icon={Globe2} label="Browser" active={section==="preview"} onClick={()=>setSection("preview")}/>
         {agentRuntime==="codex"&&<UtilityButton Icon={Bot} label="Agents" active={section==="agents"} onClick={()=>setSection("agents")}/>}
         <UtilityButton Icon={History} label="History" active={section==="history"} onClick={()=>setSection("history")}/>
+        <UtilityButton Icon={BarChart3} label="Usage" active={section==="usage"} onClick={()=>setSection("usage")}/>
         {agentRuntime==="codex"&&<UtilityButton Icon={Wrench} label="Tools" active={section==="tools"} onClick={()=>setSection("tools")}/>}
         <UtilityButton Icon={Server} label="Environments" active={section==="environments"} onClick={()=>setSection("environments")}/>
         <UtilityButton Icon={Settings} label="Settings" active={section==="settings"} onClick={()=>setSection("settings")}/>

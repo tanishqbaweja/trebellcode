@@ -33,6 +33,7 @@ const DEFAULT_STATE = Object.freeze({
   environments: [],
   stashes: [],
   checkpoints: [],
+  usageRecords: [],
 });
 
 function clone(value){ return JSON.parse(JSON.stringify(value)); }
@@ -59,6 +60,7 @@ export class TrebellStateStore {
         environments:Array.isArray(parsed.environments)?parsed.environments:[],
         stashes:Array.isArray(parsed.stashes)?parsed.stashes:[],
         checkpoints:Array.isArray(parsed.checkpoints)?parsed.checkpoints:[],
+        usageRecords:Array.isArray(parsed.usageRecords)?parsed.usageRecords:[],
       };
     }catch{return clone(DEFAULT_STATE);}
   }
@@ -168,4 +170,35 @@ export class TrebellStateStore {
     const items=threadId?this.state.checkpoints.filter(c=>c.threadId===threadId):this.state.checkpoints;
     return clone(items);
   }
+  recordUsage(entry={}){
+    const usage=entry.usage||{};const now=Number(entry.at)||Date.now();
+    const record={
+      id:String(entry.id||`${entry.runtime||"unknown"}:${entry.threadId||"unknown"}:${entry.turnId||"unknown"}`),
+      runtime:String(entry.runtime||"unknown"),provider:entry.provider?String(entry.provider):null,model:entry.model?String(entry.model):null,
+      threadId:entry.threadId?String(entry.threadId):null,turnId:entry.turnId?String(entry.turnId):null,at:now,
+      usage:{
+        totalTokens:Number(usage.totalTokens||0)||0,inputTokens:Number(usage.inputTokens||0)||0,cachedInputTokens:Number(usage.cachedInputTokens||0)||0,
+        cacheWriteInputTokens:Number(usage.cacheWriteInputTokens||0)||0,outputTokens:Number(usage.outputTokens||0)||0,reasoningOutputTokens:Number(usage.reasoningOutputTokens||0)||0,
+      },
+      cost:entry.cost&&Number.isFinite(Number(entry.cost.amount))?{amount:Number(entry.cost.amount),currency:String(entry.cost.currency||"USD")}:null,
+    };
+    const index=this.state.usageRecords.findIndex(item=>item.id===record.id);
+    if(index>=0)this.state.usageRecords[index]={...this.state.usageRecords[index],...record,model:record.model||this.state.usageRecords[index].model,provider:record.provider||this.state.usageRecords[index].provider};
+    else this.state.usageRecords.push(record);
+    this.state.usageRecords=this.state.usageRecords.sort((a,b)=>(b.at||0)-(a.at||0)).slice(0,5000);this.#save();return clone(record);
+  }
+  usage({days=30,limit=1000}={}){
+    const horizon=Math.max(1,Math.min(3650,Number(days)||30));const since=Date.now()-horizon*86400000;
+    const records=this.state.usageRecords.filter(item=>(item.at||0)>=since).slice(0,Math.max(1,Math.min(5000,Number(limit)||1000)));
+    const total={totalTokens:0,inputTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,outputTokens:0,reasoningOutputTokens:0,costUsd:0,costKnown:0};
+    const models={},runtimes={},daily={};
+    for(const record of records){
+      for(const key of ["totalTokens","inputTokens","cachedInputTokens","cacheWriteInputTokens","outputTokens","reasoningOutputTokens"])total[key]+=Number(record.usage?.[key]||0);
+      if(record.cost?.currency==="USD"&&Number.isFinite(Number(record.cost.amount))){total.costUsd+=Number(record.cost.amount);total.costKnown++}
+      const modelKey=record.model||"Unknown model";const runtimeKey=record.runtime||"unknown";const day=new Date(record.at).toISOString().slice(0,10);
+      for(const [bucket,key] of [[models,modelKey],[runtimes,runtimeKey],[daily,day]]){if(!bucket[key])bucket[key]={tokens:0,costUsd:0,turns:0};bucket[key].tokens+=Number(record.usage?.totalTokens||0);bucket[key].turns++;if(record.cost?.currency==="USD")bucket[key].costUsd+=Number(record.cost.amount||0)}
+    }
+    return {days:horizon,total,models,runtimes,daily,records:clone(records)};
+  }
+  clearUsage(){const count=this.state.usageRecords.length;this.state.usageRecords=[];this.#save();return count}
 }

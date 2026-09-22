@@ -127,6 +127,27 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
   if(!desktopSnapshot?.dataUrl?.startsWith("data:image/png;base64,")) throw new Error("Desktop snapshot is not a PNG data URL.");
   if(!(desktopSnapshot.width>0&&desktopSnapshot.height>0)) throw new Error("Desktop snapshot dimensions are invalid.");
 
+  const snapshotConfig=await mainPage.evaluate(()=>window.trebellDesktop.snapshots.configure({enabled:true,shortcut:"CommandOrControl+Shift+F11",includeText:false}));
+  if(!snapshotConfig?.enabled||!snapshotConfig?.registered) throw new Error("SnapShot shortcut did not register in the packaged desktop app.");
+  await mainPage.bringToFront();
+  await mainPage.waitForTimeout(150);
+  const captured=await mainPage.evaluate(()=>window.trebellDesktop.snapshots.capture());
+  if(!captured?.id||!(captured.width>0&&captured.height>0)) throw new Error("Foreground SnapShot capture did not return valid metadata.");
+  const persisted=await mainPage.evaluate(id=>window.trebellDesktop.snapshots.read(id),captured.id);
+  if(!persisted?.dataBase64||persisted.id!==captured.id) throw new Error("SnapShot was not persisted for renderer recovery.");
+  const pendingBeforeAck=await mainPage.evaluate(()=>window.trebellDesktop.snapshots.pending());
+  const wasPending=pendingBeforeAck.some(item=>item.id===captured.id);
+  if(wasPending){
+    await mainPage.evaluate(id=>window.trebellDesktop.snapshots.ack(id),captured.id);
+    const pendingAfterAck=await mainPage.evaluate(()=>window.trebellDesktop.snapshots.pending());
+    if(pendingAfterAck.some(item=>item.id===captured.id)) throw new Error("SnapShot ACK did not remove persisted capture files.");
+  }else{
+    await mainPage.waitForTimeout(250);
+    const attached=await mainPage.locator('.context-chip').filter({hasText:'SnapShot'}).count();
+    if(!attached) throw new Error("SnapShot disappeared from pending storage without being attached to the draft.");
+  }
+  await mainPage.evaluate(()=>window.trebellDesktop.snapshots.configure({enabled:false,shortcut:"CommandOrControl+Shift+F11",includeText:false}));
+
   await mainPage.evaluate(()=>window.trebellDesktop.zoom.reset());
   const zoomBefore=(await mainPage.evaluate(()=>window.trebellDesktop.zoom.get())).factor;
   await mainPage.keyboard.down("Control");
@@ -158,6 +179,7 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
     background:{initial,afterEnable,afterDisable},
     browser:{url:snapshot.url,title:snapshot.title,elements:snapshot.elements?.length||0,screenshotBytes:screenshot.dataUrl.length,cookieImport},
     desktopSnapshot:{width:desktopSnapshot.width,height:desktopSnapshot.height,bytes:desktopSnapshot.dataUrl.length},
+    snapShot:{width:captured.width,height:captured.height,title:captured.title,process:captured.process,persistedBytes:persisted.dataBase64.length},
     zoom:{before:zoomBefore,afterCtrlWheelUp:zoomAfter,reset:zoomReset},
     voice,
     providerCompatibility,
