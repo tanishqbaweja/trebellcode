@@ -29,6 +29,9 @@ test("Trebell Remote uses the selected provider instead of hardcoding Freebuff",
     assert.match(html, /modelProviders:\[statusData\?\.provider\|\|'freebuff'\]/);
     assert.match(html, /modelProvider:statusData\?\.provider\|\|'freebuff'/);
     assert.doesNotMatch(html, /modelProvider:'freebuff'/);
+    assert.match(html, /mcpServer\/elicitation\/request/);
+    assert.match(html, /mcpServerOpenaiFormElicitation:true/);
+    assert.match(html, /permissions:accept\?\(msg\.params\?\.permissions\|\|\{\}\):\{\}/);
 
     const status = await fetch(`http://127.0.0.1:${remote.port}/api/status`, {
       headers: { authorization: "Bearer test-token" },

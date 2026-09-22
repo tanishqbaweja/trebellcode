@@ -12,6 +12,7 @@ import TerminalPanel from "./components/TerminalPanel.jsx";
 import WorkspacePanel from "./components/WorkspacePanel.jsx";
 import SourceControlPanel from "./components/SourceControlPanel.jsx";
 import QuestionModal from "./components/QuestionModal.jsx";
+import McpElicitationModal from "./components/McpElicitationModal.jsx";
 import ProjectsPage from "./components/ProjectsPage.jsx";
 import AgentsPage from "./components/AgentsPage.jsx";
 import PreviewPage from "./components/PreviewPage.jsx";
@@ -301,7 +302,7 @@ export default function App(){
   const [sidebarOpen,setSidebarOpen]=useState(true);
   const [permissionMode,setPermissionMode]=useState("supervised"); const [webSearch,setWebSearch]=useState(true); const [workspaceMode,setWorkspaceMode]=useState("current");
   const [projectPath,setProjectPath]=useState(""); const [currentProject,setCurrentProject]=useState(null); const [gitInfo,setGitInfo]=useState(null); const [stats,setStats]=useState({}); const [runtime,setRuntime]=useState({});
-  const [approvals,setApprovals]=useState([]); const [question,setQuestion]=useState(null); const [tokenUsage,setTokenUsage]=useState(null);
+  const [approvals,setApprovals]=useState([]); const [question,setQuestion]=useState(null); const [elicitations,setElicitations]=useState([]); const [tokenUsage,setTokenUsage]=useState(null);
   const [panel,setPanel]=useState(null); const [rightPanelOpen,setRightPanelOpen]=useState(false); const [rightPanelTab,setRightPanelTab]=useState("files"); const [reviewedFiles,setReviewedFiles]=useState([]); const [checkpointByTurn,setCheckpointByTurn]=useState({});
   const [selectedThreadIds,setSelectedThreadIds]=useState(new Set()); const [providerRevision,setProviderRevision]=useState(0);
   const [goal,setGoal]=useState(null); const [linkedPullRequests,setLinkedPullRequests]=useState([]);
@@ -553,7 +554,7 @@ export default function App(){
         projectOpen:Boolean(projectPath),
         threadOpen:Boolean(activeThread?.id),
         running:Boolean(running),
-        modalOpen:Boolean(paletteOpen||question||approvals.length||settings.onboardingComplete===false),
+        modalOpen:Boolean(paletteOpen||question||elicitations.length||approvals.length||settings.onboardingComplete===false),
         rightPanelOpen:Boolean(rightPanelOpen),
         sidebarOpen:Boolean(sidebarOpen),
         desktop:Boolean(window.trebellDesktop),
@@ -578,11 +579,19 @@ export default function App(){
     };
     window.addEventListener("keydown",key);
     return()=>window.removeEventListener("keydown",key);
-  },[settings,prompt,attachments,section,panel,paletteOpen,question,approvals.length,projectPath,activeThread?.id,running,rightPanelOpen,queued,sidebarOpen]);
+  },[settings,prompt,attachments,section,panel,paletteOpen,question,elicitations.length,approvals.length,projectPath,activeThread?.id,running,rightPanelOpen,queued,sidebarOpen]);
   useEffect(()=>{if(!running&&queued.length){const next=queued[0];setQueued(prev=>prev.slice(1));startTurn(next.text,next.attachments,next.model||model).catch(error=>setEvents(prev=>[...prev,{id:"queue-error-"+Date.now(),kind:"error",title:error.message,status:"done"}]))}},[running,queued]);
 
   function handleServerRequest(client,message){
     if(message.method==="item/tool/requestUserInput"){setQuestion({client,request:message});desktopNotify("Trebell Code needs input","The running agent asked you a question.");return}
+    if(message.method==="mcpServer/elicitation/request"){
+      setElicitations(prev=>[...prev,{client,request:message}]);
+      const meta=message.params?._meta||{};
+      const actor=meta.connector_name||meta.connector_id||message.params?.serverName||"An app";
+      const action=meta.tool_title||meta.tool_name||"needs input";
+      desktopNotify("App approval required",`${actor}: ${action}`);
+      return;
+    }
     if(message.method==="item/tool/call"){
       const p=message.params||{};
       if(p.namespace==="trebell_browser"){
@@ -1095,6 +1104,11 @@ export default function App(){
   }
   async function answerQuestion(answers,filesByQuestion={}){if(!question)return;await validateAttachmentPaths(Object.values(filesByQuestion).flat());const result={};for(const q of question.request.params?.questions||[]){const values=[...(answers[q.id]||[])];const files=filesByQuestion[q.id]||[];if(files.length)values.push("Attached files:\n"+files.map(path=>"- "+path).join("\n"));result[q.id]={answers:values}}question.client.respond(question.request.id,{answers:result});setQuestion(null)}
   function cancelQuestion(){if(question){question.client.respond(question.request.id,{answers:{}});setQuestion(null)}}
+  function resolveElicitation(response){
+    const current=elicitations[0];if(!current)return;
+    current.client.respond(current.request.id,response);
+    setElicitations(prev=>prev.slice(1));
+  }
   async function login(){await fetch("/api/login/start",{method:"POST"}).catch(()=>{});const poll=setInterval(async()=>{const data=await api("/api/bootstrap").catch(()=>null);if(data?.loggedIn){clearInterval(poll);setBootstrap(data);await refreshProviderModels();}},1500);setTimeout(()=>clearInterval(poll),120000)}
   async function logout(){await api("/api/logout",{method:"POST"});setBootstrap(prev=>({...prev,loggedIn:false,providerReady:false}));setModels([]);setModel("");setSelectedModels([]);setFreebuff({loggedIn:false})}
   async function renameThread(){if(!rpc||!activeThread)return;const name=prompt("Rename thread",titleOf(activeThread));if(!name?.trim())return;await rpc.request("thread/name/set",{threadId:activeThread.id,name:name.trim()});setActiveThread(prev=>({...prev,name:name.trim()}));setThreads(prev=>prev.map(t=>t.id===activeThread.id?{...t,name:name.trim()}:t))}
@@ -1297,7 +1311,8 @@ export default function App(){
       {rightPanelOpen&&<RightPanel active={rightPanelTab} onActive={setRightPanelTab} onClose={()=>setRightPanelOpen(false)}>{rightPanelContent()}</RightPanel>}
     </div>
 
-    <QuestionModal request={question?.request} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={pickFiles}/>
+    <McpElicitationModal key={elicitations[0]?.request?.id||"none"} request={elicitations[0]?.request} onResolve={resolveElicitation}/>
+    {!elicitations.length&&<QuestionModal request={question?.request} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={pickFiles}/>}
     <CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} actions={paletteActions} threads={threads} onOpenThread={openThread}/>
     <OnboardingModal open={initialLoaded&&settings.onboardingComplete===false} projectPath={projectPath} onPickWorkspace={pickWorkspace} providerLabel={agentRuntime==="codex"?providerLabel:agentRuntimeLabel} providerReady={providerReady} permissionMode={permissionMode} onPermissionMode={setPermissionMode} onFinish={finishOnboarding}/>
   </div>;

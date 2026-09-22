@@ -29,13 +29,23 @@ export class CodexRpcClient {
     this.socket.addEventListener("message", (event) => this.#handleMessage(event.data));
     this.socket.addEventListener("close", () => {
       this.onStatus?.("disconnected");
-      for (const [, pending] of this.pending) pending.reject(new Error("App-server disconnected"));
+      for (const [, pending] of this.pending) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error("App-server disconnected"));
+      }
       this.pending.clear();
     });
 
     await this.request("initialize", {
       clientInfo: { name: "trebell-code", title: "Trebell Code", version: this.clientVersion },
-      capabilities: { experimentalApi: true },
+      capabilities: {
+        experimentalApi: true,
+        mcpServerOpenaiFormElicitation: true,
+        extensions: {
+          "openai/form": {},
+          "openai/elicitation": { form: {} },
+        },
+      },
     });
     this.notify("initialized", {});
     this.onStatus?.("connected");
@@ -46,15 +56,16 @@ export class CodexRpcClient {
       return Promise.reject(new Error("App-server is not connected"));
     }
     const id = this.nextId++;
-    this.socket.send(JSON.stringify({ method, id, params }));
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      setTimeout(() => {
+      const timer=setTimeout(() => {
         const pending = this.pending.get(id);
         if (!pending) return;
         this.pending.delete(id);
         pending.reject(new Error(`${method} timed out`));
       }, 60000);
+      this.pending.set(id, { resolve, reject, timer });
+      try{this.socket.send(JSON.stringify({ method, id, params }))}
+      catch(error){clearTimeout(timer);this.pending.delete(id);reject(error)}
     });
   }
 
@@ -89,6 +100,7 @@ export class CodexRpcClient {
       const pending = this.pending.get(message.id);
       if (!pending) return;
       this.pending.delete(message.id);
+      clearTimeout(pending.timer);
       if (message.error) pending.reject(new Error(message.error.message || "RPC request failed"));
       else pending.resolve(message.result);
       return;
