@@ -119,6 +119,21 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await expect.poll(()=>page.evaluate(()=>window.__updateInstalled)).toBe(true);
   await page.getByRole("button",{name:"light",exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.mode)).toBe("light");
+  await page.getByRole("button",{name:"Threads"}).click();
+  await expect(page.locator(".workspace-header")).toBeVisible();
+  const lightShell=await page.evaluate(()=>({
+    sidebar:getComputedStyle(document.querySelector(".sidebar")).backgroundColor,
+    main:getComputedStyle(document.querySelector(".main-frame")).backgroundColor,
+    header:getComputedStyle(document.querySelector(".workspace-header")).backgroundColor,
+    provider:getComputedStyle(document.querySelector(".sidebar-provider")).backgroundColor,
+    composer:getComputedStyle(document.querySelector(".composer-wrap")).backgroundColor,
+  }));
+  expect(lightShell.sidebar).toBe("rgb(238, 241, 244)");
+  expect(lightShell.main).toBe("rgb(246, 247, 249)");
+  expect(lightShell.header).toMatch(/^rgba?\(246, 247, 249/);
+  expect(lightShell.provider).not.toBe("rgb(255, 255, 255)");
+  expect(lightShell.composer).toMatch(/^rgba?\(255, 255, 255/);
+  await page.getByRole("button",{name:"Settings"}).click();
   await page.getByRole("button",{name:"Midnight",exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.theme)).toBe("midnight");
   await page.keyboard.press("Control+k");
@@ -127,6 +142,17 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await page.getByRole("button",{name:"dark",exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.mode)).toBe("dark");
   await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.theme)).toBe("midnight");
+  await page.getByRole("button",{name:"Threads"}).click();
+  await expect(page.locator(".workspace-header")).toBeVisible();
+  const darkShell=await page.evaluate(()=>({
+    sidebar:getComputedStyle(document.querySelector(".sidebar")).backgroundColor,
+    main:getComputedStyle(document.querySelector(".main-frame")).backgroundColor,
+    composer:getComputedStyle(document.querySelector(".composer-wrap")).backgroundColor,
+  }));
+  expect(darkShell.sidebar).toBe("rgb(17, 18, 20)");
+  expect(darkShell.main).toBe("rgb(11, 12, 14)");
+  expect(darkShell.composer).toMatch(/^rgba?\(20, 22, 25/);
+  await page.getByRole("button",{name:"Settings"}).click();
   await page.getByRole("button",{name:"Create theme"}).click();
   await page.locator(".theme-editor").getByLabel("Name").fill("E2E Theme");
   await page.locator(".theme-editor").getByLabel("Accent").fill("#4f8cff");
