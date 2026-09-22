@@ -61,7 +61,7 @@ async function handle(m){
 }
 readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",line=>{try{handle(JSON.parse(line)).catch(e=>send({jsonrpc:"2.0",id:null,error:{code:-32603,message:e.message}}))}catch{}});
 `,"utf8");
-  const terminals=new TerminalManager();
+  const terminals=new TerminalManager({persist:false});
   const updates=[];
   const session=new AcpAgentSession({runtime:"fixture",command:process.execPath,args:[fixture],cwd:root,terminals,permissionMode:"full",onUpdate:update=>updates.push(update)});
   try{

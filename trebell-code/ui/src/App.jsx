@@ -193,6 +193,7 @@ const SLASH_COMMANDS=[
   ["/preview","Open browser preview"],
   ["/agents","Open delegated agents"],
   ["/review","Review uncommitted workspace changes"],
+  ["/feedback","Send this Codex thread and logs as feedback"],
   ["/goal","Open the durable thread goal"],
   ["/palette","Open the command palette"],
   ["/new","Start a new thread"],
@@ -846,6 +847,14 @@ export default function App(){
     if(command==="/preview"){openRightPanel("preview");return true}
     if(command==="/agents"){if(agentRuntime==="codex")openRightPanel("agents");else setEvents(prev=>[...prev,{id:"agents-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} collaboration controls are not exposed yet`,status:"done",raw:{}}]);return true}
     if(command==="/review"){await startReview();return true}
+    if(command==="/feedback"){
+      if(agentRuntime!=="codex"||!activeThread?.id||!rpc){setEvents(prev=>[...prev,{id:"feedback-unavailable-"+Date.now(),kind:"error",title:"Codex feedback requires an existing Codex thread",status:"done",raw:{}}]);return true}
+      try{
+        const result=await rpc.request("feedback/upload",{classification:"bug",reason:rest.join(" ").trim()||null,threadId:activeThread.id,includeLogs:true});
+        setEvents(prev=>[...prev,{id:"feedback-"+Date.now(),kind:"tool",title:`Feedback uploaded${result?.threadId?` · ${result.threadId}`:""}`,status:"done",raw:result||{}}]);
+      }catch(error){setEvents(prev=>[...prev,{id:"feedback-error-"+Date.now(),kind:"error",title:"Feedback upload failed: "+(error.message||String(error)),status:"done",raw:{}}])}
+      return true;
+    }
     if(command==="/goal"){if(activeThread?.id)openRightPanel("goal");return true}
     if(command==="/palette"){setPaletteOpen(true);return true}
     if(command==="/new"){await newChat();return true}

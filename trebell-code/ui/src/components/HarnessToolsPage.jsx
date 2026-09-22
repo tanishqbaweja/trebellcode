@@ -7,7 +7,7 @@ function Section({title,icon:Icon,count,children}){
 function ErrorLine({value}){return value?<p className="capability-error">{value}</p>:null}
 
 export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread,skills=[]}){
-  const [data,setData]=useState({permissions:[],mcp:[],marketplaces:[],apps:[],hooks:[],features:[],capabilities:null,account:null,rateLimits:null,usage:null,config:null});
+  const [data,setData]=useState({permissions:[],mcp:[],marketplaces:[],apps:[],hooks:[],features:[],sharedPlugins:[],capabilities:null,account:null,rateLimits:null,usage:null,config:null});
   const [errors,setErrors]=useState({});
   const [loading,setLoading]=useState(false);
   const [busy,setBusy]=useState("");
@@ -25,13 +25,14 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     if(!rpc||rpcStatus!=="connected")return;
     setLoading(true);setErrors({});
     const threadId=activeThread?.id||null;
-    const [permissions,mcp,plugins,apps,hooks,features,capabilities,account,rateLimits,usage,config]=await Promise.all([
+    const [permissions,mcp,plugins,apps,hooks,features,sharedPlugins,capabilities,account,rateLimits,usage,config]=await Promise.all([
       call("permissionProfile/list",{limit:100,cwd:projectPath||null}),
       call("mcpServerStatus/list",{limit:100,detail:"full",threadId}),
       call("plugin/list",{cwds:projectPath?[projectPath]:[],forceRefetch:false}),
       call("app/list",{limit:100,threadId,forceRefetch:false}),
       call("hooks/list",{cwds:projectPath?[projectPath]:[]}),
       call("experimentalFeature/list",{limit:200,threadId}),
+      call("plugin/share/list",{}),
       call("modelProvider/capabilities/read",{}),
       call("account/read",{refreshToken:false}),
       call("account/rateLimits/read",{excludeResetCreditDetails:true}),
@@ -45,6 +46,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       apps:apps?.data||[],
       hooks:hooks?.data||[],
       features:features?.data||[],
+      sharedPlugins:sharedPlugins?.data||[],
       capabilities:capabilities||null,
       account:account||null,
       rateLimits:rateLimits||null,
@@ -78,6 +80,28 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       });
       await refresh();
     }finally{setBusy("")}
+  }
+  async function shareLocalPlugin(plugin){
+    const pluginPath=plugin?.source?.type==="local"?plugin.source.path:null;if(!rpc||!pluginPath)return;
+    setBusy("share:"+plugin.id);setErrors(prev=>({...prev,"plugin/share/save":null}));
+    try{await rpc.request("plugin/share/save",{pluginPath,...(plugin.remotePluginId?{remotePluginId:plugin.remotePluginId}:{}),discoverability:plugin.shareContext?.discoverability||"PRIVATE",shareTargets:(plugin.shareContext?.sharePrincipals||[]).filter(principal=>principal.role!=="owner"&&["reader","editor"].includes(principal.role)).map(principal=>({principalType:principal.principalType,principalId:principal.principalId,role:principal.role}))});await refresh()}
+    catch(error){setErrors(prev=>({...prev,"plugin/share/save":error.message||String(error)}))}finally{setBusy("")}
+  }
+  async function checkoutSharedPlugin(item){
+    const remotePluginId=item?.plugin?.remotePluginId;if(!rpc||!remotePluginId)return;setBusy("checkout:"+remotePluginId);
+    try{await rpc.request("plugin/share/checkout",{remotePluginId});await refresh()}
+    catch(error){setErrors(prev=>({...prev,"plugin/share/checkout":error.message||String(error)}))}finally{setBusy("")}
+  }
+  async function deleteSharedPlugin(item){
+    const remotePluginId=item?.plugin?.remotePluginId;if(!rpc||!remotePluginId)return;setBusy("delete-share:"+remotePluginId);
+    try{await rpc.request("plugin/share/delete",{remotePluginId});await refresh()}
+    catch(error){setErrors(prev=>({...prev,"plugin/share/delete":error.message||String(error)}))}finally{setBusy("")}
+  }
+  async function updateShareDiscoverability(item,discoverability){
+    const context=item?.plugin?.shareContext;const remotePluginId=item?.plugin?.remotePluginId||context?.remotePluginId;if(!rpc||!remotePluginId)return;setBusy("share-visibility:"+remotePluginId);
+    const shareTargets=(context?.sharePrincipals||[]).filter(principal=>principal.role!=="owner"&&["reader","editor"].includes(principal.role)).map(principal=>({principalType:principal.principalType,principalId:principal.principalId,role:principal.role}));
+    try{await rpc.request("plugin/share/updateTargets",{remotePluginId,discoverability,shareTargets});await refresh()}
+    catch(error){setErrors(prev=>({...prev,"plugin/share/updateTargets":error.message||String(error)}))}finally{setBusy("")}
   }
   async function toggleFeature(feature){
     if(!rpc)return;setBusy("feature:"+feature.name);
@@ -180,9 +204,16 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       </Section>
 
       <Section title="Plugins" icon={Blocks} count={plugins.length}>
-        <div className="capability-list">{plugins.map(plugin=><div key={plugin.marketplace.name+":"+plugin.id}><div><strong>{plugin.name}</strong><span>{plugin.marketplace.name}{plugin.version?" · "+plugin.version:""}</span></div><button onClick={()=>togglePlugin(plugin)} disabled={!!busy||plugin.availability==="unavailable"}>{plugin.installed?"Uninstall":"Install"}</button></div>)}</div>
+        <div className="capability-list">{plugins.map(plugin=><div key={plugin.marketplace.name+":"+plugin.id}><div><strong>{plugin.name}</strong><span>{plugin.marketplace.name}{plugin.version?" · "+plugin.version:""}{plugin.shareContext?.shareUrl?" · shared":""}</span></div><div className="capability-inline-actions">{plugin.source?.type==="local"&&<button onClick={()=>shareLocalPlugin(plugin)} disabled={!!busy}>{plugin.shareContext?.remotePluginId?"Update share":"Share privately"}</button>}<button onClick={()=>togglePlugin(plugin)} disabled={!!busy||plugin.availability==="unavailable"}>{plugin.installed?"Uninstall":"Install"}</button></div></div>)}</div>
         {!plugins.length&&<p>No plugin catalog is available in this runtime.</p>}
-        <ErrorLine value={errors["plugin/list"]}/>
+        <ErrorLine value={errors["plugin/list"]}/><ErrorLine value={errors["plugin/share/save"]}/>
+      </Section>
+
+      <Section title="Shared plugins" icon={Blocks} count={data.sharedPlugins.length}>
+        <p>Codex plugin sharing is account-backed. Local plugins are first shared privately; visibility can then be changed without inventing recipients.</p>
+        <div className="capability-list shared-plugin-list">{data.sharedPlugins.map(item=>{const plugin=item.plugin||{};const context=plugin.shareContext||{};const remotePluginId=plugin.remotePluginId||context.remotePluginId;return <div key={remotePluginId||plugin.id}><div><strong>{plugin.name||plugin.id}</strong><span>{plugin.version||plugin.localVersion||"shared plugin"}{context.creatorName?` · ${context.creatorName}`:""}</span></div><div className="capability-inline-actions">{context.shareUrl&&<button onClick={()=>window.open(context.shareUrl,"_blank","noopener,noreferrer")}>Open</button>}{!item.localPluginPath&&remotePluginId&&<button onClick={()=>checkoutSharedPlugin(item)} disabled={!!busy}>Checkout</button>}{context.discoverability&&<select value={context.discoverability} onChange={e=>updateShareDiscoverability(item,e.target.value)} disabled={!!busy}><option value="PRIVATE">Private</option><option value="UNLISTED">Unlisted</option><option value="LISTED">Listed</option></select>}{remotePluginId&&<button onClick={()=>deleteSharedPlugin(item)} disabled={!!busy}>Delete share</button>}</div></div>})}</div>
+        {!data.sharedPlugins.length&&!errors["plugin/share/list"]&&<p>No shared plugins were returned for this account.</p>}
+        <ErrorLine value={errors["plugin/share/list"]}/><ErrorLine value={errors["plugin/share/checkout"]}/><ErrorLine value={errors["plugin/share/delete"]}/><ErrorLine value={errors["plugin/share/updateTargets"]}/>
       </Section>
 
       <Section title="Marketplaces" icon={Blocks} count={data.marketplaces.length}>

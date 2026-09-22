@@ -55,6 +55,7 @@ export default function TerminalPanel({projectPath,onAttachExcerpt}){
     socket.current.send(JSON.stringify({type:"input",data:line+"\r"}));setLine("");
   }
   function ctrlC(){socket.current?.send(JSON.stringify({type:"input",data:"\x03"}));}
+  const active=sessions.find(session=>session.id===activeId)||null;
   return <div className="real-terminal">
     <div className="terminal-tabs">
       {sessions.map(s=><button key={s.id} className={s.id===activeId?"active":""} onClick={()=>setActiveId(s.id)}><SquareTerminal size={13}/>{s.name||"Terminal"}{!s.running&&<em>{s.exitCode}</em>}<span onClick={(e)=>{e.stopPropagation();close(s.id)}}><X size={11}/></span></button>)}
@@ -62,8 +63,8 @@ export default function TerminalPanel({projectPath,onAttachExcerpt}){
     </div>
     {!activeId?<div className="terminal-empty"><SquareTerminal size={30}/><strong>No terminal session</strong><button onClick={create}>Create terminal</button></div>:<>
       <pre ref={outputRef} className="terminal-screen">{output||"Terminal connected.\n"}</pre>
-      <form className="terminal-command-line" onSubmit={send}><span>$</span><input value={line} onChange={e=>setLine(e.target.value)} placeholder="Type a command…" autoFocus/><button type="button" onClick={ctrlC}>Ctrl+C</button><button>Send</button></form>
-      <div className="terminal-foot"><span>{projectPath||"Home"}</span><button onClick={()=>onAttachExcerpt?.(output.slice(-8000))}><Paperclip size={12}/> Attach recent output</button></div>
+      <form className="terminal-command-line" onSubmit={send}><span>$</span><input value={line} onChange={e=>setLine(e.target.value)} placeholder={active?.running?"Type a command…":"Stopped terminal history"} disabled={!active?.running} autoFocus/><button type="button" onClick={ctrlC} disabled={!active?.running}>Ctrl+C</button><button disabled={!active?.running}>Send</button></form>
+      <div className="terminal-foot"><span>{active?.restored?"Restored history · ":""}{active?.cwd||projectPath||"Home"}</span><button onClick={()=>onAttachExcerpt?.(output.slice(-8000))}><Paperclip size={12}/> Attach recent output</button></div>
     </>}
   </div>;
 }

@@ -3,7 +3,10 @@ import { spawn } from "node:child_process";
 import readline from "node:readline";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { WebSocketServer } from "ws";
+import { trebellHome } from "./paths.mjs";
 
 const MAX_BYTES=8*1024*1024;
 const MAX_LINES=5000;
@@ -20,11 +23,36 @@ function trimBuffer(text){
 }
 
 export class TerminalManager extends EventEmitter{
-  constructor({env=process.env}={}){
+  constructor({env=process.env,persist=true}={}){
     super();
-    this.env=env; this.sessions=new Map(); this.pending=new Map(); this.nextRid=1; this.clients=new Map(); this.exitWaiters=new Map();
+    this.env=env;this.persist=persist!==false;this.historyPath=join(trebellHome(env),"terminal-history.json");this.saveTimer=null;
+    this.sessions=new Map(); this.pending=new Map(); this.nextRid=1; this.clients=new Map(); this.exitWaiters=new Map();
+    this.#loadHistory();
     this.#startWorker();
   }
+  #loadHistory(){
+    if(!this.persist)return;
+    try{
+      const parsed=JSON.parse(readFileSync(this.historyPath,"utf8"));
+      for(const raw of Array.isArray(parsed?.sessions)?parsed.sessions:[]){
+        if(!raw?.id)continue;
+        const session={
+          id:String(raw.id),name:String(raw.name||"Terminal"),cwd:String(raw.cwd||process.cwd()),cols:Number(raw.cols)||120,rows:Number(raw.rows)||32,pid:null,
+          buffer:trimBuffer(String(raw.buffer||"")),running:false,exitCode:raw.exitCode==null?null:Number(raw.exitCode),createdAt:Number(raw.createdAt)||Date.now(),updatedAt:Number(raw.updatedAt)||Date.now(),restored:true,
+        };
+        this.sessions.set(session.id,session);
+      }
+    }catch{}
+  }
+  #saveHistory(){
+    if(!this.persist)return;
+    clearTimeout(this.saveTimer);this.saveTimer=null;
+    const sessions=[...this.sessions.values()].sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0)).map(session=>({
+      id:session.id,name:session.name,cwd:session.cwd,cols:session.cols,rows:session.rows,buffer:trimBuffer(session.buffer||""),running:false,exitCode:session.exitCode,createdAt:session.createdAt,updatedAt:session.updatedAt,
+    }));
+    try{mkdirSync(dirname(this.historyPath),{recursive:true});const tmp=this.historyPath+".tmp";writeFileSync(tmp,JSON.stringify({version:1,sessions},null,2),{encoding:"utf8",mode:0o600});renameSync(tmp,this.historyPath)}catch{}
+  }
+  #scheduleSave(){if(!this.persist)return;clearTimeout(this.saveTimer);this.saveTimer=setTimeout(()=>this.#saveHistory(),500);this.saveTimer.unref?.()}
   #startWorker(){
     const workerPath=fileURLToPath(new URL("./terminal-worker.mjs",import.meta.url));
     const childEnv={...this.env};
@@ -38,10 +66,12 @@ export class TerminalManager extends EventEmitter{
       }else if(msg.type==="output"){
         const session=this.sessions.get(msg.id); if(!session) return;
         session.buffer=trimBuffer(session.buffer+msg.data); session.updatedAt=Date.now();
+        this.#scheduleSave();
         this.emit("output",msg.id,msg.data);
         for(const ws of this.clients.get(msg.id)||[]) if(ws.readyState===ws.OPEN) ws.send(JSON.stringify({type:"output",data:msg.data}));
       }else if(msg.type==="exit"){
         const session=this.sessions.get(msg.id); if(session){session.running=false;session.exitCode=msg.exitCode;session.updatedAt=Date.now();}
+        this.#saveHistory();
         const waiters=this.exitWaiters.get(msg.id)||[];
         this.exitWaiters.delete(msg.id);
         for(const resolve of waiters)resolve({exitCode:msg.exitCode,signal:msg.signal});
@@ -60,13 +90,13 @@ export class TerminalManager extends EventEmitter{
     const id=randomUUID();
     const result=await this.#rpc("create",{id,cwd,cols,rows,shell,args,env});
     const session={id,name:name||"Terminal",cwd:cwd||process.cwd(),cols,rows,pid:result.pid,buffer:"",running:true,exitCode:null,createdAt:Date.now(),updatedAt:Date.now()};
-    this.sessions.set(id,session); return this.snapshot(id);
+    this.sessions.set(id,session);this.#saveHistory(); return this.snapshot(id);
   }
   list(){return [...this.sessions.values()].map(s=>this.#public(s));}
   snapshot(id){const s=this.sessions.get(id);return s?this.#public(s):null;}
-  #public(s){return {id:s.id,name:s.name,cwd:s.cwd,cols:s.cols,rows:s.rows,pid:s.pid,running:s.running,exitCode:s.exitCode,createdAt:s.createdAt,updatedAt:s.updatedAt,buffer:s.buffer};}
-  async write(id,data){await this.#rpc("write",{id,data});}
-  async resize(id,cols,rows){await this.#rpc("resize",{id,cols,rows});const s=this.sessions.get(id);if(s){s.cols=cols;s.rows=rows;}}
+  #public(s){return {id:s.id,name:s.name,cwd:s.cwd,cols:s.cols,rows:s.rows,pid:s.pid,running:s.running,exitCode:s.exitCode,createdAt:s.createdAt,updatedAt:s.updatedAt,buffer:s.buffer,restored:Boolean(s.restored)};}
+  async write(id,data){const session=this.sessions.get(id);if(!session?.running)throw new Error("Terminal session is stopped; create a new terminal to run commands");await this.#rpc("write",{id,data});}
+  async resize(id,cols,rows){const s=this.sessions.get(id);if(s?.running)await this.#rpc("resize",{id,cols,rows});if(s){s.cols=cols;s.rows=rows;this.#scheduleSave();}}
   async waitForExit(id,{timeoutMs=30*60_000}={}){
     const session=this.sessions.get(id);
     if(!session)return {exitCode:null,signal:null,missing:true};
@@ -82,7 +112,7 @@ export class TerminalManager extends EventEmitter{
       },Math.max(1000,Number(timeoutMs)||30*60_000));
     });
   }
-  async close(id){await this.#rpc("kill",{id}).catch(()=>{});this.sessions.delete(id);}
+  async close(id){const session=this.sessions.get(id);if(session?.running)await this.#rpc("kill",{id}).catch(()=>{});this.sessions.delete(id);this.#saveHistory();}
   attachWebSocket(server,path="/api/terminal/ws"){
     const wss=new WebSocketServer({noServer:true});
     const upgrade=(req,socket,head)=>{
@@ -104,7 +134,12 @@ export class TerminalManager extends EventEmitter{
     return {close:()=>{server.off("upgrade",upgrade);try{wss.close()}catch{}}};
   }
   async shutdown(){
-    for(const id of [...this.sessions.keys()]) await this.close(id).catch(()=>{});
+    clearTimeout(this.saveTimer);this.saveTimer=null;
+    for(const session of this.sessions.values()){
+      if(session.running)await this.#rpc("kill",{id:session.id}).catch(()=>{});
+      session.running=false;session.pid=null;session.restored=true;session.updatedAt=Date.now();
+    }
+    this.#saveHistory();
     await this.#rpc("shutdown").catch(()=>{});
     try{this.child.kill()}catch{}
   }
