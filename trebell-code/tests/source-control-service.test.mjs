@@ -11,6 +11,10 @@ import {
   repositoryHasCommits,
   resolveFjAccount,
   listPullRequests,
+  pullRequestDetail,
+  editPullRequest,
+  editPullRequestComment,
+  approvePullRequestWorkflows,
   withSourceControlExecutor,
 } from "../src/source-control-service.mjs";
 import { git } from "../src/git-service.mjs";
@@ -43,6 +47,9 @@ test("remote parser handles scp and URL remotes without losing nested paths",()=
 test("provider capabilities reflect known host limitations",()=>{
   assert.equal(CAPABILITIES.github.updateBranch,true);
   assert.equal(CAPABILITIES.github.viewedFiles,"host");
+  assert.equal(CAPABILITIES.github.edit,true);
+  assert.equal(CAPABILITIES.github.approveWorkflows,true);
+  assert.equal(CAPABILITIES.github.revert,false);
   assert.equal(CAPABILITIES.gitlab.viewedFiles,"environment");
   assert.equal(CAPABILITIES.bitbucket.publish,true);
   assert.equal(CAPABILITIES["azure-devops"].publish,true);
@@ -150,4 +157,58 @@ test("Bitbucket REST auth and requests come from the environment executor",async
   assert.equal(requests.length,1);
   assert.equal(requests[0].authorization,"Bearer remote-token");
   assert.match(requests[0].url,/api\.bitbucket\.org\/2\.0\/repositories\/acme\/widget\/pullrequests/);
+});
+
+test("GitHub PR editing, comment editing and waiting workflow approval use real CLI/API actions",async()=>{
+  const calls=[];const stdinCalls=[];
+  const gitResult=(args)=>{
+    if(args[0]==="rev-parse"&&args[1]==="--show-toplevel")return {ok:true,code:0,stdout:"/srv/app\n",stderr:""};
+    if(args[0]==="branch")return {ok:true,code:0,stdout:"main\n",stderr:""};
+    if(args[0]==="for-each-ref"&&args.includes("refs/heads"))return {ok:true,code:0,stdout:"main\n",stderr:""};
+    if(args[0]==="for-each-ref")return {ok:true,code:0,stdout:"origin/main\n",stderr:""};
+    if(args[0]==="status")return {ok:true,code:0,stdout:"## main...origin/main\n",stderr:""};
+    if(args[0]==="remote")return {ok:true,code:0,stdout:"origin\thttps://github.com/acme/widget.git (fetch)\norigin\thttps://github.com/acme/widget.git (push)\n",stderr:""};
+    if(args[0]==="worktree")return {ok:true,code:0,stdout:"worktree /srv/app\nHEAD abc\nbranch refs/heads/main\n",stderr:""};
+    return null;
+  };
+  const executor={
+    run:async(command,args,options={})=>{
+      calls.push({command,args:[...args],cwd:options.cwd});
+      if(command==="git"){const result=gitResult(args);if(result)return result}
+      if(command==="gh"&&args[0]==="pr"&&args[1]==="edit")return {ok:true,code:0,stdout:"",stderr:""};
+      if(command==="gh"&&args[0]==="pr"&&args[1]==="view"){
+        const fields=args[args.indexOf("--json")+1]||"";
+        if(fields==="headRefOid")return {ok:true,code:0,stdout:JSON.stringify({headRefOid:"head123"}),stderr:""};
+        return {ok:true,code:0,stdout:JSON.stringify({number:7,title:"Remote PR",body:"Body",state:"OPEN",url:"https://github.com/acme/widget/pull/7",headRefName:"feature",headRefOid:"head123",baseRefName:"main",comments:[{id:"55",body:"Mine",author:{login:"me"}}],reviews:[],files:[],commits:[]}),stderr:""};
+      }
+      if(command==="gh"&&args[0]==="api"&&args.includes("repos/acme/widget/actions/runs")){
+        return {ok:true,code:0,stdout:JSON.stringify({workflow_runs:[
+          {id:101,name:"CI",status:"action_required",conclusion:null,html_url:"https://github.com/acme/widget/actions/runs/101"},
+          {id:102,name:"Done",status:"completed",conclusion:"success"},
+        ]}),stderr:""};
+      }
+      if(command==="gh"&&args[0]==="api"&&args.includes("user"))return {ok:true,code:0,stdout:"me\n",stderr:""};
+      if(command==="gh"&&args[0]==="api"&&args.includes("repos/acme/widget/actions/runs/101/approve"))return {ok:true,code:0,stdout:"",stderr:""};
+      return {ok:false,code:1,stdout:"",stderr:"unexpected command "+command+" "+args.join(" ")};
+    },
+    runStdin:async(command,args,input,options={})=>{
+      stdinCalls.push({command,args:[...args],input,cwd:options.cwd});
+      return {ok:true,code:0,stdout:"{}",stderr:""};
+    },
+  };
+  await withSourceControlExecutor(executor,()=>editPullRequest("/srv/app",7,{provider:"github",title:"Updated title",body:"Updated body"}));
+  assert.equal(calls.some(call=>call.command==="gh"&&call.args.join(" ").includes("pr edit 7 --title Updated title --body Updated body")),true);
+
+  await withSourceControlExecutor(executor,()=>editPullRequestComment("/srv/app",7,55,"Edited comment",{provider:"github"}));
+  assert.equal(stdinCalls.length,1);
+  assert.equal(stdinCalls[0].command,"gh");
+  assert.equal(stdinCalls[0].args.includes("repos/acme/widget/issues/comments/55"),true);
+  assert.deepEqual(JSON.parse(stdinCalls[0].input),{body:"Edited comment"});
+
+  const detail=await withSourceControlExecutor(executor,()=>pullRequestDetail("/srv/app",7,{provider:"github"}));
+  assert.deepEqual(detail.item.awaitingWorkflowApproval.map(run=>run.id),[101]);
+  assert.equal(detail.item.comments[0].canEdit,true);
+  const approval=await withSourceControlExecutor(executor,()=>approvePullRequestWorkflows("/srv/app",7,{provider:"github"}));
+  assert.equal(approval.approved,1);
+  assert.equal(calls.some(call=>call.args.includes("repos/acme/widget/actions/runs/101/approve")),true);
 });

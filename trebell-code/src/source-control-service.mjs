@@ -11,11 +11,11 @@ const executionContext=new AsyncLocalStorage();
 const PROVIDERS=["github","gitlab","forgejo","bitbucket","azure-devops"];
 
 const CAPABILITIES={
-  github:{create:true,comment:true,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:true,publish:true,viewedFiles:"host"},
-  gitlab:{create:true,comment:true,review:true,requestChanges:false,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:false,publish:true,viewedFiles:"environment"},
-  forgejo:{create:true,comment:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:true,checkout:false,reviewers:false,publish:false,viewedFiles:"environment"},
-  bitbucket:{create:true,comment:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:false,checkout:false,reviewers:false,publish:true,viewedFiles:"environment"},
-  "azure-devops":{create:true,comment:false,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:false,checkout:false,reviewers:false,publish:true,viewedFiles:"environment"},
+  github:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:true,publish:true,viewedFiles:"host",approveWorkflows:true,revert:false},
+  gitlab:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:false,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:false,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false},
+  forgejo:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:true,checkout:false,reviewers:false,publish:false,viewedFiles:"environment",approveWorkflows:false,revert:false},
+  bitbucket:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:false,checkout:false,reviewers:false,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false},
+  "azure-devops":{create:true,edit:true,comment:false,editComments:false,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:false,checkout:false,reviewers:false,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false},
 };
 
 function currentExecutor(){return executionContext.getStore()?.executor||null}
@@ -216,6 +216,25 @@ async function sourceContext(cwd,preferred=null){
 function parseJson(raw,fallback=null){try{return JSON.parse(String(raw||"").trim()||"null")}catch{return fallback}}
 function stateOf(value,merged=false){const v=String(value||"").toLowerCase();if(merged||v==="merged"||v==="completed")return "MERGED";if(["closed","declined","superseded","abandoned"].includes(v))return "CLOSED";return "OPEN"}
 function actor(raw){if(!raw)return null;return {login:raw.login||raw.username||raw.nickname||raw.display_name||raw.displayName||raw.name||raw.uniqueName||"unknown",name:raw.name||raw.display_name||raw.displayName||null}}
+async function sourceControlViewer(ctx){
+  try{
+    if(ctx.provider==="github"){
+      const result=await run("gh",["api","user","--jq",".login"],{cwd:ctx.info.root,allowFailure:true,maxBuffer:64*1024});
+      return result.ok?String(result.stdout||"").trim()||null:null;
+    }
+    if(ctx.provider==="gitlab")return actor(await glabApi(ctx,"user"))?.login||null;
+    if(ctx.provider==="forgejo")return actor((await forgejoApi(ctx,"user")).data)?.login||null;
+    if(ctx.provider==="bitbucket")return actor(await bitbucketApi(ctx,"user"))?.login||null;
+  }catch{}
+  return null;
+}
+function markEditableComments(item,viewer){
+  const login=String(viewer||"").trim().toLowerCase();
+  if(!Array.isArray(item?.comments))return item;
+  item.viewerLogin=viewer||null;
+  item.comments=item.comments.map(comment=>({...comment,canEdit:Boolean(login&&String(comment.author?.login||"").trim().toLowerCase()===login)}));
+  return item;
+}
 function normalizeGitLab(item){return {provider:"gitlab",number:Number(item.iid??item.id),title:item.title||"",body:item.description||"",state:stateOf(item.state,item.merged_at!=null),isDraft:Boolean(item.draft??item.work_in_progress),url:item.web_url||item.webUrl||"",headRefName:item.source_branch||item.sourceBranch||"",baseRefName:item.target_branch||item.targetBranch||"",headSha:item.sha||item.diff_refs?.head_sha||null,author:actor(item.author),reviewDecision:null,statusCheckRollup:item.pipeline?[item.pipeline]:[],reviews:(item.approved_by||item.reviewers||[]).map(x=>({author:actor(x.user||x),state:"REVIEWED",body:""}))}}
 function normalizeForgejo(item){return {provider:"forgejo",number:Number(item.number??item.id),title:item.title||"",body:item.body||"",state:stateOf(item.state,item.merged),isDraft:Boolean(item.draft),url:item.html_url||item.url||"",headRefName:item.head?.ref||"",baseRefName:item.base?.ref||"",headSha:item.head?.sha||null,author:actor(item.user),reviewDecision:null,statusCheckRollup:[],reviews:(item.requested_reviewers||[]).map(x=>({author:actor(x),state:"REQUESTED",body:""}))}}
 function normalizeBitbucket(item){return {provider:"bitbucket",number:Number(item.id),title:item.title||"",body:item.description||"",state:stateOf(item.state),isDraft:Boolean(item.draft),url:item.links?.html?.href||"",headRefName:item.source?.branch?.name||"",baseRefName:item.destination?.branch?.name||"",headSha:item.source?.commit?.hash||null,author:actor(item.author),reviewDecision:null,statusCheckRollup:[],reviews:(item.reviewers||[]).map(x=>({author:actor(x),state:item.participants?.find(p=>p.user?.uuid===x.uuid)?.approved?"APPROVED":"REVIEWED",body:""}))}}
@@ -427,6 +446,31 @@ export async function createPullRequest(cwd,{provider=null,title,body="",base=nu
   if(ctx.provider==="azure-devops"){const r=await run("az",["repos","pr","create","--only-show-errors","--detect","true","--target-branch",baseBranch,"--source-branch",branch,"--title",title,"--description",body,"--output","json"],{cwd:ctx.info.root,timeout:60000});const data=parseJson(r.stdout,{});return {provider:ctx.provider,url:data._links?.web?.href||data.repository?.webUrl||data.url||""}}
 }
 
+export async function editPullRequest(cwd,number,{provider=null,title,body=""}={}){
+  const ctx=await sourceContext(cwd,provider);const nextTitle=String(title||"").trim();if(!nextTitle)throw new Error("Pull request title is required");
+  if(ctx.provider==="github"){
+    const result=await run("gh",["pr","edit",String(number),"--title",nextTitle,"--body",String(body||"")],{cwd:ctx.info.root,allowFailure:true,maxBuffer:4*1024*1024});
+    if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not edit pull request").trim());return {ok:true,provider:ctx.provider};
+  }
+  if(ctx.provider==="gitlab"){await glabApi(ctx,`projects/${encodeURIComponent(ctx.repository)}/merge_requests/${Number(number)}`,{method:"PUT",body:{title:nextTitle,description:String(body||"")}});return {ok:true,provider:ctx.provider}}
+  if(ctx.provider==="forgejo"){const target=await forgejoContext(ctx);await forgejoApi(ctx,`repos/${target.repository}/pulls/${Number(number)}`,{method:"PATCH",body:{title:nextTitle,body:String(body||"")}});return {ok:true,provider:ctx.provider}}
+  if(ctx.provider==="bitbucket"){await bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests/${Number(number)}`,{method:"PUT",body:{title:nextTitle,description:String(body||"")}});return {ok:true,provider:ctx.provider}}
+  const result=await run("az",["repos","pr","update","--detect","true","--id",String(number),"--title",nextTitle,"--description",String(body||""),"--only-show-errors","--output","json"],{cwd:ctx.info.root,allowFailure:true,timeout:60000});
+  if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not edit Azure DevOps pull request").trim());return {ok:true,provider:ctx.provider};
+}
+
+export async function editPullRequestComment(cwd,number,commentId,body,{provider=null}={}){
+  const ctx=await sourceContext(cwd,provider);const text=String(body||"");const id=String(commentId||"").trim();if(!id)throw new Error("Comment id is required");
+  if(ctx.provider==="github"){
+    const path=`repos/${ctx.repository}/issues/comments/${id}`;const result=await runStdin("gh",["api","--method","PATCH",path,"--input","-","--header","Content-Type: application/json"],JSON.stringify({body:text}),{cwd:ctx.info.root,allowFailure:true,maxBuffer:4*1024*1024});
+    if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not edit GitHub comment").trim());return {ok:true,provider:ctx.provider};
+  }
+  if(ctx.provider==="gitlab"){await glabApi(ctx,`projects/${encodeURIComponent(ctx.repository)}/merge_requests/${Number(number)}/notes/${encodeURIComponent(id)}`,{method:"PUT",body:{body:text}});return {ok:true,provider:ctx.provider}}
+  if(ctx.provider==="forgejo"){const target=await forgejoContext(ctx);await forgejoApi(ctx,`repos/${target.repository}/issues/comments/${encodeURIComponent(id)}`,{method:"PATCH",body:{body:text}});return {ok:true,provider:ctx.provider}}
+  if(ctx.provider==="bitbucket"){await bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests/${Number(number)}/comments/${encodeURIComponent(id)}`,{method:"PUT",body:{content:{raw:text}}});return {ok:true,provider:ctx.provider}}
+  throw new Error("Azure DevOps comment editing is not exposed by this integration.");
+}
+
 export async function checkoutPullRequest(cwd,number,{provider=null}={}){
   const ctx=await sourceContext(cwd,provider);
   if(ctx.provider==="github"){
@@ -495,8 +539,9 @@ export async function publishRepository(cwd,{provider="github",name=null,visibil
 export async function pullRequestDetail(cwd,number,{provider=null}={}){
   const ctx=await sourceContext(cwd,provider);let item;
   if(ctx.provider==="github"){
-    const r=await run("gh",["pr","view",String(number),"--json","number,title,body,state,isDraft,url,headRefName,headRefOid,baseRefName,author,reviewDecision,statusCheckRollup,comments,reviews,files,commits"],{cwd:ctx.info.root,allowFailure:true,maxBuffer:8*1024*1024});
-    if(!r.ok)return {ok:false,provider:ctx.provider,capabilities:ctx.capabilities,error:(r.stderr||r.stdout).trim(),item:null};const raw=parseJson(r.stdout,{});item={...raw,provider:"github",headSha:raw.headRefOid||null,files:(raw.files||[]).map(file=>({path:file.path||file.filename||"",additions:Number(file.additions||0),deletions:Number(file.deletions||0),status:file.status||null,patch:file.patch||null}))};
+    const r=await run("gh",["pr","view",String(number),"--json","number,title,body,state,isDraft,url,headRefName,headRefOid,baseRefName,author,reviewDecision,statusCheckRollup,comments,reviews,files,commits,mergeCommit,mergedAt"],{cwd:ctx.info.root,allowFailure:true,maxBuffer:8*1024*1024});
+    if(!r.ok)return {ok:false,provider:ctx.provider,capabilities:ctx.capabilities,error:(r.stderr||r.stdout).trim(),item:null};const raw=parseJson(r.stdout,{});item={...raw,provider:"github",headSha:raw.headRefOid||null,mergeCommitSha:raw.mergeCommit?.oid||null,files:(raw.files||[]).map(file=>({path:file.path||file.filename||"",additions:Number(file.additions||0),deletions:Number(file.deletions||0),status:file.status||null,patch:file.patch||null}))};
+    item.awaitingWorkflowApproval=await githubAwaitingWorkflowRuns(ctx,item.headSha).catch(()=>[]);
   }
   else if(ctx.provider==="gitlab"){
     const data=await glabApi(ctx,`projects/${encodeURIComponent(ctx.repository)}/merge_requests/${Number(number)}`);item=normalizeGitLab(data);
@@ -506,8 +551,8 @@ export async function pullRequestDetail(cwd,number,{provider=null}={}){
   }
   else if(ctx.provider==="forgejo"){
     const t=await forgejoContext(ctx);const r=await forgejoApi(ctx,`repos/${t.repository}/pulls/${Number(number)}`);item=normalizeForgejo(r.data);
-    const [reviews,files]=await Promise.all([forgejoApi(ctx,`repos/${t.repository}/pulls/${Number(number)}/reviews`).catch(()=>({data:[]})),forgejoApi(ctx,`repos/${t.repository}/pulls/${Number(number)}/files`).catch(()=>({data:[]}))]);
-    item.reviews=(Array.isArray(reviews.data)?reviews.data:[]).map(x=>({id:x.id,author:actor(x.user),state:x.state||"REVIEWED",body:x.body||""}));item.files=(Array.isArray(files.data)?files.data:[]).map(file=>({path:file.filename||file.new_path||"",oldPath:file.previous_filename||null,status:file.status||null,patch:file.patch||null,additions:Number(file.additions||0),deletions:Number(file.deletions||0)}));
+    const [reviews,files,comments]=await Promise.all([forgejoApi(ctx,`repos/${t.repository}/pulls/${Number(number)}/reviews`).catch(()=>({data:[]})),forgejoApi(ctx,`repos/${t.repository}/pulls/${Number(number)}/files`).catch(()=>({data:[]})),forgejoApi(ctx,`repos/${t.repository}/issues/${Number(number)}/comments?limit=100`).catch(()=>({data:[]}))]);
+    item.reviews=(Array.isArray(reviews.data)?reviews.data:[]).map(x=>({id:x.id,author:actor(x.user),state:x.state||"REVIEWED",body:x.body||""}));item.files=(Array.isArray(files.data)?files.data:[]).map(file=>({path:file.filename||file.new_path||"",oldPath:file.previous_filename||null,status:file.status||null,patch:file.patch||null,additions:Number(file.additions||0),deletions:Number(file.deletions||0)}));item.comments=(Array.isArray(comments.data)?comments.data:[]).map(x=>({id:x.id,body:x.body||"",author:actor(x.user)}));
   }
   else if(ctx.provider==="bitbucket"){
     const data=await bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests/${Number(number)}`);item=normalizeBitbucket(data);
@@ -515,11 +560,19 @@ export async function pullRequestDetail(cwd,number,{provider=null}={}){
     item.comments=(comments.values||[]).map(x=>({id:x.id,body:x.content?.raw||"",author:actor(x.user)}));item.files=(diffstat.values||[]).map(file=>({path:file.new?.path||file.old?.path||"",oldPath:file.old?.path||null,status:file.status||null,additions:Number(file.lines_added||0),deletions:Number(file.lines_removed||0),patch:null}));
   }
   else {const r=await run("az",["repos","pr","show","--detect","true","--id",String(number),"--only-show-errors","--output","json"],{cwd:ctx.info.root,allowFailure:true,timeout:60000});if(!r.ok)return {ok:false,provider:ctx.provider,capabilities:ctx.capabilities,error:(r.stderr||r.stdout).trim(),item:null};item=normalizeAzure(parseJson(r.stdout,{}));item.files=[]}
+  if(ctx.capabilities.editComments&&item?.comments?.length)markEditableComments(item,await sourceControlViewer(ctx));
   return {ok:true,provider:ctx.provider,capabilities:ctx.capabilities,item};
 }
 
 const GITHUB_VIEWED_QUERY=`query($owner: String!, $name: String!, $number: Int!, $after: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { id files(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { path viewerViewedState } } } } }`;
 function githubRepoParts(ctx){const parts=String(ctx.repository||"").split("/").filter(Boolean);if(parts.length!==2)throw new Error("Could not resolve GitHub owner/repository from the Git remote.");return {owner:parts[0],name:parts[1]}}
+async function githubAwaitingWorkflowRuns(ctx,headSha){
+  if(!headSha)return[];
+  const result=await run("gh",["api","--method","GET","repos/"+ctx.repository+"/actions/runs","-f","head_sha="+headSha,"-f","event=pull_request","-f","per_page=100"],{cwd:ctx.info.root,allowFailure:true,maxBuffer:8*1024*1024});
+  if(!result.ok)return[];
+  const runs=parseJson(result.stdout,{})?.workflow_runs||[];
+  return runs.filter(run=>run?.status==="action_required"||run?.conclusion==="action_required").map(run=>({id:Number(run.id),name:run.name||run.display_title||"Workflow",url:run.html_url||null,status:run.status||null,conclusion:run.conclusion||null}));
+}
 function githubViewedState(raw){const value=String(raw||"").trim().toUpperCase();return value==="VIEWED"?"viewed":value==="DISMISSED"?"dismissed":"unviewed"}
 async function githubViewedPage(ctx,number,after=null){
   const repo=githubRepoParts(ctx);const args=["api","graphql","-f",`query=${GITHUB_VIEWED_QUERY}`,"-f",`owner=${repo.owner}`,"-f",`name=${repo.name}`,"-F",`number=${Number(number)}`];if(after)args.push("-f",`after=${after}`);
@@ -538,6 +591,21 @@ export async function setPullRequestFilesViewed(cwd,number,updates,{provider=nul
   const first=await githubViewedPage(ctx,number,null);const pullRequestId=first.pullRequestId;
   for(let offset=0;offset<files.length;offset+=40){const batch=files.slice(offset,offset+40);const params=batch.map((_,index)=>`$path${index}: String!`).join(", ");const fields=batch.map((file,index)=>`f${index}: ${file.viewed?"markFileAsViewed":"unmarkFileAsViewed"}(input: { pullRequestId: $pullRequestId, path: $path${index} }) { clientMutationId }`).join(" ");const query=`mutation($pullRequestId: ID!, ${params}) { ${fields} }`;const args=["api","graphql","-f",`query=${query}`,"-f",`pullRequestId=${pullRequestId}`];for(const [index,file] of batch.entries())args.push("-f",`path${index}=${file.path}`);const result=await run("gh",args,{cwd:ctx.info.root,allowFailure:true,maxBuffer:8*1024*1024});if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not update GitHub viewed files").trim())}
   return getPullRequestFilesViewed(cwd,number,{provider:ctx.provider});
+}
+
+export async function approvePullRequestWorkflows(cwd,number,{provider=null}={}){
+  const ctx=await sourceContext(cwd,provider);if(ctx.provider!=="github")throw new Error("Waiting workflow approval is available only for GitHub pull requests.");
+  const pr=await run("gh",["pr","view",String(number),"--json","headRefOid"],{cwd:ctx.info.root,allowFailure:true,maxBuffer:2*1024*1024});
+  if(!pr.ok)throw new Error((pr.stderr||pr.stdout||"Could not read pull request").trim());
+  const headSha=parseJson(pr.stdout,{})?.headRefOid;const runs=await githubAwaitingWorkflowRuns(ctx,headSha);
+  if(!runs.length)return {ok:true,provider:"github",approved:0,runs:[]};
+  const approved=[];
+  for(const runInfo of runs){
+    const result=await run("gh",["api","--method","POST","repos/"+ctx.repository+"/actions/runs/"+runInfo.id+"/approve"],{cwd:ctx.info.root,allowFailure:true,maxBuffer:2*1024*1024});
+    if(!result.ok)throw new Error((result.stderr||result.stdout||("Could not approve workflow "+runInfo.name)).trim());
+    approved.push(runInfo);
+  }
+  return {ok:true,provider:"github",approved:approved.length,runs:approved};
 }
 
 export async function commentOnPullRequest(cwd,number,body,{provider=null}={}){
