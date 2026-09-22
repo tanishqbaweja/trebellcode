@@ -329,7 +329,7 @@ export default function App(){
   const [permissionMode,setPermissionMode]=useState("supervised"); const [webSearch,setWebSearch]=useState(true); const [workspaceMode,setWorkspaceMode]=useState("current");
   const [projectPath,setProjectPath]=useState(""); const [currentProject,setCurrentProject]=useState(null); const [gitInfo,setGitInfo]=useState(null); const [stats,setStats]=useState({}); const [runtime,setRuntime]=useState({});
   const [approvals,setApprovals]=useState([]); const [question,setQuestion]=useState(null); const [elicitations,setElicitations]=useState([]); const [tokenUsage,setTokenUsage]=useState(null);
-  const [panel,setPanel]=useState(null); const [rightPanelOpen,setRightPanelOpen]=useState(false); const [rightPanelTab,setRightPanelTab]=useState("files"); const [reviewedFiles,setReviewedFiles]=useState([]); const [checkpointByTurn,setCheckpointByTurn]=useState({});
+  const [panel,setPanel]=useState(null); const [rightPanelOpen,setRightPanelOpen]=useState(false); const [rightPanelTab,setRightPanelTab]=useState("files"); const [rightPanelMaximized,setRightPanelMaximized]=useState(false); const [reviewedFiles,setReviewedFiles]=useState([]); const [checkpointByTurn,setCheckpointByTurn]=useState({});
   const [selectedThreadIds,setSelectedThreadIds]=useState(new Set()); const [providerRevision,setProviderRevision]=useState(0);
   const [snoozeRequest,setSnoozeRequest]=useState(null); const [threadUndo,setThreadUndo]=useState(null);
   const [goal,setGoal]=useState(null); const [linkedPullRequests,setLinkedPullRequests]=useState([]); const [sourceSelectedPr,setSourceSelectedPr]=useState(null);
@@ -716,7 +716,7 @@ export default function App(){
         chatFocus:section==="chat"||section==="new",
         terminalFocus:Boolean(panel==="terminal"&&active?.closest?.(".terminal-drawer")),
         terminalOpen:panel==="terminal",
-        previewFocus:section==="preview",
+        previewFocus:Boolean(rightPanelOpen&&rightPanelTab==="preview"),
         modelPickerOpen:Boolean(modelPickerOpen),
         textInputFocus:Boolean(active&&["INPUT","TEXTAREA","SELECT"].includes(active.tagName)),
         projectOpen:Boolean(projectPath),
@@ -737,6 +737,7 @@ export default function App(){
       else if(command==="sidebarToggle")setSidebarOpen(value=>!value);
       else if(command==="threadStop")stop().catch(()=>{});
       else if(command==="threadSettle"&&activeThread?.id)reversibleThreadAction(activeThread,activeThread.section?.name==="Settled"?"active":"settle").catch(()=>{});
+      else if(command==="threadPin"&&activeThread?.id)reversibleThreadAction(activeThread,activeThread.section?.name==="Pinned"?"active":"pin").catch(()=>{});
       else if(command==="threadPrevious"||command==="threadNext"){
         const index=displayThreads.findIndex(thread=>thread.id===activeThread?.id);
         const delta=command==="threadPrevious"?-1:1;const next=displayThreads[index>=0?index+delta:-1];
@@ -752,7 +753,21 @@ export default function App(){
       else if(command==="composerFocus"){document.querySelector('[data-testid="composer"]')?.focus()}
       else if(command==="terminalNew"){setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-new")),0)}
       else if(command==="terminalClose")window.dispatchEvent(new CustomEvent("trebell:terminal-close"));
-      else if(command==="rightPanelClose")setRightPanelOpen(false);
+      else if(command==="rightPanelClose"){setRightPanelOpen(false);setRightPanelMaximized(false)}
+      else if(command==="rightPanelToggle"){if(rightPanelOpen){setRightPanelOpen(false);setRightPanelMaximized(false)}else openRightPanel(rightPanelTab||"files")}
+      else if(command==="rightPanelMaximize")setRightPanelMaximized(value=>!value);
+      else if(command==="diffToggle"){
+        if(rightPanelOpen&&rightPanelTab==="diff"){setRightPanelOpen(false);setRightPanelMaximized(false)}else openRightPanel("diff");
+      }
+      else if(command==="previewToggle"){
+        if(rightPanelOpen&&rightPanelTab==="preview"){setRightPanelOpen(false);setRightPanelMaximized(false)}else openRightPanel("preview");
+      }
+      else if(command==="previewRefresh")window.dispatchEvent(new CustomEvent("trebell:preview-command",{detail:{action:"refresh"}}));
+      else if(command==="previewFocusUrl")window.dispatchEvent(new CustomEvent("trebell:preview-command",{detail:{action:"focusUrl"}}));
+      else if(command==="previewZoomIn")window.dispatchEvent(new CustomEvent("trebell:preview-command",{detail:{action:"zoomIn"}}));
+      else if(command==="previewZoomOut")window.dispatchEvent(new CustomEvent("trebell:preview-command",{detail:{action:"zoomOut"}}));
+      else if(command==="previewResetZoom")window.dispatchEvent(new CustomEvent("trebell:preview-command",{detail:{action:"resetZoom"}}));
+      else if(command==="projectSearch"){setSidebarOpen(true);setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:sidebar-search")),0)}
       else if(command==="files")openRightPanel("files");
       else if(command==="source")openRightPanel("source");
       else if(command==="goal"&&activeThread?.id)openRightPanel("goal");
@@ -765,12 +780,16 @@ export default function App(){
       else if(command==="copyPullRequestNumber")copyActivePullRequestNumber().catch(()=>{});
       else if(command==="modelPicker")window.dispatchEvent(new CustomEvent("trebell:model-picker",{detail:{action:"toggle"}}));
       else if(command.startsWith("modelJump"))window.dispatchEvent(new CustomEvent("trebell:model-picker",{detail:{action:"jump",index:Number(command.slice("modelJump".length))-1}}));
+      else if(/^script\..+\.run$/.test(command)){
+        const scriptId=command.slice(7,-4);const script=(currentProject?.scripts||[]).find(item=>item.id===scriptId);
+        if(script)runProjectAction(script).catch(error=>setEvents(prev=>[...prev,{id:"project-action-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))
+      }
       else if(command==="cycleTheme")cycleTheme();
       else if(command==="cycleAppearance")cycleAppearance();
     };
     window.addEventListener("keydown",key);
     return()=>window.removeEventListener("keydown",key);
-  },[settings,prompt,attachments,section,panel,paletteOpen,question,elicitations.length,approvals.length,snoozeRequest,threadUndo,projectPath,activeThread,running,rightPanelOpen,rightPanelTab,sourceSelectedPr,linkedPullRequests,queued,sidebarOpen,displayThreads,modelPickerOpen]);
+  },[settings,prompt,attachments,section,panel,paletteOpen,question,elicitations.length,approvals.length,snoozeRequest,threadUndo,projectPath,activeThread,running,rightPanelOpen,rightPanelTab,sourceSelectedPr,linkedPullRequests,queued,sidebarOpen,displayThreads,modelPickerOpen,currentProject]);
   useEffect(()=>{if(!running&&queued.length){const next=queued[0];setQueued(prev=>prev.slice(1));startTurn(next.text,next.attachments,next.model||model).catch(error=>setEvents(prev=>[...prev,{id:"queue-error-"+Date.now(),kind:"error",title:error.message,status:"done"}]))}},[running,queued]);
 
   function handleServerRequest(client,message){
@@ -1587,7 +1606,7 @@ export default function App(){
   return <div className={"app-shell"+(sidebarOpen?"":" sidebar-collapsed")}>
     <ThreadSidebar section={section} setSection={navigateSection} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} onOpen={openThread} onNew={newChat} onThreadAction={threadAction} onMove={moveThreadOrder} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={bulkAction} provider={provider} agentRuntime={agentRuntime} threadMeta={threadMeta} onCollapse={()=>setSidebarOpen(false)}/>
 
-    <div className={"workspace-shell"+(rightPanelOpen?" right-open":"")}>
+    <div className={"workspace-shell"+(rightPanelOpen?" right-open":"")+(rightPanelOpen&&rightPanelMaximized?" right-maximized":"")}>
       <main className={"main-frame"+(panel==="terminal"?" terminal-open":"")}>
         <div className="window-bar">
           <span className="window-drag-space"/>
@@ -1611,7 +1630,7 @@ export default function App(){
               {running&&<button className="header-control stop-control" onClick={stop}><CircleStop size={14}/><span>Stop</span></button>}
               <button data-testid="terminal-toggle" className={"header-control icon-only "+(panel==="terminal"?"active":"")} onClick={()=>setPanel(panel==="terminal"?null:"terminal")} aria-label="Toggle terminal" title="Toggle terminal"><PanelBottom size={16}/></button>
               {activeThread?.id&&<button className={"header-control icon-only "+(rightPanelOpen&&rightPanelTab==="goal"?"active":"")} onClick={()=>openRightPanel("goal")} aria-label="Thread goal" title={goal?.objective||"Set thread goal"}><Target size={15}/></button>}
-              <button data-testid="right-panel-toggle" className={"header-control icon-only "+(rightPanelOpen?"active":"")} onClick={()=>rightPanelOpen?setRightPanelOpen(false):openRightPanel("files")} aria-label="Open files and diff" title="Toggle workspace panel"><PanelRight size={16}/></button>
+              <button data-testid="right-panel-toggle" className={"header-control icon-only "+(rightPanelOpen?"active":"")} onClick={()=>{if(rightPanelOpen){setRightPanelOpen(false);setRightPanelMaximized(false)}else openRightPanel("files")}} aria-label="Open files and diff" title="Toggle workspace panel"><PanelRight size={16}/></button>
               <button className="header-control icon-only" onClick={()=>setPaletteOpen(true)} aria-label="Command palette" title="Command palette · Ctrl+K"><Command size={15}/></button>
             </div>
           </header>
@@ -1652,11 +1671,11 @@ export default function App(){
         {section==="environments"&&<div className="secondary-page full"><EnvironmentsPage/></div>}
       {section==="usage"&&<div className="secondary-page full"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><LicensesPage/></div>}
-      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>Agent harnesses, model providers, permissions and desktop behavior.</p></div></div><SettingsPage settings={settings} onSettings={setSettings} onProviderUpdated={(options={})=>{setProviderRevision(v=>v+1);return refreshProviderModels({resetThread:true,...options})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectPath} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></div>}
+      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>Agent harnesses, model providers, permissions and desktop behavior.</p></div></div><SettingsPage settings={settings} onSettings={setSettings} onProviderUpdated={(options={})=>{setProviderRevision(v=>v+1);return refreshProviderModels({resetThread:true,...options})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectPath} projectScripts={currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></div>}
         {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Every unarchived {agentRuntimeLabel} thread stored by Trebell on this machine.</p></div></div><div className="history-page">{threads.map(t=><button key={t.id} onClick={()=>openThread(t)}><FileCode2 size={15}/><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><time>{new Date(t.updatedAt*1000).toLocaleString()}</time></button>)}</div></div>}
       </main>
 
-      {rightPanelOpen&&<RightPanel active={rightPanelTab} onActive={setRightPanelTab} onClose={()=>setRightPanelOpen(false)}>{rightPanelContent()}</RightPanel>}
+      {rightPanelOpen&&<RightPanel active={rightPanelTab} maximized={rightPanelMaximized} onToggleMaximized={()=>setRightPanelMaximized(value=>!value)} onActive={setRightPanelTab} onClose={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}>{rightPanelContent()}</RightPanel>}
     </div>
 
     <McpElicitationModal key={elicitations[0]?.request?.id||"none"} request={elicitations[0]?.request} onResolve={resolveElicitation}/>

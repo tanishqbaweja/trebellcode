@@ -91,3 +91,27 @@ test("settle shortcut is available from the composer but not the terminal",()=>{
   assert.equal(resolveKeybinding(event("s",{ctrlKey:true,shiftKey:true}),{}, {threadOpen:true,terminalFocus:false,modalOpen:false}),"threadSettle");
   assert.equal(resolveKeybinding(event("s",{ctrlKey:true,shiftKey:true}),{}, {threadOpen:true,terminalFocus:true,modalOpen:false}),null);
 });
+
+test("thread navigation and terminal-local new use context-specific defaults",()=>{
+  assert.equal(resolveKeybinding(event("[",{ctrlKey:true,shiftKey:true}),{}, {threadOpen:true,textInputFocus:false,terminalFocus:false,modalOpen:false}),"threadPrevious");
+  assert.equal(resolveKeybinding(event("]",{ctrlKey:true,shiftKey:true}),{}, {threadOpen:true,textInputFocus:false,terminalFocus:false,modalOpen:false}),"threadNext");
+  assert.equal(resolveKeybinding(event("n",{ctrlKey:true}),{}, {projectOpen:true,terminalFocus:true,modalOpen:false}),"terminalNew");
+  assert.equal(resolveKeybinding(event("n",{ctrlKey:true}),{}, {projectOpen:true,terminalFocus:false,modalOpen:false}),"newChat");
+});
+
+test("right panel and preview commands resolve only in their real contexts",()=>{
+  assert.equal(resolveKeybinding(event("b",{ctrlKey:true,altKey:true}),{}, {terminalFocus:false,modalOpen:false}),"rightPanelToggle");
+  assert.equal(resolveKeybinding(event("d",{ctrlKey:true}),{}, {terminalFocus:false,modalOpen:false}),"diffToggle");
+  assert.equal(resolveKeybinding(event("j",{ctrlKey:true,shiftKey:true}),{}, {terminalFocus:false,modalOpen:false}),"previewToggle");
+  assert.equal(resolveKeybinding(event("r",{ctrlKey:true}),{}, {previewFocus:true,terminalFocus:false,modalOpen:false}),"previewRefresh");
+  assert.equal(resolveKeybinding(event("l",{ctrlKey:true}),{}, {previewFocus:true,terminalFocus:false,modalOpen:false}),"previewFocusUrl");
+  assert.equal(resolveKeybinding(event("r",{ctrlKey:true}),{}, {previewFocus:false,terminalFocus:false,modalOpen:false}),null);
+});
+
+test("dynamic project action keybindings survive normalization and resolve",()=>{
+  const command="script.01234567-89ab-cdef-0123-456789abcdef.run";
+  const settings={keybindingRules:[{command,key:"Alt+1",when:"projectOpen && !modalOpen"}]};
+  const rule=normalizeKeybindingRules(settings).find(item=>item.command===command);
+  assert.deepEqual(rule,{command,key:"Alt+1",when:"projectOpen && !modalOpen"});
+  assert.equal(resolveKeybinding(event("1",{altKey:true}),settings,{projectOpen:true,modalOpen:false}),command);
+});

@@ -1,4 +1,4 @@
-import React from "react";
+import React,{useEffect,useRef} from "react";
 import {
   Archive, BarChart3, Bot, Clock3, Folder, Globe2, History,
   GitPullRequest, MoreHorizontal, Pin, Plus, Search, Settings, SlidersHorizontal, Wrench, Server, PanelLeftClose
@@ -64,6 +64,12 @@ export default function ThreadSidebar({
   section,setSection,threads,activeThreadId,query,setQuery,onOpen,onNew,onThreadAction,onMove,
   selectedIds,setSelectedIds,onBulkAction,provider="freebuff",agentRuntime="codex",threadMeta={},onCollapse
 }){
+  const searchRef=useRef(null);
+  useEffect(()=>{
+    const focus=()=>{searchRef.current?.focus();searchRef.current?.select?.()};
+    window.addEventListener("trebell:sidebar-search",focus);
+    return()=>window.removeEventListener("trebell:sidebar-search",focus);
+  },[]);
   const groups={
     Pinned:threads.filter(t=>t.section?.name==="Pinned"),
     Active:threads.filter(t=>!t.section),
@@ -86,7 +92,7 @@ export default function ThreadSidebar({
     <div className="sidebar-thread-tools">
       <div className="search-box">
         <Search size={14}/>
-        <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search"/>
+        <input ref={searchRef} value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search"/>
         {query&&<button onClick={()=>setQuery("")} aria-label="Clear search">×</button>}
       </div>
       <button className="sidebar-bulk-toggle" onClick={()=>setSelectedIds(bulk?new Set():new Set(threads.slice(0,1).map(t=>t.id)))} title="Thread actions" aria-label="Thread actions">

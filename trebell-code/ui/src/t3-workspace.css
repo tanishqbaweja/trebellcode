@@ -19,6 +19,7 @@ body{min-width:820px;background:var(--t3-bg);color:var(--t3-text)}
 .app-shell.sidebar-collapsed{grid-template-columns:0 minmax(0,1fr)}
 .workspace-shell{min-width:0;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);background:var(--t3-bg);transition:grid-template-columns var(--panel-animation-ms) ease}
 .workspace-shell.right-open{grid-template-columns:minmax(520px,1fr) minmax(420px,44vw)}
+.workspace-shell.right-open.right-maximized{grid-template-columns:0 minmax(0,1fr)}
 .main-frame{min-width:0;min-height:0;position:relative;border:0;border-radius:0;background:var(--t3-bg);box-shadow:none;overflow:hidden}
 .window-bar{height:32px;border-bottom:1px solid var(--t3-soft);background:var(--t3-bg);padding:0;display:flex;align-items:center;justify-content:space-between;-webkit-app-region:drag}
 .window-drag-space{flex:1;height:100%}

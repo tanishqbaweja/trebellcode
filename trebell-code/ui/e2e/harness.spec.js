@@ -137,6 +137,10 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   expect(stackActions[0].action).toBe("merge");
   expect(stackActions[0].number).toBe(2);
   expect(stackActions[0].method).toBe("rebase");
+  await page.getByRole("button",{name:"Maximize right panel"}).click();
+  await expect(page.locator(".workspace-shell")).toHaveClass(/right-maximized/);
+  await page.getByRole("button",{name:"Restore right panel"}).click();
+  await expect(page.locator(".workspace-shell")).not.toHaveClass(/right-maximized/);
   await page.getByTestId("right-panel").getByRole("button",{name:"Diff"}).click();
   await expect(page.getByText("Changes",{exact:true}).first()).toBeVisible();
   await page.getByRole("button",{name:"Close right panel"}).click();
@@ -161,6 +165,14 @@ test("Trebell Code renders the harness and scopes models to the selected provide
 
   await page.getByRole("button",{name:"Browser"}).click();
   await expect(page.getByTestId("right-panel")).toBeVisible();
+  const previewUrl=page.locator(".preview-bar input");
+  await expect(previewUrl).toHaveAttribute("title","Preview zoom 100%");
+  await page.evaluate(()=>window.dispatchEvent(new KeyboardEvent("keydown",{key:"=",ctrlKey:true,bubbles:true,cancelable:true})));
+  await expect(previewUrl).toHaveAttribute("title","Preview zoom 110%");
+  await page.evaluate(()=>window.dispatchEvent(new KeyboardEvent("keydown",{key:"0",ctrlKey:true,bubbles:true,cancelable:true})));
+  await expect(previewUrl).toHaveAttribute("title","Preview zoom 100%");
+  await page.evaluate(()=>window.dispatchEvent(new KeyboardEvent("keydown",{key:"l",ctrlKey:true,bubbles:true,cancelable:true})));
+  await expect.poll(()=>page.evaluate(()=>document.activeElement?.matches?.(".preview-bar input"))).toBe(true);
   await page.getByRole("button",{name:"Open agent browser"}).click();
   await page.getByRole("button",{name:"Import profile"}).click();
   await expect(page.getByTestId("browser-profile-import")).toContainText("Test profile");

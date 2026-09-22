@@ -1,5 +1,5 @@
 import React from "react";
-import { BrainCircuit, Cpu, FileCode2, FileDiff, GitBranch, Globe2, Smartphone, Target, X } from "lucide-react";
+import { BrainCircuit, Cpu, FileCode2, FileDiff, GitBranch, Globe2, Maximize2, Minimize2, Smartphone, Target, X } from "lucide-react";
 
 const TABS=[
   ["files",FileCode2,"Files"],
@@ -12,8 +12,8 @@ const TABS=[
   ["runtime",Cpu,"Runtime"],
 ];
 
-export default function RightPanel({active,onActive,onClose,children,disabledTabs=[]}){
-  return <aside className="context-panel" data-testid="right-panel">
+export default function RightPanel({active,onActive,onClose,children,disabledTabs=[],maximized=false,onToggleMaximized}){
+  return <aside className={"context-panel"+(maximized?" maximized":"")} data-testid="right-panel">
     <div className="context-panel-tabs">
       <div className="context-panel-tab-scroll">
         {TABS.map(([id,Icon,label])=><button
@@ -26,6 +26,7 @@ export default function RightPanel({active,onActive,onClose,children,disabledTab
           title={label}
         ><Icon size={14}/><span>{label}</span></button>)}
       </div>
+      <button className="context-panel-close" type="button" onClick={onToggleMaximized} aria-label={maximized?"Restore right panel":"Maximize right panel"} title={maximized?"Restore panel":"Maximize panel"}>{maximized?<Minimize2 size={14}/>:<Maximize2 size={14}/>}</button>
       <button className="context-panel-close" type="button" onClick={onClose} aria-label="Close right panel" title="Close panel"><X size={15}/></button>
     </div>
     <div className="context-panel-body">{children}</div>

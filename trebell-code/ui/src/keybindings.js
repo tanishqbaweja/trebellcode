@@ -4,16 +4,27 @@ export const KEYBINDING_COMMANDS=[
   {id:"sidebarToggle",label:"Toggle main sidebar",defaultKey:"Ctrl+B",defaultWhen:"!modalOpen"},
   {id:"threadStop",label:"Stop running thread",defaultKey:"",defaultWhen:"threadOpen && running && !terminalFocus && !modalOpen"},
   {id:"threadSettle",label:"Settle / un-settle thread",defaultKey:"Ctrl+Shift+S",defaultWhen:"threadOpen && !terminalFocus && !modalOpen"},
-  {id:"threadPrevious",label:"Previous thread",defaultKey:"",defaultWhen:"threadOpen && !textInputFocus && !terminalFocus && !modalOpen"},
-  {id:"threadNext",label:"Next thread",defaultKey:"",defaultWhen:"threadOpen && !textInputFocus && !terminalFocus && !modalOpen"},
+  {id:"threadPin",label:"Pin / unpin thread",defaultKey:"",defaultWhen:"threadOpen && !terminalFocus && !modalOpen"},
+  {id:"threadPrevious",label:"Previous thread",defaultKey:"Mod+Shift+[",defaultWhen:"threadOpen && !textInputFocus && !terminalFocus && !modalOpen"},
+  {id:"threadNext",label:"Next thread",defaultKey:"Mod+Shift+]",defaultWhen:"threadOpen && !textInputFocus && !terminalFocus && !modalOpen"},
   ...Array.from({length:9},(_,index)=>({id:"threadJump"+(index+1),label:"Open thread "+(index+1),defaultKey:"Mod+"+(index+1),defaultWhen:"desktop && !modelPickerOpen && !textInputFocus && !terminalFocus && !modalOpen"})),
   {id:"stash",label:"Stash prompt",defaultKey:"Ctrl+S",defaultWhen:"chatFocus && !terminalFocus && !modalOpen"},
   {id:"terminal",label:"Toggle terminal",defaultKey:"Ctrl+Shift+T",defaultWhen:"projectOpen && !modalOpen"},
   {id:"terminalFocus",label:"Focus terminal",defaultKey:"Ctrl+`",defaultWhen:"projectOpen && !terminalFocus && !modalOpen"},
   {id:"composerFocus",label:"Focus composer",defaultKey:"Ctrl+`",defaultWhen:"terminalFocus && !modalOpen"},
-  {id:"terminalNew",label:"New terminal",defaultKey:"",defaultWhen:"projectOpen && !modalOpen"},
+  {id:"terminalNew",label:"New terminal",defaultKey:"Mod+N",defaultWhen:"projectOpen && terminalFocus && !modalOpen"},
   {id:"rightPanelClose",label:"Close right panel",defaultKey:"Mod+W",defaultWhen:"desktop && rightPanelOpen && !terminalFocus && !modalOpen"},
   {id:"terminalClose",label:"Close focused terminal",defaultKey:"Mod+W",defaultWhen:"desktop && terminalFocus && !modalOpen"},
+  {id:"rightPanelToggle",label:"Toggle right panel",defaultKey:"Mod+Alt+B",defaultWhen:"!terminalFocus && !modalOpen"},
+  {id:"rightPanelMaximize",label:"Maximize right panel",defaultKey:"",defaultWhen:"rightPanelOpen && !terminalFocus && !modalOpen"},
+  {id:"diffToggle",label:"Toggle diff",defaultKey:"Mod+D",defaultWhen:"!terminalFocus && !modalOpen"},
+  {id:"previewToggle",label:"Toggle preview",defaultKey:"Mod+Shift+J",defaultWhen:"!terminalFocus && !modalOpen"},
+  {id:"previewRefresh",label:"Refresh preview",defaultKey:"Mod+R",defaultWhen:"previewFocus && !terminalFocus && !modalOpen"},
+  {id:"previewFocusUrl",label:"Focus preview URL",defaultKey:"Mod+L",defaultWhen:"previewFocus && !terminalFocus && !modalOpen"},
+  {id:"previewZoomIn",label:"Zoom preview in",defaultKey:"Mod+=",defaultWhen:"previewFocus && !terminalFocus && !modalOpen"},
+  {id:"previewZoomOut",label:"Zoom preview out",defaultKey:"Mod+-",defaultWhen:"previewFocus && !terminalFocus && !modalOpen"},
+  {id:"previewResetZoom",label:"Reset preview zoom",defaultKey:"Mod+0",defaultWhen:"previewFocus && !terminalFocus && !modalOpen"},
+  {id:"projectSearch",label:"Search threads/projects",defaultKey:"Mod+Shift+F",defaultWhen:"!terminalFocus && !modalOpen"},
   {id:"files",label:"Workspace files",defaultKey:"Ctrl+P",defaultWhen:"projectOpen && !modalOpen"},
   {id:"source",label:"Source control",defaultKey:"Ctrl+Shift+G",defaultWhen:"projectOpen && !modalOpen"},
   {id:"goal",label:"Thread goal",defaultKey:"Ctrl+Shift+L",defaultWhen:"threadOpen && !modalOpen"},
@@ -38,7 +49,7 @@ export function normalizeKeybindingRules(settings={}){
   const legacy=settings.keyboardShortcuts||{};
   const configured=Array.isArray(settings.keybindingRules)?settings.keybindingRules:[];
   const byCommand=new Map(configured.filter(Boolean).map(rule=>[String(rule.command||""),rule]));
-  return KEYBINDING_COMMANDS.map(item=>{
+  const staticRules=KEYBINDING_COMMANDS.map(item=>{
     const rule=byCommand.get(item.id)||{};
     const legacyKey=item.id==="commandPalette"?legacy.search:legacy[item.id];
     return {
@@ -47,6 +58,12 @@ export function normalizeKeybindingRules(settings={}){
       when:String(rule.when??item.defaultWhen).trim(),
     };
   });
+  const staticIds=new Set(KEYBINDING_COMMANDS.map(item=>item.id));
+  const dynamicRules=configured.filter(rule=>{
+    const command=String(rule?.command||"").trim();
+    return !staticIds.has(command)&&/^script\.[a-z0-9][a-z0-9-]{0,63}\.run$/i.test(command);
+  }).map(rule=>({command:String(rule.command),key:String(rule.key||"").trim(),when:String(rule.when||"projectOpen && !modalOpen").trim()}));
+  return [...staticRules,...dynamicRules];
 }
 
 function tokenize(expression){
@@ -112,7 +129,12 @@ export function shortcutMatches(event,value){
   if(Boolean(event.altKey)!==wantsAlt)return false;
   const eventKey=normalizedKey(event.key);
   const expected=normalizedKey(key);
-  return eventKey===expected||(expected==="comma"&&eventKey===",")||(expected==="period"&&eventKey===".")||(expected==="slash"&&eventKey==="/");
+  return eventKey===expected
+    ||(expected==="["&&eventKey==="{")
+    ||(expected==="]"&&eventKey==="}")
+    ||(expected==="comma"&&eventKey===",")
+    ||(expected==="period"&&eventKey===".")
+    ||(expected==="slash"&&eventKey==="/");
 }
 
 export function resolveKeybinding(event,settings={},context={}){
