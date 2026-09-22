@@ -34,6 +34,7 @@ import { AgentThreadStore } from "./agent-thread-store.mjs";
 import { attachAgentRelay } from "./agent-relay.mjs";
 import { listLicenses, licenseDetail } from "./license-service.mjs";
 import { WorktreeCleanupService } from "./worktree-cleanup.mjs";
+import { CloneJobService } from "./clone-job-service.mjs";
 import { prepareCodexHome } from "./codex-home-layout.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
@@ -385,7 +386,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   function projectWithEnvironment(project){
     if(!project)return project;
     const profile=project.environmentId?environments.get(project.environmentId):null;
-    return {...project,environment:project.environmentId?{
+    const cloneJob=project.cloneJob?{
+      id:project.cloneJob.id,url:project.cloneJob.url,status:project.cloneJob.status,progress:project.cloneJob.progress,
+      phase:project.cloneJob.phase,error:project.cloneJob.error||null,startedAt:project.cloneJob.startedAt,completedAt:project.cloneJob.completedAt||null,
+    }:null;
+    return {...project,cloneJob,environment:project.environmentId?{
       id:project.environmentId,
       name:profile?.name||"Unavailable environment",
       type:profile?.type||"unknown",
@@ -532,6 +537,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   }
   const cleanupLogs=[];
   const worktreeCleanup=new WorktreeCleanupService({state,getUsage:worktreeUsage,log:message=>{cleanupLogs.push({at:Date.now(),stream:"cleanup",text:String(message)+"\n"});if(cleanupLogs.length>100)cleanupLogs.splice(0,cleanupLogs.length-100)}});
+  const cloneJobs=new CloneJobService({state,environments,env,log:message=>appServer?.logs?.push({at:Date.now(),stream:"clone",text:String(message)+"\n"})});
+  await cloneJobs.recoverInterrupted();
   let appServer=await startAppServer({
     appPort,
     env,
@@ -926,6 +933,31 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       if(req.method==="DELETE"){
         const id=url.searchParams.get("id"); if(id) state.removeProject(id);
         return json(res,200,{ok:true});
+      }
+    }
+    if(url.pathname==="/api/clone-jobs"){
+      if(req.method==="GET"){
+        const id=String(url.searchParams.get("id")||"").trim();
+        if(!id)return json(res,200,{jobs:cloneJobs.list()});
+        const job=cloneJobs.get(id);if(!job)return json(res,404,{error:"Clone job was not found"});
+        const project=state.project(job.destination,job.environmentId||null);
+        return json(res,200,{job,project:projectWithEnvironment(project)});
+      }
+      if(req.method==="POST"){
+        try{
+          const body=await readJsonBody(req);const action=String(body.action||"start");
+          let job;
+          if(action==="start"){
+            const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);
+            if(!body.destination)throw new Error("Clone destination is required");
+            const destination=environmentPath(body.destination,environmentId);
+            job=await cloneJobs.start({url:body.url,destination,environmentId,name:body.name||null});
+          }else if(action==="cancel")job=await cloneJobs.cancel(body.id);
+          else if(action==="retry")job=await cloneJobs.retry(body.id);
+          else throw new Error("Unknown clone action");
+          const project=job?.destination?state.project(job.destination,job.environmentId||null):null;
+          return json(res,200,{ok:true,job,project:projectWithEnvironment(project)});
+        }catch(error){return json(res,400,{ok:false,error:error.message});}
       }
     }
     if(url.pathname==="/api/scoped-settings"){
@@ -1617,6 +1649,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       await agentRelay?.close?.();
       terminalWs?.close();
       await Promise.allSettled([
+        cloneJobs.shutdown(),
         terminals?.shutdown(),
         remoteControl?.close(),
         stopAppServer(appServer),

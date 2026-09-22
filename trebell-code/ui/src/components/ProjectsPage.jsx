@@ -49,6 +49,8 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     setProjects(enriched);
   }
   useEffect(()=>{refresh()},[]);
+  const cloning=projects.some(project=>["running","cancelling"].includes(project.cloneJob?.status));
+  useEffect(()=>{if(!cloning)return;const timer=setInterval(()=>refresh(),750);return()=>clearInterval(timer)},[cloning]);
 
   async function saveProject(project,patch){
     setError("");
@@ -96,12 +98,17 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     const destination=parent.replace(/[\\\/]$/,"")+sep+name;
     setBusy(true);setError("");
     try{
-      await api("/api/git/action",{method:"POST",body:{action:"clone",url:cloneUrl.trim(),destination}});
+      const result=await api("/api/clone-jobs",{method:"POST",body:{action:"start",url:cloneUrl.trim(),destination,environmentId:null}});
       await refresh();
-      onOpen(destination,null);
+      onOpen(result.project?.path||destination,null);
       setCloneUrl("");
     } catch(err){setError(err.message||String(err))}
     finally { setBusy(false); }
+  }
+  async function cloneAction(project,action){
+    setError("");
+    try{await api("/api/clone-jobs",{method:"POST",body:{action,id:project.cloneJob?.id}});await refresh()}
+    catch(err){setError(err.message||String(err))}
   }
 
   function editScript(project,script=null){
@@ -211,6 +218,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
       <div className="project-grid">{group.projects.map(p=><div className={p.path===currentPath&&(p.environmentId||null)===(currentEnvironmentId||null)?"project-card active":"project-card"} key={p.id}>
         <button className="project-open" onClick={()=>openProject(p)}><ProjectIcon project={p}/><div><strong>{p.name}</strong><span>{p.environment?.name||"Local machine"} · {p.path}</span><small>{p.environment?.type!=="local"?"remote workspace · "+new Date(p.lastOpenedAt).toLocaleString():p.managedWorktree?.cleanedAt?"managed worktree cleaned · click to restore":(p.git?.branch||"not a Git checkout")+" · "+new Date(p.lastOpenedAt).toLocaleString()}</small></div></button>
         <button className="project-remove" onClick={async()=>{await api("/api/projects?id="+encodeURIComponent(p.id),{method:"DELETE"});refresh()}}><Trash2 size={13}/></button>
+        {p.cloneJob&&p.cloneJob.status!=="completed"&&<div className={"project-clone-status "+p.cloneJob.status}><div><strong>{p.cloneJob.phase||"Cloning repository"}</strong><span>{p.cloneJob.status==="failed"?(p.cloneJob.error||"Clone failed"):p.cloneJob.status==="cancelled"?"Clone cancelled":Math.round(p.cloneJob.progress||0)+"%"}</span></div>{["running","cancelling"].includes(p.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(p.cloneJob.progress)||0)+"%"}}/></i>}<div>{p.cloneJob.status==="running"&&<button onClick={()=>cloneAction(p,"cancel")}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(p.cloneJob.status)&&<button onClick={()=>cloneAction(p,"retry")}><RefreshCw size={11}/> Retry</button>}</div></div>}
         <div className="project-overrides">
           <label>Model<select value={p.defaultModel||""} onChange={e=>saveProject(p,{defaultModel:e.target.value||null})}><option value="">Inherit client default</option>{models.map(id=><option key={id} value={id}>{id.replace(/^freebuff\//,"")}</option>)}</select></label>
           <label>Permissions<select value={p.permissionMode||""} onChange={e=>saveProject(p,{permissionMode:e.target.value||null})}><option value="">Inherit</option><option value="supervised">Supervised</option><option value="edits">Auto-accept edits</option><option value="auto">Auto</option><option value="full">Full access</option><option value="read-only">Read only</option></select></label>

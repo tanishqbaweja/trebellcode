@@ -474,9 +474,40 @@ export default function App(){
     if(scoped.defaultModel&&models.includes(scoped.defaultModel)){setModel(scoped.defaultModel);setSelectedModels([scoped.defaultModel])}
     if(scoped.defaultPermissionMode)setPermissionMode(scoped.defaultPermissionMode);
     if(scoped.defaultWorkspaceMode)setWorkspaceMode(scoped.defaultWorkspaceMode);
-    if(scoped.autoPull&&!resolvedEnvironmentId)api("/api/git/action",{method:"POST",body:{action:"auto-pull",cwd:path}}).catch(()=>{});
+    if(scoped.autoPull&&(!project?.cloneJob||project.cloneJob.status==="completed"))api("/api/git/action",{method:"POST",body:{action:"auto-pull",cwd:path,environmentId:resolvedEnvironmentId}}).catch(()=>{});
     return project;
   }
+  async function refreshCloneJob(id=currentProject?.cloneJob?.id){
+    if(!id)return null;
+    const result=await api("/api/clone-jobs?id="+encodeURIComponent(id));
+    if(result.project?.id===currentProject?.id||result.project?.path===projectPath)setCurrentProject(result.project);
+    if(result.job?.status==="completed"&&result.project?.path){
+      api("/api/git/info?path="+encodeURIComponent(result.project.path)+"&environmentId="+encodeURIComponent(result.project.environmentId||"")).then(setGitInfo).catch(()=>{});
+    }
+    return result;
+  }
+  async function cloneProjectAction(action){
+    const id=currentProject?.cloneJob?.id;if(!id)return null;
+    const result=await api("/api/clone-jobs",{method:"POST",body:{action,id}});
+    if(result.project)setCurrentProject(result.project);
+    return result;
+  }
+  async function waitForActiveClone(){
+    let job=currentProject?.cloneJob;
+    if(!job||job.status==="completed")return;
+    if(job.status==="failed")throw new Error(job.error||"Repository clone failed. Retry the clone before sending.");
+    if(job.status==="cancelled")throw new Error("Repository clone was cancelled. Retry the clone before sending.");
+    while(["running","cancelling"].includes(job.status)){
+      await new Promise(resolveWait=>setTimeout(resolveWait,400));
+      const result=await refreshCloneJob(job.id);job=result?.job||job;
+    }
+    if(job.status!=="completed")throw new Error(job.error||("Repository clone "+job.status+"."));
+  }
+  useEffect(()=>{
+    const job=currentProject?.cloneJob;if(!job||!["running","cancelling"].includes(job.status))return;
+    const timer=setInterval(()=>refreshCloneJob(job.id).catch(()=>{}),750);
+    return()=>clearInterval(timer);
+  },[currentProject?.cloneJob?.id,currentProject?.cloneJob?.status,projectPath]);
   async function refreshEnvironmentThemes(){
     const catalog=await api("/api/environment/themes").catch(()=>({environmentKey:bootstrap.activeEnvironmentId||"local",environmentName:bootstrap.activeEnvironment?.name||"Local machine",directory:"",themes:[]}));
     setEnvironmentThemeCatalog(catalog);
@@ -930,6 +961,7 @@ export default function App(){
   async function createThreadFor(modelId,cwd){const p=presetFor(permissionMode);const dynamicTools=[...TREBELL_BROWSER_TOOLS,...TREBELL_COMPUTER_TOOLS,...(effectiveProjectSettings.agentDeviceAccess?TREBELL_DEVICE_TOOLS:[])];const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools,developerInstructions:webSearch?"Web research is allowed when useful. You may use trebell_browser for interactive pages.":"Do not use web search or trebell_browser unless the user explicitly requests it."});if(agentRuntime!=="codex"&&result.thread?.providerMeta){setProviderAgent(result.thread.agent||providerAgent||"");const meta=result.thread.providerMeta;applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}return result.thread}
   function inputsFor(text,paths){return [{type:"text",text,text_elements:[]},...(paths||[]).map(path=>{const lower=String(path).toLowerCase();if(/\.(png|jpe?g|gif|webp|bmp)$/.test(lower))return{type:"localImage",path};if(/\.(mp3|wav|m4a|ogg|flac)$/.test(lower))return{type:"localAudio",path};return{type:"mention",name:String(path).split(/[\\/]/).pop(),path}})]}
   async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null){
+    if(!threadOverride&&(cwdOverride||projectPath)===projectPath)await waitForActiveClone();
     await validateAttachmentPaths(paths||[]);
     if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");let thread=threadOverride||activeThread;let cwd=cwdOverride||projectPath||bootstrap.cwd;
     if(!thread){cwd=await prepareWorktree(cwd,modelId);thread=await createThreadFor(modelId,cwd);activeThreadRef.current=thread;setActiveThread(thread);setThreads(prev=>[thread,...prev]);setProjectPath(cwd)}
@@ -1027,6 +1059,7 @@ export default function App(){
     const text=prompt.trim();if(!text)return;
     if(prompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"prompt-too-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{length:prompt.length}}]);return}
     const special=await handleSpecial(text);if(special===true){setPrompt("");return}
+    try{await waitForActiveClone()}catch(error){setEvents(prev=>[...prev,{id:"clone-wait-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
     if(await sendModelFanout(text))return;
     if(agentRuntime==="antigravity"&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:"Antigravity does not accept video attachments",status:"done",raw:{}}]);return}
     if(running){
@@ -1044,6 +1077,7 @@ export default function App(){
     const text=prompt.trim();if(!text)return;
     if(prompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"prompt-too-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{length:prompt.length}}]);return}
     if(text.startsWith("/")){await send();return}
+    try{await waitForActiveClone()}catch(error){setEvents(prev=>[...prev,{id:"clone-wait-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
     if(await sendModelFanout(text))return;
     if(bootstrap.mock||!rpc||rpcStatus!=="connected"){await send();return}
     if(agentRuntime==="antigravity"&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:"Antigravity does not accept video attachments",status:"done",raw:{}}]);return}
@@ -1354,6 +1388,7 @@ export default function App(){
             </div>
           </div>
 
+          {currentProject?.cloneJob&&currentProject.cloneJob.status!=="completed"&&<div className={"clone-banner "+currentProject.cloneJob.status} data-testid="clone-banner"><div><strong>{currentProject.cloneJob.phase||"Cloning repository"}</strong><span>{currentProject.cloneJob.status==="failed"?(currentProject.cloneJob.error||"Clone failed"):currentProject.cloneJob.status==="cancelled"?"Clone cancelled":"You can keep writing. Send waits until the repository is ready."}</span></div>{["running","cancelling"].includes(currentProject.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(currentProject.cloneJob.progress)||0)+"%"}}/></i>}<em>{Math.round(currentProject.cloneJob.progress||0)}%</em>{currentProject.cloneJob.status==="running"&&<button onClick={()=>cloneProjectAction("cancel").catch(error=>setEvents(prev=>[...prev,{id:"clone-cancel-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(currentProject.cloneJob.status)&&<button onClick={()=>cloneProjectAction("retry").catch(error=>setEvents(prev=>[...prev,{id:"clone-retry-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))}>Retry clone</button>}</div>}
           <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={()=>setPromptHistoryIndex(-1)} historyIndex={promptHistoryIndex} onSend={send} onBackgroundSend={sendInBackground} canBackground={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"} running={running} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onCaptureScreen={()=>captureDesktop().catch(error=>setEvents(prev=>[...prev,{id:"screen-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} webSearch={webSearch} setWebSearch={setWebSearch} skills={skills} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={changeProviderAgent} onSkill={onSkill} onFiles={()=>openRightPanel("files")} settings={settings} onStash={stashPrompt} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">

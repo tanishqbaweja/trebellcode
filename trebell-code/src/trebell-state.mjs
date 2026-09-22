@@ -71,6 +71,16 @@ function normalizePullRequestViewedFiles(value){
   return out;
 }
 function normalizeEnvironmentId(value){const text=String(value??"").trim();return text||null}
+function normalizeCloneJob(value){
+  if(!value||typeof value!=="object")return null;
+  const status=["running","cancelling","completed","failed","cancelled"].includes(String(value.status))?String(value.status):"failed";
+  return {
+    id:String(value.id||"").slice(0,120),url:String(value.url||"").slice(0,4000),status,
+    progress:Math.max(0,Math.min(100,Number(value.progress)||0)),phase:String(value.phase||"").slice(0,120),
+    error:value.error?String(value.error).slice(0,4000):null,startedAt:Number(value.startedAt)||Date.now(),
+    completedAt:value.completedAt==null?null:Number(value.completedAt)||null,tempPath:value.tempPath?String(value.tempPath).slice(0,4000):null,
+  };
+}
 export const PROJECT_SCOPED_SETTING_KEYS=Object.freeze([
   "defaultModel",
   "defaultPermissionMode",
@@ -109,6 +119,7 @@ export class TrebellStateStore {
         ...project,
         environmentId:normalizeEnvironmentId(project?.environmentId),
         settingsOverrides:normalizeScopedObject(project?.settingsOverrides),
+        cloneJob:normalizeCloneJob(project?.cloneJob),
       })):[];
       const settings={...clone(DEFAULT_STATE.settings),...rawSettings};
       settings.environmentDefaults=Object.fromEntries(Object.entries(rawSettings.environmentDefaults||{}).map(([id,value])=>[String(id),normalizeScopedObject(value)]));
@@ -217,6 +228,11 @@ export class TrebellStateStore {
     const id=normalizeEnvironmentId(environmentId);
     return clone(this.state.projects.find(project=>project.path===path&&normalizeEnvironmentId(project.environmentId)===id)||null);
   }
+  setProjectCloneJob(path,environmentId,cloneJob){
+    const id=normalizeEnvironmentId(environmentId);const project=this.state.projects.find(item=>item.path===path&&normalizeEnvironmentId(item.environmentId)===id);
+    if(!project)throw new Error("Project was not found");
+    project.cloneJob=normalizeCloneJob(cloneJob);this.#save();return clone(project);
+  }
   touchProject(path,patch={}){
     const now=Date.now();
     const name=patch.name??null;
@@ -228,6 +244,7 @@ export class TrebellStateStore {
     }
     if("settingsOverrides" in patch)project.settingsOverrides=normalizeScopedObject(patch.settingsOverrides);
     else if(!project.settingsOverrides||typeof project.settingsOverrides!=="object")project.settingsOverrides={};
+    if("cloneJob" in patch)project.cloneJob=normalizeCloneJob(patch.cloneJob);
     project.environmentId=environmentId;
     project.lastOpenedAt=now;
     if("name" in patch&&patch.name!=null) project.name=String(patch.name);
