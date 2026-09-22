@@ -279,6 +279,10 @@ test("Trebell Code renders the harness and scopes models to the selected provide
 
   await page.getByRole("button",{name:"Settings"}).click();
   await providerSelector.selectOption("agentrouter");
+  await expect.poll(async()=>{
+    const providerState=await (await request.get("/api/providers")).json();
+    return providerState.selected;
+  }).toBe("agentrouter");
   await page.getByRole("button",{name:"Threads"}).click();
   await expectModelCatalog(page,[
     "gpt-5.6-sol",
