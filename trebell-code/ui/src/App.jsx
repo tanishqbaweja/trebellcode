@@ -30,6 +30,7 @@ import UsagePage from "./components/UsagePage.jsx";
 import LicensesPage from "./components/LicensesPage.jsx";
 import { resolveKeybinding } from "./keybindings.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
+import { themeCssVariables } from "./theme-utils.js";
 
 const MAX_COMPOSER_ATTACHMENTS=100;
 const MAX_COMPOSER_CHARS=120_000;
@@ -278,7 +279,7 @@ export default function App(){
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [contextChips,setContextChips]=useState([]);
   const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [modelError,setModelError]=useState("");
   const [freebuff,setFreebuff]=useState({loggedIn:false}); const [skills,setSkills]=useState([]); const [providerCommands,setProviderCommands]=useState([]); const [providerAgents,setProviderAgents]=useState([]); const [providerAgent,setProviderAgent]=useState("");
-  const [settings,setSettings]=useState({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",appearanceMode:"system",keyboardShortcuts:{},agentRuntime:"codex",modelProvider:"freebuff"});
+  const [settings,setSettings]=useState({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",appearanceMode:"system",customThemes:[],keyboardShortcuts:{},agentRuntime:"codex",modelProvider:"freebuff"});
   const [permissionMode,setPermissionMode]=useState("supervised"); const [webSearch,setWebSearch]=useState(true); const [workspaceMode,setWorkspaceMode]=useState("current");
   const [projectPath,setProjectPath]=useState(""); const [currentProject,setCurrentProject]=useState(null); const [gitInfo,setGitInfo]=useState(null); const [stats,setStats]=useState({}); const [runtime,setRuntime]=useState({});
   const [approvals,setApprovals]=useState([]); const [question,setQuestion]=useState(null); const [tokenUsage,setTokenUsage]=useState(null);
@@ -300,10 +301,14 @@ export default function App(){
     const apply=()=>{
       const requested=["system","light","dark"].includes(settings.appearanceMode)?settings.appearanceMode:"system";
       const resolved=requested==="system"?(media?.matches===false?"light":"dark"):requested;
-      root.dataset.theme=settings.appearance||"dark";root.dataset.mode=resolved;root.style.colorScheme=resolved;
+      const custom=(settings.customThemes||[]).find(theme=>theme.id===settings.appearance);
+      root.dataset.theme=settings.appearance||"dark";root.dataset.mode=resolved;root.dataset.customTheme=custom?"true":"false";root.style.colorScheme=resolved;
+      const variableNames=["--theme-canvas","--theme-foreground","--bg","--panel","--panel2","--line","--muted","--muted2","--purple","--purple2","--green","--theme-error","--theme-warning","--theme-terminal-selection"];
+      for(const name of variableNames)root.style.removeProperty(name);
+      if(custom){for(const [name,value] of Object.entries(themeCssVariables(custom,resolved)))root.style.setProperty(name,value)}
     };
     apply();media?.addEventListener?.("change",apply);return()=>media?.removeEventListener?.("change",apply);
-  },[settings.appearance,settings.appearanceMode]);
+  },[settings.appearance,settings.appearanceMode,settings.customThemes]);
   useEffect(()=>{activeThreadRef.current=activeThread},[activeThread]);
 
   function updateThreadTelemetry(threadId,patch){
@@ -998,7 +1003,7 @@ export default function App(){
     setSection(next);
   }
   async function saveAppSettings(patch){const next=await api("/api/settings",{method:"POST",body:patch});setSettings(prev=>({...prev,...next}));return next}
-  async function cycleTheme(){const themes=["dark","midnight","black"];const next=themes[(themes.indexOf(settings.appearance||"dark")+1)%themes.length];await saveAppSettings({appearance:next})}
+  async function cycleTheme(){const themes=["dark","midnight","black",...(settings.customThemes||[]).map(theme=>theme.id)];const next=themes[(themes.indexOf(settings.appearance||"dark")+1)%themes.length];await saveAppSettings({appearance:next})}
   async function cycleAppearance(){const modes=["system","light","dark"];const next=modes[(modes.indexOf(settings.appearanceMode||"system")+1)%modes.length];await saveAppSettings({appearanceMode:next})}
 
   const activeTitle=titleOf(activeThread);
@@ -1029,6 +1034,7 @@ export default function App(){
     {id:"theme-trebell",label:"Theme: Trebell",detail:"Default purple Trebell palette",shortcut:"Ctrl+Alt+A",onRun:()=>saveAppSettings({appearance:"dark"})},
     {id:"theme-midnight",label:"Theme: Midnight",detail:"Cooler deep-blue Trebell palette",onRun:()=>saveAppSettings({appearance:"midnight"})},
     {id:"theme-black",label:"Theme: Black",detail:"OLED-friendly black Trebell palette",onRun:()=>saveAppSettings({appearance:"black"})},
+    ...(settings.customThemes||[]).map(theme=>({id:"theme-custom:"+theme.id,label:"Theme: "+theme.name,detail:`Custom ${theme.appearance||"dark"} theme`,onRun:()=>saveAppSettings({appearance:theme.id})})),
     {id:"settings",label:"Settings",detail:"Providers, permissions and desktop behavior",onRun:()=>setSection("settings")},
     {id:"copy",label:"Copy conversation",detail:"Copy this thread as text",onRun:shareThread},
   ];

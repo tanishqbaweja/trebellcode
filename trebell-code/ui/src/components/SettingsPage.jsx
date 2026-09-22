@@ -1,7 +1,8 @@
-import React,{useEffect,useState} from "react";
+import React,{useEffect,useRef,useState} from "react";
 import { Activity, Bot, Download, FileText, RefreshCw, ShieldCheck } from "lucide-react";
 import { api } from "../api.js";
 import { KEYBINDING_COMMANDS, normalizeKeybindingRules } from "../keybindings.js";
+import { normalizeCustomTheme } from "../theme-utils.js";
 
 const PROVIDER_LABELS={
   freebuff:"Freebuff",
@@ -28,6 +29,9 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
   const [browserImportProfile,setBrowserImportProfile]=useState("");
   const [browserImportMessage,setBrowserImportMessage]=useState("");
   const [browserImportBusy,setBrowserImportBusy]=useState(false);
+  const [themeDraft,setThemeDraft]=useState(null);
+  const [themeMessage,setThemeMessage]=useState("");
+  const themeImportRef=useRef(null);
   const selected=settings.modelProvider||"freebuff";
   const selectedAgent=settings.agentRuntime||runtime?.agentRuntime||"codex";
   const keybindingRules=normalizeKeybindingRules(settings);
@@ -90,6 +94,32 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
     }
     if("customModels" in patch)await onProviderUpdated?.();
     return next;
+  }
+  function createTheme(){
+    const light=(settings.appearanceMode||"system")==="light";
+    setThemeDraft({id:`custom-${crypto.randomUUID()}`,name:"Custom theme",appearance:light?"light":"dark",canvas:light?"#f3f5f9":"#0c0f16",accent:"#9c6cff",colors:{}});setThemeMessage("");
+  }
+  async function saveTheme(){
+    if(!themeDraft)return;
+    try{
+      const theme=normalizeCustomTheme(themeDraft,{id:themeDraft.id});const current=Array.isArray(settings.customThemes)?settings.customThemes:[];
+      await save({customThemes:[...current.filter(item=>item.id!==theme.id),theme],appearance:theme.id});setThemeDraft(theme);setThemeMessage("Theme saved and applied.");
+    }catch(error){setThemeMessage(error.message||String(error))}
+  }
+  async function removeTheme(theme){
+    const current=Array.isArray(settings.customThemes)?settings.customThemes:[];const patch={customThemes:current.filter(item=>item.id!==theme.id)};
+    if(settings.appearance===theme.id)patch.appearance="dark";
+    await save(patch);if(themeDraft?.id===theme.id)setThemeDraft(null);setThemeMessage("Theme removed.");
+  }
+  async function importThemeFile(event){
+    const file=event.target.files?.[0];event.target.value="";if(!file)return;
+    try{
+      const parsed=JSON.parse(await file.text());const source=Array.isArray(parsed)?parsed[0]:parsed;const theme=normalizeCustomTheme(source,{id:`custom-${crypto.randomUUID()}`});const current=Array.isArray(settings.customThemes)?settings.customThemes:[];
+      await save({customThemes:[...current,theme],appearance:theme.id});setThemeDraft(theme);setThemeMessage(`Imported ${theme.name}.`);
+    }catch(error){setThemeMessage("Import failed: "+(error.message||String(error)))}
+  }
+  function exportTheme(theme){
+    const blob=new Blob([JSON.stringify(theme,null,2)+"\n"],{type:"application/json"});const url=URL.createObjectURL(blob);const anchor=document.createElement("a");anchor.href=url;anchor.download=(theme.name||"trebell-theme").replace(/[^a-z0-9._-]+/gi,"-").replace(/^-|-$/g,"")+".json";anchor.click();setTimeout(()=>URL.revokeObjectURL(url),0);
   }
   async function addCustomModel(){
     const id=modelDraft.id.trim();if(!id)return;
@@ -255,7 +285,7 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
       <div className="settings-card"><h3>Follow-up behavior</h3>{selectedAgent==="codex"?<label>While the agent is working<select value={settings.followUpMode||"queue"} onChange={e=>save({followUpMode:e.target.value})}><option value="queue">Queue after current turn</option><option value="steer">Steer current turn immediately</option></select></label>:<p>Follow-ups are queued until the current {selectedAgentStatus?.name||selectedAgent} turn finishes. ACP does not define in-flight steering.</p>}</div>
       <div className="settings-card"><h3>Default permissions</h3><label>New threads<select value={settings.defaultPermissionMode||"supervised"} onChange={e=>save({defaultPermissionMode:e.target.value})}><option value="supervised">Supervised</option><option value="edits">Auto-accept edits</option><option value="auto">Auto</option><option value="full">Full access</option><option value="read-only">Read only</option></select></label><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.autoPull)} onChange={e=>save({autoPull:e.target.checked})}/> Automatically fast-forward clean default branches</label></div>
       {selectedAgent==="codex"&&<div className="settings-card"><h3>Computer use</h3><p>The agent can always inspect a desktop screenshot. Mouse and keyboard control are exposed only when the current thread is in <strong>Full access</strong> mode. This keeps desktop automation explicit instead of silently escalating permissions.</p></div>}
-      <div className="settings-card"><h3>Appearance</h3><p>Appearance controls light/dark behavior. Theme controls the Trebell palette independently.</p><label>Mode<div className="appearance-options">{["system","light","dark"].map(v=><button key={v} className={(settings.appearanceMode||"system")===v?"active":""} onClick={()=>save({appearanceMode:v})}>{v}</button>)}</div></label><label>Theme<div className="appearance-options">{[["dark","Trebell"],["midnight","Midnight"],["black","Black"]].map(([value,label])=><button key={value} className={(settings.appearance||"dark")===value?"active":""} onClick={()=>save({appearance:value})}>{label}</button>)}</div></label></div>
+      <div className="settings-card theme-settings"><h3>Appearance</h3><p>Appearance controls light/dark behavior. Theme controls the palette independently. Trebell themes and VS Code color-theme JSON can be imported.</p><label>Mode<div className="appearance-options">{["system","light","dark"].map(v=><button key={v} className={(settings.appearanceMode||"system")===v?"active":""} onClick={()=>save({appearanceMode:v})}>{v}</button>)}</div></label><label>Theme<div className="appearance-options">{[["dark","Trebell"],["midnight","Midnight"],["black","Black"]].map(([value,label])=><button key={value} className={(settings.appearance||"dark")===value?"active":""} onClick={()=>save({appearance:value})}>{label}</button>)}{(settings.customThemes||[]).map(theme=><button key={theme.id} className={settings.appearance===theme.id?"active":""} onClick={()=>save({appearance:theme.id})}>{theme.name}</button>)}</div></label><div className="theme-actions"><button onClick={createTheme}>Create theme</button><button onClick={()=>themeImportRef.current?.click()}>Import JSON</button>{(settings.customThemes||[]).find(theme=>theme.id===settings.appearance)&&<><button onClick={()=>setThemeDraft((settings.customThemes||[]).find(theme=>theme.id===settings.appearance))}>Edit selected</button><button onClick={()=>exportTheme((settings.customThemes||[]).find(theme=>theme.id===settings.appearance))}>Export selected</button><button onClick={()=>removeTheme((settings.customThemes||[]).find(theme=>theme.id===settings.appearance))}>Delete selected</button></>}<input ref={themeImportRef} type="file" accept=".json,application/json" hidden onChange={importThemeFile}/></div>{themeDraft&&<div className="theme-editor"><label>Name<input value={themeDraft.name||""} onChange={e=>setThemeDraft({...themeDraft,name:e.target.value})}/></label><div className="theme-editor-grid"><label>Base appearance<select value={themeDraft.appearance||"dark"} onChange={e=>setThemeDraft({...themeDraft,appearance:e.target.value})}><option value="dark">Dark</option><option value="light">Light</option></select></label><label>Canvas<input type="color" value={themeDraft.canvas||"#0c0f16"} onChange={e=>setThemeDraft({...themeDraft,canvas:e.target.value})}/></label><label>Accent<input type="color" value={themeDraft.accent||"#9c6cff"} onChange={e=>setThemeDraft({...themeDraft,accent:e.target.value})}/></label></div><div className="theme-editor-actions"><button className="setting-action" onClick={saveTheme}>Save & apply</button><button onClick={()=>setThemeDraft(null)}>Close editor</button></div></div>}{themeMessage&&<p className={/failed|error/i.test(themeMessage)?"provider-status-error":"provider-note"}>{themeMessage}</p>}</div>
       <div className="settings-card"><h3>Desktop notifications</h3><label className="toggle-line"><input type="checkbox" checked={settings.notifications!==false} onChange={e=>save({notifications:e.target.checked})}/> Notify when turns finish or need attention</label><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.notificationSound)} onChange={e=>save({notificationSound:e.target.checked})}/> Allow notification sound</label></div>
       <div className="settings-card"><h3>Restart recovery</h3><p>When Trebell restarts during active work, reconnect saved provider sessions and continue the interrupted turn. Codex uses native promptless continuation; other supported harnesses resume their saved session and continue from there. Off by default to avoid unexpected background work after a restart.</p><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.continueThreadsAfterRestart)} onChange={e=>save({continueThreadsAfterRestart:e.target.checked})}/> Continue supported active threads after restarts</label></div>
       {window.trebellDesktop?.browser?.importSources&&<div className="settings-card browser-profile-settings"><h3>Browser profiles</h3><p>Copy a supported browser session into Trebell Agent Browser. This is a one-time local copy; the source browser and Trebell stay separate afterward.</p>{browserImport.sources?.length?<>{browserImport.sources.map(source=><div className="browser-import-source" key={source.id}><div><strong>{source.name}</strong><span>{source.profiles?.length||0} profile{source.profiles?.length===1?"":"s"}{source.running?" · running":""}</span></div>{source.running&&<em>Close {source.name} before importing</em>}</div>)}<label>Profile<select value={browserImportProfile} onChange={e=>setBrowserImportProfile(e.target.value)}>{browserImport.sources.flatMap(source=>(source.profiles||[]).map(profile=><option key={profile.id} value={profile.id}>{source.name} · {profile.name}</option>))}</select></label><div className="provider-key-actions"><button className="setting-action" onClick={importBrowserProfile} disabled={browserImportBusy||!browserImportProfile||browserImport.sources.some(source=>source.running&&source.profiles?.some(profile=>profile.id===browserImportProfile))}>{browserImportBusy?"Importing…":"Import selected profile"}</button><button onClick={()=>loadBrowserImportSources()} disabled={browserImportBusy}><RefreshCw size={12}/> Rescan</button></div></>:<p className="provider-note">No directly importable browser profile was found. On Windows, Trebell currently supports Firefox profile import; JSON cookie import remains available in Agent Browser.</p>}<p className={browserImportMessage&&/close|failed|error/i.test(browserImportMessage)?"provider-status-error":"provider-note"}>{browserImportMessage}</p></div>}

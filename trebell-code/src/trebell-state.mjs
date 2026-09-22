@@ -13,6 +13,7 @@ const DEFAULT_STATE = Object.freeze({
     autoPull: false,
     appearance: "dark",
     appearanceMode: "system",
+    customThemes: [],
     notifications: true,
     notificationSound: false,
     backgroundMode: false,
