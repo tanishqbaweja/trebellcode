@@ -38,3 +38,8 @@ test("resolver skips a matching key when its when clause is false",()=>{
   assert.equal(resolveKeybinding(event("p",{ctrlKey:true}),settings,{projectOpen:true,modalOpen:false}),"files");
   assert.equal(resolveKeybinding(event("p",{ctrlKey:true}),settings,{projectOpen:true,modalOpen:true}),null);
 });
+
+test("queued follow-up shortcut resolves only for a running thread",()=>{
+  assert.equal(resolveKeybinding(event("Enter",{ctrlKey:true,shiftKey:true}),{}, {threadOpen:true,running:true,modalOpen:false}),"steerQueued");
+  assert.equal(resolveKeybinding(event("Enter",{ctrlKey:true,shiftKey:true}),{}, {threadOpen:true,running:false,modalOpen:false}),null);
+});

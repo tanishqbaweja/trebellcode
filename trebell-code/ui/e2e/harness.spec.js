@@ -37,6 +37,9 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await page.evaluate(()=>window.trebellDesktop.zoom.reset());
 
   const composer=page.getByTestId("composer");
+  await composer.fill("x".repeat(120001));
+  await expect(page.getByTestId("send")).toBeDisabled();
+  await expect(page.getByText(/maximum 120,000/)).toBeVisible();
   await composer.fill("Build and validate a private local converter.");
   await page.getByTestId("send").click();
 

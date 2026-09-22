@@ -29,8 +29,10 @@ import DevicePanel from "./components/DevicePanel.jsx";
 import UsagePage from "./components/UsagePage.jsx";
 import LicensesPage from "./components/LicensesPage.jsx";
 import { resolveKeybinding } from "./keybindings.js";
+import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
 
 const MAX_COMPOSER_ATTACHMENTS=100;
+const MAX_COMPOSER_CHARS=120_000;
 
 const TREBELL_BROWSER_TOOLS=[{
   type:"namespace",
@@ -238,6 +240,7 @@ function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,running,
   const allSlash=[...SLASH_COMMANDS,...nativeSlash].filter(([cmd],index,array)=>array.findIndex(([candidate])=>candidate===cmd)===index);
   const slashItems=slashOpen?allSlash.filter(([cmd])=>cmd.startsWith(slashQuery.split(/\s/)[0])&&(["codex","opencode","claude"].includes(agentRuntime)||cmd!=="/compact")&&(agentRuntime==="codex"||cmd!=="/agents")):[];
   const contextPaths=new Set((contextChips||[]).map(chip=>chip.path));
+  const promptTooLong=prompt.length>MAX_COMPOSER_CHARS;
   return <div className="composer-wrap" onDragOver={e=>e.preventDefault()} onDrop={onDrop}>
     {slashOpen&&slashItems.length>0&&<div className="slash-menu">{slashItems.map(([cmd,desc])=><button key={cmd} onMouseDown={e=>{e.preventDefault();setPrompt(cmd+" ")}}><strong>{cmd}</strong><span>{desc}</span></button>)}</div>}
     {(contextChips||[]).length>0&&<div className="context-chip-row" data-testid="context-chips">{contextChips.map(chip=><span className={"context-chip kind-"+(chip.kind||"context")} data-testid="context-chip" key={chip.id||chip.path} title={chip.path}><Link2 size={11}/><strong>{chip.label||"Context"}</strong>{chip.detail&&<small>{chip.detail}</small>}<button onClick={()=>onRemoveContext(chip.path)} title="Remove context"><X size={10}/></button></span>)}</div>}
@@ -258,9 +261,9 @@ function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,running,
       </>}
       <button className={"mic-btn "+(listening?"active":"")} onClick={dictate} disabled={!speechSupported} title={speechSupported?(listening?"Listening…":"Voice dictation"):"Voice dictation is unavailable on this platform"}><Mic size={15}/></button>
       <button className="stash-btn" onClick={onStash} title="Stash or restore prompt">S</button>
-      <button data-testid="send" className="send-btn" onClick={onSend} disabled={!providerReady||!prompt.trim()}>{running&&settings.followUpMode==="queue"?<Plus size={16}/>:<Send size={16}/>}</button>
+      <button data-testid="send" className="send-btn" onClick={onSend} disabled={!providerReady||!prompt.trim()||promptTooLong}>{running&&settings.followUpMode==="queue"?<Plus size={16}/>:<Send size={16}/>}</button>
     </div></div>
-    <div className={"composer-status"+(modelError?" error":"")}><span>{modelError||tokenLabel(tokenUsage,priceConfig)}</span><span>{settings.followUpMode==="steer"?"Steer":"Queue"} follow-ups</span></div>
+    <div className={"composer-status"+(modelError||promptTooLong?" error":"")}><span>{promptTooLong?`Draft is ${prompt.length.toLocaleString()} characters · maximum ${MAX_COMPOSER_CHARS.toLocaleString()}`:modelError||tokenLabel(tokenUsage,priceConfig)}</span><span>{prompt.length.toLocaleString()}/{MAX_COMPOSER_CHARS.toLocaleString()} · {settings.followUpMode==="steer"?"Steer":"Queue"} follow-ups</span></div>
   </div>;
 }
 
@@ -526,12 +529,13 @@ export default function App(){
       else if(command==="projects")setSection("projects");
       else if(command==="settings")setSection("settings");
       else if(command==="environments")setSection("environments");
+      else if(command==="steerQueued"&&queued.length)sendQueuedNow(queued[0]);
       else if(command==="cycleTheme")cycleTheme();
       else if(command==="cycleAppearance")cycleAppearance();
     };
     window.addEventListener("keydown",key);
     return()=>window.removeEventListener("keydown",key);
-  },[settings,prompt,attachments,section,panel,paletteOpen,question,approvals.length,projectPath,activeThread?.id,running,rightPanelOpen]);
+  },[settings,prompt,attachments,section,panel,paletteOpen,question,approvals.length,projectPath,activeThread?.id,running,rightPanelOpen,queued]);
   useEffect(()=>{if(!running&&queued.length){const next=queued[0];setQueued(prev=>prev.slice(1));startTurn(next.text,next.attachments,next.model||model).catch(error=>setEvents(prev=>[...prev,{id:"queue-error-"+Date.now(),kind:"error",title:error.message,status:"done"}]))}},[running,queued]);
 
   function handleServerRequest(client,message){
@@ -843,7 +847,10 @@ export default function App(){
     return false;
   }
   async function send(){
-    const text=prompt.trim();if(!text)return;const special=await handleSpecial(text);if(special===true){setPrompt("");return}
+    const text=prompt.trim();if(!text)return;
+    if(prompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"prompt-too-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{length:prompt.length}}]);return}
+    const special=await handleSpecial(text);if(special===true){setPrompt("");return}
+    if(agentRuntime==="antigravity"&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:"Antigravity does not accept video attachments",status:"done",raw:{}}]);return}
     if(running){
       if(agentRuntime==="codex"&&settings.followUpMode==="steer"&&rpc&&activeThread&&activeTurnId){await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(text,attachments)});setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text,turnId:activeTurnId}]);setPrompt("");setAttachments([]);setContextChips([]);return}
       setQueued(prev=>[...prev,{id:crypto.randomUUID(),text,attachments:[...attachments],contextChips:[...contextChips],model}]);setPrompt("");setAttachments([]);setContextChips([]);return;
@@ -853,7 +860,12 @@ export default function App(){
     await startTurn(text,attachments,model).catch(e=>{setRunning(false);setEvents([{id:"send-error",kind:"error",title:e.message,status:"done",raw:{}}])});
   }
   async function sendQueuedNow(item){setQueued(prev=>prev.filter(q=>q.id!==item.id));if(agentRuntime==="codex"&&running&&rpc&&activeThread&&activeTurnId){await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments)});setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,turnId:activeTurnId}])}else if(running)setQueued(prev=>[item,...prev]);else await startTurn(item.text,item.attachments,item.model||model)}
-  async function stop(){if(rpc&&activeThread?.id&&activeTurnId)await rpc.request("turn/interrupt",{threadId:activeThread.id,turnId:activeTurnId}).catch(()=>{});const returned=queued.map(q=>q.text).join("\n\n");if(returned)setPrompt(prev=>prev?prev+"\n\n"+returned:returned);setQueued([]);setRunning(false)}
+  async function stop(){
+    if(rpc&&activeThread?.id&&activeTurnId)await rpc.request("turn/interrupt",{threadId:activeThread.id,turnId:activeTurnId}).catch(()=>{});
+    const restored=restoreQueuedDraft({prompt,attachments,contextChips,queued,maxAttachments:MAX_COMPOSER_ATTACHMENTS});
+    setPrompt(restored.prompt);setAttachments(restored.attachments);setContextChips(restored.contextChips);
+    setQueued([]);setRunning(false);
+  }
   async function editFromHere(message){if(!["codex","opencode","claude"].includes(agentRuntime)||!rpc||!activeThread?.id||!message.turnId)return;const restoreFiles=agentRuntime==="codex"?confirm("Also restore workspace files to the checkpoint before this turn?\n\nOK = conversation + files\nCancel = conversation only"):false;if(restoreFiles&&message.checkpointId)await api("/api/checkpoints/restore",{method:"POST",body:{id:message.checkpointId}}).catch(e=>alert(e.message));await rpc.request("thread/revert",{threadId:activeThread.id,beforeTurnId:message.turnId});setPrompt(message.text);await reloadActiveThread()}
   async function stashPrompt(){
     if(prompt.trim()||attachments.length){await api("/api/stashes",{method:"POST",body:{text:prompt,attachments,contextChips,projectPath}});setPrompt("");setAttachments([]);setContextChips([]);return}
@@ -886,7 +898,11 @@ export default function App(){
     const [path]=await prepareAttachmentPaths([d.path]);
     await addContextPath(path,{kind:"computer",label:"Desktop snapshot",detail:(shot.width&&shot.height)?shot.width+"×"+shot.height:"PNG capture"});
   }
-  async function onPaste(e){const files=[...(e.clipboardData?.files||[])];if(files.length){e.preventDefault();const uploaded=[];for(const f of files.slice(0,Math.max(0,MAX_COMPOSER_ATTACHMENTS-attachments.length))){try{uploaded.push((await blobAttachment(f)).path)}catch{}}await addFiles(uploaded);return}const text=e.clipboardData?.getData("text/plain")||"";if(text.length>=32768){e.preventDefault();const d=await api("/api/attachments/text",{method:"POST",body:{name:"pasted-context.txt",text}});const prepared=await prepareAttachmentPaths([d.path]);await addFiles(prepared)}}
+  async function onPaste(e){
+    const files=[...(e.clipboardData?.files||[])];if(files.length){e.preventDefault();const uploaded=[];for(const f of files.slice(0,Math.max(0,MAX_COMPOSER_ATTACHMENTS-attachments.length))){try{uploaded.push((await blobAttachment(f)).path)}catch{}}await addFiles(uploaded);return}
+    const text=e.clipboardData?.getData("text/plain")||"";const start=Number(e.currentTarget?.selectionStart)||0,end=Number(e.currentTarget?.selectionEnd)||start;const nextLength=prompt.length-(end-start)+text.length;
+    if(text.length>=32768||nextLength>MAX_COMPOSER_CHARS){e.preventDefault();const d=await api("/api/attachments/text",{method:"POST",body:{name:"pasted-context.txt",text}});const prepared=await prepareAttachmentPaths([d.path]);await addFiles(prepared)}
+  }
   async function onDrop(e){e.preventDefault();const files=[...(e.dataTransfer?.files||[])];const uploaded=[];for(const f of files.slice(0,Math.max(0,MAX_COMPOSER_ATTACHMENTS-attachments.length))){try{uploaded.push((await blobAttachment(f)).path)}catch{}}await addFiles(uploaded)}
   async function attachExcerpt(text){if(!text.trim())return;await addContextAttachment({name:"terminal-context.txt",text,kind:"terminal",label:"Terminal excerpt",detail:text.split(/\r?\n/).length+" lines"});setPanel(null)}
   async function citeAssistant(message){

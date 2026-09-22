@@ -9,6 +9,7 @@ export const KEYBINDING_COMMANDS=[
   {id:"projects",label:"Projects",defaultKey:"Ctrl+Shift+P",defaultWhen:"!modalOpen"},
   {id:"settings",label:"Settings",defaultKey:"Ctrl+,",defaultWhen:"!modalOpen"},
   {id:"environments",label:"Environments",defaultKey:"Ctrl+Shift+E",defaultWhen:"!modalOpen"},
+  {id:"steerQueued",label:"Send oldest queued message now",defaultKey:"Ctrl+Shift+Enter",defaultWhen:"threadOpen && running && !modalOpen"},
   {id:"cycleTheme",label:"Cycle theme",defaultKey:"Ctrl+Alt+A",defaultWhen:"!modalOpen"},
   {id:"cycleAppearance",label:"Cycle appearance mode",defaultKey:"Ctrl+Alt+Shift+A",defaultWhen:"!modalOpen"},
 ];
