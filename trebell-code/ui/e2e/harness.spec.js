@@ -67,6 +67,11 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await expect(page.getByTestId("command-palette")).toContainText("E2E Project");
   await expect(page.getByTestId("command-palette")).toContainText("Remote App");
   await expect(page.getByTestId("command-palette")).toContainText("E2E SSH · /srv/app");
+  const paletteSearch=page.getByPlaceholder("Search commands, threads, and messages…");
+  await paletteSearch.fill(">settings");
+  await expect(page.getByTestId("command-palette")).toContainText("Settings");
+  await expect(page.getByTestId("command-palette")).not.toContainText("E2E Project");
+  await paletteSearch.fill("");
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("command-palette")).toBeHidden();
   await expect(page.getByTestId("model-picker")).toBeVisible();
