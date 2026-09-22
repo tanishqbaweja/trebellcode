@@ -4,7 +4,8 @@ import { api } from "../api.js";
 
 export default function EnvironmentsPage(){
   const [data,setData]=useState({profiles:[],activeEnvironmentId:null,activeEnvironment:null,capabilities:{local:{available:true},ssh:{available:false},wsl:{available:false,distros:[]}}});
-  const [remote,setRemote]=useState({enabled:false,running:false,port:3211,token:"",urls:[]});
+  const [remote,setRemote]=useState({enabled:false,running:false,port:3211,urls:[],devices:[]});
+  const [pairing,setPairing]=useState(null);
   const [draft,setDraft]=useState({type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"codex"});
   const [busy,setBusy]=useState("");
   const [message,setMessage]=useState("");
@@ -44,9 +45,19 @@ export default function EnvironmentsPage(){
     try{const r=await api("/api/remote-access",{method:"POST",body:patch});setRemote(r)}
     catch(e){setMessage(e.message)}finally{setBusy("")}
   }
+  async function createPairing(){
+    setBusy("pair");setMessage("");
+    try{const result=await api("/api/remote-access/pair",{method:"POST",body:{}});setPairing(result);const first=result.urls?.[0];if(first&&navigator.clipboard?.writeText){await navigator.clipboard.writeText(first).catch(()=>{});setMessage("Pairing link created and copied. It can be used once before it expires.")}}
+    catch(e){setMessage(e.message)}finally{setBusy("")}
+  }
+  async function revokeDevice(id){
+    setBusy("device:"+id);setMessage("");
+    try{const result=await api("/api/remote-access/device?id="+encodeURIComponent(id),{method:"DELETE"});setRemote(current=>({...current,devices:result.devices||[]}));setMessage(result.ok?"Remote device revoked.":"Device was already removed.")}
+    catch(e){setMessage(e.message)}finally{setBusy("")}
+  }
 
   return <div className="environments-page">
-    <div className="capabilities-toolbar"><div><h2>Environments & remote access</h2><p>Run the actual Codex agent session on local Windows, inside WSL, or on an SSH machine. Remote access separately exposes this desktop harness to another device on your LAN behind a bearer token.</p></div><button onClick={refresh}><RefreshCw size={13}/> Refresh</button></div>
+    <div className="capabilities-toolbar"><div><h2>Environments & remote access</h2><p>Run the actual Codex agent session on local Windows, inside WSL, or on an SSH machine. LAN remote control pairs another device with a one-time link and gives it a revocable session.</p></div><button onClick={refresh}><RefreshCw size={13}/> Refresh</button></div>
     {message&&<div className="inline-status">{message}</div>}
     <div className="environment-grid">
       <section className="capability-card">
@@ -70,7 +81,7 @@ export default function EnvironmentsPage(){
         <div className="capability-card-head"><span><Globe2 size={15}/><strong>LAN remote control</strong></span><em className={remote.running?"ok":""}>{remote.running?"running":"off"}</em></div>
         <label className="toggle-line"><input type="checkbox" checked={remote.enabled} onChange={e=>saveRemote({enabled:e.target.checked})}/> Enable remote access</label>
         <label>Port<input type="number" min="1024" max="65535" value={remote.port||3211} onChange={e=>setRemote(r=>({...r,port:Number(e.target.value)||3211}))} onBlur={()=>remote.enabled&&saveRemote({port:remote.port})}/></label>
-        {remote.enabled&&<><label>Access token<input readOnly value={remote.token||""}/></label><button onClick={()=>saveRemote({regenerateToken:true})} disabled={!!busy}>Regenerate token</button><div className="remote-urls">{(remote.urls||[]).map(url=><code key={url}>{url}</code>)}</div></>}
+        {remote.enabled&&<><div className="capability-actions"><button onClick={createPairing} disabled={!!busy}>Create one-time pairing link</button></div>{pairing&&<div className="remote-pairing"><span>Expires {new Date(pairing.expiresAt).toLocaleTimeString()}</span>{(pairing.urls||[]).map(url=><div key={url}><code>{url}</code><button onClick={()=>navigator.clipboard?.writeText?.(url)}>Copy</button></div>)}</div>}<div className="remote-devices"><strong>Paired devices</strong>{(remote.devices||[]).length?(remote.devices||[]).map(device=><div key={device.id}><span><b>{device.name}</b><small>Last seen {new Date(device.lastSeenAt||device.createdAt).toLocaleString()}</small></span><button className="danger" onClick={()=>revokeDevice(device.id)} disabled={!!busy}><Trash2 size={12}/> Revoke</button></div>):<p>No paired devices yet.</p>}</div><div className="remote-urls">{(remote.urls||[]).map(url=><code key={url}>{url}</code>)}</div></>}
       </section>
       <section className="capability-card">
         <div className="capability-card-head"><span><Server size={15}/><strong>Host capabilities</strong></span></div>

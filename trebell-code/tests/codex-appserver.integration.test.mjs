@@ -32,6 +32,22 @@ function rpc(ws,id,method,params={}) {
   });
 }
 
+function rpcOutcome(ws,id,method,params={}) {
+  return new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>reject(new Error(`${method} timed out`)),15000);
+    const onMessage=(data)=>{
+      let msg;
+      try{msg=JSON.parse(String(data));}catch{return;}
+      if(msg.id!==id) return;
+      clearTimeout(timer);
+      ws.off("message",onMessage);
+      resolve(msg.error?{ok:false,error:msg.error}:{ok:true,result:msg.result});
+    };
+    ws.on("message",onMessage);
+    ws.send(JSON.stringify({id,method,params}));
+  });
+}
+
 test("real Codex app-server is reachable through Trebell browser relay", {timeout:45000}, async () => {
   const [port,appPort]=await Promise.all([freePort(),freePort()]);
   const home=await mkdtemp(join(tmpdir(),"trebell-relay-integration-"));
@@ -81,6 +97,26 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
     });
     assert.equal(executed.exitCode,0,JSON.stringify(executed));
     assert.match(executed.stdout,/trebell-relay-ok/);
+
+    const capabilityCalls=[
+      ["account/read",{refreshToken:false}],
+      ["account/rateLimits/read",{excludeResetCreditDetails:true}],
+      ["account/usage/read",{}],
+      ["config/read",{includeLayers:true,cwd:process.cwd()}],
+      ["mcpServerStatus/list",{limit:20,detail:"full",threadId:null}],
+      ["plugin/list",{cwds:[process.cwd()],forceRefetch:false}],
+      ["hooks/list",{cwds:[process.cwd()]}],
+      ["experimentalFeature/list",{limit:100,threadId:null}],
+      ["modelProvider/capabilities/read",{}],
+      ["externalAgentConfig/detect",{includeHome:true,cwds:[process.cwd()],maxSessions:10,maxSessionAgeDays:30}],
+    ];
+    let id=10;
+    for(const [method,params] of capabilityCalls){
+      const outcome=await rpcOutcome(ws,id++,method,params);
+      if(outcome.ok)continue;
+      assert.notEqual(outcome.error?.code,-32601,`${method} must exist in the bundled Codex app-server`);
+      assert.doesNotMatch(String(outcome.error?.message||""),/method not found|unknown method/i,`${method} must be a real capability`);
+    }
   } finally {
     try{ws?.close();}catch{}
     await gui.close();

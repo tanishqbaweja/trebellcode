@@ -14,7 +14,7 @@ function relativeTime(epoch){
   return Math.floor(d/86400)+"d";
 }
 
-function ThreadRow({thread,active,selected,bulk,onOpen,onSelect,onAction,onMove}){
+function ThreadRow({thread,active,selected,bulk,onOpen,onSelect,onAction,onMove,agentRuntime="codex"}){
   const section=thread.section?.name||"Active";
   return <div className={active?"thread-row active":"thread-row"}>
     {bulk&&<input className="thread-select" type="checkbox" checked={selected} onChange={()=>onSelect(thread.id)}/>}
@@ -22,7 +22,7 @@ function ThreadRow({thread,active,selected,bulk,onOpen,onSelect,onAction,onMove}
       <span className={"thread-status-dot "+(section==="Pinned"?"pinned":section==="Snoozed"?"snoozed":section==="Settled"?"settled":"")}/>
       <div>
         <strong>{titleOf(thread)}</strong>
-        <span>{thread.model?.replace(/^freebuff\//,"")||"Codex"} · {relativeTime(thread.updatedAt)}</span>
+        <span>{thread.model?.replace(/^freebuff\//,"")||({codex:"Codex",claude:"Claude",cursor:"Cursor",grok:"Grok",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime)} · {relativeTime(thread.updatedAt)}</span>
       </div>
     </button>
     <details className="thread-menu">
@@ -31,7 +31,7 @@ function ThreadRow({thread,active,selected,bulk,onOpen,onSelect,onAction,onMove}
         <button onClick={()=>onAction(thread,section==="Pinned"?"active":"pin")}>{section==="Pinned"?"Unpin":"Pin"}</button>
         <button onClick={()=>onAction(thread,"snooze")}>Snooze</button>
         <button onClick={()=>onAction(thread,section==="Settled"?"active":"settle")}>{section==="Settled"?"Un-settle":"Settle"}</button>
-        <button onClick={()=>onAction(thread,"fork")}>Fork thread</button>
+        {(agentRuntime==="codex"||agentRuntime==="opencode"||thread.providerMeta?.initialize?.agentCapabilities?.sessionCapabilities?.fork!=null)&&<button onClick={()=>onAction(thread,"fork")}>Fork thread</button>}
         <button onClick={()=>onMove(thread,-1)}>Move up</button>
         <button onClick={()=>onMove(thread,1)}>Move down</button>
         <button onClick={()=>onAction(thread,"archive")}>Archive</button>
@@ -49,7 +49,7 @@ function UtilityButton({Icon,label,active,onClick}){
 
 export default function ThreadSidebar({
   section,setSection,threads,activeThreadId,query,setQuery,onOpen,onNew,onThreadAction,onMove,
-  selectedIds,setSelectedIds,onBulkAction,provider="freebuff"
+  selectedIds,setSelectedIds,onBulkAction,provider="freebuff",agentRuntime="codex"
 }){
   const groups={
     Pinned:threads.filter(t=>t.section?.name==="Pinned"),
@@ -59,6 +59,7 @@ export default function ThreadSidebar({
   };
   const bulk=selectedIds.size>0;
   const providerLabel={freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider;
+  const runtimeLabel={codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime;
   function toggle(id){const next=new Set(selectedIds);next.has(id)?next.delete(id):next.add(id);setSelectedIds(next)}
 
   return <aside className="sidebar">
@@ -91,7 +92,7 @@ export default function ThreadSidebar({
     <div className="thread-sections">
       {Object.entries(groups).map(([name,items])=>items.length>0&&<section key={name}>
         <h4>{name}<span>{items.length}</span></h4>
-        {items.map(t=><ThreadRow key={t.id} thread={t} active={t.id===activeThreadId} bulk={bulk} selected={selectedIds.has(t.id)} onOpen={onOpen} onSelect={toggle} onAction={onThreadAction} onMove={onMove}/>)}
+        {items.map(t=><ThreadRow key={t.id} thread={t} active={t.id===activeThreadId} bulk={bulk} selected={selectedIds.has(t.id)} onOpen={onOpen} onSelect={toggle} onAction={onThreadAction} onMove={onMove} agentRuntime={agentRuntime}/>)}
       </section>)}
       {!threads.length&&<div className="sidebar-empty">No threads yet.<br/>Start a task to create one.</div>}
     </div>
@@ -100,13 +101,13 @@ export default function ThreadSidebar({
       <div className="sidebar-utilities">
         <UtilityButton Icon={Folder} label="Projects" active={section==="projects"} onClick={()=>setSection("projects")}/>
         <UtilityButton Icon={Globe2} label="Browser" active={section==="preview"} onClick={()=>setSection("preview")}/>
-        <UtilityButton Icon={Bot} label="Agents" active={section==="agents"} onClick={()=>setSection("agents")}/>
+        {agentRuntime==="codex"&&<UtilityButton Icon={Bot} label="Agents" active={section==="agents"} onClick={()=>setSection("agents")}/>}
         <UtilityButton Icon={History} label="History" active={section==="history"} onClick={()=>setSection("history")}/>
-        <UtilityButton Icon={Wrench} label="Tools" active={section==="tools"} onClick={()=>setSection("tools")}/>
+        {agentRuntime==="codex"&&<UtilityButton Icon={Wrench} label="Tools" active={section==="tools"} onClick={()=>setSection("tools")}/>}
         <UtilityButton Icon={Server} label="Environments" active={section==="environments"} onClick={()=>setSection("environments")}/>
         <UtilityButton Icon={Settings} label="Settings" active={section==="settings"} onClick={()=>setSection("settings")}/>
       </div>
-      <button className="sidebar-provider" onClick={()=>setSection(provider==="freebuff"?"freebuff":"settings")} title={"Configure "+providerLabel}><span className="provider-dot"/><div><strong>{providerLabel}</strong><span>via Codex harness</span></div><MoreHorizontal size={13}/></button>
+      <button className="sidebar-provider" onClick={()=>setSection(agentRuntime==="codex"&&provider==="freebuff"?"freebuff":"settings")} title={"Configure "+runtimeLabel}><span className="provider-dot"/><div><strong>{runtimeLabel}</strong><span>{agentRuntime==="codex"?providerLabel+" inference":"Agent harness"}</span></div><MoreHorizontal size={13}/></button>
     </div>
   </aside>;
 }

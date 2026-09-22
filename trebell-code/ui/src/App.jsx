@@ -115,13 +115,22 @@ function pullRequestIdentity(pr){
     return JSON.stringify([String(pr?.provider||"").toLowerCase(),url.hostname.toLowerCase(),path,Number(pr?.number)||0]);
   }catch{return JSON.stringify([String(pr?.provider||"").toLowerCase(),String(pr?.url||""),Number(pr?.number)||0])}
 }
-function tokenLabel(tokenUsage){
+function tokenLabel(tokenUsage,price=null){
   const total=tokenUsage?.total?.totalTokens;
   const contextTokens=tokenUsage?.last?.inputTokens;
   const windowSize=tokenUsage?.modelContextWindow;
+  const actual=Number(tokenUsage?.cost?.amount);
+  let cost=Number.isFinite(actual)?actual:null;
+  if(cost==null&&price){
+    const usage=tokenUsage?.total||{};
+    const input=Number(usage.inputTokens||0),output=Number(usage.outputTokens||0),cacheRead=Number(usage.cachedInputTokens||0),cacheWrite=Number(usage.cacheWriteInputTokens||0);
+    const inputRate=price.inputPrice==null?null:Number(price.inputPrice),outputRate=price.outputPrice==null?null:Number(price.outputPrice);
+    if(Number.isFinite(inputRate)||Number.isFinite(outputRate))cost=(input*(Number.isFinite(inputRate)?inputRate:0)+output*(Number.isFinite(outputRate)?outputRate:0)+cacheRead*(Number.isFinite(Number(price.cacheReadPrice))?Number(price.cacheReadPrice):(Number.isFinite(inputRate)?inputRate:0))+cacheWrite*(Number.isFinite(Number(price.cacheWritePrice))?Number(price.cacheWritePrice):(Number.isFinite(inputRate)?inputRate:0)))/1_000_000;
+  }
+  const suffix=cost!=null?` · $${cost<0.01?cost.toFixed(4):cost.toFixed(2)}`:"";
   if(total==null)return "Context —";
-  if(windowSize&&contextTokens!=null)return "Context "+Math.round(contextTokens/windowSize*100)+"% · "+contextTokens.toLocaleString()+" input · "+total.toLocaleString()+" total";
-  return "Tokens "+total.toLocaleString();
+  if(windowSize&&contextTokens!=null)return "Context "+Math.round(contextTokens/windowSize*100)+"% · "+contextTokens.toLocaleString()+" input · "+total.toLocaleString()+" total"+suffix;
+  return "Tokens "+total.toLocaleString()+suffix;
 }
 
 function EventIcon({event}){
@@ -140,8 +149,8 @@ function ActivityTimeline({events,assistantText,onOpenPanel}){
     </details>)}
   </div>{assistantText&&<div className="assistant-answer">{assistantText}</div>}</div>;
 }
-function Conversation({messages,onEditFromHere,onCite}){
-  return <div className="conversation-history">{messages.map(m=>m.role==="user"?<div className="user-row" key={m.id}><div className="user-bubble"><p>{m.text}</p>{m.turnId&&<button className="message-action" onClick={()=>onEditFromHere(m)}>Edit from here</button>}</div></div>:<div className="history-assistant" key={m.id}><div className="agent-star small"><Sparkles size={12}/></div><div><div className="assistant-message-text">{m.text}</div><button className="message-action" onClick={()=>onCite?.(m)}>Cite response</button></div></div>)}</div>;
+function Conversation({messages,onEditFromHere,onCite,allowRevert=true}){
+  return <div className="conversation-history">{messages.map(m=>m.role==="user"?<div className="user-row" key={m.id}><div className="user-bubble"><p>{m.text}</p>{allowRevert&&m.turnId&&<button className="message-action" onClick={()=>onEditFromHere(m)}>Edit from here</button>}</div></div>:<div className="history-assistant" key={m.id}><div className="agent-star small"><Sparkles size={12}/></div><div><div className="assistant-message-text">{m.text}</div><button className="message-action" onClick={()=>onCite?.(m)}>Cite response</button></div></div>)}</div>;
 }
 function ApprovalCard({request,onResolve}){
   if(!request)return null;
@@ -170,10 +179,11 @@ const SLASH_COMMANDS=[
   ["/clear","Reset the current draft/thread view"],
 ];
 
-function Composer({prompt,setPrompt,onSend,running,providerReady,provider,login,onConfigureProvider,models,modelMeta,model,setModel,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,permissionMode,setPermissionMode,webSearch,setWebSearch,skills,onSkill,onFiles,settings,onStash,tokenUsage,workspaceMode,setWorkspaceMode}){
+function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,running,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",login,onConfigureProvider,models,modelMeta,model,setModel,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,permissionMode,setPermissionMode,webSearch,setWebSearch,skills,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,onSkill,onFiles,settings,onStash,tokenUsage,workspaceMode,setWorkspaceMode}){
   const [skillsOpen,setSkillsOpen]=useState(false);
   const [listening,setListening]=useState(false);
   const speechSupported=typeof window!=="undefined"&&Boolean(window.SpeechRecognition||window.webkitSpeechRecognition);
+  const priceConfig=(settings.customModels||[]).find(item=>item.id===model&&item.runtime===agentRuntime&&(agentRuntime!=="codex"||item.provider===provider))||null;
   function dictate(){
     if(!speechSupported||listening)return;
     const Recognition=window.SpeechRecognition||window.webkitSpeechRecognition;
@@ -192,35 +202,48 @@ function Composer({prompt,setPrompt,onSend,running,providerReady,provider,login,
   }
   function keyDown(e){
     if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();onSend();return}
-    if(e.key==="ArrowUp"&&!prompt){e.preventDefault();window.dispatchEvent(new CustomEvent("trebell:history",{detail:-1}))}
-    if(e.key==="ArrowDown"){window.dispatchEvent(new CustomEvent("trebell:history",{detail:1}))}
+    const noExtras=!attachments.length&&!(contextChips||[]).length;
+    if(e.key==="ArrowUp"&&noExtras&&(!prompt||historyIndex>=0)){
+      const before=prompt.slice(0,e.currentTarget.selectionStart);if(before.includes("\n"))return;
+      e.preventDefault();window.dispatchEvent(new CustomEvent("trebell:history",{detail:-1}));return;
+    }
+    if(e.key==="ArrowDown"&&noExtras&&historyIndex>=0){
+      const after=prompt.slice(e.currentTarget.selectionEnd);if(after.includes("\n"))return;
+      e.preventDefault();window.dispatchEvent(new CustomEvent("trebell:history",{detail:1}));
+    }
   }
   const slashOpen=prompt.startsWith("/")&&!prompt.includes("\n");
   const slashQuery=prompt.toLowerCase();
-  const slashItems=slashOpen?SLASH_COMMANDS.filter(([cmd])=>cmd.startsWith(slashQuery.split(/\s/)[0])):[];
+  const nativeSlash=(providerCommands||[]).map(command=>{
+    const raw=typeof command==="string"?command:command?.name||command?.command||"";if(!raw)return null;
+    const cmd=raw.startsWith("/")?raw:"/"+raw;const desc=typeof command==="string"?`${agentRuntimeLabel} command`:command?.description||`${agentRuntimeLabel} command`;return [cmd,desc];
+  }).filter(Boolean);
+  const allSlash=[...SLASH_COMMANDS,...nativeSlash].filter(([cmd],index,array)=>array.findIndex(([candidate])=>candidate===cmd)===index);
+  const slashItems=slashOpen?allSlash.filter(([cmd])=>cmd.startsWith(slashQuery.split(/\s/)[0])&&(["codex","opencode","claude"].includes(agentRuntime)||cmd!=="/compact")&&(agentRuntime==="codex"||cmd!=="/agents")):[];
   const contextPaths=new Set((contextChips||[]).map(chip=>chip.path));
   return <div className="composer-wrap" onDragOver={e=>e.preventDefault()} onDrop={onDrop}>
     {slashOpen&&slashItems.length>0&&<div className="slash-menu">{slashItems.map(([cmd,desc])=><button key={cmd} onMouseDown={e=>{e.preventDefault();setPrompt(cmd+" ")}}><strong>{cmd}</strong><span>{desc}</span></button>)}</div>}
     {(contextChips||[]).length>0&&<div className="context-chip-row" data-testid="context-chips">{contextChips.map(chip=><span className={"context-chip kind-"+(chip.kind||"context")} data-testid="context-chip" key={chip.id||chip.path} title={chip.path}><Link2 size={11}/><strong>{chip.label||"Context"}</strong>{chip.detail&&<small>{chip.detail}</small>}<button onClick={()=>onRemoveContext(chip.path)} title="Remove context"><X size={10}/></button></span>)}</div>}
     <div className="attachment-shelf">{attachments.filter(path=>!contextPaths.has(path)).map(path=><span key={path}><Paperclip size={11}/>{String(path).split(/[\\/]/).pop()}<button onClick={()=>onRemoveAttachment(path)}><X size={10}/></button></span>)}</div>
-    <textarea data-testid="composer" value={prompt} onChange={e=>setPrompt(e.target.value)} onKeyDown={keyDown} onPaste={onPaste} placeholder={providerReady?(running?(settings.followUpMode==="steer"?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…"):(provider==="freebuff"?"Sign in to Freebuff to start…":"Configure the selected provider in Settings…")} disabled={!providerReady}/>
+    <textarea data-testid="composer" value={prompt} onChange={e=>{onPromptEdit?.();setPrompt(e.target.value)}} onKeyDown={keyDown} onPaste={onPaste} placeholder={providerReady?(running?(agentRuntime==="codex"&&settings.followUpMode==="steer"?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…"):(agentRuntime!=="codex"?`Configure ${agentRuntimeLabel} in Settings…`:provider==="freebuff"?"Sign in to Freebuff to start…":"Configure the selected provider in Settings…")} disabled={!providerReady}/>
     <div className="composer-bar"><div className="composer-left">
       <button className="circle-btn" onClick={onPickFiles}><Plus size={18}/></button>
-      <button className={"pill-btn "+(webSearch?"active":"")} onClick={()=>setWebSearch(!webSearch)}><Globe2 size={14}/> Web</button>
+      {agentRuntime==="codex"&&<button className={"pill-btn "+(webSearch?"active":"")} onClick={()=>setWebSearch(!webSearch)}><Globe2 size={14}/> Web</button>}
       <button className="pill-btn" onClick={onFiles}><FileCode2 size={14}/> Files</button>
       {window.trebellDesktop?.captureScreen&&<button className="circle-btn" onClick={onCaptureScreen} title="Capture desktop screenshot" aria-label="Capture desktop screenshot"><Camera size={15}/></button>}
-      <div className="popover-wrap"><button className="pill-btn" onClick={()=>setSkillsOpen(!skillsOpen)}><WandSparkles size={14}/> Skills</button>{skillsOpen&&<div className="mini-popover">{skills.length?skills.map(s=><button key={s.path} onClick={()=>{onSkill(s);setSkillsOpen(false)}}><strong>{"$"}{s.name}</strong><span>{s.description}</span></button>):<p>No enabled skills found.</p>}</div>}</div>
+      {(agentRuntime==="codex"||skills.length>0)&&<div className="popover-wrap"><button className="pill-btn" onClick={()=>setSkillsOpen(!skillsOpen)}><WandSparkles size={14}/> Skills</button>{skillsOpen&&<div className="mini-popover">{skills.length?skills.map(s=><button key={s.path||s.location||s.name} onClick={()=>{onSkill(s);setSkillsOpen(false)}}><strong>{agentRuntime==="codex"?"$":"/"}{s.name}</strong><span>{s.description}</span></button>):<p>No enabled skills found.</p>}</div>}</div>}
       <select className="permission-picker" value={permissionMode} onChange={e=>setPermissionMode(e.target.value)}><option value="supervised">Supervised</option><option value="edits">Auto-accept edits</option><option value="auto">Auto</option><option value="full">Full access</option><option value="read-only">Read only</option></select>
       <select className="workspace-mode" value={workspaceMode} onChange={e=>setWorkspaceMode(e.target.value)}><option value="current">Current workspace</option><option value="worktree">New worktree</option></select>
     </div><div className="composer-right">
-      {!providerReady?<button className="login-btn" onClick={provider==="freebuff"?login:onConfigureProvider}>{provider==="freebuff"?"Sign in to Freebuff":"Configure "+({agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||"provider")}</button>:<>
-        <select data-testid="model-picker" value={model} disabled={!models.length} onChange={e=>setModel(e.target.value)}>{models.length?models.map(id=><option key={id} value={id}>{modelLabel(id,freebuff)}{modelMeta?.[id]?.agent?" · "+modelMeta[id].agent:""}</option>):<option value="">{modelError?"Provider error":"No models available"}</option>}</select>
+      {!providerReady?<button className="login-btn" onClick={agentRuntime==="codex"&&provider==="freebuff"?login:onConfigureProvider}>{agentRuntime!=="codex"?"Configure "+agentRuntimeLabel:provider==="freebuff"?"Sign in to Freebuff":"Configure "+({agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||"provider")}</button>:<>
+        {agentRuntime!=="codex"&&providerAgents.length>0&&<select className="agent-picker" value={providerAgent||""} onChange={e=>onProviderAgent?.(e.target.value)} title="Provider agent"><option value="">Default agent</option>{providerAgents.map(agent=>{const name=typeof agent==="string"?agent:agent.name;const mode=typeof agent==="string"?"":agent.mode;return <option key={name} value={name}>{name}{mode?` · ${mode}`:""}</option>})}</select>}
+        <select data-testid="model-picker" value={model} disabled={!models.length} onChange={e=>setModel(e.target.value)}>{models.length?models.map(id=><option key={id} value={id}>{modelMeta?.[id]?.name||modelLabel(id,freebuff)}{modelMeta?.[id]?.custom?" · custom":modelMeta?.[id]?.agent?" · "+modelMeta[id].agent:""}</option>):<option value="">{modelError?"Provider error":"No models available"}</option>}</select>
       </>}
       <button className={"mic-btn "+(listening?"active":"")} onClick={dictate} disabled={!speechSupported} title={speechSupported?(listening?"Listening…":"Voice dictation"):"Voice dictation is unavailable on this platform"}><Mic size={15}/></button>
       <button className="stash-btn" onClick={onStash} title="Stash or restore prompt">S</button>
       <button data-testid="send" className="send-btn" onClick={onSend} disabled={!providerReady||!prompt.trim()}>{running&&settings.followUpMode==="queue"?<Plus size={16}/>:<Send size={16}/>}</button>
     </div></div>
-    <div className={"composer-status"+(modelError?" error":"")}><span>{modelError||tokenLabel(tokenUsage)}</span><span>{settings.followUpMode==="steer"?"Steer":"Queue"} follow-ups</span></div>
+    <div className={"composer-status"+(modelError?" error":"")}><span>{modelError||tokenLabel(tokenUsage,priceConfig)}</span><span>{settings.followUpMode==="steer"?"Steer":"Queue"} follow-ups</span></div>
   </div>;
 }
 
@@ -234,8 +257,8 @@ export default function App(){
   const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [section,setSection]=useState("chat");
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [contextChips,setContextChips]=useState([]);
   const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [modelError,setModelError]=useState("");
-  const [freebuff,setFreebuff]=useState({loggedIn:false}); const [skills,setSkills]=useState([]);
-  const [settings,setSettings]=useState({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",keyboardShortcuts:{},modelProvider:"freebuff"});
+  const [freebuff,setFreebuff]=useState({loggedIn:false}); const [skills,setSkills]=useState([]); const [providerCommands,setProviderCommands]=useState([]); const [providerAgents,setProviderAgents]=useState([]); const [providerAgent,setProviderAgent]=useState("");
+  const [settings,setSettings]=useState({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",keyboardShortcuts:{},agentRuntime:"codex",modelProvider:"freebuff"});
   const [permissionMode,setPermissionMode]=useState("supervised"); const [webSearch,setWebSearch]=useState(true); const [workspaceMode,setWorkspaceMode]=useState("current");
   const [projectPath,setProjectPath]=useState(""); const [currentProject,setCurrentProject]=useState(null); const [gitInfo,setGitInfo]=useState(null); const [stats,setStats]=useState({}); const [runtime,setRuntime]=useState({});
   const [approvals,setApprovals]=useState([]); const [question,setQuestion]=useState(null); const [tokenUsage,setTokenUsage]=useState(null);
@@ -284,11 +307,12 @@ export default function App(){
     return()=>{disposed=true;window.removeEventListener("wheel",onWheel,{capture:true})};
   },[]);
 
+  const agentRuntime=settings.agentRuntime||bootstrap.agentRuntime||"codex";
   const provider=settings.modelProvider||bootstrap.provider||"freebuff";
-  const providerReady=bootstrap.mock||(provider==="freebuff"?Boolean(bootstrap.loggedIn):Boolean(bootstrap.providerReady));
-  useEffect(()=>{setThreadTelemetry({})},[provider]);
+  const providerReady=bootstrap.mock||(agentRuntime==="codex"?(provider==="freebuff"?Boolean(bootstrap.loggedIn):Boolean(bootstrap.providerReady)):Boolean(bootstrap.agentRuntimeReady));
+  useEffect(()=>{setThreadTelemetry({})},[provider,agentRuntime]);
   async function refreshFreebuff(modelOverride=model){
-    if(provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;
+    if(agentRuntime!=="codex"||provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;
     const params=new URLSearchParams({timezone}); if(modelOverride)params.set("model",modelOverride);
     const data=await api("/api/freebuff/overview?"+params).catch(()=>null); if(data)setFreebuff(data);
   }
@@ -304,7 +328,7 @@ export default function App(){
     const next=ids.includes(model)?model:(ids[0]||"");
     setModels(ids);setModel(next);
     if(resetThread){setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([])}
-    if((boot?.provider||provider)==="freebuff"&&next)refreshFreebuff(next);
+    if((boot?.agentRuntime||agentRuntime)==="codex"&&(boot?.provider||provider)==="freebuff"&&next)refreshFreebuff(next);
     return d;
   }
   async function touchProject(path){
@@ -339,12 +363,15 @@ export default function App(){
       if(initialProject?.permissionMode)setPermissionMode(initialProject.permissionMode);
       if(initialProject?.workspaceMode)setWorkspaceMode(initialProject.workspaceMode);
       if(window.trebellDesktop?.background&&state.settings?.backgroundMode!=null)window.trebellDesktop.background.set(Boolean(state.settings.backgroundMode)).catch?.(()=>{});
-      if((state.settings?.modelProvider||boot.provider||"freebuff")==="freebuff"&&initialModel){const p=new URLSearchParams({timezone,model:initialModel});const fb=await api("/api/freebuff/overview?"+p).catch(()=>null);if(fb&&!cancelled)setFreebuff(fb)}
+      if((state.settings?.agentRuntime||boot.agentRuntime||"codex")==="codex"&&(state.settings?.modelProvider||boot.provider||"freebuff")==="freebuff"&&initialModel){const p=new URLSearchParams({timezone,model:initialModel});const fb=await api("/api/freebuff/overview?"+p).catch(()=>null);if(fb&&!cancelled)setFreebuff(fb)}
       if(!cancelled)setInitialLoaded(true);
     })().catch(()=>{if(!cancelled)setInitialLoaded(true)}); return()=>{cancelled=true};
   },[]);
 
   async function ensureSections(client){
+    if(agentRuntime!=="codex"){
+      const local=Object.fromEntries(["Pinned","Snoozed","Settled"].map(name=>[name,{id:name,name}]));setSections(local);return local;
+    }
     const listed=await client.request("threadSection/list",{limit:50}).catch(()=>({data:[]})); const map=Object.fromEntries((listed.data||[]).map(s=>[s.name,s]));
     for(const name of ["Pinned","Snoozed","Settled"]){if(!map[name]){const made=await client.request("threadSection/create",{name}).catch(()=>null);if(made?.section)map[name]=made.section}}
     setSections(map); return map;
@@ -353,7 +380,18 @@ export default function App(){
     const listed=await client.request("thread/list",{limit:100,modelProviders:[providerId],sortKey:"updated_at",sortDirection:"desc"}).catch(()=>({data:[]})); setThreads(listed.data||[]); return listed.data||[];
   }
   async function loadSkills(client,path=projectPath){
+    if(agentRuntime!=="codex")return;
     if(!path)return; const result=await client.request("skills/list",{cwds:[path]}).catch(()=>({data:[]})); setSkills((result.data||[]).flatMap(x=>x.skills||[]).filter(s=>s.enabled!==false));
+  }
+
+  function applyProviderInventory(update={}){
+    if(Array.isArray(update.commands))setProviderCommands(update.commands);
+    if(Array.isArray(update.skills))setSkills(update.skills.filter(skill=>skill?.enabled!==false));
+    if(Array.isArray(update.agents)){
+      const visible=update.agents.filter(agent=>typeof agent==="string"||agent?.hidden!==true).filter(agent=>typeof agent==="string"?agent:Boolean(agent?.name));
+      setProviderAgents(visible);
+      setProviderAgent(current=>current&&visible.some(agent=>(typeof agent==="string"?agent:agent.name)===current)?current:"");
+    }
   }
 
   useEffect(()=>{
@@ -364,12 +402,12 @@ export default function App(){
       catch(error){client.close();if(disposed)return;if(attempt<120){setRpcStatus("connecting");retryTimer=setTimeout(()=>connect(attempt+1),500)}else setRpcStatus("error")}
     };
     connect(); return()=>{disposed=true;clearTimeout(retryTimer);client?.close()};
-  },[bootstrap.wsUrl,bootstrap.mock,provider,providerRevision]);
+  },[bootstrap.wsUrl,bootstrap.mock,provider,agentRuntime,providerRevision]);
   useEffect(()=>{if(rpcStatus==="connected"&&rpc)loadSkills(rpc,projectPath)},[projectPath,rpcStatus]);
 
   useEffect(()=>{const timer=setInterval(async()=>{const [s,r,g]=await Promise.all([api("/api/stats").catch(()=>null),api("/api/runtime").catch(()=>null),projectPath?api("/api/git/info?path="+encodeURIComponent(projectPath)).catch(()=>null):Promise.resolve(null)]);if(s)setStats(s);if(r)setRuntime(r);if(g)setGitInfo(g)},1800);return()=>clearInterval(timer)},[projectPath]);
-  useEffect(()=>{if(provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;refreshFreebuff(model);const timer=setInterval(()=>refreshFreebuff(model),15000);return()=>clearInterval(timer)},[provider,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
-  useEffect(()=>{if(provider!=="freebuff"||!running||!(bootstrap.loggedIn||bootstrap.mock))return;const ping=()=>{const p=new URLSearchParams({timezone});if(model)p.set("model",model);fetch("/api/freebuff/heartbeat?"+p,{method:"POST"}).catch(()=>{})};ping();const timer=setInterval(ping,45000);return()=>clearInterval(timer)},[provider,running,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
+  useEffect(()=>{if(agentRuntime!=="codex"||provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;refreshFreebuff(model);const timer=setInterval(()=>refreshFreebuff(model),15000);return()=>clearInterval(timer)},[agentRuntime,provider,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
+  useEffect(()=>{if(agentRuntime!=="codex"||provider!=="freebuff"||!running||!(bootstrap.loggedIn||bootstrap.mock))return;const ping=()=>{const p=new URLSearchParams({timezone});if(model)p.set("model",model);fetch("/api/freebuff/heartbeat?"+p,{method:"POST"}).catch(()=>{})};ping();const timer=setInterval(ping,45000);return()=>clearInterval(timer)},[agentRuntime,provider,running,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
 
   useEffect(()=>{const timer=setInterval(async()=>{if(!rpc||rpcStatus!=="connected")return;const now=Date.now();for(const thread of threads){const meta=threadMeta[thread.id];if(thread.section?.name==="Snoozed"&&meta?.snoozedUntil&&meta.snoozedUntil<=now){await moveThread(thread,"active");await updateThreadMeta(thread.id,{snoozedUntil:null})}}},30000);return()=>clearInterval(timer)},[rpc,rpcStatus,threads,threadMeta,sections]);
 
@@ -534,6 +572,10 @@ export default function App(){
     else if(message.method==="thread/goal/updated"&&isCurrent)setGoal(p.goal||null);
     else if(message.method==="thread/goal/cleared"&&isCurrent)setGoal(null);
     else if(message.method==="thread/attachment/updated"&&isCurrent)loadPersistentThreadData(p.threadId).catch(()=>{});
+    else if(message.method==="thread/providerMetadata/updated"){
+      setThreads(prev=>prev.map(thread=>thread.id===p.threadId?{...thread,providerMeta:{...(thread.providerMeta||{}),[p.type]:p.update}}:thread));
+      if(isCurrent){setActiveThread(prev=>prev?.id===p.threadId?{...prev,providerMeta:{...(prev.providerMeta||{}),[p.type]:p.update}}:prev);applyProviderInventory(p.update||{})}
+    }
     else if(message.method==="thread/compacted"){
       updateThreadTelemetry(threadId,{lastActivity:{kind:"contextCompaction",title:"Context compacted",completedAtMs:Date.now()},lastActivityAt:Date.now()});
       if(isCurrent)setEvents(prev=>[...prev,{id:"compact-"+Date.now(),kind:"tool",title:"Context compacted",status:"done",raw:p}]);
@@ -585,7 +627,7 @@ export default function App(){
     if(activeThread?.id===threadId){setGoal(goalData?.goal||null);setLinkedPullRequests(pullRequests)}
     return {goal:goalData?.goal||null,pullRequests};
   }
-  async function newChat(){activeThreadRef.current=null;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([]);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null)}
+  async function newChat(){activeThreadRef.current=null;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([]);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
   async function openThread(thread){
     activeThreadRef.current=thread;setSection("chat");setEvents([]);setAssistantText("");setWorktreeSetup(null);setActiveThread(thread);
     if(thread.cwd)await touchProject(thread.cwd);else setProjectPath(projectPath);
@@ -597,7 +639,7 @@ export default function App(){
       rpc.request("thread/attachment/list",{threadId:thread.id,limit:100}).catch(()=>({data:[]})),
     ]);
     const map=Object.fromEntries((cp.checkpoints||[]).filter(x=>x.turnId).map(x=>[x.turnId,x]));setCheckpointByTurn(map);
-    if(resumed?.thread){activeThreadRef.current=resumed.thread;setActiveThread(resumed.thread);setMessages(historyFromThread(resumed.thread,map));setProjectPath(resumed.thread.cwd||projectPath)}
+    if(resumed?.thread){activeThreadRef.current=resumed.thread;setActiveThread(resumed.thread);setMessages(historyFromThread(resumed.thread,map));setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex"){const meta=resumed.thread.providerMeta||{};applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}}
     const meta=threadMeta[thread.id]||{};setReviewedFiles(meta.reviewedFiles||[]);setGoal(goalData?.goal||null);
     const persisted=(attachmentData?.data||[]).filter(item=>item.attachmentType==="pull_request").map(item=>({...item.payload,__identityKey:item.identityKey}));
     setLinkedPullRequests(persisted.length?persisted:(meta.linkedPullRequests||[]));
@@ -662,7 +704,7 @@ export default function App(){
       throw error;
     }
   }
-  async function createThreadFor(modelId,cwd){const p=presetFor(permissionMode);const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools:[...TREBELL_BROWSER_TOOLS,...TREBELL_COMPUTER_TOOLS],developerInstructions:webSearch?"Web research is allowed when useful. You may use trebell_browser for interactive pages.":"Do not use web search or trebell_browser unless the user explicitly requests it."});return result.thread}
+  async function createThreadFor(modelId,cwd){const p=presetFor(permissionMode);const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools:[...TREBELL_BROWSER_TOOLS,...TREBELL_COMPUTER_TOOLS],developerInstructions:webSearch?"Web research is allowed when useful. You may use trebell_browser for interactive pages.":"Do not use web search or trebell_browser unless the user explicitly requests it."});if(agentRuntime!=="codex"&&result.thread?.providerMeta){setProviderAgent(result.thread.agent||providerAgent||"");const meta=result.thread.providerMeta;applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}return result.thread}
   function inputsFor(text,paths){return [{type:"text",text,text_elements:[]},...(paths||[]).map(path=>{const lower=String(path).toLowerCase();if(/\.(png|jpe?g|gif|webp|bmp)$/.test(lower))return{type:"localImage",path};if(/\.(mp3|wav|m4a|ogg|flac)$/.test(lower))return{type:"localAudio",path};return{type:"mention",name:String(path).split(/[\\/]/).pop(),path}})]}
   async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null){
     if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");let thread=threadOverride||activeThread;let cwd=cwdOverride||projectPath||bootstrap.cwd;
@@ -670,18 +712,22 @@ export default function App(){
     const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7);setMessages(prev=>[...prev,{id:clientId,role:"user",text}]);setEvents([]);setAssistantText("");setRunning(true);
     const checkpoint=await api("/api/checkpoints",{method:"POST",body:{cwd,threadId:thread.id,label:text.slice(0,80)}}).catch(()=>null);const p=presetFor(permissionMode);
     const sandboxPolicy=p.sandbox==="danger-full-access"?{type:"dangerFullAccess"}:p.sandbox==="read-only"?{type:"readOnly",networkAccess:false}:{type:"workspaceWrite",writableRoots:[cwd],networkAccess:webSearch,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
-    const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,cwd,approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths)});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);
+    const custom=(settings.customModels||[]).find(item=>item.id===modelId&&item.runtime===agentRuntime&&(agentRuntime!=="codex"||item.provider===provider));
+    const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(agentRuntime==="codex"&&custom?.effort?{effort:custom.effort}:{}),...(agentRuntime==="codex"&&custom?.serviceTier?{serviceTierForTurn:custom.serviceTier}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths)});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);
     setMessages(prev=>prev.map(m=>m.id===clientId?{...m,turnId,checkpointId:checkpoint?.id||null}:m));if(checkpoint?.id&&turnId){await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}}).catch(()=>{});setCheckpointByTurn(prev=>({...prev,[turnId]:{...checkpoint,turnId}}))}setAttachments([]);setContextChips([]);return{thread,turnId};
   }
   async function handleSpecial(text){
     if(!text.startsWith("/"))return null;const [command,...rest]=text.split(/\s+/);
-    if(command==="/compact"){if(activeThread?.id&&rpc)await rpc.request("thread/compact/start",{threadId:activeThread.id});setEvents(prev=>[...prev,{id:"compact-request",kind:"tool",title:"Compacting context",status:"running",raw:{}}]);return true}
+    if(command==="/compact"){
+      if(!["codex","opencode","claude"].includes(agentRuntime)){setEvents(prev=>[...prev,{id:"compact-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose generic context compaction`,status:"done",raw:{}}]);return true}
+      if(activeThread?.id&&rpc)await rpc.request("thread/compact/start",{threadId:activeThread.id});setEvents(prev=>[...prev,{id:"compact-request",kind:"tool",title:"Compacting context",status:"running",raw:{}}]);return true
+    }
     if(command==="/model"){setSection(provider==="freebuff"?"freebuff":"settings");return true}
     if(command==="/terminal"){setPanel("terminal");return true}
     if(command==="/diff"){openRightPanel("diff");return true}
     if(command==="/git"){openRightPanel("source");return true}
     if(command==="/preview"){openRightPanel("preview");return true}
-    if(command==="/agents"){openRightPanel("agents");return true}
+    if(command==="/agents"){if(agentRuntime==="codex")openRightPanel("agents");else setEvents(prev=>[...prev,{id:"agents-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} collaboration controls are not exposed yet`,status:"done",raw:{}}]);return true}
     if(command==="/review"){await startReview();return true}
     if(command==="/goal"){if(activeThread?.id)openRightPanel("goal");return true}
     if(command==="/palette"){setPaletteOpen(true);return true}
@@ -693,16 +739,16 @@ export default function App(){
   async function send(){
     const text=prompt.trim();if(!text)return;const special=await handleSpecial(text);if(special===true){setPrompt("");return}
     if(running){
-      if(settings.followUpMode==="steer"&&rpc&&activeThread&&activeTurnId){await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(text,attachments)});setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text,turnId:activeTurnId}]);setPrompt("");setAttachments([]);setContextChips([]);return}
+      if(agentRuntime==="codex"&&settings.followUpMode==="steer"&&rpc&&activeThread&&activeTurnId){await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(text,attachments)});setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text,turnId:activeTurnId}]);setPrompt("");setAttachments([]);setContextChips([]);return}
       setQueued(prev=>[...prev,{id:crypto.randomUUID(),text,attachments:[...attachments],contextChips:[...contextChips],model}]);setPrompt("");setAttachments([]);setContextChips([]);return;
     }
     setPrompt("");setPromptHistoryIndex(-1);setSection("chat");
     if(bootstrap.mock||!rpc||rpcStatus!=="connected"){setMessages(prev=>[...prev,{id:"user-"+Date.now(),role:"user",text}]);setRunning(true);try{const d=await api("/api/chat/direct",{method:"POST",body:{prompt:text,model}});setMessages(prev=>[...prev,{id:"assistant-"+Date.now(),role:"assistant",text:d.text||""}]);setEvents([{id:"fallback",kind:"tool",title:({freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||"Provider")+" direct response",status:"done",raw:{}}])}catch(e){setEvents([{id:"error",kind:"error",title:e.message,status:"done",raw:{}}])}finally{setRunning(false);setAttachments([]);setContextChips([])}return}
     await startTurn(text,attachments,model).catch(e=>{setRunning(false);setEvents([{id:"send-error",kind:"error",title:e.message,status:"done",raw:{}}])});
   }
-  async function sendQueuedNow(item){setQueued(prev=>prev.filter(q=>q.id!==item.id));if(running&&rpc&&activeThread&&activeTurnId){await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments)});setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,turnId:activeTurnId}])}else await startTurn(item.text,item.attachments,item.model||model)}
+  async function sendQueuedNow(item){setQueued(prev=>prev.filter(q=>q.id!==item.id));if(agentRuntime==="codex"&&running&&rpc&&activeThread&&activeTurnId){await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments)});setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,turnId:activeTurnId}])}else if(running)setQueued(prev=>[item,...prev]);else await startTurn(item.text,item.attachments,item.model||model)}
   async function stop(){if(rpc&&activeThread?.id&&activeTurnId)await rpc.request("turn/interrupt",{threadId:activeThread.id,turnId:activeTurnId}).catch(()=>{});const returned=queued.map(q=>q.text).join("\n\n");if(returned)setPrompt(prev=>prev?prev+"\n\n"+returned:returned);setQueued([]);setRunning(false)}
-  async function editFromHere(message){if(!rpc||!activeThread?.id||!message.turnId)return;const restoreFiles=confirm("Also restore workspace files to the checkpoint before this turn?\n\nOK = conversation + files\nCancel = conversation only");if(restoreFiles&&message.checkpointId)await api("/api/checkpoints/restore",{method:"POST",body:{id:message.checkpointId}}).catch(e=>alert(e.message));await rpc.request("thread/revert",{threadId:activeThread.id,beforeTurnId:message.turnId});setPrompt(message.text);await reloadActiveThread()}
+  async function editFromHere(message){if(!["codex","opencode","claude"].includes(agentRuntime)||!rpc||!activeThread?.id||!message.turnId)return;const restoreFiles=agentRuntime==="codex"?confirm("Also restore workspace files to the checkpoint before this turn?\n\nOK = conversation + files\nCancel = conversation only"):false;if(restoreFiles&&message.checkpointId)await api("/api/checkpoints/restore",{method:"POST",body:{id:message.checkpointId}}).catch(e=>alert(e.message));await rpc.request("thread/revert",{threadId:activeThread.id,beforeTurnId:message.turnId});setPrompt(message.text);await reloadActiveThread()}
   async function stashPrompt(){
     if(prompt.trim()||attachments.length){await api("/api/stashes",{method:"POST",body:{text:prompt,attachments,contextChips,projectPath}});setPrompt("");setAttachments([]);setContextChips([]);return}
     const d=await api("/api/stashes").catch(()=>({stashes:[]}));const stash=d.stashes?.[0];if(stash){setPrompt(stash.text||"");setAttachments(stash.attachments||[]);setContextChips(stash.contextChips||[]);await api("/api/stashes?id="+encodeURIComponent(stash.id),{method:"DELETE"})}
@@ -796,7 +842,13 @@ export default function App(){
     }
     await onProjectOpen(path);
   }
-  function onSkill(skill){setPrompt(prev=>(prev?prev+" ":"")+"$"+skill.name+" ")}
+  function onSkill(skill){const prefix=agentRuntime==="codex"?"$":"/";setPrompt(prev=>(prev?prev+" ":"")+prefix+skill.name+" ")}
+  async function changeProviderAgent(name){
+    setProviderAgent(name||"");
+    if(agentRuntime==="codex"||!activeThread?.id||!rpc||rpcStatus!=="connected")return;
+    const result=await rpc.request("thread/settings/update",{threadId:activeThread.id,settings:{agent:name||null}}).catch(()=>null);
+    if(result?.thread){setActiveThread(result.thread);setThreads(prev=>prev.map(thread=>thread.id===result.thread.id?result.thread:thread))}
+  }
 
   function openRightPanel(tab="files"){setRightPanelTab(tab);setRightPanelOpen(true);setSection("chat")}
   function navigateSection(next){
@@ -809,6 +861,7 @@ export default function App(){
   const activeTitle=titleOf(activeThread);
   const projectLabel=String(projectPath||activeThread?.cwd||bootstrap.cwd||"Workspace").split(/[\\/]/).filter(Boolean).at(-1)||"Workspace";
   const providerLabel=({freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider);
+  const agentRuntimeLabel=({codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime);
   const completedEvents=events.filter(event=>event.status==="done").length;
   const paletteActions=[
     {id:"new",label:"New thread",detail:"Start a clean coding task",shortcut:"Ctrl+N",onRun:newChat},
@@ -820,10 +873,10 @@ export default function App(){
     {id:"terminal",label:"Terminal",detail:"Open the persistent PTY",shortcut:"Ctrl+Shift+T",onRun:()=>setPanel("terminal")},
     ...((currentProject?.scripts||[]).map(script=>({id:"project-action:"+script.id,label:"Run "+script.name,detail:script.command,onRun:()=>runProjectAction(script)}))),
     {id:"browser",label:"Browser",detail:"Open Trebell Agent Browser",onRun:()=>openRightPanel("preview")},
-    {id:"agents",label:"Agents & collaboration",detail:"Delegated threads and collaboration mode",onRun:()=>openRightPanel("agents")},
+    ...(agentRuntime==="codex"?[{id:"agents",label:"Agents & collaboration",detail:"Delegated threads and collaboration mode",onRun:()=>openRightPanel("agents")}]:[]),
     ...(activeThread?.id?[{id:"goal",label:"Thread goal",detail:goal?.objective||"Set a durable objective",onRun:()=>openRightPanel("goal")}]:[]),
     ...(activeThread?.id&&gitInfo?.isGit?[{id:"review",label:"Review changes",detail:"Ask Codex to review uncommitted changes",onRun:()=>startReview()}]:[]),
-    {id:"tools",label:"Harness capabilities",detail:"Skills, MCP, plugins, apps and hooks",onRun:()=>setSection("tools")},
+    ...(agentRuntime==="codex"?[{id:"tools",label:"Harness capabilities",detail:"Skills, MCP, plugins, apps and hooks",onRun:()=>setSection("tools")}]:[]),
     {id:"environments",label:"Environments",detail:"Local, WSL, SSH and remote access",onRun:()=>setSection("environments")},
     {id:"settings",label:"Settings",detail:"Providers, permissions and desktop behavior",onRun:()=>setSection("settings")},
     {id:"copy",label:"Copy conversation",detail:"Copy this thread as text",onRun:shareThread},
@@ -838,29 +891,29 @@ export default function App(){
     if(rightPanelTab==="files"||rightPanelTab==="diff")return <WorkspacePanel key={rightPanelTab} defaultTab={rightPanelTab==="diff"?"diff":"files"} projectPath={projectPath} activeThreadId={activeThread?.id} reviewedFiles={reviewedFiles} onReviewedChange={toggleReviewed} onAttachPath={path=>addFiles([path])} onReviewComment={attachReviewComment}/>;
     if(rightPanelTab==="preview")return previewSurface;
     if(rightPanelTab==="source")return <SourceControlPanel projectPath={projectPath} model={model} provider={provider} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
-    if(rightPanelTab==="agents")return <div className="panel-page"><AgentsPage threads={threads} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onRefreshThreads={()=>rpc?loadThreads(rpc):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model} telemetry={threadTelemetry}/></div>;
+    if(rightPanelTab==="agents"&&agentRuntime==="codex")return <div className="panel-page"><AgentsPage threads={threads} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onRefreshThreads={()=>rpc?loadThreads(rpc):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model} telemetry={threadTelemetry}/></div>;
     if(rightPanelTab==="goal")return <GoalPanel rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={setGoal}/>;
     return <div className="runtime-surface">
       <section className="runtime-summary">
-        <div><span className={"runtime-dot "+(rpcStatus==="connected"?"online":"")}/><div><strong>{running?"Agent working":"Codex harness"}</strong><span>{rpcStatus==="connected"?"Connected locally":rpcStatus}</span></div></div>
+        <div><span className={"runtime-dot "+(rpcStatus==="connected"?"online":"")}/><div><strong>{running?"Agent working":agentRuntimeLabel+" harness"}</strong><span>{rpcStatus==="connected"?"Connected locally":rpcStatus}</span></div></div>
         <small>{completedEvents}/{events.length||1} current activity steps complete</small>
       </section>
       <ApprovalCard request={approvals[0]} onResolve={resolveApproval}/>
       <section className="runtime-grid">
-        <div><span>Provider</span><strong>{providerLabel}</strong></div>
-        <div><span>Provider status</span><strong>{providerReady?"Ready":"Setup required"}</strong></div>
+        <div><span>Agent harness</span><strong>{agentRuntimeLabel}</strong></div>
+        <div><span>Harness status</span><strong>{providerReady?"Ready":"Setup required"}</strong></div>
         <div><span>CPU</span><strong>{stats.cpu||"—"}</strong></div>
         <div><span>Memory</span><strong>{stats.memory||"—"}</strong></div>
         <div><span>Disk</span><strong>{stats.disk||"—"}</strong></div>
         <div><span>Context</span><strong>{tokenLabel(tokenUsage)}</strong></div>
       </section>
-      {provider==="freebuff"&&<FreebuffMini freebuff={freebuff} model={model} onOpen={()=>setSection("freebuff")}/>}
+      {agentRuntime==="codex"&&provider==="freebuff"&&<FreebuffMini freebuff={freebuff} model={model} onOpen={()=>setSection("freebuff")}/>}
       <section className="runtime-activity"><strong>Latest activity</strong><p>{events.find(event=>event.status==="running")?.title||events.at(-1)?.title||"Waiting for a task"}</p></section>
     </div>;
   }
 
   return <div className="app-shell">
-    <ThreadSidebar section={section} setSection={navigateSection} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} onOpen={openThread} onNew={newChat} onThreadAction={threadAction} onMove={moveThreadOrder} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={bulkAction} provider={provider}/>
+    <ThreadSidebar section={section} setSection={navigateSection} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} onOpen={openThread} onNew={newChat} onThreadAction={threadAction} onMove={moveThreadOrder} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={bulkAction} provider={provider} agentRuntime={agentRuntime}/>
 
     <div className={"workspace-shell"+(rightPanelOpen?" right-open":"")}>
       <main className={"main-frame"+(panel==="terminal"?" terminal-open":"")}>
@@ -893,14 +946,14 @@ export default function App(){
           <div className="conversation-scroll">
             <div className="conversation-column">
               <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
-              <Conversation messages={messages} onEditFromHere={editFromHere} onCite={citeAssistant}/>
+              <Conversation messages={messages} onEditFromHere={editFromHere} onCite={citeAssistant} allowRevert={["codex","opencode","claude"].includes(agentRuntime)}/>
               <ActivityTimeline events={events} assistantText={assistantText} onOpenPanel={name=>name==="workspace"?openRightPanel("diff"):setPanel(name)}/>
               {approvals[0]&&<div className="inline-approval"><ApprovalCard request={approvals[0]} onResolve={resolveApproval}/></div>}
               {queued.map(item=><div className="queued-message" key={item.id}><span>Queued</span><p>{item.text}</p><button onClick={()=>sendQueuedNow(item)}>Send now</button><button onClick={()=>{setPrompt(item.text);setAttachments(item.attachments);setContextChips(item.contextChips||[]);setQueued(prev=>prev.filter(x=>x.id!==item.id))}}>Edit</button></div>)}
               {!messages.length&&!events.length&&<div className="welcome">
                 <div className="welcome-mark"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/></div>
                 <h1>What do you want to build?</h1>
-                <p>{providerLabel} supplies inference. Trebell keeps Codex as the local coding-agent harness for files, shell, Git, approvals, skills, MCP, browser control and durable threads.</p>
+                <p>{agentRuntime==="codex"?`${providerLabel} supplies inference to the Codex harness.`:`${agentRuntimeLabel} is the active coding-agent harness.`} Trebell keeps files, terminal, Git, worktrees, previews and project actions in one workspace.</p>
                 <div className="suggestions">
                   <button onClick={()=>setPrompt("Inspect this project and explain the architecture.")}>Explain codebase</button>
                   <button onClick={()=>setPrompt("Find a useful bug, fix it, and run the relevant tests.")}>Fix a bug</button>
@@ -910,7 +963,7 @@ export default function App(){
             </div>
           </div>
 
-          <Composer prompt={prompt} setPrompt={setPrompt} onSend={send} running={running} providerReady={providerReady} provider={provider} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onCaptureScreen={()=>captureDesktop().catch(error=>setEvents(prev=>[...prev,{id:"screen-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} webSearch={webSearch} setWebSearch={setWebSearch} skills={skills} onSkill={onSkill} onFiles={()=>openRightPanel("files")} settings={settings} onStash={stashPrompt} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode}/>
+          <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={()=>setPromptHistoryIndex(-1)} historyIndex={promptHistoryIndex} onSend={send} running={running} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onCaptureScreen={()=>captureDesktop().catch(error=>setEvents(prev=>[...prev,{id:"screen-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} webSearch={webSearch} setWebSearch={setWebSearch} skills={skills} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={changeProviderAgent} onSkill={onSkill} onFiles={()=>openRightPanel("files")} settings={settings} onStash={stashPrompt} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="terminal-drawer-head"><span><SquareTerminal size={14}/> Terminal</span><div><button onClick={()=>attachExcerpt("")} aria-hidden="true" tabIndex={-1} className="terminal-head-spacer"/><button onClick={()=>setPanel(null)} aria-label="Close terminal"><X size={15}/></button></div></div>
@@ -920,11 +973,11 @@ export default function App(){
 
         {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Local repositories, checkouts, reusable actions and project defaults.</p></div></div><ProjectsPage currentPath={projectPath} onOpen={onProjectOpen} models={models} onProjectUpdated={project=>{if(project?.path===projectPath)setCurrentProject(project)}} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></div>}
         {section==="templates"&&<div className="secondary-page"><h1>Templates</h1><p>Reusable starting points that become normal Trebell turns.</p><div className="template-grid">{[["Ship a feature","Inspect the project, plan a useful feature, implement it, run the relevant tests, fix failures, and summarize the result."],["Fix a bug","Reproduce a meaningful bug in this project, diagnose it, fix it, and validate the fix."],["Review codebase","Map this codebase architecture, important execution paths, risks, and highest-value improvements."],["Refactor safely","Choose a worthwhile refactor, preserve behavior, implement focused changes, and run tests."],["Autonomous build","Take this project to a working validated result. Continue through implementation and test failures until it passes."],["Security review","Review this project for concrete security weaknesses and propose or implement safe fixes."]].map(([name,text])=><button key={name} onClick={()=>{setPrompt(text);setSection("chat")}}><BrainCircuit size={20}/><strong>{name}</strong><span>{text}</span></button>)}</div></div>}
-        {section==="freebuff"&&<div className="secondary-page"><div className="page-header"><div><h1>Freebuff</h1><p>Account, balance, model pricing and session state.</p></div></div><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model)}/></div>}
-        {section==="tools"&&<div className="secondary-page full"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills}/></div>}
+        {section==="freebuff"&&agentRuntime==="codex"&&provider==="freebuff"&&<div className="secondary-page"><div className="page-header"><div><h1>Freebuff</h1><p>Account, balance, model pricing and session state.</p></div></div><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model)}/></div>}
+        {section==="tools"&&agentRuntime==="codex"&&<div className="secondary-page full"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills}/></div>}
         {section==="environments"&&<div className="secondary-page full"><EnvironmentsPage/></div>}
-        {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>Providers, permissions, desktop behavior and runtime diagnostics.</p></div></div><SettingsPage settings={settings} onSettings={setSettings} onProviderUpdated={()=>{setProviderRevision(v=>v+1);return refreshProviderModels({resetThread:true})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectPath} modelError={modelError}/></div>}
-        {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Every unarchived {providerLabel}-backed Codex thread on this machine.</p></div></div><div className="history-page">{threads.map(t=><button key={t.id} onClick={()=>openThread(t)}><FileCode2 size={15}/><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><time>{new Date(t.updatedAt*1000).toLocaleString()}</time></button>)}</div></div>}
+        {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>Agent harnesses, model providers, permissions and desktop behavior.</p></div></div><SettingsPage settings={settings} onSettings={setSettings} onProviderUpdated={()=>{setProviderRevision(v=>v+1);return refreshProviderModels({resetThread:true})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectPath} modelError={modelError}/></div>}
+        {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Every unarchived {agentRuntimeLabel} thread stored by Trebell on this machine.</p></div></div><div className="history-page">{threads.map(t=><button key={t.id} onClick={()=>openThread(t)}><FileCode2 size={15}/><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><time>{new Date(t.updatedAt*1000).toLocaleString()}</time></button>)}</div></div>}
       </main>
 
       {rightPanelOpen&&<RightPanel active={rightPanelTab} onActive={setRightPanelTab} onClose={()=>setRightPanelOpen(false)}>{rightPanelContent()}</RightPanel>}
@@ -932,6 +985,6 @@ export default function App(){
 
     <QuestionModal request={question?.request} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={pickFiles}/>
     <CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} actions={paletteActions} threads={threads} onOpenThread={openThread}/>
-    <OnboardingModal open={initialLoaded&&settings.onboardingComplete===false} projectPath={projectPath} onPickWorkspace={pickWorkspace} providerLabel={providerLabel} providerReady={providerReady} permissionMode={permissionMode} onPermissionMode={setPermissionMode} onFinish={finishOnboarding}/>
+    <OnboardingModal open={initialLoaded&&settings.onboardingComplete===false} projectPath={projectPath} onPickWorkspace={pickWorkspace} providerLabel={agentRuntime==="codex"?providerLabel:agentRuntimeLabel} providerReady={providerReady} permissionMode={permissionMode} onPermissionMode={setPermissionMode} onFinish={finishOnboarding}/>
   </div>;
 }

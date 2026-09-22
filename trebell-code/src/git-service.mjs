@@ -59,6 +59,10 @@ export async function cloneRepository(url,destination){
   await run("git",["clone",url,dest],{cwd:dirname(dest),timeout:10*60_000,maxBuffer:16*1024*1024});
   return gitInfo(dest);
 }
+export async function initializeRepository(cwd){
+  const target=resolve(cwd);await mkdir(target,{recursive:true});
+  await git(target,["init"]);return gitInfo(target);
+}
 export async function createBranch(cwd,name,{checkout=true,startPoint=null}={}){
   const args=checkout?["switch","-c",name]:["branch",name];
   if(startPoint) args.push(startPoint);

@@ -11,6 +11,10 @@ function quotePosix(value){
   return "'" + String(value).replace(/'/g,"'\\''") + "'";
 }
 
+function shellCommand(command,args=[]){
+  return [command,...args].map(quotePosix).join(" ");
+}
+
 async function runProcess(command,args=[],{
   cwd=undefined,
   env=process.env,
@@ -151,6 +155,16 @@ export class EnvironmentManager {
     throw new Error("Unsupported environment type");
   }
 
+  spawnArgv(id,{command,args=[],cwd=null,stdio=["pipe","pipe","pipe"]}={}){
+    const profile=this.get(id);
+    if(!profile) throw new Error("Environment profile was not found");
+    const executable=String(command||"").trim();
+    if(!executable)throw new Error("command is required");
+    const working=String(cwd??profile.cwd??"").trim();
+    if(profile.type==="local")return spawn(executable,args,{cwd:working||undefined,env:this.env,windowsHide:true,stdio});
+    return this.spawnSession(id,{command:shellCommand(executable,args),cwd:working||null,stdio});
+  }
+
   async execute(id,{command,cwd=null,timeoutMs=30000}={}){
     const profile=this.state.environments().find(x=>x.id===id);
     if(!profile) throw new Error("Environment profile was not found");
@@ -183,6 +197,17 @@ export class EnvironmentManager {
     const startedAt=Date.now();
     const result=await runProcess(executable,args,options);
     return {...result,profile:{id:profile.id,name:profile.name,type:profile.type},durationMs:Date.now()-startedAt};
+  }
+
+  async executeArgv(id,{command,args=[],cwd=null,timeoutMs=30000}={}){
+    const profile=this.get(id);
+    if(!profile)throw new Error("Environment profile was not found");
+    if(profile.type==="local"){
+      const startedAt=Date.now();
+      const result=await runProcess(String(command||""),Array.isArray(args)?args:[],{cwd:String(cwd??profile.cwd??"").trim()||undefined,env:this.env,timeoutMs:Math.min(300000,Math.max(1000,Number(timeoutMs)||30000))});
+      return {...result,profile:{id:profile.id,name:profile.name,type:profile.type},durationMs:Date.now()-startedAt};
+    }
+    return this.execute(id,{command:shellCommand(String(command||""),Array.isArray(args)?args:[]),cwd,timeoutMs});
   }
 
   async probe(id){

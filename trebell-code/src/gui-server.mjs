@@ -9,7 +9,7 @@ import { attachCodexRelay, probeCodexReady, waitForCodexReady } from "./codex-re
 import { workspaceDiff, workspaceFile, workspaceSearch, workspaceTree, workspaceWriteFile } from "./workspace.mjs";
 import { spawn } from "node:child_process";
 import { codexBin, codexHome, packageRoot, trebellHome } from "./paths.mjs";
-import { DEFAULT_PORT, ensureCodexConfig } from "./config.mjs";
+import { DEFAULT_PORT, codexProviderOverrides, ensureCodexConfig } from "./config.mjs";
 import { health, isLoggedIn, listModels, listModelMetadata, logout, runLogin, startBridge } from "./freebuff.mjs";
 import { getFreebuffOverview } from "./freebuff-product.mjs";
 import { TrebellStateStore } from "./trebell-state.mjs";
@@ -18,19 +18,24 @@ import { TerminalManager } from "./terminal-manager.mjs";
 import { EnvironmentManager } from "./environment-manager.mjs";
 import { startRemoteAppServer } from "./environment-app-server.mjs";
 import { createRemoteControlServer } from "./remote-control.mjs";
+import { RemoteAuthStore } from "./remote-auth-store.mjs";
 import { ProviderManager, normalizeProviderId } from "./provider-manager.mjs";
 import { startProviderBridge } from "./provider-bridge.mjs";
+import { AgentRuntimeManager, normalizeAgentRuntime } from "./agent-runtime-manager.mjs";
+import { AgentThreadStore } from "./agent-thread-store.mjs";
+import { attachAgentRelay } from "./agent-relay.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
   .then(text=>String(JSON.parse(text).version||"0.0.0"))
   .catch(()=>"0.0.0");
 import {
-  gitInfo, cloneRepository, createBranch, switchBranch, commitAll, fetchRepo, pullRepo, pushRepo,
+  gitInfo, cloneRepository, initializeRepository, createBranch, switchBranch, commitAll, fetchRepo, pullRepo, pushRepo,
   safeAutoPull, createWorktree, removeWorktree,
 } from "./git-service.mjs";
 import {
   sourceControlDiagnostics, listPullRequests, createPullRequest, pullRequestDetail,
   commentOnPullRequest, reviewPullRequest, mergePullRequest, updatePullRequestBranch,
+  checkoutPullRequest, requestPullRequestReviewer, publishRepository,
 } from "./source-control-service.mjs";
 
 const MIME = {
@@ -134,7 +139,7 @@ async function stopChildProcess(child){
   try{child.stderr?.destroy();}catch{}
 }
 
-async function startAppServer({appPort,env=process.env,mock=false,provider="freebuff",environments=null,environmentId=null}){
+async function startAppServer({appPort,env=process.env,mock=false,provider="freebuff",environments=null,environmentId=null,runtimeInstance=null}){
   if(mock) return { child:null, logs:[], targetUrl:null, readyUrl:null, environment:null };
   if(environmentId&&environments){
     const profile=environments.get(environmentId);
@@ -160,7 +165,10 @@ async function startAppServer({appPort,env=process.env,mock=false,provider="free
     }
   }
   ensureCodexConfig({port:DEFAULT_PORT,env,provider});
-  const command=codexBin(env);
+  const command=runtimeInstance?.binaryPath?.trim()||codexBin(env);
+  const runtimeHome=runtimeInstance?.homePath?.trim()||codexHome(env);
+  const runtimeEnv={...env,...(runtimeInstance?.environment||{}),CODEX_HOME:runtimeHome};
+  const args=[...codexProviderOverrides({port:DEFAULT_PORT,provider}),"app-server","--listen",`ws://127.0.0.1:${appPort}`];
   const logs=[];
   const pushLog=(chunk,stream)=>{
     const line=String(chunk);
@@ -168,9 +176,9 @@ async function startAppServer({appPort,env=process.env,mock=false,provider="free
     if(logs.length>250) logs.splice(0,logs.length-250);
     if(env.TREBELL_GUI_DEBUG==="1") (stream==="stderr"?process.stderr:process.stdout).write(chunk);
   };
-  const child=spawn(command,["app-server","--listen",`ws://127.0.0.1:${appPort}`],{
+  const child=spawn(command,args,{
     cwd:process.cwd(),
-    env:{...env,CODEX_HOME:codexHome(env)},
+    env:runtimeEnv,
     windowsHide:true,
     shell:process.platform==="win32" && !command.toLowerCase().endsWith(".exe"),
     stdio:["ignore","pipe","pipe"],
@@ -179,7 +187,7 @@ async function startAppServer({appPort,env=process.env,mock=false,provider="free
   child.stderr?.on("data",chunk=>pushLog(chunk,"stderr"));
   child.on("error",error=>pushLog(error.stack||error.message,"stderr"));
   child.on("exit",(code,signal)=>pushLog(`app-server exited code=${code} signal=${signal}\n`,"stderr"));
-  return { child, logs, targetUrl:`ws://127.0.0.1:${appPort}`, readyUrl:`http://127.0.0.1:${appPort}/readyz`, environment:null };
+  return { child, logs, targetUrl:`ws://127.0.0.1:${appPort}`, readyUrl:`http://127.0.0.1:${appPort}/readyz`, environment:null, runtimeInstanceId:runtimeInstance?.id||"codex-default",runtimeHome };
 }
 
 async function appServerReady(instance,appPort){
@@ -340,7 +348,13 @@ async function projectActionSuggestions(projectPath){
 export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",mock=false,env=process.env}={}){
   const dist=resolve(packageRoot,"ui","dist");
   const state=new TrebellStateStore(env);
+  const remoteAuth=new RemoteAuthStore(env);
   const providers=new ProviderManager({env});
+  const environments=new EnvironmentManager({state,env});
+  const agentRuntimes=new AgentRuntimeManager({state,env,environments});
+  const agentThreads=new AgentThreadStore(env);
+  let selectedAgentRuntime=normalizeAgentRuntime(state.settings().agentRuntime);
+  if(state.settings().agentRuntime!==selectedAgentRuntime) state.updateSettings({agentRuntime:selectedAgentRuntime,agentRuntimeInstanceId:`${selectedAgentRuntime}-default`});
   let selectedProvider=normalizeProviderId(state.settings().modelProvider);
   if(state.settings().modelProvider!==selectedProvider) state.updateSettings({modelProvider:selectedProvider});
   const providerBridgeLogs=[];
@@ -357,7 +371,6 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   let loginPromise=null;
   const checkpoints=new CheckpointService({state,env});
   const terminals=mock ? null : new TerminalManager({env});
-  const environments=new EnvironmentManager({state,env});
   let appServer=await startAppServer({
     appPort,
     env,
@@ -365,6 +378,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     provider:selectedProvider,
     environments,
     environmentId:state.settings().activeEnvironmentId||null,
+    runtimeInstance:agentRuntimes.activeRuntime()==="codex"?agentRuntimes.activeInstance():null,
   });
   let remoteControl=null;
 
@@ -385,24 +399,37 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       provider:selectedProvider,
       environments,
       environmentId:state.settings().activeEnvironmentId||null,
+      runtimeInstance:agentRuntimes.activeRuntime()==="codex"?agentRuntimes.activeInstance():null,
     });
     if(!mock) await waitForAppServer(appServer,appPort,15000).catch(()=>false);
     return selectedProvider;
   }
 
   async function selectedModels(){
-    if(mock) return {models:fakeModels(selectedProvider),metadata:{provider:selectedProvider,models:fakeModels(selectedProvider).map(id=>({id,provider:selectedProvider}))}};
+    const mergeCustom=catalog=>{
+      if(!["codex","claude","opencode"].includes(selectedAgentRuntime))return catalog;
+      const custom=(state.settings().customModels||[]).filter(item=>item&&item.id&&item.runtime===selectedAgentRuntime&&(selectedAgentRuntime!=="codex"||item.provider===selectedProvider));
+      if(!custom.length)return catalog;
+      const baseModels=Array.isArray(catalog.models)?catalog.models:[];const models=[...baseModels];for(const item of custom)if(!models.includes(item.id))models.push(item.id);
+      const metadataModels=[...(catalog.metadata?.models||[])];for(const item of custom){const index=metadataModels.findIndex(model=>model.id===item.id);const meta={id:item.id,name:item.name||item.id,provider:selectedAgentRuntime==="codex"?selectedProvider:selectedAgentRuntime,agent:selectedAgentRuntime,custom:true,effort:item.effort||null,serviceTier:item.serviceTier||null};if(index>=0)metadataModels[index]={...metadataModels[index],...meta};else metadataModels.push(meta)}
+      return {...catalog,models,metadata:{...(catalog.metadata||{}),models:metadataModels}};
+    };
+    if(selectedAgentRuntime!=="codex"){
+      const result=await agentRuntimes.models(agentRuntimes.activeInstance());
+      return mergeCustom({models:result.models||[],metadata:{provider:selectedAgentRuntime,agentRuntime:selectedAgentRuntime,source:result.source,models:result.metadata||[]},error:result.error||null});
+    }
+    if(mock) return mergeCustom({models:fakeModels(selectedProvider),metadata:{provider:selectedProvider,models:fakeModels(selectedProvider).map(id=>({id,provider:selectedProvider}))}});
     if(selectedProvider==="freebuff"){
-      if(!isLoggedIn(env)) return {models:[],metadata:{provider:"freebuff",models:[]}};
+      if(!isLoggedIn(env)) return mergeCustom({models:[],metadata:{provider:"freebuff",models:[]}});
       await ensureBridge();
       const [models,metadata]=await Promise.all([
         listModels(DEFAULT_PORT),
         listModelMetadata(DEFAULT_PORT).catch(()=>({registry:null,models:[]})),
       ]);
-      return {models:models.filter(id=>id.startsWith("freebuff/")),metadata:{...metadata,provider:"freebuff"}};
+      return mergeCustom({models:models.filter(id=>id.startsWith("freebuff/")),metadata:{...metadata,provider:"freebuff"}});
     }
     const result=await providers.models(selectedProvider);
-    return {models:result.models||[],metadata:{provider:selectedProvider,source:result.source,models:result.metadata||[]},error:result.error||null};
+    return mergeCustom({models:result.models||[],metadata:{provider:selectedProvider,source:result.source,models:result.metadata||[]},error:result.error||null});
   }
 
   function newRemoteToken(){ return randomBytes(24).toString("base64url"); }
@@ -412,8 +439,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       enabled:Boolean(settings.remoteAccessEnabled),
       running:Boolean(remoteControl),
       port:Number(settings.remoteAccessPort||3211),
-      token:settings.remoteAccessToken||"",
       urls:remoteControl?.urls||[],
+      devices:remoteAuth.listDevices(),
     };
   }
   async function syncRemoteControl(){
@@ -434,15 +461,22 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       token,
       version:TREBELL_VERSION,
       appPort,
-      enabled:()=>mock || Boolean(appServer?.child && appServer.child.exitCode===null),
+      targetUrl:()=>selectedAgentRuntime==="codex"
+        ? (appServer?.targetUrl||`ws://127.0.0.1:${appPort}`)
+        : `ws://127.0.0.1:${port}/api/agent/ws`,
+      enabled:()=>selectedAgentRuntime==="codex" ? (mock || Boolean(appServer?.child && appServer.child.exitCode===null)) : true,
       environments,
+      authStore:remoteAuth,
       getStatus:async()=>{
         const catalog=await selectedModels().catch(()=>({models:[]}));
+        const agentStatus=selectedAgentRuntime==="codex"?null:await agentRuntimes.probe(agentRuntimes.activeInstance()).catch(()=>null);
         return {
           cwd:process.cwd(),
           loggedIn:mock||isLoggedIn(env),
+          agentRuntime:selectedAgentRuntime,
+          agentRuntimeStatus:agentStatus,
           provider:selectedProvider,
-          providerReady:providerReady(),
+          providerReady:selectedAgentRuntime==="codex"?providerReady():Boolean(agentStatus?.available),
           appServerReady:mock||await appServerReady(appServer,appPort),
           model:catalog.models?.[0]||null,
           projects:state.projects(),
@@ -487,11 +521,54 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         try{
           const patch=await readJsonBody(req);
           if("modelProvider" in patch) patch.modelProvider=normalizeProviderId(patch.modelProvider);
+          if("agentRuntime" in patch) patch.agentRuntime=normalizeAgentRuntime(patch.agentRuntime);
           const previous=selectedProvider;
+          const previousAgentRuntime=selectedAgentRuntime;
           const next=state.updateSettings(patch);
           if("modelProvider" in patch && patch.modelProvider!==previous) await restartAppServer(patch.modelProvider);
+          if("agentRuntime" in patch && patch.agentRuntime!==previousAgentRuntime){
+            selectedAgentRuntime=patch.agentRuntime;
+            if(selectedAgentRuntime==="codex")await restartAppServer(selectedProvider);
+          }
           if("remoteAccessEnabled" in patch||"remoteAccessPort" in patch||"remoteAccessToken" in patch) await syncRemoteControl();
           return json(res,200,next);
+        }catch(error){return json(res,400,{error:error.message});}
+      }
+    }
+    if(url.pathname==="/api/agent-runtimes"){
+      if(req.method==="GET"){
+        try{return json(res,200,await agentRuntimes.snapshot());}
+        catch(error){return json(res,500,{error:error.message});}
+      }
+      if(req.method==="POST"){
+        try{
+          const body=await readJsonBody(req);
+          if(body.action==="select"){
+            const previousRuntime=agentRuntimes.activeRuntime();
+            const previousInstanceId=agentRuntimes.activeInstance().id;
+            const selected=await agentRuntimes.setActive({runtime:body.runtime,instanceId:body.instanceId||null});
+            selectedAgentRuntime=selected.runtime;
+            if(selected.runtime==="codex"&&(previousRuntime!=="codex"||previousInstanceId!==selected.instance.id))await restartAppServer(selectedProvider);
+            return json(res,200,{...await agentRuntimes.snapshot(),selected});
+          }
+          if(body.action==="upsert"){
+            const instance=agentRuntimes.upsertInstance(body.instance||{});
+            if(instance.kind==="codex"&&agentRuntimes.activeInstance().id===instance.id)await restartAppServer(selectedProvider);
+            return json(res,200,{instance,...await agentRuntimes.snapshot()});
+          }
+          if(body.action==="probe"){
+            const instance=agentRuntimes.instances().find(item=>item.id===String(body.instanceId||""))||body.runtime;
+            return json(res,200,{status:await agentRuntimes.probe(instance)});
+          }
+          return json(res,400,{error:"unknown agent runtime action"});
+        }catch(error){return json(res,400,{error:error.message});}
+      }
+      if(req.method==="DELETE"){
+        const id=url.searchParams.get("id");if(!id)return json(res,400,{error:"id is required"});
+        try{
+          const removed=agentRuntimes.removeInstance(id);
+          if(removed.resetTo&&removed.kind==="codex")await restartAppServer(selectedProvider);
+          return json(res,200,{...removed,...await agentRuntimes.snapshot()});
         }catch(error){return json(res,400,{error:error.message});}
       }
     }
@@ -558,6 +635,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const id=body.id?String(body.id):null;
         if(id&&!environments.get(id)) throw new Error("Environment profile was not found");
         state.updateSettings({activeEnvironmentId:id});
+        await agentRelay?.reset?.();
         await restartAppServer(selectedProvider);
         return json(res,200,{
           activeEnvironmentId:id,
@@ -596,6 +674,17 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           return json(res,200,await syncRemoteControl());
         }catch(error){return json(res,400,{error:error.message});}
       }
+    }
+    if(url.pathname==="/api/remote-access/pair"&&req.method==="POST"){
+      try{
+        if(!state.settings().remoteAccessEnabled)return json(res,400,{error:"Enable remote access before creating a pairing link"});
+        if(!remoteControl)await syncRemoteControl();
+        return json(res,200,remoteControl.createPairing());
+      }catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/remote-access/device"&&req.method==="DELETE"){
+      const id=url.searchParams.get("id");if(!id)return json(res,400,{error:"id is required"});
+      return json(res,200,{ok:remoteAuth.revokeDevice(id),devices:remoteAuth.listDevices()});
     }
     if(url.pathname==="/api/projects"){
       if(req.method==="GET") return json(res,200,{projects:state.projects()});
@@ -669,6 +758,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         let result;
         switch(body.action){
           case "clone": result=await cloneRepository(body.url,body.destination); state.touchProject(result.root||body.destination); break;
+          case "init": result=await initializeRepository(cwd); state.touchProject(result.root||cwd); break;
           case "branch-create": result=await createBranch(cwd,body.name,{checkout:body.checkout!==false,startPoint:body.startPoint||null}); break;
           case "branch-switch": result=await switchBranch(cwd,body.name); break;
           case "commit": result=await commitAll(cwd,body.message||"Trebell Code changes"); break;
@@ -714,6 +804,12 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return json(res,200,{ok:true,...await createPullRequest(body.cwd||process.cwd(),body)});
       }catch(error){return json(res,400,{ok:false,error:error.message});}
     }
+    if(url.pathname==="/api/source-control/publish" && req.method==="POST"){
+      try{
+        const body=await readJsonBody(req);
+        return json(res,200,await publishRepository(body.cwd||process.cwd(),body));
+      }catch(error){return json(res,400,{ok:false,error:error.message});}
+    }
     if(url.pathname==="/api/source-control/pr-detail"){
       return json(res,200,await pullRequestDetail(url.searchParams.get("path")||process.cwd(),url.searchParams.get("number"),{provider:url.searchParams.get("provider")||null}));
     }
@@ -725,6 +821,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         if(body.action==="review") return json(res,200,await reviewPullRequest(cwd,body.number,{provider:body.provider||null,event:body.event,body:body.body||""}));
         if(body.action==="merge") return json(res,200,await mergePullRequest(cwd,body.number,{provider:body.provider||null,method:body.method,auto:Boolean(body.auto)}));
         if(body.action==="update-branch") return json(res,200,await updatePullRequestBranch(cwd,body.number,{provider:body.provider||null,rebase:body.rebase!==false}));
+        if(body.action==="checkout") return json(res,200,await checkoutPullRequest(cwd,body.number,{provider:body.provider||null}));
+        if(body.action==="request-reviewer") return json(res,200,await requestPullRequestReviewer(cwd,body.number,body.reviewer,{provider:body.provider||null}));
         return json(res,400,{error:"unknown PR action"});
       }catch(error){return json(res,400,{ok:false,error:error.message});}
     }
@@ -779,16 +877,22 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
 
     if(url.pathname==="/api/bootstrap"){
       const appReady=mock || await appServerReady(appServer,appPort);
+      const agentSnapshot=await agentRuntimes.snapshot().catch(()=>({selectedRuntime:selectedAgentRuntime,selectedInstanceId:`${selectedAgentRuntime}-default`,statuses:[]}));
+      const activeAgentStatus=agentSnapshot.statuses?.find(item=>item.id===agentSnapshot.selectedInstanceId)||null;
       return json(res,200,{
         mock,
         loggedIn:mock || isLoggedIn(env),
+        agentRuntime:selectedAgentRuntime,
+        agentRuntimeInstanceId:agentSnapshot.selectedInstanceId,
+        agentRuntimeReady:selectedAgentRuntime==="codex"?appReady:Boolean(activeAgentStatus?.available),
+        agentRuntimeStatus:activeAgentStatus,
         provider:selectedProvider,
         providerReady:providerReady(),
         bridgeReady:selectedProvider==="freebuff" ? (mock || await health(DEFAULT_PORT)) : false,
         appServerReady:appReady,
         wsUrl:mock ? null : (env.TREBELL_GUI_PUBLIC==="1"
-          ? `${String(req.headers["x-forwarded-proto"]||"https").split(",")[0].trim()==="https"?"wss":"ws"}://${String(req.headers["x-forwarded-host"]||req.headers.host||"").split(",")[0].trim()}/api/codex/ws`
-          : `ws://127.0.0.1:${port}/api/codex/ws`),
+          ? `${String(req.headers["x-forwarded-proto"]||"https").split(",")[0].trim()==="https"?"wss":"ws"}://${String(req.headers["x-forwarded-host"]||req.headers.host||"").split(",")[0].trim()}${selectedAgentRuntime==="codex"?"/api/codex/ws":"/api/agent/ws"}`
+          : `ws://127.0.0.1:${port}${selectedAgentRuntime==="codex"?"/api/codex/ws":"/api/agent/ws"}`),
         cwd:process.cwd(),
         platform:process.platform,
         version:TREBELL_VERSION,
@@ -797,7 +901,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       });
     }
     if(url.pathname==="/api/runtime"){
+      const agentSnapshot=await agentRuntimes.snapshot().catch(()=>({selectedRuntime:selectedAgentRuntime,selectedInstanceId:null,statuses:[]}));
       return json(res,200,{
+        agentRuntime:selectedAgentRuntime,
+        agentRuntimeInstanceId:agentSnapshot.selectedInstanceId,
+        agentRuntimeStatus:agentSnapshot.statuses?.find(item=>item.id===agentSnapshot.selectedInstanceId)||null,
         provider:selectedProvider,
         providerReady:providerReady(),
         appServerReady:mock || await appServerReady(appServer,appPort),
@@ -1031,6 +1139,15 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     enabled:()=>mock || Boolean(appServer?.child && appServer.child.exitCode===null),
     log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"relay",text:message}),
   });
+  const agentRelay=mock?null:attachAgentRelay(server,{
+    runtimeManager:agentRuntimes,
+    threadStore:agentThreads,
+    terminals,
+    state,
+    environments,
+    version:TREBELL_VERSION,
+    log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"agent-relay",text:String(message)+"\n"}),
+  });
 
   await new Promise((resolve,reject)=>{
     server.once("error",reject);
@@ -1046,6 +1163,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     server,
     close:async()=>{
       relay.close();
+      await agentRelay?.close?.();
       terminalWs?.close();
       await Promise.allSettled([
         terminals?.shutdown(),

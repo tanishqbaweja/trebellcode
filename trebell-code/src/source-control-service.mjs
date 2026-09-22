@@ -9,11 +9,11 @@ const execFileAsync=promisify(execFile);
 const PROVIDERS=["github","gitlab","forgejo","bitbucket","azure-devops"];
 
 const CAPABILITIES={
-  github:{create:true,comment:true,review:true,requestChanges:true,merge:true,updateBranch:true},
-  gitlab:{create:true,comment:true,review:true,requestChanges:false,merge:true,updateBranch:true},
-  forgejo:{create:true,comment:true,review:true,requestChanges:true,merge:true,updateBranch:true},
-  bitbucket:{create:true,comment:true,review:true,requestChanges:true,merge:true,updateBranch:false},
-  "azure-devops":{create:true,comment:false,review:true,requestChanges:true,merge:true,updateBranch:false},
+  github:{create:true,comment:true,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:true,publish:true},
+  gitlab:{create:true,comment:true,review:true,requestChanges:false,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:false,publish:true},
+  forgejo:{create:true,comment:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:true,checkout:false,reviewers:false,publish:false},
+  bitbucket:{create:true,comment:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:false,checkout:false,reviewers:false,publish:false},
+  "azure-devops":{create:true,comment:false,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:false,checkout:false,reviewers:false,publish:false},
 };
 
 async function run(command,args,{cwd,timeout=120000,maxBuffer=8*1024*1024,allowFailure=false}={}){
@@ -242,7 +242,7 @@ export async function sourceControlDiagnostics(cwd,preferred=null){
     bitbucket:{installed:true,authenticated:Boolean(bitHeaders.Authorization),version:"REST API",detail:bitHeaders.Authorization?"Credentials configured":"Set TREBELL_BITBUCKET_* credentials.",label:"Bitbucket"},
     "azure-devops":{...azure,label:"Azure DevOps"},
   };
-  return {git,detectedProvider:detected,selectedProvider:normalizeProvider(preferred)||(detected!=="unknown"?detected:null),remoteUrl:origin?.url||null,providers,...providers};
+  return {git,detectedProvider:detected,selectedProvider:normalizeProvider(preferred)||(detected!=="unknown"?detected:null),remoteUrl:origin?.url||null,providers,capabilities:CAPABILITIES,...providers};
 }
 
 export async function listPullRequests(cwd,{provider=null}={}){
@@ -273,6 +273,53 @@ export async function createPullRequest(cwd,{provider=null,title,body="",base=nu
   if(ctx.provider==="forgejo"){const t=await forgejoContext(ctx);const r=await forgejoApi(ctx,`repos/${t.repository}/pulls`,{method:"POST",body:{base:baseBranch,head:branch,title,body}});return {provider:ctx.provider,url:r.data?.html_url||r.data?.url||""}}
   if(ctx.provider==="bitbucket"){const data=await bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests`,{method:"POST",body:{title,description:body,source:{branch:{name:branch}},destination:{branch:{name:baseBranch}}}});return {provider:ctx.provider,url:data.links?.html?.href||""}}
   if(ctx.provider==="azure-devops"){const r=await run("az",["repos","pr","create","--only-show-errors","--detect","true","--target-branch",baseBranch,"--source-branch",branch,"--title",title,"--description",body,"--output","json"],{cwd:ctx.info.root,timeout:60000});const data=parseJson(r.stdout,{});return {provider:ctx.provider,url:data._links?.web?.href||data.repository?.webUrl||data.url||""}}
+}
+
+export async function checkoutPullRequest(cwd,number,{provider=null}={}){
+  const ctx=await sourceContext(cwd,provider);
+  if(ctx.provider==="github"){
+    const result=await run("gh",["pr","checkout",String(number)],{cwd:ctx.info.root,allowFailure:true,maxBuffer:4*1024*1024});
+    if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not check out pull request").trim());
+    return {ok:true,provider:ctx.provider,info:await gitInfo(ctx.info.root),output:(result.stdout||result.stderr).trim()};
+  }
+  if(ctx.provider==="gitlab"){
+    const result=await run("glab",["mr","checkout",String(number)],{cwd:ctx.info.root,allowFailure:true,maxBuffer:4*1024*1024});
+    if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not check out merge request").trim());
+    return {ok:true,provider:ctx.provider,info:await gitInfo(ctx.info.root),output:(result.stdout||result.stderr).trim()};
+  }
+  throw new Error(`${ctx.provider} pull-request checkout is not safely supported by the configured client.`);
+}
+
+export async function requestPullRequestReviewer(cwd,number,reviewer,{provider=null}={}){
+  const ctx=await sourceContext(cwd,provider);const login=String(reviewer||"").trim();if(!login)throw new Error("Reviewer is required");
+  if(ctx.provider==="github"){
+    const result=await run("gh",["pr","edit",String(number),"--add-reviewer",login],{cwd:ctx.info.root,allowFailure:true,maxBuffer:4*1024*1024});
+    if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not request reviewer").trim());
+    return {ok:true,provider:ctx.provider,reviewer:login};
+  }
+  throw new Error(`${ctx.provider} reviewer requests are not exposed by Trebell yet.`);
+}
+
+export async function publishRepository(cwd,{provider="github",name=null,visibility="private"}={}){
+  const info=await gitInfo(cwd);if(!info.isGit)throw new Error("Initialize Git before publishing this project.");
+  if(info.remotes?.some(remote=>remote.name==="origin"))throw new Error("This repository already has an origin remote.");
+  const repoName=String(name||info.root.split(/[\\/]/).filter(Boolean).pop()||"").trim();if(!repoName)throw new Error("Repository name is required.");
+  const privacy=visibility==="public"?"public":"private";
+  if(provider==="github"){
+    const args=["repo","create",repoName,"--source",info.root,"--remote","origin","--"+privacy,"--push"];
+    const result=await run("gh",args,{cwd:info.root,allowFailure:true,timeout:180000,maxBuffer:8*1024*1024});
+    if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not publish GitHub repository").trim());
+    return {ok:true,provider,url:(result.stdout.match(/https?:\/\/\S+/)||[])[0]||null,info:await gitInfo(info.root)};
+  }
+  if(provider==="gitlab"){
+    const created=await runStdin("glab",["api","projects","--method","POST","--input","-","--header","Content-Type: application/json"],JSON.stringify({name:repoName,visibility:privacy}),{cwd:info.root,allowFailure:true});
+    if(!created.ok)throw new Error((created.stderr||created.stdout||"Could not create GitLab repository").trim());
+    const project=parseJson(created.stdout,{});const remote=project.http_url_to_repo||project.ssh_url_to_repo;if(!remote)throw new Error("GitLab created the project but did not return a clone URL.");
+    await run("git",["remote","add","origin",remote],{cwd:info.root});
+    const branch=info.branch||"main";await run("git",["push","-u","origin",branch],{cwd:info.root,timeout:180000});
+    return {ok:true,provider,url:project.web_url||null,info:await gitInfo(info.root)};
+  }
+  throw new Error(`${provider} repository publishing is not exposed by Trebell yet.`);
 }
 
 export async function pullRequestDetail(cwd,number,{provider=null}={}){
@@ -309,7 +356,7 @@ export async function mergePullRequest(cwd,number,{provider=null,method="squash"
   if(ctx.provider==="gitlab"){const args=["mr","merge",String(number),"--auto-merge="+(auto?"true":"false"),"--yes"];if(method==="squash")args.push("--squash");if(method==="rebase")args.push("--rebase");const r=await run("glab",args,{cwd:ctx.info.root});return {ok:true,provider:ctx.provider,output:(r.stdout||r.stderr).trim()}}
   if(ctx.provider==="forgejo"){const t=await forgejoContext(ctx);await forgejoApi(ctx,`repos/${t.repository}/pulls/${Number(number)}/merge`,{method:"POST",body:{Do:method==="rebase"?"rebase":method==="squash"?"squash":"merge"}});return {ok:true,provider:ctx.provider}}
   if(ctx.provider==="bitbucket"){const strategy=method==="rebase"?"rebase_fast_forward":method==="squash"?"squash":"merge_commit";await bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests/${Number(number)}/merge`,{method:"POST",body:{merge_strategy:strategy}});return {ok:true,provider:ctx.provider}}
-  const args=["repos","pr","update","--detect","true","--id",String(number),"--status","completed","--delete-source-branch","true","--only-show-errors"];if(method==="squash")args.push("--squash","true");const r=await run("az",args,{cwd:ctx.info.root,timeout:60000});return {ok:true,provider:ctx.provider,output:(r.stdout||r.stderr).trim()};
+  const args=["repos","pr","update","--detect","true","--id",String(number),"--delete-source-branch","true","--only-show-errors"];if(auto)args.push("--auto-complete","true");else args.push("--status","completed");if(method==="squash")args.push("--squash","true");const r=await run("az",args,{cwd:ctx.info.root,timeout:60000});return {ok:true,provider:ctx.provider,output:(r.stdout||r.stderr).trim()};
 }
 
 export async function updatePullRequestBranch(cwd,number,{provider=null,rebase=true}={}){

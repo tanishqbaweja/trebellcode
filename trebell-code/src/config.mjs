@@ -14,6 +14,21 @@ const PROVIDERS = {
   vyceai: { name: "Trebell VyceAi", baseUrl: () => `http://127.0.0.1:${PROVIDER_COMPAT_PORT}/v1` },
 };
 
+export function codexProviderOverrides({port=DEFAULT_PORT,provider="freebuff"}={}){
+  const selectedId=provider in PROVIDERS?provider:"freebuff";
+  const selected=PROVIDERS[selectedId];
+  return [
+    "--config",`model_provider=${JSON.stringify(selectedId)}`,
+    "--config",`model_providers.${selectedId}.name=${JSON.stringify(selected.name)}`,
+    "--config",`model_providers.${selectedId}.base_url=${JSON.stringify(selected.baseUrl(port))}`,
+    "--config",`model_providers.${selectedId}.wire_api=\"responses\"`,
+    "--config",`model_providers.${selectedId}.requires_openai_auth=false`,
+    "--config",`model_providers.${selectedId}.request_max_retries=2`,
+    "--config",`model_providers.${selectedId}.stream_max_retries=2`,
+    "--config",`model_providers.${selectedId}.stream_idle_timeout_ms=300000`,
+  ];
+}
+
 export function ensureDirs(env = process.env) {
   mkdirSync(trebellHome(env), { recursive: true });
   mkdirSync(codexHome(env), { recursive: true });

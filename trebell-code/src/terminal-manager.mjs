@@ -56,9 +56,9 @@ export class TerminalManager extends EventEmitter{
     this.child.stdin.write(JSON.stringify({rid,action,...payload})+"\n");
     return new Promise((resolve,reject)=>{this.pending.set(rid,{resolve,reject});setTimeout(()=>{if(this.pending.delete(rid))reject(new Error("Terminal worker timed out"));},15000);});
   }
-  async create({cwd,cols=120,rows=32,shell=null,args=null,name=null}={}){
+  async create({cwd,cols=120,rows=32,shell=null,args=null,name=null,env=null}={}){
     const id=randomUUID();
-    const result=await this.#rpc("create",{id,cwd,cols,rows,shell,args});
+    const result=await this.#rpc("create",{id,cwd,cols,rows,shell,args,env});
     const session={id,name:name||"Terminal",cwd:cwd||process.cwd(),cols,rows,pid:result.pid,buffer:"",running:true,exitCode:null,createdAt:Date.now(),updatedAt:Date.now()};
     this.sessions.set(id,session); return this.snapshot(id);
   }
