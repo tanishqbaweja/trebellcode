@@ -13,6 +13,9 @@ const DEFAULT_STATE = Object.freeze({
     defaultPermissionMode: "supervised",
     defaultWorkspaceMode: "current",
     autoPull: false,
+    sourceControlMergeMethod: "squash",
+    sourceControlTextStyle: "concise",
+    sourceControlTextModel: null,
     worktreeSubmodules: "recursive",
     worktreeCleanup: {mode:"off"},
     appearance: "dark",
@@ -89,6 +92,9 @@ export const PROJECT_SCOPED_SETTING_KEYS=Object.freeze([
   "worktreeSubmodules",
   "worktreeCleanup",
   "autoPull",
+  "sourceControlMergeMethod",
+  "sourceControlTextStyle",
+  "sourceControlTextModel",
   "agentDeviceAccess",
 ]);
 function normalizeScopedSetting(key,value){
@@ -97,6 +103,9 @@ function normalizeScopedSetting(key,value){
   if(key==="defaultWorkspaceMode")return ["current","worktree"].includes(String(value))?String(value):"current";
   if(key==="worktreeSubmodules")return ["recursive","top-level","none"].includes(String(value))?String(value):"recursive";
   if(key==="worktreeCleanup")return normalizeWorktreeCleanup(value);
+  if(key==="sourceControlMergeMethod")return ["squash","merge","rebase"].includes(String(value))?String(value):"squash";
+  if(key==="sourceControlTextStyle")return ["concise","descriptive","repository"].includes(String(value))?String(value):"concise";
+  if(key==="sourceControlTextModel"){const text=String(value??"").trim();return text||null}
   if(key==="autoPull"||key==="agentDeviceAccess")return Boolean(value);
   return undefined;
 }
@@ -126,6 +135,9 @@ export class TrebellStateStore {
       settings.environmentDefaults=Object.fromEntries(Object.entries(rawSettings.environmentDefaults||{}).map(([id,value])=>[String(id),normalizeScopedObject(value)]));
       if(Number(parsed.version||1)<2&&rawSettings.appearanceMode==="system")settings.appearanceMode="dark";
       settings.worktreeCleanup=normalizeWorktreeCleanup(settings.worktreeCleanup);
+      settings.sourceControlMergeMethod=normalizeScopedSetting("sourceControlMergeMethod",settings.sourceControlMergeMethod);
+      settings.sourceControlTextStyle=normalizeScopedSetting("sourceControlTextStyle",settings.sourceControlTextStyle);
+      settings.sourceControlTextModel=normalizeScopedSetting("sourceControlTextModel",settings.sourceControlTextModel);
       if(!Object.prototype.hasOwnProperty.call(rawSettings,"onboardingComplete")&&projects.length>0)settings.onboardingComplete=true;
       return {
         ...clone(DEFAULT_STATE),
@@ -156,6 +168,9 @@ export class TrebellStateStore {
       worktreeSubmodules:normalizeScopedSetting("worktreeSubmodules",this.state.settings.worktreeSubmodules),
       worktreeCleanup:normalizeScopedSetting("worktreeCleanup",this.state.settings.worktreeCleanup),
       autoPull:Boolean(this.state.settings.autoPull),
+      sourceControlMergeMethod:normalizeScopedSetting("sourceControlMergeMethod",this.state.settings.sourceControlMergeMethod),
+      sourceControlTextStyle:normalizeScopedSetting("sourceControlTextStyle",this.state.settings.sourceControlTextStyle),
+      sourceControlTextModel:normalizeScopedSetting("sourceControlTextModel",this.state.settings.sourceControlTextModel),
       agentDeviceAccess:Boolean(this.state.settings.agentDeviceAccess),
     };
     const id=normalizeEnvironmentId(environmentId);if(!id)return clone(base);
@@ -201,6 +216,9 @@ export class TrebellStateStore {
   updateSettings(patch={}){
     if("worktreeSubmodules" in patch&&!['recursive','top-level','none'].includes(String(patch.worktreeSubmodules)))patch={...patch,worktreeSubmodules:'recursive'};
     if("worktreeCleanup" in patch)patch={...patch,worktreeCleanup:normalizeWorktreeCleanup(patch.worktreeCleanup)};
+    if("sourceControlMergeMethod" in patch)patch={...patch,sourceControlMergeMethod:normalizeScopedSetting("sourceControlMergeMethod",patch.sourceControlMergeMethod)};
+    if("sourceControlTextStyle" in patch)patch={...patch,sourceControlTextStyle:normalizeScopedSetting("sourceControlTextStyle",patch.sourceControlTextStyle)};
+    if("sourceControlTextModel" in patch)patch={...patch,sourceControlTextModel:normalizeScopedSetting("sourceControlTextModel",patch.sourceControlTextModel)};
     if("panelAnimationMs" in patch){const value=Math.round(Number(patch.panelAnimationMs)||0);patch={...patch,panelAnimationMs:Math.max(0,Math.min(400,value))}}
     this.state.settings={...this.state.settings,...patch};
     this.#save();

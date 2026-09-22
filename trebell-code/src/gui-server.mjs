@@ -51,7 +51,7 @@ import {
   commentOnPullRequest, reviewPullRequest, mergePullRequest, updatePullRequestBranch,
   rebasePullRequestStack,
   checkoutPullRequest, requestPullRequestReviewer, publishRepository, getPullRequestFilesViewed, setPullRequestFilesViewed,
-  sourceControlGitAction, sourceControlGitInfo, sourceControlRepositoryIdentity, withSourceControlExecutor,
+  sourceControlGitAction, sourceControlGitInfo, sourceControlRecentCommitSubjects, sourceControlRepositoryIdentity, withSourceControlExecutor,
 } from "./source-control-service.mjs";
 import { prViewedKey, updateViewedRecord, viewedStates } from "./pr-viewed-state.mjs";
 import { buildPullRequestLink, linkedPullRequestTerminalStatus, normalizePullRequestIdentity, parsePullRequestUrl, pullRequestForBranch, pullRequestIdentityKey } from "./pr-link-utils.mjs";
@@ -247,7 +247,7 @@ function fakeModels(provider="freebuff"){
 function statsSnapshot(){
   const load=cpus().length ? Math.min(100,Math.round((requireLoad()/cpus().length)*100)) : 0;
   const usedMem=Math.max(0,totalmem()-freemem());
-  let disk="—";
+  let disk="â€”";
   try{
     const fs=statfsSync(tmpdir());
     const used=(fs.blocks-fs.bfree)*fs.bsize;
@@ -936,6 +936,55 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     const parsed=JSON.parse(raw);
     return {text:parsed?.choices?.[0]?.message?.content ?? "",model,raw:parsed};
   }
+  function sourceControlStyleInstruction(style){
+    if(style==="descriptive")return "Use a clear, specific engineering style. Prefer a descriptive subject over a vague one. Explain why the change matters in the review body.";
+    if(style==="repository")return "Match this repository's existing writing conventions. Follow patterns from recent commit subjects and repository instructions when they are present.";
+    return "Be concise and direct. Avoid filler, marketing language, and redundant detail.";
+  }
+  async function sourceControlWritingContext(cwd,environmentId,{includeInstructions=false}={}){
+    const subjects=await inSourceControlEnvironment(environmentId,()=>sourceControlRecentCommitSubjects(cwd,{limit:10})).catch(()=>[]);
+    const instructions=[];
+    if(includeInstructions){
+      for(const relativePath of ["AGENTS.md","CLAUDE.md","CONTRIBUTING.md",".github/pull_request_template.md"]){
+        try{
+          const filePath=remoteEnvironmentProfile(environmentId)?relativePath:join(cwd,relativePath);
+          const file=await environmentWorkspaceFile(filePath,12_000,{root:cwd,environments,environmentId});
+          const content=String(file.content||"").trim();if(content)instructions.push({path:relativePath,content});
+        }catch{}
+      }
+    }
+    return {subjects,instructions};
+  }
+  async function sourceControlTextRequest({cwd,environmentId,kind,model=null}){
+    const scoped=state.projectSettings(cwd,environmentId).effective;
+    const style=scoped.sourceControlTextStyle||"concise";const selectedModel=scoped.sourceControlTextModel||model||null;
+    const diff=await environmentWorkspaceDiff(cwd,{environments,environmentId});
+    const context=await sourceControlWritingContext(cwd,environmentId,{includeInstructions:style==="repository"});
+    const recent=context.subjects.length?"Recent commit subjects:\n"+context.subjects.map(subject=>"- "+subject).join("\n")+"\n\n":"";
+    const instructions=context.instructions.length?"Repository instructions:\n"+context.instructions.map(item=>"### "+item.path+"\n"+item.content.slice(0,6000)).join("\n\n")+"\n\n":"";
+    const styleInstruction=sourceControlStyleInstruction(style);
+    const prompt=kind==="review"
+      ?[
+        "Generate a pull request title and description for the current change.",
+        styleInstruction,
+        "Return strict JSON only with this shape: {\"title\":\"...\",\"body\":\"...\"}.",
+        "Keep the title under 100 characters. The body should summarize the change and validation without inventing tests or results.",
+        recent,instructions,"Status:\n"+String(diff.status||"").slice(0,12000),"Diff:\n"+String(diff.diff||"").slice(0,60000),
+      ].filter(Boolean).join("\n\n")
+      :[
+        "Write one Git commit subject for the current change.",
+        styleInstruction,
+        "Use imperative mood when it fits the repository convention. Keep it under 100 characters. Return only the subject with no quotes or markdown.",
+        recent,instructions,"Status:\n"+String(diff.status||"").slice(0,12000),"Diff:\n"+String(diff.diff||"").slice(0,60000),
+      ].filter(Boolean).join("\n\n");
+    if(mock)return kind==="review"
+      ?{text:JSON.stringify({title:"Mock generated review",body:"Mock generated description."}),style,model:selectedModel,prompt}
+      :{text:"Mock generated commit",style,model:selectedModel,prompt};
+    const answer=selectedProvider==="freebuff"
+      ?await queryFreebuff(prompt,selectedModel)
+      :await providers.directChat(selectedProvider,{prompt,model:selectedModel});
+    return {text:String(answer.text||"").trim(),style,model:selectedModel,prompt};
+  }
   if(!mock && isLoggedIn(env)) ensureBridge().catch(()=>{});
 
   const server=createServer(async(req,res)=>{
@@ -1379,7 +1428,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
             const setup=(sourceProject?.scripts||[]).find(script=>script.runOnWorktreeCreate);
             if(setup&&!mock&&terminals){
               const spec=commandShellSpec(setup.command,env);
-              const session=await terminals.create({cwd:result.worktree,name:`${setup.name||"Setup"} · setup`,cols:120,rows:32,shell:spec.shell,args:spec.args});
+              const session=await terminals.create({cwd:result.worktree,name:`${setup.name||"Setup"} Â· setup`,cols:120,rows:32,shell:spec.shell,args:spec.args});
               result={...result,setup:{scriptId:setup.id,scriptName:setup.name,command:setup.command,waitForSetup:Boolean(setup.waitForSetup),session:terminals.snapshot(session.id)}};
             }
             break;
@@ -1535,12 +1584,25 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const body=await readJsonBody(req);
         const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);
         const cwd=environmentPath(body.cwd||remoteEnvironmentProfile(environmentId)?.cwd||process.cwd(),environmentId);
-        const diff=await environmentWorkspaceDiff(cwd,{environments,environmentId});
-        const prompt=`Write one concise Git commit subject (imperative, <=72 chars) for this change. Return only the subject.\n\nStatus:\n${diff.status}\n\nDiff:\n${diff.diff.slice(0,60000)}`;
-        const answer=selectedProvider==="freebuff"
-          ? await queryFreebuff(prompt,body.model)
-          : await providers.directChat(selectedProvider,{prompt,model:body.model});
-        return json(res,200,{message:answer.text.trim().split(/\r?\n/)[0].replace(/^["']|["']$/g,"")});
+        const generated=await sourceControlTextRequest({cwd,environmentId,kind:"commit",model:body.model||null});
+        return json(res,200,{message:generated.text.split(/\r?\n/)[0].replace(/^[\"']|[\"']$/g,""),style:generated.style,model:generated.model});
+      }catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/git/review-text" && req.method==="POST"){
+      try{
+        const body=await readJsonBody(req);
+        const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);
+        const cwd=environmentPath(body.cwd||remoteEnvironmentProfile(environmentId)?.cwd||process.cwd(),environmentId);
+        const generated=await sourceControlTextRequest({cwd,environmentId,kind:"review",model:body.model||null});
+        const raw=generated.text.replace(/^```(?:json)?\s*/i,"").replace(/\s*```$/i,"").trim();
+        let parsed=null;try{parsed=JSON.parse(raw)}catch{
+          const start=raw.indexOf("{"),end=raw.lastIndexOf("}");if(start>=0&&end>start)try{parsed=JSON.parse(raw.slice(start,end+1))}catch{}
+        }
+        const lines=raw.split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
+        const title=String(parsed?.title||lines[0]||"").replace(/^[#*\-\s]+/,"").slice(0,100).trim();
+        const reviewBody=String(parsed?.body||(!parsed?lines.slice(1).join("\n"):"")).trim();
+        if(!title)throw new Error("The model did not return a pull request title");
+        return json(res,200,{title,body:reviewBody,style:generated.style,model:generated.model});
       }catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/checkpoints"){

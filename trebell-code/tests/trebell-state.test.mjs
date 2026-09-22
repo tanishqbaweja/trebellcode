@@ -150,27 +150,36 @@ test("scoped settings resolve environment defaults and project overrides without
   const home=await mkdtemp(join(tmpdir(),"trebell-state-scopes-"));const env={...process.env,TREBELL_HOME:home};
   try{
     const state=new TrebellStateStore(env);
-    state.updateSettings({defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",worktreeSubmodules:"recursive",autoPull:false,agentDeviceAccess:false,defaultModel:"model-global"});
-    state.updateEnvironmentDefaults("ssh-a",{defaultPermissionMode:"full",defaultWorkspaceMode:"worktree",worktreeSubmodules:"none",agentDeviceAccess:true,defaultModel:"model-remote"});
+    state.updateSettings({defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",worktreeSubmodules:"recursive",autoPull:false,agentDeviceAccess:false,defaultModel:"model-global",sourceControlMergeMethod:"squash",sourceControlTextStyle:"concise",sourceControlTextModel:null});
+    state.updateEnvironmentDefaults("ssh-a",{defaultPermissionMode:"full",defaultWorkspaceMode:"worktree",worktreeSubmodules:"none",agentDeviceAccess:true,defaultModel:"model-remote",sourceControlMergeMethod:"rebase",sourceControlTextStyle:"repository",sourceControlTextModel:"model-writing"});
     const project=state.touchProject("/srv/app",{environmentId:"ssh-a",name:"Remote App"});
     let scoped=state.projectSettings(project.path,"ssh-a");
     assert.equal(scoped.effective.defaultPermissionMode,"full");
     assert.equal(scoped.effective.defaultWorkspaceMode,"worktree");
     assert.equal(scoped.effective.defaultModel,"model-remote");
+    assert.equal(scoped.effective.sourceControlMergeMethod,"rebase");
+    assert.equal(scoped.effective.sourceControlTextStyle,"repository");
+    assert.equal(scoped.effective.sourceControlTextModel,"model-writing");
     assert.equal(state.environmentDefaults("ssh-b").defaultPermissionMode,"supervised");
 
-    state.updateProjectSettings(project.path,"ssh-a",{defaultPermissionMode:"edits",autoPull:true},[]);
+    state.updateProjectSettings(project.path,"ssh-a",{defaultPermissionMode:"edits",autoPull:true,sourceControlMergeMethod:"merge",sourceControlTextStyle:"descriptive",sourceControlTextModel:"model-project-writing"},[]);
     scoped=state.projectSettings(project.path,"ssh-a");
     assert.equal(scoped.overrides.defaultPermissionMode,"edits");
     assert.equal(scoped.effective.defaultPermissionMode,"edits");
     assert.equal(scoped.effective.autoPull,true);
+    assert.equal(scoped.effective.sourceControlMergeMethod,"merge");
+    assert.equal(scoped.effective.sourceControlTextStyle,"descriptive");
+    assert.equal(scoped.effective.sourceControlTextModel,"model-project-writing");
     assert.equal(state.project(project.path,"ssh-a").permissionMode,"edits");
 
-    state.updateProjectSettings(project.path,"ssh-a",{},["defaultPermissionMode","autoPull"]);
+    state.updateProjectSettings(project.path,"ssh-a",{},["defaultPermissionMode","autoPull","sourceControlMergeMethod","sourceControlTextStyle","sourceControlTextModel"]);
     scoped=state.projectSettings(project.path,"ssh-a");
     assert.equal(scoped.overrides.defaultPermissionMode,undefined);
     assert.equal(scoped.effective.defaultPermissionMode,"full");
     assert.equal(scoped.effective.autoPull,false);
+    assert.equal(scoped.effective.sourceControlMergeMethod,"rebase");
+    assert.equal(scoped.effective.sourceControlTextStyle,"repository");
+    assert.equal(scoped.effective.sourceControlTextModel,"model-writing");
     assert.equal(state.project(project.path,"ssh-a").permissionMode,null);
 
     state.touchProject(project.path,{environmentId:"ssh-a",workspaceMode:"current"});

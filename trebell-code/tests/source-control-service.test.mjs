@@ -19,6 +19,7 @@ import {
   mergePullRequest,
   rebasePullRequestStack,
   sourceControlGitAction,
+  sourceControlRecentCommitSubjects,
   withSourceControlExecutor,
 } from "../src/source-control-service.mjs";
 import { git } from "../src/git-service.mjs";
@@ -162,6 +163,26 @@ test("remote auto-pull fetches, verifies default branch and fast-forwards inside
   assert.equal(calls.some(call=>call.args[0]==="rev-list"&&call.args.at(-1)==="origin/main...HEAD"),true);
   assert.equal(calls.some(call=>call.args[0]==="pull"&&call.args[1]==="--ff-only"),true);
   assert.equal(calls.every(call=>!call.cwd||String(call.cwd).startsWith("/srv/app")),true);
+});
+
+test("recent commit subjects are read through the selected environment executor",async()=>{
+  const calls=[];
+  const executor={run:async(command,args,options={})=>{
+    calls.push({command,args:[...args],cwd:options.cwd});
+    if(command!=="git")return {ok:false,code:1,stdout:"",stderr:"unexpected command"};
+    if(args[0]==="rev-parse"&&args[1]==="--show-toplevel")return {ok:true,code:0,stdout:"/srv/app\n",stderr:""};
+    if(args[0]==="branch")return {ok:true,code:0,stdout:"main\n",stderr:""};
+    if(args[0]==="for-each-ref"&&args.includes("refs/heads"))return {ok:true,code:0,stdout:"main\n",stderr:""};
+    if(args[0]==="for-each-ref")return {ok:true,code:0,stdout:"origin/main\n",stderr:""};
+    if(args[0]==="status")return {ok:true,code:0,stdout:"## main...origin/main\n",stderr:""};
+    if(args[0]==="remote")return {ok:true,code:0,stdout:"origin\thttps://github.com/acme/widget.git (fetch)\norigin\thttps://github.com/acme/widget.git (push)\n",stderr:""};
+    if(args[0]==="worktree")return {ok:true,code:0,stdout:"worktree /srv/app\nHEAD abc\nbranch refs/heads/main\n",stderr:""};
+    if(args[0]==="log")return {ok:true,code:0,stdout:"Use conventional subject\nFix checkout race\n",stderr:""};
+    return {ok:false,code:1,stdout:"",stderr:"unexpected git "+args.join(" ")};
+  }};
+  const subjects=await withSourceControlExecutor(executor,()=>sourceControlRecentCommitSubjects("/srv/app",{limit:5}));
+  assert.deepEqual(subjects,["Use conventional subject","Fix checkout race"]);
+  assert.equal(calls.some(call=>call.args[0]==="log"&&call.cwd==="/srv/app"),true);
 });
 
 test("Bitbucket REST auth and requests come from the environment executor",async()=>{

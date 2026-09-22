@@ -118,6 +118,13 @@ export async function sourceControlGitInfo(cwd){
   return serviceGitInfo(cwd);
 }
 
+export async function sourceControlRecentCommitSubjects(cwd,{limit=8}={}){
+  const info=await serviceGitInfo(cwd);if(!info.isGit)return [];
+  const count=Math.max(1,Math.min(30,Number(limit)||8));
+  const result=await run("git",["log","-n",String(count),"--pretty=%s"],{cwd:info.root,allowFailure:true,maxBuffer:256*1024});
+  return result.ok?result.stdout.split(/\r?\n/).map(line=>line.trim()).filter(Boolean):[];
+}
+
 export async function sourceControlGitAction(cwd,{action,name=null,message=null,setUpstream=false,startPoint=null,path=null,force=false}={}){
   const base=String(cwd||"").trim();
   if(!base)throw new Error("Repository path is required");

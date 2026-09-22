@@ -74,6 +74,14 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(blockedVisualization.status,400);
     const settings=await fetch(gui.url+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({followUpMode:"steer"})}).then(r=>r.json());
     assert.equal(settings.followUpMode,"steer");
+    const sourceDefaults=await fetch(gui.url+"/api/scoped-settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({environmentId:null,projectId:projectSaved.project.id,patch:{sourceControlMergeMethod:"rebase",sourceControlTextStyle:"repository",sourceControlTextModel:"freebuff/test/coding-fast"},resetKeys:[]})}).then(r=>r.json());
+    assert.equal(sourceDefaults.effective.sourceControlMergeMethod,"rebase");
+    assert.equal(sourceDefaults.effective.sourceControlTextStyle,"repository");
+    assert.equal(sourceDefaults.effective.sourceControlTextModel,"freebuff/test/coding-fast");
+    const commitText=await fetch(gui.url+"/api/git/commit-message",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({cwd:projectPath,environmentId:null,model:"freebuff/test/coding-large"})}).then(r=>r.json());
+    assert.equal(commitText.message,"Mock generated commit");assert.equal(commitText.style,"repository");assert.equal(commitText.model,"freebuff/test/coding-fast");
+    const reviewText=await fetch(gui.url+"/api/git/review-text",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({cwd:projectPath,environmentId:null,model:"freebuff/test/coding-large"})}).then(r=>r.json());
+    assert.equal(reviewText.title,"Mock generated review");assert.equal(reviewText.body,"Mock generated description.");assert.equal(reviewText.style,"repository");assert.equal(reviewText.model,"freebuff/test/coding-fast");
     const meta=await fetch(gui.url+"/api/thread-meta",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId:"thread-test",patch:{pinned:true}})}).then(r=>r.json());
     assert.equal(meta.pinned,true);
     const general=await fetch(gui.url+"/api/general-workspace",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({environmentId:null})}).then(r=>r.json());
