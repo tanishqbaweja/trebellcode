@@ -12,8 +12,8 @@ const CAPABILITIES={
   github:{create:true,comment:true,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:true,publish:true,viewedFiles:"host"},
   gitlab:{create:true,comment:true,review:true,requestChanges:false,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:false,publish:true,viewedFiles:"environment"},
   forgejo:{create:true,comment:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:true,checkout:false,reviewers:false,publish:false,viewedFiles:"environment"},
-  bitbucket:{create:true,comment:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:false,checkout:false,reviewers:false,publish:false,viewedFiles:"environment"},
-  "azure-devops":{create:true,comment:false,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:false,checkout:false,reviewers:false,publish:false,viewedFiles:"environment"},
+  bitbucket:{create:true,comment:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:false,checkout:false,reviewers:false,publish:true,viewedFiles:"environment"},
+  "azure-devops":{create:true,comment:false,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:false,checkout:false,reviewers:false,publish:true,viewedFiles:"environment"},
 };
 
 async function run(command,args,{cwd,timeout=120000,maxBuffer=8*1024*1024,allowFailure=false}={}){
@@ -90,6 +90,19 @@ function normalizeGitLab(item){return {provider:"gitlab",number:Number(item.iid?
 function normalizeForgejo(item){return {provider:"forgejo",number:Number(item.number??item.id),title:item.title||"",body:item.body||"",state:stateOf(item.state,item.merged),isDraft:Boolean(item.draft),url:item.html_url||item.url||"",headRefName:item.head?.ref||"",baseRefName:item.base?.ref||"",headSha:item.head?.sha||null,author:actor(item.user),reviewDecision:null,statusCheckRollup:[],reviews:(item.requested_reviewers||[]).map(x=>({author:actor(x),state:"REQUESTED",body:""}))}}
 function normalizeBitbucket(item){return {provider:"bitbucket",number:Number(item.id),title:item.title||"",body:item.description||"",state:stateOf(item.state),isDraft:Boolean(item.draft),url:item.links?.html?.href||"",headRefName:item.source?.branch?.name||"",baseRefName:item.destination?.branch?.name||"",headSha:item.source?.commit?.hash||null,author:actor(item.author),reviewDecision:null,statusCheckRollup:[],reviews:(item.reviewers||[]).map(x=>({author:actor(x),state:item.participants?.find(p=>p.user?.uuid===x.uuid)?.approved?"APPROVED":"REVIEWED",body:""}))}}
 function normalizeAzure(item){return {provider:"azure-devops",number:Number(item.pullRequestId??item.id),title:item.title||"",body:item.description||"",state:stateOf(item.status),isDraft:Boolean(item.isDraft),url:item._links?.web?.href||item.repository?.webUrl||item.url||"",headRefName:String(item.sourceRefName||"").replace(/^refs\/heads\//,""),baseRefName:String(item.targetRefName||"").replace(/^refs\/heads\//,""),headSha:item.lastMergeSourceCommit?.commitId||item.lastMergeCommit?.commitId||null,author:actor(item.createdBy),reviewDecision:null,statusCheckRollup:[],reviews:(item.reviewers||[]).map(x=>({author:actor(x),state:Number(x.vote)>=10?"APPROVED":Number(x.vote)<=-5?"CHANGES_REQUESTED":"REVIEWED",body:""}))}}
+export function parsePublishTarget(provider,value){
+  const id=normalizeProvider(provider)||String(provider||"");const raw=String(value||"").trim().replace(/^\/+|\/+$/g,"");if(!raw)throw new Error("Repository name is required.");
+  if(id==="bitbucket"||id==="azure-devops"){
+    const parts=raw.split("/").filter(Boolean);if(parts.length!==2)throw new Error(id==="bitbucket"?"Bitbucket repository path must be workspace/repository.":"Azure DevOps repository path must be project/repository.");
+    return id==="bitbucket"?{provider:id,workspace:parts[0],name:parts[1],path:raw}:{provider:id,project:parts[0],name:parts[1],path:raw};
+  }
+  if(id==="gitlab"){
+    const parts=raw.split("/").filter(Boolean);return {provider:id,name:parts.at(-1),namespace:parts.length>1?parts.slice(0,-1).join("/"):null,path:raw};
+  }
+  return {provider:id,name:raw,path:raw};
+}
+
+export async function repositoryHasCommits(cwd){const result=await run("git",["rev-parse","--verify","HEAD"],{cwd,allowFailure:true});return result.ok&&Boolean(result.stdout.trim())}
 
 async function defaultBaseBranch(cwd){
   const result=await run("git",["symbolic-ref","--quiet","--short","refs/remotes/origin/HEAD"],{cwd,allowFailure:true});
@@ -303,21 +316,39 @@ export async function requestPullRequestReviewer(cwd,number,reviewer,{provider=n
 export async function publishRepository(cwd,{provider="github",name=null,visibility="private"}={}){
   const info=await gitInfo(cwd);if(!info.isGit)throw new Error("Initialize Git before publishing this project.");
   if(info.remotes?.some(remote=>remote.name==="origin"))throw new Error("This repository already has an origin remote.");
-  const repoName=String(name||info.root.split(/[\\/]/).filter(Boolean).pop()||"").trim();if(!repoName)throw new Error("Repository name is required.");
+  const target=parsePublishTarget(provider,name||info.root.split(/[\\/]/).filter(Boolean).pop()||"");const repoName=target.name;
   const privacy=visibility==="public"?"public":"private";
+  const hasCommits=await repositoryHasCommits(info.root);const branch=info.branch||"main";
   if(provider==="github"){
-    const args=["repo","create",repoName,"--source",info.root,"--remote","origin","--"+privacy,"--push"];
+    const args=["repo","create",target.path,"--source",info.root,"--remote","origin","--"+privacy];if(hasCommits)args.push("--push");
     const result=await run("gh",args,{cwd:info.root,allowFailure:true,timeout:180000,maxBuffer:8*1024*1024});
     if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not publish GitHub repository").trim());
-    return {ok:true,provider,url:(result.stdout.match(/https?:\/\/\S+/)||[])[0]||null,info:await gitInfo(info.root)};
+    return {ok:true,provider,url:(result.stdout.match(/https?:\/\/\S+/)||[])[0]||null,pushed:hasCommits,info:await gitInfo(info.root)};
   }
   if(provider==="gitlab"){
-    const created=await runStdin("glab",["api","projects","--method","POST","--input","-","--header","Content-Type: application/json"],JSON.stringify({name:repoName,visibility:privacy}),{cwd:info.root,allowFailure:true});
+    let namespaceId=null;
+    if(target.namespace){const ns=await run("glab",["api",`namespaces/${encodeURIComponent(target.namespace)}`],{cwd:info.root,allowFailure:true,maxBuffer:2*1024*1024});if(!ns.ok)throw new Error((ns.stderr||ns.stdout||`Could not resolve GitLab namespace ${target.namespace}`).trim());namespaceId=parseJson(ns.stdout,{})?.id;if(!namespaceId)throw new Error(`GitLab namespace ${target.namespace} was not found.`)}
+    const body={name:repoName,path:repoName,visibility:privacy,...(namespaceId?{namespace_id:namespaceId}:{})};
+    const created=await runStdin("glab",["api","projects","--method","POST","--input","-","--header","Content-Type: application/json"],JSON.stringify(body),{cwd:info.root,allowFailure:true});
     if(!created.ok)throw new Error((created.stderr||created.stdout||"Could not create GitLab repository").trim());
     const project=parseJson(created.stdout,{});const remote=project.http_url_to_repo||project.ssh_url_to_repo;if(!remote)throw new Error("GitLab created the project but did not return a clone URL.");
     await run("git",["remote","add","origin",remote],{cwd:info.root});
-    const branch=info.branch||"main";await run("git",["push","-u","origin",branch],{cwd:info.root,timeout:180000});
-    return {ok:true,provider,url:project.web_url||null,info:await gitInfo(info.root)};
+    if(hasCommits)await run("git",["push","-u","origin",branch],{cwd:info.root,timeout:180000});
+    return {ok:true,provider,url:project.web_url||null,pushed:hasCommits,info:await gitInfo(info.root)};
+  }
+  if(provider==="bitbucket"){
+    const project=await bitbucketApi(null,`repositories/${encodeURIComponent(target.workspace)}/${encodeURIComponent(repoName)}`,{method:"POST",body:{scm:"git",name:repoName,is_private:privacy!=="public"}});
+    const clones=Array.isArray(project.links?.clone)?project.links.clone:[];const remote=clones.find(item=>item.name==="https")?.href||clones.find(item=>item.name==="ssh")?.href;
+    if(!remote)throw new Error("Bitbucket created the repository but did not return a clone URL.");
+    await run("git",["remote","add","origin",remote],{cwd:info.root});if(hasCommits)await run("git",["push","-u","origin",branch],{cwd:info.root,timeout:180000});
+    return {ok:true,provider,url:project.links?.html?.href||null,pushed:hasCommits,info:await gitInfo(info.root)};
+  }
+  if(provider==="azure-devops"){
+    const created=await run("az",["repos","create","--detect","true","--project",target.project,"--name",repoName,"--only-show-errors","--output","json"],{cwd:info.root,allowFailure:true,timeout:60000,maxBuffer:8*1024*1024});
+    if(!created.ok)throw new Error((created.stderr||created.stdout||"Could not create Azure DevOps repository").trim());const project=parseJson(created.stdout,{});const remote=project.remoteUrl||project.sshUrl;
+    if(!remote)throw new Error("Azure DevOps created the repository but did not return a clone URL.");
+    await run("git",["remote","add","origin",remote],{cwd:info.root});if(hasCommits)await run("git",["push","-u","origin",branch],{cwd:info.root,timeout:180000});
+    return {ok:true,provider,url:project.webUrl||project.url||null,pushed:hasCommits,info:await gitInfo(info.root)};
   }
   throw new Error(`${provider} repository publishing is not exposed by Trebell yet.`);
 }
