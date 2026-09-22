@@ -50,9 +50,10 @@ import {
   commentOnPullRequest, reviewPullRequest, mergePullRequest, updatePullRequestBranch,
   rebasePullRequestStack,
   checkoutPullRequest, requestPullRequestReviewer, publishRepository, getPullRequestFilesViewed, setPullRequestFilesViewed,
-  sourceControlGitAction, sourceControlGitInfo, withSourceControlExecutor,
+  sourceControlGitAction, sourceControlGitInfo, sourceControlRepositoryIdentity, withSourceControlExecutor,
 } from "./source-control-service.mjs";
 import { prViewedKey, updateViewedRecord, viewedStates } from "./pr-viewed-state.mjs";
+import { buildPullRequestLink, normalizePullRequestIdentity, parsePullRequestUrl, pullRequestIdentityKey } from "./pr-link-utils.mjs";
 
 const MIME = {
   ".html":"text/html; charset=utf-8",
@@ -518,6 +519,88 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   }
   function inSourceControlEnvironment(environmentId,callback){
     return withSourceControlExecutor(sourceControlExecutor(environmentId),callback);
+  }
+  function threadPullRequestAttachments(threadId){
+    return (state.threadMeta(threadId)?.attachments||[]).filter(item=>item?.attachmentType==="pull_request");
+  }
+  function threadPullRequestLinks(threadId){
+    return threadPullRequestAttachments(threadId).map(item=>({...item.payload,__identityKey:item.identityKey})).filter(Boolean);
+  }
+  async function resolvePullRequestIdentity(identity,{preferredPath=null,preferredEnvironmentId=null}={}){
+    const wanted=normalizePullRequestIdentity(identity);if(!wanted)throw new Error("Pull request identity is incomplete");
+    const projects=state.projects().sort((a,b)=>{
+      const aPreferred=a.path===preferredPath&&(a.environmentId||null)===(preferredEnvironmentId||null);
+      const bPreferred=b.path===preferredPath&&(b.environmentId||null)===(preferredEnvironmentId||null);
+      return Number(bPreferred)-Number(aPreferred);
+    });
+    for(const project of projects){
+      try{
+        const repo=await inSourceControlEnvironment(project.environmentId||null,()=>sourceControlRepositoryIdentity(project.path,{provider:wanted.provider||null}));
+        if(String(repo.host||"").toLowerCase()!==wanted.host||String(repo.repository||"").toLowerCase()!==wanted.repository.toLowerCase())continue;
+        const detail=await inSourceControlEnvironment(project.environmentId||null,()=>pullRequestDetail(project.path,wanted.number,{provider:repo.provider}));
+        if(detail?.ok&&detail.item)return {project:projectWithEnvironment(project),detail};
+      }catch{}
+    }
+    throw new Error("Add a Trebell project for "+wanted.host+"/"+wanted.repository+" to resolve this pull request.");
+  }
+  function storePullRequestLink(threadId,link){
+    const key=pullRequestIdentityKey(link);if(!key)throw new Error("Pull request identity is incomplete");
+    const meta=state.threadMeta(threadId);const attachments=(meta.attachments||[]).filter(item=>!(item?.attachmentType==="pull_request"&&(item.identityKey===key||pullRequestIdentityKey(item.payload||{})===key)));
+    attachments.push({attachmentType:"pull_request",identityKey:key,payload:link});
+    const dismissed=(meta.dismissedPullRequestKeys||[]).filter(item=>item!==key);
+    const legacy=attachments.filter(item=>item?.attachmentType==="pull_request").map(item=>item.payload);
+    state.updateThreadMeta(threadId,{attachments,dismissedPullRequestKeys:dismissed,linkedPullRequests:legacy});
+    return {key,links:threadPullRequestLinks(threadId)};
+  }
+  function removePullRequestLink(threadId,identity){
+    const key=pullRequestIdentityKey(identity);if(!key)throw new Error("Pull request identity is incomplete");
+    const meta=state.threadMeta(threadId);const attachments=(meta.attachments||[]).filter(item=>!(item?.attachmentType==="pull_request"&&(item.identityKey===key||pullRequestIdentityKey(item.payload||{})===key)));
+    const dismissed=[...new Set([...(meta.dismissedPullRequestKeys||[]),key])];
+    const legacy=attachments.filter(item=>item?.attachmentType==="pull_request").map(item=>item.payload);
+    state.updateThreadMeta(threadId,{attachments,dismissedPullRequestKeys:dismissed,linkedPullRequests:legacy});
+    return {key,links:threadPullRequestLinks(threadId)};
+  }
+  function reversePullRequestLinks(identity){
+    const key=pullRequestIdentityKey(identity);if(!key)return[];
+    const externalThreads=new Map(agentThreads.list().map(thread=>[thread.id,thread]));
+    const results=[];
+    for(const [threadId,meta] of Object.entries(state.listThreadMeta())){
+      if(!(meta.attachments||[]).some(item=>item?.attachmentType==="pull_request"&&(item.identityKey===key||pullRequestIdentityKey(item.payload||{})===key)))continue;
+      const thread=externalThreads.get(threadId);
+      results.push({threadId,title:thread?.name||thread?.preview||meta.title||null,cwd:thread?.cwd||meta.cwd||null,archived:Boolean(thread?.archived||meta.archived)});
+    }
+    return results;
+  }
+  async function syncThreadPullRequestLinks(threadId){
+    const meta=state.threadMeta(threadId);const attachments=meta.attachments||[];
+    const pullAttachments=attachments.filter(item=>item?.attachmentType==="pull_request");
+    if(!pullAttachments.length)return {threadId,links:[]};
+    const dismissed=new Set(meta.dismissedPullRequestKeys||[]);const synced=new Map();
+    for(const attachment of pullAttachments){
+      const original=attachment.payload||{};const identity=normalizePullRequestIdentity(original.identity||original);
+      if(!identity){synced.set(attachment.identityKey,attachment);continue}
+      try{
+        const resolved=await resolvePullRequestIdentity(identity);
+        const detail=resolved.detail.item;const updated=buildPullRequestLink({...detail,linkedAt:original.linkedAt},{source:original.source||"manual"});
+        const updatedKey=pullRequestIdentityKey(updated);synced.set(updatedKey,{attachmentType:"pull_request",identityKey:updatedKey,payload:updated});
+        const layers=Array.isArray(detail.stack?.layers)?detail.stack.layers:[];
+        for(const layer of layers){
+          const layerIdentity={...identity,number:Number(layer.number)};const layerKey=pullRequestIdentityKey(layerIdentity);
+          if(!layerKey||dismissed.has(layerKey)||synced.has(layerKey))continue;
+          const existing=pullAttachments.find(item=>item.identityKey===layerKey);
+          try{
+            const layerDetail=Number(layer.number)===Number(detail.number)?detail:await inSourceControlEnvironment(resolved.project.environmentId||null,()=>pullRequestDetail(resolved.project.path,layer.number,{provider:identity.provider}));
+            if(!layerDetail?.ok||!layerDetail.item)continue;
+            const layerLink=buildPullRequestLink({...layerDetail.item,linkedAt:existing?.payload?.linkedAt},{source:existing?.payload?.source||"stack"});
+            synced.set(layerKey,{attachmentType:"pull_request",identityKey:layerKey,payload:layerLink});
+          }catch{}
+        }
+      }catch{synced.set(attachment.identityKey,attachment)}
+    }
+    const nonPr=attachments.filter(item=>item?.attachmentType!=="pull_request");const next=[...nonPr,...synced.values()];
+    const legacy=[...synced.values()].map(item=>item.payload);
+    state.updateThreadMeta(threadId,{attachments:next,linkedPullRequests:legacy,lastPullRequestSyncAt:Date.now()});
+    return {threadId,links:threadPullRequestLinks(threadId)};
   }
   function remoteEnvironmentProfile(environmentId){
     const profile=environmentId?environments.get(environmentId):null;
@@ -1177,6 +1260,48 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return json(res,200,await inSourceControlEnvironment(environmentId,()=>pullRequestDetail(cwd,url.searchParams.get("number"),{provider:url.searchParams.get("provider")||null})));
       }catch(error){return json(res,400,{ok:false,error:error.message});}
     }
+    if(url.pathname==="/api/source-control/thread-link"){
+      if(req.method==="GET"){
+        try{
+          const threadId=String(url.searchParams.get("threadId")||"").trim();
+          if(threadId)return json(res,200,{threadId,links:threadPullRequestLinks(threadId)});
+          const identity=normalizePullRequestIdentity({
+            provider:url.searchParams.get("provider"),host:url.searchParams.get("host"),repository:url.searchParams.get("repository"),number:url.searchParams.get("number"),url:url.searchParams.get("url"),
+          });
+          if(!identity)throw new Error("threadId or pull request identity is required");
+          return json(res,200,{identity,threads:reversePullRequestLinks(identity)});
+        }catch(error){return json(res,400,{error:error.message});}
+      }
+      if(req.method==="POST"){
+        try{
+          const body=await readJsonBody(req);const action=String(body.action||"link");const threadId=String(body.threadId||"").trim();
+          if(action==="resolve"){
+            const identity=normalizePullRequestIdentity(body.identity||body.pr||{url:body.url})||parsePullRequestUrl(body.url);
+            const resolved=await resolvePullRequestIdentity(identity,{preferredPath:body.cwd||null,preferredEnvironmentId:body.environmentId||null});
+            return json(res,200,{identity:resolved.detail.item.identity,project:resolved.project,pr:resolved.detail.item});
+          }
+          if(!threadId)throw new Error("threadId is required");
+          if(action==="sync")return json(res,200,{ok:true,...await syncThreadPullRequestLinks(threadId)});
+          if(action==="unlink"){
+            const identity=normalizePullRequestIdentity(body.identity||body.pr||{url:body.url});return json(res,200,{ok:true,...removePullRequestLink(threadId,identity)});
+          }
+          if(action!=="link")throw new Error("Unknown pull request link action");
+          let pr=body.pr&&typeof body.pr==="object"?body.pr:null;let identity=normalizePullRequestIdentity(pr?.identity||pr||{url:body.url});
+          if(!identity&&body.cwd&&body.number){
+            const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);
+            const cwd=environmentPath(body.cwd,environmentId);const detail=await inSourceControlEnvironment(environmentId,()=>pullRequestDetail(cwd,body.number,{provider:body.provider||null}));
+            if(!detail?.ok||!detail.item)throw new Error(detail?.error||"Pull request not found");pr=detail.item;identity=pr.identity;
+          }
+          if(!identity)throw new Error("Pull request identity is incomplete");
+          if(!pr?.identity||!pr?.title||(!pr?.stack&&body.refresh!==false)){
+            const resolved=await resolvePullRequestIdentity(identity,{preferredPath:body.cwd||null,preferredEnvironmentId:body.environmentId||null}).catch(()=>null);
+            if(resolved?.detail?.item)pr={...pr,...resolved.detail.item};
+          }
+          const link=buildPullRequestLink({...pr,identity,url:pr?.url||body.url},{source:body.source||"manual"});
+          return json(res,200,{ok:true,link,...storePullRequestLink(threadId,link)});
+        }catch(error){return json(res,400,{ok:false,error:error.message});}
+      }
+    }
     if(url.pathname==="/api/source-control/pr-viewed"&&req.method==="GET"){
       try{
         const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
@@ -1634,9 +1759,28 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   });
   if(!mock) waitForAppServer(appServer,appPort,15000).catch(()=>false);
   let cleanupTimer=null;
+  let pullRequestSyncTimer=null,pullRequestSyncRunning=false;
+  const sweepPullRequestLinks=async()=>{
+    if(pullRequestSyncRunning)return;pullRequestSyncRunning=true;
+    try{
+      const now=Date.now();
+      for(const [threadId,meta] of Object.entries(state.listThreadMeta())){
+        const links=(meta.attachments||[]).filter(item=>item?.attachmentType==="pull_request").map(item=>item.payload||{});
+        if(!links.length)continue;
+        const states=links.map(link=>String(link.snapshot?.state||link.state||"").toUpperCase());
+        if(states.length&&states.every(value=>value==="MERGED"))continue;
+        const openOrUnknown=states.some(value=>!value||value==="OPEN");
+        const cadence=openOrUnknown?60_000:10*60_000;
+        if(now-Number(meta.lastPullRequestSyncAt||0)<cadence)continue;
+        await syncThreadPullRequestLinks(threadId).catch(error=>appServer?.logs?.push({at:Date.now(),stream:"pr-sync",text:error.message+"\n"}));
+      }
+    }finally{pullRequestSyncRunning=false}
+  };
   if(!mock){
     worktreeCleanup.sweep().catch(error=>cleanupLogs.push({at:Date.now(),stream:"cleanup",text:error.message+"\n"}));
     cleanupTimer=setInterval(()=>worktreeCleanup.sweep().catch(error=>cleanupLogs.push({at:Date.now(),stream:"cleanup",text:error.message+"\n"})),60*60_000);cleanupTimer.unref?.();
+    setTimeout(()=>sweepPullRequestLinks().catch(()=>{}),5000).unref?.();
+    pullRequestSyncTimer=setInterval(()=>sweepPullRequestLinks().catch(()=>{}),60_000);pullRequestSyncTimer.unref?.();
   }
   if(state.settings().remoteAccessEnabled) await syncRemoteControl().catch(error=>{
     appServer?.logs?.push({at:Date.now(),stream:"remote",text:"remote access failed: "+error.message+"\n"});
@@ -1647,6 +1791,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     server,
     close:async()=>{
       if(cleanupTimer)clearInterval(cleanupTimer);
+      if(pullRequestSyncTimer)clearInterval(pullRequestSyncTimer);
       relay.close();
       await agentRelay?.close?.();
       terminalWs?.close();

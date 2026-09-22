@@ -2,7 +2,7 @@ import React,{useEffect,useState} from "react";
 import { GitBranch, GitCommit, GitPullRequest, RefreshCw, Upload, Download, Plus, WandSparkles, ExternalLink, MessageSquare, CheckCircle2, Eye, EyeOff, Pencil, ShieldCheck, Layers3 } from "lucide-react";
 import { api } from "../api.js";
 
-export default function SourceControlPanel({projectPath,environmentId=null,remote=false,environmentName="Local machine",model,provider="freebuff",onProjectChange,onAttachPr,onLinkPr,linkedPullRequests=[]}){
+export default function SourceControlPanel({projectPath,environmentId=null,remote=false,environmentName="Local machine",model,provider="freebuff",threadId=null,onProjectChange,onAttachPr,onLinkPr,onLinkPrUrl,onLinkedPullRequestsChanged,linkedPullRequests=[]}){
   const [info,setInfo]=useState(null);
   const [diagnostics,setDiagnostics]=useState(null);
   const [sourceProvider,setSourceProvider]=useState("");
@@ -12,6 +12,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   const [commitMessage,setCommitMessage]=useState("");
   const [comment,setComment]=useState("");
   const [stackMergeMethod,setStackMergeMethod]=useState("squash");
+  const [linkedThreads,setLinkedThreads]=useState([]);
   const [viewed,setViewed]=useState({store:null,files:[],loading:false});
   const [busy,setBusy]=useState("");
   const [error,setError]=useState("");
@@ -49,7 +50,17 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   async function openPr(pr){
     const d=await api("/api/source-control/pr-detail?"+query({path:projectPath,number:String(pr.number),...(sourceProvider?{provider:sourceProvider}:{})})).catch(()=>null);
     const item=d?.item||pr;setSelectedPr(item);await loadViewed(item,d?.provider||sourceProvider||item.provider);
+    if(item?.identity){
+      const params=new URLSearchParams({provider:item.identity.provider||"",host:item.identity.host||"",repository:item.identity.repository||"",number:String(item.identity.number||item.number)});
+      const reverse=await api("/api/source-control/thread-link?"+params).catch(()=>({threads:[]}));setLinkedThreads(reverse.threads||[]);
+    }else setLinkedThreads([]);
   }
+  async function syncLinkedPullRequests(){
+    if(!threadId)return;
+    const result=await api("/api/source-control/thread-link",{method:"POST",body:{action:"sync",threadId}}).catch(()=>null);
+    if(result?.links)onLinkedPullRequestsChanged?.(result.links);
+  }
+  useEffect(()=>{if(threadId&&linkedPullRequests.length)syncLinkedPullRequests()},[threadId,projectPath,environmentId]);
   async function loadViewed(pr,providerOverride=sourceProvider){
     if(!pr?.number){setViewed({store:null,files:[],loading:false});return}
     setViewed(current=>({...current,loading:true}));
@@ -97,6 +108,22 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     }catch(e){setError(e.message)}
     finally{setBusy("")}
   }
+  const linkedGroups=(()=>{
+    const groups=[];const byKey=new Map();
+    for(const link of linkedPullRequests||[]){
+      const key=link.stack?.kind==="native"&&link.stack?.number?"stack:"+link.identity?.host+":"+link.identity?.repository+":"+link.stack.number:"pr:"+pullLinkKey(link);
+      if(!byKey.has(key)){const group={key,stack:link.stack||null,links:[]};byKey.set(key,group);groups.push(group)}
+      byKey.get(key).links.push(link);
+    }
+    for(const group of groups)group.links.sort((a,b)=>{
+      if(group.stack?.layers){const pos=new Map(group.stack.layers.map((layer,index)=>[Number(layer.number),index]));return (pos.get(Number(a.number))??999)-(pos.get(Number(b.number))??999)}
+      return Number(a.number)-Number(b.number);
+    });
+    return groups;
+  })();
+  function pullLinkKey(link){const identity=link?.identity;return identity?.host&&identity?.repository&&identity?.number?[identity.host,String(identity.repository).toLowerCase(),identity.number].join("|"):String(link?.url||link?.number||"")}
+  const branchPr=info?.branch?prs.find(pr=>pr.state==="OPEN"&&pr.headRefName===info.branch)||null:null;
+  const branchPrLinked=branchPr?linkedPullRequests.some(link=>pullLinkKey(link)===pullLinkKey(branchPr)):false;
 
   if(!projectPath)return <div className="empty-state">Open a project to use source control.</div>;
   if(info&&!info.isGit)return <div className="source-control"><div className="empty-state"><GitBranch size={28}/><strong>Not a Git repository</strong><span>{projectPath}</span><button onClick={()=>action("init")} disabled={!!busy}><Plus size={13}/> Initialize Git</button></div></div>;
@@ -107,6 +134,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       <div><button onClick={()=>action("fetch")} disabled={!!busy}><RefreshCw size={13}/> Fetch</button><button onClick={()=>action("pull")} disabled={!!busy}><Download size={13}/> Pull</button><button onClick={()=>action("push",{setUpstream:!info?.upstream})} disabled={!!busy}><Upload size={13}/> Push</button></div>
     </div>
     {error&&<div className="inline-error">{error}</div>}
+    {branchPr&&<div className="branch-pr-badge"><GitPullRequest size={13}/><span><strong>Branch PR #{branchPr.number}</strong><small>{branchPr.title}</small></span><button onClick={()=>openPr(branchPr)}>Review</button>{threadId&&!branchPrLinked&&<button onClick={()=>onLinkPr?.(branchPr)}>Link this PR</button>}{threadId&&branchPrLinked&&<em>Linked</em>}</div>}
     <div className="sc-grid">
       <section className="sc-card"><h3>Changes <span>{info?.status?.length||0}</span></h3><div className="status-list">{(info?.status||[]).map(s=><div key={s.path}><code>{s.code}</code><span>{s.path}</span></div>)}{!info?.status?.length&&<p>Working tree clean.</p>}</div>
         <div className="commit-box"><textarea value={commitMessage} onChange={e=>setCommitMessage(e.target.value)} placeholder="Commit message"/><button onClick={generate} disabled={busy==="generate"}><WandSparkles size={13}/> Generate with {{freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider}</button><button className="primary" onClick={()=>action("commit",{message:commitMessage})} disabled={!commitMessage.trim()||!!busy}><GitCommit size={13}/> Commit</button></div>
@@ -117,10 +145,11 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
         <button onClick={async()=>{const branch=prompt("New worktree branch");if(!branch)return;const path=remote?prompt("Remote worktree path",(String(projectPath).replace(/[\\/]?$/,"")+"-"+branch.replace(/[^a-zA-Z0-9._-]+/g,"-"))):await window.trebellDesktop?.pickDirectory?.();if(path){await action("worktree-create",{branch,path,baseBranch:info?.branch});onProjectChange?.(path,environmentId||null)}}}><Plus size={13}/> Add worktree</button>
       </section>
     </div>
-    <section className="pr-card"><div className="pr-head"><h3>Pull requests</h3><button onClick={refresh}><RefreshCw size={13}/></button><button onClick={async()=>{const title=prompt("PR title",commitMessage||"Trebell Code changes");if(!title)return;const body=prompt("PR description","")||"";try{const d=await api("/api/source-control/pr",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,title,body})});if(d.url)window.open(d.url,"_blank");await refresh()}catch(e){setError(e.message)}}}><Plus size={13}/> Create PR</button></div>
+    {threadId&&<section className="sc-card linked-pr-panel"><div className="linked-pr-panel-head"><h3>Linked pull requests <span>{linkedPullRequests.length}</span></h3><button onClick={syncLinkedPullRequests} disabled={!!busy}><RefreshCw size={12}/> Sync</button></div>{linkedGroups.length?linkedGroups.map(group=><div className="linked-pr-group" key={group.key}>{group.stack&&<div className="linked-pr-group-title"><Layers3 size={12}/><strong>Stack #{group.stack.number}</strong><span>{group.links.length} linked layer{group.links.length===1?"":"s"}</span></div>}<div>{group.links.map(link=><div className="linked-pr-row" key={pullLinkKey(link)}><button className="linked-pr-open" onClick={()=>window.open(link.url,"_blank")}><GitPullRequest size={12}/><span><strong>#{link.number} {link.snapshot?.title||link.title||"Pull request"}</strong><small>{link.identity?.repository||""} · {link.snapshot?.state||link.state||"unknown"}</small></span></button><button className="linked-pr-unlink" onClick={()=>onLinkPr?.(link)}>Unlink</button></div>)}</div></div>):<p>No pull requests linked to this thread.</p>}</section>}
+    <section className="pr-card"><div className="pr-head"><h3>Pull requests</h3><button onClick={refresh}><RefreshCw size={13}/></button><button onClick={async()=>{const title=prompt("PR title",commitMessage||"Trebell Code changes");if(!title)return;const body=prompt("PR description","")||"";try{const d=await api("/api/source-control/pr",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,title,body})});if(d.url){if(threadId)await onLinkPrUrl?.(d.url,"created");window.open(d.url,"_blank")}await refresh()}catch(e){setError(e.message)}}}><Plus size={13}/> Create PR</button></div>
       <div className="pr-layout"><div className="pr-list">{prs.map(pr=><button key={pr.number} onClick={()=>openPr(pr)} className={selectedPr?.number===pr.number?"active":""}><GitPullRequest size={14}/><div><strong>#{pr.number} {pr.title}</strong><span>{pr.headRefName} → {pr.baseRefName}{pr.stack?.position&&pr.stack?.size?" · stack "+pr.stack.position+"/"+pr.stack.size:""}</span></div><em>{pr.state}</em></button>)}</div>
       <div className="pr-detail">{selectedPr?<>
-        <h3>#{selectedPr.number} {selectedPr.title}</h3><p>{selectedPr.body||"No description."}</p>
+        <h3>#{selectedPr.number} {selectedPr.title}</h3>{linkedThreads.length>0&&<div className="pr-linked-threads"><span>Linked threads</span>{linkedThreads.map(thread=><em key={thread.threadId} title={thread.threadId}>{thread.title||thread.threadId.slice(0,8)}{thread.archived?" · archived":""}</em>)}</div>}<p>{selectedPr.body||"No description."}</p>
         {selectedPr.stack&&<div className="pr-stack"><div className="pr-stack-head"><strong><Layers3 size={12}/> GitHub stack #{selectedPr.stack.number}</strong><span>Layer {selectedPr.stack.position||stackFor(selectedPr).find(layer=>layer.number===selectedPr.number)?.position||"?"} of {selectedPr.stack.size||stackFor(selectedPr).length||"?"} · base {selectedPr.stack.baseRefName||"unknown"}</span></div>{stackFor(selectedPr).length>0&&<><div className="pr-stack-layers">{stackFor(selectedPr).map(layer=><button key={layer.number} className={layer.number===selectedPr.number?"active":""} onClick={()=>layer.number===selectedPr.number?null:openPr({...layer,provider:"github"})}><span>{layer.position}</span><strong>#{layer.number} {layer.title||layer.headRefName}</strong><em>{layer.state}{layer.isDraft?" · draft":""}</em></button>)}</div><div className="pr-stack-actions"><button onClick={()=>stackAction("rebase")} disabled={!!busy}>Rebase stack</button><select aria-label="Stack merge method" value={stackMergeMethod} onChange={event=>setStackMergeMethod(event.target.value)}><option value="squash">Squash</option><option value="merge">Merge commit</option><option value="rebase">Rebase merge</option></select><button onClick={()=>stackAction("merge")} disabled={!!busy||selectedPr.mergedAt}>Merge through #{selectedPr.number}</button></div></>}</div>}
         <div className="pr-actions"><button onClick={()=>window.open(selectedPr.url,"_blank")}><ExternalLink size={12}/> Open</button><button onClick={()=>onAttachPr?.(selectedPr)}><MessageSquare size={12}/> Attach</button><button className={linkedPullRequests.some(x=>x.number===selectedPr.number&&x.url===selectedPr.url)?"linked":""} onClick={()=>onLinkPr?.(selectedPr)}><GitPullRequest size={12}/> {linkedPullRequests.some(x=>x.number===selectedPr.number&&x.url===selectedPr.url)?"Linked":"Link to thread"}</button>{capabilities.edit&&<button onClick={()=>{const title=prompt("PR title",selectedPr.title||"");if(title==null||!title.trim())return;const body=prompt("PR description",selectedPr.body||"");if(body==null)return;prAction("edit",{title:title.trim(),body})}} disabled={!!busy}><Pencil size={12}/> Edit</button>}{capabilities.checkout&&<button onClick={()=>prAction("checkout")} disabled={!!busy}><Download size={12}/> Checkout</button>}{capabilities.reviewers&&<button onClick={()=>{const reviewer=prompt("Reviewer username");if(reviewer?.trim())prAction("request-reviewer",{reviewer:reviewer.trim()})}} disabled={!!busy}>Request reviewer</button>}{capabilities.approveWorkflows&&selectedPr.awaitingWorkflowApproval?.length>0&&<button onClick={()=>prAction("approve-workflows")} disabled={!!busy}><ShieldCheck size={12}/> Approve workflows ({selectedPr.awaitingWorkflowApproval.length})</button>}{capabilities.revert&&selectedPr.mergedAt&&selectedPr.mergeCommitSha&&<button onClick={async()=>{if(!confirm("Open a new pull request that reverts #"+selectedPr.number+"?"))return;const result=await prAction("revert");if(result?.url)window.open(result.url,"_blank")}} disabled={!!busy}><GitPullRequest size={12}/> Revert PR</button>}{capabilities.review&&!selectedPr.mergedAt&&<button onClick={()=>prAction("review",{event:"APPROVE",body:"Reviewed in Trebell Code."})}><CheckCircle2 size={12}/> Approve</button>}{capabilities.autoMerge&&!selectedPr.mergedAt&&!selectedPr.stack&&<button onClick={()=>prAction("merge",{method:"squash",auto:true})} disabled={!!busy}>Auto-merge</button>}{capabilities.merge&&!selectedPr.mergedAt&&!selectedPr.stack&&<button onClick={()=>prAction("merge",{method:"squash"})}>Merge</button>}</div>
         {capabilities.comment&&<div className="pr-comment"><textarea value={comment} onChange={e=>setComment(e.target.value)} placeholder="Write a change-request comment…"/><button disabled={!comment.trim()||!!busy} onClick={async()=>{await prAction("comment",{body:comment});setComment("")}}><MessageSquare size={12}/> Comment</button></div>}

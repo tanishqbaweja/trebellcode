@@ -67,6 +67,21 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(settings.followUpMode,"steer");
     const meta=await fetch(gui.url+"/api/thread-meta",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId:"thread-test",patch:{pinned:true}})}).then(r=>r.json());
     assert.equal(meta.pinned,true);
+    const linked=await fetch(gui.url+"/api/source-control/thread-link",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({
+      action:"link",threadId:"thread-test",refresh:false,source:"manual",pr:{
+        identity:{provider:"github",host:"github.com",repository:"acme/widget",number:17},
+        number:17,title:"Linked review",state:"OPEN",url:"https://github.com/acme/widget/pull/17",headRefName:"feature",baseRefName:"main",
+      },
+    })}).then(r=>r.json());
+    assert.equal(linked.ok,true);assert.equal(linked.links.length,1);assert.equal(linked.link.identity.repository,"acme/widget");
+    const threadLinks=await fetch(gui.url+"/api/source-control/thread-link?threadId=thread-test").then(r=>r.json());
+    assert.equal(threadLinks.links[0].snapshot.title,"Linked review");
+    const reverse=await fetch(gui.url+"/api/source-control/thread-link?host=github.com&repository=acme%2Fwidget&number=17&provider=github").then(r=>r.json());
+    assert.equal(reverse.threads.some(thread=>thread.threadId==="thread-test"),true);
+    const unlinked=await fetch(gui.url+"/api/source-control/thread-link",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({
+      action:"unlink",threadId:"thread-test",identity:{provider:"github",host:"github.com",repository:"acme/widget",number:17},
+    })}).then(r=>r.json());
+    assert.equal(unlinked.links.length,0);
 
     const overview=await fetch(gui.url+"/api/freebuff/overview?model=freebuff/deepseek/deepseek-v4-flash&timezone=UTC").then(r=>r.json());
     assert.equal(overview.loggedIn,true);

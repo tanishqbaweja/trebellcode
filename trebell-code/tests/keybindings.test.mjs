@@ -48,3 +48,12 @@ test("main sidebar toggle matches Ctrl+B outside modals",()=>{
   assert.equal(resolveKeybinding(event("b",{ctrlKey:true}),{}, {modalOpen:false}),"sidebarToggle");
   assert.equal(resolveKeybinding(event("b",{ctrlKey:true}),{}, {modalOpen:true}),null);
 });
+
+test("thread undo uses Mod+Z only when focus is outside text inputs",()=>{
+  assert.equal(shortcutMatches(event("z",{ctrlKey:true}),"Mod+Z"),true);
+  assert.equal(shortcutMatches(event("z",{metaKey:true}),"Mod+Z"),true);
+  assert.equal(shortcutMatches(event("z",{ctrlKey:true,metaKey:true}),"Mod+Z"),false);
+  assert.equal(resolveKeybinding(event("z",{ctrlKey:true}),{}, {undoAvailable:true,textInputFocus:false,modalOpen:false}),"undoThreadAction");
+  assert.equal(resolveKeybinding(event("z",{ctrlKey:true}),{}, {undoAvailable:true,textInputFocus:true,modalOpen:false}),null);
+  assert.equal(resolveKeybinding(event("z",{ctrlKey:true}),{}, {undoAvailable:false,textInputFocus:false,modalOpen:false}),null);
+});

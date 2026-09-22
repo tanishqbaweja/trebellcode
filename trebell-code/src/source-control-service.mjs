@@ -212,6 +212,18 @@ async function sourceContext(cwd,preferred=null){
   if(!provider)throw new Error("Could not identify this Git host. Choose GitHub, GitLab, Forgejo/Gitea, Bitbucket, or Azure DevOps.");
   return {info,provider,detected,remoteUrl,remote,remoteName:origin?.name||"origin",repository:repositoryFromRemote(remote,provider),capabilities:CAPABILITIES[provider]};
 }
+function identityRepositoryForContext(ctx){
+  if(ctx.provider!=="azure-devops")return ctx.repository;
+  const parts=String(ctx.remote?.path||"").split("/").filter(Boolean);
+  if(parts[0]?.toLowerCase()==="v3"&&parts.length>=4)return [parts[1],parts[2],parts[3]].join("/");
+  const gitIndex=parts.findIndex(part=>part.toLowerCase()==="_git");
+  if(gitIndex>=2&&parts[gitIndex+1])return [...parts.slice(0,gitIndex),parts[gitIndex+1]].join("/");
+  return ctx.repository;
+}
+function identityForContext(ctx,number){return {provider:ctx.provider,host:String(ctx.remote?.hostname||ctx.remote?.host||"").toLowerCase(),repository:identityRepositoryForContext(ctx),number:Number(number)}}
+export async function sourceControlRepositoryIdentity(cwd,{provider=null}={}){
+  const ctx=await sourceContext(cwd,provider);return {provider:ctx.provider,host:String(ctx.remote?.hostname||ctx.remote?.host||"").toLowerCase(),repository:identityRepositoryForContext(ctx),remoteUrl:ctx.remoteUrl};
+}
 
 function parseJson(raw,fallback=null){try{return JSON.parse(String(raw||"").trim()||"null")}catch{return fallback}}
 function stateOf(value,merged=false){const v=String(value||"").toLowerCase();if(merged||v==="merged"||v==="completed")return "MERGED";if(["closed","declined","superseded","abandoned"].includes(v))return "CLOSED";return "OPEN"}
@@ -472,7 +484,7 @@ export async function listPullRequests(cwd,{provider=null}={}){
     const r=await run("az",["repos","pr","list","--detect","true","--status","active","--top","50","--only-show-errors","--output","json"],{cwd:ctx.info.root,allowFailure:true,timeout:60000});
     if(!r.ok)return {ok:false,provider:ctx.provider,capabilities:ctx.capabilities,error:(r.stderr||r.stdout).trim(),items:[]};items=(parseJson(r.stdout,[])||[]).map(normalizeAzure);
   }
-  return {ok:true,provider:ctx.provider,capabilities:ctx.capabilities,items};
+  return {ok:true,provider:ctx.provider,capabilities:ctx.capabilities,items:items.map(item=>({...item,identity:identityForContext(ctx,item.number)}))};
 }
 
 export async function createPullRequest(cwd,{provider=null,title,body="",base=null,draft=false}={}){
@@ -604,6 +616,7 @@ export async function pullRequestDetail(cwd,number,{provider=null}={}){
     item.comments=(comments.values||[]).map(x=>({id:x.id,body:x.content?.raw||"",author:actor(x.user)}));item.files=(diffstat.values||[]).map(file=>({path:file.new?.path||file.old?.path||"",oldPath:file.old?.path||null,status:file.status||null,additions:Number(file.lines_added||0),deletions:Number(file.lines_removed||0),patch:null}));
   }
   else {const r=await run("az",["repos","pr","show","--detect","true","--id",String(number),"--only-show-errors","--output","json"],{cwd:ctx.info.root,allowFailure:true,timeout:60000});if(!r.ok)return {ok:false,provider:ctx.provider,capabilities:ctx.capabilities,error:(r.stderr||r.stdout).trim(),item:null};item=normalizeAzure(parseJson(r.stdout,{}));item.files=[]}
+  if(item)item.identity=identityForContext(ctx,item.number||number);
   if(ctx.capabilities.editComments&&item?.comments?.length)markEditableComments(item,await sourceControlViewer(ctx));
   return {ok:true,provider:ctx.provider,capabilities:ctx.capabilities,item};
 }

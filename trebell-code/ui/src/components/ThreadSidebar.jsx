@@ -3,6 +3,7 @@ import {
   Archive, BarChart3, Bot, Clock3, Folder, Globe2, History,
   MoreHorizontal, Pin, Plus, Search, Settings, SlidersHorizontal, Wrench, Server, PanelLeftClose
 } from "lucide-react";
+import { formatSnoozeUntil } from "../thread-snooze.js";
 
 function titleOf(thread){return thread.name||thread.preview||"Untitled task"}
 function relativeTime(epoch){
@@ -14,7 +15,7 @@ function relativeTime(epoch){
   return Math.floor(d/86400)+"d";
 }
 
-function ThreadRow({thread,active,selected,bulk,onOpen,onSelect,onAction,onMove,agentRuntime="codex"}){
+function ThreadRow({thread,meta,active,selected,bulk,onOpen,onSelect,onAction,onMove,agentRuntime="codex"}){
   const section=thread.section?.name||"Active";
   return <div className={active?"thread-row active":"thread-row"}>
     {bulk&&<input className="thread-select" type="checkbox" checked={selected} onChange={()=>onSelect(thread.id)}/>}
@@ -22,14 +23,14 @@ function ThreadRow({thread,active,selected,bulk,onOpen,onSelect,onAction,onMove,
       <span className={"thread-status-dot "+(section==="Pinned"?"pinned":section==="Snoozed"?"snoozed":section==="Settled"?"settled":"")}/>
       <div>
         <strong>{titleOf(thread)}</strong>
-        <span>{thread.model?.replace(/^freebuff\//,"")||({codex:"Codex",claude:"Claude",cursor:"Cursor",grok:"Grok",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime)} · {relativeTime(thread.updatedAt)}</span>
+        <span>{section==="Snoozed"&&meta?.snoozedUntil?"Wakes "+formatSnoozeUntil(meta.snoozedUntil):(thread.model?.replace(/^freebuff\//,"")||({codex:"Codex",claude:"Claude",cursor:"Cursor",grok:"Grok",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime))+" · "+relativeTime(thread.updatedAt)}</span>
       </div>
     </button>
     <details className="thread-menu">
       <summary title="Thread actions"><MoreHorizontal size={13}/></summary>
       <div className="thread-menu-popover">
         <button onClick={()=>onAction(thread,section==="Pinned"?"active":"pin")}>{section==="Pinned"?"Unpin":"Pin"}</button>
-        <button onClick={()=>onAction(thread,"snooze")}>Snooze</button>
+        <button onClick={()=>onAction(thread,section==="Snoozed"?"active":"snooze")}>{section==="Snoozed"?"Wake thread":"Snooze…"}</button>
         <button onClick={()=>onAction(thread,section==="Settled"?"active":"settle")}>{section==="Settled"?"Un-settle":"Settle"}</button>
         {(agentRuntime==="codex"||agentRuntime==="opencode"||thread.providerMeta?.initialize?.agentCapabilities?.sessionCapabilities?.fork!=null)&&<button onClick={()=>onAction(thread,"fork")}>Fork thread</button>}
         <button onClick={()=>onMove(thread,-1)}>Move up</button>
@@ -49,7 +50,7 @@ function UtilityButton({Icon,label,active,onClick}){
 
 export default function ThreadSidebar({
   section,setSection,threads,activeThreadId,query,setQuery,onOpen,onNew,onThreadAction,onMove,
-  selectedIds,setSelectedIds,onBulkAction,provider="freebuff",agentRuntime="codex",onCollapse
+  selectedIds,setSelectedIds,onBulkAction,provider="freebuff",agentRuntime="codex",threadMeta={},onCollapse
 }){
   const groups={
     Pinned:threads.filter(t=>t.section?.name==="Pinned"),
@@ -92,7 +93,7 @@ export default function ThreadSidebar({
     <div className="thread-sections">
       {Object.entries(groups).map(([name,items])=>items.length>0&&<section key={name}>
         <h4>{name}<span>{items.length}</span></h4>
-        {items.map(t=><ThreadRow key={t.id} thread={t} active={t.id===activeThreadId} bulk={bulk} selected={selectedIds.has(t.id)} onOpen={onOpen} onSelect={toggle} onAction={onThreadAction} onMove={onMove} agentRuntime={agentRuntime}/>)}
+        {items.map(t=><ThreadRow key={t.id} thread={t} meta={threadMeta[t.id]||null} active={t.id===activeThreadId} bulk={bulk} selected={selectedIds.has(t.id)} onOpen={onOpen} onSelect={toggle} onAction={onThreadAction} onMove={onMove} agentRuntime={agentRuntime}/>)}
       </section>)}
       {!threads.length&&<div className="sidebar-empty">No threads yet.<br/>Start a task to create one.</div>}
     </div>

@@ -17,6 +17,7 @@ import ProjectsPage from "./components/ProjectsPage.jsx";
 import AgentsPage from "./components/AgentsPage.jsx";
 import PreviewPage from "./components/PreviewPage.jsx";
 import SettingsPage from "./components/SettingsPage.jsx";
+import SnoozeDialog from "./components/SnoozeDialog.jsx";
 import FreebuffPage from "./components/FreebuffPage.jsx";
 import RightPanel from "./components/RightPanel.jsx";
 import HarnessToolsPage from "./components/HarnessToolsPage.jsx";
@@ -78,6 +79,14 @@ const TREBELL_DEVICE_TOOLS=[{
     {type:"function",name:"foreground",description:"Read the foreground Android emulator app/activity.",inputSchema:{type:"object",properties:{id:{type:"string"}},required:["id"],additionalProperties:false}}
   ]
 }];
+const TREBELL_SOURCE_CONTROL_TOOLS=[{
+  type:"namespace",
+  name:"trebell_source_control",
+  description:"Link hosted pull requests to the current Trebell thread.",
+  tools:[
+    {type:"function",name:"link_pull_request",description:"Link a pull request URL to the current thread so Trebell can track its review state and native stack.",inputSchema:{type:"object",properties:{url:{type:"string"}},required:["url"],additionalProperties:false}}
+  ]
+}];
 
 function titleOf(thread){return thread?.name||thread?.preview||"New Trebell task"}
 function modelLabel(id,freebuff){
@@ -132,6 +141,8 @@ function presetFor(mode){
   return {sandbox:"workspace-write",approvalPolicy:"on-request"};
 }
 function pullRequestIdentity(pr){
+  const identity=pr?.identity;
+  if(identity?.host&&identity?.repository&&identity?.number)return [String(identity.host).toLowerCase(),String(identity.repository).toLowerCase(),Number(identity.number)].join("|");
   try{
     const url=new URL(pr?.url||"");
     const path=url.pathname.replace(/\/+$/,"").toLowerCase();
@@ -305,12 +316,13 @@ export default function App(){
   const [approvals,setApprovals]=useState([]); const [question,setQuestion]=useState(null); const [elicitations,setElicitations]=useState([]); const [tokenUsage,setTokenUsage]=useState(null);
   const [panel,setPanel]=useState(null); const [rightPanelOpen,setRightPanelOpen]=useState(false); const [rightPanelTab,setRightPanelTab]=useState("files"); const [reviewedFiles,setReviewedFiles]=useState([]); const [checkpointByTurn,setCheckpointByTurn]=useState({});
   const [selectedThreadIds,setSelectedThreadIds]=useState(new Set()); const [providerRevision,setProviderRevision]=useState(0);
+  const [snoozeRequest,setSnoozeRequest]=useState(null); const [threadUndo,setThreadUndo]=useState(null);
   const [goal,setGoal]=useState(null); const [linkedPullRequests,setLinkedPullRequests]=useState([]);
   const [worktreeSetup,setWorktreeSetup]=useState(null);
   const [threadTelemetry,setThreadTelemetry]=useState({});
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false);
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"});
-  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
+  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const displayThreads=searchResults||threads;
   const environmentThemes=useMemo(()=>(environmentThemeCatalog.themes||[]).flatMap(theme=>{
     try{return [{...normalizeCustomTheme(theme,{id:`environment-${environmentThemeCatalog.environmentKey}-${theme.id}`}),publishedId:theme.id,published:true}]}
@@ -622,9 +634,10 @@ export default function App(){
         projectOpen:Boolean(projectPath),
         threadOpen:Boolean(activeThread?.id),
         running:Boolean(running),
-        modalOpen:Boolean(paletteOpen||question||elicitations.length||approvals.length||settings.onboardingComplete===false),
+        modalOpen:Boolean(paletteOpen||question||elicitations.length||approvals.length||snoozeRequest||settings.onboardingComplete===false),
         rightPanelOpen:Boolean(rightPanelOpen),
         sidebarOpen:Boolean(sidebarOpen),
+        undoAvailable:Boolean(threadUndo),
         desktop:Boolean(window.trebellDesktop),
       };
       const command=resolveKeybinding(event,settings,context);
@@ -642,12 +655,13 @@ export default function App(){
       else if(command==="settings")setSection("settings");
       else if(command==="environments")setSection("environments");
       else if(command==="steerQueued"&&queued.length)sendQueuedNow(queued[0]);
+      else if(command==="undoThreadAction")undoThreadAction();
       else if(command==="cycleTheme")cycleTheme();
       else if(command==="cycleAppearance")cycleAppearance();
     };
     window.addEventListener("keydown",key);
     return()=>window.removeEventListener("keydown",key);
-  },[settings,prompt,attachments,section,panel,paletteOpen,question,elicitations.length,approvals.length,projectPath,activeThread?.id,running,rightPanelOpen,queued,sidebarOpen]);
+  },[settings,prompt,attachments,section,panel,paletteOpen,question,elicitations.length,approvals.length,snoozeRequest,threadUndo,projectPath,activeThread?.id,running,rightPanelOpen,queued,sidebarOpen]);
   useEffect(()=>{if(!running&&queued.length){const next=queued[0];setQueued(prev=>prev.slice(1));startTurn(next.text,next.attachments,next.model||model).catch(error=>setEvents(prev=>[...prev,{id:"queue-error-"+Date.now(),kind:"error",title:error.message,status:"done"}]))}},[running,queued]);
 
   function handleServerRequest(client,message){
@@ -728,6 +742,17 @@ export default function App(){
             else if(p.tool==="foreground")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"foreground",args:{}}});
             else throw new Error("Unknown Trebell device tool: "+p.tool);
             client.respond(message.id,{contentItems:[{type:"inputText",text:JSON.stringify(result)}],success:true});
+          }catch(error){client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false})}
+        })();
+        return;
+      }
+      if(p.namespace==="trebell_source_control"){
+        (async()=>{
+          try{
+            if(p.tool!=="link_pull_request")throw new Error("Unknown Trebell source-control tool: "+p.tool);
+            if(!activeThread?.id)throw new Error("A Trebell thread must be open before linking a pull request.");
+            const result=await linkPullRequestUrl(p.arguments?.url,"agent");
+            client.respond(message.id,{contentItems:[{type:"inputText",text:JSON.stringify({linked:true,number:result?.link?.number,url:result?.link?.url})}],success:true});
           }catch(error){client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false})}
         })();
         return;
@@ -819,17 +844,78 @@ export default function App(){
   }
 
   async function updateThreadMeta(threadId,patch){const meta=await api("/api/thread-meta",{method:"POST",body:{threadId,patch}}).catch(()=>({...threadMeta[threadId],...patch}));setThreadMeta(prev=>({...prev,[threadId]:meta}));return meta}
+  function clearThreadUndo(){
+    if(threadUndoTimerRef.current)clearTimeout(threadUndoTimerRef.current);
+    threadUndoTimerRef.current=null;threadUndoRef.current=null;setThreadUndo(null);
+  }
+  function offerThreadUndo(label,undo){
+    if(threadUndoTimerRef.current)clearTimeout(threadUndoTimerRef.current);
+    const id=crypto.randomUUID();threadUndoRef.current={id,undo};setThreadUndo({id,label});
+    threadUndoTimerRef.current=setTimeout(()=>{if(threadUndoRef.current?.id===id){threadUndoRef.current=null;setThreadUndo(null)}},5000);
+  }
+  async function undoThreadAction(){
+    const current=threadUndoRef.current;if(!current)return;
+    clearThreadUndo();
+    try{await current.undo()}
+    catch(error){setEvents(prev=>[...prev,{id:"thread-undo-error-"+Date.now(),kind:"error",title:"Undo failed: "+(error.message||String(error)),status:"done",raw:{}}])}
+  }
+  useEffect(()=>()=>{if(threadUndoTimerRef.current)clearTimeout(threadUndoTimerRef.current)},[]);
+  function captureThreadPlacement(thread){
+    const sectionId=thread.section?.id||null;const group=threads.filter(item=>(item.section?.id||null)===sectionId);const index=group.findIndex(item=>item.id===thread.id);
+    return {section:thread.section||null,beforeThreadId:index>=0?group[index+1]?.id||null:null,snoozedUntil:threadMeta[thread.id]?.snoozedUntil??null};
+  }
+  function restoreThreadLocally(thread,snapshot){
+    const restored={...thread,archived:false,section:snapshot.section||null,sectionEnteredAt:snapshot.section?Date.now()/1000:null};
+    setThreads(prev=>{
+      const without=prev.filter(item=>item.id!==thread.id);const beforeIndex=snapshot.beforeThreadId?without.findIndex(item=>item.id===snapshot.beforeThreadId):-1;
+      if(beforeIndex>=0)without.splice(beforeIndex,0,restored);else without.push(restored);return without;
+    });
+    if(activeThread?.id===thread.id)setActiveThread(restored);
+    return restored;
+  }
+  async function restoreThreadPlacement(thread,snapshot){
+    if(!rpc||rpcStatus!=="connected")return;
+    await rpc.request("thread/section/move",{threadId:thread.id,sectionId:snapshot.section?.id||null,beforeThreadId:snapshot.beforeThreadId||null});
+    restoreThreadLocally(thread,snapshot);await updateThreadMeta(thread.id,{snoozedUntil:snapshot.snoozedUntil??null});
+  }
   async function moveThread(thread,destination,beforeThreadId=null){
     if(!rpc||rpcStatus!=="connected")return;
     const target=destination==="active"?null:sections[destination==="pin"?"Pinned":destination==="snooze"?"Snoozed":destination==="settle"?"Settled":destination];
     await rpc.request("thread/section/move",{threadId:thread.id,sectionId:target?.id||null,beforeThreadId});
     const updated={...thread,section:target||null,sectionEnteredAt:target?Date.now()/1000:null};setThreads(prev=>prev.map(t=>t.id===thread.id?updated:t));if(activeThread?.id===thread.id)setActiveThread(updated);
   }
+  async function reversibleThreadAction(thread,action,{snoozeUntil=null,offerUndo=true}={}){
+    const snapshot=captureThreadPlacement(thread);const wasActive=activeThread?.id===thread.id;let label="Thread updated";let undo=null;
+    if(action==="pin"){
+      if(thread.section?.name==="Pinned")return null;
+      await moveThread(thread,"pin");label="Thread pinned";undo=()=>restoreThreadPlacement(thread,snapshot);
+    }else if(action==="settle"){
+      if(thread.section?.name==="Settled")return null;
+      await moveThread(thread,"settle");label="Thread settled";undo=()=>restoreThreadPlacement(thread,snapshot);
+    }else if(action==="active"){
+      const previous=thread.section?.name||"Active";if(previous==="Active"&&!snapshot.snoozedUntil)return null;
+      await moveThread(thread,"active");await updateThreadMeta(thread.id,{snoozedUntil:null});
+      label=previous==="Pinned"?"Thread unpinned":previous==="Snoozed"?"Thread woken":previous==="Settled"?"Thread restored":"Thread moved to Active";
+      undo=()=>restoreThreadPlacement(thread,snapshot);
+    }else if(action==="snooze"){
+      if(!Number.isFinite(Number(snoozeUntil))||Number(snoozeUntil)<=Date.now())throw new Error("Choose a future snooze time.");
+      await updateThreadMeta(thread.id,{snoozedUntil:Number(snoozeUntil)});await moveThread(thread,"snooze");label="Thread snoozed";undo=()=>restoreThreadPlacement(thread,snapshot);
+    }else if(action==="archive"){
+      if(!rpc)return null;
+      await rpc.request("thread/archive",{threadId:thread.id});setThreads(prev=>prev.filter(t=>t.id!==thread.id));if(wasActive)await newChat();label="Thread archived";
+      undo=async()=>{
+        const result=await rpc.request("thread/unarchive",{threadId:thread.id});
+        const restoredThread=result?.thread||thread;
+        await rpc.request("thread/section/move",{threadId:thread.id,sectionId:snapshot.section?.id||null,beforeThreadId:snapshot.beforeThreadId||null});
+        await updateThreadMeta(thread.id,{snoozedUntil:snapshot.snoozedUntil??null});const restored=restoreThreadLocally(restoredThread,snapshot);
+        if(wasActive)await openThread(restored);
+      };
+    }else return null;
+    const result={label,undo};if(offerUndo&&undo)offerThreadUndo(label,undo);return result;
+  }
   async function threadAction(thread,action){
-    if(action==="pin"){await moveThread(thread,"pin");return}
-    if(action==="settle"){await moveThread(thread,"settle");return}
-    if(action==="active"){await moveThread(thread,"active");await updateThreadMeta(thread.id,{snoozedUntil:null});return}
-    if(action==="snooze"){const mins=Number(prompt("Snooze for how many minutes?","60"));if(!Number.isFinite(mins)||mins<=0)return;await updateThreadMeta(thread.id,{snoozedUntil:Date.now()+mins*60000});await moveThread(thread,"snooze");return}
+    if(action==="pin"||action==="settle"||action==="active"||action==="archive"){await reversibleThreadAction(thread,action);return}
+    if(action==="snooze"){setSnoozeRequest({threads:[thread],bulk:false});return}
     if(action==="fork"){
       if(!rpc)return;
       const p=presetFor(permissionMode);
@@ -844,10 +930,23 @@ export default function App(){
       if(activeThread?.id===thread.id)await newChat();
       return;
     }
-    if(action==="archive"){await rpc?.request("thread/archive",{threadId:thread.id});setThreads(prev=>prev.filter(t=>t.id!==thread.id));if(activeThread?.id===thread.id)newChat()}
   }
   async function moveThreadOrder(thread,direction){const group=threads.filter(t=>(t.section?.name||"Active")===(thread.section?.name||"Active"));const index=group.findIndex(t=>t.id===thread.id);const targetIndex=index+direction;if(targetIndex<0||targetIndex>=group.length)return;const before=direction<0?group[targetIndex].id:(group[targetIndex+1]?.id||null);await rpc.request("thread/section/move",{threadId:thread.id,sectionId:thread.section?.id||null,beforeThreadId:before});await loadThreads(rpc)}
-  async function bulkAction(action){for(const id of selectedThreadIds){const thread=threads.find(t=>t.id===id);if(thread)await threadAction(thread,action)}setSelectedThreadIds(new Set())}
+  async function bulkAction(action){
+    const selected=[...selectedThreadIds].map(id=>threads.find(thread=>thread.id===id)).filter(Boolean);if(!selected.length)return;
+    if(action==="snooze"){setSnoozeRequest({threads:selected,bulk:true});return}
+    const results=[];for(const thread of selected){const result=await reversibleThreadAction(thread,action,{offerUndo:false});if(result)results.push(result)}
+    setSelectedThreadIds(new Set());
+    if(results.length){const noun=results.length===1?"thread":results.length+" threads";const verb=action==="pin"?"pinned":action==="settle"?"settled":action==="archive"?"archived":"updated";offerThreadUndo(noun+" "+verb,async()=>{for(const result of [...results].reverse())await result.undo?.()})}
+  }
+  async function submitSnooze(until){
+    const request=snoozeRequest;if(!request)return;const results=[];
+    try{
+      for(const thread of request.threads||[]){const result=await reversibleThreadAction(thread,"snooze",{snoozeUntil:until,offerUndo:false});if(result)results.push(result)}
+      if(request.bulk)setSelectedThreadIds(new Set());setSnoozeRequest(null);
+      if(results.length){const label=results.length===1?"Thread snoozed":results.length+" threads snoozed";offerThreadUndo(label,async()=>{for(const result of [...results].reverse())await result.undo?.()})}
+    }catch(error){setEvents(prev=>[...prev,{id:"snooze-error-"+Date.now(),kind:"error",title:error.message||String(error),status:"done",raw:{}}])}
+  }
 
   async function loadPersistentThreadData(threadId){
     if(!rpc||rpcStatus!=="connected"||!threadId)return {goal:null,pullRequests:[]};
@@ -958,7 +1057,7 @@ export default function App(){
     if(setup?.session?.id&&setup.waitForSetup){const settled=await waitForDetachedSetup(setup.session.id);if(settled.timeout)throw new Error("Background worktree setup is still running after 30 minutes.");if(settled.exitCode!==0)throw new Error(`Background worktree setup failed with exit code ${settled.exitCode??"unknown"}.`)}
     return worktree;
   }
-  async function createThreadFor(modelId,cwd){const p=presetFor(permissionMode);const dynamicTools=[...TREBELL_BROWSER_TOOLS,...TREBELL_COMPUTER_TOOLS,...(effectiveProjectSettings.agentDeviceAccess?TREBELL_DEVICE_TOOLS:[])];const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools,developerInstructions:webSearch?"Web research is allowed when useful. You may use trebell_browser for interactive pages.":"Do not use web search or trebell_browser unless the user explicitly requests it."});if(agentRuntime!=="codex"&&result.thread?.providerMeta){setProviderAgent(result.thread.agent||providerAgent||"");const meta=result.thread.providerMeta;applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}return result.thread}
+  async function createThreadFor(modelId,cwd){const p=presetFor(permissionMode);const dynamicTools=[...TREBELL_BROWSER_TOOLS,...TREBELL_COMPUTER_TOOLS,...TREBELL_SOURCE_CONTROL_TOOLS,...(effectiveProjectSettings.agentDeviceAccess?TREBELL_DEVICE_TOOLS:[])];const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools,developerInstructions:webSearch?"Web research is allowed when useful. You may use trebell_browser for interactive pages.":"Do not use web search or trebell_browser unless the user explicitly requests it."});if(agentRuntime!=="codex"&&result.thread?.providerMeta){setProviderAgent(result.thread.agent||providerAgent||"");const meta=result.thread.providerMeta;applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}return result.thread}
   function inputsFor(text,paths){return [{type:"text",text,text_elements:[]},...(paths||[]).map(path=>{const lower=String(path).toLowerCase();if(/\.(png|jpe?g|gif|webp|bmp)$/.test(lower))return{type:"localImage",path};if(/\.(mp3|wav|m4a|ogg|flac)$/.test(lower))return{type:"localAudio",path};return{type:"mention",name:String(path).split(/[\\/]/).pop(),path}})]}
   async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null){
     if(!threadOverride&&(cwdOverride||projectPath)===projectPath)await waitForActiveClone();
@@ -1159,16 +1258,18 @@ export default function App(){
   async function linkPr(pr){
     if(!activeThread?.id)return;
     const current=linkedPullRequests||[];
-    const existing=current.find(x=>x.number===pr.number&&x.url===pr.url);
-    const identityKey=existing?.__identityKey||pullRequestIdentity(pr);
-    const payload={number:pr.number,title:pr.title,url:pr.url,state:pr.state,headRefName:pr.headRefName,baseRefName:pr.baseRefName};
-    if(rpc&&rpcStatus==="connected"){
-      if(existing)await rpc.request("thread/attachment/remove",{threadId:activeThread.id,attachmentType:"pull_request",identityKey});
-      else await rpc.request("thread/attachment/add",{threadId:activeThread.id,attachmentType:"pull_request",identityKey,payload});
-    }
-    const next=existing?current.filter(x=>!(x.number===pr.number&&x.url===pr.url)):[...current,{...payload,__identityKey:identityKey}];
-    setLinkedPullRequests(next);
-    await updateThreadMeta(activeThread.id,{linkedPullRequests:next.map(({__identityKey,...item})=>item)});
+    const key=pullRequestIdentity(pr);const existing=current.find(item=>pullRequestIdentity(item)===key);
+    const result=await api("/api/source-control/thread-link",{method:"POST",body:{
+      action:existing?"unlink":"link",threadId:activeThread.id,pr,cwd:projectPath,environmentId:workspaceEnvironmentId,source:"manual",
+    }});
+    setLinkedPullRequests(result.links||[]);
+  }
+  async function linkPullRequestUrl(url,source="manual"){
+    if(!activeThread?.id)throw new Error("Open a thread before linking a pull request.");
+    const value=String(url||"").trim();if(!value)throw new Error("Pull request URL is required.");
+    const resolved=await api("/api/source-control/thread-link",{method:"POST",body:{action:"resolve",url:value,cwd:projectPath,environmentId:workspaceEnvironmentId}});
+    const result=await api("/api/source-control/thread-link",{method:"POST",body:{action:"link",threadId:activeThread.id,pr:resolved.pr,cwd:resolved.project?.path||projectPath,environmentId:resolved.project?.environmentId||workspaceEnvironmentId,source,refresh:false}});
+    setLinkedPullRequests(result.links||[]);return result;
   }
   async function toggleReviewed(path,value){const next=value?[...new Set([...reviewedFiles,path])]:reviewedFiles.filter(x=>x!==path);setReviewedFiles(next);if(activeThread?.id)await updateThreadMeta(activeThread.id,{reviewedFiles:next})}
   function resolveApproval(request,decision){
@@ -1282,6 +1383,7 @@ export default function App(){
     {id:"files",label:"Files",detail:"Browse and edit the workspace",onRun:()=>openRightPanel("files")},
     {id:"diff",label:"Changes",detail:"Inspect the current Git diff",onRun:()=>openRightPanel("diff")},
     {id:"git",label:"Source control",detail:gitInfo?.branch||"Git and pull requests",onRun:()=>openRightPanel("source")},
+    ...(activeThread?.id?[{id:"link-pr",label:"Link pull request",detail:"Attach a hosted review to this thread",onRun:async()=>{const url=prompt("Pull request URL");if(url)await linkPullRequestUrl(url,"manual")}}]:[]),
     {id:"terminal",label:"Terminal",detail:"Open the persistent PTY",shortcut:"Ctrl+Shift+T",onRun:()=>setPanel("terminal")},
     ...((currentProject?.scripts||[]).map(script=>({id:"project-action:"+script.id,label:"Run "+script.name,detail:script.command,onRun:()=>runProjectAction(script)}))),
     {id:"browser",label:"Browser",detail:"Open Trebell Agent Browser",onRun:()=>openRightPanel("preview")},
@@ -1313,7 +1415,7 @@ export default function App(){
   function rightPanelContent(){
     if(rightPanelTab==="files"||rightPanelTab==="diff")return <WorkspacePanel key={rightPanelTab+":"+(workspaceEnvironmentId||"local")} defaultTab={rightPanelTab==="diff"?"diff":"files"} projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} activeThreadId={activeThread?.id} reviewedFiles={reviewedFiles} onReviewedChange={toggleReviewed} onAttachPath={path=>addFiles([path])} onReviewComment={attachReviewComment}/>;
     if(rightPanelTab==="preview")return previewSurface;
-    if(rightPanelTab==="source")return <SourceControlPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} model={model} provider={provider} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
+    if(rightPanelTab==="source")return <SourceControlPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} model={model} provider={provider} threadId={activeThread?.id||null} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} onLinkPrUrl={linkPullRequestUrl} onLinkedPullRequestsChanged={setLinkedPullRequests} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
     if(rightPanelTab==="device")return <DevicePanel/>;
     if(rightPanelTab==="agents"&&agentRuntime==="codex")return <div className="panel-page"><AgentsPage threads={threads} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onRefreshThreads={()=>rpc?loadThreads(rpc):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model} telemetry={threadTelemetry}/></div>;
     if(rightPanelTab==="goal")return <GoalPanel rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={setGoal}/>;
@@ -1337,7 +1439,7 @@ export default function App(){
   }
 
   return <div className={"app-shell"+(sidebarOpen?"":" sidebar-collapsed")}>
-    <ThreadSidebar section={section} setSection={navigateSection} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} onOpen={openThread} onNew={newChat} onThreadAction={threadAction} onMove={moveThreadOrder} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={bulkAction} provider={provider} agentRuntime={agentRuntime} onCollapse={()=>setSidebarOpen(false)}/>
+    <ThreadSidebar section={section} setSection={navigateSection} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} onOpen={openThread} onNew={newChat} onThreadAction={threadAction} onMove={moveThreadOrder} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={bulkAction} provider={provider} agentRuntime={agentRuntime} threadMeta={threadMeta} onCollapse={()=>setSidebarOpen(false)}/>
 
     <div className={"workspace-shell"+(rightPanelOpen?" right-open":"")}>
       <main className={"main-frame"+(panel==="terminal"?" terminal-open":"")}>
@@ -1413,6 +1515,8 @@ export default function App(){
 
     <McpElicitationModal key={elicitations[0]?.request?.id||"none"} request={elicitations[0]?.request} onResolve={resolveElicitation}/>
     {!elicitations.length&&<QuestionModal request={question?.request} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={pickFiles}/>}
+    <SnoozeDialog request={snoozeRequest} onSubmit={submitSnooze} onCancel={()=>setSnoozeRequest(null)}/>
+    {threadUndo&&<div className="thread-undo-toast" role="status" aria-live="polite" data-testid="thread-undo-toast"><span>{threadUndo.label}</span><button onClick={undoThreadAction}>Undo</button><em>5s</em></div>}
     <CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} actions={paletteActions} projects={paletteProjects} threads={threads} environmentNames={paletteEnvironmentNames} onOpenProject={project=>onProjectOpen(project.path,project.environmentId||null)} onOpenThread={openThread}/>
     <OnboardingModal open={initialLoaded&&settings.onboardingComplete===false} projectPath={projectPath} onPickWorkspace={pickWorkspace} providerLabel={agentRuntime==="codex"?providerLabel:agentRuntimeLabel} providerReady={providerReady} permissionMode={permissionMode} onPermissionMode={setPermissionMode} onFinish={finishOnboarding}/>
   </div>;

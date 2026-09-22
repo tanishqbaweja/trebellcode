@@ -11,6 +11,7 @@ export const KEYBINDING_COMMANDS=[
   {id:"settings",label:"Settings",defaultKey:"Ctrl+,",defaultWhen:"!modalOpen"},
   {id:"environments",label:"Environments",defaultKey:"Ctrl+Shift+E",defaultWhen:"!modalOpen"},
   {id:"steerQueued",label:"Send oldest queued message now",defaultKey:"Ctrl+Shift+Enter",defaultWhen:"threadOpen && running && !modalOpen"},
+  {id:"undoThreadAction",label:"Undo recent thread action",defaultKey:"Mod+Z",defaultWhen:"undoAvailable && !textInputFocus && !modalOpen"},
   {id:"cycleTheme",label:"Cycle theme",defaultKey:"Ctrl+Alt+A",defaultWhen:"!modalOpen"},
   {id:"cycleAppearance",label:"Cycle appearance mode",defaultKey:"Ctrl+Alt+Shift+A",defaultWhen:"!modalOpen"},
 ];
@@ -82,12 +83,17 @@ export function shortcutMatches(event,value){
   const parts=String(value).toLowerCase().split("+").map(x=>x.trim()).filter(Boolean);
   const key=parts.pop();
   if(!key)return false;
+  const wantsMod=parts.includes("mod");
   const wantsCtrl=parts.includes("ctrl")||parts.includes("control");
   const wantsMeta=parts.includes("cmd")||parts.includes("command")||parts.includes("meta");
   const wantsShift=parts.includes("shift");
   const wantsAlt=parts.includes("alt")||parts.includes("option");
-  if(Boolean(event.ctrlKey)!==wantsCtrl)return false;
-  if(Boolean(event.metaKey)!==wantsMeta)return false;
+  if(wantsMod){
+    if(!Boolean(event.ctrlKey||event.metaKey)||Boolean(event.ctrlKey&&event.metaKey))return false;
+  }else{
+    if(Boolean(event.ctrlKey)!==wantsCtrl)return false;
+    if(Boolean(event.metaKey)!==wantsMeta)return false;
+  }
   if(Boolean(event.shiftKey)!==wantsShift)return false;
   if(Boolean(event.altKey)!==wantsAlt)return false;
   const eventKey=normalizedKey(event.key);

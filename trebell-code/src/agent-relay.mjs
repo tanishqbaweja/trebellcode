@@ -212,6 +212,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const meta=state.threadMeta(params.threadId);const attachments=(meta.attachments||[]).filter(item=>!(item.attachmentType===params.attachmentType&&item.identityKey===params.identityKey));state.updateThreadMeta(params.threadId,{attachments});return {data:attachments};
     }
     if(method==="thread/archive"){await sessions.get(params.threadId)?.close().catch(()=>{});sessions.delete(params.threadId);return {thread:threadStore.update(params.threadId,{archived:true})}}
+    if(method==="thread/unarchive"){const thread=threadStore.update(params.threadId,{archived:false});if(!thread)throw new Error("Thread not found");return {thread}}
     if(method==="thread/fork"){
       const source=threadStore.get(params.threadId);if(!source)throw new Error("Thread not found");const runtimeSession=sessions.get(source.id)||await ensureSession(source,context,{});
       let fork;
