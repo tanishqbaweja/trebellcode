@@ -34,6 +34,9 @@ function Require-Command([string]$Name, [string]$Help) {
 }
 
 function Invoke-Native([string]$File, [string[]]$Arguments) {
+  if ($env:OS -eq "Windows_NT" -and ($File -eq "npm" -or $File -eq "npx")) {
+    $File = "$File.cmd"
+  }
   & $File @Arguments
   if ($LASTEXITCODE -ne 0) {
     throw "$File failed with exit code $LASTEXITCODE."
