@@ -1,6 +1,7 @@
 import React,{useEffect,useMemo,useState} from "react";
-import { RefreshCw, Trash2 } from "lucide-react";
+import { CircleAlert, RefreshCw, RotateCcw, Sparkles, Trash2 } from "lucide-react";
 import { api } from "../api.js";
+import { codexRateLimitEntries,formatRateReset,microsToCurrency,rateLimitReachedLabel,rateLimitRemainingPercent } from "../usage-account.js";
 
 function formatTokens(value){const n=Number(value||0);if(n>=1_000_000)return (n/1_000_000).toFixed(n>=10_000_000?1:2)+"M";if(n>=1_000)return (n/1_000).toFixed(n>=100_000?0:1)+"K";return n.toLocaleString()}
 function estimateCost(record,settings){
@@ -11,11 +12,30 @@ function estimateCost(record,settings){
   return {amount,estimated:true};
 }
 function runtimeLabel(value){return ({codex:"Codex",claude:"Claude Code",opencode:"OpenCode",cursor:"Cursor",grok:"Grok Build",antigravity:"Antigravity"}[value]||value||"Unknown")}
+function money(value){return Number.isFinite(value)?`$${value.toFixed(value<1?4:2)}`:"—"}
+function duration(value){const seconds=Number(value);if(!Number.isFinite(seconds)||seconds<0)return "—";if(seconds<60)return Math.round(seconds)+"s";const mins=Math.round(seconds/60);return mins<60?mins+"m":Math.floor(mins/60)+"h "+(mins%60)+"m"}
 
-export default function UsagePage({settings={}}){
+export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected",activeThread=null,agentRuntime="codex"}){
   const [days,setDays]=useState(30);const [data,setData]=useState({records:[],total:{},models:{},runtimes:{},daily:{}});const [loading,setLoading]=useState(false);const [error,setError]=useState("");
-  async function refresh(){setLoading(true);setError("");try{setData(await api(`/api/usage?days=${days}&limit=5000`))}catch(err){setError(err.message)}finally{setLoading(false)}}
-  useEffect(()=>{refresh()},[days]);
+  const [codex,setCodex]=useState({account:null,rateLimits:null,usage:null,messages:null,errors:{},loading:false,notice:""});
+  async function refreshCodex(){
+    if(agentRuntime!=="codex"||!rpc||rpcStatus!=="connected"){setCodex(current=>({...current,account:null,rateLimits:null,usage:null,messages:null,errors:{},loading:false}));return}
+    setCodex(current=>({...current,loading:true,errors:{},notice:""}));
+    const requests=[
+      ["account",()=>rpc.request("account/read",{refreshToken:false})],
+      ["rateLimits",()=>rpc.request("account/rateLimits/read",{excludeResetCreditDetails:false})],
+      ["usage",()=>rpc.request("account/usage/read",activeThread?.id?{threadId:activeThread.id}:{})],
+      ["messages",()=>rpc.request("account/workspaceMessages/read",{})],
+    ];
+    const results=await Promise.all(requests.map(async([key,run])=>{try{return [key,await run(),null]}catch(err){return [key,null,err?.message||String(err)]}}));
+    const next={account:null,rateLimits:null,usage:null,messages:null,errors:{},loading:false,notice:""};
+    for(const [key,value,failure] of results){next[key]=value;if(failure)next.errors[key]=failure}
+    setCodex(next);
+  }
+  async function refreshLocal(){setLoading(true);setError("");try{setData(await api(`/api/usage?days=${days}&limit=5000`))}catch(err){setError(err.message)}finally{setLoading(false)}}
+  async function refresh(){await Promise.all([refreshLocal(),refreshCodex()])}
+  useEffect(()=>{refreshLocal()},[days]);
+  useEffect(()=>{refreshCodex()},[rpc,rpcStatus,activeThread?.id,agentRuntime]);
   const computed=useMemo(()=>{
     let cost=0,known=0,estimated=0;const modelMap={};
     for(const record of data.records||[]){const item=estimateCost(record,settings);if(item){cost+=item.amount;item.estimated?estimated++:known++}const key=record.model||"Unknown model";const bucket=modelMap[key]||(modelMap[key]={tokens:0,turns:0,cost:0,costEntries:0,runtime:record.runtime});bucket.tokens+=Number(record.usage?.totalTokens||0);bucket.turns++;if(item){bucket.cost+=item.amount;bucket.costEntries++}}
@@ -23,9 +43,46 @@ export default function UsagePage({settings={}}){
   },[data,settings]);
   const daily=Object.entries(data.daily||{}).sort((a,b)=>a[0].localeCompare(b[0]));const maxDaily=Math.max(1,...daily.map(([,value])=>Number(value.tokens||0)));
   async function clear(){if(!confirm("Clear Trebell's locally recorded usage history? Provider account usage is not affected."))return;await api("/api/usage",{method:"DELETE"});await refresh()}
+  async function resetCodexLimit(creditId=null){
+    if(!rpc||!confirm("Use one earned Codex reset credit now? This can reset an eligible rate-limit window."))return;
+    setCodex(current=>({...current,loading:true,notice:""}));
+    try{
+      const result=await rpc.request("account/rateLimitResetCredit/consume",{idempotencyKey:crypto.randomUUID(),creditId:creditId||null});
+      const labels={reset:"Rate-limit window reset.",nothingToReset:"No current window is eligible for a reset.",noCredit:"No reset credit is available.",alreadyRedeemed:"That reset was already completed."};
+      await refreshCodex();
+      setCodex(current=>({...current,notice:labels[result?.outcome]||String(result?.outcome||"Reset request completed.")}));
+    }catch(err){setCodex(current=>({...current,loading:false,notice:err?.message||String(err)}))}
+  }
+  const codexLimits=codexRateLimitEntries(codex.rateLimits);
+  const codexSummary=codex.usage?.summary||null;
+  const threadUsage=codex.usage?.threadUsage||null;
+  const resetCredits=codex.rateLimits?.rateLimitResetCredits||null;
   return <div className="usage-page">
-    <div className="capabilities-toolbar"><div><h2>Usage</h2><p>Local per-turn token and cost history across Trebell harnesses. Provider-reported cost wins; custom-model prices are marked as estimates.</p></div><div className="usage-toolbar"><select value={days} onChange={e=>setDays(Number(e.target.value))}><option value={7}>7 days</option><option value={30}>30 days</option><option value={90}>90 days</option><option value={365}>1 year</option></select><button onClick={refresh} disabled={loading}><RefreshCw size={13}/>{loading?"Refreshing…":"Refresh"}</button><button onClick={clear} disabled={!data.records?.length}><Trash2 size={13}/> Clear local history</button></div></div>
+    <div className="capabilities-toolbar"><div><h2>Usage</h2><p>Local per-turn history across every Trebell harness, plus live Codex account limits when the active Codex runtime exposes them.</p></div><div className="usage-toolbar"><select value={days} onChange={e=>setDays(Number(e.target.value))}><option value={7}>7 days</option><option value={30}>30 days</option><option value={90}>90 days</option><option value={365}>1 year</option></select><button onClick={refresh} disabled={loading||codex.loading}><RefreshCw size={13}/>{loading||codex.loading?"Refreshing…":"Refresh"}</button><button onClick={clear} disabled={!data.records?.length}><Trash2 size={13}/> Clear local history</button></div></div>
     {error&&<div className="inline-error">{error}</div>}
+    {agentRuntime==="codex"&&rpcStatus==="connected"&&<section className="capability-card codex-account-usage" data-testid="codex-account-usage">
+      <div className="capability-card-head"><span><Sparkles size={15}/><strong>Codex account & limits</strong></span><em>{codex.account?.account?.planType||codex.rateLimits?.rateLimits?.planType||"live"}</em></div>
+      {codex.account?.account?.email&&<p className="codex-account-line">{codex.account.account.email}</p>}
+      {codex.rateLimits?.ordinaryUsageAllowed===false&&<div className="usage-warning"><CircleAlert size={14}/><span>Ordinary included usage is currently blocked by the account backend.</span></div>}
+      {codexLimits.length>0?<div className="codex-limit-grid">{codexLimits.map(({id,label,snapshot})=><div className="codex-limit-card" key={id}>
+        <div><strong>{label}</strong>{snapshot.rateLimitReachedType&&<span className="limit-reached">{rateLimitReachedLabel(snapshot.rateLimitReachedType)}</span>}</div>
+        {snapshot.primary&&<div className="limit-window"><span>Primary</span><i><b style={{width:`${Math.max(2,rateLimitRemainingPercent(snapshot.primary)??0)}%`}}/></i><strong>{rateLimitRemainingPercent(snapshot.primary)}% left</strong><small>{formatRateReset(snapshot.primary.resetsAt)}</small></div>}
+        {snapshot.secondary&&<div className="limit-window"><span>Secondary</span><i><b style={{width:`${Math.max(2,rateLimitRemainingPercent(snapshot.secondary)??0)}%`}}/></i><strong>{rateLimitRemainingPercent(snapshot.secondary)}% left</strong><small>{formatRateReset(snapshot.secondary.resetsAt)}</small></div>}
+        {snapshot.credits&&<div className="limit-meta"><span>Credits</span><strong>{snapshot.credits.unlimited?"Unlimited":snapshot.credits.balance??(snapshot.credits.hasCredits?"Available":"None")}</strong></div>}
+        {snapshot.individualLimit&&<div className="limit-meta"><span>Spend control</span><strong>{snapshot.individualLimit.used} / {snapshot.individualLimit.limit}</strong><small>{snapshot.individualLimit.remainingPercent}% left · {formatRateReset(snapshot.individualLimit.resetsAt)}</small></div>}
+      </div>)}</div>:<p>{codex.loading?"Loading live Codex account limits…":"This inference route did not return Codex account limits."}</p>}
+      {resetCredits?.availableCount>0&&<div className="reset-credit-row"><div><strong>{resetCredits.availableCount} reset credit{resetCredits.availableCount===1?"":"s"} available</strong><span>Earned reset credits can restore an eligible Codex rate-limit window.</span></div><button onClick={()=>resetCodexLimit(resetCredits.credits?.find(item=>item.status==="available")?.id||null)} disabled={codex.loading}><RotateCcw size={12}/> Use reset credit</button></div>}
+      {codexSummary&&<div className="codex-usage-kv">
+        <div><span>Lifetime tokens</span><strong>{codexSummary.lifetimeTokens==null?"—":formatTokens(codexSummary.lifetimeTokens)}</strong></div>
+        <div><span>Peak day</span><strong>{codexSummary.peakDailyTokens==null?"—":formatTokens(codexSummary.peakDailyTokens)}</strong></div>
+        <div><span>Current streak</span><strong>{codexSummary.currentStreakDays==null?"—":codexSummary.currentStreakDays+"d"}</strong></div>
+        <div><span>Longest turn</span><strong>{duration(codexSummary.longestRunningTurnSec)}</strong></div>
+      </div>}
+      {threadUsage&&<div className="thread-account-usage"><strong>Current thread estimate</strong><span>{formatTokens(threadUsage.groups?.reduce((sum,item)=>sum+Number(item.totalTokens||0),0)||0)} tokens · {money(microsToCurrency(threadUsage.estimatedUsageUsdMicros))} · {(Number(threadUsage.estimatedUsageCreditsMicros||0)/1_000_000).toFixed(3)} credits</span></div>}
+      {codex.messages?.featureEnabled&&codex.messages.messages?.length>0&&<div className="workspace-messages"><strong>Workspace messages</strong>{codex.messages.messages.map(message=><div key={message.messageId}><span>{String(message.messageType||"notice").replaceAll("_"," ")}</span><p>{message.messageBody}</p></div>)}</div>}
+      {codex.notice&&<p className="provider-note">{codex.notice}</p>}
+      {Object.values(codex.errors).length>0&&<details className="capability-details"><summary>Unavailable Codex account data</summary><pre>{Object.entries(codex.errors).map(([key,value])=>`${key}: ${value}`).join("\n")}</pre></details>}
+    </section>}
     <div className="usage-summary">
       <div><span>Total tokens</span><strong>{formatTokens(data.total?.totalTokens)}</strong><small>{(data.records||[]).length} recorded turns</small></div>
       <div><span>Input</span><strong>{formatTokens(data.total?.inputTokens)}</strong><small>{formatTokens(data.total?.cachedInputTokens)} cached</small></div>
