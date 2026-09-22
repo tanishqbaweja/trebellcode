@@ -40,11 +40,16 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(remoteEnvironment.profile.id,"ssh-test");
     const remoteProject=await fetch(gui.url+"/api/projects",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({
       path:"/srv/app",environmentId:"ssh-test",
+      scripts:[{id:"remote-dev",name:"Remote dev",command:"npm run dev"}],
     })}).then(r=>r.json());
     assert.equal(remoteProject.project.path,"/srv/app");
     assert.equal(remoteProject.project.environmentId,"ssh-test");
     const projectsAfter=await fetch(gui.url+"/api/projects").then(r=>r.json());
     assert.equal(projectsAfter.projects.find(project=>project.id===remoteProject.project.id).environment.name,"Remote test");
+    const remoteAction=await fetch(gui.url+"/api/project-script/run",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({path:"/srv/app",environmentId:"ssh-test",scriptId:"remote-dev"})}).then(r=>r.json());
+    assert.equal(remoteAction.ok,true);
+    assert.equal(remoteAction.session.environmentId,"ssh-test");
+    assert.equal(remoteAction.session.environmentType,"ssh");
     const actionRun=await fetch(gui.url+"/api/project-script/run",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({path:projectPath,scriptId:"dev"})}).then(r=>r.json());
     assert.equal(actionRun.ok,true);
     assert.equal(actionRun.session.id,"mock-project-action");

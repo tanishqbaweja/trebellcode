@@ -38,6 +38,7 @@ export class TerminalManager extends EventEmitter{
         if(!raw?.id)continue;
         const session={
           id:String(raw.id),name:String(raw.name||"Terminal"),cwd:String(raw.cwd||process.cwd()),cols:Number(raw.cols)||120,rows:Number(raw.rows)||32,pid:null,
+          environmentId:raw.environmentId?String(raw.environmentId):null,environmentName:String(raw.environmentName||"Local machine"),environmentType:String(raw.environmentType||"local"),
           buffer:trimBuffer(String(raw.buffer||"")),running:false,exitCode:raw.exitCode==null?null:Number(raw.exitCode),createdAt:Number(raw.createdAt)||Date.now(),updatedAt:Number(raw.updatedAt)||Date.now(),restored:true,
         };
         this.sessions.set(session.id,session);
@@ -48,7 +49,7 @@ export class TerminalManager extends EventEmitter{
     if(!this.persist)return;
     clearTimeout(this.saveTimer);this.saveTimer=null;
     const sessions=[...this.sessions.values()].sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0)).map(session=>({
-      id:session.id,name:session.name,cwd:session.cwd,cols:session.cols,rows:session.rows,buffer:trimBuffer(session.buffer||""),running:false,exitCode:session.exitCode,createdAt:session.createdAt,updatedAt:session.updatedAt,
+      id:session.id,name:session.name,cwd:session.cwd,environmentId:session.environmentId||null,environmentName:session.environmentName||"Local machine",environmentType:session.environmentType||"local",cols:session.cols,rows:session.rows,buffer:trimBuffer(session.buffer||""),running:false,exitCode:session.exitCode,createdAt:session.createdAt,updatedAt:session.updatedAt,
     }));
     try{mkdirSync(dirname(this.historyPath),{recursive:true});const tmp=this.historyPath+".tmp";writeFileSync(tmp,JSON.stringify({version:1,sessions},null,2),{encoding:"utf8",mode:0o600});renameSync(tmp,this.historyPath)}catch{}
   }
@@ -86,15 +87,18 @@ export class TerminalManager extends EventEmitter{
     this.child.stdin.write(JSON.stringify({rid,action,...payload})+"\n");
     return new Promise((resolve,reject)=>{this.pending.set(rid,{resolve,reject});setTimeout(()=>{if(this.pending.delete(rid))reject(new Error("Terminal worker timed out"));},15000);});
   }
-  async create({cwd,cols=120,rows=32,shell=null,args=null,name=null,env=null}={}){
+  async create({cwd,displayCwd=null,cols=120,rows=32,shell=null,args=null,name=null,env=null,environmentId=null,environmentName="Local machine",environmentType="local"}={}){
     const id=randomUUID();
     const result=await this.#rpc("create",{id,cwd,cols,rows,shell,args,env});
-    const session={id,name:name||"Terminal",cwd:cwd||process.cwd(),cols,rows,pid:result.pid,buffer:"",running:true,exitCode:null,createdAt:Date.now(),updatedAt:Date.now()};
+    const session={id,name:name||"Terminal",cwd:displayCwd||cwd||process.cwd(),environmentId:environmentId||null,environmentName:environmentName||"Local machine",environmentType:environmentType||"local",cols,rows,pid:result.pid,buffer:"",running:true,exitCode:null,createdAt:Date.now(),updatedAt:Date.now()};
     this.sessions.set(id,session);this.#saveHistory(); return this.snapshot(id);
   }
-  list(){return [...this.sessions.values()].map(s=>this.#public(s));}
+  list(environmentId=undefined){
+    const wanted=environmentId===undefined?undefined:(environmentId||null);
+    return [...this.sessions.values()].filter(session=>wanted===undefined||(session.environmentId||null)===wanted).map(s=>this.#public(s));
+  }
   snapshot(id){const s=this.sessions.get(id);return s?this.#public(s):null;}
-  #public(s){return {id:s.id,name:s.name,cwd:s.cwd,cols:s.cols,rows:s.rows,pid:s.pid,running:s.running,exitCode:s.exitCode,createdAt:s.createdAt,updatedAt:s.updatedAt,buffer:s.buffer,restored:Boolean(s.restored)};}
+  #public(s){return {id:s.id,name:s.name,cwd:s.cwd,environmentId:s.environmentId||null,environmentName:s.environmentName||"Local machine",environmentType:s.environmentType||"local",cols:s.cols,rows:s.rows,pid:s.pid,running:s.running,exitCode:s.exitCode,createdAt:s.createdAt,updatedAt:s.updatedAt,buffer:s.buffer,restored:Boolean(s.restored)};}
   async write(id,data){const session=this.sessions.get(id);if(!session?.running)throw new Error("Terminal session is stopped; create a new terminal to run commands");await this.#rpc("write",{id,data});}
   async resize(id,cols,rows){const s=this.sessions.get(id);if(s?.running)await this.#rpc("resize",{id,cols,rows});if(s){s.cols=cols;s.rows=rows;this.#scheduleSave();}}
   async waitForExit(id,{timeoutMs=30*60_000}={}){

@@ -420,6 +420,37 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   let loginPromise=null;
   const checkpoints=new CheckpointService({state,env});
   const terminals=mock ? null : new TerminalManager({env});
+  function terminalOptions({environmentId=null,cwd=null,name=null,cols=120,rows=32,terminalEnv=null}={}){
+    const spec=environments.terminalSpec(environmentId,{cwd});
+    const profile=environmentId?environments.get(environmentId):null;
+    const displayCwd=String(cwd||profile?.cwd||process.cwd());
+    return {
+      cwd:spec.cwd,
+      displayCwd,
+      cols,
+      rows,
+      name:name||"Terminal",
+      env:terminalEnv||null,
+      shell:spec.shell,
+      args:spec.args,
+      environmentId:spec.environmentId,
+      environmentName:spec.environmentName,
+      environmentType:spec.environmentType,
+    };
+  }
+  async function createTerminalSession(body={}){
+    const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")
+      ?requestedEnvironmentId(body.environmentId,{fallback:false})
+      :requestedEnvironmentId(null);
+    return terminals.create(terminalOptions({
+      environmentId,
+      cwd:body.cwd||null,
+      name:body.name||null,
+      cols:body.cols,
+      rows:body.rows,
+      terminalEnv:body.env||null,
+    }));
+  }
   function worktreeUsage(){
     const activePaths=[],referencedPaths=[];
     for(const thread of agentThreads.list()){
@@ -848,12 +879,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         if(!project) return json(res,404,{error:"Project was not found"});
         const script=(project.scripts||[]).find(item=>item.id===String(body.scriptId||""));
         if(!script) return json(res,404,{error:"Project action was not found"});
-        const profile=environmentId?environments.get(environmentId):null;
-        if(profile&&profile.type!=="local")return json(res,400,{error:"Remote project actions require a remote terminal session"});
         if(mock){
-          return json(res,200,{ok:true,script,session:{id:"mock-project-action",name:script.name,cwd:projectPath,running:true},previewUrl:script.previewUrl||null});
+          const profile=environmentId?environments.get(environmentId):null;
+          return json(res,200,{ok:true,script,session:{id:"mock-project-action",name:script.name,cwd:projectPath,environmentId,environmentName:profile?.name||"Local machine",environmentType:profile?.type||"local",running:true},previewUrl:script.previewUrl||null});
         }
-        const session=await terminals.create({cwd:projectPath,name:script.name||"Project action",cols:120,rows:32});
+        const session=await createTerminalSession({cwd:projectPath,environmentId,name:script.name||"Project action",cols:120,rows:32});
         await terminals.write(session.id,String(script.command||"")+"\r");
         return json(res,200,{ok:true,script,session:terminals.snapshot(session.id),previewUrl:script.previewUrl||null});
       }catch(error){return json(res,400,{ok:false,error:error.message});}
@@ -1024,9 +1054,14 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         if(req.method==="POST") return json(res,200,{session:{id:"mock-terminal",name:"Terminal",cwd:process.cwd(),buffer:"",running:true}});
         if(req.method==="DELETE") return json(res,200,{ok:true});
       }
-      if(req.method==="GET") return json(res,200,{sessions:terminals.list()});
+      if(req.method==="GET"){
+        const filter=url.searchParams.has("environmentId")
+          ?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false})
+          :undefined;
+        return json(res,200,{sessions:terminals.list(filter)});
+      }
       if(req.method==="POST"){
-        try{return json(res,200,{session:await terminals.create(await readJsonBody(req))});}
+        try{return json(res,200,{session:await createTerminalSession(await readJsonBody(req))});}
         catch(error){return json(res,400,{error:error.message});}
       }
       if(req.method==="DELETE"){

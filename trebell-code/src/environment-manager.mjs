@@ -237,6 +237,55 @@ export class EnvironmentManager {
     throw new Error("Unsupported environment type");
   }
 
+  terminalSpec(id,{cwd=null}={}){
+    const profile=id?this.get(id):null;
+    if(!profile||profile.type==="local"){
+      return {
+        environmentId:profile?.id||null,
+        environmentName:profile?.name||"Local machine",
+        environmentType:"local",
+        cwd:String(cwd??profile?.cwd??"").trim()||undefined,
+        shell:null,
+        args:null,
+      };
+    }
+    const working=String(cwd??profile.cwd??"").trim();
+    const remoteShell="\"$"+"{SHELL:-/bin/bash}\"";
+    const launch=working
+      ?"cd "+quotePosix(working)+" && exec "+remoteShell+" -l"
+      :"exec "+remoteShell+" -l";
+    if(profile.type==="wsl"){
+      if(this.platform!=="win32")throw new Error("WSL environments are available only on Windows");
+      const args=[];
+      if(profile.distro)args.push("-d",profile.distro);
+      args.push("--","bash","-lc",launch);
+      return {
+        environmentId:profile.id,
+        environmentName:profile.name,
+        environmentType:"wsl",
+        cwd:undefined,
+        shell:"wsl.exe",
+        args,
+      };
+    }
+    if(profile.type==="ssh"){
+      const shell=this.platform==="win32"?"ssh.exe":"ssh";
+      const args=["-tt","-o","BatchMode=yes","-o","ConnectTimeout=8","-o","ServerAliveInterval=15","-p",String(normalizedPort(profile.port))];
+      if(profile.identityFile)args.push("-i",profile.identityFile);
+      const target=profile.user?(profile.user+"@"+profile.host):profile.host;
+      args.push(target,launch);
+      return {
+        environmentId:profile.id,
+        environmentName:profile.name,
+        environmentType:"ssh",
+        cwd:undefined,
+        shell,
+        args,
+      };
+    }
+    throw new Error("Unsupported environment type");
+  }
+
   spawnArgv(id,{command,args=[],cwd=null,stdio=["pipe","pipe","pipe"]}={}){
     const profile=this.get(id);
     if(!profile) throw new Error("Environment profile was not found");

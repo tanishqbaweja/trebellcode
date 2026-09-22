@@ -1147,7 +1147,7 @@ export default function App(){
   }
   async function runProjectAction(script){
     if(!script||!projectPath)return;
-    const result=await api("/api/project-script/run",{method:"POST",body:{path:projectPath,scriptId:script.id}});
+    const result=await api("/api/project-script/run",{method:"POST",body:{path:projectPath,environmentId:workspaceEnvironmentId,scriptId:script.id}});
     setSection("chat");setPanel("terminal");
     setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0);
     if(script.previewUrl&&script.autoOpenPreview){
@@ -1334,7 +1334,7 @@ export default function App(){
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="terminal-drawer-head"><span><SquareTerminal size={14}/> Terminal</span><div><button onClick={()=>attachExcerpt("")} aria-hidden="true" tabIndex={-1} className="terminal-head-spacer"/><button onClick={()=>setPanel(null)} aria-label="Close terminal"><X size={15}/></button></div></div>
-            <TerminalPanel projectPath={projectPath} onAttachExcerpt={attachExcerpt}/>
+            <TerminalPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} onAttachExcerpt={attachExcerpt}/>
           </div>}
         </div>}
 

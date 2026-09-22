@@ -46,11 +46,12 @@ test("terminal scrollback survives manager restart as stopped history",{timeout:
     const marker="trebell-history-"+Date.now();
     const shell=process.platform==="win32"?(process.env.COMSPEC||"cmd.exe"):(process.env.SHELL||"/bin/bash");
     const args=process.platform==="win32"?["/d","/s","/c",`echo ${marker}`]:["-lc",`printf '${marker}\\n'`];
-    const session=await first.create({cwd:process.cwd(),shell,args,name:"History fixture"});
+    const session=await first.create({cwd:process.cwd(),displayCwd:"/srv/app",shell,args,name:"History fixture",environmentId:"ssh-a",environmentName:"Build box",environmentType:"ssh"});
     await first.waitForExit(session.id,{timeoutMs:10000});assert.match(first.snapshot(session.id).buffer,new RegExp(marker));
     await first.shutdown();first=null;
     second=new TerminalManager({env});const restored=second.snapshot(session.id);
-    assert.ok(restored);assert.equal(restored.running,false);assert.equal(restored.restored,true);assert.equal(restored.name,"History fixture");assert.match(restored.buffer,new RegExp(marker));
+    assert.ok(restored);assert.equal(restored.running,false);assert.equal(restored.restored,true);assert.equal(restored.name,"History fixture");assert.equal(restored.cwd,"/srv/app");assert.equal(restored.environmentId,"ssh-a");assert.equal(restored.environmentName,"Build box");assert.equal(restored.environmentType,"ssh");assert.match(restored.buffer,new RegExp(marker));
+    assert.equal(second.list("ssh-a").length,1);assert.equal(second.list(null).length,0);
     await assert.rejects(()=>second.write(session.id,"echo should-not-run\r"),/stopped/i);
     await second.close(session.id);assert.equal(second.snapshot(session.id),null);
   }finally{await first?.shutdown().catch(()=>{});await second?.shutdown().catch(()=>{});await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:100})}

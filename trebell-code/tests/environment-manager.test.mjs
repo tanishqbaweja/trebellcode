@@ -109,3 +109,31 @@ test("remote environments without a published theme directory return an empty ca
   assert.deepEqual(catalog.themes,[]);
   assert.equal(catalog.directory,".trebell/themes");
 });
+
+test("terminal specs keep interactive shells inside local, WSL and SSH environments",()=>{
+  const profiles=[
+    {id:"local-profile",name:"Named local",type:"local",cwd:"C:\\code\\app"},
+    {id:"wsl",name:"Ubuntu dev",type:"wsl",cwd:"/home/me/app",distro:"Ubuntu"},
+    {id:"ssh",name:"Build box",type:"ssh",cwd:"/srv/app",host:"build.example",user:"dev",port:2222,identityFile:"C:\\keys\\build"},
+  ];
+  const manager=new EnvironmentManager({state:stateFor(profiles),platform:"win32"});
+  const local=manager.terminalSpec("local-profile",{cwd:"C:\\code\\other"});
+  assert.equal(local.environmentType,"local");
+  assert.equal(local.environmentId,"local-profile");
+  assert.equal(local.shell,null);
+  assert.equal(local.cwd,"C:\\code\\other");
+
+  const wsl=manager.terminalSpec("wsl",{cwd:"/work/repo"});
+  assert.equal(wsl.shell,"wsl.exe");
+  assert.deepEqual(wsl.args.slice(0,4),["-d","Ubuntu","--","bash"]);
+  assert.equal(wsl.args.at(-1).includes("cd '/work/repo'"),true);
+  assert.equal(wsl.args.at(-1).includes("/bin/bash"),true);
+
+  const ssh=manager.terminalSpec("ssh",{cwd:"/srv/app"});
+  assert.equal(ssh.shell,"ssh.exe");
+  assert.equal(ssh.args.includes("-tt"),true);
+  assert.equal(ssh.args.includes("2222"),true);
+  assert.equal(ssh.args.includes("C:\\keys\\build"),true);
+  assert.equal(ssh.args.at(-2),"dev@build.example");
+  assert.equal(ssh.args.at(-1).includes("cd '/srv/app'"),true);
+});
