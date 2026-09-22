@@ -97,6 +97,33 @@ test("Trebell Code renders the harness and scopes models to the selected provide
 
   await page.getByTestId("right-panel-toggle").click();
   await expect(page.getByTestId("right-panel")).toBeVisible();
+  const stackLayers=[
+    {position:1,number:1,title:"Layer one",state:"OPEN",isDraft:false,url:"https://github.com/acme/widget/pull/1",headRefName:"layer-one",headSha:"old1",baseRefName:"main",baseSha:"base0"},
+    {position:2,number:2,title:"Layer two",state:"OPEN",isDraft:false,url:"https://github.com/acme/widget/pull/2",headRefName:"layer-two",headSha:"old2",baseRefName:"layer-one",baseSha:"old1"},
+  ];
+  const stackSummary={number:42,size:2,position:2,baseRefName:"main",baseSha:"base0"};
+  const prItems=stackLayers.map(layer=>({provider:"github",number:layer.number,title:layer.title,state:layer.state,isDraft:false,url:layer.url,headRefName:layer.headRefName,baseRefName:layer.baseRefName,stack:{...stackSummary,position:layer.position}}));
+  const stackActions=[];
+  await page.route("**/api/source-control/diagnostics?**",route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selectedProvider:"github",detectedProvider:"github",git:{version:"git version test"},providers:{github:{label:"GitHub",installed:true,authenticated:true}},capabilities:{github:{create:true,edit:true,comment:true,editComments:true,review:true,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:true,viewedFiles:"host",approveWorkflows:true,revert:true,stacks:true}}})}));
+  await page.route("**/api/source-control/prs?**",route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,provider:"github",capabilities:{create:true,edit:true,comment:true,editComments:true,review:true,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:true,viewedFiles:"host",approveWorkflows:true,revert:true,stacks:true},items:prItems})}));
+  await page.route("**/api/source-control/pr-detail?**",route=>{
+    const url=new URL(route.request().url());const number=Number(url.searchParams.get("number"))||2;const layer=stackLayers.find(item=>item.number===number)||stackLayers[1];
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,provider:"github",capabilities:{create:true,edit:true,comment:true,editComments:true,review:true,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:true,viewedFiles:"host",approveWorkflows:true,revert:true,stacks:true},item:{...layer,body:"Stacked change",comments:[],reviews:[],files:[],statusCheckRollup:[],stack:{...stackSummary,position:layer.position,layers:stackLayers,selectedNumber:number}}})});
+  });
+  await page.route("**/api/source-control/pr-viewed?**",route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,provider:"github",store:"host",files:[],headSha:"old2"})}));
+  await page.route("**/api/source-control/pr-action",async route=>{stackActions.push(route.request().postDataJSON());await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,provider:"github"})})});
+  await page.getByTestId("right-panel").locator('.context-panel-tab-scroll button[aria-label="Git"]').click();
+  await expect(page.getByText("stack 2/2",{exact:false})).toBeVisible();
+  await page.getByRole("button",{name:/#2 Layer two/}).click();
+  await expect(page.getByText("GitHub stack #42")).toBeVisible();
+  await expect(page.getByLabel("Stack merge method")).toHaveValue("squash");
+  await page.getByLabel("Stack merge method").selectOption("rebase");
+  page.once("dialog",dialog=>dialog.accept());
+  await page.getByRole("button",{name:"Merge through #2"}).click();
+  await expect.poll(()=>stackActions.length).toBe(1);
+  expect(stackActions[0].action).toBe("merge");
+  expect(stackActions[0].number).toBe(2);
+  expect(stackActions[0].method).toBe("rebase");
   await page.getByTestId("right-panel").getByRole("button",{name:"Diff"}).click();
   await expect(page.getByText("Changes",{exact:true}).first()).toBeVisible();
   await page.getByRole("button",{name:"Close right panel"}).click();
@@ -206,8 +233,10 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   const scopedTargets=scopedSettings.locator(".scoped-settings-targets select");
   await scopedTargets.nth(0).selectOption("ssh-palette");
   await scopedSettings.getByLabel("Permissions").selectOption("full");
-  const remoteDefaults=await (await request.get("/api/scoped-settings?environmentId=ssh-palette")).json();
-  expect(remoteDefaults.effective.defaultPermissionMode).toBe("full");
+  await expect.poll(async()=>{
+    const remoteDefaults=await (await request.get("/api/scoped-settings?environmentId=ssh-palette")).json();
+    return remoteDefaults.effective.defaultPermissionMode;
+  }).toBe("full");
   await scopedTargets.nth(1).selectOption({label:"Remote App · /srv/app"});
   await expect(scopedSettings.getByLabel("Permissions")).toHaveValue("__inherit__");
   await scopedSettings.getByLabel("Permissions").selectOption("edits");
