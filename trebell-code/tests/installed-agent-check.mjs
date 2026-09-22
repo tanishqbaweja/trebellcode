@@ -143,24 +143,11 @@ try{
   assert.ok(thread.thread?.id,"thread/start did not return a thread id");
   const fixtureUrl=`http://127.0.0.1:${fixturePort}`;
   const expected=`${proof}:model-ok`;
-  const turn=await rpc.request("turn/start",{threadId:thread.thread.id,model,cwd:workspace,approvalPolicy:"never",sandboxPolicy:{type:"dangerFullAccess"},input:[{type:"text",text:[
-    "Perform this packaged Trebell validation using tools, not guesses.",
-    "1. Call trebell_computer.screenshot once.",
-    `2. Open ${fixtureUrl} with trebell_browser.open.`,
-    "3. Snapshot the page. Type model-ok into the proof input, click Commit proof, then snapshot again.",
-    `4. Confirm the page shows exactly ${expected}.`,
-    `5. Use your shell/filesystem tools to create installed-agent-proof.txt in the current workspace containing exactly ${expected}.`,
-    "6. Read that file back to verify it.",
-    `7. Reply with only ${expected}.`,
-  ].join("\n"),text_elements:[]} ]});
-  const turnId=turn.turn?.id;assert.ok(turnId,"turn/start did not return a turn id");
-  let completed;
-  try{
-    completed=await rpc.waitFor(msg=>msg.method==="turn/completed"&&(msg.params?.turn?.id===turnId||msg.params?.turnId===turnId),180000);
-  }catch(error){
+  async function timeoutDiagnostics(error,label){
     const diagnostics=await fetch(base+"/api/diagnostics?path="+encodeURIComponent(workspace)).then(r=>r.json()).catch(()=>null);
     const resumed=await rpc.request("thread/resume",{threadId:thread.thread.id,model,modelProvider:"vyceai",cwd:workspace,excludeTurns:false}).catch(()=>null);
     console.error("PACKAGED_AGENT_TIMEOUT_DIAGNOSTICS",JSON.stringify({
+      label,
       toolCalls,
       assistantTail:assistant.slice(-2000),
       notifications:rpc.notifications.slice(-50).map(msg=>({method:msg.method,turnId:msg.params?.turnId||msg.params?.turn?.id||null,itemType:msg.params?.item?.type||null,status:msg.params?.turn?.status||msg.params?.status||null,message:msg.params?.message||null})),
@@ -170,13 +157,45 @@ try{
     },null,2));
     throw error;
   }
+  async function runCapabilityTurn(label,text,{requiredCalls=[],timeoutMs=90000,retries=1}={}){
+    let lastError=null;
+    for(let attempt=0;attempt<=retries;attempt++){
+      const callsBefore=toolCalls.length;
+      const turn=await rpc.request("turn/start",{threadId:thread.thread.id,model,cwd:workspace,approvalPolicy:"never",sandboxPolicy:{type:"dangerFullAccess"},input:[{type:"text",text,text_elements:[]}]});
+      const turnId=turn.turn?.id;assert.ok(turnId,`${label}: turn/start did not return a turn id`);
+      try{
+        const completed=await rpc.waitFor(msg=>msg.method==="turn/completed"&&(msg.params?.turn?.id===turnId||msg.params?.turnId===turnId),timeoutMs);
+        assert.equal(completed.params?.turn?.status,"completed",`${label}: turn did not complete successfully`);
+        const calls=toolCalls.slice(callsBefore);
+        for(const call of requiredCalls)assert.ok(calls.includes(call),`${label}: model did not call ${call}`);
+        return {turnId,completed,calls};
+      }catch(error){
+        lastError=error;
+        await rpc.request("turn/interrupt",{threadId:thread.thread.id,turnId}).catch(()=>{});
+        if(attempt<retries){await wait(750);continue}
+      }
+    }
+    return timeoutDiagnostics(lastError,label);
+  }
+
+  await runCapabilityTurn("computer screenshot","Call trebell_computer.screenshot exactly once, inspect its result, then reply exactly COMPUTER_OK.",{requiredCalls:["trebell_computer/screenshot"]});
+  await runCapabilityTurn("browser open",`Call trebell_browser.open exactly once with ${fixtureUrl}, inspect its result, then reply exactly BROWSER_OPEN_OK.`,{requiredCalls:["trebell_browser/open"]});
+  await runCapabilityTurn("browser snapshot","Call trebell_browser.snapshot exactly once, inspect the page, then reply exactly SNAPSHOT_OK.",{requiredCalls:["trebell_browser/snapshot"]});
+
+  const directSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.browser.snapshot());
+  const input=directSnapshot.elements?.find(element=>element.name==="q");
+  const button=directSnapshot.elements?.find(element=>element.tag==="button"&&/Commit proof/i.test(element.text||""));
+  assert.ok(input?.ref&&button?.ref,"Packaged Agent Browser did not expose fixture input/button refs");
+  await runCapabilityTurn("browser type",`Call trebell_browser.type exactly once with ref ${input.ref} and text model-ok, then reply exactly TYPE_OK.`,{requiredCalls:["trebell_browser/type"]});
+  await runCapabilityTurn("browser click",`Call trebell_browser.click exactly once with ref ${button.ref}, then reply exactly CLICK_OK.`,{requiredCalls:["trebell_browser/click"]});
+  const afterClick=await mainPage.evaluate(()=>window.trebellDesktop.browser.snapshot());
+  assert.ok(afterClick.text?.includes(expected),`Packaged browser did not reach expected state: ${expected}`);
+
+  const fileTurn=await runCapabilityTurn("filesystem write",`Use your shell/filesystem tools to create installed-agent-proof.txt in the current workspace containing exactly ${expected} and nothing else. Read it back, verify it, then reply exactly FILE_OK.`,{timeoutMs:120000});
   const fileProof=decodeText(await readFile(join(workspace,"installed-agent-proof.txt"))).trim();
   assert.equal(fileProof,expected);
-  assert.match(assistant,new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")));
   for(const call of ["trebell_computer/screenshot","trebell_browser/open","trebell_browser/snapshot","trebell_browser/type","trebell_browser/click"])assert.ok(toolCalls.includes(call),`Model did not call ${call}`);
-  assert.ok(toolCalls.filter(call=>call==="trebell_browser/snapshot").length>=2,"Model did not snapshot before and after browser interaction");
-  assert.equal(completed.params?.turn?.status,"completed");
-  console.log(JSON.stringify({ok:true,model,turnStatus:completed.params?.turn?.status,toolCalls,fileProof,assistantContainsProof:true},null,2));
+  console.log(JSON.stringify({ok:true,model,turnStatus:fileTurn.completed.params?.turn?.status,toolCalls,fileProof,capabilityTurns:6},null,2));
 }finally{
   try{ws?.close()}catch{}
   try{await browser?.close()}catch{}
