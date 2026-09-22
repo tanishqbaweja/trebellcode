@@ -107,3 +107,23 @@ test("usage records upsert streaming updates instead of double-counting a turn",
     assert.equal(new TrebellStateStore(env).clearUsage(),2);
   }finally{await rm(home,{recursive:true,force:true});}
 });
+
+test("projects with the same remote path stay distinct across environments",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-state-project-env-"));
+  const env={...process.env,TREBELL_HOME:home};
+  try{
+    const state=new TrebellStateStore(env);
+    const first=state.touchProject("/srv/app",{environmentId:"ssh-a",name:"App A"});
+    const second=state.touchProject("/srv/app",{environmentId:"ssh-b",name:"App B"});
+    const local=state.touchProject("/srv/app",{environmentId:null,name:"Local-looking path"});
+    assert.notEqual(first.id,second.id);
+    assert.notEqual(second.id,local.id);
+    assert.equal(state.projects().length,3);
+    assert.equal(state.project("/srv/app","ssh-a").name,"App A");
+    assert.equal(state.project("/srv/app","ssh-b").name,"App B");
+    assert.equal(state.project("/srv/app",null).name,"Local-looking path");
+    const again=new TrebellStateStore(env);
+    assert.equal(again.project("/srv/app","ssh-a").environmentId,"ssh-a");
+    assert.equal(again.project("/srv/app",null).environmentId,null);
+  }finally{await rm(home,{recursive:true,force:true})}
+});

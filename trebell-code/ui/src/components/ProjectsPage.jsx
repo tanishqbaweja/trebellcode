@@ -25,7 +25,7 @@ function ProjectIcon({project}){
   return <span className="project-icon project-icon-monogram" style={{background:icon?.color||autoColor(project.name)}}>{text}</span>;
 }
 
-export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPreview,onProjectUpdated,models=[]}){
+export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOpen,onRunScript,onOpenPreview,onProjectUpdated,models=[]}){
   const [projects,setProjects]=useState([]);
   const [cloneUrl,setCloneUrl]=useState("");
   const [busy,setBusy]=useState(false);
@@ -38,6 +38,7 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
   async function refresh(){
     const d=await api("/api/projects").catch(()=>({projects:[]}));
     const enriched=await Promise.all((d.projects||[]).map(async project=>{
+      if(project.environment?.type&&project.environment.type!=="local")return {...project,scripts:Array.isArray(project.scripts)?project.scripts:[],git:null,remote:null,suggested:{scripts:[],t3:{present:false},packageManager:null}};
       const [git,suggested]=await Promise.all([
         api("/api/git/info?path="+encodeURIComponent(project.path)).catch(()=>null),
         api("/api/project-actions/suggestions?path="+encodeURIComponent(project.path)).catch(()=>({scripts:[],t3:{present:false},packageManager:null})),
@@ -52,7 +53,7 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
   async function saveProject(project,patch){
     setError("");
     try{
-      const result=await api("/api/projects",{method:"POST",body:{path:project.path,...patch}});
+      const result=await api("/api/projects",{method:"POST",body:{path:project.path,environmentId:project.environmentId||null,...patch}});
       onProjectUpdated?.(result.project);
       await refresh();
     }catch(err){setError(err.message||String(err));throw err}
@@ -64,7 +65,7 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
       catch(err){setError("Could not restore managed worktree: "+(err.message||String(err)));return}
       finally{setBusy(false)}
     }
-    onOpen(project.path);
+    onOpen(project.path,project.environmentId||null);
   }
   function cleanupValue(project){return project.worktreeCleanup||null}
   async function setCleanupMode(project,mode){
@@ -81,9 +82,9 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
   async function addLocal(){
     const path=await window.trebellDesktop?.pickDirectory?.();
     if(!path)return;
-    await api("/api/projects",{method:"POST",body:{path}});
+    await api("/api/projects",{method:"POST",body:{path,environmentId:null,activate:true}});
     await refresh();
-    onOpen(path);
+    onOpen(path,null);
   }
 
   async function clone(){
@@ -97,7 +98,7 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
     try{
       await api("/api/git/action",{method:"POST",body:{action:"clone",url:cloneUrl.trim(),destination}});
       await refresh();
-      onOpen(destination);
+      onOpen(destination,null);
       setCloneUrl("");
     } catch(err){setError(err.message||String(err))}
     finally { setBusy(false); }
@@ -193,8 +194,9 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
   const groups=useMemo(()=>{
     const map=new Map();
     for(const project of projects){
-      const key=project.remote||project.path;
-      if(!map.has(key)) map.set(key,{key,label:project.remote||project.name,projects:[]});
+      const environmentLabel=project.environment?.name||"Local machine";
+      const key=(project.environmentId||"local")+":"+(project.remote||project.path);
+      if(!map.has(key)) map.set(key,{key,label:project.remote||project.name,environmentLabel,projects:[]});
       map.get(key).projects.push(project);
     }
     return [...map.values()];
@@ -205,9 +207,9 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
     {error&&<p className="provider-status-error">{error}</p>}
     <div className="clone-card"><GitBranch size={20}/><div><strong>Clone repository</strong><span>HTTPS or SSH Git URL</span></div><input value={cloneUrl} onChange={e=>setCloneUrl(e.target.value)} placeholder="https://github.com/owner/repo.git"/><button onClick={clone} disabled={busy||!cloneUrl.trim()}>{busy?"Working…":"Clone"}</button></div>
     <div className="project-groups">{groups.map(group=><section className="project-group" key={group.key}>
-      <div className="project-group-head"><Layers3 size={14}/><div><strong>{group.label}</strong><span>{group.projects.length} checkout{group.projects.length===1?"":"s"}</span></div></div>
-      <div className="project-grid">{group.projects.map(p=><div className={p.path===currentPath?"project-card active":"project-card"} key={p.id}>
-        <button className="project-open" onClick={()=>openProject(p)}><ProjectIcon project={p}/><div><strong>{p.name}</strong><span>{p.path}</span><small>{p.managedWorktree?.cleanedAt?"managed worktree cleaned · click to restore":(p.git?.branch||"not a Git checkout")+" · "+new Date(p.lastOpenedAt).toLocaleString()}</small></div></button>
+      <div className="project-group-head"><Layers3 size={14}/><div><strong>{group.label}</strong><span>{group.environmentLabel} · {group.projects.length} checkout{group.projects.length===1?"":"s"}</span></div></div>
+      <div className="project-grid">{group.projects.map(p=><div className={p.path===currentPath&&(p.environmentId||null)===(currentEnvironmentId||null)?"project-card active":"project-card"} key={p.id}>
+        <button className="project-open" onClick={()=>openProject(p)}><ProjectIcon project={p}/><div><strong>{p.name}</strong><span>{p.environment?.name||"Local machine"} · {p.path}</span><small>{p.environment?.type!=="local"?"remote workspace · "+new Date(p.lastOpenedAt).toLocaleString():p.managedWorktree?.cleanedAt?"managed worktree cleaned · click to restore":(p.git?.branch||"not a Git checkout")+" · "+new Date(p.lastOpenedAt).toLocaleString()}</small></div></button>
         <button className="project-remove" onClick={async()=>{await api("/api/projects?id="+encodeURIComponent(p.id),{method:"DELETE"});refresh()}}><Trash2 size={13}/></button>
         <div className="project-overrides">
           <label>Model<select value={p.defaultModel||""} onChange={e=>saveProject(p,{defaultModel:e.target.value||null})}><option value="">Inherit client default</option>{models.map(id=><option key={id} value={id}>{id.replace(/^freebuff\//,"")}</option>)}</select></label>
@@ -219,7 +221,7 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
         {identityOpen[p.id]&&<div className="project-identity-editor"><label>Name<input defaultValue={p.name} onBlur={e=>{const value=e.target.value.trim();if(value&&value!==p.name)saveProject(p,{name:value})}}/></label><div className="project-icon-actions"><button onClick={()=>saveProject(p,{icon:null})}>Automatic</button><button onClick={()=>setIconDraft(current=>({...current,[p.id]:{kind:"emoji",value:p.icon?.kind==="emoji"?p.icon.value:"🚀",color:p.icon?.color||autoColor(p.name)}}))}>Emoji</button><button onClick={()=>setIconDraft(current=>({...current,[p.id]:{kind:"monogram",value:p.icon?.kind==="monogram"?p.icon.value:autoMonogram(p.name),color:p.icon?.color||autoColor(p.name)}}))}>Monogram</button><label className="project-image-button"><ImagePlus size={12}/> Image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={e=>importProjectImage(p,e.target.files?.[0])}/></label></div>{iconDraft[p.id]&&<div className="project-icon-draft"><input maxLength={iconDraft[p.id].kind==="monogram"?2:16} value={iconDraft[p.id].value} onChange={e=>setIconDraft(current=>({...current,[p.id]:{...current[p.id],value:e.target.value}}))}/><input type="color" value={iconDraft[p.id].color||autoColor(p.name)} onChange={e=>setIconDraft(current=>({...current,[p.id]:{...current[p.id],color:e.target.value}}))}/><button onClick={async()=>{await saveProject(p,{icon:iconDraft[p.id]});setIconDraft(current=>({...current,[p.id]:null}))}}>Save icon</button></div>}</div>}
         <div className="project-cleanup"><label>Automatic worktree cleanup<select value={p.worktreeCleanup?.mode||"inherit"} onChange={e=>setCleanupMode(p,e.target.value)}><option value="inherit">Inherit</option><option value="off">Off</option><option value="custom">Custom</option></select></label>{p.worktreeCleanup?.mode==="custom"&&<div className="project-cleanup-rules"><label>After inactive days<input type="number" min="1" max="3650" defaultValue={p.worktreeCleanup.rules?.worktreeAfterDays??""} placeholder="Never" onBlur={e=>setCleanupRule(p,"worktreeAfterDays",e.target.value?Number(e.target.value):null)}/></label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeOnMerge)} onChange={e=>setCleanupRule(p,"worktreeOnMerge",e.target.checked)}/> After merge</label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeOnDelete)} onChange={e=>setCleanupRule(p,"worktreeOnDelete",e.target.checked)}/> After last thread deletion</label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeUnchanged)} onChange={e=>setCleanupRule(p,"worktreeUnchanged",e.target.checked)}/> If unchanged from base</label></div>}</div>
 
-        <div className="project-actions">
+        {p.environment?.type==="local"?<div className="project-actions">
           <div className="project-actions-head"><span><SquareTerminal size={13}/> Project actions</span><div>{importableScripts(p).length>0&&<button onClick={()=>setSuggestionsOpen(current=>({...current,[p.id]:!current[p.id]}))}><Download size={12}/> Import {importableScripts(p).length}</button>}<button onClick={()=>editScript(p)}><Plus size={12}/> Add action</button></div></div>
           {p.suggested?.t3?.present&&<div className="project-config-hint"><strong>t3.json detected</strong><span>{[p.suggested.t3.defaultThreadEnvMode&&("workspace "+p.suggested.t3.defaultThreadEnvMode),p.suggested.t3.worktreeSubmodules&&("submodules "+p.suggested.t3.worktreeSubmodules)].filter(Boolean).join(" · ")||"Shared project actions available"}</span>{p.suggested.t3.defaultThreadEnvMode&&p.workspaceMode!==p.suggested.t3.defaultThreadEnvMode&&<button onClick={()=>saveProject(p,{workspaceMode:p.suggested.t3.defaultThreadEnvMode})}>Use workspace</button>}{p.suggested.t3.worktreeSubmodules&&p.worktreeSubmodules!==p.suggested.t3.worktreeSubmodules&&<button onClick={()=>saveProject(p,{worktreeSubmodules:p.suggested.t3.worktreeSubmodules})}>Use submodules</button>}</div>}
           {suggestionsOpen[p.id]&&importableScripts(p).length>0&&<div className="project-import-list">
@@ -241,7 +243,7 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
             <label><input type="checkbox" checked={editor.autoOpenPreview} disabled={!editor.previewUrl.trim()} onChange={e=>setEditor({...editor,autoOpenPreview:e.target.checked})}/> Open preview when this action runs</label>
             <div><button className="primary" disabled={!editor.command.trim()} onClick={()=>submitScript(p)}><Check size={12}/> Save action</button><button onClick={()=>setEditor(null)}><X size={12}/> Cancel</button></div>
           </div>}
-        </div>
+        </div>:<p className="project-actions-empty">Project actions are hidden for this remote workspace until a remote terminal session is attached.</p>}
       </div>)}</div>
     </section>)}</div>
   </div>;

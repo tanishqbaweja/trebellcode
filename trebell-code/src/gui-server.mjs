@@ -2,11 +2,18 @@ import { createServer } from "node:http";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createReadStream, statfsSync } from "node:fs";
 import { cpus, freemem, totalmem, tmpdir, loadavg } from "node:os";
-import { basename, extname, join, normalize, resolve, sep } from "node:path";
+import { basename, extname, join, normalize, posix, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { randomUUID, randomBytes } from "node:crypto";
 import { attachCodexRelay, probeCodexReady, waitForCodexReady } from "./codex-relay.mjs";
-import { workspaceDiff, workspaceFile, workspaceSearch, workspaceTree, workspaceWriteFile } from "./workspace.mjs";
+import {
+  environmentWorkspaceDiff,
+  environmentWorkspaceFile,
+  environmentWorkspacePath,
+  environmentWorkspaceSearch,
+  environmentWorkspaceTree,
+  environmentWorkspaceWriteFile,
+} from "./workspace.mjs";
 import { spawn } from "node:child_process";
 import { codexBin, codexHome, packageRoot, trebellHome } from "./paths.mjs";
 import { DEFAULT_PORT, codexProviderOverrides, ensureCodexConfig } from "./config.mjs";
@@ -361,6 +368,27 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   const devices=new DeviceService({env});
   const providers=new ProviderManager({env});
   const environments=new EnvironmentManager({state,env});
+  function requestedEnvironmentId(value,{fallback=true}={}){
+    if(value===undefined||value===null)return fallback?(state.settings().activeEnvironmentId||null):null;
+    const text=String(value).trim();return text||null;
+  }
+  function environmentPath(value,environmentId){
+    const text=String(value||"").trim();if(!text)throw new Error("path is required");
+    const profile=environmentId?environments.get(environmentId):null;
+    if(environmentId&&!profile)throw new Error("Environment profile was not found");
+    if(!profile||profile.type==="local")return resolve(text);
+    if(text.startsWith("/"))return posix.normalize(text);
+    return posix.normalize(posix.join(profile.cwd||"/",text));
+  }
+  function projectWithEnvironment(project){
+    if(!project)return project;
+    const profile=project.environmentId?environments.get(project.environmentId):null;
+    return {...project,environment:project.environmentId?{
+      id:project.environmentId,
+      name:profile?.name||"Unavailable environment",
+      type:profile?.type||"unknown",
+    }:{id:null,name:"Local machine",type:"local"}};
+  }
   const agentRuntimes=new AgentRuntimeManager({state,env,environments});
   const codexThreadModels=new Map();
   const agentThreads=new AgentThreadStore(env);
@@ -781,13 +809,17 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       return json(res,200,{ok:remoteAuth.revokeDevice(id),devices:remoteAuth.listDevices()});
     }
     if(url.pathname==="/api/projects"){
-      if(req.method==="GET") return json(res,200,{projects:state.projects()});
+      if(req.method==="GET") return json(res,200,{projects:state.projects().map(projectWithEnvironment)});
       if(req.method==="POST"){
         try{
           const body=await readJsonBody(req);
           if(!body.path) return json(res,400,{error:"path is required"});
-          const project=state.touchProject(resolve(body.path),body);
-          return json(res,200,{project});
+          const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")
+            ?requestedEnvironmentId(body.environmentId,{fallback:false})
+            :requestedEnvironmentId(null);
+          const project=state.touchProject(environmentPath(body.path,environmentId),{...body,environmentId});
+          if(body.activate)state.updateSettings({activeProjectId:project.id});
+          return json(res,200,{project:projectWithEnvironment(project)});
         }catch(error){return json(res,400,{error:error.message});}
       }
       if(req.method==="DELETE"){
@@ -810,11 +842,14 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     if(url.pathname==="/api/project-script/run"&&req.method==="POST"){
       try{
         const body=await readJsonBody(req);
-        const projectPath=resolve(body.path||process.cwd());
-        const project=state.projects().find(item=>resolve(item.path)===projectPath);
+        const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);
+        const projectPath=environmentPath(body.path||process.cwd(),environmentId);
+        const project=state.project(projectPath,environmentId);
         if(!project) return json(res,404,{error:"Project was not found"});
         const script=(project.scripts||[]).find(item=>item.id===String(body.scriptId||""));
         if(!script) return json(res,404,{error:"Project action was not found"});
+        const profile=environmentId?environments.get(environmentId):null;
+        if(profile&&profile.type!=="local")return json(res,400,{error:"Remote project actions require a remote terminal session"});
         if(mock){
           return json(res,200,{ok:true,script,session:{id:"mock-project-action",name:script.name,cwd:projectPath,running:true},previewUrl:script.previewUrl||null});
         }
@@ -859,8 +894,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const cwd=body.cwd||process.cwd();
         let result;
         switch(body.action){
-          case "clone": result=await cloneRepository(body.url,body.destination); state.touchProject(result.root||body.destination); break;
-          case "init": result=await initializeRepository(cwd); state.touchProject(result.root||cwd); break;
+          case "clone": result=await cloneRepository(body.url,body.destination); state.touchProject(result.root||body.destination,{environmentId:null}); break;
+          case "init": result=await initializeRepository(cwd); state.touchProject(result.root||cwd,{environmentId:null}); break;
           case "branch-create": result=await createBranch(cwd,body.name,{checkout:body.checkout!==false,startPoint:body.startPoint||null}); break;
           case "branch-switch": result=await switchBranch(cwd,body.name); break;
           case "commit": result=await commitAll(cwd,body.message||"Trebell Code changes"); break;
@@ -869,7 +904,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           case "push": result=await pushRepo(cwd,{setUpstream:Boolean(body.setUpstream)}); break;
           case "auto-pull": result=await safeAutoPull(cwd); break;
           case "worktree-create": {
-            const sourceProject=state.projects().find(item=>resolve(item.path)===resolve(cwd))||null;
+            const sourceProject=state.project(resolve(cwd),null);
             const projectConfig=await projectActionSuggestions(cwd).catch(()=>({t3:{}}));
             const submodules=sourceProject?.worktreeSubmodules||projectConfig?.t3?.worktreeSubmodules||state.settings().worktreeSubmodules||"recursive";
             result=await createWorktree(cwd,{branch:body.branch,path:body.path,baseBranch:body.baseBranch||null,submodules});
@@ -883,7 +918,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
               scripts:sourceProject.scripts||[],
               preferredScriptId:sourceProject.preferredScriptId??null,
             }:{};
-            state.touchProject(result.worktree,{...inherited,managedWorktree:{root:result.info.root,branch:String(body.branch||""),baseBranch:String(body.baseBranch||result.info.branch||""),submodules,createdAt:Date.now(),cleanedAt:null,cleanupReason:null}});
+            state.touchProject(result.worktree,{...inherited,environmentId:null,managedWorktree:{root:result.info.root,branch:String(body.branch||""),baseBranch:String(body.baseBranch||result.info.branch||""),submodules,createdAt:Date.now(),cleanedAt:null,cleanupReason:null}});
             const setup=(sourceProject?.scripts||[]).find(script=>script.runOnWorktreeCreate);
             if(setup&&!mock&&terminals){
               const spec=commandShellSpec(setup.command,env);
@@ -925,7 +960,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const cwd=url.searchParams.get("path")||process.cwd(),number=url.searchParams.get("number"),provider=url.searchParams.get("provider")||null;
         const detail=await pullRequestDetail(cwd,number,{provider});if(!detail?.ok||!detail.item)return json(res,400,{error:detail?.error||"Pull request not found"});
         if(detail.provider==="github")return json(res,200,await getPullRequestFilesViewed(cwd,number,{provider:detail.provider}));
-        const project=state.projects().find(item=>resolve(item.path)===resolve(cwd));const key=prViewedKey(detail.provider,number);const record=project?.pullRequestViewedFiles?.[key]||{};
+        const project=state.project(resolve(cwd),null);const key=prViewedKey(detail.provider,number);const record=project?.pullRequestViewedFiles?.[key]||{};
         return json(res,200,{ok:true,provider:detail.provider,store:"environment",files:viewedStates(detail.item.files||[],record,detail.item.headSha),headSha:detail.item.headSha||null});
       }catch(error){return json(res,400,{error:error.message});}
     }
@@ -934,7 +969,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const body=await readJsonBody(req);const cwd=body.cwd||process.cwd(),number=body.number,provider=body.provider||null,updates=Array.isArray(body.files)?body.files:[];
         const detail=await pullRequestDetail(cwd,number,{provider});if(!detail?.ok||!detail.item)throw new Error(detail?.error||"Pull request not found");
         if(detail.provider==="github")return json(res,200,await setPullRequestFilesViewed(cwd,number,updates,{provider:detail.provider}));
-        const project=state.projects().find(item=>resolve(item.path)===resolve(cwd))||state.touchProject(cwd);const records={...(project.pullRequestViewedFiles||{})};const key=prViewedKey(detail.provider,number);records[key]=updateViewedRecord(detail.item.files||[],records[key]||{},detail.item.headSha,updates);state.touchProject(cwd,{pullRequestViewedFiles:records});
+        const project=state.project(resolve(cwd),null)||state.touchProject(resolve(cwd),{environmentId:null});const records={...(project.pullRequestViewedFiles||{})};const key=prViewedKey(detail.provider,number);records[key]=updateViewedRecord(detail.item.files||[],records[key]||{},detail.item.headSha,updates);state.touchProject(resolve(cwd),{environmentId:null,pullRequestViewedFiles:records});
         return json(res,200,{ok:true,provider:detail.provider,store:"environment",files:viewedStates(detail.item.files||[],records[key],detail.item.headSha),headSha:detail.item.headSha||null});
       }catch(error){return json(res,400,{error:error.message});}
     }
@@ -1052,22 +1087,36 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       }catch(error){return json(res,502,{error:error instanceof Error?error.message:String(error)});}
     }
     if(url.pathname==="/api/workspace/tree"){
-      try{return json(res,200,await workspaceTree(url.searchParams.get("path")||process.cwd()));}
+      try{
+        const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
+        return json(res,200,await environmentWorkspaceTree(url.searchParams.get("path")||process.cwd(),{environments,environmentId}));
+      }
       catch(error){return json(res,400,{error:error instanceof Error?error.message:String(error)});}
     }
     if(url.pathname==="/api/workspace/diff"){
-      return json(res,200,await workspaceDiff(url.searchParams.get("path")||process.cwd()));
+      const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
+      return json(res,200,await environmentWorkspaceDiff(url.searchParams.get("path")||process.cwd(),{environments,environmentId}));
     }
     if(url.pathname==="/api/workspace/raw"&&(req.method==="GET"||req.method==="HEAD")){
       try{
-        const root=resolve(url.searchParams.get("root")||process.cwd());
-        const requested=resolve(url.searchParams.get("path")||"");
-        if(requested!==root&&!requested.startsWith(root+sep))return json(res,403,{error:"File is outside the active workspace"});
-        const info=await stat(requested);
-        if(!info.isFile())return json(res,404,{error:"Not a file"});
+        const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
+        const located=environmentWorkspacePath(url.searchParams.get("root")||process.cwd(),url.searchParams.get("path")||"",{environments,environmentId});
+        const root=located.root,requested=located.path;
+        let info;
+        if(located.remote)info=await environments.attachmentInfo(environmentId,requested);
+        else{
+          if(requested!==root&&!requested.startsWith(root+sep))return json(res,403,{error:"File is outside the active workspace"});
+          const localInfo=await stat(requested);
+          if(!localInfo.isFile())return json(res,404,{error:"Not a file"});
+          info={size:localInfo.size};
+        }
         const type=MIME[extname(requested).toLowerCase()]||"application/octet-stream";
         const range=String(req.headers.range||"").match(/^bytes=(\d*)-(\d*)$/);
         const common={"content-type":type,"accept-ranges":"bytes","cache-control":"no-store","content-disposition":`inline; filename="${basename(requested).replace(/"/g,"")}"`};
+        if(info.size===0){
+          res.writeHead(200,{...common,"content-length":"0"});
+          return res.end();
+        }
         if(range){
           let start=range[1]?Number(range[1]):0;
           let end=range[2]?Number(range[2]):info.size-1;
@@ -1075,10 +1124,22 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           start=Math.max(0,Math.min(start,info.size-1));end=Math.max(start,Math.min(end,info.size-1));
           res.writeHead(206,{...common,"content-range":`bytes ${start}-${end}/${info.size}`,"content-length":String(end-start+1)});
           if(req.method==="HEAD")return res.end();
+          if(located.remote){
+            const child=environments.streamFile(environmentId,requested,{start,length:end-start+1});
+            child.once("error",()=>res.destroy());
+            req.once("close",()=>{if(child.exitCode===null)child.kill()});
+            return child.stdout.pipe(res);
+          }
           return createReadStream(requested,{start,end}).pipe(res);
         }
         res.writeHead(200,{...common,"content-length":String(info.size)});
         if(req.method==="HEAD")return res.end();
+        if(located.remote){
+          const child=environments.streamFile(environmentId,requested);
+          child.once("error",()=>res.destroy());
+          req.once("close",()=>{if(child.exitCode===null)child.kill()});
+          return child.stdout.pipe(res);
+        }
         return createReadStream(requested).pipe(res);
       }catch(error){return json(res,404,{error:error instanceof Error?error.message:String(error)});}
     }
@@ -1086,14 +1147,21 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       if(req.method==="PUT"){
         try{
           const body=await readJsonBody(req,4*1024*1024);
-          return json(res,200,await workspaceWriteFile(body.path,body.content));
+          const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);
+          return json(res,200,await environmentWorkspaceWriteFile(body.path,body.content,{root:body.root||null,environments,environmentId}));
         }catch(error){return json(res,400,{error:error instanceof Error?error.message:String(error)});}
       }
-      try{return json(res,200,await workspaceFile(url.searchParams.get("path")||""));}
+      try{
+        const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
+        return json(res,200,await environmentWorkspaceFile(url.searchParams.get("path")||"",512_000,{root:url.searchParams.get("root")||null,environments,environmentId}));
+      }
       catch(error){return json(res,400,{error:error instanceof Error?error.message:String(error)});}
     }
     if(url.pathname==="/api/workspace/search"){
-      try{return json(res,200,await workspaceSearch(url.searchParams.get("path")||process.cwd(),url.searchParams.get("q")||""));}
+      try{
+        const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
+        return json(res,200,await environmentWorkspaceSearch(url.searchParams.get("path")||process.cwd(),url.searchParams.get("q")||"",{environments,environmentId}));
+      }
       catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/attachments/text" && req.method==="POST"){

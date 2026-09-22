@@ -309,6 +309,7 @@ export default function App(){
   const [worktreeSetup,setWorktreeSetup]=useState(null);
   const [threadTelemetry,setThreadTelemetry]=useState({});
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false);
+  const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"});
   const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const displayThreads=searchResults||threads;
   const environmentThemes=useMemo(()=>(environmentThemeCatalog.themes||[]).flatMap(theme=>{
@@ -340,6 +341,19 @@ export default function App(){
     apply();media?.addEventListener?.("change",apply);return()=>media?.removeEventListener?.("change",apply);
   },[settings.panelAnimationMs]);
   useEffect(()=>{activeThreadRef.current=activeThread},[activeThread]);
+  useEffect(()=>{
+    if(!paletteOpen)return;
+    let cancelled=false;
+    Promise.all([
+      api("/api/projects").catch(()=>({projects:[]})),
+      api("/api/environments").catch(()=>({profiles:[]})),
+    ]).then(([projectData,environmentData])=>{
+      if(cancelled)return;
+      setPaletteProjects(projectData.projects||[]);
+      setPaletteEnvironmentNames(Object.fromEntries([["local","Local machine"],...(environmentData.profiles||[]).map(profile=>[profile.id,profile.name||profile.id])]));
+    });
+    return()=>{cancelled=true};
+  },[paletteOpen]);
 
   function updateThreadTelemetry(threadId,patch){
     if(!threadId)return;
@@ -403,6 +417,9 @@ export default function App(){
 
   const agentRuntime=settings.agentRuntime||bootstrap.agentRuntime||"codex";
   const provider=settings.modelProvider||bootstrap.provider||"freebuff";
+  const workspaceEnvironmentId=activeThread?.providerMeta?.environmentId??(currentProject?currentProject.environmentId||null:settings.activeEnvironmentId||null);
+  const workspaceEnvironmentType=currentProject?.environment?.type||(workspaceEnvironmentId&&(workspaceEnvironmentId===settings.activeEnvironmentId)?bootstrap.activeEnvironment?.type:null)||(workspaceEnvironmentId?"remote":"local");
+  const workspaceRemote=Boolean(workspaceEnvironmentId&&workspaceEnvironmentType!=="local");
   const providerReady=bootstrap.mock||(agentRuntime==="codex"?(provider==="freebuff"?Boolean(bootstrap.loggedIn):Boolean(bootstrap.providerReady)):Boolean(bootstrap.agentRuntimeReady));
   useEffect(()=>{setThreadTelemetry({})},[provider,agentRuntime]);
   async function refreshFreebuff(modelOverride=model){
@@ -434,16 +451,20 @@ export default function App(){
     }
     return d;
   }
-  async function touchProject(path){
+  async function touchProject(path,environmentId=undefined,{activate=true}={}){
     if(!path)return null;
+    const resolvedEnvironmentId=environmentId===undefined
+      ?(activeThreadRef.current?.providerMeta?.environmentId??settings.activeEnvironmentId??null)
+      :(environmentId||null);
     setProjectPath(path);
-    const response=await api("/api/projects",{method:"POST",body:{path}}).catch(()=>null);
+    const response=await api("/api/projects",{method:"POST",body:{path,environmentId:resolvedEnvironmentId,activate}}).catch(()=>null);
     const project=response?.project||null;
     setCurrentProject(project);
+    if(project&&activate)setSettings(prev=>({...prev,activeProjectId:project.id}));
     if(project?.defaultModel&&models.includes(project.defaultModel)){setModel(project.defaultModel);setSelectedModels([project.defaultModel])}
     if(project?.permissionMode)setPermissionMode(project.permissionMode);
     if(project?.workspaceMode)setWorkspaceMode(project.workspaceMode);
-    if(settings.autoPull)api("/api/git/action",{method:"POST",body:{action:"auto-pull",cwd:path}}).catch(()=>{});
+    if(settings.autoPull&&!resolvedEnvironmentId)api("/api/git/action",{method:"POST",body:{action:"auto-pull",cwd:path}}).catch(()=>{});
     return project;
   }
   async function refreshEnvironmentThemes(){
@@ -455,13 +476,16 @@ export default function App(){
   useEffect(()=>{
     let cancelled=false;
     (async()=>{
-      const [boot,state,modelData,themeCatalog]=await Promise.all([api("/api/bootstrap").catch(()=>({mock:true,loggedIn:true,cwd:"",platform:""})),api("/api/state").catch(()=>({settings:{},projects:[],threadMeta:{}})),api("/api/models").catch(error=>({models:[],error:error.message})),api("/api/environment/themes").catch(()=>({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}))]);
+      const [boot,state,modelData,themeCatalog,projectData]=await Promise.all([api("/api/bootstrap").catch(()=>({mock:true,loggedIn:true,cwd:"",platform:""})),api("/api/state").catch(()=>({settings:{},projects:[],threadMeta:{}})),api("/api/models").catch(error=>({models:[],error:error.message})),api("/api/environment/themes").catch(()=>({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})),api("/api/projects").catch(()=>({projects:[]}))]);
       if(cancelled)return; setBootstrap(boot); setSettings(prev=>({...prev,...(state.settings||{})})); setPermissionMode(state.settings?.defaultPermissionMode||"supervised"); setThreadMeta(state.threadMeta||{});
       setEnvironmentThemeCatalog(themeCatalog);
-      const firstProject=state.projects?.[0]||null;
+      const activeEnvironmentId=state.settings?.activeEnvironmentId||null;
+      const projectsForEnvironment=(projectData.projects||state.projects||[]).filter(project=>(project.environmentId||null)===activeEnvironmentId);
+      const activeProject=projectsForEnvironment.find(project=>project.id===state.settings?.activeProjectId)||null;
+      const firstProject=projectsForEnvironment[0]||null;
       const environmentCwd=boot.activeEnvironment?.cwd||"";
-      const initialPath=environmentCwd||firstProject?.path||boot.cwd||"";
-      const initialProject=(state.projects||[]).find(project=>String(project.path)===String(initialPath))||firstProject;
+      const initialProject=activeProject||(environmentCwd?projectsForEnvironment.find(project=>String(project.path)===String(environmentCwd)):null)||firstProject;
+      const initialPath=initialProject?.path||environmentCwd||(!activeEnvironmentId?boot.cwd:"")||"";
       setCurrentProject(initialProject);
       setProjectPath(initialPath);
       const availableModels=modelData.models||[];
@@ -530,7 +554,7 @@ export default function App(){
   },[bootstrap.wsUrl,bootstrap.mock,provider,agentRuntime,providerRevision]);
   useEffect(()=>{if(rpcStatus==="connected"&&rpc)loadSkills(rpc,projectPath)},[projectPath,rpcStatus]);
 
-  useEffect(()=>{const timer=setInterval(async()=>{const [s,r,g]=await Promise.all([api("/api/stats").catch(()=>null),api("/api/runtime").catch(()=>null),projectPath?api("/api/git/info?path="+encodeURIComponent(projectPath)).catch(()=>null):Promise.resolve(null)]);if(s)setStats(s);if(r)setRuntime(r);if(g)setGitInfo(g)},1800);return()=>clearInterval(timer)},[projectPath]);
+  useEffect(()=>{const timer=setInterval(async()=>{const [s,r,g]=await Promise.all([api("/api/stats").catch(()=>null),api("/api/runtime").catch(()=>null),projectPath&&!workspaceRemote?api("/api/git/info?path="+encodeURIComponent(projectPath)).catch(()=>null):Promise.resolve(null)]);if(s)setStats(s);if(r)setRuntime(r);setGitInfo(g)},1800);return()=>clearInterval(timer)},[projectPath,workspaceRemote]);
   useEffect(()=>{if(agentRuntime!=="codex"||provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;refreshFreebuff(model);const timer=setInterval(()=>refreshFreebuff(model),15000);return()=>clearInterval(timer)},[agentRuntime,provider,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
   useEffect(()=>{if(agentRuntime!=="codex"||provider!=="freebuff"||!running||!(bootstrap.loggedIn||bootstrap.mock))return;const ping=()=>{const p=new URLSearchParams({timezone});if(model)p.set("model",model);fetch("/api/freebuff/heartbeat?"+p,{method:"POST"}).catch(()=>{})};ping();const timer=setInterval(ping,45000);return()=>clearInterval(timer)},[agentRuntime,provider,running,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
 
@@ -793,9 +817,10 @@ export default function App(){
   }
   async function newChat(){activeThreadRef.current=null;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([]);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
   async function openThread(thread){
-    if(thread.cwd)await api("/api/worktree/ensure",{method:"POST",body:{path:thread.cwd}}).catch(error=>{throw new Error("Could not restore this managed worktree: "+error.message)});
+    const threadEnvironmentId=thread.providerMeta?.environmentId||null;
+    if(thread.cwd&&!threadEnvironmentId)await api("/api/worktree/ensure",{method:"POST",body:{path:thread.cwd,environmentId:null}}).catch(error=>{throw new Error("Could not restore this managed worktree: "+error.message)});
     activeThreadRef.current=thread;setSection("chat");setEvents([]);setAssistantText("");setWorktreeSetup(null);setActiveThread(thread);
-    if(thread.cwd)await touchProject(thread.cwd);else setProjectPath(projectPath);
+    if(thread.cwd)await touchProject(thread.cwd,threadEnvironmentId);else setProjectPath(projectPath);
     if(!rpc||rpcStatus!=="connected")return;
     const [resumed,cp,goalData,attachmentData]=await Promise.all([
       rpc.request("thread/resume",{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null,excludeTurns:false}).catch(()=>null),
@@ -1131,7 +1156,22 @@ export default function App(){
     }
     return result;
   }
-  async function onProjectOpen(path){await touchProject(path);setSection("chat");if(rpcStatus==="connected")loadSkills(rpc,path)}
+  async function onProjectOpen(path,environmentId=null){
+    const targetEnvironmentId=environmentId||null;
+    const currentEnvironmentId=settings.activeEnvironmentId||null;
+    if(targetEnvironmentId!==currentEnvironmentId){
+      const switched=await api("/api/environment/activate",{method:"POST",body:{id:targetEnvironmentId}});
+      if(switched.error)throw new Error(switched.error);
+      const [nextSettings,nextBootstrap]=await Promise.all([api("/api/settings"),api("/api/bootstrap")]);
+      setSettings(prev=>({...prev,...nextSettings}));
+      setBootstrap(nextBootstrap);
+      setProviderRevision(value=>value+1);
+      await refreshEnvironmentThemes();
+    }
+    await touchProject(path,targetEnvironmentId);
+    setSection("chat");
+    if(targetEnvironmentId===currentEnvironmentId&&rpcStatus==="connected")loadSkills(rpc,path);
+  }
   async function finishOnboarding({openSettings=false}={}){
     const next=await api("/api/settings",{method:"POST",body:{onboardingComplete:true,defaultPermissionMode:permissionMode}});
     setSettings(prev=>({...prev,...next}));
@@ -1212,8 +1252,9 @@ export default function App(){
   />;
 
   function rightPanelContent(){
-    if(rightPanelTab==="files"||rightPanelTab==="diff")return <WorkspacePanel key={rightPanelTab} defaultTab={rightPanelTab==="diff"?"diff":"files"} projectPath={projectPath} activeThreadId={activeThread?.id} reviewedFiles={reviewedFiles} onReviewedChange={toggleReviewed} onAttachPath={path=>addFiles([path])} onReviewComment={attachReviewComment}/>;
+    if(rightPanelTab==="files"||rightPanelTab==="diff")return <WorkspacePanel key={rightPanelTab+":"+(workspaceEnvironmentId||"local")} defaultTab={rightPanelTab==="diff"?"diff":"files"} projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} activeThreadId={activeThread?.id} reviewedFiles={reviewedFiles} onReviewedChange={toggleReviewed} onAttachPath={path=>addFiles([path])} onReviewComment={attachReviewComment}/>;
     if(rightPanelTab==="preview")return previewSurface;
+    if(rightPanelTab==="source"&&workspaceRemote)return <div className="panel-page"><div className="empty-state"><strong>Remote source control</strong><span>Files and diffs run in {currentProject?.environment?.name||"the remote environment"}. Forge actions are hidden until Trebell has a remote Git/forge session rather than accidentally running them on the desktop host.</span></div></div>;
     if(rightPanelTab==="source")return <SourceControlPanel projectPath={projectPath} model={model} provider={provider} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
     if(rightPanelTab==="device")return <DevicePanel/>;
     if(rightPanelTab==="agents"&&agentRuntime==="codex")return <div className="panel-page"><AgentsPage threads={threads} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onRefreshThreads={()=>rpc?loadThreads(rpc):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model} telemetry={threadTelemetry}/></div>;
@@ -1258,7 +1299,7 @@ export default function App(){
             </div>
             <div className="workspace-header-actions">
               {gitInfo?.isGit&&<button className="header-control branch-control" onClick={()=>openRightPanel("source")} title="Source control"><GitBranch size={14}/><span>{gitInfo.branch||"detached"}</span></button>}
-              <OpenInPicker path={projectPath}/>
+              {!workspaceRemote&&<OpenInPicker path={projectPath}/>}
               {(currentProject?.scripts||[]).length>0&&(()=>{const script=(currentProject.scripts||[]).find(item=>item.id===currentProject.preferredScriptId)||currentProject.scripts[0];return <button className="header-control" onClick={()=>runProjectAction(script).catch(error=>setEvents(prev=>[...prev,{id:"project-action-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} title={script.command}><Play size={13}/><span>{script.name}</span></button>})()}
               {activeThread?.id&&gitInfo?.isGit&&<button className="header-control" onClick={()=>startReview().catch(error=>setEvents(prev=>[...prev,{id:"review-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} title="Review uncommitted changes"><ShieldCheck size={14}/><span>Review</span></button>}
               {running&&<button className="header-control stop-control" onClick={stop}><CircleStop size={14}/><span>Stop</span></button>}
@@ -1297,7 +1338,7 @@ export default function App(){
           </div>}
         </div>}
 
-        {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Local repositories, checkouts, reusable actions and project defaults.</p></div></div><ProjectsPage currentPath={projectPath} onOpen={onProjectOpen} models={models} onProjectUpdated={project=>{if(project?.path===projectPath)setCurrentProject(project)}} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></div>}
+        {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><ProjectsPage currentPath={projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} models={models} onProjectUpdated={project=>{if(project?.path===projectPath&&(project?.environmentId||null)===(workspaceEnvironmentId||null))setCurrentProject(project)}} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></div>}
         {section==="templates"&&<div className="secondary-page"><h1>Templates</h1><p>Reusable starting points that become normal Trebell turns.</p><div className="template-grid">{[["Ship a feature","Inspect the project, plan a useful feature, implement it, run the relevant tests, fix failures, and summarize the result."],["Fix a bug","Reproduce a meaningful bug in this project, diagnose it, fix it, and validate the fix."],["Review codebase","Map this codebase architecture, important execution paths, risks, and highest-value improvements."],["Refactor safely","Choose a worthwhile refactor, preserve behavior, implement focused changes, and run tests."],["Autonomous build","Take this project to a working validated result. Continue through implementation and test failures until it passes."],["Security review","Review this project for concrete security weaknesses and propose or implement safe fixes."]].map(([name,text])=><button key={name} onClick={()=>{setPrompt(text);setSection("chat")}}><BrainCircuit size={20}/><strong>{name}</strong><span>{text}</span></button>)}</div></div>}
         {section==="freebuff"&&agentRuntime==="codex"&&provider==="freebuff"&&<div className="secondary-page"><div className="page-header"><div><h1>Freebuff</h1><p>Account, balance, model pricing and session state.</p></div></div><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model)}/></div>}
         {section==="tools"&&agentRuntime==="codex"&&<div className="secondary-page full"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills}/></div>}
@@ -1308,12 +1349,12 @@ export default function App(){
         {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Every unarchived {agentRuntimeLabel} thread stored by Trebell on this machine.</p></div></div><div className="history-page">{threads.map(t=><button key={t.id} onClick={()=>openThread(t)}><FileCode2 size={15}/><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><time>{new Date(t.updatedAt*1000).toLocaleString()}</time></button>)}</div></div>}
       </main>
 
-      {rightPanelOpen&&<RightPanel active={rightPanelTab} onActive={setRightPanelTab} onClose={()=>setRightPanelOpen(false)}>{rightPanelContent()}</RightPanel>}
+      {rightPanelOpen&&<RightPanel active={rightPanelTab} onActive={setRightPanelTab} onClose={()=>setRightPanelOpen(false)} disabledTabs={workspaceRemote?["source"]:[]}>{rightPanelContent()}</RightPanel>}
     </div>
 
     <McpElicitationModal key={elicitations[0]?.request?.id||"none"} request={elicitations[0]?.request} onResolve={resolveElicitation}/>
     {!elicitations.length&&<QuestionModal request={question?.request} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={pickFiles}/>}
-    <CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} actions={paletteActions} threads={threads} onOpenThread={openThread}/>
+    <CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} actions={paletteActions} projects={paletteProjects} threads={threads} environmentNames={paletteEnvironmentNames} onOpenProject={project=>onProjectOpen(project.path,project.environmentId||null)} onOpenThread={openThread}/>
     <OnboardingModal open={initialLoaded&&settings.onboardingComplete===false} projectPath={projectPath} onPickWorkspace={pickWorkspace} providerLabel={agentRuntime==="codex"?providerLabel:agentRuntimeLabel} providerReady={providerReady} permissionMode={permissionMode} onPermissionMode={setPermissionMode} onFinish={finishOnboarding}/>
   </div>;
 }

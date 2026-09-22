@@ -342,6 +342,43 @@ export class EnvironmentManager {
     return {path:requested,size,image:/\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(requested),environmentId:profile.id};
   }
 
+  async writeTextFile(id,path,content){
+    const profile=this.get(id);
+    if(!profile)throw new Error("Environment profile was not found");
+    if(profile.type==="local")throw new Error("writeTextFile is only for remote environments");
+    const requested=String(path||"").trim();if(!requested)throw new Error("File path is required");
+    const dir=posix.dirname(requested);
+    const child=this.spawnSession(profile.id,{
+      command:"mkdir -p "+quotePosix(dir)+" && cat > "+quotePosix(requested),
+      cwd:"",
+      stdio:["pipe","pipe","pipe"],
+    });
+    const bytes=Buffer.from(String(content??""),"utf8");
+    await new Promise((resolveWrite,reject)=>{
+      let stderr="",settled=false;
+      const finish=error=>{if(settled)return;settled=true;error?reject(error):resolveWrite()};
+      child.stderr?.on("data",chunk=>{stderr=(stderr+String(chunk)).slice(-128*1024)});
+      child.once("error",finish);
+      child.once("close",code=>code===0?finish():finish(new Error(stderr.trim()||("Remote file write exited with code "+code))));
+      child.stdin.end(bytes);
+    });
+    return this.attachmentInfo(profile.id,requested);
+  }
+
+  streamFile(id,path,{start=null,length=null}={}){
+    const profile=this.get(id);
+    if(!profile)throw new Error("Environment profile was not found");
+    if(profile.type==="local")throw new Error("streamFile is only for remote environments");
+    const requested=String(path||"").trim();if(!requested)throw new Error("File path is required");
+    let command="cat "+quotePosix(requested);
+    if(start!=null&&length!=null){
+      const safeStart=Math.max(0,Math.trunc(Number(start)||0));
+      const safeLength=Math.max(0,Math.trunc(Number(length)||0));
+      command="tail -c +"+(safeStart+1)+" "+quotePosix(requested)+" | head -c "+safeLength;
+    }
+    return this.spawnSession(profile.id,{command,cwd:"",stdio:["ignore","pipe","pipe"]});
+  }
+
   async validateAttachments(id,paths,{maxCount=100,maxImageBytes=80*1024*1024}={}){
     const requested=Array.isArray(paths)?paths:[];if(requested.length>maxCount)throw new Error(`A message supports up to ${maxCount} attachments`);
     const files=[];let imageBytes=0;

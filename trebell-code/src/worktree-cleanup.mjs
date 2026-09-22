@@ -39,7 +39,7 @@ export class WorktreeCleanupService{
   async cleanupProject(project,{reason=null,now=Date.now()}={}){
     const inspection=await this.inspect(project,{reason,now});if(!inspection.eligible)return {removed:false,projectId:project.id,path:project.path,...inspection};
     await removeWorktree(project.managedWorktree.root,project.path,{force:false});
-    const updated=this.state.touchProject(project.path,{managedWorktree:{...project.managedWorktree,cleanedAt:Date.now(),cleanupReason:inspection.reason}});
+    const updated=this.state.touchProject(project.path,{environmentId:project.environmentId||null,managedWorktree:{...project.managedWorktree,cleanedAt:Date.now(),cleanupReason:inspection.reason}});
     this.log(`cleaned worktree ${project.path} (${inspection.reason})`);return {removed:true,projectId:project.id,path:project.path,reason:inspection.reason,triggers:inspection.triggers,project:updated};
   }
   async sweep({reason=null,path=null,now=Date.now()}={}){
@@ -50,14 +50,14 @@ export class WorktreeCleanupService{
     }
     return {results,removed:results.filter(item=>item.removed).length};
   }
-  async ensure(path){
-    const project=this.state.projects().find(item=>key(item.path)===key(path));if(!project?.managedWorktree)return {restored:false,project};
+  async ensure(path,environmentId=null){
+    const project=this.state.projects().find(item=>(item.environmentId||null)===(environmentId||null)&&key(item.path)===key(path));if(!project?.managedWorktree)return {restored:false,project};
     const info=await gitInfo(project.path);
     if(info.isGit){
-      if(project.managedWorktree.cleanedAt){const updated=this.state.touchProject(project.path,{managedWorktree:{...project.managedWorktree,cleanedAt:null,cleanupReason:null}});return {restored:false,reconciled:true,project:updated}}
+      if(project.managedWorktree.cleanedAt){const updated=this.state.touchProject(project.path,{environmentId:project.environmentId||null,managedWorktree:{...project.managedWorktree,cleanedAt:null,cleanupReason:null}});return {restored:false,reconciled:true,project:updated}}
       return {restored:false,project};
     }
     const restored=await restoreWorktree(project.managedWorktree.root,{branch:project.managedWorktree.branch,path:project.path,submodules:project.managedWorktree.submodules});
-    const updated=this.state.touchProject(project.path,{managedWorktree:{...project.managedWorktree,cleanedAt:null,cleanupReason:null}});return {restored:true,project:updated,result:restored};
+    const updated=this.state.touchProject(project.path,{environmentId:project.environmentId||null,managedWorktree:{...project.managedWorktree,cleanedAt:null,cleanupReason:null}});return {restored:true,project:updated,result:restored};
   }
 }

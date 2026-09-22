@@ -68,7 +68,7 @@ function fileIcon(name){
   return <FileCode2 size={14}/>;
 }
 
-export default function WorkspacePanel({projectPath,defaultTab="files",reviewedFiles=[],onReviewedChange,onAttachPath,onReviewComment}){
+export default function WorkspacePanel({projectPath,environmentId=null,remote=false,defaultTab="files",reviewedFiles=[],onReviewedChange,onAttachPath,onReviewComment}){
   const [tab,setTab]=useState(defaultTab==="diff"?"diff":"files");
   const [entries,setEntries]=useState([]);
   const [query,setQuery]=useState("");
@@ -79,25 +79,30 @@ export default function WorkspacePanel({projectPath,defaultTab="files",reviewedF
   const [diff,setDiff]=useState({status:"",diff:""});
   const [loading,setLoading]=useState(false);
   const [error,setError]=useState("");
+  function params(values={}){
+    const query=new URLSearchParams(values);
+    query.set("environmentId",environmentId||"");
+    return query.toString();
+  }
 
   async function refreshTree(){
     if(!projectPath)return;setLoading(true);
-    const data=await api("/api/workspace/tree?path="+encodeURIComponent(projectPath)).catch(()=>({entries:[]}));
+    const data=await api("/api/workspace/tree?"+params({path:projectPath})).catch(()=>({entries:[]}));
     setEntries(data.entries||[]);setLoading(false);
   }
   async function refreshDiff(){
     if(!projectPath)return;setLoading(true);
-    const data=await api("/api/workspace/diff?path="+encodeURIComponent(projectPath)).catch(error=>({status:"",diff:"",error:error.message}));
+    const data=await api("/api/workspace/diff?"+params({path:projectPath})).catch(error=>({status:"",diff:"",error:error.message}));
     setDiff(data);setLoading(false);
   }
-  useEffect(()=>{refreshTree();refreshDiff();setFile(null);setError("");},[projectPath]);
+  useEffect(()=>{refreshTree();refreshDiff();setFile(null);setError("");},[projectPath,environmentId]);
   useEffect(()=>{setTab(defaultTab==="diff"?"diff":"files")},[defaultTab]);
 
   useEffect(()=>{
     if(!query.trim()){setSearchResults([]);return;}
-    const t=setTimeout(()=>api("/api/workspace/search?path="+encodeURIComponent(projectPath)+"&q="+encodeURIComponent(query)).then(d=>setSearchResults(d.items||[])).catch(()=>setSearchResults([])),180);
+    const t=setTimeout(()=>api("/api/workspace/search?"+params({path:projectPath,q:query})).then(d=>setSearchResults(d.items||[])).catch(()=>setSearchResults([])),180);
     return()=>clearTimeout(t);
-  },[query,projectPath]);
+  },[query,projectPath,environmentId]);
 
   async function open(path){
     setError("");
@@ -107,18 +112,18 @@ export default function WorkspacePanel({projectPath,defaultTab="files",reviewedF
       setFile({path,name,kind,content:null});setDraft("");setEdit(false);return;
     }
     try{
-      const data=await api("/api/workspace/file?path="+encodeURIComponent(path));
+      const data=await api("/api/workspace/file?"+params({root:projectPath,path}));
       setFile({...data,kind});setDraft(data.content);setEdit(false);
     }catch(err){setFile({path,name,kind:"unsupported",content:null});setDraft("");setEdit(false);setError(err.message||String(err))}
   }
   async function save(){
-    const data=await api("/api/workspace/file",{method:"PUT",body:{path:file.path,content:draft}});
+    const data=await api("/api/workspace/file",{method:"PUT",body:{root:projectPath,path:file.path,content:draft,environmentId}});
     setFile({...data,kind:previewKind(data.name)});setDraft(data.content);setEdit(false);refreshDiff();
   }
   const highlighted=useMemo(()=>file?.content!=null?Prism.highlight(file.content,languageFor(file.name),"javascript"):"",[file]);
   const changedPaths=useMemo(()=>String(diff.status||"").split(/\r?\n/).filter(Boolean).map(line=>line.slice(3)),[diff.status]);
   const source=query?searchResults:entries;
-  const rawUrl=file&&projectPath?"/api/workspace/raw?root="+encodeURIComponent(projectPath)+"&path="+encodeURIComponent(file.path):"";
+  const rawUrl=file&&projectPath?"/api/workspace/raw?"+params({root:projectPath,path:file.path}):"";
   const table=useMemo(()=>file?.kind==="table"?parseDelimited(file.content,extension(file.name)==="tsv"?"\t":","):[],[file]);
 
   function preview(){
@@ -142,7 +147,7 @@ export default function WorkspacePanel({projectPath,defaultTab="files",reviewedF
       <div className="workspace-search"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search files…"/></div>
       <div className="workspace-body">
         <div className="tree-list">{loading?<p>Loading…</p>:source.map(entry=><button key={entry.path} style={{paddingLeft:8+(entry.depth||0)*14}} onClick={()=>entry.isFile&&open(entry.path)}>{entry.isDirectory?<Folder size={14}/>:fileIcon(entry.name)}<span>{entry.relativePath||entry.name}</span>{entry.isFile&&<i onClick={e=>{e.stopPropagation();onAttachPath?.(entry.path)}}><Paperclip size={11}/></i>}</button>)}</div>
-        <div className="file-view">{file&&<div className="file-head"><strong>{file.name}</strong><div><OpenInPicker path={file.path} compact/><button onClick={()=>onAttachPath?.(file.path)}><Paperclip size={13}/> Attach</button>{editable&&<button onClick={()=>setEdit(v=>!v)}>{edit?<X size={13}/>:<FileCode2 size={13}/>} {edit?"Cancel":"Edit"}</button>}{edit&&<button onClick={save}><Save size={13}/> Save</button>}</div></div>}{preview()}</div>
+        <div className="file-view">{file&&<div className="file-head"><strong>{file.name}</strong><div>{!remote&&<OpenInPicker path={file.path} compact/>}<button onClick={()=>onAttachPath?.(file.path)}><Paperclip size={13}/> Attach</button>{editable&&<button onClick={()=>setEdit(v=>!v)}>{edit?<X size={13}/>:<FileCode2 size={13}/>} {edit?"Cancel":"Edit"}</button>}{edit&&<button onClick={save}><Save size={13}/> Save</button>}</div></div>}{preview()}</div>
       </div>
     </div>}
     {tab==="diff"&&<div className="changes-view">

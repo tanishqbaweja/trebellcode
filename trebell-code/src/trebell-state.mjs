@@ -26,6 +26,7 @@ const DEFAULT_STATE = Object.freeze({
     keyboardShortcuts: {},
     keybindingRules: [],
     activeEnvironmentId: null,
+    activeProjectId: null,
     remoteAccessEnabled: false,
     remoteAccessPort: 3211,
     remoteAccessToken: "",
@@ -66,6 +67,7 @@ function normalizePullRequestViewedFiles(value){
   }
   return out;
 }
+function normalizeEnvironmentId(value){const text=String(value??"").trim();return text||null}
 
 export class TrebellStateStore {
   constructor(env=process.env){
@@ -77,7 +79,10 @@ export class TrebellStateStore {
     try{
       const parsed=JSON.parse(readFileSync(this.path,"utf8"));
       const rawSettings=parsed.settings&&typeof parsed.settings==="object"?parsed.settings:{};
-      const projects=Array.isArray(parsed.projects)?parsed.projects:[];
+      const projects=Array.isArray(parsed.projects)?parsed.projects.map(project=>({
+        ...project,
+        environmentId:normalizeEnvironmentId(project?.environmentId),
+      })):[];
       const settings={...clone(DEFAULT_STATE.settings),...rawSettings};
       if(Number(parsed.version||1)<2&&rawSettings.appearanceMode==="system")settings.appearanceMode="dark";
       settings.worktreeCleanup=normalizeWorktreeCleanup(settings.worktreeCleanup);
@@ -130,14 +135,20 @@ export class TrebellStateStore {
     return before!==this.state.environments.length;
   }
   projects(){ return clone(this.state.projects).sort((a,b)=>(b.lastOpenedAt||0)-(a.lastOpenedAt||0)); }
+  project(path,environmentId=null){
+    const id=normalizeEnvironmentId(environmentId);
+    return clone(this.state.projects.find(project=>project.path===path&&normalizeEnvironmentId(project.environmentId)===id)||null);
+  }
   touchProject(path,patch={}){
     const now=Date.now();
     const name=patch.name??null;
-    let project=this.state.projects.find(p=>p.path===path);
+    const environmentId=normalizeEnvironmentId(patch.environmentId);
+    let project=this.state.projects.find(p=>p.path===path&&normalizeEnvironmentId(p.environmentId)===environmentId);
     if(!project){
-      project={id:randomUUID(),path,name:name||path.split(/[\\/]/).filter(Boolean).pop()||path,createdAt:now,lastOpenedAt:now,scripts:[]};
+      project={id:randomUUID(),path,environmentId,name:name||path.split(/[\\/]/).filter(Boolean).pop()||path,createdAt:now,lastOpenedAt:now,scripts:[]};
       this.state.projects.push(project);
     }
+    project.environmentId=environmentId;
     project.lastOpenedAt=now;
     if("name" in patch&&patch.name!=null) project.name=String(patch.name);
     if("defaultModel" in patch) project.defaultModel=patch.defaultModel?String(patch.defaultModel):null;

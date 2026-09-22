@@ -12,7 +12,7 @@ const TABS=[
   ["runtime",Cpu,"Runtime"],
 ];
 
-export default function RightPanel({active,onActive,onClose,children}){
+export default function RightPanel({active,onActive,onClose,children,disabledTabs=[]}){
   return <aside className="context-panel" data-testid="right-panel">
     <div className="context-panel-tabs">
       <div className="context-panel-tab-scroll">
@@ -21,6 +21,7 @@ export default function RightPanel({active,onActive,onClose,children}){
           type="button"
           className={active===id?"active":""}
           onClick={()=>onActive(id)}
+          disabled={disabledTabs.includes(id)}
           aria-label={label}
           title={label}
         ><Icon size={14}/><span>{label}</span></button>)}

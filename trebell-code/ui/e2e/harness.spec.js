@@ -38,6 +38,8 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await request.post("/api/settings",{data:{onboardingComplete:true}});
   const boot=await (await request.get("/api/bootstrap")).json();
   await request.post("/api/projects",{data:{path:boot.cwd,name:"E2E Project",worktreeSubmodules:"top-level",icon:{kind:"monogram",value:"E2",color:"#4f8cff"}}});
+  await request.post("/api/environments",{data:{id:"ssh-palette",name:"E2E SSH",type:"ssh",host:"example.invalid",cwd:"/srv/app"}});
+  await request.post("/api/projects",{data:{path:"/srv/app",environmentId:"ssh-palette",name:"Remote App"}});
   await page.goto("/");
   const onboarding=page.getByTestId("onboarding");
   if(await onboarding.isVisible().catch(()=>false))await onboarding.getByRole("button",{name:"Finish setup"}).click();
@@ -62,6 +64,9 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await page.keyboard.press("Control+k");
   await expect(page.getByTestId("command-palette")).toBeVisible();
   await expect(page.getByTestId("command-palette")).toContainText("Open workspace folder");
+  await expect(page.getByTestId("command-palette")).toContainText("E2E Project");
+  await expect(page.getByTestId("command-palette")).toContainText("Remote App");
+  await expect(page.getByTestId("command-palette")).toContainText("E2E SSH · /srv/app");
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("command-palette")).toBeHidden();
   await expect(page.getByTestId("model-picker")).toBeVisible();
