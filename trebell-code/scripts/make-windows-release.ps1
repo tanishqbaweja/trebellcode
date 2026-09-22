@@ -159,6 +159,31 @@ try {
   Invoke-Native "node" @("tests/installed-relay-check.mjs","http://127.0.0.1:$GuiPort")
   Invoke-Native "node" @("tests/installed-desktop-check.mjs")
   if ($env:TREBELL_TEST_VYCE_API_KEY -or $env:VYCEAI_API_KEY -or $env:VYCE_API_KEY) {
+    # The desktop smoke connects over CDP and closes that remote browser when it
+    # disconnects. Relaunch a fresh packaged app so model-driven validation gets
+    # an independent runtime/browser session instead of inheriting a dead one.
+    if ($DesktopProcess -and -not $DesktopProcess.HasExited) {
+      if ($env:OS -eq "Windows_NT") {
+        & taskkill.exe /PID $DesktopProcess.Id /T /F *> $null
+      } else {
+        Stop-Process -Id $DesktopProcess.Id -Force -ErrorAction SilentlyContinue
+      }
+    }
+    Stop-GeneratedDesktopProcesses
+    $DesktopProcess = Start-Process -FilePath $UnpackedExe -ArgumentList "--remote-debugging-port=$CdpPort" -PassThru
+    $AgentRuntimeReady = $false
+    for ($Attempt = 0; $Attempt -lt 120; $Attempt++) {
+      if ($DesktopProcess.HasExited) { throw "Fresh packaged Trebell Code exited before model-driven validation could connect." }
+      try {
+        $Boot = Invoke-RestMethod -Uri "http://127.0.0.1:$GuiPort/api/bootstrap" -TimeoutSec 1
+        if ($Boot.appServerReady -eq $true) {
+          $AgentRuntimeReady = $true
+          break
+        }
+      } catch {}
+      Start-Sleep -Milliseconds 250
+    }
+    if (-not $AgentRuntimeReady) { throw "Fresh packaged Trebell runtime did not become ready for model-driven validation." }
     Write-Host "Running packaged model-driven harness validation..." -ForegroundColor Cyan
     Invoke-Native "node" @("tests/installed-agent-check.mjs","http://127.0.0.1:$GuiPort")
   }

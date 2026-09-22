@@ -25,4 +25,5 @@ test("packaged desktop updater requires explicit download and install",async()=>
   assert.match(release,/function Reset-ReleaseOutput/);
   assert.match(release,/Reset-ReleaseOutput[\s\S]*electron-builder\",\"--win\",\"nsis\"/);
   assert.match(release,/taskkill\.exe \/PID \$DesktopProcess\.Id \/T \/F/);
+  assert.match(release,/Fresh packaged Trebell runtime did not become ready for model-driven validation/);
 });
