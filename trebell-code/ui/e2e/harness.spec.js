@@ -11,11 +11,21 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await page.addInitScript(()=>{
     const snapshot={url:"http://fixture.local",title:"Preview fixture",text:"Checkout",elements:[{ref:"e7",tag:"button",text:"Submit order",href:""}]};
     window.__trebellZoomFactor=1;
+    window.__updateState={supported:true,status:"available",currentVersion:"1.2.0",availableVersion:"1.3.0",percent:null,error:null};
+    window.__updateListeners=[];window.__updateInstalled=false;
+    const publishUpdate=patch=>{window.__updateState={...window.__updateState,...patch};for(const listener of window.__updateListeners)listener(window.__updateState);return window.__updateState};
     Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{
       zoom:{
         get:async()=>({factor:window.__trebellZoomFactor}),
         set:async factor=>({factor:window.__trebellZoomFactor=Number(factor)}),
         reset:async()=>({factor:window.__trebellZoomFactor=1}),
+      },
+      updates:{
+        get:async()=>window.__updateState,
+        check:async()=>publishUpdate({status:"available",error:null}),
+        download:async()=>{publishUpdate({status:"downloading",percent:42});setTimeout(()=>publishUpdate({status:"downloaded",percent:100}),20);return window.__updateState},
+        install:async()=>{window.__updateInstalled=true;publishUpdate({status:"installing"});return {ok:true}},
+        onState:handler=>{window.__updateListeners.push(handler);return()=>{window.__updateListeners=window.__updateListeners.filter(item=>item!==handler)}},
       },
       browser:{navigate:async()=>({ok:true}),show:async()=>({ok:true}),snapshot:async()=>snapshot,screenshot:async()=>({dataUrl:"data:image/png;base64,iVBORw0KGgo="}),importCookies:async()=>({ok:true,imported:2,failed:0}),importSources:async()=>({platform:"win32",sources:[{id:"firefox",name:"Firefox",installed:true,running:false,profiles:[{id:"C:/Profiles/Test",name:"Test profile"}]},{id:"helium",name:"Helium",installed:true,running:false,profiles:[{id:"C:/Helium/Default",name:"Default"}]}]}),importProfile:async(sourceId,profileId)=>sourceId==="helium"?({ok:true,sourceId,profileId,profileName:"Default",imported:5,failed:0,skipped:1}):({ok:true,sourceId,profileId,profileName:"Test profile",imported:7,failed:0}),close:async()=>({ok:true})}
     }});
@@ -101,6 +111,12 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await expect(page.getByRole("heading",{name:"Settings"})).toBeVisible();
   await expect(page.getByText("Follow-up behavior")).toBeVisible();
   await expect(page.getByLabel("Default policy")).toHaveValue("off");
+  await expect(page.getByText("Update available",{exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"Download update"}).click();
+  await expect(page.getByRole("button",{name:"Restart & install"})).toBeVisible();
+  page.once("dialog",dialog=>dialog.accept());
+  await page.getByRole("button",{name:"Restart & install"}).click();
+  await expect.poll(()=>page.evaluate(()=>window.__updateInstalled)).toBe(true);
   await page.getByRole("button",{name:"light",exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.mode)).toBe("light");
   await page.getByRole("button",{name:"Midnight",exact:true}).click();

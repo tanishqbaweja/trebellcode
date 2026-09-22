@@ -36,7 +36,7 @@ function configureUpdater(){
   updaterConfigured=true;
   if(!app.isPackaged)return publishUpdaterState({supported:false,status:"development",error:null});
   autoUpdater.autoDownload=false;
-  autoUpdater.autoInstallOnAppQuit=true;
+  autoUpdater.autoInstallOnAppQuit=false;
   autoUpdater.allowPrerelease=false;
   autoUpdater.on("checking-for-update",()=>publishUpdaterState({supported:true,status:"checking",error:null,percent:null,transferred:null,total:null}));
   autoUpdater.on("update-available",info=>publishUpdaterState({supported:true,status:"available",availableVersion:info?.version||null,releaseName:info?.releaseName||null,error:null}));
@@ -57,7 +57,7 @@ async function checkDesktopUpdate(){
 async function downloadDesktopUpdate(){
   configureUpdater();
   if(!app.isPackaged)throw new Error("Desktop updates are only available in packaged builds.");
-  if(updaterState.status!=="available"&&updaterState.status!=="error")throw new Error("No downloadable update is currently available.");
+  if(updaterState.status!=="available")throw new Error("No downloadable update is currently available.");
   publishUpdaterState({status:"downloading",error:null,percent:0});
   await autoUpdater.downloadUpdate();
   return {...updaterState};
