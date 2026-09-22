@@ -9,7 +9,9 @@ const DEFAULT_STATE = Object.freeze({
   threadMeta: {},
   settings: {
     followUpMode: "queue",
+    defaultModel: null,
     defaultPermissionMode: "supervised",
+    defaultWorkspaceMode: "current",
     autoPull: false,
     worktreeSubmodules: "recursive",
     worktreeCleanup: {mode:"off"},
@@ -27,6 +29,7 @@ const DEFAULT_STATE = Object.freeze({
     keybindingRules: [],
     activeEnvironmentId: null,
     activeProjectId: null,
+    environmentDefaults: {},
     remoteAccessEnabled: false,
     remoteAccessPort: 3211,
     remoteAccessToken: "",
@@ -68,6 +71,29 @@ function normalizePullRequestViewedFiles(value){
   return out;
 }
 function normalizeEnvironmentId(value){const text=String(value??"").trim();return text||null}
+export const PROJECT_SCOPED_SETTING_KEYS=Object.freeze([
+  "defaultModel",
+  "defaultPermissionMode",
+  "defaultWorkspaceMode",
+  "worktreeSubmodules",
+  "worktreeCleanup",
+  "autoPull",
+  "agentDeviceAccess",
+]);
+function normalizeScopedSetting(key,value){
+  if(key==="defaultModel"){const text=String(value??"").trim();return text||null}
+  if(key==="defaultPermissionMode")return ["supervised","edits","auto","full","read-only"].includes(String(value))?String(value):"supervised";
+  if(key==="defaultWorkspaceMode")return ["current","worktree"].includes(String(value))?String(value):"current";
+  if(key==="worktreeSubmodules")return ["recursive","top-level","none"].includes(String(value))?String(value):"recursive";
+  if(key==="worktreeCleanup")return normalizeWorktreeCleanup(value);
+  if(key==="autoPull"||key==="agentDeviceAccess")return Boolean(value);
+  return undefined;
+}
+function normalizeScopedObject(value={}){
+  const out={};if(!value||typeof value!=="object"||Array.isArray(value))return out;
+  for(const key of PROJECT_SCOPED_SETTING_KEYS)if(Object.prototype.hasOwnProperty.call(value,key))out[key]=normalizeScopedSetting(key,value[key]);
+  return out;
+}
 
 export class TrebellStateStore {
   constructor(env=process.env){
@@ -82,8 +108,10 @@ export class TrebellStateStore {
       const projects=Array.isArray(parsed.projects)?parsed.projects.map(project=>({
         ...project,
         environmentId:normalizeEnvironmentId(project?.environmentId),
+        settingsOverrides:normalizeScopedObject(project?.settingsOverrides),
       })):[];
       const settings={...clone(DEFAULT_STATE.settings),...rawSettings};
+      settings.environmentDefaults=Object.fromEntries(Object.entries(rawSettings.environmentDefaults||{}).map(([id,value])=>[String(id),normalizeScopedObject(value)]));
       if(Number(parsed.version||1)<2&&rawSettings.appearanceMode==="system")settings.appearanceMode="dark";
       settings.worktreeCleanup=normalizeWorktreeCleanup(settings.worktreeCleanup);
       if(!Object.prototype.hasOwnProperty.call(rawSettings,"onboardingComplete")&&projects.length>0)settings.onboardingComplete=true;
@@ -108,6 +136,56 @@ export class TrebellStateStore {
   }
   snapshot(){ return clone(this.state); }
   settings(){ return clone(this.state.settings); }
+  environmentDefaults(environmentId=null){
+    const base={
+      defaultModel:normalizeScopedSetting("defaultModel",this.state.settings.defaultModel),
+      defaultPermissionMode:normalizeScopedSetting("defaultPermissionMode",this.state.settings.defaultPermissionMode),
+      defaultWorkspaceMode:normalizeScopedSetting("defaultWorkspaceMode",this.state.settings.defaultWorkspaceMode),
+      worktreeSubmodules:normalizeScopedSetting("worktreeSubmodules",this.state.settings.worktreeSubmodules),
+      worktreeCleanup:normalizeScopedSetting("worktreeCleanup",this.state.settings.worktreeCleanup),
+      autoPull:Boolean(this.state.settings.autoPull),
+      agentDeviceAccess:Boolean(this.state.settings.agentDeviceAccess),
+    };
+    const id=normalizeEnvironmentId(environmentId);if(!id)return clone(base);
+    return {...clone(base),...clone(this.state.settings.environmentDefaults?.[id]||{})};
+  }
+  projectSettings(path,environmentId=null){
+    const project=this.project(path,environmentId);const defaults=this.environmentDefaults(environmentId);const overrides={...(project?.settingsOverrides||{})};
+    if(project){
+      if(!Object.prototype.hasOwnProperty.call(overrides,"defaultModel")&&project.defaultModel)overrides.defaultModel=project.defaultModel;
+      if(!Object.prototype.hasOwnProperty.call(overrides,"defaultPermissionMode")&&project.permissionMode)overrides.defaultPermissionMode=project.permissionMode;
+      if(!Object.prototype.hasOwnProperty.call(overrides,"defaultWorkspaceMode")&&project.workspaceMode)overrides.defaultWorkspaceMode=project.workspaceMode;
+      if(!Object.prototype.hasOwnProperty.call(overrides,"worktreeSubmodules")&&project.worktreeSubmodules)overrides.worktreeSubmodules=project.worktreeSubmodules;
+      if(!Object.prototype.hasOwnProperty.call(overrides,"worktreeCleanup")&&project.worktreeCleanup!=null)overrides.worktreeCleanup=project.worktreeCleanup;
+    }
+    return {defaults:clone(defaults),overrides:clone(overrides),effective:{...clone(defaults),...clone(overrides)}};
+  }
+  updateEnvironmentDefaults(environmentId,patch={},resetKeys=[]){
+    const id=normalizeEnvironmentId(environmentId);const clean=normalizeScopedObject(patch);
+    if(!id){
+      const direct={};
+      for(const [key,value] of Object.entries(clean))direct[key==="defaultWorkspaceMode"?"defaultWorkspaceMode":key]=value;
+      for(const key of resetKeys||[])if(PROJECT_SCOPED_SETTING_KEYS.includes(key))direct[key]=clone(DEFAULT_STATE.settings[key==="defaultWorkspaceMode"?"defaultWorkspaceMode":key]);
+      return this.updateSettings(direct);
+    }
+    const all={...(this.state.settings.environmentDefaults||{})};const current={...(all[id]||{})};
+    Object.assign(current,clean);for(const key of resetKeys||[])delete current[key];
+    if(Object.keys(current).length)all[id]=current;else delete all[id];
+    this.state.settings.environmentDefaults=all;this.#save();return this.environmentDefaults(id);
+  }
+  updateProjectSettings(path,environmentId,patch={},resetKeys=[]){
+    const project=this.state.projects.find(item=>item.path===path&&normalizeEnvironmentId(item.environmentId)===normalizeEnvironmentId(environmentId));
+    if(!project)throw new Error("Project was not found");
+    const next={...(project.settingsOverrides||{}),...normalizeScopedObject(patch)};for(const key of resetKeys||[])delete next[key];
+    project.settingsOverrides=next;
+    const mirror={environmentId:normalizeEnvironmentId(environmentId),settingsOverrides:next};
+    if(Object.prototype.hasOwnProperty.call(next,"defaultModel")||resetKeys.includes("defaultModel"))mirror.defaultModel=next.defaultModel??null;
+    if(Object.prototype.hasOwnProperty.call(next,"defaultPermissionMode")||resetKeys.includes("defaultPermissionMode"))mirror.permissionMode=next.defaultPermissionMode??null;
+    if(Object.prototype.hasOwnProperty.call(next,"defaultWorkspaceMode")||resetKeys.includes("defaultWorkspaceMode"))mirror.workspaceMode=next.defaultWorkspaceMode??null;
+    if(Object.prototype.hasOwnProperty.call(next,"worktreeSubmodules")||resetKeys.includes("worktreeSubmodules"))mirror.worktreeSubmodules=next.worktreeSubmodules??null;
+    if(Object.prototype.hasOwnProperty.call(next,"worktreeCleanup")||resetKeys.includes("worktreeCleanup"))mirror.worktreeCleanup=next.worktreeCleanup??null;
+    return {project:this.touchProject(path,mirror),...this.projectSettings(path,environmentId)};
+  }
   updateSettings(patch={}){
     if("worktreeSubmodules" in patch&&!['recursive','top-level','none'].includes(String(patch.worktreeSubmodules)))patch={...patch,worktreeSubmodules:'recursive'};
     if("worktreeCleanup" in patch)patch={...patch,worktreeCleanup:normalizeWorktreeCleanup(patch.worktreeCleanup)};
@@ -145,20 +223,23 @@ export class TrebellStateStore {
     const environmentId=normalizeEnvironmentId(patch.environmentId);
     let project=this.state.projects.find(p=>p.path===path&&normalizeEnvironmentId(p.environmentId)===environmentId);
     if(!project){
-      project={id:randomUUID(),path,environmentId,name:name||path.split(/[\\/]/).filter(Boolean).pop()||path,createdAt:now,lastOpenedAt:now,scripts:[]};
+      project={id:randomUUID(),path,environmentId,name:name||path.split(/[\\/]/).filter(Boolean).pop()||path,createdAt:now,lastOpenedAt:now,scripts:[],settingsOverrides:{}};
       this.state.projects.push(project);
     }
+    if("settingsOverrides" in patch)project.settingsOverrides=normalizeScopedObject(patch.settingsOverrides);
+    else if(!project.settingsOverrides||typeof project.settingsOverrides!=="object")project.settingsOverrides={};
     project.environmentId=environmentId;
     project.lastOpenedAt=now;
     if("name" in patch&&patch.name!=null) project.name=String(patch.name);
-    if("defaultModel" in patch) project.defaultModel=patch.defaultModel?String(patch.defaultModel):null;
-    if("permissionMode" in patch) project.permissionMode=patch.permissionMode?String(patch.permissionMode):null;
-    if("workspaceMode" in patch) project.workspaceMode=patch.workspaceMode?String(patch.workspaceMode):null;
+    if("defaultModel" in patch){project.defaultModel=patch.defaultModel?String(patch.defaultModel):null;if(project.defaultModel)project.settingsOverrides.defaultModel=normalizeScopedSetting("defaultModel",project.defaultModel);else delete project.settingsOverrides.defaultModel}
+    if("permissionMode" in patch){project.permissionMode=patch.permissionMode?String(patch.permissionMode):null;if(project.permissionMode)project.settingsOverrides.defaultPermissionMode=normalizeScopedSetting("defaultPermissionMode",project.permissionMode);else delete project.settingsOverrides.defaultPermissionMode}
+    if("workspaceMode" in patch){project.workspaceMode=patch.workspaceMode?String(patch.workspaceMode):null;if(project.workspaceMode)project.settingsOverrides.defaultWorkspaceMode=normalizeScopedSetting("defaultWorkspaceMode",project.workspaceMode);else delete project.settingsOverrides.defaultWorkspaceMode}
     if("worktreeSubmodules" in patch){
       const mode=patch.worktreeSubmodules==null?null:String(patch.worktreeSubmodules);
       project.worktreeSubmodules=["recursive","top-level","none"].includes(mode)?mode:null;
+      if(project.worktreeSubmodules)project.settingsOverrides.worktreeSubmodules=project.worktreeSubmodules;else delete project.settingsOverrides.worktreeSubmodules;
     }
-    if("worktreeCleanup" in patch)project.worktreeCleanup=normalizeWorktreeCleanup(patch.worktreeCleanup,{allowNull:true});
+    if("worktreeCleanup" in patch){project.worktreeCleanup=normalizeWorktreeCleanup(patch.worktreeCleanup,{allowNull:true});if(project.worktreeCleanup!=null)project.settingsOverrides.worktreeCleanup=project.worktreeCleanup;else delete project.settingsOverrides.worktreeCleanup}
     if("managedWorktree" in patch){
       const raw=patch.managedWorktree;
       project.managedWorktree=raw&&typeof raw==="object"?{

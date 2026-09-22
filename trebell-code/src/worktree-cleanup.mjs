@@ -35,7 +35,7 @@ export async function inspectManagedWorktree(project,{settings={},activePaths=[]
 
 export class WorktreeCleanupService{
   constructor({state,getUsage=()=>({activePaths:[],referencedPaths:[]}),log=()=>{}}={}){this.state=state;this.getUsage=getUsage;this.log=log}
-  async inspect(project,options={}){const usage=this.getUsage();return inspectManagedWorktree(project,{settings:this.state.settings(),...usage,...options})}
+  async inspect(project,options={}){const usage=this.getUsage();const scoped=this.state.projectSettings(project.path,project.environmentId||null);return inspectManagedWorktree(project,{settings:{...this.state.settings(),worktreeCleanup:scoped.effective.worktreeCleanup},...usage,...options})}
   async cleanupProject(project,{reason=null,now=Date.now()}={}){
     const inspection=await this.inspect(project,{reason,now});if(!inspection.eligible)return {removed:false,projectId:project.id,path:project.path,...inspection};
     await removeWorktree(project.managedWorktree.root,project.path,{force:false});

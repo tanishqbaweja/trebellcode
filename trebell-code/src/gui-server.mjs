@@ -389,7 +389,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       id:project.environmentId,
       name:profile?.name||"Unavailable environment",
       type:profile?.type||"unknown",
-    }:{id:null,name:"Local machine",type:"local"}};
+    }:{id:null,name:"Local machine",type:"local"},effectiveSettings:state.projectSettings(project.path,project.environmentId).effective};
   }
   const agentRuntimes=new AgentRuntimeManager({state,env,environments});
   const codexThreadModels=new Map();
@@ -928,6 +928,34 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return json(res,200,{ok:true});
       }
     }
+    if(url.pathname==="/api/scoped-settings"){
+      if(req.method==="GET"){
+        try{
+          const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
+          const projectId=String(url.searchParams.get("projectId")||"").trim();
+          if(projectId){
+            const project=state.projects().find(item=>item.id===projectId);if(!project)throw new Error("Project was not found");
+            const resolved=state.projectSettings(project.path,project.environmentId);
+            return json(res,200,{scope:"project",environmentId:project.environmentId||null,project:projectWithEnvironment(project),...resolved});
+          }
+          const defaults=state.environmentDefaults(environmentId);
+          return json(res,200,{scope:"environment",environmentId,defaults,overrides:{},effective:defaults});
+        }catch(error){return json(res,400,{error:error.message});}
+      }
+      if(req.method==="POST"){
+        try{
+          const body=await readJsonBody(req);const projectId=String(body.projectId||"").trim();const patch=body.patch&&typeof body.patch==="object"?body.patch:{};const resetKeys=Array.isArray(body.resetKeys)?body.resetKeys:[];
+          if(projectId){
+            const project=state.projects().find(item=>item.id===projectId);if(!project)throw new Error("Project was not found");
+            const result=state.updateProjectSettings(project.path,project.environmentId,patch,resetKeys);
+            return json(res,200,{scope:"project",environmentId:project.environmentId||null,project:projectWithEnvironment(result.project),defaults:result.defaults,overrides:result.overrides,effective:result.effective});
+          }
+          const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);
+          state.updateEnvironmentDefaults(environmentId,patch,resetKeys);const defaults=state.environmentDefaults(environmentId);
+          return json(res,200,{scope:"environment",environmentId,defaults,overrides:{},effective:defaults});
+        }catch(error){return json(res,400,{error:error.message});}
+      }
+    }
     if(url.pathname==="/api/worktree/cleanup"&&req.method==="POST"){
       try{const body=await readJsonBody(req);return json(res,200,await worktreeCleanup.sweep({reason:body.reason||null,path:body.path||null}))}
       catch(error){return json(res,400,{error:error.message});}
@@ -1026,6 +1054,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
               workspaceMode:sourceProject.workspaceMode??null,
               worktreeSubmodules:sourceProject.worktreeSubmodules??null,
               worktreeCleanup:sourceProject.worktreeCleanup??null,
+              settingsOverrides:sourceProject.settingsOverrides||{},
               icon:sourceProject.icon??null,
               scripts:sourceProject.scripts||[],
               preferredScriptId:sourceProject.preferredScriptId??null,
@@ -1048,7 +1077,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           case "worktree-create": {
             const sourceProject=state.project(resolve(cwd),null);
             const projectConfig=await projectActionSuggestions(cwd).catch(()=>({t3:{}}));
-            const submodules=sourceProject?.worktreeSubmodules||projectConfig?.t3?.worktreeSubmodules||state.settings().worktreeSubmodules||"recursive";
+            const scoped=sourceProject?state.projectSettings(sourceProject.path,null):{defaults:state.environmentDefaults(null),overrides:{}};
+            const submodules=scoped.overrides.worktreeSubmodules||projectConfig?.t3?.worktreeSubmodules||scoped.defaults.worktreeSubmodules||"recursive";
             result=await createWorktree(cwd,{branch:body.branch,path:body.path,baseBranch:body.baseBranch||null,submodules});
             const inherited=sourceProject?{
               defaultModel:sourceProject.defaultModel??null,
@@ -1056,6 +1086,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
               workspaceMode:sourceProject.workspaceMode??null,
               worktreeSubmodules:sourceProject.worktreeSubmodules??null,
               worktreeCleanup:sourceProject.worktreeCleanup??null,
+              settingsOverrides:sourceProject.settingsOverrides||{},
               icon:sourceProject.icon??null,
               scripts:sourceProject.scripts||[],
               preferredScriptId:sourceProject.preferredScriptId??null,

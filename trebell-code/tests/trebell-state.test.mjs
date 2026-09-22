@@ -136,3 +136,37 @@ test("projects with the same remote path stay distinct across environments",asyn
     assert.equal(again.project("/srv/app",null).environmentId,null);
   }finally{await rm(home,{recursive:true,force:true})}
 });
+
+test("scoped settings resolve environment defaults and project overrides without leaking between environments",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-state-scopes-"));const env={...process.env,TREBELL_HOME:home};
+  try{
+    const state=new TrebellStateStore(env);
+    state.updateSettings({defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",worktreeSubmodules:"recursive",autoPull:false,agentDeviceAccess:false,defaultModel:"model-global"});
+    state.updateEnvironmentDefaults("ssh-a",{defaultPermissionMode:"full",defaultWorkspaceMode:"worktree",worktreeSubmodules:"none",agentDeviceAccess:true,defaultModel:"model-remote"});
+    const project=state.touchProject("/srv/app",{environmentId:"ssh-a",name:"Remote App"});
+    let scoped=state.projectSettings(project.path,"ssh-a");
+    assert.equal(scoped.effective.defaultPermissionMode,"full");
+    assert.equal(scoped.effective.defaultWorkspaceMode,"worktree");
+    assert.equal(scoped.effective.defaultModel,"model-remote");
+    assert.equal(state.environmentDefaults("ssh-b").defaultPermissionMode,"supervised");
+
+    state.updateProjectSettings(project.path,"ssh-a",{defaultPermissionMode:"edits",autoPull:true},[]);
+    scoped=state.projectSettings(project.path,"ssh-a");
+    assert.equal(scoped.overrides.defaultPermissionMode,"edits");
+    assert.equal(scoped.effective.defaultPermissionMode,"edits");
+    assert.equal(scoped.effective.autoPull,true);
+    assert.equal(state.project(project.path,"ssh-a").permissionMode,"edits");
+
+    state.updateProjectSettings(project.path,"ssh-a",{},["defaultPermissionMode","autoPull"]);
+    scoped=state.projectSettings(project.path,"ssh-a");
+    assert.equal(scoped.overrides.defaultPermissionMode,undefined);
+    assert.equal(scoped.effective.defaultPermissionMode,"full");
+    assert.equal(scoped.effective.autoPull,false);
+    assert.equal(state.project(project.path,"ssh-a").permissionMode,null);
+
+    state.touchProject(project.path,{environmentId:"ssh-a",workspaceMode:"current"});
+    scoped=state.projectSettings(project.path,"ssh-a");
+    assert.equal(scoped.overrides.defaultWorkspaceMode,"current");
+    assert.equal(scoped.effective.defaultWorkspaceMode,"current");
+  }finally{await rm(home,{recursive:true,force:true})}
+});

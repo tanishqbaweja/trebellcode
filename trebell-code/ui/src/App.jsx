@@ -418,6 +418,15 @@ export default function App(){
   const agentRuntime=settings.agentRuntime||bootstrap.agentRuntime||"codex";
   const provider=settings.modelProvider||bootstrap.provider||"freebuff";
   const workspaceEnvironmentId=activeThread?.providerMeta?.environmentId??(currentProject?currentProject.environmentId||null:settings.activeEnvironmentId||null);
+  const effectiveProjectSettings=currentProject?.effectiveSettings||{
+    defaultModel:settings.defaultModel||null,
+    defaultPermissionMode:settings.defaultPermissionMode||"supervised",
+    defaultWorkspaceMode:settings.defaultWorkspaceMode||"current",
+    worktreeSubmodules:settings.worktreeSubmodules||"recursive",
+    worktreeCleanup:settings.worktreeCleanup||{mode:"off"},
+    autoPull:Boolean(settings.autoPull),
+    agentDeviceAccess:Boolean(settings.agentDeviceAccess),
+  };
   const workspaceEnvironmentType=currentProject?.environment?.type||(workspaceEnvironmentId&&(workspaceEnvironmentId===settings.activeEnvironmentId)?bootstrap.activeEnvironment?.type:null)||(workspaceEnvironmentId?"remote":"local");
   const workspaceRemote=Boolean(workspaceEnvironmentId&&workspaceEnvironmentType!=="local");
   const providerReady=bootstrap.mock||(agentRuntime==="codex"?(provider==="freebuff"?Boolean(bootstrap.loggedIn):Boolean(bootstrap.providerReady)):Boolean(bootstrap.agentRuntimeReady));
@@ -461,10 +470,11 @@ export default function App(){
     const project=response?.project||null;
     setCurrentProject(project);
     if(project&&activate)setSettings(prev=>({...prev,activeProjectId:project.id}));
-    if(project?.defaultModel&&models.includes(project.defaultModel)){setModel(project.defaultModel);setSelectedModels([project.defaultModel])}
-    if(project?.permissionMode)setPermissionMode(project.permissionMode);
-    if(project?.workspaceMode)setWorkspaceMode(project.workspaceMode);
-    if(settings.autoPull&&!resolvedEnvironmentId)api("/api/git/action",{method:"POST",body:{action:"auto-pull",cwd:path}}).catch(()=>{});
+    const scoped=project?.effectiveSettings||{};
+    if(scoped.defaultModel&&models.includes(scoped.defaultModel)){setModel(scoped.defaultModel);setSelectedModels([scoped.defaultModel])}
+    if(scoped.defaultPermissionMode)setPermissionMode(scoped.defaultPermissionMode);
+    if(scoped.defaultWorkspaceMode)setWorkspaceMode(scoped.defaultWorkspaceMode);
+    if(scoped.autoPull&&!resolvedEnvironmentId)api("/api/git/action",{method:"POST",body:{action:"auto-pull",cwd:path}}).catch(()=>{});
     return project;
   }
   async function refreshEnvironmentThemes(){
@@ -491,8 +501,11 @@ export default function App(){
       const availableModels=modelData.models||[];
       setModelError(modelData.error||"");
       setModelMeta(Object.fromEntries((modelData.metadata?.models||[]).map(item=>[item.id,item]))); const fallback=availableModels.length?availableModels:(boot.mock?["freebuff/deepseek/deepseek-v4-flash","freebuff/test/coding-large","freebuff/test/coding-fast"]:[]);
-      const initialModel=(initialProject?.defaultModel&&fallback.includes(initialProject.defaultModel))?initialProject.defaultModel:(fallback[0]||"");
+      const initialScoped=initialProject?.effectiveSettings||{};
+      const initialModel=(initialScoped.defaultModel&&fallback.includes(initialScoped.defaultModel))?initialScoped.defaultModel:(fallback[0]||"");
       setModels(fallback); setModel(initialModel);setSelectedModels(initialModel?[initialModel]:[]);
+      setPermissionMode(initialScoped.defaultPermissionMode||state.settings?.defaultPermissionMode||"supervised");
+      setWorkspaceMode(initialScoped.defaultWorkspaceMode||state.settings?.defaultWorkspaceMode||"current");
       if(initialProject?.permissionMode)setPermissionMode(initialProject.permissionMode);
       if(initialProject?.workspaceMode)setWorkspaceMode(initialProject.workspaceMode);
       if(window.trebellDesktop?.background&&state.settings?.backgroundMode!=null)window.trebellDesktop.background.set(Boolean(state.settings.backgroundMode)).catch?.(()=>{});
@@ -667,7 +680,7 @@ export default function App(){
       if(p.namespace==="trebell_device"){
         (async()=>{
           try{
-            if(!settings.agentDeviceAccess)throw new Error("Agent device access is disabled in Settings.");
+            if(!effectiveProjectSettings.agentDeviceAccess)throw new Error("Agent device access is disabled for this project.");
             const args=p.arguments||{};
             if(p.tool==="list"){
               const result=await api("/api/devices");
@@ -914,7 +927,7 @@ export default function App(){
     if(setup?.session?.id&&setup.waitForSetup){const settled=await waitForDetachedSetup(setup.session.id);if(settled.timeout)throw new Error("Background worktree setup is still running after 30 minutes.");if(settled.exitCode!==0)throw new Error(`Background worktree setup failed with exit code ${settled.exitCode??"unknown"}.`)}
     return worktree;
   }
-  async function createThreadFor(modelId,cwd){const p=presetFor(permissionMode);const dynamicTools=[...TREBELL_BROWSER_TOOLS,...TREBELL_COMPUTER_TOOLS,...(settings.agentDeviceAccess?TREBELL_DEVICE_TOOLS:[])];const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools,developerInstructions:webSearch?"Web research is allowed when useful. You may use trebell_browser for interactive pages.":"Do not use web search or trebell_browser unless the user explicitly requests it."});if(agentRuntime!=="codex"&&result.thread?.providerMeta){setProviderAgent(result.thread.agent||providerAgent||"");const meta=result.thread.providerMeta;applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}return result.thread}
+  async function createThreadFor(modelId,cwd){const p=presetFor(permissionMode);const dynamicTools=[...TREBELL_BROWSER_TOOLS,...TREBELL_COMPUTER_TOOLS,...(effectiveProjectSettings.agentDeviceAccess?TREBELL_DEVICE_TOOLS:[])];const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools,developerInstructions:webSearch?"Web research is allowed when useful. You may use trebell_browser for interactive pages.":"Do not use web search or trebell_browser unless the user explicitly requests it."});if(agentRuntime!=="codex"&&result.thread?.providerMeta){setProviderAgent(result.thread.agent||providerAgent||"");const meta=result.thread.providerMeta;applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}return result.thread}
   function inputsFor(text,paths){return [{type:"text",text,text_elements:[]},...(paths||[]).map(path=>{const lower=String(path).toLowerCase();if(/\.(png|jpe?g|gif|webp|bmp)$/.test(lower))return{type:"localImage",path};if(/\.(mp3|wav|m4a|ogg|flac)$/.test(lower))return{type:"localAudio",path};return{type:"mention",name:String(path).split(/[\\/]/).pop(),path}})]}
   async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null){
     await validateAttachmentPaths(paths||[]);
@@ -1172,6 +1185,18 @@ export default function App(){
     setSection("chat");
     if(targetEnvironmentId===currentEnvironmentId&&rpcStatus==="connected")loadSkills(rpc,path);
   }
+  async function onScopedSettingsChanged(){
+    const [nextSettings,projectData]=await Promise.all([api("/api/settings"),api("/api/projects")]);
+    setSettings(prev=>({...prev,...nextSettings}));
+    const project=(projectData.projects||[]).find(item=>item.id===currentProject?.id)||null;
+    if(project){
+      setCurrentProject(project);
+      const scoped=project.effectiveSettings||{};
+      if(scoped.defaultModel&&models.includes(scoped.defaultModel)){setModel(scoped.defaultModel);setSelectedModels([scoped.defaultModel])}
+      if(scoped.defaultPermissionMode)setPermissionMode(scoped.defaultPermissionMode);
+      if(scoped.defaultWorkspaceMode)setWorkspaceMode(scoped.defaultWorkspaceMode);
+    }
+  }
   async function finishOnboarding({openSettings=false}={}){
     const next=await api("/api/settings",{method:"POST",body:{onboardingComplete:true,defaultPermissionMode:permissionMode}});
     setSettings(prev=>({...prev,...next}));
@@ -1344,7 +1369,7 @@ export default function App(){
         {section==="environments"&&<div className="secondary-page full"><EnvironmentsPage/></div>}
       {section==="usage"&&<div className="secondary-page full"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><LicensesPage/></div>}
-      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>Agent harnesses, model providers, permissions and desktop behavior.</p></div></div><SettingsPage settings={settings} onSettings={setSettings} onProviderUpdated={(options={})=>{setProviderRevision(v=>v+1);return refreshProviderModels({resetThread:true,...options})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectPath} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></div>}
+      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>Agent harnesses, model providers, permissions and desktop behavior.</p></div></div><SettingsPage settings={settings} onSettings={setSettings} onProviderUpdated={(options={})=>{setProviderRevision(v=>v+1);return refreshProviderModels({resetThread:true,...options})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectPath} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></div>}
         {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Every unarchived {agentRuntimeLabel} thread stored by Trebell on this machine.</p></div></div><div className="history-page">{threads.map(t=><button key={t.id} onClick={()=>openThread(t)}><FileCode2 size={15}/><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><time>{new Date(t.updatedAt*1000).toLocaleString()}</time></button>)}</div></div>}
       </main>
 
