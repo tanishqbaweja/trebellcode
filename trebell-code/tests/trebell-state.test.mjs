@@ -32,6 +32,8 @@ test("project actions persist, sanitize, inherit preference, and allow clearing 
       defaultModel:"freebuff/test/coding-fast",
       permissionMode:"full",
       workspaceMode:"worktree",
+      worktreeSubmodules:"top-level",
+      icon:{kind:"monogram",value:"tb",color:"#123456"},
       scripts:[{
         id:"dev",
         name:"Dev server",
@@ -48,11 +50,15 @@ test("project actions persist, sanitize, inherit preference, and allow clearing 
     assert.equal(saved.scripts[0].runOnWorktreeCreate,true);
     assert.equal(saved.scripts[0].waitForSetup,true);
     assert.equal(saved.preferredScriptId,"dev");
+    assert.equal(saved.worktreeSubmodules,"top-level");
+    assert.deepEqual(saved.icon,{kind:"monogram",value:"TB",color:"#123456"});
 
-    const cleared=state.touchProject(projectPath,{defaultModel:null,permissionMode:null,workspaceMode:null});
+    const cleared=state.touchProject(projectPath,{defaultModel:null,permissionMode:null,workspaceMode:null,worktreeSubmodules:null,icon:null});
     assert.equal(cleared.defaultModel,null);
     assert.equal(cleared.permissionMode,null);
     assert.equal(cleared.workspaceMode,null);
+    assert.equal(cleared.worktreeSubmodules,null);
+    assert.equal(cleared.icon,null);
 
     const again=new TrebellStateStore(env).projects()[0];
     assert.equal(again.scripts[0].previewUrl,"http://localhost:5173");

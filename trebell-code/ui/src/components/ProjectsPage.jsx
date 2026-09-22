@@ -1,9 +1,28 @@
 import React,{useEffect,useMemo,useState} from "react";
-import { Check, Download, ExternalLink, FolderCode, GitBranch, Layers3, Pencil, Play, Plus, RefreshCw, SquareTerminal, Trash2, X } from "lucide-react";
+import { Check, Download, ExternalLink, FolderCode, GitBranch, ImagePlus, Layers3, Pencil, Play, Plus, RefreshCw, Settings2, SquareTerminal, Trash2, X } from "lucide-react";
 import { api } from "../api.js";
 
 function blankScript(){
   return {id:null,name:"",command:"",previewUrl:"",autoOpenPreview:false,runOnWorktreeCreate:false,waitForSetup:false};
+}
+
+const ICON_COLORS=["#7c5cff","#4f8cff","#2fa57d","#c57b32","#c45a7a","#6d7f93"];
+function autoMonogram(name="Project"){
+  const words=String(name).trim().split(/\s+/).filter(Boolean);
+  const first=words[0]||"PR";if(/^[A-Za-z]\d/.test(first))return first.slice(0,2).toUpperCase();
+  if(words.length>1)return (words[0][0]+words[1][0]).toUpperCase();
+  const word=first;
+  return (word[0]+(word[word.length-1]||word[0])).toUpperCase();
+}
+function autoColor(name="Project"){
+  let hash=0;for(const ch of String(name))hash=(hash*31+ch.charCodeAt(0))>>>0;return ICON_COLORS[hash%ICON_COLORS.length];
+}
+function ProjectIcon({project}){
+  const icon=project.icon;
+  if(icon?.kind==="image")return <span className="project-icon project-icon-image"><img src={icon.value} alt=""/></span>;
+  if(icon?.kind==="emoji")return <span className="project-icon project-icon-emoji" style={{background:icon.color||autoColor(project.name)}}>{icon.value}</span>;
+  const text=icon?.kind==="monogram"?icon.value:autoMonogram(project.name);
+  return <span className="project-icon project-icon-monogram" style={{background:icon?.color||autoColor(project.name)}}>{text}</span>;
 }
 
 export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPreview,onProjectUpdated,models=[]}){
@@ -13,6 +32,8 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
   const [editor,setEditor]=useState(null);
   const [error,setError]=useState("");
   const [suggestionsOpen,setSuggestionsOpen]=useState({});
+  const [identityOpen,setIdentityOpen]=useState({});
+  const [iconDraft,setIconDraft]=useState({});
 
   async function refresh(){
     const d=await api("/api/projects").catch(()=>({projects:[]}));
@@ -143,6 +164,12 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
     await saveProject(project,{scripts:[...project.scripts,...items],preferredScriptId:project.preferredScriptId||items[0].id});
   }
 
+  async function importProjectImage(project,file){
+    if(!file)return;if(file.size>1_400_000){setError("Project icon images must be under 1.4 MB.");return}
+    const dataUrl=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result||""));reader.onerror=()=>reject(reader.error||new Error("Could not read image"));reader.readAsDataURL(file)});
+    await saveProject(project,{icon:{kind:"image",value:dataUrl,color:autoColor(project.name)}});
+  }
+
   const groups=useMemo(()=>{
     const map=new Map();
     for(const project of projects){
@@ -160,17 +187,20 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
     <div className="project-groups">{groups.map(group=><section className="project-group" key={group.key}>
       <div className="project-group-head"><Layers3 size={14}/><div><strong>{group.label}</strong><span>{group.projects.length} checkout{group.projects.length===1?"":"s"}</span></div></div>
       <div className="project-grid">{group.projects.map(p=><div className={p.path===currentPath?"project-card active":"project-card"} key={p.id}>
-        <button className="project-open" onClick={()=>onOpen(p.path)}><FolderCode size={22}/><div><strong>{p.name}</strong><span>{p.path}</span><small>{p.git?.branch||"not a Git checkout"} · {new Date(p.lastOpenedAt).toLocaleString()}</small></div></button>
+        <button className="project-open" onClick={()=>onOpen(p.path)}><ProjectIcon project={p}/><div><strong>{p.name}</strong><span>{p.path}</span><small>{p.git?.branch||"not a Git checkout"} · {new Date(p.lastOpenedAt).toLocaleString()}</small></div></button>
         <button className="project-remove" onClick={async()=>{await api("/api/projects?id="+encodeURIComponent(p.id),{method:"DELETE"});refresh()}}><Trash2 size={13}/></button>
         <div className="project-overrides">
           <label>Model<select value={p.defaultModel||""} onChange={e=>saveProject(p,{defaultModel:e.target.value||null})}><option value="">Inherit client default</option>{models.map(id=><option key={id} value={id}>{id.replace(/^freebuff\//,"")}</option>)}</select></label>
           <label>Permissions<select value={p.permissionMode||""} onChange={e=>saveProject(p,{permissionMode:e.target.value||null})}><option value="">Inherit</option><option value="supervised">Supervised</option><option value="edits">Auto-accept edits</option><option value="auto">Auto</option><option value="full">Full access</option><option value="read-only">Read only</option></select></label>
           <label>Workspace<select value={p.workspaceMode||""} onChange={e=>saveProject(p,{workspaceMode:e.target.value||null})}><option value="">Inherit</option><option value="current">Current checkout</option><option value="worktree">New worktree</option></select></label>
+          <label>Submodules<select value={p.worktreeSubmodules||""} onChange={e=>saveProject(p,{worktreeSubmodules:e.target.value||null})}><option value="">Inherit</option><option value="recursive">Recursive</option><option value="top-level">Top level only</option><option value="none">Skip</option></select></label>
         </div>
+        <div className="project-identity-toggle"><button onClick={()=>setIdentityOpen(current=>({...current,[p.id]:!current[p.id]}))}><Settings2 size={12}/> Project identity</button></div>
+        {identityOpen[p.id]&&<div className="project-identity-editor"><label>Name<input defaultValue={p.name} onBlur={e=>{const value=e.target.value.trim();if(value&&value!==p.name)saveProject(p,{name:value})}}/></label><div className="project-icon-actions"><button onClick={()=>saveProject(p,{icon:null})}>Automatic</button><button onClick={()=>setIconDraft(current=>({...current,[p.id]:{kind:"emoji",value:p.icon?.kind==="emoji"?p.icon.value:"🚀",color:p.icon?.color||autoColor(p.name)}}))}>Emoji</button><button onClick={()=>setIconDraft(current=>({...current,[p.id]:{kind:"monogram",value:p.icon?.kind==="monogram"?p.icon.value:autoMonogram(p.name),color:p.icon?.color||autoColor(p.name)}}))}>Monogram</button><label className="project-image-button"><ImagePlus size={12}/> Image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={e=>importProjectImage(p,e.target.files?.[0])}/></label></div>{iconDraft[p.id]&&<div className="project-icon-draft"><input maxLength={iconDraft[p.id].kind==="monogram"?2:16} value={iconDraft[p.id].value} onChange={e=>setIconDraft(current=>({...current,[p.id]:{...current[p.id],value:e.target.value}}))}/><input type="color" value={iconDraft[p.id].color||autoColor(p.name)} onChange={e=>setIconDraft(current=>({...current,[p.id]:{...current[p.id],color:e.target.value}}))}/><button onClick={async()=>{await saveProject(p,{icon:iconDraft[p.id]});setIconDraft(current=>({...current,[p.id]:null}))}}>Save icon</button></div>}</div>}
 
         <div className="project-actions">
           <div className="project-actions-head"><span><SquareTerminal size={13}/> Project actions</span><div>{importableScripts(p).length>0&&<button onClick={()=>setSuggestionsOpen(current=>({...current,[p.id]:!current[p.id]}))}><Download size={12}/> Import {importableScripts(p).length}</button>}<button onClick={()=>editScript(p)}><Plus size={12}/> Add action</button></div></div>
-          {p.suggested?.t3?.present&&<div className="project-config-hint"><strong>t3.json detected</strong><span>{p.suggested.t3.defaultThreadEnvMode?"Default workspace: "+p.suggested.t3.defaultThreadEnvMode:"Shared project actions available"}</span>{p.suggested.t3.defaultThreadEnvMode&&p.workspaceMode!==p.suggested.t3.defaultThreadEnvMode&&<button onClick={()=>saveProject(p,{workspaceMode:p.suggested.t3.defaultThreadEnvMode})}>Use default</button>}</div>}
+          {p.suggested?.t3?.present&&<div className="project-config-hint"><strong>t3.json detected</strong><span>{[p.suggested.t3.defaultThreadEnvMode&&("workspace "+p.suggested.t3.defaultThreadEnvMode),p.suggested.t3.worktreeSubmodules&&("submodules "+p.suggested.t3.worktreeSubmodules)].filter(Boolean).join(" · ")||"Shared project actions available"}</span>{p.suggested.t3.defaultThreadEnvMode&&p.workspaceMode!==p.suggested.t3.defaultThreadEnvMode&&<button onClick={()=>saveProject(p,{workspaceMode:p.suggested.t3.defaultThreadEnvMode})}>Use workspace</button>}{p.suggested.t3.worktreeSubmodules&&p.worktreeSubmodules!==p.suggested.t3.worktreeSubmodules&&<button onClick={()=>saveProject(p,{worktreeSubmodules:p.suggested.t3.worktreeSubmodules})}>Use submodules</button>}</div>}
           {suggestionsOpen[p.id]&&importableScripts(p).length>0&&<div className="project-import-list">
             <div className="project-import-head"><span>Discovered actions</span><button onClick={()=>importAll(p)}>Import all</button></div>
             {importableScripts(p).map(script=><div key={script.source+":"+script.id}><span><strong>{script.name}</strong><small>{script.command}</small></span><em>{script.source}</em><button onClick={()=>importScript(p,script)}><Download size={11}/> Import</button></div>)}

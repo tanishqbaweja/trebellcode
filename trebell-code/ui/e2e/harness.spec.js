@@ -14,6 +14,8 @@ test("Trebell Code renders the harness and scopes models to the selected provide
     }});
   });
   await request.post("/api/settings",{data:{onboardingComplete:true}});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await request.post("/api/projects",{data:{path:boot.cwd,name:"E2E Project",worktreeSubmodules:"top-level",icon:{kind:"monogram",value:"E2",color:"#4f8cff"}}});
   await page.goto("/");
   const onboarding=page.getByTestId("onboarding");
   if(await onboarding.isVisible().catch(()=>false))await onboarding.getByRole("button",{name:"Finish setup"}).click();
@@ -64,6 +66,9 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await page.getByRole("button",{name:"Projects",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Projects"})).toBeVisible();
   await expect(page.getByText("Clone repository")).toBeVisible();
+  const e2eProject=page.locator(".project-card").filter({hasText:"E2E Project"});
+  await expect(e2eProject.locator(".project-icon")).toHaveText("E2");
+  await expect(e2eProject.getByLabel("Submodules")).toHaveValue("top-level");
 
   await page.getByRole("button",{name:"Browser"}).click();
   await expect(page.getByTestId("right-panel")).toBeVisible();

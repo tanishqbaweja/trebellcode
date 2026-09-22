@@ -11,6 +11,7 @@ const DEFAULT_STATE = Object.freeze({
     followUpMode: "queue",
     defaultPermissionMode: "supervised",
     autoPull: false,
+    worktreeSubmodules: "recursive",
     appearance: "dark",
     appearanceMode: "system",
     customThemes: [],
@@ -75,6 +76,7 @@ export class TrebellStateStore {
   snapshot(){ return clone(this.state); }
   settings(){ return clone(this.state.settings); }
   updateSettings(patch={}){
+    if("worktreeSubmodules" in patch&&!['recursive','top-level','none'].includes(String(patch.worktreeSubmodules)))patch={...patch,worktreeSubmodules:'recursive'};
     this.state.settings={...this.state.settings,...patch};
     this.#save();
     return this.settings();
@@ -111,6 +113,23 @@ export class TrebellStateStore {
     if("defaultModel" in patch) project.defaultModel=patch.defaultModel?String(patch.defaultModel):null;
     if("permissionMode" in patch) project.permissionMode=patch.permissionMode?String(patch.permissionMode):null;
     if("workspaceMode" in patch) project.workspaceMode=patch.workspaceMode?String(patch.workspaceMode):null;
+    if("worktreeSubmodules" in patch){
+      const mode=patch.worktreeSubmodules==null?null:String(patch.worktreeSubmodules);
+      project.worktreeSubmodules=["recursive","top-level","none"].includes(mode)?mode:null;
+    }
+    if("icon" in patch){
+      const raw=patch.icon;
+      if(!raw) project.icon=null;
+      else if(typeof raw==="object"){
+        const kind=["emoji","monogram","image"].includes(raw.kind)?raw.kind:null;
+        const color=/^#[0-9a-f]{6}$/i.test(String(raw.color||""))?String(raw.color).toLowerCase():"#7c5cff";
+        let value=String(raw.value||"").trim();
+        if(kind==="emoji")value=value.slice(0,16);
+        else if(kind==="monogram")value=value.replace(/[^a-z0-9]/gi,"").slice(0,2).toUpperCase();
+        else if(kind==="image"&&(!/^data:image\/(?:png|jpe?g|webp|gif);base64,/i.test(value)||value.length>2_000_000))value="";
+        project.icon=kind&&value?{kind,value,color}:null;
+      }
+    }
     if(Array.isArray(patch.scripts)){
       project.scripts=patch.scripts.slice(0,30).map((script,index)=>({
         id:String(script?.id||randomUUID()),

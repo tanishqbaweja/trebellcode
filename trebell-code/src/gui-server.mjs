@@ -341,7 +341,7 @@ async function projectActionSuggestions(projectPath){
     waitForSetup:false,
   }));
   return {
-    t3:{present:Boolean(t3),defaultThreadEnvMode:t3?.defaultThreadEnvMode==="worktree"?"worktree":t3?.defaultThreadEnvMode==="local"?"current":null},
+    t3:{present:Boolean(t3),defaultThreadEnvMode:t3?.defaultThreadEnvMode==="worktree"?"worktree":t3?.defaultThreadEnvMode==="local"?"current":null,worktreeSubmodules:["recursive","top-level","none"].includes(t3?.worktreeSubmodules)?t3.worktreeSubmodules:null},
     packageManager,
     scripts:[...fileScripts,...packageScripts],
   };
@@ -830,11 +830,15 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           case "auto-pull": result=await safeAutoPull(cwd); break;
           case "worktree-create": {
             const sourceProject=state.projects().find(item=>resolve(item.path)===resolve(cwd))||null;
-            result=await createWorktree(cwd,{branch:body.branch,path:body.path,baseBranch:body.baseBranch||null});
+            const projectConfig=await projectActionSuggestions(cwd).catch(()=>({t3:{}}));
+            const submodules=sourceProject?.worktreeSubmodules||projectConfig?.t3?.worktreeSubmodules||state.settings().worktreeSubmodules||"recursive";
+            result=await createWorktree(cwd,{branch:body.branch,path:body.path,baseBranch:body.baseBranch||null,submodules});
             const inherited=sourceProject?{
               defaultModel:sourceProject.defaultModel??null,
               permissionMode:sourceProject.permissionMode??null,
               workspaceMode:sourceProject.workspaceMode??null,
+              worktreeSubmodules:sourceProject.worktreeSubmodules??null,
+              icon:sourceProject.icon??null,
               scripts:sourceProject.scripts||[],
               preferredScriptId:sourceProject.preferredScriptId??null,
             }:{};

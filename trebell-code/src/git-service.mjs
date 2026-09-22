@@ -89,7 +89,11 @@ export async function safeAutoPull(cwd){
   await git(info.root,["pull","--ff-only"]);
   return {ok:true,info:await gitInfo(info.root)};
 }
-export async function createWorktree(cwd,{branch,path,baseBranch=null}){
+export function worktreeSubmoduleArgs(mode="recursive"){
+  if(mode==="none")return null;
+  return mode==="top-level"?["submodule","update","--init"]:["submodule","update","--init","--recursive"];
+}
+export async function createWorktree(cwd,{branch,path,baseBranch=null,submodules="recursive"}){
   const info=await gitInfo(cwd);
   if(!info.isGit) throw new Error("Workspace is not a Git repository");
   const dest=resolve(path);
@@ -98,7 +102,9 @@ export async function createWorktree(cwd,{branch,path,baseBranch=null}){
   args.push(dest);
   if(baseBranch) args.push(baseBranch);
   await git(info.root,args,{timeout:180000});
-  return {worktree:dest,info:await gitInfo(info.root)};
+  const submoduleArgs=worktreeSubmoduleArgs(submodules);
+  if(submoduleArgs)await git(dest,submoduleArgs,{timeout:10*60_000,maxBuffer:16*1024*1024});
+  return {worktree:dest,submodules:submodules||"recursive",info:await gitInfo(info.root)};
 }
 export async function removeWorktree(cwd,path,{force=false}={}){
   const info=await gitInfo(cwd);
