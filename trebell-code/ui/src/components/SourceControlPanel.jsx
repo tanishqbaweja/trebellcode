@@ -1,5 +1,5 @@
 import React,{useEffect,useState} from "react";
-import { GitBranch, GitCommit, GitPullRequest, RefreshCw, Upload, Download, Plus, WandSparkles, ExternalLink, MessageSquare, CheckCircle2, Eye, EyeOff, Pencil, ShieldCheck } from "lucide-react";
+import { GitBranch, GitCommit, GitPullRequest, RefreshCw, Upload, Download, Plus, WandSparkles, ExternalLink, MessageSquare, CheckCircle2, Eye, EyeOff, Pencil, ShieldCheck, Layers3 } from "lucide-react";
 import { api } from "../api.js";
 
 export default function SourceControlPanel({projectPath,environmentId=null,remote=false,environmentName="Local machine",model,provider="freebuff",onProjectChange,onAttachPr,onLinkPr,linkedPullRequests=[]}){
@@ -11,6 +11,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   const [selectedPr,setSelectedPr]=useState(null);
   const [commitMessage,setCommitMessage]=useState("");
   const [comment,setComment]=useState("");
+  const [stackMergeMethod,setStackMergeMethod]=useState("squash");
   const [viewed,setViewed]=useState({store:null,files:[],loading:false});
   const [busy,setBusy]=useState("");
   const [error,setError]=useState("");
@@ -71,46 +72,25 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   }
 
   function stackFor(pr){
-    if(!pr)return[];
-    const byHead=new Map(prs.map(x=>[x.headRefName,x]));
-    const byBase=new Map();
-    for(const item of prs){
-      const list=byBase.get(item.baseRefName)||[];
-      list.push(item);byBase.set(item.baseRefName,list);
-    }
-    const seen=new Set([pr.number]);
-    const below=[];
-    let cur=pr;
-    while(cur?.baseRefName&&byHead.has(cur.baseRefName)){
-      const parent=byHead.get(cur.baseRefName);
-      if(seen.has(parent.number))break;
-      seen.add(parent.number);below.unshift(parent);cur=parent;
-    }
-    const above=[];
-    cur=pr;
-    while(true){
-      const children=(byBase.get(cur.headRefName)||[]).filter(x=>!seen.has(x.number));
-      if(children.length!==1)break;
-      const child=children[0];seen.add(child.number);above.push(child);cur=child;
-    }
-    return [...below,pr,...above];
+    return Array.isArray(pr?.stack?.layers)?pr.stack.layers:[];
   }
 
   async function stackAction(kind){
     const stack=stackFor(selectedPr);
-    if(stack.length<2)return;
+    if(stack.length<1||!selectedPr?.stack)return;
+    const selectedPosition=Number(selectedPr.stack?.position)||stack.find(layer=>layer.number===selectedPr.number)?.position||stack.length;
+    const mergeScope=stack.filter(layer=>layer.state==="OPEN"&&Number(layer.position)<=selectedPosition);
     const label=stack.map(pr=>"#"+pr.number).join(" → ");
-    if(!confirm((kind==="merge"?"Merge":"Rebase")+" stack "+label+"?"))return;
+    const promptText=kind==="merge"
+      ?"Merge "+mergeScope.map(pr=>"#"+pr.number).join(" → ")+" using "+stackMergeMethod+" as one GitHub stack operation? GitHub will enforce branch rules and merge queues."
+      :"Rebase stack "+label+"? This rewrites the remote stack branches bottom-to-top with force-with-lease and restarts checks. Your current checkout is not changed.";
+    if(!confirm(promptText))return;
     setBusy(kind+"-stack");setError("");
     try{
       if(kind==="merge"){
-        for(const pr of stack){
-          await api("/api/source-control/pr-action",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,number:pr.number,action:"merge",method:"squash"})});
-        }
+        await api("/api/source-control/pr-action",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,number:selectedPr.number,action:"merge",method:stackMergeMethod})});
       }else{
-        for(const pr of stack.slice(1)){
-          await api("/api/source-control/pr-action",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,number:pr.number,action:"update-branch",rebase:true})});
-        }
+        await api("/api/source-control/pr-action",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,number:selectedPr.number,action:"rebase-stack"})});
       }
       await refresh();
       if(selectedPr)await openPr(selectedPr);
@@ -138,11 +118,11 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       </section>
     </div>
     <section className="pr-card"><div className="pr-head"><h3>Pull requests</h3><button onClick={refresh}><RefreshCw size={13}/></button><button onClick={async()=>{const title=prompt("PR title",commitMessage||"Trebell Code changes");if(!title)return;const body=prompt("PR description","")||"";try{const d=await api("/api/source-control/pr",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,title,body})});if(d.url)window.open(d.url,"_blank");await refresh()}catch(e){setError(e.message)}}}><Plus size={13}/> Create PR</button></div>
-      <div className="pr-layout"><div className="pr-list">{prs.map(pr=><button key={pr.number} onClick={()=>openPr(pr)} className={selectedPr?.number===pr.number?"active":""}><GitPullRequest size={14}/><div><strong>#{pr.number} {pr.title}</strong><span>{pr.headRefName} → {pr.baseRefName}</span></div><em>{pr.state}</em></button>)}</div>
+      <div className="pr-layout"><div className="pr-list">{prs.map(pr=><button key={pr.number} onClick={()=>openPr(pr)} className={selectedPr?.number===pr.number?"active":""}><GitPullRequest size={14}/><div><strong>#{pr.number} {pr.title}</strong><span>{pr.headRefName} → {pr.baseRefName}{pr.stack?.position&&pr.stack?.size?" · stack "+pr.stack.position+"/"+pr.stack.size:""}</span></div><em>{pr.state}</em></button>)}</div>
       <div className="pr-detail">{selectedPr?<>
         <h3>#{selectedPr.number} {selectedPr.title}</h3><p>{selectedPr.body||"No description."}</p>
-        {stackFor(selectedPr).length>1&&<div className="pr-stack"><strong>Stack</strong><span>{stackFor(selectedPr).map(pr=>"#"+pr.number).join(" → ")}</span><div><button onClick={()=>stackAction("rebase")} disabled={!!busy}>Rebase stack</button><button onClick={()=>stackAction("merge")} disabled={!!busy}>Merge stack</button></div></div>}
-        <div className="pr-actions"><button onClick={()=>window.open(selectedPr.url,"_blank")}><ExternalLink size={12}/> Open</button><button onClick={()=>onAttachPr?.(selectedPr)}><MessageSquare size={12}/> Attach</button><button className={linkedPullRequests.some(x=>x.number===selectedPr.number&&x.url===selectedPr.url)?"linked":""} onClick={()=>onLinkPr?.(selectedPr)}><GitPullRequest size={12}/> {linkedPullRequests.some(x=>x.number===selectedPr.number&&x.url===selectedPr.url)?"Linked":"Link to thread"}</button>{capabilities.edit&&<button onClick={()=>{const title=prompt("PR title",selectedPr.title||"");if(title==null||!title.trim())return;const body=prompt("PR description",selectedPr.body||"");if(body==null)return;prAction("edit",{title:title.trim(),body})}} disabled={!!busy}><Pencil size={12}/> Edit</button>}{capabilities.checkout&&<button onClick={()=>prAction("checkout")} disabled={!!busy}><Download size={12}/> Checkout</button>}{capabilities.reviewers&&<button onClick={()=>{const reviewer=prompt("Reviewer username");if(reviewer?.trim())prAction("request-reviewer",{reviewer:reviewer.trim()})}} disabled={!!busy}>Request reviewer</button>}{capabilities.approveWorkflows&&selectedPr.awaitingWorkflowApproval?.length>0&&<button onClick={()=>prAction("approve-workflows")} disabled={!!busy}><ShieldCheck size={12}/> Approve workflows ({selectedPr.awaitingWorkflowApproval.length})</button>}{capabilities.revert&&selectedPr.mergedAt&&selectedPr.mergeCommitSha&&<button onClick={async()=>{if(!confirm("Open a new pull request that reverts #"+selectedPr.number+"?"))return;const result=await prAction("revert");if(result?.url)window.open(result.url,"_blank")}} disabled={!!busy}><GitPullRequest size={12}/> Revert PR</button>}{capabilities.review&&!selectedPr.mergedAt&&<button onClick={()=>prAction("review",{event:"APPROVE",body:"Reviewed in Trebell Code."})}><CheckCircle2 size={12}/> Approve</button>}{capabilities.autoMerge&&!selectedPr.mergedAt&&<button onClick={()=>prAction("merge",{method:"squash",auto:true})} disabled={!!busy}>Auto-merge</button>}{capabilities.merge&&!selectedPr.mergedAt&&<button onClick={()=>prAction("merge",{method:"squash"})}>Merge</button>}</div>
+        {selectedPr.stack&&<div className="pr-stack"><div className="pr-stack-head"><strong><Layers3 size={12}/> GitHub stack #{selectedPr.stack.number}</strong><span>Layer {selectedPr.stack.position||stackFor(selectedPr).find(layer=>layer.number===selectedPr.number)?.position||"?"} of {selectedPr.stack.size||stackFor(selectedPr).length||"?"} · base {selectedPr.stack.baseRefName||"unknown"}</span></div>{stackFor(selectedPr).length>0&&<><div className="pr-stack-layers">{stackFor(selectedPr).map(layer=><button key={layer.number} className={layer.number===selectedPr.number?"active":""} onClick={()=>layer.number===selectedPr.number?null:openPr({...layer,provider:"github"})}><span>{layer.position}</span><strong>#{layer.number} {layer.title||layer.headRefName}</strong><em>{layer.state}{layer.isDraft?" · draft":""}</em></button>)}</div><div className="pr-stack-actions"><button onClick={()=>stackAction("rebase")} disabled={!!busy}>Rebase stack</button><select aria-label="Stack merge method" value={stackMergeMethod} onChange={event=>setStackMergeMethod(event.target.value)}><option value="squash">Squash</option><option value="merge">Merge commit</option><option value="rebase">Rebase merge</option></select><button onClick={()=>stackAction("merge")} disabled={!!busy||selectedPr.mergedAt}>Merge through #{selectedPr.number}</button></div></>}</div>}
+        <div className="pr-actions"><button onClick={()=>window.open(selectedPr.url,"_blank")}><ExternalLink size={12}/> Open</button><button onClick={()=>onAttachPr?.(selectedPr)}><MessageSquare size={12}/> Attach</button><button className={linkedPullRequests.some(x=>x.number===selectedPr.number&&x.url===selectedPr.url)?"linked":""} onClick={()=>onLinkPr?.(selectedPr)}><GitPullRequest size={12}/> {linkedPullRequests.some(x=>x.number===selectedPr.number&&x.url===selectedPr.url)?"Linked":"Link to thread"}</button>{capabilities.edit&&<button onClick={()=>{const title=prompt("PR title",selectedPr.title||"");if(title==null||!title.trim())return;const body=prompt("PR description",selectedPr.body||"");if(body==null)return;prAction("edit",{title:title.trim(),body})}} disabled={!!busy}><Pencil size={12}/> Edit</button>}{capabilities.checkout&&<button onClick={()=>prAction("checkout")} disabled={!!busy}><Download size={12}/> Checkout</button>}{capabilities.reviewers&&<button onClick={()=>{const reviewer=prompt("Reviewer username");if(reviewer?.trim())prAction("request-reviewer",{reviewer:reviewer.trim()})}} disabled={!!busy}>Request reviewer</button>}{capabilities.approveWorkflows&&selectedPr.awaitingWorkflowApproval?.length>0&&<button onClick={()=>prAction("approve-workflows")} disabled={!!busy}><ShieldCheck size={12}/> Approve workflows ({selectedPr.awaitingWorkflowApproval.length})</button>}{capabilities.revert&&selectedPr.mergedAt&&selectedPr.mergeCommitSha&&<button onClick={async()=>{if(!confirm("Open a new pull request that reverts #"+selectedPr.number+"?"))return;const result=await prAction("revert");if(result?.url)window.open(result.url,"_blank")}} disabled={!!busy}><GitPullRequest size={12}/> Revert PR</button>}{capabilities.review&&!selectedPr.mergedAt&&<button onClick={()=>prAction("review",{event:"APPROVE",body:"Reviewed in Trebell Code."})}><CheckCircle2 size={12}/> Approve</button>}{capabilities.autoMerge&&!selectedPr.mergedAt&&!selectedPr.stack&&<button onClick={()=>prAction("merge",{method:"squash",auto:true})} disabled={!!busy}>Auto-merge</button>}{capabilities.merge&&!selectedPr.mergedAt&&!selectedPr.stack&&<button onClick={()=>prAction("merge",{method:"squash"})}>Merge</button>}</div>
         {capabilities.comment&&<div className="pr-comment"><textarea value={comment} onChange={e=>setComment(e.target.value)} placeholder="Write a change-request comment…"/><button disabled={!comment.trim()||!!busy} onClick={async()=>{await prAction("comment",{body:comment});setComment("")}}><MessageSquare size={12}/> Comment</button></div>}
         {(selectedPr.files||[]).length>0&&<><div className="pr-files-head"><h4>Files</h4><span>{viewed.files.filter(item=>item.state==="viewed").length} / {selectedPr.files.length} {viewed.store==="environment"?"viewed in Trebell Code":"viewed"}</span></div><div className="pr-files">{(selectedPr.files||[]).map(file=>{const state=viewed.files.find(item=>item.path===file.path)?.state||"unviewed";const isViewed=state==="viewed",stale=state==="dismissed";return <details key={file.path} className={"pr-file "+state}><summary><button type="button" className="pr-file-viewed" disabled={viewed.loading||busy==="viewed:"+file.path} onClick={event=>{event.preventDefault();event.stopPropagation();setFileViewed(file,!isViewed)}} aria-label={(isViewed?"Mark unviewed ":"Mark viewed ")+file.path}>{isViewed?<Eye size={12}/>:<EyeOff size={12}/>}</button><strong>{file.path}</strong><span>{stale?"changed since viewed":`${Number(file.additions||0)}+ ${Number(file.deletions||0)}−`}</span></summary>{stale&&<p>This file changed after you marked it viewed.</p>}{file.patch&&<pre>{file.patch}</pre>}</details>})}</div></>}
         <h4>Conversation</h4><div className="review-list">{(selectedPr.comments||[]).length?(selectedPr.comments||[]).map((entry,i)=><div key={entry.id||i}><strong>{entry.author?.login||entry.author?.name||"Commenter"}</strong><span>{entry.canEdit?"yours":"comment"}</span><p>{entry.body||""}</p>{capabilities.editComments&&entry.canEdit&&<button className="pr-comment-edit" onClick={()=>{const body=prompt("Edit comment",entry.body||"");if(body!=null&&body!==entry.body)prAction("edit-comment",{commentId:entry.id,body})}} disabled={!!busy}><Pencil size={11}/> Edit comment</button>}</div>):<p>No comments yet.</p>}</div>

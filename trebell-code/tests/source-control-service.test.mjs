@@ -16,6 +16,8 @@ import {
   editPullRequestComment,
   approvePullRequestWorkflows,
   revertPullRequest,
+  mergePullRequest,
+  rebasePullRequestStack,
   withSourceControlExecutor,
 } from "../src/source-control-service.mjs";
 import { git } from "../src/git-service.mjs";
@@ -248,4 +250,90 @@ test("GitHub revert PR uses an isolated worktree and cleans it after opening the
   assert.equal(reverted.args.at(-1),"merge123");
   assert.equal(calls.some(call=>call.command==="git"&&call.args[0]==="worktree"&&call.args[1]==="remove"),true);
   assert.equal(calls.some(call=>call.command==="git"&&call.args[0]==="branch"&&call.args[1]==="-D"),true);
+});
+
+test("GitHub native stack details use REST membership and stacked merges use merge-async",async()=>{
+  const calls=[];const stdinCalls=[];
+  const executor={
+    run:async(command,args,options={})=>{
+      calls.push({command,args:[...args],cwd:options.cwd});
+      if(command==="git"&&args[0]==="rev-parse"&&args[1]==="--show-toplevel")return {ok:true,code:0,stdout:"/srv/app\n",stderr:""};
+      if(command==="git"&&args[0]==="branch")return {ok:true,code:0,stdout:"layer-two\n",stderr:""};
+      if(command==="git"&&args[0]==="for-each-ref"&&args.includes("refs/heads"))return {ok:true,code:0,stdout:"main\nlayer-one\nlayer-two\n",stderr:""};
+      if(command==="git"&&args[0]==="for-each-ref")return {ok:true,code:0,stdout:"origin/layer-two\n",stderr:""};
+      if(command==="git"&&args[0]==="status")return {ok:true,code:0,stdout:"## layer-two...origin/layer-two\n",stderr:""};
+      if(command==="git"&&args[0]==="remote")return {ok:true,code:0,stdout:"origin\thttps://github.com/acme/widget.git (fetch)\norigin\thttps://github.com/acme/widget.git (push)\n",stderr:""};
+      if(command==="git"&&args[0]==="worktree")return {ok:true,code:0,stdout:"worktree /srv/app\nHEAD old2\nbranch refs/heads/layer-two\n",stderr:""};
+      if(command==="gh"&&args[0]==="pr"&&args[1]==="view")return {ok:true,code:0,stdout:JSON.stringify({number:2,title:"Layer two",body:"",state:"OPEN",url:"https://github.com/acme/widget/pull/2",headRefName:"layer-two",headRefOid:"old2",baseRefName:"layer-one",comments:[],reviews:[],files:[],commits:[]}),stderr:""};
+      if(command==="gh"&&args[0]==="api"){
+        const path=args.find(value=>String(value).startsWith("repos/acme/widget/"))||"";
+        if(path==="repos/acme/widget/pulls/2")return {ok:true,code:0,stdout:JSON.stringify({number:2,state:"open",head:{ref:"layer-two",sha:"old2"},base:{ref:"layer-one",sha:"old1"},stack:{number:42,size:3,position:2,base:{ref:"main",sha:"base0"}}}),stderr:""};
+        if(path==="repos/acme/widget/stacks/42")return {ok:true,code:0,stdout:JSON.stringify({id:900,number:42,open:true,base:{ref:"main"},pull_requests:[
+          {number:1,title:"Layer one",state:"open",head:{ref:"layer-one",sha:"old1"},base:{ref:"main",sha:"base0"},html_url:"https://github.com/acme/widget/pull/1"},
+          {number:2,title:"Layer two",state:"open",head:{ref:"layer-two",sha:"old2"},base:{ref:"layer-one",sha:"old1"},html_url:"https://github.com/acme/widget/pull/2"},
+          {number:3,title:"Layer three",state:"open",head:{ref:"layer-three",sha:"old3"},base:{ref:"layer-two",sha:"old2"},html_url:"https://github.com/acme/widget/pull/3"},
+        ]}),stderr:""};
+        if(path==="repos/acme/widget/actions/runs")return {ok:true,code:0,stdout:JSON.stringify({workflow_runs:[]}),stderr:""};
+      }
+      return {ok:false,code:1,stdout:"",stderr:"unexpected "+command+" "+args.join(" ")};
+    },
+    runStdin:async(command,args,input,options={})=>{
+      stdinCalls.push({command,args:[...args],input,cwd:options.cwd});
+      if(command==="gh"&&args.includes("repos/acme/widget/pulls/2/merge-async"))return {ok:true,code:0,stdout:JSON.stringify({status:"pending",details:{uuid:"merge-uuid"}}),stderr:""};
+      return {ok:false,code:1,stdout:"",stderr:"unexpected stdin"};
+    },
+  };
+  const detail=await withSourceControlExecutor(executor,()=>pullRequestDetail("/srv/app",2,{provider:"github"}));
+  assert.equal(detail.item.stack.number,42);assert.equal(detail.item.stack.position,2);assert.equal(detail.item.stack.layers.length,3);
+  const merged=await withSourceControlExecutor(executor,()=>mergePullRequest("/srv/app",2,{provider:"github",method:"squash"}));
+  assert.equal(merged.stack,true);assert.equal(merged.async,true);assert.equal(merged.request.details.uuid,"merge-uuid");
+  assert.equal(stdinCalls.some(call=>call.args.includes("repos/acme/widget/pulls/2/merge-async")),true);
+  assert.deepEqual(JSON.parse(stdinCalls.find(call=>call.args.includes("repos/acme/widget/pulls/2/merge-async")).input),{sha:"old2",merge_method:"squash",merge_action:"default"});
+});
+
+test("GitHub stack rebase cascades in a temporary worktree with force-with-lease",async()=>{
+  const calls=[];let headReads=0;
+  const stackResponse={id:900,number:42,open:true,base:{ref:"main"},pull_requests:[
+    {number:1,title:"Layer one",state:"open",head:{ref:"layer-one",sha:"old1"},base:{ref:"main",sha:"base0"},html_url:"https://github.com/acme/widget/pull/1"},
+    {number:2,title:"Layer two",state:"open",head:{ref:"layer-two",sha:"old2"},base:{ref:"layer-one",sha:"old1"},html_url:"https://github.com/acme/widget/pull/2"},
+  ]};
+  const executor={
+    run:async(command,args,options={})=>{
+      calls.push({command,args:[...args],cwd:options.cwd});
+      if(command==="git"&&args[0]==="rev-parse"&&args[1]==="--show-toplevel")return {ok:true,code:0,stdout:"/srv/app\n",stderr:""};
+      if(command==="git"&&args[0]==="branch")return {ok:true,code:0,stdout:"layer-two\n",stderr:""};
+      if(command==="git"&&args[0]==="for-each-ref"&&args.includes("refs/heads"))return {ok:true,code:0,stdout:"main\nlayer-one\nlayer-two\n",stderr:""};
+      if(command==="git"&&args[0]==="for-each-ref")return {ok:true,code:0,stdout:"origin/layer-two\n",stderr:""};
+      if(command==="git"&&args[0]==="status")return {ok:true,code:0,stdout:"## layer-two...origin/layer-two\n",stderr:""};
+      if(command==="git"&&args[0]==="remote")return {ok:true,code:0,stdout:"origin\thttps://github.com/acme/widget.git (fetch)\norigin\thttps://github.com/acme/widget.git (push)\n",stderr:""};
+      if(command==="git"&&args[0]==="worktree"&&args[1]==="list")return {ok:true,code:0,stdout:"worktree /srv/app\nHEAD old2\nbranch refs/heads/layer-two\n",stderr:""};
+      if(command==="gh"&&args[0]==="api"){
+        const path=args.find(value=>String(value).startsWith("repos/acme/widget/"))||"";
+        if(path==="repos/acme/widget/pulls/2")return {ok:true,code:0,stdout:JSON.stringify({number:2,state:"open",head:{ref:"layer-two",sha:"old2"},base:{ref:"layer-one",sha:"old1"},stack:{number:42,size:2,position:2,base:{ref:"main",sha:"base0"}}}),stderr:""};
+        if(path==="repos/acme/widget/stacks/42")return {ok:true,code:0,stdout:JSON.stringify(stackResponse),stderr:""};
+      }
+      if(command==="git"&&args[0]==="fetch")return {ok:true,code:0,stdout:"",stderr:""};
+      if(command==="git"&&args[0]==="rev-parse"&&args[1]==="refs/remotes/origin/main")return {ok:true,code:0,stdout:"base-new\n",stderr:""};
+      if(command==="git"&&args[0]==="worktree"&&args[1]==="add")return {ok:true,code:0,stdout:"",stderr:""};
+      if(command==="git"&&args[0]==="checkout")return {ok:true,code:0,stdout:"",stderr:""};
+      if(command==="git"&&args[0]==="rebase"&&args[1]==="--onto")return {ok:true,code:0,stdout:"",stderr:""};
+      if(command==="git"&&args[0]==="rev-parse"&&args[1]==="HEAD")return {ok:true,code:0,stdout:(++headReads===1?"new1":"new2")+"\n",stderr:""};
+      if(command==="git"&&args[0]==="push")return {ok:true,code:0,stdout:"",stderr:""};
+      if(command==="git"&&args[0]==="rebase"&&args[1]==="--abort")return {ok:true,code:0,stdout:"",stderr:""};
+      if(command==="git"&&args[0]==="worktree"&&args[1]==="remove")return {ok:true,code:0,stdout:"",stderr:""};
+      return {ok:false,code:1,stdout:"",stderr:"unexpected "+command+" "+args.join(" ")};
+    },
+  };
+  const result=await withSourceControlExecutor(executor,()=>rebasePullRequestStack("/srv/app",2,{provider:"github"}));
+  assert.deepEqual(result.updated.map(item=>item.newHead),["new1","new2"]);
+  const checkouts=calls.filter(call=>call.command==="git"&&call.args[0]==="checkout");assert.equal(checkouts.length,2);
+  assert.equal(checkouts.every(call=>call.cwd!=="/srv/app"&&String(call.cwd).includes(".trebell-stack-rebase-")),true);
+  const rebases=calls.filter(call=>call.command==="git"&&call.args[0]==="rebase"&&call.args[1]==="--onto");
+  assert.deepEqual(rebases[0].args,["rebase","--onto","base-new","base0"]);
+  assert.deepEqual(rebases[1].args,["rebase","--onto","new1","old1"]);
+  assert.equal(calls.some(call=>call.command==="git"&&call.args[0]==="merge-base"),false);
+  const pushes=calls.filter(call=>call.command==="git"&&call.args[0]==="push");
+  assert.equal(pushes[0].args.includes("--force-with-lease=refs/heads/layer-one:old1"),true);
+  assert.equal(pushes[1].args.includes("--force-with-lease=refs/heads/layer-two:old2"),true);
+  assert.equal(calls.some(call=>call.command==="git"&&call.args[0]==="worktree"&&call.args[1]==="remove"),true);
 });

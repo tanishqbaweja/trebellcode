@@ -11,11 +11,11 @@ const executionContext=new AsyncLocalStorage();
 const PROVIDERS=["github","gitlab","forgejo","bitbucket","azure-devops"];
 
 const CAPABILITIES={
-  github:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:true,publish:true,viewedFiles:"host",approveWorkflows:true,revert:true},
-  gitlab:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:false,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:false,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false},
-  forgejo:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:true,checkout:false,reviewers:false,publish:false,viewedFiles:"environment",approveWorkflows:false,revert:false},
-  bitbucket:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:false,checkout:false,reviewers:false,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false},
-  "azure-devops":{create:true,edit:true,comment:false,editComments:false,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:false,checkout:false,reviewers:false,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false},
+  github:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:true,publish:true,viewedFiles:"host",approveWorkflows:true,revert:true,stacks:true},
+  gitlab:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:false,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:false,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false,stacks:false},
+  forgejo:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:true,checkout:false,reviewers:false,publish:false,viewedFiles:"environment",approveWorkflows:false,revert:false,stacks:false},
+  bitbucket:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:false,checkout:false,reviewers:false,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false,stacks:false},
+  "azure-devops":{create:true,edit:true,comment:false,editComments:false,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:false,checkout:false,reviewers:false,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false,stacks:false},
 };
 
 function currentExecutor(){return executionContext.getStore()?.executor||null}
@@ -210,7 +210,7 @@ async function sourceContext(cwd,preferred=null){
   const detected=detectSourceControlProvider(remoteUrl);
   const provider=normalizeProvider(preferred)|| (detected!=="unknown"?detected:null);
   if(!provider)throw new Error("Could not identify this Git host. Choose GitHub, GitLab, Forgejo/Gitea, Bitbucket, or Azure DevOps.");
-  return {info,provider,detected,remoteUrl,remote,repository:repositoryFromRemote(remote,provider),capabilities:CAPABILITIES[provider]};
+  return {info,provider,detected,remoteUrl,remote,remoteName:origin?.name||"origin",repository:repositoryFromRemote(remote,provider),capabilities:CAPABILITIES[provider]};
 }
 
 function parseJson(raw,fallback=null){try{return JSON.parse(String(raw||"").trim()||"null")}catch{return fallback}}
@@ -387,6 +387,40 @@ async function glabApi(ctx,path,{method="GET",body}={}){
   if(!r.ok)throw new Error((r.stderr||r.stdout||"GitLab API request failed").trim());return parseJson(r.stdout,r.stdout);
 }
 
+const GITHUB_API_VERSION="2026-03-10";
+async function githubApi(ctx,path,{method="GET",body,allowFailure=false}={}){
+  const args=["api","--method",method,String(path),"--header","Accept: application/vnd.github+json","--header","X-GitHub-Api-Version: "+GITHUB_API_VERSION];
+  const result=body===undefined
+    ?await run("gh",args,{cwd:ctx.info.root,allowFailure:true,maxBuffer:12*1024*1024})
+    :await runStdin("gh",[...args,"--input","-","--header","Content-Type: application/json"],JSON.stringify(body),{cwd:ctx.info.root,allowFailure:true,maxBuffer:12*1024*1024});
+  if(!result.ok&&!allowFailure)throw new Error((result.stderr||result.stdout||"GitHub API request failed").trim());
+  return {ok:result.ok,data:parseJson(result.stdout,null),stdout:result.stdout,stderr:result.stderr,code:result.code};
+}
+function githubStackSummary(raw){
+  if(!raw||typeof raw!=="object")return null;
+  const number=Number(raw.number);const size=Number(raw.size);const position=Number(raw.position);
+  if(!Number.isFinite(number)||number<=0)return null;
+  return {number,size:Number.isFinite(size)?size:null,position:Number.isFinite(position)?position:null,baseRefName:raw.base?.ref||null,baseSha:raw.base?.sha||null};
+}
+function normalizeGitHubStackLayer(raw,index=0){
+  return {
+    position:index+1,number:Number(raw?.number),title:raw?.title||"",state:stateOf(raw?.state,Boolean(raw?.merged_at)),
+    mergedAt:raw?.merged_at||null,isDraft:Boolean(raw?.draft),url:raw?.html_url||"",
+    headRefName:raw?.head?.ref||"",headSha:raw?.head?.sha||null,baseRefName:raw?.base?.ref||"",baseSha:raw?.base?.sha||null,
+  };
+}
+async function githubStackForPull(ctx,number,{pull=null}={}){
+  const pr=pull||(await githubApi(ctx,"repos/"+ctx.repository+"/pulls/"+Number(number),{allowFailure:true})).data;
+  const membership=githubStackSummary(pr?.stack);if(!membership)return null;
+  const stackResult=await githubApi(ctx,"repos/"+ctx.repository+"/stacks/"+membership.number,{allowFailure:true});
+  const stack=stackResult.ok?stackResult.data:null;
+  const layers=(stack?.pull_requests||[]).map(normalizeGitHubStackLayer);
+  return {
+    ...membership,id:stack?.id||null,open:stack?.open!==false,baseRefName:stack?.base?.ref||membership.baseRefName,
+    layers,selectedNumber:Number(number),
+  };
+}
+
 async function cliProbe(command,versionArgs,authArgs,cwd,installHint){
   const version=await run(command,versionArgs,{cwd,allowFailure:true,timeout:20000});
   if(!version.ok)return {installed:false,authenticated:false,version:null,detail:installHint};
@@ -422,6 +456,11 @@ export async function listPullRequests(cwd,{provider=null}={}){
     const r=await run("gh",["pr","list","--limit","50","--json","number,title,state,isDraft,url,headRefName,baseRefName,author,reviewDecision,statusCheckRollup"],{cwd:ctx.info.root,allowFailure:true,maxBuffer:4*1024*1024});
     if(!r.ok)return {ok:false,provider:ctx.provider,capabilities:ctx.capabilities,error:(r.stderr||r.stdout).trim(),items:[]};
     items=(parseJson(r.stdout,[])||[]).map(x=>({...x,provider:"github"}));
+    const rest=await githubApi(ctx,"repos/"+ctx.repository+"/pulls?state=open&per_page=50",{allowFailure:true});
+    if(rest.ok&&Array.isArray(rest.data)){
+      const stacks=new Map(rest.data.map(pr=>[Number(pr.number),githubStackSummary(pr.stack)]));
+      items=items.map(item=>({...item,stack:stacks.get(Number(item.number))||null}));
+    }
   }else if(ctx.provider==="gitlab"){
     const r=await run("glab",["mr","list","--per-page","50","--output","json"],{cwd:ctx.info.root,allowFailure:true,maxBuffer:4*1024*1024});
     if(!r.ok)return {ok:false,provider:ctx.provider,capabilities:ctx.capabilities,error:(r.stderr||r.stdout).trim(),items:[]};items=(parseJson(r.stdout,[])||[]).map(normalizeGitLab);
@@ -542,6 +581,11 @@ export async function pullRequestDetail(cwd,number,{provider=null}={}){
     const r=await run("gh",["pr","view",String(number),"--json","number,title,body,state,isDraft,url,headRefName,headRefOid,baseRefName,author,reviewDecision,statusCheckRollup,comments,reviews,files,commits,mergeCommit,mergedAt"],{cwd:ctx.info.root,allowFailure:true,maxBuffer:8*1024*1024});
     if(!r.ok)return {ok:false,provider:ctx.provider,capabilities:ctx.capabilities,error:(r.stderr||r.stdout).trim(),item:null};const raw=parseJson(r.stdout,{});item={...raw,provider:"github",headSha:raw.headRefOid||null,mergeCommitSha:raw.mergeCommit?.oid||null,files:(raw.files||[]).map(file=>({path:file.path||file.filename||"",additions:Number(file.additions||0),deletions:Number(file.deletions||0),status:file.status||null,patch:file.patch||null}))};
     item.awaitingWorkflowApproval=await githubAwaitingWorkflowRuns(ctx,item.headSha).catch(()=>[]);
+    const rest=await githubApi(ctx,"repos/"+ctx.repository+"/pulls/"+Number(number),{allowFailure:true});
+    if(rest.ok&&rest.data){
+      item.stack=await githubStackForPull(ctx,number,{pull:rest.data}).catch(()=>null);
+      if(rest.data.merged_at&&!item.mergedAt)item.mergedAt=rest.data.merged_at;
+    }else item.stack=null;
   }
   else if(ctx.provider==="gitlab"){
     const data=await glabApi(ctx,`projects/${encodeURIComponent(ctx.repository)}/merge_requests/${Number(number)}`);item=normalizeGitLab(data);
@@ -665,11 +709,63 @@ export async function reviewPullRequest(cwd,number,{provider=null,event="COMMENT
 
 export async function mergePullRequest(cwd,number,{provider=null,method="squash",auto=false}={}){
   const ctx=await sourceContext(cwd,provider);
-  if(ctx.provider==="github"){const flag=method==="merge"?"--merge":method==="rebase"?"--rebase":"--squash";const args=["pr","merge",String(number),flag];if(auto)args.push("--auto");else args.push("--delete-branch");const r=await run("gh",args,{cwd:ctx.info.root});return {ok:true,provider:ctx.provider,output:(r.stdout||r.stderr).trim()}}
+  if(ctx.provider==="github"){
+    const pr=await githubApi(ctx,"repos/"+ctx.repository+"/pulls/"+Number(number),{allowFailure:true});
+    const stack=pr.ok?await githubStackForPull(ctx,number,{pull:pr.data}).catch(()=>null):null;
+    if(stack){
+      if(auto)throw new Error("GitHub does not support auto-merge for stacked pull requests. Merge or queue the stack instead.");
+      const mergeMethod=method==="merge"?"merge":method==="rebase"?"rebase":"squash";
+      const result=await githubApi(ctx,"repos/"+ctx.repository+"/pulls/"+Number(number)+"/merge-async",{method:"PUT",body:{sha:pr.data?.head?.sha||undefined,merge_method:mergeMethod,merge_action:"default"}});
+      return {ok:true,provider:"github",stack:true,async:true,request:result.data||null,stackInfo:stack};
+    }
+    const flag=method==="merge"?"--merge":method==="rebase"?"--rebase":"--squash";const args=["pr","merge",String(number),flag];if(auto)args.push("--auto");else args.push("--delete-branch");const r=await run("gh",args,{cwd:ctx.info.root});return {ok:true,provider:ctx.provider,output:(r.stdout||r.stderr).trim()}
+  }
   if(ctx.provider==="gitlab"){const args=["mr","merge",String(number),"--auto-merge="+(auto?"true":"false"),"--yes"];if(method==="squash")args.push("--squash");if(method==="rebase")args.push("--rebase");const r=await run("glab",args,{cwd:ctx.info.root});return {ok:true,provider:ctx.provider,output:(r.stdout||r.stderr).trim()}}
   if(ctx.provider==="forgejo"){const t=await forgejoContext(ctx);await forgejoApi(ctx,`repos/${t.repository}/pulls/${Number(number)}/merge`,{method:"POST",body:{Do:method==="rebase"?"rebase":method==="squash"?"squash":"merge"}});return {ok:true,provider:ctx.provider}}
   if(ctx.provider==="bitbucket"){const strategy=method==="rebase"?"rebase_fast_forward":method==="squash"?"squash":"merge_commit";await bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests/${Number(number)}/merge`,{method:"POST",body:{merge_strategy:strategy}});return {ok:true,provider:ctx.provider}}
   const args=["repos","pr","update","--detect","true","--id",String(number),"--delete-source-branch","true","--only-show-errors"];if(auto)args.push("--auto-complete","true");else args.push("--status","completed");if(method==="squash")args.push("--squash","true");const r=await run("az",args,{cwd:ctx.info.root,timeout:60000});return {ok:true,provider:ctx.provider,output:(r.stdout||r.stderr).trim()};
+}
+
+export async function rebasePullRequestStack(cwd,number,{provider=null}={}){
+  const ctx=await sourceContext(cwd,provider);if(ctx.provider!=="github")throw new Error("Native PR stack rebasing is available only for GitHub.");
+  const stack=await githubStackForPull(ctx,number);if(!stack)throw new Error("This pull request is not part of a GitHub stack.");
+  const layers=(stack.layers||[]).filter(layer=>layer.state==="OPEN");
+  if(!layers.length)return {ok:true,provider:"github",stack,updated:[]};
+  const base=String(stack.baseRefName||"").trim();if(!base)throw new Error("GitHub did not return the stack base branch.");
+  const root=ctx.info.root;const remoteName=ctx.remoteName||"origin";const stamp=Date.now().toString(36);const worktree=root+".trebell-stack-rebase-"+stack.number+"-"+stamp;
+  let worktreeAdded=false;const updated=[];
+  try{
+    const fetchRef=async ref=>{
+      const result=await run("git",["fetch",remoteName,"+refs/heads/"+ref+":refs/remotes/"+remoteName+"/"+ref],{cwd:root,allowFailure:true,timeout:120000,maxBuffer:4*1024*1024});
+      if(!result.ok)throw new Error((result.stderr||result.stdout||("Could not fetch "+ref)).trim());
+    };
+    await fetchRef(base);for(const layer of layers)await fetchRef(layer.headRefName);
+    const baseShaResult=await run("git",["rev-parse","refs/remotes/"+remoteName+"/"+base],{cwd:root,allowFailure:true,maxBuffer:128*1024});
+    if(!baseShaResult.ok)throw new Error((baseShaResult.stderr||"Could not resolve the latest stack base").trim());
+    let newParentSha=baseShaResult.stdout.trim();
+    const added=await run("git",["worktree","add","--detach",worktree,newParentSha],{cwd:root,allowFailure:true,timeout:120000,maxBuffer:4*1024*1024});
+    if(!added.ok)throw new Error((added.stderr||added.stdout||"Could not create temporary stack worktree").trim());worktreeAdded=true;
+    for(const layer of layers){
+      const oldHead=String(layer.headSha||"").trim();if(!oldHead)throw new Error("GitHub did not return a head SHA for PR #"+layer.number);
+      const oldBase=String(layer.baseSha||"").trim();if(!oldBase)throw new Error("GitHub did not return the original base SHA for PR #"+layer.number);
+      const checkout=await run("git",["checkout","--detach",oldHead],{cwd:worktree,allowFailure:true,maxBuffer:2*1024*1024});
+      if(!checkout.ok)throw new Error((checkout.stderr||checkout.stdout||("Could not prepare PR #"+layer.number)).trim());
+      const rebased=await run("git",["rebase","--onto",newParentSha,oldBase],{cwd:worktree,allowFailure:true,timeout:180000,maxBuffer:6*1024*1024});
+      if(!rebased.ok){
+        await run("git",["rebase","--abort"],{cwd:worktree,allowFailure:true}).catch(()=>{});
+        const error=new Error("Stack rebase stopped at PR #"+layer.number+": "+(rebased.stderr||rebased.stdout||"rebase conflict").trim());error.updated=updated;throw error;
+      }
+      const head=await run("git",["rev-parse","HEAD"],{cwd:worktree,allowFailure:true,maxBuffer:128*1024});
+      if(!head.ok)throw new Error("Could not read the rebased head for PR #"+layer.number);
+      const newHead=head.stdout.trim();
+      const pushed=await run("git",["push",remoteName,"--force-with-lease=refs/heads/"+layer.headRefName+":"+oldHead,"HEAD:refs/heads/"+layer.headRefName],{cwd:worktree,allowFailure:true,timeout:180000,maxBuffer:6*1024*1024});
+      if(!pushed.ok)throw new Error("Stack rebase stopped while pushing PR #"+layer.number+": "+(pushed.stderr||pushed.stdout||"push rejected").trim());
+      updated.push({number:layer.number,headRefName:layer.headRefName,oldHead,newHead});newParentSha=newHead;
+    }
+    return {ok:true,provider:"github",stack,updated};
+  }finally{
+    if(worktreeAdded){await run("git",["rebase","--abort"],{cwd:worktree,allowFailure:true}).catch(()=>{});await run("git",["worktree","remove","--force",worktree],{cwd:root,allowFailure:true,timeout:120000}).catch(()=>{})}
+  }
 }
 
 export async function updatePullRequestBranch(cwd,number,{provider=null,rebase=true}={}){
