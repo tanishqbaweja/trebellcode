@@ -1,5 +1,12 @@
 import { test, expect } from "@playwright/test";
 
+async function expectModelCatalog(page,labels){
+  const picker=page.getByTestId("model-picker");await picker.click();
+  const menu=page.locator(".model-picker-menu");await expect(menu).toBeVisible();
+  await expect(menu.locator("> button strong")).toHaveText(labels);
+  await picker.click();await expect(menu).toBeHidden();
+}
+
 test("Trebell Code renders the harness and scopes models to the selected provider", async ({ page,request }) => {
   await page.addInitScript(()=>{
     const snapshot={url:"http://fixture.local",title:"Preview fixture",text:"Checkout",elements:[{ref:"e7",tag:"button",text:"Submit order",href:""}]};
@@ -26,7 +33,7 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("command-palette")).toBeHidden();
   await expect(page.getByTestId("model-picker")).toBeVisible();
-  await expect(page.getByTestId("model-picker").locator("option")).toHaveCount(3);
+  await expectModelCatalog(page,["deepseek/deepseek-v4-flash · 10 FB/h off-peak","test/coding-large","test/coding-fast"]);
   await expect(page.getByRole("button",{name:"New thread"})).toBeVisible();
   await expect(page.getByTestId("right-panel-toggle")).toBeVisible();
   await expect(page.getByTestId("terminal-toggle")).toBeVisible();
@@ -69,6 +76,7 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   const e2eProject=page.locator(".project-card").filter({hasText:"E2E Project"});
   await expect(e2eProject.locator(".project-icon")).toHaveText("E2");
   await expect(e2eProject.getByLabel("Submodules")).toHaveValue("top-level");
+  await expect(e2eProject.getByLabel("Automatic worktree cleanup")).toHaveValue("inherit");
 
   await page.getByRole("button",{name:"Browser"}).click();
   await expect(page.getByTestId("right-panel")).toBeVisible();
@@ -92,6 +100,7 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await page.getByRole("button",{name:"Settings"}).click();
   await expect(page.getByRole("heading",{name:"Settings"})).toBeVisible();
   await expect(page.getByText("Follow-up behavior")).toBeVisible();
+  await expect(page.getByLabel("Default policy")).toHaveValue("off");
   await page.getByRole("button",{name:"light",exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.mode)).toBe("light");
   await page.getByRole("button",{name:"Midnight",exact:true}).click();
@@ -121,20 +130,19 @@ test("Trebell Code renders the harness and scopes models to the selected provide
 
   await providerSelector.selectOption("justworker");
   await page.getByRole("button",{name:"Threads"}).click();
-  await expect(page.getByTestId("model-picker").locator("option")).toHaveCount(1);
-  await expect(page.getByTestId("model-picker")).toHaveValue("claude-opus-4-8");
+  await expectModelCatalog(page,["claude-opus-4-8"]);
+  await expect(page.getByTestId("model-picker")).toContainText("claude-opus-4-8");
 
   await page.getByRole("button",{name:"Settings"}).click();
   await providerSelector.selectOption("hcnsec");
   await page.getByRole("button",{name:"Threads"}).click();
-  await expect(page.getByTestId("model-picker").locator("option")).toHaveCount(1);
-  await expect(page.getByTestId("model-picker")).toHaveValue("glm-5.3");
+  await expectModelCatalog(page,["glm-5.3"]);
+  await expect(page.getByTestId("model-picker")).toContainText("glm-5.3");
 
   await page.getByRole("button",{name:"Settings"}).click();
   await providerSelector.selectOption("vyceai");
   await page.getByRole("button",{name:"Threads"}).click();
-  await expect(page.getByTestId("model-picker").locator("option")).toHaveCount(4);
-  await expect(page.getByTestId("model-picker").locator("option")).toHaveText([
+  await expectModelCatalog(page,[
     "claude-sonnet-4-6",
     "gpt-astra",
     "deepseek-v4.1",
@@ -144,8 +152,7 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await page.getByRole("button",{name:"Settings"}).click();
   await providerSelector.selectOption("agentrouter");
   await page.getByRole("button",{name:"Threads"}).click();
-  await expect(page.getByTestId("model-picker").locator("option")).toHaveCount(5);
-  await expect(page.getByTestId("model-picker").locator("option")).toHaveText([
+  await expectModelCatalog(page,[
     "gpt-5.6-sol",
     "gpt-6-astra",
     "claude-opus-4-8",
@@ -156,7 +163,7 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await page.getByRole("button",{name:"Settings"}).click();
   await providerSelector.selectOption("freebuff");
   await page.getByRole("button",{name:"Threads"}).click();
-  await expect(page.getByTestId("model-picker").locator("option")).toHaveCount(3);
+  await expectModelCatalog(page,["deepseek/deepseek-v4-flash · 10 FB/h off-peak","test/coding-large","test/coding-fast"]);
   await expect(page.getByRole("button",{name:"Freebuff"})).toBeVisible();
 
   await page.screenshot({path:"test-results/trebell-code-ui.png",fullPage:true});
