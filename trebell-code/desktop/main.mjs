@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { createGuiServer } from "../src/gui-server.mjs";
 import { parseFirefoxProfiles, readFirefoxCookieDatabase } from "./firefox-import.mjs";
+import { chromiumCookieDatabase, discoverHeliumProfiles, readHeliumProfileCookies } from "./chromium-import.mjs";
 
 let windowRef=null;
 let gui=null;
@@ -274,6 +275,24 @@ function firefoxRoot(){
   return join(app.getPath("home"),".mozilla","firefox");
 }
 
+function heliumRoot(){
+  return process.platform==="win32"&&process.env.LOCALAPPDATA?join(process.env.LOCALAPPDATA,"imput","Helium","User Data"):null;
+}
+
+function psLiteral(value){return "'"+String(value).replace(/'/g,"''")+"'"}
+
+async function heliumRunning(profiles=[]){
+  if(process.platform!=="win32")return false;
+  const processProbe=await powershell("if(Get-Process helium -ErrorAction SilentlyContinue){'yes'}else{'no'}",{timeout:2500}).catch(()=>"no");
+  if(processProbe.trim()==="yes")return true;
+  for(const profile of profiles){
+    const database=chromiumCookieDatabase(profile.id);if(!database)continue;
+    const script=`$p=${psLiteral(database)}; try { $s=[IO.File]::Open($p,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None); $s.Dispose(); 'free' } catch [IO.IOException] { 'held' } catch { 'free' }`;
+    const verdict=await powershell(script,{timeout:2500}).catch(()=>"free");if(verdict.trim()==="held")return true;
+  }
+  return false;
+}
+
 async function firefoxRunning(){
   if(process.platform==="win32"){
     const result=await powershell("if(Get-Process firefox -ErrorAction SilentlyContinue){'yes'}else{'no'}",{timeout:2500}).catch(()=>"no");return result.trim()==="yes";
@@ -292,6 +311,11 @@ async function browserImportSources(){
     }
     sources.push({id:"firefox",name:"Firefox",installed:profiles.length>0,running:profiles.length?await firefoxRunning():false,profiles:profiles.map(profile=>({id:profile.id,name:profile.name}))});
   }
+  const helium=heliumRoot();
+  if(helium&&existsSync(helium)){
+    const profiles=discoverHeliumProfiles(helium);
+    sources.push({id:"helium",name:"Helium",installed:profiles.length>0,running:profiles.length?await heliumRunning(profiles):false,profiles:profiles.map(profile=>({id:profile.id,name:profile.name}))});
+  }
   return {sources,platform:process.platform};
 }
 
@@ -302,12 +326,18 @@ async function readFirefoxProfileCookies(profileDirectory){
 }
 
 async function importBrowserProfile(payload={}){
-  if(payload.sourceId!=="firefox")throw new Error("That browser source is not supported on this platform.");
-  const available=await browserImportSources();const source=available.sources.find(item=>item.id==="firefox");const profile=source?.profiles?.find(item=>item.id===payload.profileId);
-  if(!profile)throw new Error("Firefox profile was not found.");
-  const cookies=await readFirefoxProfileCookies(profile.id);const browser=await ensureAgentBrowser();let imported=0;const errors=[];
+  if(!["firefox","helium"].includes(payload.sourceId))throw new Error("That browser source is not supported on this platform.");
+  const available=await browserImportSources();const source=available.sources.find(item=>item.id===payload.sourceId);const profile=source?.profiles?.find(item=>item.id===payload.profileId);
+  if(!profile)throw new Error(`${payload.sourceId==="helium"?"Helium":"Firefox"} profile was not found.`);
+  if(source.running)throw new Error(`Close ${source.name} before importing its session, then try again.`);
+  let cookies,skipped=0,skippedHosts=[];
+  if(payload.sourceId==="helium"){
+    const result=await readHeliumProfileCookies(profile.id,heliumRoot());cookies=result.cookies;skipped=result.skipped||0;skippedHosts=result.skippedHosts||[];
+  }else cookies=await readFirefoxProfileCookies(profile.id);
+  const browser=await ensureAgentBrowser();let imported=0;const errors=[];
   for(const raw of cookies){try{await browser.webContents.session.cookies.set(normalizeImportedCookie(raw));imported++}catch(error){errors.push(String(error?.message||error))}}
-  return {ok:true,sourceId:"firefox",profileId:profile.id,profileName:profile.name,imported,failed:errors.length,errors:errors.slice(0,10)};
+  await browser.webContents.session.cookies.flushStore().catch(()=>{});
+  return {ok:true,sourceId:payload.sourceId,profileId:profile.id,profileName:profile.name,imported,failed:errors.length,skipped,skippedHosts,errors:errors.slice(0,10)};
 }
 
 async function ensureAgentBrowser({show=false}={}){

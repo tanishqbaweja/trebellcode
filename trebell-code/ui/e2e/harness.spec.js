@@ -10,7 +10,7 @@ test("Trebell Code renders the harness and scopes models to the selected provide
         set:async factor=>({factor:window.__trebellZoomFactor=Number(factor)}),
         reset:async()=>({factor:window.__trebellZoomFactor=1}),
       },
-      browser:{navigate:async()=>({ok:true}),show:async()=>({ok:true}),snapshot:async()=>snapshot,screenshot:async()=>({dataUrl:"data:image/png;base64,iVBORw0KGgo="}),importCookies:async()=>({ok:true,imported:2,failed:0}),importSources:async()=>({platform:"win32",sources:[{id:"firefox",name:"Firefox",installed:true,running:false,profiles:[{id:"C:/Profiles/Test",name:"Test profile"}]}]}),importProfile:async()=>({ok:true,sourceId:"firefox",profileName:"Test profile",imported:7,failed:0}),close:async()=>({ok:true})}
+      browser:{navigate:async()=>({ok:true}),show:async()=>({ok:true}),snapshot:async()=>snapshot,screenshot:async()=>({dataUrl:"data:image/png;base64,iVBORw0KGgo="}),importCookies:async()=>({ok:true,imported:2,failed:0}),importSources:async()=>({platform:"win32",sources:[{id:"firefox",name:"Firefox",installed:true,running:false,profiles:[{id:"C:/Profiles/Test",name:"Test profile"}]},{id:"helium",name:"Helium",installed:true,running:false,profiles:[{id:"C:/Helium/Default",name:"Default"}]}]}),importProfile:async(sourceId,profileId)=>sourceId==="helium"?({ok:true,sourceId,profileId,profileName:"Default",imported:5,failed:0,skipped:1}):({ok:true,sourceId,profileId,profileName:"Test profile",imported:7,failed:0}),close:async()=>({ok:true})}
     }});
   });
   await request.post("/api/settings",{data:{onboardingComplete:true}});
@@ -70,6 +70,7 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await page.getByRole("button",{name:"Open agent browser"}).click();
   await page.getByRole("button",{name:"Import profile"}).click();
   await expect(page.getByTestId("browser-profile-import")).toContainText("Test profile");
+  await expect(page.getByTestId("browser-profile-import")).toContainText("Helium");
   await page.getByTestId("browser-profile-import").getByRole("button",{name:/Test profile/}).click();
   await expect(page.getByTestId("browser-cookie-status")).toHaveText("Imported 7 cookies from Test profile");
   await page.getByRole("button",{name:"Import cookie JSON"}).click();
