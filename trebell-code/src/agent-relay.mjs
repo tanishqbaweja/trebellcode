@@ -173,6 +173,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     if(method==="initialize")return {userAgent:"trebell-agent-relay",capabilities:{experimentalApi:true}};
     const runtime=runtimeManager.activeRuntime();
     if(method==="thread/list")return {data:threadStore.list(runtime).filter(thread=>!thread.archived).slice(0,params.limit||100),nextCursor:null};
+    if(method==="thread/read"){
+      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      return {thread:params.includeTurns===false?{...thread,turns:[]}:thread};
+    }
     if(method==="thread/start"){
       const instance=runtimeManager.activeInstance();const environmentId=state?.settings?.().activeEnvironmentId||null;const effectiveCwd=runtimeManager.runtimeCwd(params.cwd||process.cwd(),environmentId);const seed=threadStore.create({runtime,cwd:effectiveCwd,providerSessionId:"",model:params.model||null,agent:params.agent||null,providerMeta:{runtimeInstanceId:instance.id,environmentId}});
       threadStore.update(seed.id,{runtimeInstanceId:instance.id});

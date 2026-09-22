@@ -121,6 +121,14 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await expect(page.getByText("stack 2/2",{exact:false})).toBeVisible();
   await page.getByRole("button",{name:/#2 Layer two/}).click();
   await expect(page.getByText("GitHub stack #42")).toBeVisible();
+  await page.evaluate(()=>{
+    window.__copiedText=[];
+    Object.defineProperty(navigator.clipboard,"writeText",{configurable:true,value:async text=>{window.__copiedText.push(String(text))}});
+  });
+  await page.evaluate(()=>window.dispatchEvent(new KeyboardEvent("keydown",{key:"c",ctrlKey:true,shiftKey:true,bubbles:true,cancelable:true})));
+  await expect.poll(()=>page.evaluate(()=>window.__copiedText.at(-1))).toBe("https://github.com/acme/widget/pull/2");
+  await page.evaluate(()=>window.dispatchEvent(new KeyboardEvent("keydown",{key:"k",ctrlKey:true,shiftKey:true,bubbles:true,cancelable:true})));
+  await expect.poll(()=>page.evaluate(()=>window.__copiedText.at(-1))).toBe("#2");
   await expect(page.getByLabel("Stack merge method")).toHaveValue("squash");
   await page.getByLabel("Stack merge method").selectOption("rebase");
   page.once("dialog",dialog=>dialog.accept());

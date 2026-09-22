@@ -57,3 +57,11 @@ test("thread undo uses Mod+Z only when focus is outside text inputs",()=>{
   assert.equal(resolveKeybinding(event("z",{ctrlKey:true}),{}, {undoAvailable:true,textInputFocus:true,modalOpen:false}),null);
   assert.equal(resolveKeybinding(event("z",{ctrlKey:true}),{}, {undoAvailable:false,textInputFocus:false,modalOpen:false}),null);
 });
+
+test("pull request copy shortcuts use mod bindings and respect terminal focus",()=>{
+  assert.equal(resolveKeybinding(event("c",{ctrlKey:true,shiftKey:true}),{}, {threadOpen:true,terminalFocus:false,modalOpen:false}),"copyReference");
+  assert.equal(resolveKeybinding(event("c",{ctrlKey:true,shiftKey:true}),{}, {threadOpen:false,pullRequestOpen:true,terminalFocus:false,modalOpen:false}),"copyReference");
+  assert.equal(resolveKeybinding(event("k",{ctrlKey:true,shiftKey:true}),{}, {pullRequestOpen:true,terminalFocus:false,modalOpen:false}),"copyPullRequestNumber");
+  assert.equal(resolveKeybinding(event("c",{ctrlKey:true,shiftKey:true}),{}, {threadOpen:true,terminalFocus:true,modalOpen:false}),null);
+  assert.equal(resolveKeybinding(event("k",{ctrlKey:true,shiftKey:true}),{}, {pullRequestOpen:true,terminalFocus:true,modalOpen:false}),null);
+});

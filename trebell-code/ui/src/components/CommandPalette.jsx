@@ -7,6 +7,8 @@ export default function CommandPalette({open,onClose,actions=[],projects=[],thre
   const [messageMatches,setMessageMatches]=useState([]);
   const [messageSearching,setMessageSearching]=useState(false);
   const inputRef=useRef(null);
+  const messageSearchRef=useRef(onSearchThreadMessages);
+  messageSearchRef.current=onSearchThreadMessages;
   useEffect(()=>{if(!open)return;setQuery("");setSelected(0);setMessageMatches([]);setMessageSearching(false);const t=setTimeout(()=>inputRef.current?.focus(),0);return()=>clearTimeout(t)},[open]);
   useEffect(()=>{
     if(!open)return;
@@ -20,15 +22,16 @@ export default function CommandPalette({open,onClose,actions=[],projects=[],thre
     return()=>window.removeEventListener("keydown",closeOnEscape,true);
   },[open,onClose]);
   useEffect(()=>{
+    if(!open)return;
     const raw=query.trim();const q=raw.startsWith(">")?raw.slice(1).trim():raw;
-    if(!open||raw.startsWith(">")||q.length<2||!onSearchThreadMessages){setMessageMatches([]);setMessageSearching(false);return}
+    if(raw.startsWith(">")||q.length<2||!messageSearchRef.current){setMessageMatches(current=>current.length?[]:current);setMessageSearching(false);return}
     let cancelled=false;setMessageSearching(true);
     const timer=setTimeout(async()=>{
-      const matches=await onSearchThreadMessages(q).catch(()=>[]);
+      const matches=await messageSearchRef.current(q).catch(()=>[]);
       if(!cancelled){setMessageMatches(matches||[]);setMessageSearching(false)}
     },180);
     return()=>{cancelled=true;clearTimeout(timer)}
-  },[open,query,onSearchThreadMessages]);
+  },[open,query]);
   const items=useMemo(()=>{
     const raw=query.trim();const actionOnly=raw.startsWith(">");const q=(actionOnly?raw.slice(1):raw).trim().toLowerCase();
     const messageMap=new Map((messageMatches||[]).map(match=>[match.threadId,match.excerpt]));

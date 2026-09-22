@@ -15,3 +15,31 @@ export function matchingMessageExcerpt(items,query,{maxLength=120}={}){
   }
   return null;
 }
+
+function pullRequestSearchText(link={}){
+  const identity=link.identity||{};
+  const snapshot=link.snapshot||{};
+  return [
+    link.url,link.title,link.state,link.headRefName,link.baseRefName,
+    snapshot.title,snapshot.state,snapshot.headBranch,snapshot.baseBranch,
+    identity.host,identity.repository,
+    identity.number?String(identity.number):"",
+    identity.number?"#"+String(identity.number):"",
+  ].filter(Boolean).join(" ").toLowerCase();
+}
+
+export function matchingPullRequestExcerpt(meta={},query){
+  const needle=String(query||"").trim().toLowerCase();if(needle.length<2)return null;
+  const attachments=(meta.attachments||[]).filter(item=>item?.attachmentType==="pull_request").map(item=>item.payload||{});
+  const legacy=Array.isArray(meta.linkedPullRequests)?meta.linkedPullRequests:[];
+  const seen=new Set();
+  for(const link of [...attachments,...legacy]){
+    const identity=link.identity||{};const key=[identity.host,identity.repository,identity.number,link.url].filter(Boolean).join("|");
+    if(seen.has(key))continue;seen.add(key);
+    if(!pullRequestSearchText(link).includes(needle))continue;
+    const number=identity.number||link.number;const title=link.snapshot?.title||link.title||"Pull request";
+    const repository=identity.repository?identity.repository+" · ":"";
+    return repository+(number?"#"+number+" ":"")+title;
+  }
+  return null;
+}

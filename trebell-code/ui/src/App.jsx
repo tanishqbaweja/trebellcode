@@ -35,7 +35,7 @@ import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
 import { normalizeCustomTheme, themeCssVariables } from "./theme-utils.js";
 import { approvalResponse } from "./approval-utils.js";
 import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./fanout-utils.js";
-import { matchingMessageExcerpt } from "./thread-message-search.js";
+import { matchingMessageExcerpt, matchingPullRequestExcerpt } from "./thread-message-search.js";
 
 const MAX_COMPOSER_ATTACHMENTS=100;
 const MAX_COMPOSER_CHARS=120_000;
@@ -318,7 +318,7 @@ export default function App(){
   const [panel,setPanel]=useState(null); const [rightPanelOpen,setRightPanelOpen]=useState(false); const [rightPanelTab,setRightPanelTab]=useState("files"); const [reviewedFiles,setReviewedFiles]=useState([]); const [checkpointByTurn,setCheckpointByTurn]=useState({});
   const [selectedThreadIds,setSelectedThreadIds]=useState(new Set()); const [providerRevision,setProviderRevision]=useState(0);
   const [snoozeRequest,setSnoozeRequest]=useState(null); const [threadUndo,setThreadUndo]=useState(null);
-  const [goal,setGoal]=useState(null); const [linkedPullRequests,setLinkedPullRequests]=useState([]);
+  const [goal,setGoal]=useState(null); const [linkedPullRequests,setLinkedPullRequests]=useState([]); const [sourceSelectedPr,setSourceSelectedPr]=useState(null);
   const [worktreeSetup,setWorktreeSetup]=useState(null);
   const [threadTelemetry,setThreadTelemetry]=useState({});
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false);
@@ -572,9 +572,15 @@ export default function App(){
   async function searchThreadMessages(queryText){
     const needle=String(queryText||"").trim();if(needle.length<2||!rpc||rpcStatus!=="connected")return[];
     const candidates=threads.slice(0,50);const cache=threadMessageSearchCacheRef.current;let cursor=0;
-    const results=[];const workers=Array.from({length:Math.min(8,candidates.length)},async()=>{
-      while(cursor<candidates.length){
-        const thread=candidates[cursor++];const version=Number(thread.updatedAt||0);let cached=cache.get(thread.id);
+    const results=[];const matched=new Set();
+    for(const thread of candidates){
+      const excerpt=matchingPullRequestExcerpt(threadMeta[thread.id]||{},needle);
+      if(excerpt){results.push({threadId:thread.id,excerpt:"PR · "+excerpt});matched.add(thread.id)}
+    }
+    const searchable=candidates.filter(thread=>!matched.has(thread.id));
+    const workers=Array.from({length:Math.min(8,searchable.length)},async()=>{
+      while(cursor<searchable.length){
+        const thread=searchable[cursor++];const version=Number(thread.updatedAt||0);let cached=cache.get(thread.id);
         if(!cached||cached.updatedAt!==version){
           const response=await rpc.request("thread/items/list",{threadId:thread.id,limit:150,sortDirection:"desc"}).catch(()=>({data:[]}));
           cached={updatedAt:version,items:response.data||[]};cache.set(thread.id,cached);
@@ -635,10 +641,18 @@ export default function App(){
   useEffect(()=>{const timer=setInterval(async()=>{if(!rpc||rpcStatus!=="connected")return;const now=Date.now();for(const thread of threads){const meta=threadMeta[thread.id];if(thread.section?.name==="Snoozed"&&meta?.snoozedUntil&&meta.snoozedUntil<=now){await moveThread(thread,"active");await updateThreadMeta(thread.id,{snoozedUntil:null})}}},30000);return()=>clearInterval(timer)},[rpc,rpcStatus,threads,threadMeta,sections]);
 
   useEffect(()=>{
-    if(!query.trim()){setSearchResults(null);return} const q=query.toLowerCase(); const titleMatches=threads.filter(t=>titleOf(t).toLowerCase().includes(q)||(t.cwd||"").toLowerCase().includes(q));
+    if(!query.trim()){setSearchResults(null);return} const q=query.toLowerCase(); const titleMatches=threads.filter(t=>titleOf(t).toLowerCase().includes(q)||(t.cwd||"").toLowerCase().includes(q)||Boolean(matchingPullRequestExcerpt(threadMeta[t.id]||{},q)));
     if(!rpc||rpcStatus!=="connected"||query.length<2){setSearchResults(titleMatches);return}
     let cancelled=false; const timer=setTimeout(async()=>{const found=new Map(titleMatches.map(t=>[t.id,t]));const rest=threads.filter(t=>!found.has(t.id)).slice(0,35);await Promise.all(rest.map(async t=>{const items=await rpc.request("thread/items/list",{threadId:t.id,limit:150,sortDirection:"desc"}).catch(()=>({data:[]}));if((items.data||[]).some(entry=>messageText(entry.item).toLowerCase().includes(q)))found.set(t.id,t)}));if(!cancelled)setSearchResults([...found.values()])},250);return()=>{cancelled=true;clearTimeout(timer)}
-  },[query,threads,rpc,rpcStatus]);
+  },[query,threads,threadMeta,rpc,rpcStatus]);
+
+  async function copyText(value){const text=String(value||"").trim();if(!text)return false;await navigator.clipboard?.writeText?.(text);return true}
+  async function copyActiveReference(){
+    const selectedUrl=rightPanelOpen&&rightPanelTab==="source"?sourceSelectedPr?.url:null;if(selectedUrl){await copyText(selectedUrl);return}
+    const linkedUrl=linkedPullRequests.find(link=>link?.url)?.url;
+    await copyText(linkedUrl||activeThread?.id||"");
+  }
+  async function copyActivePullRequestNumber(){if(rightPanelOpen&&rightPanelTab==="source"&&sourceSelectedPr?.number)await copyText("#"+sourceSelectedPr.number)}
 
   useEffect(()=>{const onHistory=event=>{const sent=messages.filter(m=>m.role==="user").map(m=>m.text);if(!sent.length)return;let next=promptHistoryIndex;if(event.detail<0)next=Math.min(sent.length-1,next+1);else next=Math.max(-1,next-1);setPromptHistoryIndex(next);setPrompt(next<0?"":sent[sent.length-1-next])};window.addEventListener("trebell:history",onHistory);return()=>window.removeEventListener("trebell:history",onHistory)},[messages,promptHistoryIndex]);
   useEffect(()=>{
@@ -656,6 +670,7 @@ export default function App(){
         rightPanelOpen:Boolean(rightPanelOpen),
         sidebarOpen:Boolean(sidebarOpen),
         undoAvailable:Boolean(threadUndo),
+        pullRequestOpen:Boolean(rightPanelOpen&&rightPanelTab==="source"&&sourceSelectedPr?.number),
         desktop:Boolean(window.trebellDesktop),
       };
       const command=resolveKeybinding(event,settings,context);
@@ -674,12 +689,14 @@ export default function App(){
       else if(command==="environments")setSection("environments");
       else if(command==="steerQueued"&&queued.length)sendQueuedNow(queued[0]);
       else if(command==="undoThreadAction")undoThreadAction();
+      else if(command==="copyReference")copyActiveReference().catch(()=>{});
+      else if(command==="copyPullRequestNumber")copyActivePullRequestNumber().catch(()=>{});
       else if(command==="cycleTheme")cycleTheme();
       else if(command==="cycleAppearance")cycleAppearance();
     };
     window.addEventListener("keydown",key);
     return()=>window.removeEventListener("keydown",key);
-  },[settings,prompt,attachments,section,panel,paletteOpen,question,elicitations.length,approvals.length,snoozeRequest,threadUndo,projectPath,activeThread?.id,running,rightPanelOpen,queued,sidebarOpen]);
+  },[settings,prompt,attachments,section,panel,paletteOpen,question,elicitations.length,approvals.length,snoozeRequest,threadUndo,projectPath,activeThread?.id,running,rightPanelOpen,rightPanelTab,sourceSelectedPr,linkedPullRequests,queued,sidebarOpen]);
   useEffect(()=>{if(!running&&queued.length){const next=queued[0];setQueued(prev=>prev.slice(1));startTurn(next.text,next.attachments,next.model||model).catch(error=>setEvents(prev=>[...prev,{id:"queue-error-"+Date.now(),kind:"error",title:error.message,status:"done"}]))}},[running,queued]);
 
   function handleServerRequest(client,message){
@@ -994,6 +1011,27 @@ export default function App(){
     const meta=threadMeta[thread.id]||{};setReviewedFiles(meta.reviewedFiles||[]);setGoal(goalData?.goal||null);
     const persisted=(attachmentData?.data||[]).filter(item=>item.attachmentType==="pull_request").map(item=>({...item.payload,__identityKey:item.identityKey}));
     setLinkedPullRequests(persisted.length?persisted:(meta.linkedPullRequests||[]));
+  }
+  async function openLinkedThread(reference){
+    if(!rpc||rpcStatus!=="connected"||!reference?.threadId)throw new Error("The agent harness is not connected.");
+    let thread=threads.find(item=>item.id===reference.threadId)||null;
+    if(!thread){
+      const read=await rpc.request("thread/read",{threadId:reference.threadId,includeTurns:false}).catch(()=>null);
+      thread=read?.thread||null;
+    }
+    const archived=Boolean(reference.archived||thread?.archived);
+    if(archived){
+      const restored=await rpc.request("thread/unarchive",{threadId:reference.threadId}).catch(()=>null);
+      thread=restored?.thread||thread;
+      if(!thread){
+        const read=await rpc.request("thread/read",{threadId:reference.threadId,includeTurns:false});
+        thread=read?.thread||null;
+      }
+      if(thread)thread={...thread,archived:false};
+    }
+    if(!thread)throw new Error("Linked thread was not found.");
+    setThreads(prev=>[thread,...prev.filter(item=>item.id!==thread.id)]);
+    await openThread(thread);
   }
   async function reloadActiveThread(){if(activeThread)await openThread(activeThread)}
   async function monitorWorktreeSetup(sessionId,{timeoutMs=30*60_000}={}){
@@ -1433,7 +1471,7 @@ export default function App(){
   function rightPanelContent(){
     if(rightPanelTab==="files"||rightPanelTab==="diff")return <WorkspacePanel key={rightPanelTab+":"+(workspaceEnvironmentId||"local")} defaultTab={rightPanelTab==="diff"?"diff":"files"} projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} activeThreadId={activeThread?.id} reviewedFiles={reviewedFiles} onReviewedChange={toggleReviewed} onAttachPath={path=>addFiles([path])} onReviewComment={attachReviewComment}/>;
     if(rightPanelTab==="preview")return previewSurface;
-    if(rightPanelTab==="source")return <SourceControlPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} model={model} provider={provider} threadId={activeThread?.id||null} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} onLinkPrUrl={linkPullRequestUrl} onLinkedPullRequestsChanged={setLinkedPullRequests} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
+    if(rightPanelTab==="source")return <SourceControlPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} model={model} provider={provider} threadId={activeThread?.id||null} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} onLinkPrUrl={linkPullRequestUrl} onOpenLinkedThread={openLinkedThread} onSelectedPrChange={setSourceSelectedPr} onLinkedPullRequestsChanged={setLinkedPullRequests} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
     if(rightPanelTab==="device")return <DevicePanel/>;
     if(rightPanelTab==="agents"&&agentRuntime==="codex")return <div className="panel-page"><AgentsPage threads={threads} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onRefreshThreads={()=>rpc?loadThreads(rpc):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model} telemetry={threadTelemetry}/></div>;
     if(rightPanelTab==="goal")return <GoalPanel rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={setGoal}/>;

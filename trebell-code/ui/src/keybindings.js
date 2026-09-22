@@ -12,6 +12,8 @@ export const KEYBINDING_COMMANDS=[
   {id:"environments",label:"Environments",defaultKey:"Ctrl+Shift+E",defaultWhen:"!modalOpen"},
   {id:"steerQueued",label:"Send oldest queued message now",defaultKey:"Ctrl+Shift+Enter",defaultWhen:"threadOpen && running && !modalOpen"},
   {id:"undoThreadAction",label:"Undo recent thread action",defaultKey:"Mod+Z",defaultWhen:"undoAvailable && !textInputFocus && !modalOpen"},
+  {id:"copyReference",label:"Copy Link or Thread ID",defaultKey:"Mod+Shift+C",defaultWhen:"(threadOpen || pullRequestOpen) && !terminalFocus && !modalOpen"},
+  {id:"copyPullRequestNumber",label:"Copy Number",defaultKey:"Mod+Shift+K",defaultWhen:"pullRequestOpen && !terminalFocus && !modalOpen"},
   {id:"cycleTheme",label:"Cycle theme",defaultKey:"Ctrl+Alt+A",defaultWhen:"!modalOpen"},
   {id:"cycleAppearance",label:"Cycle appearance mode",defaultKey:"Ctrl+Alt+Shift+A",defaultWhen:"!modalOpen"},
 ];
