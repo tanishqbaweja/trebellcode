@@ -3,14 +3,17 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:http";
 import { createGuiServer } from "../src/gui-server.mjs";
 
 const packageVersion=JSON.parse(await readFile(new URL("../package.json",import.meta.url),"utf8")).version;
+async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 
 test("GUI server exposes mock bootstrap, provider models, and health", async () => {
   const home=await mkdtemp(join(tmpdir(),"trebell-gui-test-"));
   const env={...process.env,TREBELL_HOME:home};
-  const gui=await createGuiServer({port:33210,appPort:33456,mock:true,env});
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  const gui=await createGuiServer({port,appPort,mock:true,env});
   try{
     const boot=await fetch(gui.url+"/api/bootstrap").then(r=>r.json());
     assert.equal(boot.mock,true);
