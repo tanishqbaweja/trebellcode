@@ -21,4 +21,6 @@ test("packaged desktop updater requires explicit download and install",async()=>
   assert.match(release,/latest\.yml required by the in-app updater/);
   assert.match(release,/NSIS build is missing resources\\app-update\.yml required by electron-updater/);
   assert.match(release,/\$LatestYml/);assert.match(release,/\$Blockmap/);
+  assert.match(release,/function Stop-GeneratedDesktopProcesses/);
+  assert.match(release,/taskkill\.exe \/PID \$DesktopProcess\.Id \/T \/F/);
 });

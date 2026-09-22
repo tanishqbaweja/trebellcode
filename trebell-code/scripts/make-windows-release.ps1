@@ -50,6 +50,21 @@ function Get-FreeTcpPort {
   finally { $Listener.Stop() }
 }
 
+function Stop-GeneratedDesktopProcesses {
+  $UnpackedRoot = Join-Path $Root "desktop-dist\win-unpacked"
+  if (-not (Test-Path $UnpackedRoot)) { return }
+  $ResolvedRoot = [System.IO.Path]::GetFullPath($UnpackedRoot).TrimEnd([char]'\') + "\"
+  $Processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    $_.ExecutablePath -and $_.ExecutablePath.StartsWith($ResolvedRoot,[System.StringComparison]::OrdinalIgnoreCase)
+  })
+  if ($Processes.Count -eq 0) { return }
+  Write-Host "Stopping $($Processes.Count) stale generated Trebell process(es)..." -ForegroundColor DarkGray
+  foreach ($Process in ($Processes | Sort-Object ProcessId -Descending)) {
+    Stop-Process -Id $Process.ProcessId -Force -ErrorAction SilentlyContinue
+  }
+  Start-Sleep -Milliseconds 500
+}
+
 Require-Command "node" "Install Node.js 22 or newer."
 Require-Command "npm" "Install Node.js 22 or newer."
 
@@ -84,6 +99,7 @@ Invoke-Native "npm" @("run","bridge:build")
 Invoke-Native "npm" @("run","ui:build")
 
 Write-Host "`n[5/8] Building unpacked Windows app for native smoke tests..." -ForegroundColor Cyan
+Stop-GeneratedDesktopProcesses
 Invoke-Native "npx" @("electron-builder","--dir","--win","--x64")
 
 $UnpackedExe = Join-Path $Root "desktop-dist\win-unpacked\Trebell Code.exe"
@@ -133,8 +149,13 @@ try {
   }
 } finally {
   if ($DesktopProcess -and -not $DesktopProcess.HasExited) {
-    Stop-Process -Id $DesktopProcess.Id -Force -ErrorAction SilentlyContinue
+    if ($env:OS -eq "Windows_NT") {
+      & taskkill.exe /PID $DesktopProcess.Id /T /F *> $null
+    } else {
+      Stop-Process -Id $DesktopProcess.Id -Force -ErrorAction SilentlyContinue
+    }
   }
+  Stop-GeneratedDesktopProcesses
   $env:TREBELL_GUI_PORT = $OldGuiPort
   $env:TREBELL_APP_SERVER_PORT = $OldAppPort
   $env:TREBELL_CDP_URL = $OldCdpUrl
