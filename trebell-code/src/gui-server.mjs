@@ -25,6 +25,7 @@ import { startProviderBridge } from "./provider-bridge.mjs";
 import { AgentRuntimeManager, normalizeAgentRuntime } from "./agent-runtime-manager.mjs";
 import { AgentThreadStore } from "./agent-thread-store.mjs";
 import { attachAgentRelay } from "./agent-relay.mjs";
+import { listLicenses, licenseDetail } from "./license-service.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
   .then(text=>String(JSON.parse(text).version||"0.0.0"))
@@ -1130,6 +1131,14 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const item=await response.json();
         return json(res,response.ok?200:502,{current:TREBELL_VERSION,latest:item.tag_name||null,url:item.html_url||null,name:item.name||null});
       }catch(error){return json(res,502,{current:TREBELL_VERSION,error:error.message});}
+    }
+    if(url.pathname==="/api/licenses"&&req.method==="GET"){
+      try{return json(res,200,await listLicenses({query:url.searchParams.get("q")||""}))}
+      catch(error){return json(res,500,{error:error.message});}
+    }
+    if(url.pathname==="/api/licenses/detail"&&req.method==="GET"){
+      try{return json(res,200,await licenseDetail(url.searchParams.get("id")||""))}
+      catch(error){return json(res,404,{error:error.message});}
     }
     if(url.pathname==="/api/diagnostics"){
       const cwd=url.searchParams.get("path")||process.cwd();

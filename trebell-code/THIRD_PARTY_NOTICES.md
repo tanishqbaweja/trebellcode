@@ -2,7 +2,7 @@
 
 ## OpenAI Codex
 
-Trebell Code uses the `@openai/codex` 0.154.0 runtime package and is based on
+Trebell Code uses the `@openai/codex` 0.155.1 runtime package and is based on
 the OpenAI Codex source tree.
 
 Upstream: https://github.com/openai/codex  

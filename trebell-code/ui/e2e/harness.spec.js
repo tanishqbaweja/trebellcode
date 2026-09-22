@@ -93,6 +93,10 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await page.getByRole("button",{name:"dark",exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.mode)).toBe("dark");
   await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.theme)).toBe("midnight");
+  await page.getByRole("button",{name:"View licenses"}).click();
+  await expect(page.getByRole("heading",{name:"Open source licenses"})).toBeVisible();
+  await expect(page.getByPlaceholder("Search package, version or license")).toBeVisible();
+  await page.getByRole("button",{name:"Settings"}).click();
   await page.getByRole("button",{name:"Usage"}).click();
   await expect(page.getByRole("heading",{name:"Usage",exact:true})).toBeVisible();
   await expect(page.getByText("Total tokens",{exact:true})).toBeVisible();

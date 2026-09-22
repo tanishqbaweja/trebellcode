@@ -1,5 +1,5 @@
 import React,{useEffect,useState} from "react";
-import { Activity, Bot, Download, RefreshCw, ShieldCheck } from "lucide-react";
+import { Activity, Bot, Download, FileText, RefreshCw, ShieldCheck } from "lucide-react";
 import { api } from "../api.js";
 import { KEYBINDING_COMMANDS, normalizeKeybindingRules } from "../keybindings.js";
 
@@ -11,7 +11,7 @@ const PROVIDER_LABELS={
   vyceai:"VyceAi",
 };
 
-export default function SettingsPage({settings,onSettings,onProviderUpdated,runtime,rpcStatus,loggedIn,login,logout,projectPath,modelError}){
+export default function SettingsPage({settings,onSettings,onProviderUpdated,runtime,rpcStatus,loggedIn,login,logout,projectPath,modelError,onOpenLicenses}){
   const [update,setUpdate]=useState(null);
   const [diagnostics,setDiagnostics]=useState(null);
   const [loading,setLoading]=useState(false);
@@ -182,7 +182,7 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
     <div className="settings-grid">
       <div className="settings-card about-card">
         <div className="about-brand"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/><div><h3>Trebell Code</h3><p>Desktop coding-agent harness</p></div></div>
-        <span className="about-version">v{diagnostics?.version||update?.current||"1.2.0"}</span>
+        <span className="about-version">v{diagnostics?.version||update?.current||"1.2.0"}</span><button onClick={onOpenLicenses}><FileText size={12}/> View licenses</button>
       </div>
       <div className="settings-card agent-runtime-settings">
         <h3>Agent harness</h3>
