@@ -11,6 +11,7 @@ let agentBrowser=null;
 let tray=null;
 let backgroundEnabled=false;
 let snapshotConfig={enabled:false,shortcut:"CommandOrControl+Shift+S",includeText:false};
+let browserRecordingGrantUntil=0;
 
 const MIN_ZOOM_FACTOR=0.7;
 const MAX_ZOOM_FACTOR=2.5;
@@ -282,8 +283,32 @@ async function ensureAgentBrowser({show=false}={}){
     agentBrowser.loadURL(url).catch(()=>{});
     return {action:"deny"};
   });
+  const publishState=()=>{
+    if(!windowRef||windowRef.isDestroyed()||!agentBrowser||agentBrowser.isDestroyed())return;
+    windowRef.webContents.send("browser:state",browserState());
+  };
+  for(const event of ["did-navigate","did-navigate-in-page","did-start-loading","did-stop-loading","page-title-updated"])agentBrowser.webContents.on(event,publishState);
   agentBrowser.on("closed",()=>{agentBrowser=null;});
   return agentBrowser;
+}
+
+function browserState(){
+  if(!agentBrowser||agentBrowser.isDestroyed())return {open:false,url:"",title:"",canGoBack:false,canGoForward:false,loading:false,width:null,height:null};
+  const history=agentBrowser.webContents.navigationHistory;const [width,height]=agentBrowser.getContentSize();
+  return {open:true,url:agentBrowser.webContents.getURL(),title:agentBrowser.webContents.getTitle(),canGoBack:history.canGoBack(),canGoForward:history.canGoForward(),loading:agentBrowser.webContents.isLoading(),width,height};
+}
+
+async function browserNavigateHistory(direction){
+  const browser=await ensureAgentBrowser();const history=browser.webContents.navigationHistory;
+  if(direction==="back"&&history.canGoBack())history.goBack();
+  else if(direction==="forward"&&history.canGoForward())history.goForward();
+  else if(direction==="reload")browser.webContents.reload();
+  return browserState();
+}
+
+async function browserViewport(payload={}){
+  const browser=await ensureAgentBrowser();const width=Math.max(320,Math.min(3840,Math.round(Number(payload.width)||1280)));const height=Math.max(240,Math.min(2160,Math.round(Number(payload.height)||800)));
+  browser.setContentSize(width,height,true);return browserState();
 }
 
 async function browserSnapshot(){
@@ -585,6 +610,13 @@ async function createWindow(){
   });
 
   windowRef.removeMenu();
+  windowRef.webContents.session.setDisplayMediaRequestHandler(async(request,callback)=>{
+    if(!request.videoRequested||Date.now()>browserRecordingGrantUntil){callback({});return}
+    try{
+      const browser=await ensureAgentBrowser({show:true});browserRecordingGrantUntil=0;
+      callback({video:{id:browser.webContents.getMediaSourceId(),name:browser.getTitle()||"Trebell Agent Browser"}});
+    }catch{browserRecordingGrantUntil=0;callback({})}
+  });
   installMainZoomControls(windowRef);
   windowRef.webContents.setWindowOpenHandler(({url})=>{
     shell.openExternal(url);
@@ -663,6 +695,10 @@ if(!lock){
   ipcMain.handle("browser:click",async(_event,ref)=>browserClick(ref));
   ipcMain.handle("browser:type",async(_event,payload)=>browserType(payload?.ref,payload?.text));
   ipcMain.handle("browser:screenshot",async()=>browserScreenshot());
+  ipcMain.handle("browser:state",async()=>browserState());
+  ipcMain.handle("browser:history",async(_event,direction)=>browserNavigateHistory(direction));
+  ipcMain.handle("browser:viewport",async(_event,payload)=>browserViewport(payload));
+  ipcMain.handle("browser:recording:arm",async()=>{const browser=await ensureAgentBrowser({show:true});browserRecordingGrantUntil=Date.now()+5000;return {ok:true,expiresAt:browserRecordingGrantUntil,sourceId:browser.webContents.getMediaSourceId()};});
   ipcMain.handle("desktop:screenshot",async()=>desktopScreenshot());
   ipcMain.handle("computer:screenshot",async()=>desktopScreenshot());
   ipcMain.handle("computer:move",async(_event,payload={})=>computerMove(payload.x,payload.y));

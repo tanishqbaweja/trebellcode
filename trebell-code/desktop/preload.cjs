@@ -46,6 +46,17 @@ contextBridge.exposeInMainWorld("trebellDesktop", {
   browser: {
     navigate: (url) => ipcRenderer.invoke("browser:navigate", url),
     show: () => ipcRenderer.invoke("browser:show"),
+    state: () => ipcRenderer.invoke("browser:state"),
+    back: () => ipcRenderer.invoke("browser:history", "back"),
+    forward: () => ipcRenderer.invoke("browser:history", "forward"),
+    reload: () => ipcRenderer.invoke("browser:history", "reload"),
+    setViewport: (width,height) => ipcRenderer.invoke("browser:viewport", {width,height}),
+    armRecording: () => ipcRenderer.invoke("browser:recording:arm"),
+    onState: (handler) => {
+      const listener=(_event,payload)=>handler(payload);
+      ipcRenderer.on("browser:state",listener);
+      return () => ipcRenderer.removeListener("browser:state",listener);
+    },
     snapshot: () => ipcRenderer.invoke("browser:snapshot"),
     click: (ref) => ipcRenderer.invoke("browser:click", ref),
     type: (ref,text) => ipcRenderer.invoke("browser:type", {ref,text}),

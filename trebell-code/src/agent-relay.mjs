@@ -35,6 +35,20 @@ function acpToolItem(update){
 
 function planSteps(update){return (update.entries||update.plan||[]).map(entry=>({step:entry.content||entry.step||entry.text||"Plan step",status:entry.status==="in_progress"?"inProgress":entry.status||"pending",priority:entry.priority||null}))}
 
+function usageFromPromptResult(result,fallback=null){
+  const openCode=result?.raw?.info?.tokens;
+  if(openCode){
+    const input=Number(openCode.input||0),output=Number(openCode.output||0),reasoning=Number(openCode.reasoning||0),cached=Number(openCode.cache?.read||0),cacheWrite=Number(openCode.cache?.write||0);
+    return {usage:{totalTokens:Number(openCode.total)||(input+output+reasoning+cached+cacheWrite),inputTokens:input,cachedInputTokens:cached,cacheWriteInputTokens:cacheWrite,outputTokens:output,reasoningOutputTokens:reasoning},cost:result.raw?.info?.cost!=null?{amount:Number(result.raw.info.cost),currency:"USD"}:null,at:Date.now()};
+  }
+  const claude=result?.raw?.usage;
+  if(claude){
+    const input=Number(claude.input_tokens||0),output=Number(claude.output_tokens||0),cached=Number(claude.cache_read_input_tokens||0),cacheWrite=Number(claude.cache_creation_input_tokens||0);
+    return {usage:{totalTokens:input+output+cached+cacheWrite,inputTokens:input,cachedInputTokens:cached,cacheWriteInputTokens:cacheWrite,outputTokens:output,reasoningOutputTokens:0},cost:result.raw?.total_cost_usd!=null?{amount:Number(result.raw.total_cost_usd),currency:"USD"}:null,at:Date.now()};
+  }
+  return fallback;
+}
+
 function approvalOption(options,decision){
   const find=kind=>options.find(option=>option.kind===kind)?.optionId;
   if(decision==="acceptForSession")return find("allow_always")||find("allow_once")||null;
@@ -107,7 +121,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const reasoning=Number(usage.reasoning_tokens??usage.reasoningOutputTokens??0)||0;
       const used=Number(update.used)||(input+output+cached+cacheWrite+reasoning),size=Number(update.size)||0;
       const snapshot={totalTokens:used,inputTokens:input||Math.max(0,used-output-reasoning),cachedInputTokens:cached,cacheWriteInputTokens:cacheWrite,outputTokens:output,reasoningOutputTokens:reasoning};
-      if(turnId)state?.recordUsage?.({runtime:thread.runtime||runtimeManager.activeRuntime(),provider:thread.providerMeta?.runtimeInstanceId||null,model:thread.model||null,threadId,turnId,usage:snapshot,cost:update.cost||null,at:Date.now()});
+      const runtimeSession=sessions.get(threadId);if(runtimeSession)runtimeSession.__usage={usage:snapshot,cost:update.cost||null,at:Date.now()};
       emit("thread/tokenUsage/updated",{threadId,turnId,tokenUsage:{total:snapshot,last:snapshot,modelContextWindow:size||null,cost:update.cost||null}});
     }else if(type==="diff"){
       emit("turn/diff/updated",{threadId,turnId,diff:update.diff||[]});
@@ -174,19 +188,26 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     }
     if(method==="turn/start"){
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");const session=await ensureSession(thread,context,{model:params.model||thread.model});
-      if(params.model&&params.model!==thread.model)await session.setModel(params.model).catch(()=>{});
+      if(params.model&&params.model!==thread.model){await session.setModel(params.model).catch(()=>{});threadStore.update(thread.id,{model:params.model})}
       const turn=threadStore.addTurn(thread.id,{inputText:textOfInput(params.input),status:"inProgress"});session.__assistant="";
+      session.__usage=null;
       emit("turn/started",{threadId:thread.id,turn});
       const prompt=await acpPrompt(params.input||[]);
       const selectedAgent=Object.prototype.hasOwnProperty.call(params,"agent")?(params.agent||null):(thread.agent||null);
       if(selectedAgent!==thread.agent)threadStore.update(thread.id,{agent:selectedAgent});
       const promptPromise=session.prompt(prompt,{messageId:randomUUID(),agent:selectedAgent});
+      const persistUsage=result=>{
+        const usage=usageFromPromptResult(result,session.__usage);if(!usage)return;const current=threadStore.get(thread.id)||thread;
+        state?.recordUsage?.({runtime:current.runtime||runtimeManager.activeRuntime(),provider:current.providerMeta?.runtimeInstanceId||null,model:current.model||params.model||null,threadId:thread.id,turnId:turn.id,usage:usage.usage,cost:usage.cost,at:usage.at||Date.now()});
+      };
       promptPromise.then(result=>{
+        persistUsage(result);
         const providerMessageId=result?.providerMessageId||result?.userMessageId||null;if(providerMessageId)threadStore.updateTurn(thread.id,turn.id,{providerMessageId});
         const assistant=String(session.__assistant||"").trim();if(assistant){const item={type:"agentMessage",id:`assistant-${turn.id}`,text:assistant,phase:null,memoryCitation:null,delivery:null,questions:null};threadStore.addItem(thread.id,turn.id,item);emit("item/completed",{threadId:thread.id,turnId:turn.id,item,completedAtMs:Date.now()})}
         const status=result?.stopReason==="cancelled"?"cancelled":result?.stopReason==="refusal"?"failed":"completed";const completed=threadStore.finishTurn(thread.id,turn.id,{status,error:status==="failed"?{message:"Agent refused the turn"}:null});
         emit("turn/completed",{threadId:thread.id,turn:completed});emit("thread/status/changed",{threadId:thread.id,status:threadStore.get(thread.id).status});
       }).catch(error=>{
+        persistUsage(null);
         const completed=threadStore.finishTurn(thread.id,turn.id,{status:"failed",error:{message:error.message}});emit("error",{threadId:thread.id,turnId:turn.id,message:error.message});emit("turn/completed",{threadId:thread.id,turn:completed});
       });
       return {turn};

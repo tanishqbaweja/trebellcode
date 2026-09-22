@@ -1,8 +1,17 @@
-import React,{useEffect,useState} from "react";
-import { ExternalLink, Globe2, RefreshCw, Camera, MousePointer2, Eye, X, Radar } from "lucide-react";
+import React,{useEffect,useRef,useState} from "react";
+import { ExternalLink, Globe2, RefreshCw, Camera, MousePointer2, Eye, X, Radar, ArrowLeft, ArrowRight, MonitorSmartphone, Circle, Square, RotateCw, History } from "lucide-react";
 import { api } from "../api.js";
 
-export default function PreviewPage({onAttachText,onAttachImage}){
+const VIEWPORTS=[
+  {id:"desktop",label:"Desktop",width:1440,height:900},
+  {id:"laptop",label:"Laptop",width:1280,height:800},
+  {id:"tablet",label:"Tablet",width:820,height:1180},
+  {id:"mobile",label:"Mobile",width:390,height:844},
+];
+function historyKey(projectPath){return "trebell:browser-history:v1:"+String(projectPath||"global")}
+function normalizedHistoryUrl(value){try{const parsed=new URL(value);if(!/^https?:$/.test(parsed.protocol))return null;parsed.username="";parsed.password="";return parsed.href}catch{return null}}
+
+export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAttachFile}){
   const [draft,setDraft]=useState("http://localhost:3000");
   const [url,setUrl]=useState("");
   const [key,setKey]=useState(0);
@@ -14,6 +23,22 @@ export default function PreviewPage({onAttachText,onAttachImage}){
   const [cookieStatus,setCookieStatus]=useState("");
   const [servers,setServers]=useState([]);
   const [serverError,setServerError]=useState("");
+  const [browserState,setBrowserState]=useState({open:false,url:"",title:"",canGoBack:false,canGoForward:false,loading:false,width:1280,height:800});
+  const [viewport,setViewport]=useState({width:1280,height:800});
+  const [history,setHistory]=useState([]);
+  const [recording,setRecording]=useState(false);
+  const [recordingSince,setRecordingSince]=useState(0);
+  const [recordingSeconds,setRecordingSeconds]=useState(0);
+  const recorderRef=useRef(null);const streamRef=useRef(null);const chunksRef=useRef([]);
+
+  function remember(nextUrl,title=""){
+    const normalized=normalizedHistoryUrl(nextUrl);if(!normalized)return;
+    setHistory(current=>{
+      const next=[{url:normalized,title:String(title||"").slice(0,512),lastVisitedAt:Date.now()},...current.filter(item=>item.url!==normalized)].slice(0,50);
+      try{localStorage.setItem(historyKey(projectPath),JSON.stringify(next))}catch{}
+      return next;
+    });
+  }
 
   async function discover(){
     setBusy("servers");setServerError("");
@@ -27,6 +52,21 @@ export default function PreviewPage({onAttachText,onAttachImage}){
 
   useEffect(()=>{discover()},[]);
   useEffect(()=>{
+    try{const parsed=JSON.parse(localStorage.getItem(historyKey(projectPath))||"[]");setHistory(Array.isArray(parsed)?parsed.slice(0,50):[])}catch{setHistory([])}
+  },[projectPath]);
+  useEffect(()=>{
+    const browser=window.trebellDesktop?.browser;if(!browser)return;
+    let disposed=false;
+    browser.state?.().then(state=>{if(!disposed&&state){setBrowserState(state);if(state.width&&state.height)setViewport({width:state.width,height:state.height});if(state.url)remember(state.url,state.title)}}).catch(()=>{});
+    const unsubscribe=browser.onState?.(state=>{if(disposed||!state)return;setBrowserState(state);if(state.width&&state.height)setViewport({width:state.width,height:state.height});if(state.url)remember(state.url,state.title)});
+    return()=>{disposed=true;unsubscribe?.()};
+  },[projectPath]);
+  useEffect(()=>{
+    if(!recording){setRecordingSeconds(0);return}
+    const tick=()=>setRecordingSeconds(Math.max(0,Math.floor((Date.now()-recordingSince)/1000)));tick();const timer=setInterval(tick,500);return()=>clearInterval(timer);
+  },[recording,recordingSince]);
+  useEffect(()=>()=>{try{if(recorderRef.current?.state!=="inactive")recorderRef.current.stop()}catch{};for(const track of streamRef.current?.getTracks?.()||[])track.stop()},[]);
+  useEffect(()=>{
     const open=event=>{
       const next=String(event.detail||"").trim();
       if(!next)return;
@@ -37,10 +77,10 @@ export default function PreviewPage({onAttachText,onAttachImage}){
   },[]);
 
   function normalized(){let next=draft.trim();if(next&&!/^https?:\/\//i.test(next))next="http://"+next;return next}
-  function go(){setUrl(normalized())}
+  function go(){const next=normalized();setUrl(next);if(next)remember(next)}
   async function agentOpen(){
     const next=normalized();if(!next)return;setBusy("open");
-    try{await window.trebellDesktop?.browser?.navigate?.(next);setUrl(next);setSnapshot(await window.trebellDesktop?.browser?.snapshot?.())}finally{setBusy("")}
+    try{const state=await window.trebellDesktop?.browser?.navigate?.(next);setUrl(next);remember(next,state?.title);setSnapshot(await window.trebellDesktop?.browser?.snapshot?.())}finally{setBusy("")}
   }
   async function inspect(){setBusy("inspect");try{const next=await window.trebellDesktop?.browser?.snapshot?.();setSnapshot(next);if(selectedRef&&!next?.elements?.some(el=>el.ref===selectedRef))setSelectedRef(null)}finally{setBusy("")}}
   async function capture(){setBusy("capture");try{const shot=await window.trebellDesktop?.browser?.screenshot?.();if(shot?.dataUrl)await onAttachImage?.(shot.dataUrl)}finally{setBusy("")}}
@@ -54,6 +94,35 @@ export default function PreviewPage({onAttachText,onAttachImage}){
     }catch(error){setCookieStatus("Cookie import failed: "+String(error?.message||error))}
     finally{setBusy("")}
   }
+  async function navigateHistory(direction){
+    const browser=window.trebellDesktop?.browser;if(!browser)return;setBusy(direction);
+    try{const state=direction==="back"?await browser.back?.():direction==="forward"?await browser.forward?.():await browser.reload?.();if(state){setBrowserState(state);if(state.url){setDraft(state.url);setUrl(state.url);remember(state.url,state.title)}}}finally{setBusy("")}
+  }
+  async function applyViewport(width,height){
+    const next={width:Math.max(320,Math.min(3840,Number(width)||1280)),height:Math.max(240,Math.min(2160,Number(height)||800))};setViewport(next);
+    const state=await window.trebellDesktop?.browser?.setViewport?.(next.width,next.height);if(state)setBrowserState(state);
+  }
+  async function startRecording(){
+    const browser=window.trebellDesktop?.browser;if(!browser?.armRecording||!navigator.mediaDevices?.getDisplayMedia)throw new Error("Browser recording is unavailable in this build.");
+    setBusy("recording");
+    try{
+      await browser.armRecording();
+      const stream=await navigator.mediaDevices.getDisplayMedia({audio:false,video:{frameRate:{ideal:30,max:30}}});streamRef.current=stream;
+      const choices=["video/mp4;codecs=avc1","video/webm;codecs=vp9","video/webm;codecs=vp8","video/webm"];
+      const mimeType=choices.find(type=>MediaRecorder.isTypeSupported(type))||"";const recorder=new MediaRecorder(stream,mimeType?{mimeType}:undefined);chunksRef.current=[];recorderRef.current=recorder;
+      recorder.ondataavailable=event=>{if(event.data?.size)chunksRef.current.push(event.data)};
+      recorder.start(1000);setRecordingSince(Date.now());setRecording(true);
+    }finally{setBusy("")}
+  }
+  async function stopRecording(){
+    const recorder=recorderRef.current;if(!recorder)return;setBusy("recording-stop");
+    try{
+      const stopped=new Promise(resolve=>{recorder.addEventListener("stop",resolve,{once:true});if(recorder.state!=="inactive")recorder.stop();else resolve()});await stopped;
+      for(const track of streamRef.current?.getTracks?.()||[])track.stop();
+      const type=recorder.mimeType||chunksRef.current[0]?.type||"video/webm";const blob=new Blob(chunksRef.current,{type});
+      if(blob.size>0&&onAttachFile){const ext=type.includes("mp4")?"mp4":"webm";await onAttachFile(new File([blob],`browser-recording-${Date.now()}.${ext}`,{type}),{kind:"browser",label:"Browser recording",detail:`${recordingSeconds}s · ${(blob.size/1024/1024).toFixed(1)} MB`})}
+    }finally{recorderRef.current=null;streamRef.current=null;chunksRef.current=[];setRecording(false);setBusy("")}
+  }
   async function attachElement(element,note=""){
     const cleanNote=String(note||"").trim();
     const lines=["Browser element context","URL: "+(snapshot?.url||url),"Title: "+(snapshot?.title||""),"Element ref: "+element.ref,"Tag: "+element.tag,"Text: "+(element.text||""),"Href: "+(element.href||"")];
@@ -63,7 +132,11 @@ export default function PreviewPage({onAttachText,onAttachImage}){
   }
   const selectedElement=(snapshot?.elements||[]).find(el=>el.ref===selectedRef)||null;
   return <div className="preview-page">
-    <div className="preview-bar"><Globe2 size={15}/><input value={draft} onChange={e=>setDraft(e.target.value)} onKeyDown={e=>e.key==="Enter"&&go()} placeholder="http://localhost:3000"/><button onClick={go}>Preview</button><button onClick={()=>setKey(k=>k+1)}><RefreshCw size={13}/></button>{url&&<button onClick={()=>window.open(url,"_blank")}><ExternalLink size={13}/></button>}</div>
+    <div className="preview-bar"><Globe2 size={15}/><button title="Back" disabled={!browserState.canGoBack||!!busy} onClick={()=>navigateHistory("back")}><ArrowLeft size={13}/></button><button title="Forward" disabled={!browserState.canGoForward||!!busy} onClick={()=>navigateHistory("forward")}><ArrowRight size={13}/></button><input value={draft} onChange={e=>setDraft(e.target.value)} onKeyDown={e=>e.key==="Enter"&&go()} placeholder="http://localhost:3000"/><button onClick={go}>Preview</button><button title="Reload agent browser" onClick={()=>navigateHistory("reload")} disabled={!!busy}><RefreshCw size={13}/></button>{url&&<button onClick={()=>window.open(url,"_blank")}><ExternalLink size={13}/></button>}</div>
+
+    <div className="browser-device-toolbar"><MonitorSmartphone size={13}/><select value={VIEWPORTS.find(item=>item.width===viewport.width&&item.height===viewport.height)?.id||"custom"} onChange={e=>{const preset=VIEWPORTS.find(item=>item.id===e.target.value);if(preset)applyViewport(preset.width,preset.height)}}><option value="custom">Custom</option>{VIEWPORTS.map(item=><option key={item.id} value={item.id}>{item.label} · {item.width}×{item.height}</option>)}</select><input type="number" min="320" max="3840" value={viewport.width} onChange={e=>setViewport(v=>({...v,width:e.target.value}))} onBlur={()=>applyViewport(viewport.width,viewport.height)}/><span>×</span><input type="number" min="240" max="2160" value={viewport.height} onChange={e=>setViewport(v=>({...v,height:e.target.value}))} onBlur={()=>applyViewport(viewport.width,viewport.height)}/><button title="Rotate viewport" onClick={()=>applyViewport(viewport.height,viewport.width)}><RotateCw size={12}/></button><button className={recording?"recording active":"recording"} disabled={!!busy&&!recording} onClick={()=>recording?stopRecording().catch(error=>setCookieStatus(error.message)):startRecording().catch(error=>setCookieStatus(error.message))}>{recording?<Square size={11}/>:<Circle size={11}/>} {recording?`Stop ${recordingSeconds}s`:"Record"}</button></div>
+
+    {history.length>0&&<details className="browser-history"><summary><History size={12}/> Recent pages</summary><div>{history.slice(0,12).map(item=><button key={item.url} onClick={()=>{setDraft(item.url);setUrl(item.url);agentOpen().catch(()=>{})}}><span><strong>{item.title||new URL(item.url).host}</strong><small>{item.url}</small></span><time>{new Date(item.lastVisitedAt).toLocaleString()}</time></button>)}</div></details>}
 
     <div className="preview-discovery">
       <div className="preview-discovery-head"><span><Radar size={13}/> Local dev servers</span><button onClick={discover} disabled={busy==="servers"}><RefreshCw size={12}/> Detect</button></div>
