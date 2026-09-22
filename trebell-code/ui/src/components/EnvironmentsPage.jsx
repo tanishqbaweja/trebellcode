@@ -6,7 +6,7 @@ export default function EnvironmentsPage(){
   const [data,setData]=useState({profiles:[],activeEnvironmentId:null,activeEnvironment:null,capabilities:{local:{available:true},ssh:{available:false},wsl:{available:false,distros:[]}}});
   const [remote,setRemote]=useState({enabled:false,running:false,port:3211,urls:[],devices:[]});
   const [pairing,setPairing]=useState(null);
-  const [draft,setDraft]=useState({type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"codex"});
+  const [draft,setDraft]=useState({type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"codex",themeDirectory:""});
   const [busy,setBusy]=useState("");
   const [message,setMessage]=useState("");
 
@@ -21,7 +21,7 @@ export default function EnvironmentsPage(){
     try{
       const body={...draft,name:draft.name||({local:"Local machine",wsl:"WSL",ssh:"SSH"}[draft.type])};
       await api("/api/environments",{method:"POST",body});
-      setDraft({type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"codex"});
+      setDraft({type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"codex",themeDirectory:""});
       await refresh();
     }catch(e){setMessage(e.message)}finally{setBusy("")}
   }
@@ -64,7 +64,7 @@ export default function EnvironmentsPage(){
         <div className="capability-card-head"><span><Laptop2 size={15}/><strong>Configured environments</strong></span><em>{data.profiles.length}</em></div>
         <div className="environment-list">
           <div><div><strong>Local machine</strong><span>WINDOWS · Trebell desktop host</span></div><div>{!data.activeEnvironmentId?<em className="ok">active</em>:<button onClick={()=>activate(null)} disabled={!!busy}>Use for agent</button>}</div></div>
-          {data.profiles.map(profile=><div key={profile.id}><div><strong>{profile.name}</strong><span>{profile.type.toUpperCase()} · {profile.cwd||profile.host||profile.distro||"default"}</span></div><div>{data.activeEnvironmentId===profile.id?<em className="ok">agent active</em>:<button onClick={()=>activate(profile.id)} disabled={!!busy}>Use for agent</button>}<button onClick={()=>probe(profile.id)} disabled={!!busy}>Test</button><button className="danger" onClick={()=>remove(profile.id)} disabled={data.activeEnvironmentId===profile.id}><Trash2 size={12}/></button></div></div>)}</div>
+          {data.profiles.map(profile=><div key={profile.id}><div><strong>{profile.name}</strong><span>{profile.type.toUpperCase()} · {profile.cwd||profile.host||profile.distro||"default"}{profile.themeDirectory?" · themes "+profile.themeDirectory:""}</span></div><div>{data.activeEnvironmentId===profile.id?<em className="ok">agent active</em>:<button onClick={()=>activate(profile.id)} disabled={!!busy}>Use for agent</button>}<button onClick={()=>probe(profile.id)} disabled={!!busy}>Test</button><button className="danger" onClick={()=>remove(profile.id)} disabled={data.activeEnvironmentId===profile.id}><Trash2 size={12}/></button></div></div>)}</div>
         {!data.profiles.length&&<p>No saved remote environments. The local Windows agent is active by default.</p>}
       </section>
       <section className="capability-card environment-create">
@@ -72,6 +72,7 @@ export default function EnvironmentsPage(){
         <label>Type<select value={draft.type} onChange={e=>setDraft(d=>({...d,type:e.target.value}))}><option value="local">Local</option><option value="wsl" disabled={!data.capabilities?.wsl?.available}>WSL</option><option value="ssh" disabled={!data.capabilities?.ssh?.available}>SSH</option></select></label>
         <label>Name<input value={draft.name} onChange={e=>setDraft(d=>({...d,name:e.target.value}))} placeholder="My environment"/></label>
         <label>Working directory<input value={draft.cwd} onChange={e=>setDraft(d=>({...d,cwd:e.target.value}))} placeholder={draft.type==="wsl"?"/home/me/project":draft.type==="ssh"?"/srv/project":"C:\\code\\project"}/></label>
+        <label>Published themes directory<input value={draft.themeDirectory} onChange={e=>setDraft(d=>({...d,themeDirectory:e.target.value}))} placeholder={draft.type==="local"?"Default Trebell themes folder":"Default .trebell/themes"}/></label>
         {draft.type==="wsl"&&<label>Distribution<select value={draft.distro} onChange={e=>setDraft(d=>({...d,distro:e.target.value}))}><option value="">Default WSL distro</option>{(data.capabilities?.wsl?.distros||[]).map(x=><option key={x}>{x}</option>)}</select></label>}
         {draft.type!=="local"&&<label>Codex executable<input value={draft.codexPath||"codex"} onChange={e=>setDraft(d=>({...d,codexPath:e.target.value}))} placeholder="/usr/local/bin/codex"/></label>}
         {draft.type==="ssh"&&<><label>Host<input value={draft.host} onChange={e=>setDraft(d=>({...d,host:e.target.value}))} placeholder="dev.example.com"/></label><div className="environment-two"><label>User<input value={draft.user} onChange={e=>setDraft(d=>({...d,user:e.target.value}))}/></label><label>Port<input type="number" value={draft.port} onChange={e=>setDraft(d=>({...d,port:Number(e.target.value)||22}))}/></label></div><label>Identity file<input value={draft.identityFile} onChange={e=>setDraft(d=>({...d,identityFile:e.target.value}))} placeholder="C:\\Users\\me\\.ssh\\id_ed25519"/></label></>}

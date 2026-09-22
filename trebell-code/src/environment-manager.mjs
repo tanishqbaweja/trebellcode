@@ -1,10 +1,15 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
-import { basename, resolve, posix } from "node:path";
+import { lstat, readFile, readdir, stat } from "node:fs/promises";
+import { basename, join, resolve, posix } from "node:path";
+import { trebellHome } from "./paths.mjs";
 
 const MAX_OUTPUT=2*1024*1024;
+const MAX_THEME_FILES=32;
+const MAX_THEME_FILE_BYTES=32*1024;
+const MAX_THEME_TOTAL_BYTES=192*1024;
+const RESERVED_THEME_IDS=new Set(["system","light","dark","midnight","black"]);
 
 function cleanText(value=""){
   return String(value).replace(/\u0000/g,"").replace(/\r/g,"").trimEnd();
@@ -16,6 +21,19 @@ function quotePosix(value){
 
 function shellCommand(command,args=[]){
   return [command,...args].map(quotePosix).join(" ");
+}
+
+function publishedTheme(filename,raw){
+  const id=String(filename||"").replace(/\.json$/i,"");
+  if(!/^[a-z0-9][a-z0-9._-]{0,79}$/i.test(id)||RESERVED_THEME_IDS.has(id.toLowerCase()))return null;
+  let parsed;
+  try{parsed=JSON.parse(raw)}catch{return null}
+  if(!parsed||typeof parsed!=="object"||Array.isArray(parsed))return null;
+  const colors=parsed.colors&&typeof parsed.colors==="object"&&!Array.isArray(parsed.colors)?parsed.colors:{};
+  const hasCanvas=/^#[0-9a-f]{3,8}$/i.test(String(parsed.canvas||""));
+  const hasEditor=/^#[0-9a-f]{3,8}$/i.test(String(colors["editor.background"]||colors.canvas||""));
+  if(!hasCanvas&&!hasEditor)return null;
+  return {...parsed,id,name:String(parsed.name||parsed.label||id).trim().slice(0,80)||id,published:true};
 }
 
 async function runProcess(command,args=[],{
@@ -81,6 +99,7 @@ function validateProfile(input={}){
     next.identityFile=String(input.identityFile||"").trim();
     if(!next.host) throw new Error("SSH host is required");
   }
+  next.themeDirectory=String(input.themeDirectory||"").trim().slice(0,1024);
   return next;
 }
 
@@ -124,6 +143,66 @@ export class EnvironmentManager {
   async discover(){
     const capabilities=await this.capabilities();
     return {capabilities,profiles:this.list()};
+  }
+
+  themeDirectory(id=null){
+    const profile=id?this.get(id):null;
+    if(id&&!profile)throw new Error("Environment profile was not found");
+    if(!profile||profile.type==="local")return profile?.themeDirectory||join(trebellHome(this.env),"themes");
+    return profile.themeDirectory||".trebell/themes";
+  }
+
+  async themeCatalog(id=null){
+    const profile=id?this.get(id):null;
+    if(id&&!profile)throw new Error("Environment profile was not found");
+    const directory=this.themeDirectory(id);
+    const themes=[];
+    let totalBytes=0;
+    if(!profile||profile.type==="local"){
+      const entries=(await readdir(directory).catch(()=>[])).filter(name=>/\.json$/i.test(name)).sort().slice(0,MAX_THEME_FILES);
+      for(const name of entries){
+        const path=join(directory,name);
+        const info=await lstat(path).catch(()=>null);
+        if(!info||!info.isFile()||info.isSymbolicLink()||info.size>MAX_THEME_FILE_BYTES)continue;
+        totalBytes+=info.size;if(totalBytes>MAX_THEME_TOTAL_BYTES)break;
+        const raw=await readFile(path,"utf8").catch(()=>null);if(raw==null)continue;
+        const theme=publishedTheme(name,raw);if(theme)themes.push(theme);
+      }
+    }else{
+      const exists=await this.executeArgv(id,{command:"test",args:["-d",directory],timeoutMs:5000});
+      if(exists.exitCode!==0)return {
+        environmentId:profile.id,
+        environmentKey:profile.id,
+        environmentName:profile.name,
+        environmentType:profile.type,
+        directory,
+        themes,
+        limits:{maxFiles:MAX_THEME_FILES,maxFileBytes:MAX_THEME_FILE_BYTES,maxTotalBytes:MAX_THEME_TOTAL_BYTES},
+      };
+      const listing=await this.executeArgv(id,{command:"find",args:[directory,"-maxdepth","1","-type","f","-name","*.json"],timeoutMs:12000});
+      if(listing.exitCode!==0)throw new Error(listing.stderr||`Could not read themes from ${profile.name}`);
+      const paths=String(listing.stdout||"").split("\n").map(value=>value.trim()).filter(Boolean).sort().slice(0,MAX_THEME_FILES);
+      for(const path of paths){
+        const name=posix.basename(path);
+        if(!/^[a-z0-9][a-z0-9._-]{0,79}\.json$/i.test(name))continue;
+        const measured=await this.executeArgv(id,{command:"wc",args:["-c",path],timeoutMs:5000});
+        const size=Number(String(measured.stdout||"").trim().split(/\s+/)[0]);
+        if(measured.exitCode!==0||!Number.isFinite(size)||size<0||size>MAX_THEME_FILE_BYTES)continue;
+        totalBytes+=size;if(totalBytes>MAX_THEME_TOTAL_BYTES)break;
+        const contents=await this.executeArgv(id,{command:"cat",args:[path],timeoutMs:5000});
+        if(contents.exitCode!==0)continue;
+        const theme=publishedTheme(name,contents.stdout);if(theme)themes.push(theme);
+      }
+    }
+    return {
+      environmentId:profile?.id||null,
+      environmentKey:profile?.id||"local",
+      environmentName:profile?.name||"Local machine",
+      environmentType:profile?.type||"local",
+      directory,
+      themes,
+      limits:{maxFiles:MAX_THEME_FILES,maxFileBytes:MAX_THEME_FILE_BYTES,maxTotalBytes:MAX_THEME_TOTAL_BYTES},
+    };
   }
 
   spawnSession(id,{command,cwd=null,stdio=["ignore","pipe","pipe"]}={}){

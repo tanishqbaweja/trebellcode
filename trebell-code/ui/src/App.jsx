@@ -30,7 +30,7 @@ import UsagePage from "./components/UsagePage.jsx";
 import LicensesPage from "./components/LicensesPage.jsx";
 import { resolveKeybinding } from "./keybindings.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
-import { themeCssVariables } from "./theme-utils.js";
+import { normalizeCustomTheme, themeCssVariables } from "./theme-utils.js";
 import { approvalResponse } from "./approval-utils.js";
 import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./fanout-utils.js";
 
@@ -273,9 +273,9 @@ function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgr
       <select className="permission-picker" value={permissionMode} onChange={e=>setPermissionMode(e.target.value)}><option value="supervised">Supervised</option><option value="edits">Auto-accept edits</option><option value="auto">Auto</option><option value="full">Full access</option><option value="read-only">Read only</option></select>
       <select className="workspace-mode" value={workspaceMode} onChange={e=>setWorkspaceMode(e.target.value)}><option value="current">Current workspace</option><option value="worktree">New worktree</option></select>
     </div><div className="composer-right">
-      {!providerReady?<button className="login-btn" onClick={agentRuntime==="codex"&&provider==="freebuff"?login:onConfigureProvider}>{agentRuntime!=="codex"?"Configure "+agentRuntimeLabel:provider==="freebuff"?"Sign in to Freebuff":"Configure "+({agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||"provider")}</button>:<>
+      {!providerReady&&!models.length?<button className="login-btn" onClick={agentRuntime==="codex"&&provider==="freebuff"?login:onConfigureProvider}>{agentRuntime!=="codex"?"Configure "+agentRuntimeLabel:provider==="freebuff"?"Sign in to Freebuff":"Configure "+({agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||"provider")}</button>:<>
         {agentRuntime!=="codex"&&providerAgents.length>0&&<select className="agent-picker" value={providerAgent||""} onChange={e=>onProviderAgent?.(e.target.value)} title="Provider agent"><option value="">Default agent</option>{providerAgents.map(agent=>{const name=typeof agent==="string"?agent:agent.name;const mode=typeof agent==="string"?"":agent.mode;return <option key={name} value={name}>{name}{mode?` · ${mode}`:""}</option>})}</select>}
-        <div className="model-picker-wrap"><button data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onClick={()=>setModelOpen(value=>!value)} title={allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||modelLabel(model,freebuff)||modelError||"No models")}<ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu">{models.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id,freebuff)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.agent||""}</small></button>})}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
+        <div className="model-picker-wrap"><button data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onClick={()=>setModelOpen(value=>!value)} title={!providerReady?"Provider reconnecting":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||modelLabel(model,freebuff)||modelError||"No models")}<ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu">{models.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id,freebuff)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.agent||""}</small></button>})}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
       </>}
       <button className={"mic-btn "+(listening?"active":"")} onClick={dictate} disabled={!speechSupported} title={speechSupported?(listening?"Listening…":"Voice dictation"):"Voice dictation is unavailable on this platform"}><Mic size={15}/></button>
       <button className="stash-btn" onClick={onStash} title="Stash or restore prompt">S</button>
@@ -297,6 +297,7 @@ export default function App(){
   const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [selectedModels,setSelectedModels]=useState([]); const [modelError,setModelError]=useState("");
   const [freebuff,setFreebuff]=useState({loggedIn:false}); const [skills,setSkills]=useState([]); const [providerCommands,setProviderCommands]=useState([]); const [providerAgents,setProviderAgents]=useState([]); const [providerAgent,setProviderAgent]=useState("");
   const [settings,setSettings]=useState({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,customThemes:[],keyboardShortcuts:{},agentRuntime:"codex",modelProvider:"freebuff"});
+  const [environmentThemeCatalog,setEnvironmentThemeCatalog]=useState({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]});
   const [sidebarOpen,setSidebarOpen]=useState(true);
   const [permissionMode,setPermissionMode]=useState("supervised"); const [webSearch,setWebSearch]=useState(true); const [workspaceMode,setWorkspaceMode]=useState("current");
   const [projectPath,setProjectPath]=useState(""); const [currentProject,setCurrentProject]=useState(null); const [gitInfo,setGitInfo]=useState(null); const [stats,setStats]=useState({}); const [runtime,setRuntime]=useState({});
@@ -309,6 +310,11 @@ export default function App(){
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false);
   const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const displayThreads=searchResults||threads;
+  const environmentThemes=useMemo(()=>(environmentThemeCatalog.themes||[]).flatMap(theme=>{
+    try{return [{...normalizeCustomTheme(theme,{id:`environment-${environmentThemeCatalog.environmentKey}-${theme.id}`}),publishedId:theme.id,published:true}]}
+    catch{return []}
+  }),[environmentThemeCatalog]);
+  const selectedEnvironmentThemeId=settings.environmentThemeSelections?.[environmentThemeCatalog.environmentKey]||null;
   function desktopNotify(title,body){
     if(settings.notifications===false)return;
     window.trebellDesktop?.notify?.({title,body,silent:!settings.notificationSound});
@@ -319,14 +325,14 @@ export default function App(){
     const apply=()=>{
       const requested=["system","light","dark"].includes(settings.appearanceMode)?settings.appearanceMode:"system";
       const resolved=requested==="system"?(media?.matches===false?"light":"dark"):requested;
-      const custom=(settings.customThemes||[]).find(theme=>theme.id===settings.appearance);
-      root.dataset.theme=settings.appearance||"dark";root.dataset.mode=resolved;root.dataset.customTheme=custom?"true":"false";root.style.colorScheme=resolved;
+      const custom=environmentThemes.find(theme=>theme.publishedId===selectedEnvironmentThemeId)||(settings.customThemes||[]).find(theme=>theme.id===settings.appearance);
+      root.dataset.theme=custom?.id||settings.appearance||"dark";root.dataset.mode=resolved;root.dataset.customTheme=custom?"true":"false";root.dataset.environmentTheme=custom?.published?"true":"false";root.style.colorScheme=resolved;
       const variableNames=["--theme-canvas","--theme-foreground","--bg","--panel","--panel2","--line","--muted","--muted2","--purple","--purple2","--green","--theme-error","--theme-warning","--theme-terminal-selection"];
       for(const name of variableNames)root.style.removeProperty(name);
       if(custom){for(const [name,value] of Object.entries(themeCssVariables(custom,resolved)))root.style.setProperty(name,value)}
     };
     apply();media?.addEventListener?.("change",apply);return()=>media?.removeEventListener?.("change",apply);
-  },[settings.appearance,settings.appearanceMode,settings.customThemes]);
+  },[settings.appearance,settings.appearanceMode,settings.customThemes,environmentThemes,selectedEnvironmentThemeId]);
   useEffect(()=>{
     const root=document.documentElement;const media=window.matchMedia?.("(prefers-reduced-motion: reduce)");
     const apply=()=>{const duration=media?.matches?0:Math.max(0,Math.min(400,Number(settings.panelAnimationMs)||0));root.style.setProperty("--panel-animation-ms",duration+"ms")};
@@ -439,12 +445,18 @@ export default function App(){
     if(settings.autoPull)api("/api/git/action",{method:"POST",body:{action:"auto-pull",cwd:path}}).catch(()=>{});
     return project;
   }
+  async function refreshEnvironmentThemes(){
+    const catalog=await api("/api/environment/themes").catch(()=>({environmentKey:bootstrap.activeEnvironmentId||"local",environmentName:bootstrap.activeEnvironment?.name||"Local machine",directory:"",themes:[]}));
+    setEnvironmentThemeCatalog(catalog);
+    return catalog;
+  }
 
   useEffect(()=>{
     let cancelled=false;
     (async()=>{
-      const [boot,state,modelData]=await Promise.all([api("/api/bootstrap").catch(()=>({mock:true,loggedIn:true,cwd:"",platform:""})),api("/api/state").catch(()=>({settings:{},projects:[],threadMeta:{}})),api("/api/models").catch(error=>({models:[],error:error.message}))]);
+      const [boot,state,modelData,themeCatalog]=await Promise.all([api("/api/bootstrap").catch(()=>({mock:true,loggedIn:true,cwd:"",platform:""})),api("/api/state").catch(()=>({settings:{},projects:[],threadMeta:{}})),api("/api/models").catch(error=>({models:[],error:error.message})),api("/api/environment/themes").catch(()=>({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]}))]);
       if(cancelled)return; setBootstrap(boot); setSettings(prev=>({...prev,...(state.settings||{})})); setPermissionMode(state.settings?.defaultPermissionMode||"supervised"); setThreadMeta(state.threadMeta||{});
+      setEnvironmentThemeCatalog(themeCatalog);
       const firstProject=state.projects?.[0]||null;
       const environmentCwd=boot.activeEnvironment?.cwd||"";
       const initialPath=environmentCwd||firstProject?.path||boot.cwd||"";
@@ -1134,7 +1146,14 @@ export default function App(){
     if(next==="agents"){openRightPanel("agents");return}
     setSection(next);
   }
-  async function saveAppSettings(patch){const next=await api("/api/settings",{method:"POST",body:patch});setSettings(prev=>({...prev,...next}));return next}
+  async function saveAppSettings(patch){
+    if("appearance" in patch&&environmentThemeCatalog?.environmentKey){
+      const selections={...(settings.environmentThemeSelections||{})};
+      delete selections[environmentThemeCatalog.environmentKey];
+      patch={...patch,environmentThemeSelections:selections};
+    }
+    const next=await api("/api/settings",{method:"POST",body:patch});setSettings(prev=>({...prev,...next}));return next;
+  }
   async function cycleTheme(){const themes=["dark","midnight","black",...(settings.customThemes||[]).map(theme=>theme.id)];const next=themes[(themes.indexOf(settings.appearance||"dark")+1)%themes.length];await saveAppSettings({appearance:next})}
   async function cycleAppearance(){const modes=["system","light","dark"];const next=modes[(modes.indexOf(settings.appearanceMode||"system")+1)%modes.length];await saveAppSettings({appearanceMode:next})}
 
@@ -1271,7 +1290,7 @@ export default function App(){
         {section==="environments"&&<div className="secondary-page full"><EnvironmentsPage/></div>}
       {section==="usage"&&<div className="secondary-page full"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><LicensesPage/></div>}
-        {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>Agent harnesses, model providers, permissions and desktop behavior.</p></div></div><SettingsPage settings={settings} onSettings={setSettings} onProviderUpdated={(options={})=>{setProviderRevision(v=>v+1);return refreshProviderModels({resetThread:true,...options})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectPath} modelError={modelError} onOpenLicenses={()=>setSection("licenses")}/></div>}
+      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>Agent harnesses, model providers, permissions and desktop behavior.</p></div></div><SettingsPage settings={settings} onSettings={setSettings} onProviderUpdated={(options={})=>{setProviderRevision(v=>v+1);return refreshProviderModels({resetThread:true,...options})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectPath} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></div>}
         {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Every unarchived {agentRuntimeLabel} thread stored by Trebell on this machine.</p></div></div><div className="history-page">{threads.map(t=><button key={t.id} onClick={()=>openThread(t)}><FileCode2 size={15}/><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><time>{new Date(t.updatedAt*1000).toLocaleString()}</time></button>)}</div></div>}
       </main>
 

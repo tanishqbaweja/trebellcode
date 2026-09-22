@@ -1,4 +1,6 @@
 import { test, expect } from "@playwright/test";
+import { mkdir, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 
 async function expectModelCatalog(page,labels){
   const picker=page.getByTestId("model-picker");await expect(picker).toBeVisible();await expect(picker).toBeEnabled();await picker.click();
@@ -8,6 +10,9 @@ async function expectModelCatalog(page,labels){
 }
 
 test("Trebell Code renders the harness and scopes models to the selected provider", async ({ page,request }) => {
+  const publishedThemes=fileURLToPath(new URL("../../test-results/e2e-home/themes/",import.meta.url));
+  await mkdir(publishedThemes,{recursive:true});
+  await writeFile(fileURLToPath(new URL("e2e-published.json",new URL("../../test-results/e2e-home/themes/",import.meta.url))),JSON.stringify({name:"E2E Published",appearance:"dark",canvas:"#111827",accent:"#35c98b"}));
   await page.addInitScript(()=>{
     const snapshot={url:"http://fixture.local",title:"Preview fixture",text:"Checkout",elements:[{ref:"e7",tag:"button",text:"Submit order",href:""}]};
     window.__trebellZoomFactor=1;
@@ -172,6 +177,12 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   expect(darkShell.main).toBe("rgb(11, 12, 14)");
   expect(darkShell.composer).toMatch(/^rgba?\(20, 22, 25/);
   await page.getByRole("button",{name:"Settings"}).click();
+  await expect(page.getByRole("button",{name:"E2E Published",exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"E2E Published",exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.theme)).toBe("environment-local-e2e-published");
+  await expect.poll(()=>page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue("--purple").trim())).toBe("#35c98b");
+  await page.getByRole("button",{name:"Midnight",exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.theme)).toBe("midnight");
   await page.getByRole("button",{name:"Create theme"}).click();
   await page.locator(".theme-editor").getByLabel("Name").fill("E2E Theme");
   await page.locator(".theme-editor").getByLabel("Accent").fill("#4f8cff");

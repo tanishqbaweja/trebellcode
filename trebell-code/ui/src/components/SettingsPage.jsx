@@ -12,7 +12,7 @@ const PROVIDER_LABELS={
   vyceai:"VyceAi",
 };
 
-export default function SettingsPage({settings,onSettings,onProviderUpdated,runtime,rpcStatus,loggedIn,login,logout,projectPath,modelError,onOpenLicenses}){
+export default function SettingsPage({settings,onSettings,onProviderUpdated,runtime,rpcStatus,loggedIn,login,logout,projectPath,modelError,onOpenLicenses,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes}){
   const [update,setUpdate]=useState(null);
   const [desktopUpdate,setDesktopUpdate]=useState(null);
   const [diagnostics,setDiagnostics]=useState(null);
@@ -86,6 +86,11 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
     }catch(error){setAgentMessage(error.message)}
   }
   async function save(patch){
+    if("appearance" in patch&&environmentThemeCatalog?.environmentKey){
+      const selections={...(settings.environmentThemeSelections||{})};
+      delete selections[environmentThemeCatalog.environmentKey];
+      patch={...patch,environmentThemeSelections:selections};
+    }
     const next=await api("/api/settings",{method:"POST",body:patch});
     onSettings(next);
     if("modelProvider" in patch){
@@ -96,6 +101,24 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
     }
     if("customModels" in patch)await onProviderUpdated?.();
     return next;
+  }
+  async function selectEnvironmentTheme(theme){
+    if(!theme?.publishedId||!environmentThemeCatalog?.environmentKey)return;
+    const selections={...(settings.environmentThemeSelections||{}),[environmentThemeCatalog.environmentKey]:theme.publishedId};
+    await save({environmentThemeSelections:selections});
+  }
+  async function stopFollowingEnvironmentTheme(){
+    if(!environmentThemeCatalog?.environmentKey)return;
+    const selections={...(settings.environmentThemeSelections||{})};delete selections[environmentThemeCatalog.environmentKey];
+    await save({environmentThemeSelections:selections});
+  }
+  async function duplicateEnvironmentTheme(theme){
+    if(!theme)return;
+    const copy=normalizeCustomTheme({...theme,name:`${theme.name} copy`},{id:`custom-${crypto.randomUUID()}`});
+    const selections={...(settings.environmentThemeSelections||{})};delete selections[environmentThemeCatalog.environmentKey];
+    const current=Array.isArray(settings.customThemes)?settings.customThemes:[];
+    await save({customThemes:[...current,copy],appearance:copy.id,environmentThemeSelections:selections});
+    setThemeDraft(copy);setThemeMessage("Published theme duplicated as an editable local theme.");
   }
   function createTheme(){
     const light=(settings.appearanceMode||"system")==="light";
@@ -325,6 +348,19 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
       <div className="settings-card"><h3>Project defaults</h3><label>New-thread permissions<select value={settings.defaultPermissionMode||"supervised"} onChange={e=>save({defaultPermissionMode:e.target.value})}><option value="supervised">Supervised</option><option value="edits">Auto-accept edits</option><option value="auto">Auto</option><option value="full">Full access</option><option value="read-only">Read only</option></select></label><label>Worktree submodules<select value={settings.worktreeSubmodules||"recursive"} onChange={e=>save({worktreeSubmodules:e.target.value})}><option value="recursive">Recursive</option><option value="top-level">Top level only</option><option value="none">Skip</option></select></label><p>Projects can override this default, and <code>t3.json</code> can supply it when the project is set to inherit.</p><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.autoPull)} onChange={e=>save({autoPull:e.target.checked})}/> Automatically fast-forward clean default branches</label></div>
       <div className="settings-card worktree-cleanup-settings"><h3>Worktree cleanup</h3><p>Only Trebell-managed worktrees are eligible. Dirty worktrees, active agent sessions and running terminals are always kept. Cleaned worktrees keep their branch and can be restored when reopened.</p><label>Default policy<select value={settings.worktreeCleanup?.mode||"off"} onChange={e=>setGlobalCleanupMode(e.target.value)}><option value="off">Off</option><option value="custom">Custom</option></select></label>{settings.worktreeCleanup?.mode==="custom"&&<div className="cleanup-rule-grid"><label>After inactive days<input type="number" min="1" max="3650" value={settings.worktreeCleanup.rules?.worktreeAfterDays??""} placeholder="Never" onChange={e=>setGlobalCleanupRule("worktreeAfterDays",e.target.value?Number(e.target.value):null)}/></label><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.worktreeCleanup.rules?.worktreeOnMerge)} onChange={e=>setGlobalCleanupRule("worktreeOnMerge",e.target.checked)}/> After merge</label><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.worktreeCleanup.rules?.worktreeOnDelete)} onChange={e=>setGlobalCleanupRule("worktreeOnDelete",e.target.checked)}/> After last thread deletion</label><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.worktreeCleanup.rules?.worktreeUnchanged)} onChange={e=>setGlobalCleanupRule("worktreeUnchanged",e.target.checked)}/> If unchanged from base</label></div>}<div className="provider-key-actions"><button onClick={runWorktreeCleanup}>Run cleanup now</button></div>{cleanupMessage&&<p className={/failed/i.test(cleanupMessage)?"provider-status-error":"provider-note"}>{cleanupMessage}</p>}</div>
       {selectedAgent==="codex"&&<div className="settings-card"><h3>Computer use</h3><p>The agent can always inspect a desktop screenshot. Mouse and keyboard control are exposed only when the current thread is in <strong>Full access</strong> mode. This keeps desktop automation explicit instead of silently escalating permissions.</p></div>}
+      <div className="settings-card environment-theme-settings">
+        <h3>Environment themes</h3>
+        <p><strong>{environmentThemeCatalog.environmentName||"Local machine"}</strong> can publish theme JSON files from <code>{environmentThemeCatalog.directory||"the environment theme directory"}</code>. Published themes stay owned by that environment, so edits on the machine can flow into Trebell after refresh.</p>
+        <div className="appearance-options">
+          {(environmentThemes||[]).map(theme=><button key={theme.id} className={settings.environmentThemeSelections?.[environmentThemeCatalog.environmentKey]===theme.publishedId?"active":""} onClick={()=>selectEnvironmentTheme(theme)}>{theme.name}</button>)}
+        </div>
+        {!environmentThemes?.length&&<p className="provider-note">No valid published themes found. Theme files are bounded to 32 KB each and must define a canvas color (or VS Code editor background).</p>}
+        <div className="theme-actions">
+          <button onClick={()=>onRefreshEnvironmentThemes?.()}><RefreshCw size={12}/> Refresh published themes</button>
+          {settings.environmentThemeSelections?.[environmentThemeCatalog.environmentKey]&&<button onClick={stopFollowingEnvironmentTheme}>Use my normal theme</button>}
+          {environmentThemes.find(theme=>theme.publishedId===settings.environmentThemeSelections?.[environmentThemeCatalog.environmentKey])&&<button onClick={()=>duplicateEnvironmentTheme(environmentThemes.find(theme=>theme.publishedId===settings.environmentThemeSelections?.[environmentThemeCatalog.environmentKey]))}>Duplicate as editable</button>}
+        </div>
+      </div>
       <div className="settings-card theme-settings"><h3>Appearance</h3><p>Appearance controls light/dark behavior. Theme controls the palette independently. Trebell themes and VS Code color-theme JSON can be imported.</p><label>Mode<div className="appearance-options">{["system","light","dark"].map(v=><button key={v} className={(settings.appearanceMode||"dark")===v?"active":""} onClick={()=>save({appearanceMode:v})}>{v}</button>)}</div></label><label>Panel animations <span>{Math.max(0,Math.min(400,Number(settings.panelAnimationMs)||0))} ms</span><input aria-label="Panel animations" type="range" min="0" max="400" step="25" value={Math.max(0,Math.min(400,Number(settings.panelAnimationMs)||0))} onChange={e=>save({panelAnimationMs:Number(e.target.value)})}/></label><p>Sidebar, right panel and terminal movement uses this duration. Operating-system reduced motion always disables it.</p><label>Theme<div className="appearance-options">{[["dark","Trebell"],["midnight","Midnight"],["black","Black"]].map(([value,label])=><button key={value} className={(settings.appearance||"dark")===value?"active":""} onClick={()=>save({appearance:value})}>{label}</button>)}{(settings.customThemes||[]).map(theme=><button key={theme.id} className={settings.appearance===theme.id?"active":""} onClick={()=>save({appearance:theme.id})}>{theme.name}</button>)}</div></label><div className="theme-actions"><button onClick={createTheme}>Create theme</button><button onClick={()=>themeImportRef.current?.click()}>Import JSON</button>{(settings.customThemes||[]).find(theme=>theme.id===settings.appearance)&&<><button onClick={()=>setThemeDraft((settings.customThemes||[]).find(theme=>theme.id===settings.appearance))}>Edit selected</button><button onClick={()=>exportTheme((settings.customThemes||[]).find(theme=>theme.id===settings.appearance))}>Export selected</button><button onClick={()=>removeTheme((settings.customThemes||[]).find(theme=>theme.id===settings.appearance))}>Delete selected</button></>}<input ref={themeImportRef} type="file" accept=".json,application/json" hidden onChange={importThemeFile}/></div>{themeDraft&&<div className="theme-editor"><label>Name<input value={themeDraft.name||""} onChange={e=>setThemeDraft({...themeDraft,name:e.target.value})}/></label><div className="theme-editor-grid"><label>Base appearance<select value={themeDraft.appearance||"dark"} onChange={e=>setThemeDraft({...themeDraft,appearance:e.target.value})}><option value="dark">Dark</option><option value="light">Light</option></select></label><label>Canvas<input type="color" value={themeDraft.canvas||"#0c0f16"} onChange={e=>setThemeDraft({...themeDraft,canvas:e.target.value})}/></label><label>Accent<input type="color" value={themeDraft.accent||"#9c6cff"} onChange={e=>setThemeDraft({...themeDraft,accent:e.target.value})}/></label></div><div className="theme-editor-actions"><button className="setting-action" onClick={saveTheme}>Save & apply</button><button onClick={()=>setThemeDraft(null)}>Close editor</button></div></div>}{themeMessage&&<p className={/failed|error/i.test(themeMessage)?"provider-status-error":"provider-note"}>{themeMessage}</p>}</div>
       <div className="settings-card"><h3>Desktop notifications</h3><label className="toggle-line"><input type="checkbox" checked={settings.notifications!==false} onChange={e=>save({notifications:e.target.checked})}/> Notify when turns finish or need attention</label><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.notificationSound)} onChange={e=>save({notificationSound:e.target.checked})}/> Allow notification sound</label></div>
       <div className="settings-card"><h3>Restart recovery</h3><p>When Trebell restarts during active work, reconnect saved provider sessions and continue the interrupted turn. Codex uses native promptless continuation; other supported harnesses resume their saved session and continue from there. Off by default to avoid unexpected background work after a restart.</p><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.continueThreadsAfterRestart)} onChange={e=>save({continueThreadsAfterRestart:e.target.checked})}/> Continue supported active threads after restarts</label></div>

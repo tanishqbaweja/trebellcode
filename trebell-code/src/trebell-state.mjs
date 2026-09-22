@@ -17,6 +17,7 @@ const DEFAULT_STATE = Object.freeze({
     appearanceMode: "dark",
     panelAnimationMs: 0,
     customThemes: [],
+    environmentThemeSelections: {},
     notifications: true,
     notificationSound: false,
     backgroundMode: false,

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { EnvironmentManager } from "../src/environment-manager.mjs";
@@ -65,4 +65,47 @@ test("attachment metadata is read inside remote environments",async()=>{
   const info=await manager.attachmentInfo("ssh","/srv/project/.trebell/attachments/picture.png");
   assert.equal(info.size,1234);assert.equal(info.image,true);assert.equal(info.environmentId,"ssh");
   assert.match(command,/wc -c/);assert.match(command,/picture\.png/);
+});
+
+test("local environments publish bounded theme files without shadowing built-ins",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-env-theme-"));
+  try{
+    const themes=join(root,"themes");await mkdir(themes,{recursive:true});
+    await writeFile(join(themes,"nightfall.json"),JSON.stringify({name:"Nightfall",appearance:"dark",canvas:"#111827",accent:"#8b5cf6"}));
+    await writeFile(join(themes,"dark.json"),JSON.stringify({name:"Shadow built-in",canvas:"#000000",accent:"#ffffff"}));
+    await writeFile(join(themes,"broken.json"),"{not json");
+    const manager=new EnvironmentManager({state:stateFor([]),env:{...process.env,TREBELL_HOME:root}});
+    const catalog=await manager.themeCatalog();
+    assert.equal(catalog.environmentKey,"local");
+    assert.equal(catalog.directory,themes);
+    assert.deepEqual(catalog.themes.map(theme=>theme.id),["nightfall"]);
+    assert.equal(catalog.themes[0].published,true);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("remote environment themes are read through bounded argv commands",async()=>{
+  const profile={id:"ssh",name:"Build box",type:"ssh",cwd:"/srv/project",host:"example.invalid",port:22,themeDirectory:"/srv/themes"};
+  const manager=new EnvironmentManager({state:stateFor([profile])});
+  const calls=[];
+  manager.executeArgv=async(_id,options)=>{
+    calls.push(options);
+    if(options.command==="test")return {exitCode:0,stdout:"",stderr:""};
+    if(options.command==="find")return {exitCode:0,stdout:"/srv/themes/nightfall.json\n/srv/themes/not allowed.json",stderr:""};
+    if(options.command==="wc")return {exitCode:0,stdout:"82 /srv/themes/nightfall.json",stderr:""};
+    if(options.command==="cat")return {exitCode:0,stdout:JSON.stringify({name:"Remote Nightfall",appearance:"dark",canvas:"#10151f",accent:"#5b8cff"}),stderr:""};
+    throw new Error("unexpected command");
+  };
+  const catalog=await manager.themeCatalog("ssh");
+  assert.equal(catalog.directory,"/srv/themes");
+  assert.deepEqual(catalog.themes.map(theme=>theme.name),["Remote Nightfall"]);
+  assert.deepEqual(calls.map(call=>call.command),["test","find","wc","cat"]);
+});
+
+test("remote environments without a published theme directory return an empty catalog",async()=>{
+  const profile={id:"wsl",name:"Ubuntu",type:"wsl",cwd:"/home/me/project"};
+  const manager=new EnvironmentManager({state:stateFor([profile]),platform:"win32"});
+  manager.executeArgv=async()=>({exitCode:1,stdout:"",stderr:""});
+  const catalog=await manager.themeCatalog("wsl");
+  assert.deepEqual(catalog.themes,[]);
+  assert.equal(catalog.directory,".trebell/themes");
 });

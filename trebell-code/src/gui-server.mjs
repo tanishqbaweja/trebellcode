@@ -718,6 +718,13 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return json(res,200,await environments.probe(body.id));
       }catch(error){return json(res,400,{error:error.message});}
     }
+    if(url.pathname==="/api/environment/themes"&&req.method==="GET"){
+      try{
+        const requested=url.searchParams.get("id");
+        const id=requested==null?(state.settings().activeEnvironmentId||null):(requested||null);
+        return json(res,200,await environments.themeCatalog(id));
+      }catch(error){return json(res,400,{error:error.message});}
+    }
     if(url.pathname==="/api/environment/execute"&&req.method==="POST"){
       try{
         const body=await readJsonBody(req);
