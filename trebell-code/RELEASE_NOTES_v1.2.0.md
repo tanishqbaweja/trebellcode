@@ -12,6 +12,7 @@ This development release rolls the large post-1.1 feature batch into the next mi
 - Automatic localhost preview discovery and one-click project previews.
 - Multi-forge source control, remote WSL/SSH environments, conditional keybindings, browser automation, computer use, review workflows, and Codex capability surfaces retained from the earlier parity work.
 - Windows development now launches the bundled native `codex.exe` directly, avoiding `.cmd` path failures in folders containing spaces.
+- Windows packaging uses `node-pty`'s shipped Windows prebuilds instead of forcing a local C++ rebuild, so creating an installer does not require Visual Studio Spectre libraries.
 - Playwright validation is isolated from the user's real Trebell profile and can use an installed browser channel such as Chrome.
 - Vyce supports both `VYCEAI_API_KEY` and `VYCE_API_KEY`, and local validation loads the repository `.env` automatically.
 

@@ -53,7 +53,7 @@
     "productName": "Trebell Code",
     "artifactName": "Trebell-Code-Setup-${version}.${ext}",
     "asar": true,
-    "npmRebuild": true,
+    "npmRebuild": false,
     "directories": {
       "output": "desktop-dist",
       "buildResources": "build"
