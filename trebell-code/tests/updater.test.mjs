@@ -19,6 +19,6 @@ test("packaged desktop updater requires explicit download and install",async()=>
   assert.equal(pkg.dependencies?.["electron-updater"],"^6.8.9");
   assert.deepEqual(pkg.build?.publish?.[0],{provider:"github",owner:"tanishqbaweja",repo:"trebellcode"});
   assert.match(release,/latest\.yml required by the in-app updater/);
-  assert.match(release,/resources\\app-update\.yml required by electron-updater/);
+  assert.match(release,/NSIS build is missing resources\\app-update\.yml required by electron-updater/);
   assert.match(release,/\$LatestYml/);assert.match(release,/\$Blockmap/);
 });

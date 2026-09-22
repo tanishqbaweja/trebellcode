@@ -88,8 +88,6 @@ Invoke-Native "npx" @("electron-builder","--dir","--win","--x64")
 
 $UnpackedExe = Join-Path $Root "desktop-dist\win-unpacked\Trebell Code.exe"
 if (-not (Test-Path $UnpackedExe)) { throw "Unpacked desktop build was not produced: $UnpackedExe" }
-$AppUpdateYml = Join-Path $Root "desktop-dist\win-unpacked\resources\app-update.yml"
-if (-not (Test-Path $AppUpdateYml)) { throw "Packaged app is missing resources\app-update.yml required by electron-updater." }
 
 Write-Host "`n[6/8] Running Windows desktop + bundled Codex smoke tests..." -ForegroundColor Cyan
 $GuiPort = Get-FreeTcpPort
@@ -149,6 +147,8 @@ Invoke-Native "npx" @("electron-builder","--win","nsis","--x64")
 $InstallerName = "Trebell-Code-Setup-$Version.exe"
 $Installer = Join-Path $Root "desktop-dist\$InstallerName"
 if (-not (Test-Path $Installer)) { throw "Build completed without producing $Installer" }
+$AppUpdateYml = Join-Path $Root "desktop-dist\win-unpacked\resources\app-update.yml"
+if (-not (Test-Path $AppUpdateYml)) { throw "NSIS build is missing resources\app-update.yml required by electron-updater." }
 $LatestYml = Join-Path $Root "desktop-dist\latest.yml"
 if (-not (Test-Path $LatestYml)) { throw "Build completed without producing latest.yml required by the in-app updater." }
 $Blockmap = "$Installer.blockmap"
