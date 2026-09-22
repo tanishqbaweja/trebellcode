@@ -4,6 +4,7 @@ import {
   GitPullRequest, MoreHorizontal, Pin, Plus, Search, Settings, SlidersHorizontal, Wrench, Server, PanelLeftClose
 } from "lucide-react";
 import { formatSnoozeUntil } from "../thread-snooze.js";
+import { threadReferenceValues } from "../thread-references.js";
 
 function titleOf(thread){return thread.name||thread.preview||"Untitled task"}
 function relativeTime(epoch){
@@ -23,6 +24,8 @@ function ThreadRow({thread,meta,active,selected,bulk,onOpen,onSelect,onAction,on
   const detected=linked.length?null:meta?.branchPullRequest||null;
   const review=linked[0]||detected;const reviewNumber=review?.identity?.number||review?.number;
   const reviewLabel=linked.length>1?"#"+reviewNumber+" +"+(linked.length-1):reviewNumber?"#"+reviewNumber:null;
+  const references=threadReferenceValues(thread,meta);
+  const copy=value=>navigator.clipboard?.writeText?.(String(value||"")).catch(()=>{});
   return <div className={active?"thread-row active":"thread-row"}>
     {bulk&&<input className="thread-select" type="checkbox" checked={selected} onChange={()=>onSelect(thread.id)}/>}
     <button className="thread-main" onClick={()=>onOpen(thread)} title={titleOf(thread)}>
@@ -41,6 +44,9 @@ function ThreadRow({thread,meta,active,selected,bulk,onOpen,onSelect,onAction,on
         {(agentRuntime==="codex"||agentRuntime==="opencode"||thread.providerMeta?.initialize?.agentCapabilities?.sessionCapabilities?.fork!=null)&&<button onClick={()=>onAction(thread,"fork")}>Fork thread</button>}
         <button onClick={()=>onMove(thread,-1)}>Move up</button>
         <button onClick={()=>onMove(thread,1)}>Move down</button>
+        <button onClick={()=>copy(references.threadId)}>Copy thread ID</button>
+        {references.branch&&<button onClick={()=>copy(references.branch)}>Copy branch</button>}
+        {references.path&&<button onClick={()=>copy(references.path)}>Copy path</button>}
         <button onClick={()=>onAction(thread,"archive")}>Archive</button>
         <button className="danger" onClick={()=>onAction(thread,"delete")}>Delete</button>
       </div>
