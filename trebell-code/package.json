@@ -1,7 +1,7 @@
 {
   "name": "trebell-code",
   "version": "1.3.0",
-  "description": "Trebell Code Desktop — a provider-agnostic Codex agent harness with browser automation, desktop snapshot context, Git/worktree workflows, remote environments, and Responses compatibility for third-party inference APIs.",
+  "description": "Trebell Code Desktop - a provider-agnostic Codex agent harness with browser automation, desktop snapshot context, Git/worktree workflows, remote environments, and Responses compatibility for third-party inference APIs.",
   "type": "module",
   "license": "Apache-2.0",
   "bin": {

@@ -65,6 +65,21 @@ function Stop-GeneratedDesktopProcesses {
   Start-Sleep -Milliseconds 500
 }
 
+function Reset-ReleaseOutput {
+  Stop-GeneratedDesktopProcesses
+  $Output = Join-Path $Root "desktop-dist"
+  if (-not (Test-Path $Output)) { return }
+  for ($Attempt = 1; $Attempt -le 12; $Attempt++) {
+    try {
+      Remove-Item $Output -Recurse -Force -ErrorAction Stop
+      return
+    } catch {
+      if ($Attempt -eq 12) { throw }
+      Start-Sleep -Milliseconds 500
+    }
+  }
+}
+
 Require-Command "node" "Install Node.js 22 or newer."
 Require-Command "npm" "Install Node.js 22 or newer."
 
@@ -99,7 +114,7 @@ Invoke-Native "npm" @("run","bridge:build")
 Invoke-Native "npm" @("run","ui:build")
 
 Write-Host "`n[5/8] Building unpacked Windows app for native smoke tests..." -ForegroundColor Cyan
-Stop-GeneratedDesktopProcesses
+Reset-ReleaseOutput
 Invoke-Native "npx" @("electron-builder","--dir","--win","--x64")
 
 $UnpackedExe = Join-Path $Root "desktop-dist\win-unpacked\Trebell Code.exe"
@@ -163,6 +178,7 @@ try {
 }
 
 Write-Host "`n[7/8] Building Windows x64 NSIS installer..." -ForegroundColor Cyan
+Reset-ReleaseOutput
 Invoke-Native "npx" @("electron-builder","--win","nsis","--x64")
 
 $InstallerName = "Trebell-Code-Setup-$Version.exe"
