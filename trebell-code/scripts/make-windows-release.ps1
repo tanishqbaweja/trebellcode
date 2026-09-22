@@ -129,12 +129,14 @@ $OldGuiPort = $env:TREBELL_GUI_PORT
 $OldAppPort = $env:TREBELL_APP_SERVER_PORT
 $OldCdpUrl = $env:TREBELL_CDP_URL
 $OldFixturePort = $env:TREBELL_BROWSER_FIXTURE_PORT
+$OldTestHidden = $env:TREBELL_TEST_HIDDEN
 $DesktopProcess = $null
 try {
   $env:TREBELL_GUI_PORT = [string]$GuiPort
   $env:TREBELL_APP_SERVER_PORT = [string]$AppPort
   $env:TREBELL_CDP_URL = "http://127.0.0.1:$CdpPort"
   $env:TREBELL_BROWSER_FIXTURE_PORT = [string]$FixturePort
+  $env:TREBELL_TEST_HIDDEN = "1"
 
   if (-not ($env:TREBELL_TEST_VYCE_API_KEY -or $env:VYCEAI_API_KEY -or $env:VYCE_API_KEY)) {
     Write-Host "No Vyce key is set locally; desktop smoke will test native features and bundled Codex, while Vyce compatibility remains covered by Railway." -ForegroundColor DarkGray
@@ -200,6 +202,7 @@ try {
   $env:TREBELL_APP_SERVER_PORT = $OldAppPort
   $env:TREBELL_CDP_URL = $OldCdpUrl
   $env:TREBELL_BROWSER_FIXTURE_PORT = $OldFixturePort
+  $env:TREBELL_TEST_HIDDEN = $OldTestHidden
 }
 
 Write-Host "`n[7/8] Building Windows x64 NSIS installer..." -ForegroundColor Cyan

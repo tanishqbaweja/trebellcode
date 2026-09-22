@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { trebellHome } from "./paths.mjs";
 
 const DEFAULT_STATE = Object.freeze({
-  version: 1,
+  version: 2,
   projects: [],
   threadMeta: {},
   settings: {
@@ -14,7 +14,7 @@ const DEFAULT_STATE = Object.freeze({
     worktreeSubmodules: "recursive",
     worktreeCleanup: {mode:"off"},
     appearance: "dark",
-    appearanceMode: "system",
+    appearanceMode: "dark",
     customThemes: [],
     notifications: true,
     notificationSound: false,
@@ -64,11 +64,13 @@ export class TrebellStateStore {
       const rawSettings=parsed.settings&&typeof parsed.settings==="object"?parsed.settings:{};
       const projects=Array.isArray(parsed.projects)?parsed.projects:[];
       const settings={...clone(DEFAULT_STATE.settings),...rawSettings};
+      if(Number(parsed.version||1)<2&&rawSettings.appearanceMode==="system")settings.appearanceMode="dark";
       settings.worktreeCleanup=normalizeWorktreeCleanup(settings.worktreeCleanup);
       if(!Object.prototype.hasOwnProperty.call(rawSettings,"onboardingComplete")&&projects.length>0)settings.onboardingComplete=true;
       return {
         ...clone(DEFAULT_STATE),
         ...parsed,
+        version:DEFAULT_STATE.version,
         settings,
         projects,
         threadMeta:parsed.threadMeta&&typeof parsed.threadMeta==="object"?parsed.threadMeta:{},

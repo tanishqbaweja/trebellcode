@@ -37,6 +37,17 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   const onboarding=page.getByTestId("onboarding");
   if(await onboarding.isVisible().catch(()=>false))await onboarding.getByRole("button",{name:"Finish setup"}).click();
   await expect(page.getByText("Trebell Code").first()).toBeVisible();
+  await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.mode)).toBe("dark");
+  const initialShell=await page.evaluate(()=>({
+    sidebar:getComputedStyle(document.querySelector(".sidebar")).backgroundColor,
+    main:getComputedStyle(document.querySelector(".main-frame")).backgroundColor,
+    header:getComputedStyle(document.querySelector(".workspace-header")).backgroundColor,
+    composer:getComputedStyle(document.querySelector(".composer-wrap")).backgroundColor,
+  }));
+  expect(initialShell.sidebar).toBe("rgb(17, 18, 20)");
+  expect(initialShell.main).toBe("rgb(11, 12, 14)");
+  expect(initialShell.header).toMatch(/^rgba?\(11, 12, 14/);
+  expect(initialShell.composer).toMatch(/^rgba?\(20, 22, 25/);
   await page.keyboard.press("Control+k");
   await expect(page.getByTestId("command-palette")).toBeVisible();
   await expect(page.getByTestId("command-palette")).toContainText("Open workspace folder");

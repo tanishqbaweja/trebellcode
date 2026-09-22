@@ -399,12 +399,13 @@ async function importBrowserProfile(payload={}){
 }
 
 async function ensureAgentBrowser({show=false}={}){
+  const hiddenValidation=process.env.TREBELL_TEST_HIDDEN==="1";
   if(agentBrowser&&!agentBrowser.isDestroyed()){
-    if(show){agentBrowser.show();agentBrowser.focus();}
+    if(show&&!hiddenValidation){agentBrowser.show();agentBrowser.focus();}
     return agentBrowser;
   }
   agentBrowser=new BrowserWindow({
-    width:1280,height:860,show,title:"Trebell Agent Browser",
+    width:1280,height:860,show:show&&!hiddenValidation,title:"Trebell Agent Browser",
     icon:appIcon(),
     backgroundColor:"#0a0d14",autoHideMenuBar:true,
     webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,partition:"persist:trebell-agent-browser"},
@@ -760,6 +761,7 @@ async function createWindow(){
   await windowRef.loadURL(gui.url);
   setMainZoomFactor(loadDesktopPrefs().zoomFactor||1,{persist:false});
   windowRef.once("ready-to-show",()=>{
+    if(process.env.TREBELL_TEST_HIDDEN==="1")return;
     if(process.argv.includes("--background")&&backgroundEnabled){ensureTray();return}
     windowRef?.show();
   });

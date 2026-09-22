@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
@@ -19,6 +19,17 @@ test("Trebell UI state persists project, thread metadata and stashes", async()=>
     assert.equal(again.listStashes()[0].text,"hello");
     assert.deepEqual(again.listStashes()[0].contextChips,[{id:"ctx-1",path:"context.txt",kind:"review",label:"Review: context.txt"}]);
   }finally{await rm(home,{recursive:true,force:true});}
+});
+
+test("legacy implicit System appearance migrates to Dark once",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-state-theme-migration-"));
+  const env={...process.env,TREBELL_HOME:home};
+  try{
+    await writeFile(join(home,"ui-state.json"),JSON.stringify({version:1,projects:[],threadMeta:{},settings:{appearance:"dark",appearanceMode:"system"}}));
+    const migrated=new TrebellStateStore(env);assert.equal(migrated.settings().appearance,"dark");assert.equal(migrated.settings().appearanceMode,"dark");
+    migrated.updateSettings({appearanceMode:"system"});
+    const explicit=new TrebellStateStore(env);assert.equal(explicit.settings().appearanceMode,"system");
+  }finally{await rm(home,{recursive:true,force:true})}
 });
 
 
