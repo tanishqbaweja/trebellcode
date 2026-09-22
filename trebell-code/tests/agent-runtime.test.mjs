@@ -29,6 +29,35 @@ test("agent runtime registry exposes real harnesses and capability-gates configu
   }
 });
 
+test("runtime installer uses only official allowlisted packages in the selected environment", async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-agent-install-"));
+  const env={...process.env,TREBELL_HOME:home};const calls=[];
+  try{
+    const state=new TrebellStateStore(env);state.updateSettings({activeEnvironmentId:"ssh-fixture"});
+    const environments={
+      get:id=>id==="ssh-fixture"?{id,name:"Fixture SSH",type:"ssh",cwd:"/srv/app"}:null,
+      executeArgv:async(id,{command,args})=>{
+        calls.push({id,command,args:[...args]});
+        if(command==="npm"&&args[0]==="--version")return {exitCode:0,stdout:"11.0.0\n",stderr:""};
+        if(command==="npm"&&args[0]==="install")return {exitCode:0,stdout:"installed\n",stderr:""};
+        if(command==="claude"&&args[0]==="--version")return {exitCode:0,stdout:"claude 2.0.0\n",stderr:""};
+        if(command==="claude"&&args[0]==="auth")return {exitCode:0,stdout:JSON.stringify({loggedIn:false}),stderr:""};
+        return {exitCode:1,stdout:"",stderr:"unexpected command"};
+      },
+    };
+    const manager=new AgentRuntimeManager({state,env,environments});
+    const installed=await manager.install("claude");
+    assert.equal(installed.packageName,"@anthropic-ai/claude-code");
+    assert.equal(installed.status.installed,true);assert.equal(installed.status.authenticated,false);
+    assert.equal(calls.some(call=>call.command==="npm"&&call.args.join(" ")==="install -g @anthropic-ai/claude-code"),true);
+    await assert.rejects(()=>manager.install("cursor"),/not installable/i);
+    const snapshot=await manager.snapshot();
+    assert.equal(snapshot.definitions.find(item=>item.id==="claude").installable,true);
+    assert.equal(snapshot.definitions.find(item=>item.id==="opencode").packageName,"@opencode/cli");
+    assert.equal(snapshot.definitions.find(item=>item.id==="cursor").installable,false);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 test("ACP agent session serves bounded filesystem and terminal capabilities end to end", async () => {
   const root=await mkdtemp(join(tmpdir(),"trebell-acp-session-"));
   const fixture=join(root,"fake-acp.mjs");

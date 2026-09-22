@@ -13,6 +13,11 @@ const RUNTIMES=Object.freeze({
   antigravity:{id:"antigravity",name:"Antigravity",protocol:"acp",command:null,multipleInstances:true,managed:true},
 });
 
+const INSTALLABLE_PACKAGES=Object.freeze({
+  claude:"@anthropic-ai/claude-code",
+  opencode:"@opencode/cli",
+});
+
 export function normalizeAgentRuntime(value){
   const id=String(value||"codex").trim().toLowerCase();
   return RUNTIMES[id]?id:"codex";
@@ -134,6 +139,30 @@ export class AgentRuntimeManager{
     }
     return run(this.executable(instance),args,{env:this.childEnv(instance),cwd:cwd||process.cwd(),timeoutMs});
   }
+  async #runCommand(command,args,{timeoutMs=120000,cwd=null,environmentId=undefined}={}){
+    const profile=this.activeEnvironment(environmentId);
+    if(profile&&profile.type!=="local"&&this.environments){
+      const result=await this.environments.executeArgv(profile.id,{command,args,cwd:cwd||profile.cwd||"",timeoutMs,maxOutput:4*1024*1024});
+      return {ok:result.exitCode===0,code:result.exitCode,error:result.timedOut?"command timed out":null,stdout:result.stdout||"",stderr:result.stderr||""};
+    }
+    return run(command,args,{env:this.env,cwd:cwd||process.cwd(),timeoutMs});
+  }
+  installable(kind){
+    const runtime=normalizeAgentRuntime(kind);const packageName=INSTALLABLE_PACKAGES[runtime]||null;
+    return packageName?{runtime,packageName}:null;
+  }
+  async install(kind,{environmentId=undefined}={}){
+    const target=this.installable(kind);const normalized=normalizeAgentRuntime(kind);
+    if(!target)throw new Error((RUNTIMES[normalized]?.name||String(kind||"Harness"))+" is not installable from Trebell Code");
+    const npm=await this.#runCommand("npm",["--version"],{timeoutMs:8000,environmentId});
+    if(!npm.ok)throw new Error("npm is required to install this harness in the selected environment. Install Node.js/npm there first.");
+    const result=await this.#runCommand("npm",["install","-g",target.packageName],{timeoutMs:180000,environmentId});
+    if(!result.ok)throw new Error((result.stderr||result.stdout||("Could not install "+target.packageName)).trim().slice(-2000));
+    const instances=this.instances();
+    const instance=instances.find(item=>item.kind===target.runtime&&item.id===target.runtime+"-default")||instances.find(item=>item.kind===target.runtime)||defaultInstance(target.runtime);
+    const status=await this.probe(instance,{environmentId});
+    return {ok:true,runtime:target.runtime,packageName:target.packageName,status,output:(result.stdout||result.stderr||"").trim().slice(-2000)};
+  }
   acpArgs(instance,permissionMode="supervised",cwd=process.cwd()){
     if(instance.kind==="cursor"){
       if(permissionMode==="full")return ["--force","acp"];
@@ -197,6 +226,7 @@ export class AgentRuntimeManager{
       const {environment,...safe}=instance;
       return {...safe,environmentKeys:Object.keys(environment||{})};
     });
-    const active=this.activeInstance();return {selectedRuntime:this.activeRuntime(),selectedInstanceId:active.id,definitions:this.definitions(),instances:publicInstances,statuses};
+    const definitions=this.definitions().map(def=>({...def,installable:Boolean(INSTALLABLE_PACKAGES[def.id]),packageName:INSTALLABLE_PACKAGES[def.id]||null}));
+    const active=this.activeInstance();return {selectedRuntime:this.activeRuntime(),selectedInstanceId:active.id,definitions,instances:publicInstances,statuses};
   }
 }

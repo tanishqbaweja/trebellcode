@@ -892,6 +892,10 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
             const instance=agentRuntimes.instances().find(item=>item.id===String(body.instanceId||""))||body.runtime;
             return json(res,200,{status:await agentRuntimes.probe(instance)});
           }
+          if(body.action==="install"){
+            const installed=await agentRuntimes.install(body.runtime,{environmentId:Object.prototype.hasOwnProperty.call(body,"environmentId")?body.environmentId:undefined});
+            return json(res,200,{installed,...await agentRuntimes.snapshot()});
+          }
           return json(res,400,{error:"unknown agent runtime action"});
         }catch(error){return json(res,400,{error:error.message});}
       }

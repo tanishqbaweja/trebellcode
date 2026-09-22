@@ -23,6 +23,7 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
   const [providerMessage,setProviderMessage]=useState("");
   const [agentInfo,setAgentInfo]=useState(null);
   const [agentMessage,setAgentMessage]=useState("");
+  const [installingAgent,setInstallingAgent]=useState(null);
   const [instanceDraft,setInstanceDraft]=useState(null);
   const [modelDraft,setModelDraft]=useState({id:"",name:"",effort:"",serviceTier:"",inputPrice:"",outputPrice:"",cacheReadPrice:"",cacheWritePrice:""});
   const [snapshotInfo,setSnapshotInfo]=useState({enabled:false,shortcut:"CommandOrControl+Shift+S",includeText:false,playSound:true,sound:"soft-pop",flash:true,animations:true,registered:false,pending:0});
@@ -85,6 +86,19 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
       setAgentInfo(result);setInstanceDraft(null);onSettings(await api("/api/settings"));setAgentMessage("Runtime profile removed.");
       if(result.resetTo)await onProviderUpdated?.({resetThread:true});
     }catch(error){setAgentMessage(error.message)}
+  }
+  async function installAgentRuntime(kind){
+    const definition=(agentInfo?.definitions||[]).find(item=>item.id===kind);if(!definition?.installable)return;
+    const label=definition.name||kind;const packageName=definition.packageName||"the official package";
+    if(!confirm("Install or update "+label+" in the selected environment?\n\nTrebell will run: npm install -g "+packageName))return;
+    setInstallingAgent(kind);setAgentMessage("Installing "+label+"…");
+    try{
+      const result=await api("/api/agent-runtimes",{method:"POST",body:{action:"install",runtime:kind,environmentId:settings.activeEnvironmentId||null}});
+      setAgentInfo(result);
+      const status=result.installed?.status;
+      setAgentMessage(status?.installed&&!status?.authenticated?label+" installed. Sign in with the CLI, then refresh diagnostics.":label+" installed and ready.");
+      await onProviderUpdated?.({resetThread:true});
+    }catch(error){setAgentMessage(error.message)}finally{setInstallingAgent(null)}
   }
   async function save(patch){
     if("appearance" in patch&&environmentThemeCatalog?.environmentKey){
@@ -268,9 +282,9 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
         <div className="agent-runtime-list">{(agentInfo?.definitions||[]).map(def=>{
           const status=(selectedAgent===def.id?agentInfo?.statuses?.find(item=>item.id===agentInfo?.selectedInstanceId):null)||agentInfo?.statuses?.find(item=>item.kind===def.id&&item.available)||agentInfo?.statuses?.find(item=>item.kind===def.id);
           const active=selectedAgent===def.id;
-          return <button key={def.id} className={active?"active":""} disabled={!active&&!status?.available} onClick={()=>!active&&status?.available&&selectAgentRuntime(def.id,status.id)}>
+          return <div className="agent-runtime-option" key={def.id}><button className={active?"active":""} disabled={!active&&!status?.available} onClick={()=>!active&&status?.available&&selectAgentRuntime(def.id,status.id)}>
             <Bot size={14}/><span><strong>{def.name}</strong><small>{status?.available?status?.version||"Ready":status?.message||"Unavailable"}</small></span><em>{active?"Active":status?.available?"Use":"Unavailable"}</em>
-          </button>;
+          </button>{def.installable&&<button className="agent-runtime-install" disabled={installingAgent===def.id} onClick={()=>installAgentRuntime(def.id)}>{installingAgent===def.id?"Installing…":status?.installed?"Update":"Install"}</button>}</div>;
         })}</div>
         <div className="runtime-profiles">
           <div className="runtime-profiles-head"><strong>Profiles</strong><button onClick={()=>editInstance()} disabled={selectedAgent==="antigravity"}>Add profile</button></div>
