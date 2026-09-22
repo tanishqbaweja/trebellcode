@@ -2,8 +2,18 @@ export const KEYBINDING_COMMANDS=[
   {id:"newChat",label:"New thread",defaultKey:"Ctrl+N",defaultWhen:"!modalOpen"},
   {id:"commandPalette",label:"Command palette",defaultKey:"Ctrl+K",defaultWhen:""},
   {id:"sidebarToggle",label:"Toggle main sidebar",defaultKey:"Ctrl+B",defaultWhen:"!modalOpen"},
+  {id:"threadStop",label:"Stop running thread",defaultKey:"",defaultWhen:"threadOpen && running && !terminalFocus && !modalOpen"},
+  {id:"threadSettle",label:"Settle / un-settle thread",defaultKey:"Ctrl+Shift+S",defaultWhen:"threadOpen && !terminalFocus && !modalOpen"},
+  {id:"threadPrevious",label:"Previous thread",defaultKey:"",defaultWhen:"threadOpen && !textInputFocus && !terminalFocus && !modalOpen"},
+  {id:"threadNext",label:"Next thread",defaultKey:"",defaultWhen:"threadOpen && !textInputFocus && !terminalFocus && !modalOpen"},
+  ...Array.from({length:9},(_,index)=>({id:"threadJump"+(index+1),label:"Open thread "+(index+1),defaultKey:"Mod+"+(index+1),defaultWhen:"desktop && !modelPickerOpen && !textInputFocus && !terminalFocus && !modalOpen"})),
   {id:"stash",label:"Stash prompt",defaultKey:"Ctrl+S",defaultWhen:"chatFocus && !terminalFocus && !modalOpen"},
   {id:"terminal",label:"Toggle terminal",defaultKey:"Ctrl+Shift+T",defaultWhen:"projectOpen && !modalOpen"},
+  {id:"terminalFocus",label:"Focus terminal",defaultKey:"Ctrl+`",defaultWhen:"projectOpen && !terminalFocus && !modalOpen"},
+  {id:"composerFocus",label:"Focus composer",defaultKey:"Ctrl+`",defaultWhen:"terminalFocus && !modalOpen"},
+  {id:"terminalNew",label:"New terminal",defaultKey:"",defaultWhen:"projectOpen && !modalOpen"},
+  {id:"rightPanelClose",label:"Close right panel",defaultKey:"Mod+W",defaultWhen:"desktop && rightPanelOpen && !terminalFocus && !modalOpen"},
+  {id:"terminalClose",label:"Close focused terminal",defaultKey:"Mod+W",defaultWhen:"desktop && terminalFocus && !modalOpen"},
   {id:"files",label:"Workspace files",defaultKey:"Ctrl+P",defaultWhen:"projectOpen && !modalOpen"},
   {id:"source",label:"Source control",defaultKey:"Ctrl+Shift+G",defaultWhen:"projectOpen && !modalOpen"},
   {id:"goal",label:"Thread goal",defaultKey:"Ctrl+Shift+L",defaultWhen:"threadOpen && !modalOpen"},
@@ -14,6 +24,8 @@ export const KEYBINDING_COMMANDS=[
   {id:"undoThreadAction",label:"Undo recent thread action",defaultKey:"Mod+Z",defaultWhen:"undoAvailable && !textInputFocus && !modalOpen"},
   {id:"copyReference",label:"Copy Link or Thread ID",defaultKey:"Mod+Shift+C",defaultWhen:"(threadOpen || pullRequestOpen) && !terminalFocus && !modalOpen"},
   {id:"copyPullRequestNumber",label:"Copy Number",defaultKey:"Mod+Shift+K",defaultWhen:"pullRequestOpen && !terminalFocus && !modalOpen"},
+  {id:"modelPicker",label:"Choose model",defaultKey:"Mod+Shift+M",defaultWhen:"!terminalFocus && !modalOpen"},
+  ...Array.from({length:9},(_,index)=>({id:"modelJump"+(index+1),label:"Choose model "+(index+1),defaultKey:"Mod+"+(index+1),defaultWhen:"desktop && modelPickerOpen && !terminalFocus && !modalOpen"})),
   {id:"cycleTheme",label:"Cycle theme",defaultKey:"Ctrl+Alt+A",defaultWhen:"!modalOpen"},
   {id:"cycleAppearance",label:"Cycle appearance mode",defaultKey:"Ctrl+Alt+Shift+A",defaultWhen:"!modalOpen"},
 ];
@@ -34,7 +46,7 @@ export function normalizeKeybindingRules(settings={}){
       key:String(rule.key??legacyKey??item.defaultKey).trim(),
       when:String(rule.when??item.defaultWhen).trim(),
     };
-  }).filter(rule=>rule.key);
+  });
 }
 
 function tokenize(expression){
@@ -104,7 +116,9 @@ export function shortcutMatches(event,value){
 }
 
 export function resolveKeybinding(event,settings={},context={}){
-  for(const rule of normalizeKeybindingRules(settings)){
+  const rules=normalizeKeybindingRules(settings);
+  for(let index=rules.length-1;index>=0;index--){
+    const rule=rules[index];
     if(!shortcutMatches(event,rule.key))continue;
     try{if(evaluateWhen(rule.when,context))return rule.command}catch{}
   }

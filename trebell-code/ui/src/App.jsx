@@ -219,11 +219,25 @@ const SLASH_COMMANDS=[
   ["/clear","Reset the current draft/thread view"],
 ];
 
-function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,permissionMode,setPermissionMode,webSearch,setWebSearch,skills,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,onSkill,onFiles,settings,onStash,tokenUsage,workspaceMode,setWorkspaceMode}){
+function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,permissionMode,setPermissionMode,webSearch,setWebSearch,skills,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,onSkill,onFiles,settings,onStash,tokenUsage,workspaceMode,setWorkspaceMode,onModelPickerOpenChange}){
   const [skillsOpen,setSkillsOpen]=useState(false);
   const [modelOpen,setModelOpen]=useState(false);
   const [listening,setListening]=useState(false);
   const speechSupported=typeof window!=="undefined"&&Boolean(window.SpeechRecognition||window.webkitSpeechRecognition);
+  useEffect(()=>{onModelPickerOpenChange?.(modelOpen)},[modelOpen,onModelPickerOpenChange]);
+  useEffect(()=>{
+    const onPicker=event=>{
+      const action=event.detail?.action;
+      if(action==="toggle"){setModelOpen(value=>!value);return}
+      if(action==="open"){setModelOpen(true);return}
+      if(action==="jump"){
+        const index=Math.max(0,Number(event.detail?.index)||0);const id=models[index];
+        if(id){setModel(id);onSelectedModels?.([id]);setModelOpen(false)}
+      }
+    };
+    window.addEventListener("trebell:model-picker",onPicker);
+    return()=>window.removeEventListener("trebell:model-picker",onPicker);
+  },[models,setModel,onSelectedModels]);
   const priceConfig=(settings.customModels||[]).find(item=>item.id===model&&item.runtime===agentRuntime&&(agentRuntime!=="codex"||item.provider===provider))||null;
   function dictate(){
     if(!speechSupported||listening)return;
@@ -307,7 +321,7 @@ export default function App(){
   const [running,setRunning]=useState(false); const [queued,setQueued]=useState([]);
   const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [section,setSection]=useState("chat");
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [contextChips,setContextChips]=useState([]);
-  const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [selectedModels,setSelectedModels]=useState([]); const [modelError,setModelError]=useState("");
+  const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [selectedModels,setSelectedModels]=useState([]); const [modelError,setModelError]=useState(""); const [modelPickerOpen,setModelPickerOpen]=useState(false);
   const [freebuff,setFreebuff]=useState({loggedIn:false}); const [skills,setSkills]=useState([]); const [providerCommands,setProviderCommands]=useState([]); const [providerAgents,setProviderAgents]=useState([]); const [providerAgent,setProviderAgent]=useState("");
   const [settings,setSettings]=useState({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,customThemes:[],keyboardShortcuts:{},agentRuntime:"codex",modelProvider:"freebuff"});
   const [environmentThemeCatalog,setEnvironmentThemeCatalog]=useState({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]});
@@ -701,7 +715,9 @@ export default function App(){
       const context={
         chatFocus:section==="chat"||section==="new",
         terminalFocus:Boolean(panel==="terminal"&&active?.closest?.(".terminal-drawer")),
+        terminalOpen:panel==="terminal",
         previewFocus:section==="preview",
+        modelPickerOpen:Boolean(modelPickerOpen),
         textInputFocus:Boolean(active&&["INPUT","TEXTAREA","SELECT"].includes(active.tagName)),
         projectOpen:Boolean(projectPath),
         threadOpen:Boolean(activeThread?.id),
@@ -719,8 +735,24 @@ export default function App(){
       if(command==="newChat")newChat();
       else if(command==="commandPalette")setPaletteOpen(value=>!value);
       else if(command==="sidebarToggle")setSidebarOpen(value=>!value);
+      else if(command==="threadStop")stop().catch(()=>{});
+      else if(command==="threadSettle"&&activeThread?.id)reversibleThreadAction(activeThread,activeThread.section?.name==="Settled"?"active":"settle").catch(()=>{});
+      else if(command==="threadPrevious"||command==="threadNext"){
+        const index=displayThreads.findIndex(thread=>thread.id===activeThread?.id);
+        const delta=command==="threadPrevious"?-1:1;const next=displayThreads[index>=0?index+delta:-1];
+        if(next)openThread(next).catch(()=>{});
+      }
+      else if(command.startsWith("threadJump")){
+        const index=Number(command.slice("threadJump".length))-1;const target=displayThreads[index];
+        if(target)openThread(target).catch(()=>{});
+      }
       else if(command==="stash")stashPrompt();
       else if(command==="terminal")setPanel(value=>value==="terminal"?null:"terminal");
+      else if(command==="terminalFocus"){setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-focus")),0)}
+      else if(command==="composerFocus"){document.querySelector('[data-testid="composer"]')?.focus()}
+      else if(command==="terminalNew"){setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-new")),0)}
+      else if(command==="terminalClose")window.dispatchEvent(new CustomEvent("trebell:terminal-close"));
+      else if(command==="rightPanelClose")setRightPanelOpen(false);
       else if(command==="files")openRightPanel("files");
       else if(command==="source")openRightPanel("source");
       else if(command==="goal"&&activeThread?.id)openRightPanel("goal");
@@ -731,12 +763,14 @@ export default function App(){
       else if(command==="undoThreadAction")undoThreadAction();
       else if(command==="copyReference")copyActiveReference().catch(()=>{});
       else if(command==="copyPullRequestNumber")copyActivePullRequestNumber().catch(()=>{});
+      else if(command==="modelPicker")window.dispatchEvent(new CustomEvent("trebell:model-picker",{detail:{action:"toggle"}}));
+      else if(command.startsWith("modelJump"))window.dispatchEvent(new CustomEvent("trebell:model-picker",{detail:{action:"jump",index:Number(command.slice("modelJump".length))-1}}));
       else if(command==="cycleTheme")cycleTheme();
       else if(command==="cycleAppearance")cycleAppearance();
     };
     window.addEventListener("keydown",key);
     return()=>window.removeEventListener("keydown",key);
-  },[settings,prompt,attachments,section,panel,paletteOpen,question,elicitations.length,approvals.length,snoozeRequest,threadUndo,projectPath,activeThread?.id,running,rightPanelOpen,rightPanelTab,sourceSelectedPr,linkedPullRequests,queued,sidebarOpen]);
+  },[settings,prompt,attachments,section,panel,paletteOpen,question,elicitations.length,approvals.length,snoozeRequest,threadUndo,projectPath,activeThread,running,rightPanelOpen,rightPanelTab,sourceSelectedPr,linkedPullRequests,queued,sidebarOpen,displayThreads,modelPickerOpen]);
   useEffect(()=>{if(!running&&queued.length){const next=queued[0];setQueued(prev=>prev.slice(1));startTurn(next.text,next.attachments,next.model||model).catch(error=>setEvents(prev=>[...prev,{id:"queue-error-"+Date.now(),kind:"error",title:error.message,status:"done"}]))}},[running,queued]);
 
   function handleServerRequest(client,message){
@@ -1603,7 +1637,7 @@ export default function App(){
           </div>
 
           {currentProject?.cloneJob&&currentProject.cloneJob.status!=="completed"&&<div className={"clone-banner "+currentProject.cloneJob.status} data-testid="clone-banner"><div><strong>{currentProject.cloneJob.phase||"Cloning repository"}</strong><span>{currentProject.cloneJob.status==="failed"?(currentProject.cloneJob.error||"Clone failed"):currentProject.cloneJob.status==="cancelled"?"Clone cancelled":"You can keep writing. Send waits until the repository is ready."}</span></div>{["running","cancelling"].includes(currentProject.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(currentProject.cloneJob.progress)||0)+"%"}}/></i>}<em>{Math.round(currentProject.cloneJob.progress||0)}%</em>{currentProject.cloneJob.status==="running"&&<button onClick={()=>cloneProjectAction("cancel").catch(error=>setEvents(prev=>[...prev,{id:"clone-cancel-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(currentProject.cloneJob.status)&&<button onClick={()=>cloneProjectAction("retry").catch(error=>setEvents(prev=>[...prev,{id:"clone-retry-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))}>Retry clone</button>}</div>}
-          <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={()=>setPromptHistoryIndex(-1)} historyIndex={promptHistoryIndex} onSend={send} onBackgroundSend={sendInBackground} canBackground={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"} running={running} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onCaptureScreen={()=>captureDesktop().catch(error=>setEvents(prev=>[...prev,{id:"screen-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} webSearch={webSearch} setWebSearch={setWebSearch} skills={skills} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={changeProviderAgent} onSkill={onSkill} onFiles={()=>openRightPanel("files")} settings={settings} onStash={stashPrompt} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode}/>
+          <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={()=>setPromptHistoryIndex(-1)} historyIndex={promptHistoryIndex} onSend={send} onBackgroundSend={sendInBackground} canBackground={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"} running={running} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onCaptureScreen={()=>captureDesktop().catch(error=>setEvents(prev=>[...prev,{id:"screen-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} webSearch={webSearch} setWebSearch={setWebSearch} skills={skills} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={changeProviderAgent} onSkill={onSkill} onFiles={()=>openRightPanel("files")} settings={settings} onStash={stashPrompt} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} onModelPickerOpenChange={setModelPickerOpen}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="terminal-drawer-head"><span><SquareTerminal size={14}/> Terminal</span><div><button onClick={()=>attachExcerpt("")} aria-hidden="true" tabIndex={-1} className="terminal-head-spacer"/><button onClick={()=>setPanel(null)} aria-label="Close terminal"><X size={15}/></button></div></div>

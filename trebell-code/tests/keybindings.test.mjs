@@ -65,3 +65,29 @@ test("pull request copy shortcuts use mod bindings and respect terminal focus",(
   assert.equal(resolveKeybinding(event("c",{ctrlKey:true,shiftKey:true}),{}, {threadOpen:true,terminalFocus:true,modalOpen:false}),null);
   assert.equal(resolveKeybinding(event("k",{ctrlKey:true,shiftKey:true}),{}, {pullRequestOpen:true,terminalFocus:true,modalOpen:false}),null);
 });
+
+test("unbound commands stay editable and simply do not resolve until assigned",()=>{
+  const rules=normalizeKeybindingRules({});
+  assert.deepEqual(rules.find(rule=>rule.command==="threadStop"),{command:"threadStop",key:"",when:"threadOpen && running && !terminalFocus && !modalOpen"});
+  assert.equal(resolveKeybinding(event("Escape"),{}, {threadOpen:true,running:true,terminalFocus:false,modalOpen:false}),null);
+  const settings={keybindingRules:[{command:"threadStop",key:"Escape",when:"threadOpen && running && !terminalFocus && !modalOpen"}]};
+  assert.equal(resolveKeybinding(event("Escape"),settings,{threadOpen:true,running:true,terminalFocus:false,modalOpen:false}),"threadStop");
+});
+
+test("shared numeric shortcuts prefer model jumps while the model picker is open",()=>{
+  assert.equal(resolveKeybinding(event("1",{ctrlKey:true}),{}, {desktop:true,modelPickerOpen:false,textInputFocus:false,terminalFocus:false,modalOpen:false}),"threadJump1");
+  assert.equal(resolveKeybinding(event("1",{ctrlKey:true}),{}, {desktop:true,modelPickerOpen:true,textInputFocus:false,terminalFocus:false,modalOpen:false}),"modelJump1");
+});
+
+test("terminal focus and close shortcuts resolve by focus context",()=>{
+  const grave=String.fromCharCode(96);
+  assert.equal(resolveKeybinding(event(grave,{ctrlKey:true}),{}, {projectOpen:true,terminalFocus:false,modalOpen:false}),"terminalFocus");
+  assert.equal(resolveKeybinding(event(grave,{ctrlKey:true}),{}, {projectOpen:true,terminalFocus:true,modalOpen:false}),"composerFocus");
+  assert.equal(resolveKeybinding(event("w",{ctrlKey:true}),{}, {desktop:true,rightPanelOpen:true,terminalFocus:false,modalOpen:false}),"rightPanelClose");
+  assert.equal(resolveKeybinding(event("w",{ctrlKey:true}),{}, {desktop:true,rightPanelOpen:true,terminalFocus:true,modalOpen:false}),"terminalClose");
+});
+
+test("settle shortcut is available from the composer but not the terminal",()=>{
+  assert.equal(resolveKeybinding(event("s",{ctrlKey:true,shiftKey:true}),{}, {threadOpen:true,terminalFocus:false,modalOpen:false}),"threadSettle");
+  assert.equal(resolveKeybinding(event("s",{ctrlKey:true,shiftKey:true}),{}, {threadOpen:true,terminalFocus:true,modalOpen:false}),null);
+});

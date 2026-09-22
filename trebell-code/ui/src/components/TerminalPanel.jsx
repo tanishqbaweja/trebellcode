@@ -11,6 +11,7 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   const [line,setLine]=useState("");
   const socket=useRef(null);
   const outputRef=useRef(null);
+  const inputRef=useRef(null);
   const environmentQuery=()=>"?"+new URLSearchParams({environmentId:environmentId||""}).toString();
 
   async function refresh(preferredId=null){
@@ -26,6 +27,19 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
     window.addEventListener("trebell:terminal-refresh",onRefresh);
     return()=>window.removeEventListener("trebell:terminal-refresh",onRefresh);
   },[activeId]);
+  useEffect(()=>{
+    const focus=()=>setTimeout(()=>inputRef.current?.focus(),0);
+    const createNew=()=>create().then(()=>focus()).catch(()=>{});
+    const closeActive=()=>{if(activeId)close(activeId).catch(()=>{})};
+    window.addEventListener("trebell:terminal-focus",focus);
+    window.addEventListener("trebell:terminal-new",createNew);
+    window.addEventListener("trebell:terminal-close",closeActive);
+    return()=>{
+      window.removeEventListener("trebell:terminal-focus",focus);
+      window.removeEventListener("trebell:terminal-new",createNew);
+      window.removeEventListener("trebell:terminal-close",closeActive);
+    };
+  },[activeId,sessions.length,projectPath,environmentId]);
 
   useEffect(()=>{
     socket.current?.close();
@@ -64,7 +78,7 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
     </div>
     {!activeId?<div className="terminal-empty"><SquareTerminal size={30}/><strong>No terminal session</strong><button onClick={create}>Create terminal</button></div>:<>
       <pre ref={outputRef} className="terminal-screen">{output||"Terminal connected.\n"}</pre>
-      <form className="terminal-command-line" onSubmit={send}><span>$</span><input value={line} onChange={e=>setLine(e.target.value)} placeholder={active?.running?"Type a command…":"Stopped terminal history"} disabled={!active?.running} autoFocus/><button type="button" onClick={ctrlC} disabled={!active?.running}>Ctrl+C</button><button disabled={!active?.running}>Send</button></form>
+      <form className="terminal-command-line" onSubmit={send}><span>$</span><input ref={inputRef} value={line} onChange={e=>setLine(e.target.value)} placeholder={active?.running?"Type a command…":"Stopped terminal history"} disabled={!active?.running} autoFocus/><button type="button" onClick={ctrlC} disabled={!active?.running}>Ctrl+C</button><button disabled={!active?.running}>Send</button></form>
       <div className="terminal-foot"><span>{active?.restored?"Restored history · ":""}{active?.environmentName||environmentName} · {active?.cwd||projectPath||"Home"}</span><button onClick={()=>onAttachExcerpt?.(output.slice(-8000))}><Paperclip size={12}/> Attach recent output</button></div>
     </>}
   </div>;
