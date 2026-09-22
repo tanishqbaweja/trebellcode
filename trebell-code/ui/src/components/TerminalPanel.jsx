@@ -1,85 +1,137 @@
 import React,{useEffect,useRef,useState} from "react";
-import { Plus, SquareTerminal, X, Paperclip } from "lucide-react";
+import { Columns2, Plus, Rows2, SquareTerminal, X, Paperclip } from "lucide-react";
 import { api,wsUrl } from "../api.js";
 
+const MAX_SPLIT_PANES=4;
 const stripAnsi=(text)=>String(text||"").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,"").replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g,"");
 
 export default function TerminalPanel({projectPath,environmentId=null,environmentName="Local machine",onAttachExcerpt}){
   const [sessions,setSessions]=useState([]);
   const [activeId,setActiveId]=useState(null);
-  const [output,setOutput]=useState("");
-  const [line,setLine]=useState("");
-  const socket=useRef(null);
-  const outputRef=useRef(null);
-  const inputRef=useRef(null);
+  const [paneIds,setPaneIds]=useState([]);
+  const [splitDirection,setSplitDirection]=useState("horizontal");
+  const [outputs,setOutputs]=useState({});
+  const [lines,setLines]=useState({});
+  const [focusTick,setFocusTick]=useState(0);
+  const sockets=useRef(new Map());
+  const outputRefs=useRef(new Map());
+  const inputRefs=useRef(new Map());
   const environmentQuery=()=>"?"+new URLSearchParams({environmentId:environmentId||""}).toString();
 
   async function refresh(preferredId=null){
     const data=await api("/api/terminal/sessions"+environmentQuery()).catch(()=>({sessions:[]}));
-    setSessions(data.sessions||[]);
-    const target=preferredId||(activeId&&data.sessions?.some(session=>session.id===activeId)?activeId:null)||data.sessions?.[0]?.id||null;
+    const list=data.sessions||[];setSessions(list);
+    const target=preferredId||(activeId&&list.some(session=>session.id===activeId)?activeId:null)||list[0]?.id||null;
     setActiveId(target);
-    return data.sessions||[];
+    setPaneIds(current=>{
+      const valid=current.filter(id=>list.some(session=>session.id===id));
+      return valid.length?valid:(target?[target]:[]);
+    });
+    return list;
   }
-  useEffect(()=>{setActiveId(null);setOutput("");refresh();},[environmentId]);
+
   useEffect(()=>{
-    const onRefresh=event=>refresh(event.detail||null);
-    window.addEventListener("trebell:terminal-refresh",onRefresh);
-    return()=>window.removeEventListener("trebell:terminal-refresh",onRefresh);
-  },[activeId]);
+    for(const socket of sockets.current.values())socket.close();
+    sockets.current.clear();setActiveId(null);setPaneIds([]);setOutputs({});setLines({});refresh();
+  },[environmentId]);
+  useEffect(()=>()=>{for(const socket of sockets.current.values())socket.close();sockets.current.clear()},[]);
+
   useEffect(()=>{
-    const focus=()=>setTimeout(()=>inputRef.current?.focus(),0);
-    const createNew=()=>create().then(()=>focus()).catch(()=>{});
+    const visible=new Set(paneIds);
+    for(const [id,socket] of sockets.current.entries())if(!visible.has(id)){socket.close();sockets.current.delete(id)}
+    for(const id of paneIds){
+      if(sockets.current.has(id))continue;
+      const ws=new WebSocket(wsUrl("/api/terminal/ws?session="+encodeURIComponent(id)));sockets.current.set(id,ws);
+      ws.onmessage=(event)=>{
+        let msg;try{msg=JSON.parse(event.data)}catch{return}
+        if(msg.type==="snapshot")setOutputs(previous=>({...previous,[id]:stripAnsi(msg.session?.buffer||"")}));
+        else if(msg.type==="output")setOutputs(previous=>({...previous,[id]:stripAnsi((previous[id]||"")+msg.data)}));
+        else if(msg.type==="exit")setSessions(previous=>previous.map(session=>session.id===id?{...session,running:false,exitCode:msg.exitCode}:session));
+      };
+      ws.onclose=()=>{if(sockets.current.get(id)===ws)sockets.current.delete(id)};
+    }
+  },[paneIds.join("|")]);
+
+  useEffect(()=>{
+    for(const id of paneIds){const node=outputRefs.current.get(id);if(node)node.scrollTo({top:node.scrollHeight})}
+  },[outputs,paneIds]);
+  useEffect(()=>{if(activeId)setTimeout(()=>inputRefs.current.get(activeId)?.focus(),0)},[activeId,focusTick]);
+
+  async function createSession(){
+    const data=await api("/api/terminal/sessions",{method:"POST",body:{cwd:projectPath||undefined,environmentId:environmentId||null,cols:120,rows:32,name:"Terminal "+(sessions.length+1)}});
+    setSessions(previous=>[...previous,data.session]);setLines(previous=>({...previous,[data.session.id]:""}));return data.session;
+  }
+  async function create(){
+    const session=await createSession();setPaneIds([session.id]);setActiveId(session.id);setFocusTick(value=>value+1);return session;
+  }
+  async function split(direction="horizontal"){
+    let current=paneIds;
+    if(!current.length){
+      const base=activeId||sessions[0]?.id;
+      if(base)current=[base];
+      else{const first=await createSession();current=[first.id]}
+    }
+    if(current.length>=MAX_SPLIT_PANES)return;
+    const session=await createSession();setSplitDirection(direction);setPaneIds([...current,session.id]);setActiveId(session.id);setFocusTick(value=>value+1);
+  }
+  async function close(id){
+    await api("/api/terminal/sessions?id="+encodeURIComponent(id),{method:"DELETE"}).catch(()=>{});
+    sockets.current.get(id)?.close();sockets.current.delete(id);
+    const remainingSessions=sessions.filter(session=>session.id!==id);setSessions(remainingSessions);
+    let remainingPanes=paneIds.filter(paneId=>paneId!==id);
+    if(!remainingPanes.length&&remainingSessions[0])remainingPanes=[remainingSessions[0].id];
+    setPaneIds(remainingPanes);setOutputs(previous=>{const next={...previous};delete next[id];return next});setLines(previous=>{const next={...previous};delete next[id];return next});
+    if(id===activeId)setActiveId(remainingPanes[0]||remainingSessions[0]?.id||null);
+  }
+  function selectSession(id){
+    setActiveId(id);setFocusTick(value=>value+1);
+    setPaneIds(current=>{
+      if(current.includes(id))return current;
+      if(!current.length)return[id];
+      const replace=current.includes(activeId)?current.indexOf(activeId):current.length-1;
+      return current.map((paneId,index)=>index===replace?id:paneId);
+    });
+  }
+  function send(id,event){
+    event?.preventDefault();const line=lines[id]||"";const socket=sockets.current.get(id);
+    if(!line||socket?.readyState!==WebSocket.OPEN)return;
+    socket.send(JSON.stringify({type:"input",data:line+"\r"}));setLines(previous=>({...previous,[id]:""}));
+  }
+  function ctrlC(id){sockets.current.get(id)?.send(JSON.stringify({type:"input",data:"\x03"}))}
+
+  useEffect(()=>{
+    const focus=()=>setFocusTick(value=>value+1);
+    const createNew=()=>create().catch(()=>{});
     const closeActive=()=>{if(activeId)close(activeId).catch(()=>{})};
+    const splitPane=event=>split(event.detail?.direction==="vertical"?"vertical":"horizontal").catch(()=>{});
     window.addEventListener("trebell:terminal-focus",focus);
     window.addEventListener("trebell:terminal-new",createNew);
     window.addEventListener("trebell:terminal-close",closeActive);
+    window.addEventListener("trebell:terminal-split",splitPane);
     return()=>{
       window.removeEventListener("trebell:terminal-focus",focus);
       window.removeEventListener("trebell:terminal-new",createNew);
       window.removeEventListener("trebell:terminal-close",closeActive);
+      window.removeEventListener("trebell:terminal-split",splitPane);
     };
-  },[activeId,sessions.length,projectPath,environmentId]);
+  },[activeId,paneIds,sessions,projectPath,environmentId]);
 
-  useEffect(()=>{
-    socket.current?.close();
-    if(!activeId) return;
-    const ws=new WebSocket(wsUrl("/api/terminal/ws?session="+encodeURIComponent(activeId)));
-    socket.current=ws;
-    ws.onmessage=(event)=>{
-      let msg;try{msg=JSON.parse(event.data)}catch{return}
-      if(msg.type==="snapshot") setOutput(stripAnsi(msg.session?.buffer||""));
-      else if(msg.type==="output") setOutput(prev=>stripAnsi(prev+msg.data));
-      else if(msg.type==="exit") setSessions(prev=>prev.map(s=>s.id===activeId?{...s,running:false,exitCode:msg.exitCode}:s));
-    };
-    return()=>ws.close();
-  },[activeId]);
-
-  useEffect(()=>{outputRef.current?.scrollTo({top:outputRef.current.scrollHeight});},[output]);
-
-  async function create(){
-    const data=await api("/api/terminal/sessions",{method:"POST",body:{cwd:projectPath||undefined,environmentId:environmentId||null,cols:120,rows:32,name:"Terminal "+(sessions.length+1)}});
-    setSessions(prev=>[...prev,data.session]);setActiveId(data.session.id);
-  }
-  async function close(id){
-    await api("/api/terminal/sessions?id="+encodeURIComponent(id),{method:"DELETE"}).catch(()=>{});
-    const next=sessions.filter(s=>s.id!==id);setSessions(next);setActiveId(next[0]?.id||null);if(id===activeId)setOutput("");
-  }
-  function send(e){
-    e?.preventDefault(); if(!line||socket.current?.readyState!==WebSocket.OPEN)return;
-    socket.current.send(JSON.stringify({type:"input",data:line+"\r"}));setLine("");
-  }
-  function ctrlC(){socket.current?.send(JSON.stringify({type:"input",data:"\x03"}));}
-  const active=sessions.find(session=>session.id===activeId)||null;
+  const paneSessions=paneIds.map(id=>sessions.find(session=>session.id===id)).filter(Boolean);
+  const paneStyle=paneSessions.length>1?(splitDirection==="vertical"?{gridTemplateRows:"repeat("+paneSessions.length+",minmax(0,1fr))"}:{gridTemplateColumns:"repeat("+paneSessions.length+",minmax(0,1fr))"}):{};
   return <div className="real-terminal">
     <div className="terminal-tabs">
-      {sessions.map(s=><button key={s.id} className={s.id===activeId?"active":""} onClick={()=>setActiveId(s.id)}><SquareTerminal size={13}/>{s.name||"Terminal"}{!s.running&&<em>{s.exitCode}</em>}<span onClick={(e)=>{e.stopPropagation();close(s.id)}}><X size={11}/></span></button>)}
+      {sessions.map(session=><button key={session.id} className={session.id===activeId?"active":""} onClick={()=>selectSession(session.id)}><SquareTerminal size={13}/>{session.name||"Terminal"}{!session.running&&<em>{session.exitCode}</em>}<span onClick={(event)=>{event.stopPropagation();close(session.id)}}><X size={11}/></span></button>)}
       <button className="terminal-new" onClick={create}><Plus size={14}/> New</button>
+      <button title="Split horizontally" onClick={()=>split("horizontal")} disabled={paneSessions.length>=MAX_SPLIT_PANES}><Columns2 size={13}/></button>
+      <button title="Split vertically" onClick={()=>split("vertical")} disabled={paneSessions.length>=MAX_SPLIT_PANES}><Rows2 size={13}/></button>
     </div>
-    {!activeId?<div className="terminal-empty"><SquareTerminal size={30}/><strong>No terminal session</strong><button onClick={create}>Create terminal</button></div>:<>
-      <pre ref={outputRef} className="terminal-screen">{output||"Terminal connected.\n"}</pre>
-      <form className="terminal-command-line" onSubmit={send}><span>$</span><input ref={inputRef} value={line} onChange={e=>setLine(e.target.value)} placeholder={active?.running?"Type a command…":"Stopped terminal history"} disabled={!active?.running} autoFocus/><button type="button" onClick={ctrlC} disabled={!active?.running}>Ctrl+C</button><button disabled={!active?.running}>Send</button></form>
-      <div className="terminal-foot"><span>{active?.restored?"Restored history · ":""}{active?.environmentName||environmentName} · {active?.cwd||projectPath||"Home"}</span><button onClick={()=>onAttachExcerpt?.(output.slice(-8000))}><Paperclip size={12}/> Attach recent output</button></div>
-    </>}
+    {!paneSessions.length?<div className="terminal-empty"><SquareTerminal size={30}/><strong>No terminal session</strong><button onClick={create}>Create terminal</button></div>:<div className={"terminal-panes "+(paneSessions.length>1?"split "+splitDirection:"")} style={paneStyle}>
+      {paneSessions.map(session=><section key={session.id} className={"terminal-pane"+(session.id===activeId?" active":"")} onMouseDown={()=>session.id!==activeId&&setActiveId(session.id)}>
+        <div className="terminal-pane-head"><span><SquareTerminal size={11}/>{session.name||"Terminal"}</span>{paneSessions.length>1&&<button onClick={()=>close(session.id)} aria-label={"Close "+(session.name||"terminal")}><X size={10}/></button>}</div>
+        <pre ref={node=>node?outputRefs.current.set(session.id,node):outputRefs.current.delete(session.id)} className="terminal-screen">{outputs[session.id]||"Terminal connected.\n"}</pre>
+        <form className="terminal-command-line" onSubmit={event=>send(session.id,event)}><span>$</span><input ref={node=>node?inputRefs.current.set(session.id,node):inputRefs.current.delete(session.id)} value={lines[session.id]||""} onChange={event=>setLines(previous=>({...previous,[session.id]:event.target.value}))} placeholder={session.running?"Type a command…":"Stopped terminal history"} disabled={!session.running}/><button type="button" onClick={()=>ctrlC(session.id)} disabled={!session.running}>Ctrl+C</button><button disabled={!session.running}>Send</button></form>
+        <div className="terminal-foot"><span>{session.restored?"Restored history · ":""}{session.environmentName||environmentName} · {session.cwd||projectPath||"Home"}</span><button onClick={()=>onAttachExcerpt?.((outputs[session.id]||"").slice(-8000))}><Paperclip size={12}/> Attach recent output</button></div>
+      </section>)}
+    </div>}
   </div>;
 }

@@ -108,6 +108,12 @@ test("right panel and preview commands resolve only in their real contexts",()=>
   assert.equal(resolveKeybinding(event("r",{ctrlKey:true}),{}, {previewFocus:false,terminalFocus:false,modalOpen:false}),null);
 });
 
+test("terminal split shortcuts take precedence over diff while terminal focus is active",()=>{
+  assert.equal(resolveKeybinding(event("d",{ctrlKey:true}),{}, {terminalFocus:true,modalOpen:false}),"terminalSplit");
+  assert.equal(resolveKeybinding(event("d",{ctrlKey:true,shiftKey:true}),{}, {terminalFocus:true,modalOpen:false}),"terminalSplitVertical");
+  assert.equal(resolveKeybinding(event("d",{ctrlKey:true}),{}, {terminalFocus:false,modalOpen:false}),"diffToggle");
+});
+
 test("dynamic project action keybindings survive normalization and resolve",()=>{
   const command="script.01234567-89ab-cdef-0123-456789abcdef.run";
   const settings={keybindingRules:[{command,key:"Alt+1",when:"projectOpen && !modalOpen"}]};

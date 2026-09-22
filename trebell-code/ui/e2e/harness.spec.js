@@ -148,7 +148,21 @@ test("Trebell Code renders the harness and scopes models to the selected provide
 
   await page.getByTestId("terminal-toggle").click();
   await expect(page.getByTestId("drawer")).toBeVisible();
-  await page.getByRole("button",{name:"Close terminal"}).click();
+  const createTerminal=page.getByRole("button",{name:"Create terminal"});
+  if(await createTerminal.isVisible().catch(()=>false))await createTerminal.click();
+  await expect(page.locator(".terminal-pane")).toHaveCount(1);
+  await page.locator(".terminal-command-line input").first().click();
+  await page.evaluate(()=>window.dispatchEvent(new KeyboardEvent("keydown",{key:"d",ctrlKey:true,bubbles:true,cancelable:true})));
+  await expect(page.locator(".terminal-pane")).toHaveCount(2);
+  await expect(page.locator(".terminal-panes")).toHaveClass(/horizontal/);
+  await page.locator(".terminal-command-line input").last().click();
+  await page.evaluate(()=>window.dispatchEvent(new KeyboardEvent("keydown",{key:"d",ctrlKey:true,shiftKey:true,bubbles:true,cancelable:true})));
+  await expect(page.locator(".terminal-pane")).toHaveCount(3);
+  await expect(page.locator(".terminal-panes")).toHaveClass(/vertical/);
+  await page.locator(".terminal-command-line input").last().click();
+  await page.evaluate(()=>window.dispatchEvent(new KeyboardEvent("keydown",{key:"w",ctrlKey:true,bubbles:true,cancelable:true})));
+  await expect(page.locator(".terminal-pane")).toHaveCount(2);
+  await page.getByRole("button",{name:"Close terminal",exact:true}).click();
   await expect(page.getByTestId("drawer")).toBeHidden();
 
   await page.getByRole("button",{name:"Projects",exact:true}).click();

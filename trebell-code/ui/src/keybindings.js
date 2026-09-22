@@ -12,6 +12,8 @@ export const KEYBINDING_COMMANDS=[
   {id:"terminal",label:"Toggle terminal",defaultKey:"Ctrl+Shift+T",defaultWhen:"projectOpen && !modalOpen"},
   {id:"terminalFocus",label:"Focus terminal",defaultKey:"Ctrl+`",defaultWhen:"projectOpen && !terminalFocus && !modalOpen"},
   {id:"composerFocus",label:"Focus composer",defaultKey:"Ctrl+`",defaultWhen:"terminalFocus && !modalOpen"},
+  {id:"terminalSplit",label:"Split terminal horizontally",defaultKey:"Mod+D",defaultWhen:"terminalFocus && !modalOpen"},
+  {id:"terminalSplitVertical",label:"Split terminal vertically",defaultKey:"Mod+Shift+D",defaultWhen:"terminalFocus && !modalOpen"},
   {id:"terminalNew",label:"New terminal",defaultKey:"Mod+N",defaultWhen:"projectOpen && terminalFocus && !modalOpen"},
   {id:"rightPanelClose",label:"Close right panel",defaultKey:"Mod+W",defaultWhen:"desktop && rightPanelOpen && !terminalFocus && !modalOpen"},
   {id:"terminalClose",label:"Close focused terminal",defaultKey:"Mod+W",defaultWhen:"desktop && terminalFocus && !modalOpen"},

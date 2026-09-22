@@ -751,6 +751,8 @@ export default function App(){
       else if(command==="terminal")setPanel(value=>value==="terminal"?null:"terminal");
       else if(command==="terminalFocus"){setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-focus")),0)}
       else if(command==="composerFocus"){document.querySelector('[data-testid="composer"]')?.focus()}
+      else if(command==="terminalSplit"){setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-split",{detail:{direction:"horizontal"}})),0)}
+      else if(command==="terminalSplitVertical"){setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-split",{detail:{direction:"vertical"}})),0)}
       else if(command==="terminalNew"){setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-new")),0)}
       else if(command==="terminalClose")window.dispatchEvent(new CustomEvent("trebell:terminal-close"));
       else if(command==="rightPanelClose"){setRightPanelOpen(false);setRightPanelMaximized(false)}
