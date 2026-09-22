@@ -100,7 +100,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
   function settlePrompt({thread,turn,session,promptPromise,model=null}){
     const persistUsage=result=>{
       const usage=usageFromPromptResult(result,session.__usage);if(!usage)return;const current=threadStore.get(thread.id)||thread;
-      state?.recordUsage?.({runtime:current.runtime||runtimeManager.activeRuntime(),provider:current.providerMeta?.runtimeInstanceId||null,model:current.model||model||null,threadId:thread.id,turnId:turn.id,usage:usage.usage,cost:usage.cost,at:usage.at||Date.now()});
+      state?.recordUsage?.({runtime:current.runtime||runtimeManager.activeRuntime(),provider:current.providerMeta?.runtimeInstanceId||null,model:current.model||model||null,environmentId:current.providerMeta?.environmentId??null,threadId:thread.id,turnId:turn.id,usage:usage.usage,cost:usage.cost,at:usage.at||Date.now()});
     };
     promptPromise.then(result=>{
       persistUsage(result);
@@ -221,7 +221,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         const init=runtimeSession.initializeResult?.agentCapabilities?.sessionCapabilities||{};if(init.fork==null)throw Object.assign(new Error(`${runtime} does not advertise session forking`),{code:-32601});
         fork=await runtimeSession.client.forkSession({sessionId:source.providerSessionId,cwd:source.cwd,mcpServers:[]});
       }
-      const providerSessionId=fork.sessionId||fork.id;const thread=threadStore.create({runtime,cwd:source.cwd,providerSessionId,model:source.model,agent:source.agent||null,name:source.name?`${source.name} (fork)`:null,providerMeta:{setup:fork}});return {thread};
+      const providerSessionId=fork.sessionId||fork.id;const thread=threadStore.create({runtime,cwd:source.cwd,providerSessionId,model:source.model,agent:source.agent||null,name:source.name?`${source.name} (fork)`:null,providerMeta:{...(source.providerMeta||{}),setup:fork}});return {thread};
     }
     if(method==="turn/start"){
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");const session=await ensureSession(thread,context,{model:params.model||thread.model});

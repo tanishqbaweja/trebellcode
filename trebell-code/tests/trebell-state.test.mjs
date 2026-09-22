@@ -91,7 +91,7 @@ test("usage records upsert streaming updates instead of double-counting a turn",
   const env={...process.env,TREBELL_HOME:home};
   try{
     const state=new TrebellStateStore(env);
-    state.recordUsage({runtime:"opencode",provider:"opencode-default",model:"opencode/big-pickle",threadId:"thread-1",turnId:"turn-1",usage:{totalTokens:100,inputTokens:70,outputTokens:30},cost:{amount:0.01,currency:"USD"},at:Date.now()});
+    state.recordUsage({runtime:"opencode",provider:"opencode-default",model:"opencode/big-pickle",environmentId:"ssh-a",threadId:"thread-1",turnId:"turn-1",usage:{totalTokens:100,inputTokens:70,outputTokens:30},cost:{amount:0.01,currency:"USD"},at:Date.now()});
     state.recordUsage({runtime:"opencode",provider:"opencode-default",model:"opencode/big-pickle",threadId:"thread-1",turnId:"turn-1",usage:{totalTokens:140,inputTokens:90,outputTokens:50},cost:{amount:0.02,currency:"USD"},at:Date.now()});
     state.recordUsage({runtime:"claude",provider:"claude-default",model:"sonnet",threadId:"thread-2",turnId:"turn-2",usage:{totalTokens:60,inputTokens:40,outputTokens:20},at:Date.now()});
     const usage=state.usage({days:1});
@@ -101,6 +101,15 @@ test("usage records upsert streaming updates instead of double-counting a turn",
     assert.equal(usage.total.outputTokens,70);
     assert.equal(usage.total.costUsd,0.02);
     assert.equal(usage.models["opencode/big-pickle"].turns,1);
+    assert.equal(usage.environments["ssh-a"].tokens,140);
+    assert.equal(usage.environments.local.tokens,60);
+    const remoteOnly=state.usage({days:1,environmentIds:["ssh-a"]});
+    assert.equal(remoteOnly.records.length,1);
+    assert.equal(remoteOnly.total.totalTokens,140);
+    assert.equal(remoteOnly.records[0].environmentId,"ssh-a");
+    const localOnly=state.usage({days:1,environmentIds:[null]});
+    assert.equal(localOnly.records.length,1);
+    assert.equal(localOnly.total.totalTokens,60);
     const again=new TrebellStateStore(env).usage({days:1});
     assert.equal(again.records.length,2);
     assert.equal(again.total.totalTokens,200);

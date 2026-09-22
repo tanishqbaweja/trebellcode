@@ -201,6 +201,10 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await page.getByRole("button",{name:"Usage"}).click();
   await expect(page.getByRole("heading",{name:"Usage",exact:true})).toBeVisible();
   await expect(page.getByText("Total tokens",{exact:true})).toBeVisible();
+  await page.locator(".usage-environment-filter summary").click();
+  await expect(page.locator(".usage-environment-filter")).toContainText("E2E SSH");
+  await page.getByLabel("E2E SSH").check();
+  await expect(page.locator(".usage-environment-filter summary")).toContainText("E2E SSH");
   await page.getByRole("button",{name:"Settings"}).click();
 
   const providerSelector=page.getByTestId("provider-selector");

@@ -18,6 +18,19 @@ function duration(value){const seconds=Number(value);if(!Number.isFinite(seconds
 export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected",activeThread=null,agentRuntime="codex"}){
   const [days,setDays]=useState(30);const [data,setData]=useState({records:[],total:{},models:{},runtimes:{},daily:{}});const [loading,setLoading]=useState(false);const [error,setError]=useState("");
   const [codex,setCodex]=useState({account:null,rateLimits:null,usage:null,messages:null,errors:{},loading:false,notice:""});
+  const [environmentData,setEnvironmentData]=useState({profiles:[],activeEnvironmentId:null,activeEnvironment:null});
+  const [selectedEnvironments,setSelectedEnvironments]=useState([]);
+  const environmentOptions=useMemo(()=>[
+    {id:"local",name:"Local / legacy",type:"local"},
+    ...(environmentData.profiles||[]).map(profile=>({id:profile.id,name:profile.name||profile.id,type:profile.type||"remote"})),
+  ],[environmentData]);
+  const environmentNames=useMemo(()=>Object.fromEntries(environmentOptions.map(item=>[item.id,item.name])),[environmentOptions]);
+  const activeEnvironmentKey=environmentData.activeEnvironmentId||"local";
+  const activeEnvironmentName=environmentNames[activeEnvironmentKey]||environmentData.activeEnvironment?.name||"Local machine";
+  const environmentFilterLabel=selectedEnvironments.length===0?"All environments":selectedEnvironments.length===1?(environmentNames[selectedEnvironments[0]]||selectedEnvironments[0]):`${selectedEnvironments.length} environments`;
+  function toggleEnvironment(id){
+    setSelectedEnvironments(current=>current.includes(id)?current.filter(item=>item!==id):[...current,id]);
+  }
   async function refreshCodex(){
     if(agentRuntime!=="codex"||!rpc||rpcStatus!=="connected"){setCodex(current=>({...current,account:null,rateLimits:null,usage:null,messages:null,errors:{},loading:false}));return}
     setCodex(current=>({...current,loading:true,errors:{},notice:""}));
@@ -32,10 +45,18 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
     for(const [key,value,failure] of results){next[key]=value;if(failure)next.errors[key]=failure}
     setCodex(next);
   }
-  async function refreshLocal(){setLoading(true);setError("");try{setData(await api(`/api/usage?days=${days}&limit=5000`))}catch(err){setError(err.message)}finally{setLoading(false)}}
+  async function refreshLocal(){
+    setLoading(true);setError("");
+    try{
+      const params=new URLSearchParams({days:String(days),limit:"5000"});
+      for(const id of selectedEnvironments)params.append("environmentId",id);
+      setData(await api("/api/usage?"+params.toString()));
+    }catch(err){setError(err.message)}finally{setLoading(false)}
+  }
   async function refresh(){await Promise.all([refreshLocal(),refreshCodex()])}
-  useEffect(()=>{refreshLocal()},[days]);
+  useEffect(()=>{refreshLocal()},[days,selectedEnvironments.join("|")]);
   useEffect(()=>{refreshCodex()},[rpc,rpcStatus,activeThread?.id,agentRuntime]);
+  useEffect(()=>{api("/api/environments").then(setEnvironmentData).catch(()=>{})},[]);
   const computed=useMemo(()=>{
     let cost=0,known=0,estimated=0;const modelMap={};
     for(const record of data.records||[]){const item=estimateCost(record,settings);if(item){cost+=item.amount;item.estimated?estimated++:known++}const key=record.model||"Unknown model";const bucket=modelMap[key]||(modelMap[key]={tokens:0,turns:0,cost:0,costEntries:0,runtime:record.runtime});bucket.tokens+=Number(record.usage?.totalTokens||0);bucket.turns++;if(item){bucket.cost+=item.amount;bucket.costEntries++}}
@@ -57,11 +78,12 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
   const codexSummary=codex.usage?.summary||null;
   const threadUsage=codex.usage?.threadUsage||null;
   const resetCredits=codex.rateLimits?.rateLimitResetCredits||null;
+  const showLiveCodex=agentRuntime==="codex"&&rpcStatus==="connected"&&(selectedEnvironments.length===0||selectedEnvironments.includes(activeEnvironmentKey));
   return <div className="usage-page">
-    <div className="capabilities-toolbar"><div><h2>Usage</h2><p>Local per-turn history across every Trebell harness, plus live Codex account limits when the active Codex runtime exposes them.</p></div><div className="usage-toolbar"><select value={days} onChange={e=>setDays(Number(e.target.value))}><option value={7}>7 days</option><option value={30}>30 days</option><option value={90}>90 days</option><option value={365}>1 year</option></select><button onClick={refresh} disabled={loading||codex.loading}><RefreshCw size={13}/>{loading||codex.loading?"Refreshing…":"Refresh"}</button><button onClick={clear} disabled={!data.records?.length}><Trash2 size={13}/> Clear local history</button></div></div>
+    <div className="capabilities-toolbar"><div><h2>Usage</h2><p>Per-turn token and cost history across Trebell harnesses and environments, plus live Codex account limits for the active environment.</p></div><div className="usage-toolbar"><details className="usage-environment-filter"><summary>{environmentFilterLabel}</summary><div><button onClick={()=>setSelectedEnvironments([])} className={selectedEnvironments.length===0?"active":""}>All environments</button>{environmentOptions.map(item=><label key={item.id}><input type="checkbox" checked={selectedEnvironments.includes(item.id)} onChange={()=>toggleEnvironment(item.id)}/><span>{item.name}</span><em>{item.type}</em></label>)}</div></details><select value={days} onChange={e=>setDays(Number(e.target.value))}><option value={7}>7 days</option><option value={30}>30 days</option><option value={90}>90 days</option><option value={365}>1 year</option></select><button onClick={refresh} disabled={loading||codex.loading}><RefreshCw size={13}/>{loading||codex.loading?"Refreshing…":"Refresh"}</button><button onClick={clear} disabled={!data.records?.length}><Trash2 size={13}/> Clear local history</button></div></div>
     {error&&<div className="inline-error">{error}</div>}
-    {agentRuntime==="codex"&&rpcStatus==="connected"&&<section className="capability-card codex-account-usage" data-testid="codex-account-usage">
-      <div className="capability-card-head"><span><Sparkles size={15}/><strong>Codex account & limits</strong></span><em>{codex.account?.account?.planType||codex.rateLimits?.rateLimits?.planType||"live"}</em></div>
+    {showLiveCodex&&<section className="capability-card codex-account-usage" data-testid="codex-account-usage">
+      <div className="capability-card-head"><span><Sparkles size={15}/><strong>Codex account & limits</strong></span><em>{activeEnvironmentName} · {codex.account?.account?.planType||codex.rateLimits?.rateLimits?.planType||"live"}</em></div>
       {codex.account?.account?.email&&<p className="codex-account-line">{codex.account.account.email}</p>}
       {codex.rateLimits?.ordinaryUsageAllowed===false&&<div className="usage-warning"><CircleAlert size={14}/><span>Ordinary included usage is currently blocked by the account backend.</span></div>}
       {codexLimits.length>0?<div className="codex-limit-grid">{codexLimits.map(({id,label,snapshot})=><div className="codex-limit-card" key={id}>
@@ -93,6 +115,6 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
       <section className="capability-card"><div className="capability-card-head"><span><strong>Daily tokens</strong></span><em>{days}d</em></div><div className="usage-bars">{daily.length?daily.map(([day,value])=><div key={day}><span>{new Date(day+"T00:00:00").toLocaleDateString(undefined,{month:"short",day:"numeric"})}</span><i><b style={{width:`${Math.max(2,Number(value.tokens||0)/maxDaily*100)}%`}}/></i><strong>{formatTokens(value.tokens)}</strong></div>):<p>No recorded usage in this period.</p>}</div></section>
       <section className="capability-card"><div className="capability-card-head"><span><strong>Models</strong></span><em>{computed.models.length}</em></div><div className="usage-models">{computed.models.length?computed.models.map(([name,value])=><div key={name}><span><strong>{name}</strong><small>{runtimeLabel(value.runtime)} · {value.turns} turn{value.turns===1?"":"s"}</small></span><b>{formatTokens(value.tokens)}</b><em>{value.costEntries?`$${value.cost.toFixed(value.cost<1?4:2)}`:"—"}</em></div>):<p>No model usage recorded yet.</p>}</div></section>
     </div>
-    <section className="capability-card usage-recent"><div className="capability-card-head"><span><strong>Recent turns</strong></span><em>{Math.min(100,(data.records||[]).length)}</em></div><div className="usage-table"><div className="usage-table-head"><span>When</span><span>Harness</span><span>Model</span><span>Tokens</span><span>Cost</span></div>{(data.records||[]).slice(0,100).map(record=>{const cost=estimateCost(record,settings);return <div key={record.id}><span>{new Date(record.at).toLocaleString()}</span><span>{runtimeLabel(record.runtime)}</span><span title={record.model||""}>{record.model||"Unknown"}</span><span>{formatTokens(record.usage?.totalTokens)}</span><span>{cost?`${cost.estimated?"≈":""}$${cost.amount.toFixed(cost.amount<1?4:2)}`:"—"}</span></div>})}</div></section>
+    <section className="capability-card usage-recent"><div className="capability-card-head"><span><strong>Recent turns</strong></span><em>{Math.min(100,(data.records||[]).length)}</em></div><div className="usage-table"><div className="usage-table-head"><span>When</span><span>Environment</span><span>Harness</span><span>Model</span><span>Tokens</span><span>Cost</span></div>{(data.records||[]).slice(0,100).map(record=>{const cost=estimateCost(record,settings);const environmentKey=record.environmentId||"local";return <div key={record.id}><span>{new Date(record.at).toLocaleString()}</span><span title={environmentNames[environmentKey]||environmentKey}>{environmentNames[environmentKey]||environmentKey}</span><span>{runtimeLabel(record.runtime)}</span><span title={record.model||""}>{record.model||"Unknown"}</span><span>{formatTokens(record.usage?.totalTokens)}</span><span>{cost?`${cost.estimated?"≈":""}$${cost.amount.toFixed(cost.amount<1?4:2)}`:"—"}</span></div>})}</div></section>
   </div>;
 }

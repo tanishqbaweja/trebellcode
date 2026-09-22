@@ -247,6 +247,7 @@ export class TrebellStateStore {
     const record={
       id:String(entry.id||`${entry.runtime||"unknown"}:${entry.threadId||"unknown"}:${entry.turnId||"unknown"}`),
       runtime:String(entry.runtime||"unknown"),provider:entry.provider?String(entry.provider):null,model:entry.model?String(entry.model):null,
+      environmentId:normalizeEnvironmentId(entry.environmentId),
       threadId:entry.threadId?String(entry.threadId):null,turnId:entry.turnId?String(entry.turnId):null,at:now,
       usage:{
         totalTokens:Number(usage.totalTokens||0)||0,inputTokens:Number(usage.inputTokens||0)||0,cachedInputTokens:Number(usage.cachedInputTokens||0)||0,
@@ -255,22 +256,27 @@ export class TrebellStateStore {
       cost:entry.cost&&Number.isFinite(Number(entry.cost.amount))?{amount:Number(entry.cost.amount),currency:String(entry.cost.currency||"USD")}:null,
     };
     const index=this.state.usageRecords.findIndex(item=>item.id===record.id);
-    if(index>=0)this.state.usageRecords[index]={...this.state.usageRecords[index],...record,model:record.model||this.state.usageRecords[index].model,provider:record.provider||this.state.usageRecords[index].provider};
+    if(index>=0)this.state.usageRecords[index]={...this.state.usageRecords[index],...record,model:record.model||this.state.usageRecords[index].model,provider:record.provider||this.state.usageRecords[index].provider,environmentId:record.environmentId??this.state.usageRecords[index].environmentId??null};
     else this.state.usageRecords.push(record);
     this.state.usageRecords=this.state.usageRecords.sort((a,b)=>(b.at||0)-(a.at||0)).slice(0,5000);this.#save();return clone(record);
   }
-  usage({days=30,limit=1000}={}){
+  usage({days=30,limit=1000,environmentIds=undefined}={}){
     const horizon=Math.max(1,Math.min(3650,Number(days)||30));const since=Date.now()-horizon*86400000;
-    const records=this.state.usageRecords.filter(item=>(item.at||0)>=since).slice(0,Math.max(1,Math.min(5000,Number(limit)||1000)));
+    const selected=Array.isArray(environmentIds)?new Set(environmentIds.map(normalizeEnvironmentId)):null;
+    const records=this.state.usageRecords.filter(item=>(item.at||0)>=since&&(!selected||selected.has(normalizeEnvironmentId(item.environmentId)))).slice(0,Math.max(1,Math.min(5000,Number(limit)||1000)));
     const total={totalTokens:0,inputTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,outputTokens:0,reasoningOutputTokens:0,costUsd:0,costKnown:0};
-    const models={},runtimes={},daily={};
+    const models={},runtimes={},daily={},environments={};
     for(const record of records){
       for(const key of ["totalTokens","inputTokens","cachedInputTokens","cacheWriteInputTokens","outputTokens","reasoningOutputTokens"])total[key]+=Number(record.usage?.[key]||0);
       if(record.cost?.currency==="USD"&&Number.isFinite(Number(record.cost.amount))){total.costUsd+=Number(record.cost.amount);total.costKnown++}
       const modelKey=record.model||"Unknown model";const runtimeKey=record.runtime||"unknown";const day=new Date(record.at).toISOString().slice(0,10);
       for(const [bucket,key] of [[models,modelKey],[runtimes,runtimeKey],[daily,day]]){if(!bucket[key])bucket[key]={tokens:0,costUsd:0,turns:0};bucket[key].tokens+=Number(record.usage?.totalTokens||0);bucket[key].turns++;if(record.cost?.currency==="USD")bucket[key].costUsd+=Number(record.cost.amount||0)}
+      const environmentKey=normalizeEnvironmentId(record.environmentId)||"local";
+      if(!environments[environmentKey])environments[environmentKey]={tokens:0,costUsd:0,turns:0};
+      environments[environmentKey].tokens+=Number(record.usage?.totalTokens||0);environments[environmentKey].turns++;
+      if(record.cost?.currency==="USD")environments[environmentKey].costUsd+=Number(record.cost.amount||0);
     }
-    return {days:horizon,total,models,runtimes,daily,records:clone(records)};
+    return {days:horizon,total,models,runtimes,daily,environments,environmentIds:selected?[...selected]:null,records:clone(records)};
   }
   clearUsage(){const count=this.state.usageRecords.length;this.state.usageRecords=[];this.#save();return count}
 }

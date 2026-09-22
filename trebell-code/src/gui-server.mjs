@@ -860,7 +860,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/usage"){
-      if(req.method==="GET")return json(res,200,state.usage({days:Number(url.searchParams.get("days")||30),limit:Number(url.searchParams.get("limit")||1000)}));
+      if(req.method==="GET"){
+        const requested=url.searchParams.getAll("environmentId");
+        const environmentIds=requested.length?requested.map(value=>!value||value==="local"?null:value):undefined;
+        return json(res,200,state.usage({days:Number(url.searchParams.get("days")||30),limit:Number(url.searchParams.get("limit")||1000),environmentIds}));
+      }
       if(req.method==="DELETE")return json(res,200,{ok:true,cleared:state.clearUsage()});
     }
     if(url.pathname==="/api/device/screenshot"&&req.method==="GET"){
@@ -1529,7 +1533,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       const params=message?.params||{};
       if(message?.method==="thread/started"&&params.thread?.id){
         if(params.thread.model)codexThreadModels.set(params.thread.id,params.thread.model);
-        state.updateThreadMeta(params.thread.id,{cwd:params.thread.cwd||null,runtime:"codex",deletedAt:null,active:false});
+        state.updateThreadMeta(params.thread.id,{cwd:params.thread.cwd||null,runtime:"codex",environmentId:state.settings().activeEnvironmentId||null,deletedAt:null,active:false});
       }
       if(message?.method==="thread/deleted"&&params.threadId){
         codexThreadModels.delete(params.threadId);const meta=state.threadMeta(params.threadId);state.updateThreadMeta(params.threadId,{deletedAt:Date.now(),active:false});
@@ -1538,7 +1542,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       if(message?.method==="turn/started")markCodexTurnActive(params.threadId,params.turn?.id||params.turnId);
       if(message?.method==="turn/completed")clearCodexRecovery(params.threadId,"completed");
       if(message?.method==="thread/tokenUsage/updated"&&params.threadId&&params.turnId){
-        state.recordUsage({runtime:"codex",provider:selectedProvider,model:codexThreadModels.get(params.threadId)||null,threadId:params.threadId,turnId:params.turnId,usage:params.tokenUsage?.last||params.tokenUsage?.total||{},cost:params.tokenUsage?.cost||null,at:Date.now()});
+        const meta=state.threadMeta(params.threadId);
+        state.recordUsage({runtime:"codex",provider:selectedProvider,model:codexThreadModels.get(params.threadId)||null,environmentId:meta?.environmentId??state.settings().activeEnvironmentId??null,threadId:params.threadId,turnId:params.turnId,usage:params.tokenUsage?.last||params.tokenUsage?.total||{},cost:params.tokenUsage?.cost||null,at:Date.now()});
       }
     },
   });
