@@ -89,8 +89,8 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
     if("modelProvider" in patch){
       setApiKey("");
       setProviderMessage("");
-      await loadProviders();
-      await onProviderUpdated?.({provider:next.modelProvider||patch.modelProvider,agentRuntime:next.agentRuntime||selectedAgent});
+      const refreshPromise=onProviderUpdated?.({provider:next.modelProvider||patch.modelProvider,agentRuntime:next.agentRuntime||selectedAgent});
+      await Promise.all([loadProviders(),refreshPromise]);
     }
     if("customModels" in patch)await onProviderUpdated?.();
     return next;

@@ -384,6 +384,7 @@ export default function App(){
     const seq=++modelRefreshSeqRef.current;
     const targetProvider=expectedProvider||provider;
     const targetRuntime=expectedRuntime||agentRuntime;
+    if(targetProvider!==provider||targetRuntime!==agentRuntime){setModels([]);setModel("");setModelMeta({});setModelError("")}
     const [boot,d]=await Promise.all([
       api("/api/bootstrap").catch(()=>null),
       api("/api/models").catch(error=>({models:[],error:error.message})),
