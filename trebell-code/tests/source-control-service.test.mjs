@@ -190,6 +190,10 @@ test("GitHub PR editing, comment editing and waiting workflow approval use real 
           {id:102,name:"Done",status:"completed",conclusion:"success"},
         ]}),stderr:""};
       }
+      if(command==="gh"&&args[0]==="api"&&args.includes("repos/acme/widget/pulls/7/files?per_page=100&page=1")){
+        return {ok:true,code:0,stdout:JSON.stringify([{filename:"src/payments.js",previous_filename:null,status:"modified",patch:"@@ -1 +1 @@\n-old\n+new",additions:1,deletions:1,changes:2,sha:"blob123",blob_url:"https://github.com/acme/widget/blob/blob123/src/payments.js",raw_url:"https://github.com/acme/widget/raw/blob123/src/payments.js"}]),stderr:""};
+      }
+      if(command==="gh"&&args[0]==="api"&&args.includes("repos/acme/widget/pulls/7"))return {ok:true,code:0,stdout:JSON.stringify({number:7,state:"open",head:{ref:"feature",sha:"head123"},base:{ref:"main",sha:"base123"}}),stderr:""};
       if(command==="gh"&&args[0]==="api"&&args.includes("user"))return {ok:true,code:0,stdout:"me\n",stderr:""};
       if(command==="gh"&&args[0]==="api"&&args.includes("repos/acme/widget/actions/runs/101/approve"))return {ok:true,code:0,stdout:"",stderr:""};
       return {ok:false,code:1,stdout:"",stderr:"unexpected command "+command+" "+args.join(" ")};
@@ -211,6 +215,8 @@ test("GitHub PR editing, comment editing and waiting workflow approval use real 
   const detail=await withSourceControlExecutor(executor,()=>pullRequestDetail("/srv/app",7,{provider:"github"}));
   assert.deepEqual(detail.item.awaitingWorkflowApproval.map(run=>run.id),[101]);
   assert.equal(detail.item.comments[0].canEdit,true);
+  assert.equal(detail.item.files[0].path,"src/payments.js");
+  assert.match(detail.item.files[0].patch,/\+new/);
   const approval=await withSourceControlExecutor(executor,()=>approvePullRequestWorkflows("/srv/app",7,{provider:"github"}));
   assert.equal(approval.approved,1);
   assert.equal(calls.some(call=>call.args.includes("repos/acme/widget/actions/runs/101/approve")),true);

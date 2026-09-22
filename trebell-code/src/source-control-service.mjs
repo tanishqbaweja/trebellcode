@@ -432,6 +432,22 @@ async function githubStackForPull(ctx,number,{pull=null}={}){
     layers,selectedNumber:Number(number),
   };
 }
+async function githubPullRequestFiles(ctx,number){
+  const files=[];
+  for(let page=1;page<=50;page++){
+    const result=await githubApi(ctx,"repos/"+ctx.repository+"/pulls/"+Number(number)+"/files?per_page=100&page="+page,{allowFailure:true});
+    if(!result.ok||!Array.isArray(result.data))return null;
+    for(const file of result.data){
+      files.push({
+        path:file?.filename||"",oldPath:file?.previous_filename||null,status:file?.status||null,
+        patch:file?.patch||null,additions:Number(file?.additions||0),deletions:Number(file?.deletions||0),
+        changes:Number(file?.changes||0),sha:file?.sha||null,blobUrl:file?.blob_url||null,rawUrl:file?.raw_url||null,
+      });
+    }
+    if(result.data.length<100)break;
+  }
+  return files;
+}
 
 async function cliProbe(command,versionArgs,authArgs,cwd,installHint){
   const version=await run(command,versionArgs,{cwd,allowFailure:true,timeout:20000});
@@ -593,7 +609,11 @@ export async function pullRequestDetail(cwd,number,{provider=null}={}){
     const r=await run("gh",["pr","view",String(number),"--json","number,title,body,state,isDraft,url,headRefName,headRefOid,baseRefName,author,reviewDecision,statusCheckRollup,comments,reviews,files,commits,mergeCommit,mergedAt"],{cwd:ctx.info.root,allowFailure:true,maxBuffer:8*1024*1024});
     if(!r.ok)return {ok:false,provider:ctx.provider,capabilities:ctx.capabilities,error:(r.stderr||r.stdout).trim(),item:null};const raw=parseJson(r.stdout,{});item={...raw,provider:"github",headSha:raw.headRefOid||null,mergeCommitSha:raw.mergeCommit?.oid||null,files:(raw.files||[]).map(file=>({path:file.path||file.filename||"",additions:Number(file.additions||0),deletions:Number(file.deletions||0),status:file.status||null,patch:file.patch||null}))};
     item.awaitingWorkflowApproval=await githubAwaitingWorkflowRuns(ctx,item.headSha).catch(()=>[]);
-    const rest=await githubApi(ctx,"repos/"+ctx.repository+"/pulls/"+Number(number),{allowFailure:true});
+    const [rest,apiFiles]=await Promise.all([
+      githubApi(ctx,"repos/"+ctx.repository+"/pulls/"+Number(number),{allowFailure:true}),
+      githubPullRequestFiles(ctx,number).catch(()=>null),
+    ]);
+    if(apiFiles)item.files=apiFiles;
     if(rest.ok&&rest.data){
       item.stack=await githubStackForPull(ctx,number,{pull:rest.data}).catch(()=>null);
       if(rest.data.merged_at&&!item.mergedAt)item.mergedAt=rest.data.merged_at;
