@@ -50,3 +50,30 @@ test("cancelling a clone job transitions to cancelled and clears its temp path",
     assert.equal(finished.status,"cancelled");assert.equal(state.project(join(parent,"widget"),null).cloneJob.status,"cancelled");
   }finally{await Promise.all([rm(home,{recursive:true,force:true}),rm(parent,{recursive:true,force:true})])}
 });
+
+test("remote clone jobs run Git and finalization inside the selected environment",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-clone-remote-home-"));
+  try{
+    const calls=[];let child=null;
+    const environments={
+      get:id=>id==="ssh-a"?{id:"ssh-a",name:"Remote",type:"ssh",cwd:"/srv"}:null,
+      executeArgv:async(id,options)=>{
+        calls.push({kind:"exec",id,...options});
+        if(options.command==="test")return {exitCode:1,stdout:"",stderr:""};
+        return {exitCode:0,stdout:"",stderr:""};
+      },
+      spawnArgv:(id,options)=>{
+        calls.push({kind:"spawn",id,...options});child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();child.kill=()=>true;
+        queueMicrotask(()=>{child.stderr.write("Receiving objects: 64% (64/100)\r");child.emit("close",0,null)});
+        return child;
+      },
+    };
+    const state=new TrebellStateStore({...process.env,TREBELL_HOME:home});const service=new CloneJobService({state,environments});
+    const started=await service.start({url:"git@example.test:acme/widget.git",destination:"/srv/projects/widget",environmentId:"ssh-a"});
+    const finished=await service.wait(started.id,{timeoutMs:2000});
+    assert.equal(finished.status,"completed");
+    const spawned=calls.find(call=>call.kind==="spawn");assert.equal(spawned.id,"ssh-a");assert.equal(spawned.command,"git");assert.equal(spawned.cwd,"/srv/projects");assert.equal(spawned.args[0],"clone");
+    assert.equal(calls.some(call=>call.kind==="exec"&&call.command==="mv"&&call.args.at(-1)==="/srv/projects/widget"),true);
+    assert.equal(state.project("/srv/projects/widget","ssh-a").cloneJob.status,"completed");
+  }finally{await rm(home,{recursive:true,force:true})}
+});

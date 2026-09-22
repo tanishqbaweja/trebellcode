@@ -28,6 +28,9 @@ function ProjectIcon({project}){
 export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOpen,onRunScript,onOpenPreview,onProjectUpdated,models=[]}){
   const [projects,setProjects]=useState([]);
   const [cloneUrl,setCloneUrl]=useState("");
+  const [cloneEnvironmentId,setCloneEnvironmentId]=useState("local");
+  const [cloneParent,setCloneParent]=useState("");
+  const [environmentData,setEnvironmentData]=useState({profiles:[]});
   const [busy,setBusy]=useState(false);
   const [editor,setEditor]=useState(null);
   const [error,setError]=useState("");
@@ -36,7 +39,8 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
   const [iconDraft,setIconDraft]=useState({});
 
   async function refresh(){
-    const d=await api("/api/projects").catch(()=>({projects:[]}));
+    const [d,environments]=await Promise.all([api("/api/projects").catch(()=>({projects:[]})),api("/api/environments").catch(()=>({profiles:[]}))]);
+    setEnvironmentData(environments);
     const enriched=await Promise.all((d.projects||[]).map(async project=>{
       if(project.environment?.type&&project.environment.type!=="local")return {...project,scripts:Array.isArray(project.scripts)?project.scripts:[],git:null,remote:null,suggested:{scripts:[],t3:{present:false},packageManager:null}};
       const [git,suggested]=await Promise.all([
@@ -91,16 +95,18 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
 
   async function clone(){
     if(!cloneUrl.trim())return;
-    const parent=await window.trebellDesktop?.pickDirectory?.();
+    const environmentId=cloneEnvironmentId==="local"?null:cloneEnvironmentId;
+    const profile=environmentData.profiles?.find(item=>item.id===environmentId)||null;
+    const parent=environmentId?(cloneParent.trim()||profile?.cwd||""):await window.trebellDesktop?.pickDirectory?.();
     if(!parent)return;
     const name=cloneUrl.replace(/\/+$/,"").split("/").pop().replace(/\.git$/,"")||"repository";
-    const sep=parent.includes("\\")?"\\":"/";
+    const sep=environmentId?"/":parent.includes("\\")?"\\":"/";
     const destination=parent.replace(/[\\\/]$/,"")+sep+name;
     setBusy(true);setError("");
     try{
-      const result=await api("/api/clone-jobs",{method:"POST",body:{action:"start",url:cloneUrl.trim(),destination,environmentId:null}});
+      const result=await api("/api/clone-jobs",{method:"POST",body:{action:"start",url:cloneUrl.trim(),destination,environmentId}});
       await refresh();
-      onOpen(result.project?.path||destination,null);
+      onOpen(result.project?.path||destination,environmentId);
       setCloneUrl("");
     } catch(err){setError(err.message||String(err))}
     finally { setBusy(false); }
@@ -212,7 +218,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
   return <div className="projects-page">
     <div className="page-actions"><button onClick={addLocal}><Plus size={14}/> Add local project</button><button onClick={refresh}><RefreshCw size={14}/></button></div>
     {error&&<p className="provider-status-error">{error}</p>}
-    <div className="clone-card"><GitBranch size={20}/><div><strong>Clone repository</strong><span>HTTPS or SSH Git URL</span></div><input value={cloneUrl} onChange={e=>setCloneUrl(e.target.value)} placeholder="https://github.com/owner/repo.git"/><button onClick={clone} disabled={busy||!cloneUrl.trim()}>{busy?"Working…":"Clone"}</button></div>
+    <div className="clone-card"><GitBranch size={20}/><div><strong>Clone repository</strong><span>Starts in the background</span></div><select aria-label="Clone environment" value={cloneEnvironmentId} onChange={e=>{const id=e.target.value;setCloneEnvironmentId(id);const profile=environmentData.profiles?.find(item=>item.id===id);setCloneParent(profile?.cwd||"")}}><option value="local">Local machine</option>{(environmentData.profiles||[]).map(profile=><option key={profile.id} value={profile.id}>{profile.name} · {profile.type.toUpperCase()}</option>)}</select><div className={"clone-inputs "+(cloneEnvironmentId==="local"?"":"remote")}><input aria-label="Clone URL" value={cloneUrl} onChange={e=>setCloneUrl(e.target.value)} placeholder="https://github.com/owner/repo.git"/>{cloneEnvironmentId!=="local"&&<input aria-label="Clone parent directory" value={cloneParent} onChange={e=>setCloneParent(e.target.value)} placeholder="/srv/projects" title="Remote parent directory"/>}</div><button onClick={clone} disabled={busy||!cloneUrl.trim()}>{busy?"Starting…":"Clone"}</button></div>
     <div className="project-groups">{groups.map(group=><section className="project-group" key={group.key}>
       <div className="project-group-head"><Layers3 size={14}/><div><strong>{group.label}</strong><span>{group.environmentLabel} · {group.projects.length} checkout{group.projects.length===1?"":"s"}</span></div></div>
       <div className="project-grid">{group.projects.map(p=><div className={p.path===currentPath&&(p.environmentId||null)===(currentEnvironmentId||null)?"project-card active":"project-card"} key={p.id}>

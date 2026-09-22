@@ -110,6 +110,10 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await page.getByRole("button",{name:"Projects",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Projects"})).toBeVisible();
   await expect(page.getByText("Clone repository")).toBeVisible();
+  await page.getByLabel("Clone environment").selectOption("ssh-palette");
+  await expect(page.getByLabel("Clone parent directory")).toHaveValue("/srv/app");
+  await page.getByLabel("Clone environment").selectOption("local");
+  await expect(page.getByLabel("Clone parent directory")).toHaveCount(0);
   const e2eProject=page.locator(".project-card").filter({hasText:"E2E Project"});
   await expect(e2eProject.locator(".project-icon")).toHaveText("E2");
   await expect(e2eProject.getByLabel("Submodules")).toHaveValue("top-level");
