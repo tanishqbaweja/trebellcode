@@ -49,3 +49,20 @@ test("prepareAttachment streams remote bytes instead of embedding them in the co
     assert.match(command,/cat > /);
   }finally{await rm(root,{recursive:true,force:true})}
 });
+
+test("attachment validation enforces the aggregate 80 MiB image ceiling",async()=>{
+  const manager=new EnvironmentManager({state:stateFor([{id:"local",name:"Local",type:"local",cwd:""}])});
+  manager.attachmentInfo=async(_id,path)=>({path,size:10*1024*1024,image:true,environmentId:"local"});
+  const accepted=await manager.validateAttachments("local",Array.from({length:8},(_,index)=>`image-${index}.png`));
+  assert.equal(accepted.imageBytes,80*1024*1024);
+  await assert.rejects(()=>manager.validateAttachments("local",Array.from({length:9},(_,index)=>`image-${index}.png`)),/80 MiB total/i);
+});
+
+test("attachment metadata is read inside remote environments",async()=>{
+  const manager=new EnvironmentManager({state:stateFor([{id:"ssh",name:"SSH",type:"ssh",cwd:"/srv/project",host:"example.invalid",port:22}])});
+  let command="";
+  manager.execute=async(_id,options)=>{command=options.command;return {exitCode:0,stdout:"1234",stderr:"",timedOut:false}};
+  const info=await manager.attachmentInfo("ssh","/srv/project/.trebell/attachments/picture.png");
+  assert.equal(info.size,1234);assert.equal(info.image,true);assert.equal(info.environmentId,"ssh");
+  assert.match(command,/wc -c/);assert.match(command,/picture\.png/);
+});

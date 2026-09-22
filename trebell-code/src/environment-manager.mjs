@@ -248,6 +248,32 @@ export class EnvironmentManager {
     });
     return {path:remotePath,size:info.size,copied:true,environmentId:profile.id};
   }
+
+  async attachmentInfo(id,path){
+    const requested=String(path||"").trim();if(!requested)throw new Error("Attachment path is required");
+    const profile=id?this.get(id):null;
+    let size;
+    if(!profile||profile.type==="local"){
+      const resolved=resolve(requested);const info=await stat(resolved);if(!info.isFile())throw new Error("Attachment path is not a file");size=info.size;
+      return {path:resolved,size,image:/\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(resolved),environmentId:profile?.id||null};
+    }
+    const result=await this.execute(profile.id,{command:`if [ -f ${quotePosix(requested)} ]; then wc -c < ${quotePosix(requested)}; else exit 44; fi`,cwd:"",timeoutMs:12000});
+    if(result.exitCode!==0)throw new Error(result.stderr||`Attachment does not exist in ${profile.name}`);
+    size=Number(String(result.stdout||"").trim());if(!Number.isFinite(size)||size<0)throw new Error("Could not determine attachment size");
+    return {path:requested,size,image:/\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(requested),environmentId:profile.id};
+  }
+
+  async validateAttachments(id,paths,{maxCount=100,maxImageBytes=80*1024*1024}={}){
+    const requested=Array.isArray(paths)?paths:[];if(requested.length>maxCount)throw new Error(`A message supports up to ${maxCount} attachments`);
+    const files=[];let imageBytes=0;
+    for(const path of requested){
+      const file=await this.attachmentInfo(id,path);const maxBytes=file.image?10*1024*1024:50*1024*1024;
+      if(file.size>maxBytes)throw new Error(`${file.image?"Image":"Attachment"} is larger than ${Math.round(maxBytes/1024/1024)} MB`);
+      if(file.image){imageBytes+=file.size;if(imageBytes>maxImageBytes)throw new Error("Images in one message cannot exceed 80 MiB total")}
+      files.push(file);
+    }
+    return {files,count:files.length,imageBytes,maxImageBytes};
+  }
 }
 
 export { runProcess };

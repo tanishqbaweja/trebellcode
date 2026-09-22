@@ -1069,6 +1069,12 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return json(res,200,{files});
       }catch(error){return json(res,400,{error:error.message});}
     }
+    if(url.pathname==="/api/attachments/validate"&&req.method==="POST"){
+      try{
+        const body=await readJsonBody(req,512*1024);const paths=Array.isArray(body.paths)?body.paths:[];
+        return json(res,200,await environments.validateAttachments(body.environmentId||null,paths));
+      }catch(error){return json(res,400,{error:error.message});}
+    }
     if(url.pathname==="/api/freebuff/overview"){
       const model=url.searchParams.get("model") || "";
       const timezone=url.searchParams.get("timezone") || "UTC";

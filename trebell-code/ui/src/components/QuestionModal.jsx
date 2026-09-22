@@ -7,6 +7,7 @@ export default function QuestionModal({request,onSubmit,onCancel,pickFiles}){
   const [answers,setAnswers]=useState(initial);
   const [filesByQuestion,setFilesByQuestion]=useState(()=>Object.fromEntries(questions.map(q=>[q.id,[]])));
   const [busy,setBusy]=useState("");
+  const [submitError,setSubmitError]=useState("");
   if(!request)return null;
   const fileCount=Object.values(filesByQuestion).reduce((sum,items)=>sum+(items?.length||0),0);
   async function attach(questionId){
@@ -41,6 +42,7 @@ export default function QuestionModal({request,onSubmit,onCancel,pickFiles}){
       <input placeholder="Custom answer…" value={answers[q.id]?.find(a=>!q.options?.some(o=>o.label===a))||""} onChange={e=>setCustom(q,e.target.value)}/>
       <div className="question-files">{(filesByQuestion[q.id]||[]).map(path=><span key={path}>{path.split(/[\\/]/).pop()}<button type="button" title="Remove attachment" onClick={()=>setFilesByQuestion(prev=>({...prev,[q.id]:(prev[q.id]||[]).filter(item=>item!==path)}))}><X size={10}/></button></span>)}<button type="button" onClick={()=>attach(q.id)} disabled={busy===q.id||fileCount>=100}><Paperclip size={12}/> {busy===q.id?"Choosing…":"Attach files"}</button></div>
     </div>)}
-    <div className="modal-actions"><span>{fileCount?`${fileCount}/100 attached`:""}</span><button onClick={onCancel}>Cancel</button><button className="primary" onClick={()=>onSubmit(answers,filesByQuestion)}>Submit</button></div>
+    {submitError&&<div className="inline-error">{submitError}</div>}
+    <div className="modal-actions"><span>{fileCount?`${fileCount}/100 attached`:""}</span><button onClick={onCancel}>Cancel</button><button className="primary" disabled={busy==="submit"} onClick={async()=>{setSubmitError("");setBusy("submit");try{await onSubmit(answers,filesByQuestion)}catch(error){setSubmitError(error?.message||String(error))}finally{setBusy("")}}}>{busy==="submit"?"Submitting…":"Submit"}</button></div>
   </div></div>;
 }
