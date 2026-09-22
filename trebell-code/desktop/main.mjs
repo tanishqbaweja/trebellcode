@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { createGuiServer } from "../src/gui-server.mjs";
 import { parseFirefoxProfiles, readFirefoxCookieDatabase } from "./firefox-import.mjs";
 import { chromiumCookieDatabase, discoverHeliumProfiles, readHeliumProfileCookies } from "./chromium-import.mjs";
+import { DEFAULT_SNAPSHOT_CONFIG, normalizeSnapshotConfig } from "./snapshot-config.mjs";
 
 const require=createRequire(import.meta.url);
 const { autoUpdater }=require("electron-updater");
@@ -16,7 +17,7 @@ let quitting=false;
 let agentBrowser=null;
 let tray=null;
 let backgroundEnabled=false;
-let snapshotConfig={enabled:false,shortcut:"CommandOrControl+Shift+S",includeText:false};
+let snapshotConfig={...DEFAULT_SNAPSHOT_CONFIG};
 let browserRecordingGrantUntil=0;
 let updaterConfigured=false;
 let updaterState={supported:false,status:"idle",currentVersion:null,availableVersion:null,percent:null,transferred:null,total:null,error:null,releaseName:null};
@@ -578,6 +579,49 @@ function pruneSnapshots(max=20){
   for(const item of pending.slice(0,Math.max(0,pending.length-max)))ackSnapshot(item.id);
 }
 
+function snapshotSoundWav(kind="soft-pop"){
+  const sampleRate=22050,duration=kind==="camera-shutter"?.18:.13,count=Math.max(1,Math.floor(sampleRate*duration)),bytes=Buffer.alloc(44+count*2);
+  bytes.write("RIFF",0);bytes.writeUInt32LE(36+count*2,4);bytes.write("WAVE",8);bytes.write("fmt ",12);bytes.writeUInt32LE(16,16);bytes.writeUInt16LE(1,20);bytes.writeUInt16LE(1,22);bytes.writeUInt32LE(sampleRate,24);bytes.writeUInt32LE(sampleRate*2,28);bytes.writeUInt16LE(2,32);bytes.writeUInt16LE(16,34);bytes.write("data",36);bytes.writeUInt32LE(count*2,40);
+  for(let i=0;i<count;i++){
+    const t=i/sampleRate,p=i/count;let value;
+    if(kind==="camera-shutter"){
+      const first=Math.max(0,1-t/.055),second=t>.065?Math.max(0,1-(t-.065)/.09):0;
+      value=(Math.sin(2*Math.PI*1450*t)*first*.72+Math.sin(2*Math.PI*620*t)*second*.55)*(1-p*.25);
+    }else{
+      const freq=920-430*p,envelope=Math.pow(1-p,2.4);value=Math.sin(2*Math.PI*freq*t)*envelope*.62;
+    }
+    bytes.writeInt16LE(Math.max(-32767,Math.min(32767,Math.round(value*32767))),44+i*2);
+  }
+  return bytes;
+}
+
+function playSnapshotSound(kind){
+  if(process.env.TREBELL_TEST_HIDDEN==="1")return;
+  let audioWindow;
+  try{
+    const wav=snapshotSoundWav(kind),src=`data:audio/wav;base64,${wav.toString("base64")}`;
+    audioWindow=new BrowserWindow({width:1,height:1,show:false,frame:false,focusable:false,skipTaskbar:true,webPreferences:{contextIsolation:true,sandbox:true}});
+    audioWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(`<audio autoplay src="${src}"></audio>`)}`).catch(()=>{});
+    setTimeout(()=>{try{if(audioWindow&&!audioWindow.isDestroyed())audioWindow.destroy()}catch{}},750).unref?.();
+  }catch{try{shell.beep()}catch{}}
+}
+
+function showSnapshotFeedback(meta){
+  if(process.env.TREBELL_TEST_HIDDEN==="1")return;
+  if(snapshotConfig.playSound)playSnapshotSound(snapshotConfig.sound);
+  if(!snapshotConfig.flash&&!snapshotConfig.animations)return;
+  const b=meta?.bounds;if(!b||!Number.isFinite(Number(b.x))||!Number.isFinite(Number(b.y))||Number(b.width)<20||Number(b.height)<20)return;
+  let overlay;
+  try{
+    const flash=snapshotConfig.flash?"background:rgba(255,255,255,.10);box-shadow:inset 0 0 0 3px rgba(139,108,255,.9)":"box-shadow:inset 0 0 0 2px rgba(139,108,255,.62)";
+    const animation=snapshotConfig.animations?"animation:trebellCapture .42s cubic-bezier(.2,.8,.2,1) both":"";
+    const html=`<!doctype html><style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}body{${flash};${animation}}@keyframes trebellCapture{0%{opacity:.22;transform:scale(.992)}28%{opacity:1;transform:scale(1)}100%{opacity:0;transform:scale(1.003)}}</style>`;
+    overlay=new BrowserWindow({x:Math.round(Number(b.x)),y:Math.round(Number(b.y)),width:Math.max(20,Math.round(Number(b.width))),height:Math.max(20,Math.round(Number(b.height))),show:false,frame:false,transparent:true,resizable:false,movable:false,focusable:false,alwaysOnTop:true,skipTaskbar:true,hasShadow:false,webPreferences:{contextIsolation:true,sandbox:true}});
+    overlay.setIgnoreMouseEvents(true);overlay.setAlwaysOnTop(true,"screen-saver");overlay.once("ready-to-show",()=>overlay?.showInactive());overlay.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(()=>{});
+    setTimeout(()=>{try{if(overlay&&!overlay.isDestroyed())overlay.destroy()}catch{}},snapshotConfig.animations?520:170).unref?.();
+  }catch{try{if(overlay&&!overlay.isDestroyed())overlay.destroy()}catch{}}
+}
+
 async function captureActiveSnapshot(){
   const info=await activeWindowInfo({includeText:Boolean(snapshotConfig.includeText)});
   if(!info)throw new Error("Active-window capture is unavailable on this platform.");
@@ -596,8 +640,9 @@ async function captureActiveSnapshot(){
     hasAccessibility:Array.isArray(info.accessibility)&&info.accessibility.length>0,
   };
   writeFileSync(paths.png,image);writeFileSync(paths.json,JSON.stringify(meta,null,2),{encoding:"utf8",mode:0o600});pruneSnapshots(20);
+  showSnapshotFeedback(meta);
   if(windowRef&&!windowRef.isDestroyed()){
-    if(windowRef.isMinimized())windowRef.restore();windowRef.show();windowRef.focus();
+    if(process.env.TREBELL_TEST_HIDDEN!=="1"){if(windowRef.isMinimized())windowRef.restore();windowRef.show();windowRef.focus()}
     windowRef.webContents.send("snapshot:captured",{id});
   }
   return meta;
@@ -605,11 +650,7 @@ async function captureActiveSnapshot(){
 
 let registeredSnapshotShortcut=null;
 function applySnapshotConfig(input={}, {persist=true}={}){
-  const next={
-    enabled:Boolean(input.enabled),
-    shortcut:String(input.shortcut||snapshotConfig.shortcut||"CommandOrControl+Shift+S").trim().slice(0,120)||"CommandOrControl+Shift+S",
-    includeText:Boolean(input.includeText),
-  };
+  const next=normalizeSnapshotConfig(input,snapshotConfig);
   const previous={...snapshotConfig};
   if(registeredSnapshotShortcut){globalShortcut.unregister(registeredSnapshotShortcut);registeredSnapshotShortcut=null}
   if(next.enabled){

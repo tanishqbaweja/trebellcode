@@ -157,8 +157,8 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
   if(!desktopSnapshot?.dataUrl?.startsWith("data:image/png;base64,")) throw new Error("Desktop snapshot is not a PNG data URL.");
   if(!(desktopSnapshot.width>0&&desktopSnapshot.height>0)) throw new Error("Desktop snapshot dimensions are invalid.");
 
-  const snapshotConfig=await mainPage.evaluate(()=>window.trebellDesktop.snapshots.configure({enabled:true,shortcut:"CommandOrControl+Shift+F11",includeText:false}));
-  if(!snapshotConfig?.enabled||!snapshotConfig?.registered) throw new Error("SnapShot shortcut did not register in the packaged desktop app.");
+  const snapshotConfig=await mainPage.evaluate(()=>window.trebellDesktop.snapshots.configure({enabled:true,shortcut:"CommandOrControl+Shift+F11",includeText:false,playSound:false,sound:"camera-shutter",flash:false,animations:false}));
+  if(!snapshotConfig?.enabled||!snapshotConfig?.registered||snapshotConfig.playSound!==false||snapshotConfig.sound!=="camera-shutter"||snapshotConfig.flash!==false||snapshotConfig.animations!==false) throw new Error("SnapShot settings did not persist in the packaged desktop app.");
   await mainPage.bringToFront();
   await mainPage.waitForTimeout(150);
   const captured=await mainPage.evaluate(()=>window.trebellDesktop.snapshots.capture());
@@ -176,7 +176,7 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
     const attached=await mainPage.locator('.context-chip').filter({hasText:'SnapShot'}).count();
     if(!attached) throw new Error("SnapShot disappeared from pending storage without being attached to the draft.");
   }
-  await mainPage.evaluate(()=>window.trebellDesktop.snapshots.configure({enabled:false,shortcut:"CommandOrControl+Shift+F11",includeText:false}));
+  await mainPage.evaluate(()=>window.trebellDesktop.snapshots.configure({enabled:false,shortcut:"CommandOrControl+Shift+F11",includeText:false,playSound:false,flash:false,animations:false}));
 
   await mainPage.evaluate(()=>window.trebellDesktop.zoom.reset());
   const zoomBefore=(await mainPage.evaluate(()=>window.trebellDesktop.zoom.get())).factor;

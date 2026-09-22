@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 async function expectModelCatalog(page,labels){
-  const picker=page.getByTestId("model-picker");await picker.click();
+  const picker=page.getByTestId("model-picker");await expect(picker).toBeVisible();await expect(picker).toBeEnabled();await picker.click();
   const menu=page.locator(".model-picker-menu");await expect(menu).toBeVisible();
   await expect(menu.locator("> button strong")).toHaveText(labels);
   await picker.click();await expect(menu).toBeHidden();
