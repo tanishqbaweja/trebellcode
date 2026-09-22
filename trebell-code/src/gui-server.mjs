@@ -45,7 +45,7 @@ import {
 } from "./git-service.mjs";
 import {
   sourceControlDiagnostics, listPullRequests, createPullRequest, pullRequestDetail,
-  editPullRequest, editPullRequestComment, approvePullRequestWorkflows,
+  editPullRequest, editPullRequestComment, approvePullRequestWorkflows, revertPullRequest,
   commentOnPullRequest, reviewPullRequest, mergePullRequest, updatePullRequestBranch,
   checkoutPullRequest, requestPullRequestReviewer, publishRepository, getPullRequestFilesViewed, setPullRequestFilesViewed,
   sourceControlGitAction, sourceControlGitInfo, withSourceControlExecutor,
@@ -1140,6 +1140,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         if(body.action==="edit") return json(res,200,await inSourceControlEnvironment(environmentId,()=>editPullRequest(cwd,body.number,{provider:body.provider||null,title:body.title,body:body.body||""})));
         if(body.action==="edit-comment") return json(res,200,await inSourceControlEnvironment(environmentId,()=>editPullRequestComment(cwd,body.number,body.commentId,body.body||"",{provider:body.provider||null})));
         if(body.action==="approve-workflows") return json(res,200,await inSourceControlEnvironment(environmentId,()=>approvePullRequestWorkflows(cwd,body.number,{provider:body.provider||null})));
+        if(body.action==="revert") return json(res,200,await inSourceControlEnvironment(environmentId,()=>revertPullRequest(cwd,body.number,{provider:body.provider||null})));
         if(body.action==="comment") return json(res,200,await inSourceControlEnvironment(environmentId,()=>commentOnPullRequest(cwd,body.number,body.body||"",{provider:body.provider||null})));
         if(body.action==="review") return json(res,200,await inSourceControlEnvironment(environmentId,()=>reviewPullRequest(cwd,body.number,{provider:body.provider||null,event:body.event,body:body.body||""})));
         if(body.action==="merge") return json(res,200,await inSourceControlEnvironment(environmentId,()=>mergePullRequest(cwd,body.number,{provider:body.provider||null,method:body.method,auto:Boolean(body.auto)})));

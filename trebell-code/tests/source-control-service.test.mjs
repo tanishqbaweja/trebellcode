@@ -15,6 +15,7 @@ import {
   editPullRequest,
   editPullRequestComment,
   approvePullRequestWorkflows,
+  revertPullRequest,
   withSourceControlExecutor,
 } from "../src/source-control-service.mjs";
 import { git } from "../src/git-service.mjs";
@@ -49,7 +50,7 @@ test("provider capabilities reflect known host limitations",()=>{
   assert.equal(CAPABILITIES.github.viewedFiles,"host");
   assert.equal(CAPABILITIES.github.edit,true);
   assert.equal(CAPABILITIES.github.approveWorkflows,true);
-  assert.equal(CAPABILITIES.github.revert,false);
+  assert.equal(CAPABILITIES.github.revert,true);
   assert.equal(CAPABILITIES.gitlab.viewedFiles,"environment");
   assert.equal(CAPABILITIES.bitbucket.publish,true);
   assert.equal(CAPABILITIES["azure-devops"].publish,true);
@@ -211,4 +212,40 @@ test("GitHub PR editing, comment editing and waiting workflow approval use real 
   const approval=await withSourceControlExecutor(executor,()=>approvePullRequestWorkflows("/srv/app",7,{provider:"github"}));
   assert.equal(approval.approved,1);
   assert.equal(calls.some(call=>call.args.includes("repos/acme/widget/actions/runs/101/approve")),true);
+});
+
+test("GitHub revert PR uses an isolated worktree and cleans it after opening the revert PR",async()=>{
+  const calls=[];
+  const executor={
+    run:async(command,args,options={})=>{
+      calls.push({command,args:[...args],cwd:options.cwd});
+      if(command==="git"&&args[0]==="rev-parse"&&args[1]==="--show-toplevel")return {ok:true,code:0,stdout:"/srv/app\n",stderr:""};
+      if(command==="git"&&args[0]==="branch"&&args[1]==="--show-current")return {ok:true,code:0,stdout:"main\n",stderr:""};
+      if(command==="git"&&args[0]==="for-each-ref"&&args.includes("refs/heads"))return {ok:true,code:0,stdout:"main\n",stderr:""};
+      if(command==="git"&&args[0]==="for-each-ref")return {ok:true,code:0,stdout:"origin/main\n",stderr:""};
+      if(command==="git"&&args[0]==="status")return {ok:true,code:0,stdout:"## main...origin/main\n",stderr:""};
+      if(command==="git"&&args[0]==="remote")return {ok:true,code:0,stdout:"origin\thttps://github.com/acme/widget.git (fetch)\norigin\thttps://github.com/acme/widget.git (push)\n",stderr:""};
+      if(command==="git"&&args[0]==="worktree"&&args[1]==="list")return {ok:true,code:0,stdout:"worktree /srv/app\nHEAD abc\nbranch refs/heads/main\n",stderr:""};
+      if(command==="gh"&&args[0]==="pr"&&args[1]==="view")return {ok:true,code:0,stdout:JSON.stringify({number:7,title:"Feature",state:"MERGED",mergedAt:"2026-09-20T10:00:00Z",mergeCommit:{oid:"merge123"},baseRefName:"main"}),stderr:""};
+      if(command==="git"&&args[0]==="fetch")return {ok:true,code:0,stdout:"",stderr:""};
+      if(command==="git"&&args[0]==="worktree"&&args[1]==="add")return {ok:true,code:0,stdout:"",stderr:""};
+      if(command==="git"&&args[0]==="rev-list")return {ok:true,code:0,stdout:"merge123 parent1 parent2\n",stderr:""};
+      if(command==="git"&&args[0]==="revert")return {ok:true,code:0,stdout:"reverted",stderr:""};
+      if(command==="git"&&args[0]==="push")return {ok:true,code:0,stdout:"pushed",stderr:""};
+      if(command==="gh"&&args[0]==="pr"&&args[1]==="create")return {ok:true,code:0,stdout:"https://github.com/acme/widget/pull/8\n",stderr:""};
+      if(command==="git"&&args[0]==="worktree"&&args[1]==="remove")return {ok:true,code:0,stdout:"",stderr:""};
+      if(command==="git"&&args[0]==="branch"&&args[1]==="-D")return {ok:true,code:0,stdout:"",stderr:""};
+      return {ok:false,code:1,stdout:"",stderr:"unexpected "+command+" "+args.join(" ")};
+    },
+  };
+  const result=await withSourceControlExecutor(executor,()=>revertPullRequest("/srv/app",7,{provider:"github"}));
+  assert.equal(result.url,"https://github.com/acme/widget/pull/8");
+  const added=calls.find(call=>call.command==="git"&&call.args[0]==="worktree"&&call.args[1]==="add");
+  assert.ok(added);
+  assert.equal(added.args.includes("origin/main"),true);
+  const reverted=calls.find(call=>call.command==="git"&&call.args[0]==="revert");
+  assert.deepEqual(reverted.args.slice(0,4),["revert","-m","1","--no-edit"]);
+  assert.equal(reverted.args.at(-1),"merge123");
+  assert.equal(calls.some(call=>call.command==="git"&&call.args[0]==="worktree"&&call.args[1]==="remove"),true);
+  assert.equal(calls.some(call=>call.command==="git"&&call.args[0]==="branch"&&call.args[1]==="-D"),true);
 });
