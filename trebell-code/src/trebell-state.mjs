@@ -15,6 +15,7 @@ const DEFAULT_STATE = Object.freeze({
     notifications: true,
     notificationSound: false,
     backgroundMode: false,
+    agentDeviceAccess: false,
     keyboardShortcuts: {},
     keybindingRules: [],
     activeEnvironmentId: null,

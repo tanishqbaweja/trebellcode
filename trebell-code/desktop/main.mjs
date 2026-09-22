@@ -1,5 +1,5 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, Notification, Tray, Menu, nativeImage, desktopCapturer, screen, clipboard } from "electron";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { app, BrowserWindow, ipcMain, shell, dialog, Notification, Tray, Menu, nativeImage, desktopCapturer, screen, clipboard, globalShortcut } from "electron";
+import { existsSync, readFileSync, statSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { createGuiServer } from "../src/gui-server.mjs";
@@ -10,6 +10,7 @@ let quitting=false;
 let agentBrowser=null;
 let tray=null;
 let backgroundEnabled=false;
+let snapshotConfig={enabled:false,shortcut:"CommandOrControl+Shift+S",includeText:false};
 
 const MIN_ZOOM_FACTOR=0.7;
 const MAX_ZOOM_FACTOR=2.5;
@@ -89,6 +90,15 @@ function loadDesktopPrefs(){
 function saveDesktopPrefs(prefs){
   try{writeFileSync(desktopPrefsPath(),JSON.stringify(prefs,null,2),"utf8")}catch{}
 }
+function snapshotsDir(){const dir=join(app.getPath("userData"),"snapshots");mkdirSync(dir,{recursive:true});return dir}
+function snapshotPaths(id){const safe=String(id||"").replace(/[^a-zA-Z0-9_-]/g,"");return {json:join(snapshotsDir(),safe+".json"),png:join(snapshotsDir(),safe+".png")}}
+function pendingSnapshots(){
+  const dir=snapshotsDir();const items=[];
+  for(const name of readdirSync(dir)){if(!name.endsWith(".json"))continue;try{const meta=JSON.parse(readFileSync(join(dir,name),"utf8"));const paths=snapshotPaths(meta.id);if(existsSync(paths.png))items.push(meta)}catch{}}
+  return items.sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
+}
+function readSnapshot(id){const paths=snapshotPaths(id);const meta=JSON.parse(readFileSync(paths.json,"utf8"));const data=readFileSync(paths.png);return {...meta,dataBase64:data.toString("base64")}}
+function ackSnapshot(id){const paths=snapshotPaths(id);for(const path of [paths.json,paths.png])try{unlinkSync(path)}catch{}return {ok:true,id}}
 let brandIconCache=null;
 function brandIconDataUrl(){
   const root=join(import.meta.dirname,"..","branding");

@@ -1,11 +1,12 @@
 import React from "react";
-import { BrainCircuit, Cpu, FileCode2, FileDiff, GitBranch, Globe2, Target, X } from "lucide-react";
+import { BrainCircuit, Cpu, FileCode2, FileDiff, GitBranch, Globe2, Smartphone, Target, X } from "lucide-react";
 
 const TABS=[
   ["files",FileCode2,"Files"],
   ["diff",FileDiff,"Diff"],
   ["preview",Globe2,"Browser"],
   ["source",GitBranch,"Git"],
+  ["device",Smartphone,"Device"],
   ["agents",BrainCircuit,"Agents"],
   ["goal",Target,"Goal"],
   ["runtime",Cpu,"Runtime"],

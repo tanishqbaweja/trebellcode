@@ -25,6 +25,7 @@ import GoalPanel from "./components/GoalPanel.jsx";
 import OnboardingModal from "./components/OnboardingModal.jsx";
 import OpenInPicker from "./components/OpenInPicker.jsx";
 import WorktreeSetupCard from "./components/WorktreeSetupCard.jsx";
+import DevicePanel from "./components/DevicePanel.jsx";
 import { resolveKeybinding } from "./keybindings.js";
 
 const MAX_COMPOSER_ATTACHMENTS=100;
@@ -53,6 +54,20 @@ const TREBELL_COMPUTER_TOOLS=[{
     {type:"function",name:"scroll",description:"Scroll at the current pointer position. Positive delta scrolls up; negative scrolls down.",inputSchema:{type:"object",properties:{delta:{type:"integer"}},required:["delta"],additionalProperties:false}},
     {type:"function",name:"type",description:"Type text into the focused desktop application.",inputSchema:{type:"object",properties:{text:{type:"string"}},required:["text"],additionalProperties:false}},
     {type:"function",name:"key",description:"Send a supported key or shortcut such as ENTER, TAB, ESC, CTRL+A, CTRL+C, CTRL+V, ALT+TAB, UP, DOWN, LEFT, RIGHT.",inputSchema:{type:"object",properties:{key:{type:"string"}},required:["key"],additionalProperties:false}}
+  ]
+}];
+
+const TREBELL_DEVICE_TOOLS=[{
+  type:"namespace",
+  name:"trebell_device",
+  description:"Inspect and control local Android emulators or iOS simulators exposed by Trebell Code. Physical phones are never controlled by these tools.",
+  tools:[
+    {type:"function",name:"list",description:"List available Android emulators and iOS simulators.",inputSchema:{type:"object",properties:{},additionalProperties:false}},
+    {type:"function",name:"screenshot",description:"Capture a simulator screen as an image.",inputSchema:{type:"object",properties:{id:{type:"string"}},required:["id"],additionalProperties:false}},
+    {type:"function",name:"tap",description:"Tap simulator pixel coordinates from the latest screenshot.",inputSchema:{type:"object",properties:{id:{type:"string"},x:{type:"number"},y:{type:"number"}},required:["id","x","y"],additionalProperties:false}},
+    {type:"function",name:"type",description:"Type text into the focused Android emulator control.",inputSchema:{type:"object",properties:{id:{type:"string"},text:{type:"string"}},required:["id","text"],additionalProperties:false}},
+    {type:"function",name:"key",description:"Send Android emulator Back, Home, Recents, or Enter.",inputSchema:{type:"object",properties:{id:{type:"string"},key:{type:"string",enum:["back","home","recents","enter"]}},required:["id","key"],additionalProperties:false}},
+    {type:"function",name:"foreground",description:"Read the foreground Android emulator app/activity.",inputSchema:{type:"object",properties:{id:{type:"string"}},required:["id"],additionalProperties:false}}
   ]
 }];
 
@@ -502,6 +517,30 @@ export default function App(){
         })();
         return;
       }
+      if(p.namespace==="trebell_device"){
+        (async()=>{
+          try{
+            if(!settings.agentDeviceAccess)throw new Error("Agent device access is disabled in Settings.");
+            const args=p.arguments||{};
+            if(p.tool==="list"){
+              const result=await api("/api/devices");
+              client.respond(message.id,{contentItems:[{type:"inputText",text:JSON.stringify(result)}],success:true});return;
+            }
+            if(p.tool==="screenshot"){
+              const shot=await api("/api/device/screenshot?id="+encodeURIComponent(args.id||""));
+              client.respond(message.id,{contentItems:[{type:"inputImage",imageUrl:shot.dataUrl},{type:"inputText",text:JSON.stringify({id:shot.id,platform:shot.platform,width:shot.width,height:shot.height})}],success:true});return;
+            }
+            let result;
+            if(p.tool==="tap")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"tap",args:{x:args.x,y:args.y}}});
+            else if(p.tool==="type")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"type",args:{text:args.text}}});
+            else if(p.tool==="key")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"key",args:{key:args.key}}});
+            else if(p.tool==="foreground")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"foreground",args:{}}});
+            else throw new Error("Unknown Trebell device tool: "+p.tool);
+            client.respond(message.id,{contentItems:[{type:"inputText",text:JSON.stringify(result)}],success:true});
+          }catch(error){client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false})}
+        })();
+        return;
+      }
       client.respond(message.id,{contentItems:[{type:"inputText",text:"No client-defined dynamic tool is registered for "+(p.namespace||"default")+"/"+p.tool}],success:false});
       return;
     }
@@ -704,7 +743,7 @@ export default function App(){
       throw error;
     }
   }
-  async function createThreadFor(modelId,cwd){const p=presetFor(permissionMode);const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools:[...TREBELL_BROWSER_TOOLS,...TREBELL_COMPUTER_TOOLS],developerInstructions:webSearch?"Web research is allowed when useful. You may use trebell_browser for interactive pages.":"Do not use web search or trebell_browser unless the user explicitly requests it."});if(agentRuntime!=="codex"&&result.thread?.providerMeta){setProviderAgent(result.thread.agent||providerAgent||"");const meta=result.thread.providerMeta;applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}return result.thread}
+  async function createThreadFor(modelId,cwd){const p=presetFor(permissionMode);const dynamicTools=[...TREBELL_BROWSER_TOOLS,...TREBELL_COMPUTER_TOOLS,...(settings.agentDeviceAccess?TREBELL_DEVICE_TOOLS:[])];const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools,developerInstructions:webSearch?"Web research is allowed when useful. You may use trebell_browser for interactive pages.":"Do not use web search or trebell_browser unless the user explicitly requests it."});if(agentRuntime!=="codex"&&result.thread?.providerMeta){setProviderAgent(result.thread.agent||providerAgent||"");const meta=result.thread.providerMeta;applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}return result.thread}
   function inputsFor(text,paths){return [{type:"text",text,text_elements:[]},...(paths||[]).map(path=>{const lower=String(path).toLowerCase();if(/\.(png|jpe?g|gif|webp|bmp)$/.test(lower))return{type:"localImage",path};if(/\.(mp3|wav|m4a|ogg|flac)$/.test(lower))return{type:"localAudio",path};return{type:"mention",name:String(path).split(/[\\/]/).pop(),path}})]}
   async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null){
     if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");let thread=threadOverride||activeThread;let cwd=cwdOverride||projectPath||bootstrap.cwd;
@@ -891,6 +930,7 @@ export default function App(){
     if(rightPanelTab==="files"||rightPanelTab==="diff")return <WorkspacePanel key={rightPanelTab} defaultTab={rightPanelTab==="diff"?"diff":"files"} projectPath={projectPath} activeThreadId={activeThread?.id} reviewedFiles={reviewedFiles} onReviewedChange={toggleReviewed} onAttachPath={path=>addFiles([path])} onReviewComment={attachReviewComment}/>;
     if(rightPanelTab==="preview")return previewSurface;
     if(rightPanelTab==="source")return <SourceControlPanel projectPath={projectPath} model={model} provider={provider} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
+    if(rightPanelTab==="device")return <DevicePanel/>;
     if(rightPanelTab==="agents"&&agentRuntime==="codex")return <div className="panel-page"><AgentsPage threads={threads} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onRefreshThreads={()=>rpc?loadThreads(rpc):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model} telemetry={threadTelemetry}/></div>;
     if(rightPanelTab==="goal")return <GoalPanel rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={setGoal}/>;
     return <div className="runtime-surface">

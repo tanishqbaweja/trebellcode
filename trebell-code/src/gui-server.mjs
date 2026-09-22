@@ -19,6 +19,7 @@ import { EnvironmentManager } from "./environment-manager.mjs";
 import { startRemoteAppServer } from "./environment-app-server.mjs";
 import { createRemoteControlServer } from "./remote-control.mjs";
 import { RemoteAuthStore } from "./remote-auth-store.mjs";
+import { DeviceService } from "./device-service.mjs";
 import { ProviderManager, normalizeProviderId } from "./provider-manager.mjs";
 import { startProviderBridge } from "./provider-bridge.mjs";
 import { AgentRuntimeManager, normalizeAgentRuntime } from "./agent-runtime-manager.mjs";
@@ -349,6 +350,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   const dist=resolve(packageRoot,"ui","dist");
   const state=new TrebellStateStore(env);
   const remoteAuth=new RemoteAuthStore(env);
+  const devices=new DeviceService({env});
   const providers=new ProviderManager({env});
   const environments=new EnvironmentManager({state,env});
   const agentRuntimes=new AgentRuntimeManager({state,env,environments});
@@ -656,6 +658,22 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const body=await readJsonBody(req);
         return json(res,200,await environments.execute(body.id,body));
       }catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/devices"&&req.method==="GET"){
+      try{return json(res,200,await devices.list())}
+      catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/device/screenshot"&&req.method==="GET"){
+      try{return json(res,200,await devices.screenshot(url.searchParams.get("id")))}
+      catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/device/action"&&req.method==="POST"){
+      try{const body=await readJsonBody(req);return json(res,200,await devices.action(body.id,body.action,body.args||{}))}
+      catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/device/start"&&req.method==="POST"){
+      try{const body=await readJsonBody(req);return json(res,200,await devices.startAndroid(body.avd))}
+      catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/remote-access"){
       if(req.method==="GET") return json(res,200,remoteInfo());
