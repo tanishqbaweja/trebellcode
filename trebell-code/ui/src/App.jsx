@@ -36,6 +36,7 @@ import { normalizeCustomTheme, themeCssVariables } from "./theme-utils.js";
 import { approvalResponse } from "./approval-utils.js";
 import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./fanout-utils.js";
 import { matchingMessageExcerpt, matchingPullRequestExcerpt } from "./thread-message-search.js";
+import { parseVisualizationMessage, visualizationUrl } from "./visualization-utils.js";
 
 const MAX_COMPOSER_ATTACHMENTS=100;
 const MAX_COMPOSER_CHARS=120_000;
@@ -184,8 +185,15 @@ function ActivityTimeline({events,assistantText,onOpenPanel}){
     </details>)}
   </div>{assistantText&&<div className="assistant-answer">{assistantText}</div>}</div>;
 }
-function Conversation({messages,onEditFromHere,onCite,allowRevert=true}){
-  return <div className="conversation-history">{messages.map(m=>m.role==="user"?<div className="user-row" key={m.id}><div className="user-bubble"><p>{m.text}</p>{allowRevert&&m.turnId&&<button className="message-action" onClick={()=>onEditFromHere(m)}>Edit from here</button>}</div></div>:<div className="history-assistant" key={m.id}><div className="agent-star small"><Sparkles size={12}/></div><div><div className="assistant-message-text">{m.text}</div><button className="message-action" onClick={()=>onCite?.(m)}>Cite response</button></div></div>)}</div>;
+function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId}){
+  return <div className="conversation-history">{messages.map(m=>{
+    if(m.role==="user")return <div className="user-row" key={m.id}><div className="user-bubble"><p>{m.text}</p>{allowRevert&&m.turnId&&<button className="message-action" onClick={()=>onEditFromHere(m)}>Edit from here</button>}</div></div>;
+    const parsed=parseVisualizationMessage(m.text);
+    return <div className="history-assistant" key={m.id}><div className="agent-star small"><Sparkles size={12}/></div><div>{parsed.text&&<div className="assistant-message-text">{parsed.text}</div>}{parsed.visualizations.map((visualization,index)=>{
+      const label=String(visualization.path||visualization.file||"Visualization").split(/[\\/]/).pop();
+      return <div className={"inline-visualization-card "+(visualization.mode==="wide"?"wide":"")} key={label+":"+index}><div className="inline-visualization-head"><strong>{label}</strong><span>Interactive visualization</span></div><iframe title={label} src={visualizationUrl(visualization,{projectPath,environmentId,threadId})} sandbox="allow-scripts" referrerPolicy="no-referrer"/></div>;
+    })}<button className="message-action" onClick={()=>onCite?.(m)}>Cite response</button></div></div>;
+  })}</div>;
 }
 function ApprovalCard({request,onResolve}){
   if(!request)return null;
@@ -1640,7 +1648,7 @@ export default function App(){
           <div className="conversation-scroll">
             <div className="conversation-column">
               <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
-              <Conversation messages={messages} onEditFromHere={editFromHere} onCite={citeAssistant} allowRevert={["codex","opencode","claude"].includes(agentRuntime)}/>
+              <Conversation messages={messages} onEditFromHere={editFromHere} onCite={citeAssistant} allowRevert={["codex","opencode","claude"].includes(agentRuntime)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null}/>
               <ActivityTimeline events={events} assistantText={assistantText} onOpenPanel={name=>name==="workspace"?openRightPanel("diff"):setPanel(name)}/>
               {approvals[0]&&<div className="inline-approval"><ApprovalCard request={approvals[0]} onResolve={resolveApproval}/></div>}
               {queued.map(item=><div className="queued-message" key={item.id}><span>Queued</span><p>{item.text}</p><button onClick={()=>sendQueuedNow(item)}>Send now</button><button onClick={()=>{setPrompt(item.text);setAttachments(item.attachments);setContextChips(item.contextChips||[]);setQueued(prev=>prev.filter(x=>x.id!==item.id))}}>Edit</button></div>)}

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -63,6 +63,15 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     await writeFile(join(configProject,"t3.json"),JSON.stringify({defaultThreadEnvMode:"worktree",worktreeSubmodules:"top-level",scripts:[]}));
     const t3Suggested=await fetch(gui.url+"/api/project-actions/suggestions?path="+encodeURIComponent(configProject)).then(r=>r.json());
     assert.equal(t3Suggested.t3.defaultThreadEnvMode,"worktree");assert.equal(t3Suggested.t3.worktreeSubmodules,"top-level");
+    const visualizationDir=join(configProject,"artifacts");await mkdir(visualizationDir,{recursive:true});
+    const visualizationPath=join(visualizationDir,"chart.html");await writeFile(visualizationPath,"<!doctype html><style>body{margin:0}</style><script>document.body.dataset.ready='1'</script>","utf8");
+    const visualizationResponse=await fetch(gui.url+"/api/visualization?"+new URLSearchParams({root:configProject,path:visualizationPath}));
+    assert.equal(visualizationResponse.status,200);assert.match(await visualizationResponse.text(),/dataset\.ready/);
+    assert.match(visualizationResponse.headers.get("content-security-policy")||"",/connect-src 'none'/);
+    assert.match(visualizationResponse.headers.get("content-security-policy")||"",/script-src 'unsafe-inline'/);
+    const outsideVisualization=join(home,"outside.html");await writeFile(outsideVisualization,"<p>outside</p>","utf8");
+    const blockedVisualization=await fetch(gui.url+"/api/visualization?"+new URLSearchParams({root:configProject,path:outsideVisualization}));
+    assert.equal(blockedVisualization.status,400);
     const settings=await fetch(gui.url+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({followUpMode:"steer"})}).then(r=>r.json());
     assert.equal(settings.followUpMode,"steer");
     const meta=await fetch(gui.url+"/api/thread-meta",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId:"thread-test",patch:{pinned:true}})}).then(r=>r.json());

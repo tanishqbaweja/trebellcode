@@ -1,8 +1,8 @@
 import { createServer } from "node:http";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createReadStream, statfsSync } from "node:fs";
-import { cpus, freemem, totalmem, tmpdir, loadavg } from "node:os";
-import { basename, extname, join, normalize, posix, resolve, sep } from "node:path";
+import { cpus, freemem, totalmem, tmpdir, loadavg, homedir } from "node:os";
+import { basename, extname, isAbsolute, join, normalize, posix, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { randomUUID, randomBytes } from "node:crypto";
 import { attachCodexRelay, probeCodexReady, waitForCodexReady } from "./codex-relay.mjs";
@@ -654,6 +654,95 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   function remoteEnvironmentProfile(environmentId){
     const profile=environmentId?environments.get(environmentId):null;
     return profile&&profile.type!=="local"?profile:null;
+  }
+  function pathInside(rootPath,filePath,{remote=false}={}){
+    if(remote){
+      const base=posix.normalize(String(rootPath||"/"));const target=posix.normalize(String(filePath||""));
+      const rel=posix.relative(base,target);return rel===""||(!rel.startsWith("..")&&!posix.isAbsolute(rel));
+    }
+    const base=resolve(rootPath||process.cwd());const target=resolve(filePath||"");
+    const rel=relative(base,target);return rel===""||(!rel.startsWith("..")&&!isAbsolute(rel));
+  }
+  function expandLocalHomePath(value){
+    const raw=String(value||"").trim();if(!raw)return null;
+    if(raw==="~")return homedir();
+    if(raw.startsWith("~/")||raw.startsWith("~\\"))return join(homedir(),raw.slice(2));
+    return resolve(raw);
+  }
+  async function localVisualizationRoots(workspaceRoot){
+    const roots=[resolve(workspaceRoot||process.cwd()),join(codexHome(env),"visualizations")];
+    const active=agentRuntimes.activeInstance();
+    if(active?.kind==="codex"){
+      for(const candidate of [active.homePath,active.shadowHomePath]){
+        const expanded=expandLocalHomePath(candidate);if(expanded)roots.push(join(expanded,"visualizations"));
+      }
+    }
+    return [...new Set(roots.map(root=>resolve(root)))];
+  }
+  async function remoteVisualizationRoots(environmentId,workspaceRoot){
+    const roots=[posix.normalize(String(workspaceRoot||"/"))];
+    const homeResult=await environments.executeArgv(environmentId,{command:"printenv",args:["HOME"],cwd:"",timeoutMs:8000,maxOutput:64*1024}).catch(()=>null);
+    const home=String(homeResult?.stdout||"").trim();
+    if(home)roots.push(posix.join(home,".codex","visualizations"));
+    return [...new Set(roots.map(root=>posix.normalize(root)))];
+  }
+  async function findLocalVisualization(roots,fileName,threadId=null){
+    const wanted=basename(String(fileName||""));if(!wanted)return null;
+    let visited=0;const maxVisited=4000;
+    async function walk(dir,depth){
+      if(depth>8||visited>=maxVisited)return null;
+      let entries;try{entries=await readdir(dir,{withFileTypes:true})}catch{return null}
+      for(const entry of entries){
+        if(++visited>maxVisited)return null;
+        const full=join(dir,entry.name);
+        if(entry.isFile()&&entry.name===wanted&&(!threadId||full.includes(String(threadId))))return full;
+        if(entry.isDirectory()){const found=await walk(full,depth+1);if(found)return found}
+      }
+      return null;
+    }
+    for(const root of roots.slice(1)){const found=await walk(root,0);if(found)return found}
+    return null;
+  }
+  async function resolveVisualizationPath({workspaceRoot,path,file,threadId,environmentId}={}){
+    const remote=remoteEnvironmentProfile(environmentId);
+    const requested=String(path||file||"").trim();if(!requested)throw new Error("Visualization path is required");
+    if(!/\.html?$/i.test(requested))throw new Error("Only HTML visualizations can be rendered");
+    if(remote){
+      const roots=await remoteVisualizationRoots(environmentId,workspaceRoot||remote.cwd||"/");
+      let target=requested.startsWith("/")?posix.normalize(requested):posix.normalize(posix.join(roots[0],requested));
+      if(!requested.includes("/")&&file){
+        for(const root of roots.slice(1)){
+          const args=[root,"-type","f","-name",basename(requested)];
+          if(threadId)args.push("-path","*/"+String(threadId)+"/*");
+          args.push("-print","-quit");
+          const result=await environments.executeArgv(environmentId,{command:"find",args,cwd:"",timeoutMs:12000,maxOutput:128*1024}).catch(()=>null);
+          const found=String(result?.stdout||"").split(/\r?\n/).find(Boolean);if(found){target=posix.normalize(found);break}
+        }
+      }
+      if(!roots.some(root=>pathInside(root,target,{remote:true})))throw new Error("Visualization is outside the active workspace and Codex visualization directory");
+      return {remote:true,path:target,roots};
+    }
+    const roots=await localVisualizationRoots(workspaceRoot);
+    let target=isAbsolute(requested)?resolve(requested):resolve(roots[0],requested);
+    if(!requested.includes("/")&&!requested.includes("\\")&&file){
+      const found=await findLocalVisualization(roots,requested,threadId);if(found)target=found;
+    }
+    if(!roots.some(root=>pathInside(root,target)))throw new Error("Visualization is outside the active workspace and Codex visualization directory");
+    return {remote:false,path:target,roots};
+  }
+  async function readVisualization({workspaceRoot,path,file,threadId,environmentId}={}){
+    const located=await resolveVisualizationPath({workspaceRoot,path,file,threadId,environmentId});
+    const info=located.remote?await environments.attachmentInfo(environmentId,located.path):await stat(located.path).then(item=>({size:item.size,isFile:item.isFile()}));
+    if(info.isFile===false)throw new Error("Visualization path is not a file");
+    if(!Number.isFinite(Number(info.size))||Number(info.size)>2*1024*1024)throw new Error("Visualization is too large to render (maximum 2 MB)");
+    if(!located.remote)return {path:located.path,content:await readFile(located.path,"utf8")};
+    const child=environments.streamFile(environmentId,located.path);let stdout="",stderr="";
+    await new Promise((resolveRead,reject)=>{
+      child.stdout.on("data",chunk=>{stdout+=String(chunk);if(Buffer.byteLength(stdout,"utf8")>2*1024*1024){try{child.kill()}catch{}reject(new Error("Visualization exceeded the 2 MB render limit"))}});
+      child.stderr?.on("data",chunk=>{stderr=(stderr+String(chunk)).slice(-64*1024)});
+      child.once("error",reject);child.once("close",code=>code===0?resolveRead():reject(new Error(stderr.trim()||"Could not read visualization")));
+    });
+    return {path:located.path,content:stdout};
   }
   function worktreeUsage(){
     const activePaths=[],referencedPaths=[];
@@ -1532,6 +1621,21 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     if(url.pathname==="/api/workspace/diff"){
       const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
       return json(res,200,await environmentWorkspaceDiff(url.searchParams.get("path")||process.cwd(),{environments,environmentId}));
+    }
+    if(url.pathname==="/api/visualization"&&req.method==="GET"){
+      try{
+        const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
+        const result=await readVisualization({
+          workspaceRoot:url.searchParams.get("root")||process.cwd(),path:url.searchParams.get("path")||null,file:url.searchParams.get("file")||null,
+          threadId:url.searchParams.get("threadId")||null,environmentId,
+        });
+        res.writeHead(200,{
+          "content-type":"text/html; charset=utf-8","cache-control":"no-store","x-content-type-options":"nosniff",
+          "content-security-policy":"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
+          "content-disposition":"inline; filename=\""+basename(result.path).replace(/\"/g,"")+"\"",
+        });
+        return res.end(result.content);
+      }catch(error){return json(res,400,{error:error instanceof Error?error.message:String(error)});}
     }
     if(url.pathname==="/api/workspace/raw"&&(req.method==="GET"||req.method==="HEAD")){
       try{
