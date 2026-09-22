@@ -52,6 +52,19 @@ function normalizeWorktreeCleanup(value,{allowNull=false}={}){
   if(value?.mode==="custom")return {mode:"custom",rules:normalizeCleanupRules(value.rules)};
   return {mode:"off"};
 }
+function normalizePullRequestViewedFiles(value){
+  if(!value||typeof value!=="object"||Array.isArray(value))return {};
+  const out={};
+  for(const [key,record] of Object.entries(value).slice(-80)){
+    if(!record||typeof record!=="object")continue;const files={};
+    for(const [path,mark] of Object.entries(record.files||{}).slice(-1200)){
+      const safe=String(path||"").slice(0,1200);if(!safe||!mark||typeof mark!=="object")continue;
+      files[safe]={revision:String(mark.revision||"").slice(0,200),viewedAt:Number(mark.viewedAt)||Date.now()};
+    }
+    out[String(key).slice(0,200)]={headSha:String(record.headSha||"").slice(0,200),files,updatedAt:Number(record.updatedAt)||Date.now()};
+  }
+  return out;
+}
 
 export class TrebellStateStore {
   constructor(env=process.env){
@@ -141,6 +154,7 @@ export class TrebellStateStore {
         createdAt:Number(raw.createdAt)||Date.now(),cleanedAt:raw.cleanedAt==null?null:Number(raw.cleanedAt)||null,cleanupReason:raw.cleanupReason?String(raw.cleanupReason):null,
       }:null;
     }
+    if("pullRequestViewedFiles" in patch)project.pullRequestViewedFiles=normalizePullRequestViewedFiles(patch.pullRequestViewedFiles);
     if("icon" in patch){
       const raw=patch.icon;
       if(!raw) project.icon=null;

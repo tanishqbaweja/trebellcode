@@ -34,6 +34,8 @@ test("remote parser handles scp and URL remotes without losing nested paths",()=
 
 test("provider capabilities reflect known host limitations",()=>{
   assert.equal(CAPABILITIES.github.updateBranch,true);
+  assert.equal(CAPABILITIES.github.viewedFiles,"host");
+  assert.equal(CAPABILITIES.gitlab.viewedFiles,"environment");
   assert.equal(CAPABILITIES.gitlab.requestChanges,false);
   assert.equal(CAPABILITIES.bitbucket.updateBranch,false);
   assert.equal(CAPABILITIES["azure-devops"].comment,false);

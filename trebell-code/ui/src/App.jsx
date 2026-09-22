@@ -31,6 +31,7 @@ import LicensesPage from "./components/LicensesPage.jsx";
 import { resolveKeybinding } from "./keybindings.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
 import { themeCssVariables } from "./theme-utils.js";
+import { approvalResponse } from "./approval-utils.js";
 import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./fanout-utils.js";
 
 const MAX_COMPOSER_ATTACHMENTS=100;
@@ -176,7 +177,11 @@ function Conversation({messages,onEditFromHere,onCite,allowRevert=true}){
 function ApprovalCard({request,onResolve}){
   if(!request)return null;
   const p=request.params||{};
-  return <div className="approval-card"><div className="card-title"><ShieldCheck size={16}/><strong>Approval required</strong></div><p>{p.reason||p.command||p.path||request.method}</p><div className="approval-actions"><button onClick={()=>onResolve(request,"decline")}>Deny</button><button onClick={()=>onResolve(request,"acceptForSession")}>Allow session</button><button className="approve" onClick={()=>onResolve(request,"accept")}>Allow once</button></div></div>;
+  const permissions=request.method==="item/permissions/requestApproval";
+  const network=permissions?p.permissions?.network:null;const fileSystem=permissions?p.permissions?.fileSystem:null;
+  const title=permissions?"Additional access requested":request.method.includes("fileChange")||request.method==="applyPatchApproval"?"File changes need approval":p.networkApprovalContext?.host?"Network access needs approval":"Command needs approval";
+  const detail=permissions?[network&&"Network access",fileSystem&&"Filesystem access"].filter(Boolean).join(" + "):(p.networkApprovalContext?.host?`${p.networkApprovalContext.protocol||"network"}://${p.networkApprovalContext.host}`:p.reason||p.command||p.path||request.method);
+  return <div className="approval-card"><div className="card-title"><ShieldCheck size={16}/><strong>{title}</strong></div><p>{detail||p.reason||request.method}</p>{permissions&&<pre className="approval-permissions">{JSON.stringify(p.permissions||{},null,2)}</pre>}<div className="approval-actions"><button onClick={()=>onResolve(request,"decline")}>Deny</button><button onClick={()=>onResolve(request,"acceptForSession")}>Allow session</button><button className="approve" onClick={()=>onResolve(request,"accept")}>Allow once</button></div></div>;
 }
 function FreebuffMini({freebuff,model,onOpen}){
   const balance=freebuff?.derived?.balance;
@@ -1073,7 +1078,9 @@ export default function App(){
     await updateThreadMeta(activeThread.id,{linkedPullRequests:next.map(({__identityKey,...item})=>item)});
   }
   async function toggleReviewed(path,value){const next=value?[...new Set([...reviewedFiles,path])]:reviewedFiles.filter(x=>x!==path);setReviewedFiles(next);if(activeThread?.id)await updateThreadMeta(activeThread.id,{reviewedFiles:next})}
-  function resolveApproval(request,decision){if(!rpc)return;let result={decision};if(request.method==="item/permissions/requestApproval")result={permissions:request.params?.permissions||{},scope:decision==="acceptForSession"?"session":"turn"};rpc.respond(request.id,result);setApprovals(prev=>prev.filter(x=>x.id!==request.id))}
+  function resolveApproval(request,decision){
+    if(!rpc)return;rpc.respond(request.id,approvalResponse(request,decision));setApprovals(prev=>prev.filter(x=>x.id!==request.id));
+  }
   async function answerQuestion(answers,filesByQuestion={}){if(!question)return;await validateAttachmentPaths(Object.values(filesByQuestion).flat());const result={};for(const q of question.request.params?.questions||[]){const values=[...(answers[q.id]||[])];const files=filesByQuestion[q.id]||[];if(files.length)values.push("Attached files:\n"+files.map(path=>"- "+path).join("\n"));result[q.id]={answers:values}}question.client.respond(question.request.id,{answers:result});setQuestion(null)}
   function cancelQuestion(){if(question){question.client.respond(question.request.id,{answers:{}});setQuestion(null)}}
   async function login(){await fetch("/api/login/start",{method:"POST"}).catch(()=>{});const poll=setInterval(async()=>{const data=await api("/api/bootstrap").catch(()=>null);if(data?.loggedIn){clearInterval(poll);setBootstrap(data);await refreshProviderModels();}},1500);setTimeout(()=>clearInterval(poll),120000)}

@@ -39,8 +39,9 @@ import {
 import {
   sourceControlDiagnostics, listPullRequests, createPullRequest, pullRequestDetail,
   commentOnPullRequest, reviewPullRequest, mergePullRequest, updatePullRequestBranch,
-  checkoutPullRequest, requestPullRequestReviewer, publishRepository,
+  checkoutPullRequest, requestPullRequestReviewer, publishRepository, getPullRequestFilesViewed, setPullRequestFilesViewed,
 } from "./source-control-service.mjs";
+import { prViewedKey, updateViewedRecord, viewedStates } from "./pr-viewed-state.mjs";
 
 const MIME = {
   ".html":"text/html; charset=utf-8",
@@ -911,6 +912,24 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     }
     if(url.pathname==="/api/source-control/pr-detail"){
       return json(res,200,await pullRequestDetail(url.searchParams.get("path")||process.cwd(),url.searchParams.get("number"),{provider:url.searchParams.get("provider")||null}));
+    }
+    if(url.pathname==="/api/source-control/pr-viewed"&&req.method==="GET"){
+      try{
+        const cwd=url.searchParams.get("path")||process.cwd(),number=url.searchParams.get("number"),provider=url.searchParams.get("provider")||null;
+        const detail=await pullRequestDetail(cwd,number,{provider});if(!detail?.ok||!detail.item)return json(res,400,{error:detail?.error||"Pull request not found"});
+        if(detail.provider==="github")return json(res,200,await getPullRequestFilesViewed(cwd,number,{provider:detail.provider}));
+        const project=state.projects().find(item=>resolve(item.path)===resolve(cwd));const key=prViewedKey(detail.provider,number);const record=project?.pullRequestViewedFiles?.[key]||{};
+        return json(res,200,{ok:true,provider:detail.provider,store:"environment",files:viewedStates(detail.item.files||[],record,detail.item.headSha),headSha:detail.item.headSha||null});
+      }catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/source-control/pr-viewed"&&req.method==="POST"){
+      try{
+        const body=await readJsonBody(req);const cwd=body.cwd||process.cwd(),number=body.number,provider=body.provider||null,updates=Array.isArray(body.files)?body.files:[];
+        const detail=await pullRequestDetail(cwd,number,{provider});if(!detail?.ok||!detail.item)throw new Error(detail?.error||"Pull request not found");
+        if(detail.provider==="github")return json(res,200,await setPullRequestFilesViewed(cwd,number,updates,{provider:detail.provider}));
+        const project=state.projects().find(item=>resolve(item.path)===resolve(cwd))||state.touchProject(cwd);const records={...(project.pullRequestViewedFiles||{})};const key=prViewedKey(detail.provider,number);records[key]=updateViewedRecord(detail.item.files||[],records[key]||{},detail.item.headSha,updates);state.touchProject(cwd,{pullRequestViewedFiles:records});
+        return json(res,200,{ok:true,provider:detail.provider,store:"environment",files:viewedStates(detail.item.files||[],records[key],detail.item.headSha),headSha:detail.item.headSha||null});
+      }catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/source-control/pr-action" && req.method==="POST"){
       try{

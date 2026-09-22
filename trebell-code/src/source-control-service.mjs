@@ -9,11 +9,11 @@ const execFileAsync=promisify(execFile);
 const PROVIDERS=["github","gitlab","forgejo","bitbucket","azure-devops"];
 
 const CAPABILITIES={
-  github:{create:true,comment:true,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:true,publish:true},
-  gitlab:{create:true,comment:true,review:true,requestChanges:false,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:false,publish:true},
-  forgejo:{create:true,comment:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:true,checkout:false,reviewers:false,publish:false},
-  bitbucket:{create:true,comment:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:false,checkout:false,reviewers:false,publish:false},
-  "azure-devops":{create:true,comment:false,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:false,checkout:false,reviewers:false,publish:false},
+  github:{create:true,comment:true,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:true,publish:true,viewedFiles:"host"},
+  gitlab:{create:true,comment:true,review:true,requestChanges:false,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:false,publish:true,viewedFiles:"environment"},
+  forgejo:{create:true,comment:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:true,checkout:false,reviewers:false,publish:false,viewedFiles:"environment"},
+  bitbucket:{create:true,comment:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:false,checkout:false,reviewers:false,publish:false,viewedFiles:"environment"},
+  "azure-devops":{create:true,comment:false,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:false,checkout:false,reviewers:false,publish:false,viewedFiles:"environment"},
 };
 
 async function run(command,args,{cwd,timeout=120000,maxBuffer=8*1024*1024,allowFailure=false}={}){
@@ -86,10 +86,10 @@ async function sourceContext(cwd,preferred=null){
 function parseJson(raw,fallback=null){try{return JSON.parse(String(raw||"").trim()||"null")}catch{return fallback}}
 function stateOf(value,merged=false){const v=String(value||"").toLowerCase();if(merged||v==="merged"||v==="completed")return "MERGED";if(["closed","declined","superseded","abandoned"].includes(v))return "CLOSED";return "OPEN"}
 function actor(raw){if(!raw)return null;return {login:raw.login||raw.username||raw.nickname||raw.display_name||raw.displayName||raw.name||raw.uniqueName||"unknown",name:raw.name||raw.display_name||raw.displayName||null}}
-function normalizeGitLab(item){return {provider:"gitlab",number:Number(item.iid??item.id),title:item.title||"",body:item.description||"",state:stateOf(item.state,item.merged_at!=null),isDraft:Boolean(item.draft??item.work_in_progress),url:item.web_url||item.webUrl||"",headRefName:item.source_branch||item.sourceBranch||"",baseRefName:item.target_branch||item.targetBranch||"",author:actor(item.author),reviewDecision:null,statusCheckRollup:item.pipeline?[item.pipeline]:[],reviews:(item.approved_by||item.reviewers||[]).map(x=>({author:actor(x.user||x),state:"REVIEWED",body:""}))}}
-function normalizeForgejo(item){return {provider:"forgejo",number:Number(item.number??item.id),title:item.title||"",body:item.body||"",state:stateOf(item.state,item.merged),isDraft:Boolean(item.draft),url:item.html_url||item.url||"",headRefName:item.head?.ref||"",baseRefName:item.base?.ref||"",author:actor(item.user),reviewDecision:null,statusCheckRollup:[],reviews:(item.requested_reviewers||[]).map(x=>({author:actor(x),state:"REQUESTED",body:""}))}}
-function normalizeBitbucket(item){return {provider:"bitbucket",number:Number(item.id),title:item.title||"",body:item.description||"",state:stateOf(item.state),isDraft:Boolean(item.draft),url:item.links?.html?.href||"",headRefName:item.source?.branch?.name||"",baseRefName:item.destination?.branch?.name||"",author:actor(item.author),reviewDecision:null,statusCheckRollup:[],reviews:(item.reviewers||[]).map(x=>({author:actor(x),state:item.participants?.find(p=>p.user?.uuid===x.uuid)?.approved?"APPROVED":"REVIEWED",body:""}))}}
-function normalizeAzure(item){return {provider:"azure-devops",number:Number(item.pullRequestId??item.id),title:item.title||"",body:item.description||"",state:stateOf(item.status),isDraft:Boolean(item.isDraft),url:item._links?.web?.href||item.repository?.webUrl||item.url||"",headRefName:String(item.sourceRefName||"").replace(/^refs\/heads\//,""),baseRefName:String(item.targetRefName||"").replace(/^refs\/heads\//,""),author:actor(item.createdBy),reviewDecision:null,statusCheckRollup:[],reviews:(item.reviewers||[]).map(x=>({author:actor(x),state:Number(x.vote)>=10?"APPROVED":Number(x.vote)<=-5?"CHANGES_REQUESTED":"REVIEWED",body:""}))}}
+function normalizeGitLab(item){return {provider:"gitlab",number:Number(item.iid??item.id),title:item.title||"",body:item.description||"",state:stateOf(item.state,item.merged_at!=null),isDraft:Boolean(item.draft??item.work_in_progress),url:item.web_url||item.webUrl||"",headRefName:item.source_branch||item.sourceBranch||"",baseRefName:item.target_branch||item.targetBranch||"",headSha:item.sha||item.diff_refs?.head_sha||null,author:actor(item.author),reviewDecision:null,statusCheckRollup:item.pipeline?[item.pipeline]:[],reviews:(item.approved_by||item.reviewers||[]).map(x=>({author:actor(x.user||x),state:"REVIEWED",body:""}))}}
+function normalizeForgejo(item){return {provider:"forgejo",number:Number(item.number??item.id),title:item.title||"",body:item.body||"",state:stateOf(item.state,item.merged),isDraft:Boolean(item.draft),url:item.html_url||item.url||"",headRefName:item.head?.ref||"",baseRefName:item.base?.ref||"",headSha:item.head?.sha||null,author:actor(item.user),reviewDecision:null,statusCheckRollup:[],reviews:(item.requested_reviewers||[]).map(x=>({author:actor(x),state:"REQUESTED",body:""}))}}
+function normalizeBitbucket(item){return {provider:"bitbucket",number:Number(item.id),title:item.title||"",body:item.description||"",state:stateOf(item.state),isDraft:Boolean(item.draft),url:item.links?.html?.href||"",headRefName:item.source?.branch?.name||"",baseRefName:item.destination?.branch?.name||"",headSha:item.source?.commit?.hash||null,author:actor(item.author),reviewDecision:null,statusCheckRollup:[],reviews:(item.reviewers||[]).map(x=>({author:actor(x),state:item.participants?.find(p=>p.user?.uuid===x.uuid)?.approved?"APPROVED":"REVIEWED",body:""}))}}
+function normalizeAzure(item){return {provider:"azure-devops",number:Number(item.pullRequestId??item.id),title:item.title||"",body:item.description||"",state:stateOf(item.status),isDraft:Boolean(item.isDraft),url:item._links?.web?.href||item.repository?.webUrl||item.url||"",headRefName:String(item.sourceRefName||"").replace(/^refs\/heads\//,""),baseRefName:String(item.targetRefName||"").replace(/^refs\/heads\//,""),headSha:item.lastMergeSourceCommit?.commitId||item.lastMergeCommit?.commitId||null,author:actor(item.createdBy),reviewDecision:null,statusCheckRollup:[],reviews:(item.reviewers||[]).map(x=>({author:actor(x),state:Number(x.vote)>=10?"APPROVED":Number(x.vote)<=-5?"CHANGES_REQUESTED":"REVIEWED",body:""}))}}
 
 async function defaultBaseBranch(cwd){
   const result=await run("git",["symbolic-ref","--quiet","--short","refs/remotes/origin/HEAD"],{cwd,allowFailure:true});
@@ -324,12 +324,50 @@ export async function publishRepository(cwd,{provider="github",name=null,visibil
 
 export async function pullRequestDetail(cwd,number,{provider=null}={}){
   const ctx=await sourceContext(cwd,provider);let item;
-  if(ctx.provider==="github"){const r=await run("gh",["pr","view",String(number),"--json","number,title,body,state,isDraft,url,headRefName,baseRefName,author,reviewDecision,statusCheckRollup,comments,reviews,files,commits"],{cwd:ctx.info.root,allowFailure:true,maxBuffer:8*1024*1024});if(!r.ok)return {ok:false,provider:ctx.provider,capabilities:ctx.capabilities,error:(r.stderr||r.stdout).trim(),item:null};item={...parseJson(r.stdout,{}),provider:"github"}}
-  else if(ctx.provider==="gitlab"){const data=await glabApi(ctx,`projects/${encodeURIComponent(ctx.repository)}/merge_requests/${Number(number)}`);item=normalizeGitLab(data);const notes=await glabApi(ctx,`projects/${encodeURIComponent(ctx.repository)}/merge_requests/${Number(number)}/notes?per_page=100`).catch(()=>[]);item.comments=(Array.isArray(notes)?notes:[]).map(n=>({id:n.id,body:n.body,author:actor(n.author)}))}
-  else if(ctx.provider==="forgejo"){const t=await forgejoContext(ctx);const r=await forgejoApi(ctx,`repos/${t.repository}/pulls/${Number(number)}`);item=normalizeForgejo(r.data);const reviews=await forgejoApi(ctx,`repos/${t.repository}/pulls/${Number(number)}/reviews`).catch(()=>({data:[]}));item.reviews=(Array.isArray(reviews.data)?reviews.data:[]).map(x=>({id:x.id,author:actor(x.user),state:x.state||"REVIEWED",body:x.body||""}))}
-  else if(ctx.provider==="bitbucket"){const data=await bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests/${Number(number)}`);item=normalizeBitbucket(data);const comments=await bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests/${Number(number)}/comments?pagelen=100`).catch(()=>({values:[]}));item.comments=(comments.values||[]).map(x=>({id:x.id,body:x.content?.raw||"",author:actor(x.user)}))}
-  else {const r=await run("az",["repos","pr","show","--detect","true","--id",String(number),"--only-show-errors","--output","json"],{cwd:ctx.info.root,allowFailure:true,timeout:60000});if(!r.ok)return {ok:false,provider:ctx.provider,capabilities:ctx.capabilities,error:(r.stderr||r.stdout).trim(),item:null};item=normalizeAzure(parseJson(r.stdout,{}))}
+  if(ctx.provider==="github"){
+    const r=await run("gh",["pr","view",String(number),"--json","number,title,body,state,isDraft,url,headRefName,headRefOid,baseRefName,author,reviewDecision,statusCheckRollup,comments,reviews,files,commits"],{cwd:ctx.info.root,allowFailure:true,maxBuffer:8*1024*1024});
+    if(!r.ok)return {ok:false,provider:ctx.provider,capabilities:ctx.capabilities,error:(r.stderr||r.stdout).trim(),item:null};const raw=parseJson(r.stdout,{});item={...raw,provider:"github",headSha:raw.headRefOid||null,files:(raw.files||[]).map(file=>({path:file.path||file.filename||"",additions:Number(file.additions||0),deletions:Number(file.deletions||0),status:file.status||null,patch:file.patch||null}))};
+  }
+  else if(ctx.provider==="gitlab"){
+    const data=await glabApi(ctx,`projects/${encodeURIComponent(ctx.repository)}/merge_requests/${Number(number)}`);item=normalizeGitLab(data);
+    const [notes,changes]=await Promise.all([glabApi(ctx,`projects/${encodeURIComponent(ctx.repository)}/merge_requests/${Number(number)}/notes?per_page=100`).catch(()=>[]),glabApi(ctx,`projects/${encodeURIComponent(ctx.repository)}/merge_requests/${Number(number)}/changes`).catch(()=>null)]);
+    item.comments=(Array.isArray(notes)?notes:[]).map(n=>({id:n.id,body:n.body,author:actor(n.author)}));if(changes?.diff_refs?.head_sha)item.headSha=changes.diff_refs.head_sha;
+    item.files=(changes?.changes||[]).map(file=>({path:file.new_path||file.old_path||"",oldPath:file.old_path||null,status:file.new_file?"added":file.deleted_file?"deleted":file.renamed_file?"renamed":"modified",patch:file.diff||null,additions:0,deletions:0}));
+  }
+  else if(ctx.provider==="forgejo"){
+    const t=await forgejoContext(ctx);const r=await forgejoApi(ctx,`repos/${t.repository}/pulls/${Number(number)}`);item=normalizeForgejo(r.data);
+    const [reviews,files]=await Promise.all([forgejoApi(ctx,`repos/${t.repository}/pulls/${Number(number)}/reviews`).catch(()=>({data:[]})),forgejoApi(ctx,`repos/${t.repository}/pulls/${Number(number)}/files`).catch(()=>({data:[]}))]);
+    item.reviews=(Array.isArray(reviews.data)?reviews.data:[]).map(x=>({id:x.id,author:actor(x.user),state:x.state||"REVIEWED",body:x.body||""}));item.files=(Array.isArray(files.data)?files.data:[]).map(file=>({path:file.filename||file.new_path||"",oldPath:file.previous_filename||null,status:file.status||null,patch:file.patch||null,additions:Number(file.additions||0),deletions:Number(file.deletions||0)}));
+  }
+  else if(ctx.provider==="bitbucket"){
+    const data=await bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests/${Number(number)}`);item=normalizeBitbucket(data);
+    const [comments,diffstat]=await Promise.all([bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests/${Number(number)}/comments?pagelen=100`).catch(()=>({values:[]})),bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests/${Number(number)}/diffstat?pagelen=100`).catch(()=>({values:[]}))]);
+    item.comments=(comments.values||[]).map(x=>({id:x.id,body:x.content?.raw||"",author:actor(x.user)}));item.files=(diffstat.values||[]).map(file=>({path:file.new?.path||file.old?.path||"",oldPath:file.old?.path||null,status:file.status||null,additions:Number(file.lines_added||0),deletions:Number(file.lines_removed||0),patch:null}));
+  }
+  else {const r=await run("az",["repos","pr","show","--detect","true","--id",String(number),"--only-show-errors","--output","json"],{cwd:ctx.info.root,allowFailure:true,timeout:60000});if(!r.ok)return {ok:false,provider:ctx.provider,capabilities:ctx.capabilities,error:(r.stderr||r.stdout).trim(),item:null};item=normalizeAzure(parseJson(r.stdout,{}));item.files=[]}
   return {ok:true,provider:ctx.provider,capabilities:ctx.capabilities,item};
+}
+
+const GITHUB_VIEWED_QUERY=`query($owner: String!, $name: String!, $number: Int!, $after: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { id files(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { path viewerViewedState } } } } }`;
+function githubRepoParts(ctx){const parts=String(ctx.repository||"").split("/").filter(Boolean);if(parts.length!==2)throw new Error("Could not resolve GitHub owner/repository from the Git remote.");return {owner:parts[0],name:parts[1]}}
+function githubViewedState(raw){const value=String(raw||"").trim().toUpperCase();return value==="VIEWED"?"viewed":value==="DISMISSED"?"dismissed":"unviewed"}
+async function githubViewedPage(ctx,number,after=null){
+  const repo=githubRepoParts(ctx);const args=["api","graphql","-f",`query=${GITHUB_VIEWED_QUERY}`,"-f",`owner=${repo.owner}`,"-f",`name=${repo.name}`,"-F",`number=${Number(number)}`];if(after)args.push("-f",`after=${after}`);
+  const result=await run("gh",args,{cwd:ctx.info.root,allowFailure:true,maxBuffer:8*1024*1024});if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not read GitHub viewed files").trim());
+  const pr=parseJson(result.stdout,{})?.data?.repository?.pullRequest;if(!pr)throw new Error("GitHub pull request was not found");const files=pr.files||{};
+  return {pullRequestId:pr.id,files:(files.nodes||[]).filter(Boolean).map(file=>({path:file.path,state:githubViewedState(file.viewerViewedState)})),nextCursor:files.pageInfo?.hasNextPage?files.pageInfo?.endCursor:null};
+}
+export async function getPullRequestFilesViewed(cwd,number,{provider=null}={}){
+  const ctx=await sourceContext(cwd,provider);if(ctx.provider!=="github")return {ok:true,provider:ctx.provider,store:"environment",files:[]};
+  const files=[];let cursor=null,pullRequestId=null;do{const page=await githubViewedPage(ctx,number,cursor);pullRequestId=page.pullRequestId;files.push(...page.files);cursor=page.nextCursor}while(cursor&&files.length<5000);
+  return {ok:true,provider:"github",store:"host",pullRequestId,files};
+}
+export async function setPullRequestFilesViewed(cwd,number,updates,{provider=null}={}){
+  const ctx=await sourceContext(cwd,provider);if(ctx.provider!=="github")throw new Error("This host stores viewed-file marks in Trebell, not through the source-control API.");
+  const files=(updates||[]).map(item=>({path:String(item?.path||"").trim(),viewed:item?.viewed!==false})).filter(item=>item.path).slice(0,200);if(!files.length)return getPullRequestFilesViewed(cwd,number,{provider:ctx.provider});
+  const first=await githubViewedPage(ctx,number,null);const pullRequestId=first.pullRequestId;
+  for(let offset=0;offset<files.length;offset+=40){const batch=files.slice(offset,offset+40);const params=batch.map((_,index)=>`$path${index}: String!`).join(", ");const fields=batch.map((file,index)=>`f${index}: ${file.viewed?"markFileAsViewed":"unmarkFileAsViewed"}(input: { pullRequestId: $pullRequestId, path: $path${index} }) { clientMutationId }`).join(" ");const query=`mutation($pullRequestId: ID!, ${params}) { ${fields} }`;const args=["api","graphql","-f",`query=${query}`,"-f",`pullRequestId=${pullRequestId}`];for(const [index,file] of batch.entries())args.push("-f",`path${index}=${file.path}`);const result=await run("gh",args,{cwd:ctx.info.root,allowFailure:true,maxBuffer:8*1024*1024});if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not update GitHub viewed files").trim())}
+  return getPullRequestFilesViewed(cwd,number,{provider:ctx.provider});
 }
 
 export async function commentOnPullRequest(cwd,number,body,{provider=null}={}){
