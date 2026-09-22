@@ -10,7 +10,7 @@ test("Trebell Code renders the harness and scopes models to the selected provide
         set:async factor=>({factor:window.__trebellZoomFactor=Number(factor)}),
         reset:async()=>({factor:window.__trebellZoomFactor=1}),
       },
-      browser:{navigate:async()=>({ok:true}),show:async()=>({ok:true}),snapshot:async()=>snapshot,screenshot:async()=>({dataUrl:"data:image/png;base64,iVBORw0KGgo="}),importCookies:async()=>({ok:true,imported:2,failed:0}),close:async()=>({ok:true})}
+      browser:{navigate:async()=>({ok:true}),show:async()=>({ok:true}),snapshot:async()=>snapshot,screenshot:async()=>({dataUrl:"data:image/png;base64,iVBORw0KGgo="}),importCookies:async()=>({ok:true,imported:2,failed:0}),importSources:async()=>({platform:"win32",sources:[{id:"firefox",name:"Firefox",installed:true,running:false,profiles:[{id:"C:/Profiles/Test",name:"Test profile"}]}]}),importProfile:async()=>({ok:true,sourceId:"firefox",profileName:"Test profile",imported:7,failed:0}),close:async()=>({ok:true})}
     }});
   });
   await request.post("/api/settings",{data:{onboardingComplete:true}});
@@ -65,7 +65,11 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await page.getByRole("button",{name:"Browser"}).click();
   await expect(page.getByTestId("right-panel")).toBeVisible();
   await page.getByRole("button",{name:"Open agent browser"}).click();
-  await page.getByRole("button",{name:"Import cookies"}).click();
+  await page.getByRole("button",{name:"Import profile"}).click();
+  await expect(page.getByTestId("browser-profile-import")).toContainText("Test profile");
+  await page.getByTestId("browser-profile-import").getByRole("button",{name:/Test profile/}).click();
+  await expect(page.getByTestId("browser-cookie-status")).toHaveText("Imported 7 cookies from Test profile");
+  await page.getByRole("button",{name:"Import cookie JSON"}).click();
   await expect(page.getByTestId("browser-cookie-status")).toHaveText("Imported 2 cookies");
   await page.getByRole("button",{name:/Submit order/}).click();
   await page.getByTestId("preview-annotation").locator("textarea").fill("Use this button to submit the checkout flow.");
@@ -79,6 +83,16 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await page.getByRole("button",{name:"Settings"}).click();
   await expect(page.getByRole("heading",{name:"Settings"})).toBeVisible();
   await expect(page.getByText("Follow-up behavior")).toBeVisible();
+  await page.getByRole("button",{name:"light",exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.mode)).toBe("light");
+  await page.getByRole("button",{name:"Midnight",exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.theme)).toBe("midnight");
+  await page.keyboard.press("Control+k");
+  await expect(page.getByTestId("command-palette")).toContainText("Appearance: System");
+  await page.keyboard.press("Escape");
+  await page.getByRole("button",{name:"dark",exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.mode)).toBe("dark");
+  await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.theme)).toBe("midnight");
   await page.getByRole("button",{name:"Usage"}).click();
   await expect(page.getByRole("heading",{name:"Usage",exact:true})).toBeVisible();
   await expect(page.getByText("Total tokens",{exact:true})).toBeVisible();

@@ -21,6 +21,8 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
   const [annotation,setAnnotation]=useState("");
   const [lastAttached,setLastAttached]=useState("");
   const [cookieStatus,setCookieStatus]=useState("");
+  const [browserImports,setBrowserImports]=useState(null);
+  const [importOpen,setImportOpen]=useState(false);
   const [servers,setServers]=useState([]);
   const [serverError,setServerError]=useState("");
   const [browserState,setBrowserState]=useState({open:false,url:"",title:"",canGoBack:false,canGoForward:false,loading:false,width:1280,height:800});
@@ -95,6 +97,23 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
     }catch(error){setCookieStatus("Cookie import failed: "+String(error?.message||error))}
     finally{setBusy("")}
   }
+  async function openProfileImport(){
+    const browser=window.trebellDesktop?.browser;if(!browser?.importSources){setCookieStatus("Browser profile import is unavailable in this build");return}
+    setBusy("profiles");setCookieStatus("");
+    try{const result=await browser.importSources();setBrowserImports(result||{sources:[]});setImportOpen(true)}
+    catch(error){setCookieStatus("Profile detection failed: "+String(error?.message||error))}
+    finally{setBusy("")}
+  }
+  async function importProfile(source,profile){
+    const browser=window.trebellDesktop?.browser;if(!browser?.importProfile)return;
+    setBusy("profile:"+profile.id);setCookieStatus("");
+    try{
+      const result=await browser.importProfile(source.id,profile.id);
+      setCookieStatus(`Imported ${result.imported||0} cookie${result.imported===1?"":"s"} from ${result.profileName||profile.name}${result.failed?` · ${result.failed} failed`:""}`);
+      setImportOpen(false);
+    }catch(error){setCookieStatus("Profile import failed: "+String(error?.message||error))}
+    finally{setBusy("")}
+  }
   async function navigateHistory(direction){
     const browser=window.trebellDesktop?.browser;if(!browser)return;setBusy(direction);
     try{const state=direction==="back"?await browser.back?.():direction==="forward"?await browser.forward?.():await browser.reload?.();if(state){setBrowserState(state);if(state.url){setDraft(state.url);setUrl(state.url);remember(state.url,state.title)}}}finally{setBusy("")}
@@ -144,7 +163,8 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
       {servers.length?<div className="preview-server-list">{servers.map(server=><button key={server.port} onClick={()=>{setDraft(server.url);setUrl(server.url);setKey(k=>k+1)}}><strong>:{server.port}</strong><span>{server.contentType||"HTTP "+server.status}</span></button>)}</div>:<p>{serverError||"No common local web server detected. Start your dev action, then scan again."}</p>}
     </div>
 
-    <div className="agent-browser-toolbar"><button onClick={agentOpen} disabled={!!busy}><Globe2 size={13}/> Open agent browser</button><button onClick={()=>window.trebellDesktop?.browser?.show?.()}><Eye size={13}/> Show browser</button><button onClick={inspect} disabled={!!busy}><MousePointer2 size={13}/> Inspect elements</button><button onClick={capture} disabled={!!busy}><Camera size={13}/> Attach screenshot</button><button onClick={importCookies} disabled={!!busy}>Import cookies</button><button onClick={()=>{window.trebellDesktop?.browser?.close?.();setSnapshot(null);setSelectedRef(null);setAnnotation("");setLastAttached("");setCookieStatus("")}}><X size={13}/> Close</button>{cookieStatus&&<span className="browser-cookie-status" data-testid="browser-cookie-status">{cookieStatus}</span>}</div>
+    <div className="agent-browser-toolbar"><button onClick={agentOpen} disabled={!!busy}><Globe2 size={13}/> Open agent browser</button><button onClick={()=>window.trebellDesktop?.browser?.show?.()}><Eye size={13}/> Show browser</button><button onClick={inspect} disabled={!!busy}><MousePointer2 size={13}/> Inspect elements</button><button onClick={capture} disabled={!!busy}><Camera size={13}/> Attach screenshot</button><button onClick={openProfileImport} disabled={!!busy}>Import profile</button><button onClick={importCookies} disabled={!!busy}>Import cookie JSON</button><button onClick={()=>{window.trebellDesktop?.browser?.close?.();setSnapshot(null);setSelectedRef(null);setAnnotation("");setLastAttached("");setCookieStatus("")}}><X size={13}/> Close</button>{cookieStatus&&<span className="browser-cookie-status" data-testid="browser-cookie-status">{cookieStatus}</span>}</div>
+    {importOpen&&<div className="browser-profile-import" data-testid="browser-profile-import"><div className="browser-profile-import-head"><div><strong>Import signed-in browser session</strong><span>One-time cookie copy into Trebell Agent Browser.</span></div><button onClick={()=>setImportOpen(false)}><X size={12}/></button></div>{(browserImports?.sources||[]).length?(browserImports.sources||[]).map(source=><section key={source.id}><div><strong>{source.name}</strong><span>{source.running?"Close the browser before importing.":source.installed?`${source.profiles?.length||0} profile${source.profiles?.length===1?"":"s"} found`:"No readable profiles found"}</span></div>{(source.profiles||[]).map(profile=><button key={profile.id} disabled={source.running||!!busy} onClick={()=>importProfile(source,profile)}><span>{profile.name}</span><small>{source.running?"Browser running":"Import"}</small></button>)}</section>):<p>No supported browser profiles were found. Firefox is supported on this platform; cookie JSON remains available as a fallback.</p>}</div>}
     <div className="preview-layout"><div className="preview-frame">{url?<iframe key={key} title="Trebell preview" src={url}/>:<div className="empty-state">Enter a local or web URL to preview it.</div>}</div>
       <aside className="browser-inspector"><h3>Agent browser</h3>{snapshot?<><p><strong>{snapshot.title||"Untitled"}</strong><span>{snapshot.url}</span></p><div className="browser-elements">{(snapshot.elements||[]).map(el=><button className={selectedRef===el.ref?"active":""} key={el.ref} onClick={()=>{setSelectedRef(el.ref);setLastAttached("")}}><code>{el.ref}</code><span>{el.text||el.tag}</span><small>{el.tag}{el.href?" · link":""}</small></button>)}</div>{selectedElement&&<div className="browser-annotation" data-testid="preview-annotation"><div><strong>Annotate {selectedElement.ref}</strong><span>{selectedElement.text||selectedElement.tag}</span></div><textarea value={annotation} onChange={e=>setAnnotation(e.target.value)} placeholder="Add a note or instruction for the agent about this element…"/><div className="annotation-actions"><button onClick={()=>attachElement(selectedElement)}>Attach context</button><button className="primary" disabled={!annotation.trim()} onClick={async()=>{await attachElement(selectedElement,annotation);setAnnotation("")}}>Attach annotation</button>{lastAttached&&<span>{lastAttached}</span>}</div></div>}</>:<div className="empty-inspector">Open the agent browser and inspect the page to see model-addressable elements.</div>}</aside>
     </div>

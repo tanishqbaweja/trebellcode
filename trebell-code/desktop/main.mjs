@@ -3,6 +3,7 @@ import { existsSync, readFileSync, statSync, writeFileSync, mkdirSync, readdirSy
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { createGuiServer } from "../src/gui-server.mjs";
+import { parseFirefoxProfiles, readFirefoxCookieDatabase } from "./firefox-import.mjs";
 
 let windowRef=null;
 let gui=null;
@@ -265,6 +266,48 @@ async function importBrowserCookies(payload={}){
     catch(error){errors.push(String(error?.message||error))}
   }
   return {ok:true,canceled:false,source,imported,failed:errors.length,errors:errors.slice(0,10)};
+}
+
+function firefoxRoot(){
+  if(process.platform==="win32")return process.env.APPDATA?join(process.env.APPDATA,"Mozilla","Firefox"):null;
+  if(process.platform==="darwin")return join(app.getPath("home"),"Library","Application Support","Firefox");
+  return join(app.getPath("home"),".mozilla","firefox");
+}
+
+async function firefoxRunning(){
+  if(process.platform==="win32"){
+    const result=await powershell("if(Get-Process firefox -ErrorAction SilentlyContinue){'yes'}else{'no'}",{timeout:2500}).catch(()=>"no");return result.trim()==="yes";
+  }
+  return await new Promise(resolve=>execFile("pgrep",["-x","firefox"],{windowsHide:true},error=>resolve(!error)));
+}
+
+async function browserImportSources(){
+  const root=firefoxRoot();const sources=[];
+  if(root&&existsSync(root)){
+    let profiles=[];const ini=join(root,"profiles.ini");
+    if(existsSync(ini)){try{profiles=parseFirefoxProfiles(readFileSync(ini,"utf8"),root)}catch{}}
+    if(!profiles.length){
+      const scanRoot=process.platform==="linux"?root:join(root,"Profiles");
+      if(existsSync(scanRoot))for(const entry of readdirSync(scanRoot)){const directory=join(scanRoot,entry);if(existsSync(join(directory,"cookies.sqlite")))profiles.push({id:directory,name:entry,directory})}
+    }
+    sources.push({id:"firefox",name:"Firefox",installed:profiles.length>0,running:profiles.length?await firefoxRunning():false,profiles:profiles.map(profile=>({id:profile.id,name:profile.name}))});
+  }
+  return {sources,platform:process.platform};
+}
+
+async function readFirefoxProfileCookies(profileDirectory){
+  const database=join(profileDirectory,"cookies.sqlite");if(!existsSync(database))throw new Error("Firefox cookies.sqlite was not found for that profile.");
+  if(await firefoxRunning())throw new Error("Close Firefox before importing its session, then try again.");
+  return readFirefoxCookieDatabase(database);
+}
+
+async function importBrowserProfile(payload={}){
+  if(payload.sourceId!=="firefox")throw new Error("That browser source is not supported on this platform.");
+  const available=await browserImportSources();const source=available.sources.find(item=>item.id==="firefox");const profile=source?.profiles?.find(item=>item.id===payload.profileId);
+  if(!profile)throw new Error("Firefox profile was not found.");
+  const cookies=await readFirefoxProfileCookies(profile.id);const browser=await ensureAgentBrowser();let imported=0;const errors=[];
+  for(const raw of cookies){try{await browser.webContents.session.cookies.set(normalizeImportedCookie(raw));imported++}catch(error){errors.push(String(error?.message||error))}}
+  return {ok:true,sourceId:"firefox",profileId:profile.id,profileName:profile.name,imported,failed:errors.length,errors:errors.slice(0,10)};
 }
 
 async function ensureAgentBrowser({show=false}={}){
@@ -714,6 +757,8 @@ if(!lock){
   ipcMain.handle("desktop:zoom:set",(_event,value)=>({factor:setMainZoomFactor(value)}));
   ipcMain.handle("desktop:zoom:reset",()=>({factor:setMainZoomFactor(1)}));
   ipcMain.handle("browser:importCookies",async(_event,payload)=>importBrowserCookies(payload));
+  ipcMain.handle("browser:importSources",async()=>browserImportSources());
+  ipcMain.handle("browser:importProfile",async(_event,payload)=>importBrowserProfile(payload||{}));
   ipcMain.handle("browser:close",async()=>{if(agentBrowser&&!agentBrowser.isDestroyed())agentBrowser.close();agentBrowser=null;return {ok:true};});
 
   app.whenReady().then(async()=>{

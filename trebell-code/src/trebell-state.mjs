@@ -12,6 +12,7 @@ const DEFAULT_STATE = Object.freeze({
     defaultPermissionMode: "supervised",
     autoPull: false,
     appearance: "dark",
+    appearanceMode: "system",
     notifications: true,
     notificationSound: false,
     backgroundMode: false,

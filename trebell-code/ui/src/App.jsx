@@ -274,7 +274,7 @@ export default function App(){
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [contextChips,setContextChips]=useState([]);
   const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [modelError,setModelError]=useState("");
   const [freebuff,setFreebuff]=useState({loggedIn:false}); const [skills,setSkills]=useState([]); const [providerCommands,setProviderCommands]=useState([]); const [providerAgents,setProviderAgents]=useState([]); const [providerAgent,setProviderAgent]=useState("");
-  const [settings,setSettings]=useState({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",keyboardShortcuts:{},agentRuntime:"codex",modelProvider:"freebuff"});
+  const [settings,setSettings]=useState({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",appearanceMode:"system",keyboardShortcuts:{},agentRuntime:"codex",modelProvider:"freebuff"});
   const [permissionMode,setPermissionMode]=useState("supervised"); const [webSearch,setWebSearch]=useState(true); const [workspaceMode,setWorkspaceMode]=useState("current");
   const [projectPath,setProjectPath]=useState(""); const [currentProject,setCurrentProject]=useState(null); const [gitInfo,setGitInfo]=useState(null); const [stats,setStats]=useState({}); const [runtime,setRuntime]=useState({});
   const [approvals,setApprovals]=useState([]); const [question,setQuestion]=useState(null); const [tokenUsage,setTokenUsage]=useState(null);
@@ -291,7 +291,15 @@ export default function App(){
     window.trebellDesktop?.notify?.({title,body,silent:!settings.notificationSound});
   }
 
-  useEffect(()=>{document.documentElement.dataset.theme=settings.appearance||"dark"},[settings.appearance]);
+  useEffect(()=>{
+    const root=document.documentElement;const media=window.matchMedia?.("(prefers-color-scheme: dark)");
+    const apply=()=>{
+      const requested=["system","light","dark"].includes(settings.appearanceMode)?settings.appearanceMode:"system";
+      const resolved=requested==="system"?(media?.matches===false?"light":"dark"):requested;
+      root.dataset.theme=settings.appearance||"dark";root.dataset.mode=resolved;root.style.colorScheme=resolved;
+    };
+    apply();media?.addEventListener?.("change",apply);return()=>media?.removeEventListener?.("change",apply);
+  },[settings.appearance,settings.appearanceMode]);
   useEffect(()=>{activeThreadRef.current=activeThread},[activeThread]);
 
   function updateThreadTelemetry(threadId,patch){
@@ -501,6 +509,8 @@ export default function App(){
       else if(command==="projects")setSection("projects");
       else if(command==="settings")setSection("settings");
       else if(command==="environments")setSection("environments");
+      else if(command==="cycleTheme")cycleTheme();
+      else if(command==="cycleAppearance")cycleAppearance();
     };
     window.addEventListener("keydown",key);
     return()=>window.removeEventListener("keydown",key);
@@ -945,6 +955,9 @@ export default function App(){
     if(next==="agents"){openRightPanel("agents");return}
     setSection(next);
   }
+  async function saveAppSettings(patch){const next=await api("/api/settings",{method:"POST",body:patch});setSettings(prev=>({...prev,...next}));return next}
+  async function cycleTheme(){const themes=["dark","midnight","black"];const next=themes[(themes.indexOf(settings.appearance||"dark")+1)%themes.length];await saveAppSettings({appearance:next})}
+  async function cycleAppearance(){const modes=["system","light","dark"];const next=modes[(modes.indexOf(settings.appearanceMode||"system")+1)%modes.length];await saveAppSettings({appearanceMode:next})}
 
   const activeTitle=titleOf(activeThread);
   const projectLabel=String(projectPath||activeThread?.cwd||bootstrap.cwd||"Workspace").split(/[\\/]/).filter(Boolean).at(-1)||"Workspace";
@@ -967,6 +980,12 @@ export default function App(){
     ...(agentRuntime==="codex"?[{id:"tools",label:"Harness capabilities",detail:"Skills, MCP, plugins, apps and hooks",onRun:()=>setSection("tools")}]:[]),
     {id:"environments",label:"Environments",detail:"Local, WSL, SSH and remote access",onRun:()=>setSection("environments")},
     {id:"usage",label:"Usage",detail:"Tokens and cost across recorded turns",onRun:()=>setSection("usage")},
+    {id:"appearance-system",label:"Appearance: System",detail:"Follow the operating system light/dark setting",shortcut:"Ctrl+Alt+Shift+A",onRun:()=>saveAppSettings({appearanceMode:"system"})},
+    {id:"appearance-light",label:"Appearance: Light",detail:"Use light appearance",onRun:()=>saveAppSettings({appearanceMode:"light"})},
+    {id:"appearance-dark",label:"Appearance: Dark",detail:"Use dark appearance",onRun:()=>saveAppSettings({appearanceMode:"dark"})},
+    {id:"theme-trebell",label:"Theme: Trebell",detail:"Default purple Trebell palette",shortcut:"Ctrl+Alt+A",onRun:()=>saveAppSettings({appearance:"dark"})},
+    {id:"theme-midnight",label:"Theme: Midnight",detail:"Cooler deep-blue Trebell palette",onRun:()=>saveAppSettings({appearance:"midnight"})},
+    {id:"theme-black",label:"Theme: Black",detail:"OLED-friendly black Trebell palette",onRun:()=>saveAppSettings({appearance:"black"})},
     {id:"settings",label:"Settings",detail:"Providers, permissions and desktop behavior",onRun:()=>setSection("settings")},
     {id:"copy",label:"Copy conversation",detail:"Copy this thread as text",onRun:shareThread},
   ];

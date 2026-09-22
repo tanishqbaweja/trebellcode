@@ -62,6 +62,8 @@ contextBridge.exposeInMainWorld("trebellDesktop", {
     type: (ref,text) => ipcRenderer.invoke("browser:type", {ref,text}),
     screenshot: () => ipcRenderer.invoke("browser:screenshot"),
     importCookies: (payload) => ipcRenderer.invoke("browser:importCookies", payload),
+    importSources: () => ipcRenderer.invoke("browser:importSources"),
+    importProfile: (sourceId,profileId) => ipcRenderer.invoke("browser:importProfile", {sourceId,profileId}),
     close: () => ipcRenderer.invoke("browser:close"),
   },
 });
