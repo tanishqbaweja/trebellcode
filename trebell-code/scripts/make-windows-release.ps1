@@ -10,6 +10,23 @@ Set-StrictMode -Version Latest
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 
+# Load local Vyce validation credentials from the repository-level .env without
+# printing them. The release build inherits these variables so the packaged EXE
+# can be validated through the real provider + Codex harness path.
+$RepoEnv = Join-Path (Split-Path -Parent $Root) ".env"
+if (Test-Path $RepoEnv) {
+  foreach ($Line in Get-Content $RepoEnv) {
+    if ($Line -match '^\s*(TREBELL_TEST_VYCE_API_KEY|VYCEAI_API_KEY|VYCE_API_KEY)\s*=\s*(.*)\s*$') {
+      $Name = $Matches[1]
+      $Value = $Matches[2].Trim()
+      if (($Value.StartsWith('"') -and $Value.EndsWith('"')) -or ($Value.StartsWith("'") -and $Value.EndsWith("'"))) {
+        $Value = $Value.Substring(1,$Value.Length-2)
+      }
+      if (-not [string]::IsNullOrWhiteSpace($Value)) { Set-Item -Path "Env:$Name" -Value $Value }
+    }
+  }
+}
+
 function Require-Command([string]$Name, [string]$Help) {
   if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
     throw "$Name is required. $Help"
@@ -107,6 +124,10 @@ try {
 
   Invoke-Native "node" @("tests/installed-relay-check.mjs","http://127.0.0.1:$GuiPort")
   Invoke-Native "node" @("tests/installed-desktop-check.mjs")
+  if ($env:TREBELL_TEST_VYCE_API_KEY -or $env:VYCEAI_API_KEY -or $env:VYCE_API_KEY) {
+    Write-Host "Running packaged model-driven harness validation..." -ForegroundColor Cyan
+    Invoke-Native "node" @("tests/installed-agent-check.mjs","http://127.0.0.1:$GuiPort")
+  }
 } finally {
   if ($DesktopProcess -and -not $DesktopProcess.HasExited) {
     Stop-Process -Id $DesktopProcess.Id -Force -ErrorAction SilentlyContinue

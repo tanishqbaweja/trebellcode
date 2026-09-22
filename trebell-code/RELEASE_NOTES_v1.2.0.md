@@ -21,6 +21,11 @@ This development release rolls the large post-1.1 feature batch into the next mi
 - Playwright desktop-style harness flow: passing in installed Chrome.
 - Live Vyce `deepseek-v4.1` model discovery and direct inference: passing.
 - Live end-to-end Vyce + Codex + Trebell browser tool loop: passing (`open -> snapshot -> click -> snapshot`), including writing and reading the observed proof token from the workspace.
+- The Windows release build also launches the packaged EXE and requires a model-driven packaged-app check: `deepseek-v4.1` must invoke Trebell's desktop screenshot and isolated-browser tools, then use Codex shell/filesystem tools to write and verify a proof file.
+
+## Scope note
+
+Trebell Code 1.2 is a Codex-centered harness with multiple model API providers. It should not be described as feature-for-feature identical to current T3 Code: T3 also ships independent Claude Code, Cursor, Grok Build, OpenCode, and Antigravity harnesses, mobile clients, multi-environment pairing/load balancing, multi-account provider instances, and cross-provider usage/cost aggregation.
 
 Run the live checks from `trebell-code`:
 
