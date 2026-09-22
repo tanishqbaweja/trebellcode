@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -76,6 +76,12 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(settings.followUpMode,"steer");
     const meta=await fetch(gui.url+"/api/thread-meta",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId:"thread-test",patch:{pinned:true}})}).then(r=>r.json());
     assert.equal(meta.pinned,true);
+    const general=await fetch(gui.url+"/api/general-workspace",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({environmentId:null})}).then(r=>r.json());
+    assert.equal(general.environmentId,null);
+    assert.equal(general.remote,false);
+    assert.equal(general.environmentName,"Local machine");
+    assert.equal((await stat(general.path)).isDirectory(),true);
+    assert.match(general.path,/general$/);
     await fetch(gui.url+"/api/thread-meta",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId:"thread-branch",patch:{
       cwd:projectPath,environmentId:null,branch:"feature/x",sectionName:"Active",
       branchPullRequest:{identity:{provider:"github",host:"github.com",repository:"acme/widget",number:21},number:21,title:"Detected review",state:"OPEN",url:"https://github.com/acme/widget/pull/21",headRefName:"feature/x",baseRefName:"main"},

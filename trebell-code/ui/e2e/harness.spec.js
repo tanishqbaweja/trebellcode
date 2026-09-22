@@ -176,6 +176,13 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await expect(e2eProject.locator(".project-icon")).toHaveText("E2");
   await expect(e2eProject.getByLabel("Submodules")).toHaveValue("top-level");
   await expect(e2eProject.getByLabel("Automatic worktree cleanup")).toHaveValue("inherit");
+  await page.getByRole("button",{name:/No project · General chat/}).click();
+  await expect(page.getByRole("heading",{name:"What do you want to think through?"})).toBeVisible();
+  await expect(page.locator(".projectless-mode")).toHaveText("General scratch");
+  await expect(page.getByText("This is a General chat with no attached project.")).toBeVisible();
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  await page.locator(".project-card").filter({hasText:"E2E Project"}).locator(".project-open").click();
+  await expect(page.getByRole("heading",{name:"What do you want to build?"})).toBeVisible();
 
   await page.getByRole("button",{name:"Browser"}).click();
   await expect(page.getByTestId("right-panel")).toBeVisible();

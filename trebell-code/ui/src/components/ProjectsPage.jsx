@@ -1,5 +1,5 @@
 import React,{useEffect,useMemo,useState} from "react";
-import { Check, Download, ExternalLink, FolderCode, GitBranch, ImagePlus, Layers3, Pencil, Play, Plus, RefreshCw, Settings2, SquareTerminal, Trash2, X } from "lucide-react";
+import { Check, Download, ExternalLink, FolderCode, GitBranch, ImagePlus, Layers3, MessageSquareText, Pencil, Play, Plus, RefreshCw, Settings2, SquareTerminal, Trash2, X } from "lucide-react";
 import { api } from "../api.js";
 
 function blankScript(){
@@ -25,7 +25,7 @@ function ProjectIcon({project}){
   return <span className="project-icon project-icon-monogram" style={{background:icon?.color||autoColor(project.name)}}>{text}</span>;
 }
 
-export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOpen,onRunScript,onOpenPreview,onProjectUpdated,models=[]}){
+export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOpen,onGeneralChat,onRunScript,onOpenPreview,onProjectUpdated,models=[]}){
   const [projects,setProjects]=useState([]);
   const [cloneUrl,setCloneUrl]=useState("");
   const [cloneEnvironmentId,setCloneEnvironmentId]=useState("local");
@@ -218,6 +218,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
   return <div className="projects-page">
     <div className="page-actions"><button onClick={addLocal}><Plus size={14}/> Add local project</button><button onClick={refresh}><RefreshCw size={14}/></button></div>
     {error&&<p className="provider-status-error">{error}</p>}
+    <button className="general-chat-card" onClick={()=>onGeneralChat?.()}><MessageSquareText size={22}/><span><strong>No project · General chat</strong><small>Plan, research, troubleshoot, or draft in a Trebell-managed scratch workspace.</small></span><em>Start chat</em></button>
     <div className="clone-card"><GitBranch size={20}/><div><strong>Clone repository</strong><span>Starts in the background</span></div><select aria-label="Clone environment" value={cloneEnvironmentId} onChange={e=>{const id=e.target.value;setCloneEnvironmentId(id);const profile=environmentData.profiles?.find(item=>item.id===id);setCloneParent(profile?.cwd||"")}}><option value="local">Local machine</option>{(environmentData.profiles||[]).map(profile=><option key={profile.id} value={profile.id}>{profile.name} · {profile.type.toUpperCase()}</option>)}</select><div className={"clone-inputs "+(cloneEnvironmentId==="local"?"":"remote")}><input aria-label="Clone URL" value={cloneUrl} onChange={e=>setCloneUrl(e.target.value)} placeholder="https://github.com/owner/repo.git"/>{cloneEnvironmentId!=="local"&&<input aria-label="Clone parent directory" value={cloneParent} onChange={e=>setCloneParent(e.target.value)} placeholder="/srv/projects" title="Remote parent directory"/>}</div><button onClick={clone} disabled={busy||!cloneUrl.trim()}>{busy?"Starting…":"Clone"}</button></div>
     <div className="project-groups">{groups.map(group=><section className="project-group" key={group.key}>
       <div className="project-group-head"><Layers3 size={14}/><div><strong>{group.label}</strong><span>{group.environmentLabel} · {group.projects.length} checkout{group.projects.length===1?"":"s"}</span></div></div>

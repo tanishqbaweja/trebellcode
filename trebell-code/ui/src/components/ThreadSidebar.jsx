@@ -32,7 +32,7 @@ function ThreadRow({thread,meta,active,selected,bulk,onOpen,onSelect,onAction,on
       <span className={"thread-status-dot "+(section==="Pinned"?"pinned":section==="Snoozed"?"snoozed":section==="Settled"?"settled":"")}/>
       <div>
         <strong className="thread-title-line"><span className="thread-title-text">{titleOf(thread)}</span>{reviewLabel&&<em className={linked.length?"thread-pr-chip linked":"thread-pr-chip detected"} title={linked.length?"Linked pull request":"Detected from saved branch"}><GitPullRequest size={9}/>{reviewLabel}</em>}</strong>
-        <span>{section==="Snoozed"&&meta?.snoozedUntil?"Wakes "+formatSnoozeUntil(meta.snoozedUntil):(thread.model?.replace(/^freebuff\//,"")||({codex:"Codex",claude:"Claude",cursor:"Cursor",grok:"Grok",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime))+" · "+relativeTime(thread.updatedAt)}</span>
+        <span>{section==="Snoozed"&&meta?.snoozedUntil?"Wakes "+formatSnoozeUntil(meta.snoozedUntil):meta?.projectless?"No project · "+relativeTime(thread.updatedAt):(thread.model?.replace(/^freebuff\//,"")||({codex:"Codex",claude:"Claude",cursor:"Cursor",grok:"Grok",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime))+" · "+relativeTime(thread.updatedAt)}</span>
       </div>
     </button>
     <details className="thread-menu">
@@ -46,7 +46,7 @@ function ThreadRow({thread,meta,active,selected,bulk,onOpen,onSelect,onAction,on
         <button onClick={()=>onMove(thread,1)}>Move down</button>
         <button onClick={()=>copy(references.threadId)}>Copy thread ID</button>
         {references.branch&&<button onClick={()=>copy(references.branch)}>Copy branch</button>}
-        {references.path&&<button onClick={()=>copy(references.path)}>Copy path</button>}
+        {references.path&&!meta?.projectless&&<button onClick={()=>copy(references.path)}>Copy path</button>}
         <button onClick={()=>onAction(thread,"archive")}>Archive</button>
         <button className="danger" onClick={()=>onAction(thread,"delete")}>Delete</button>
       </div>
@@ -72,7 +72,8 @@ export default function ThreadSidebar({
   },[]);
   const groups={
     Pinned:threads.filter(t=>t.section?.name==="Pinned"),
-    Active:threads.filter(t=>!t.section),
+    General:threads.filter(t=>!t.section&&threadMeta[t.id]?.projectless),
+    Active:threads.filter(t=>!t.section&&!threadMeta[t.id]?.projectless),
     Snoozed:threads.filter(t=>t.section?.name==="Snoozed"),
     Settled:threads.filter(t=>t.section?.name==="Settled"),
   };

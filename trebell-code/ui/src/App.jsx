@@ -227,7 +227,7 @@ const SLASH_COMMANDS=[
   ["/clear","Reset the current draft/thread view"],
 ];
 
-function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,permissionMode,setPermissionMode,webSearch,setWebSearch,skills,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,onSkill,onFiles,settings,onStash,tokenUsage,workspaceMode,setWorkspaceMode,onModelPickerOpenChange}){
+function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,permissionMode,setPermissionMode,webSearch,setWebSearch,skills,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,onSkill,onFiles,settings,onStash,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,onModelPickerOpenChange}){
   const [skillsOpen,setSkillsOpen]=useState(false);
   const [modelOpen,setModelOpen]=useState(false);
   const [listening,setListening]=useState(false);
@@ -306,7 +306,7 @@ function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgr
       {window.trebellDesktop?.captureScreen&&<button className="circle-btn" onClick={onCaptureScreen} title="Capture desktop screenshot" aria-label="Capture desktop screenshot"><Camera size={15}/></button>}
       {(agentRuntime==="codex"||skills.length>0)&&<div className="popover-wrap"><button className="pill-btn" onClick={()=>setSkillsOpen(!skillsOpen)}><WandSparkles size={14}/> Skills</button>{skillsOpen&&<div className="mini-popover">{skills.length?skills.map(s=><button key={s.path||s.location||s.name} onClick={()=>{onSkill(s);setSkillsOpen(false)}}><strong>{agentRuntime==="codex"?"$":"/"}{s.name}</strong><span>{s.description}</span></button>):<p>No enabled skills found.</p>}</div>}</div>}
       <select className="permission-picker" value={permissionMode} onChange={e=>setPermissionMode(e.target.value)}><option value="supervised">Supervised</option><option value="edits">Auto-accept edits</option><option value="auto">Auto</option><option value="full">Full access</option><option value="read-only">Read only</option></select>
-      <select className="workspace-mode" value={workspaceMode} onChange={e=>setWorkspaceMode(e.target.value)}><option value="current">Current workspace</option><option value="worktree">New worktree</option></select>
+      {projectless?<span className="workspace-mode projectless-mode">General scratch</span>:<select className="workspace-mode" value={workspaceMode} onChange={e=>setWorkspaceMode(e.target.value)}><option value="current">Current workspace</option><option value="worktree">New worktree</option></select>}
     </div><div className="composer-right">
       {!providerReady&&!models.length?<button className="login-btn" onClick={agentRuntime==="codex"&&provider==="freebuff"?login:onConfigureProvider}>{agentRuntime!=="codex"?"Configure "+agentRuntimeLabel:provider==="freebuff"?"Sign in to Freebuff":"Configure "+({agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||"provider")}</button>:<>
         {agentRuntime!=="codex"&&providerAgents.length>0&&<select className="agent-picker" value={providerAgent||""} onChange={e=>onProviderAgent?.(e.target.value)} title="Provider agent"><option value="">Default agent</option>{providerAgents.map(agent=>{const name=typeof agent==="string"?agent:agent.name;const mode=typeof agent==="string"?"":agent.mode;return <option key={name} value={name}>{name}{mode?` · ${mode}`:""}</option>})}</select>}
@@ -335,7 +335,7 @@ export default function App(){
   const [environmentThemeCatalog,setEnvironmentThemeCatalog]=useState({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]});
   const [sidebarOpen,setSidebarOpen]=useState(true);
   const [permissionMode,setPermissionMode]=useState("supervised"); const [webSearch,setWebSearch]=useState(true); const [workspaceMode,setWorkspaceMode]=useState("current");
-  const [projectPath,setProjectPath]=useState(""); const [currentProject,setCurrentProject]=useState(null); const [gitInfo,setGitInfo]=useState(null); const [stats,setStats]=useState({}); const [runtime,setRuntime]=useState({});
+  const [projectPath,setProjectPath]=useState(""); const [currentProject,setCurrentProject]=useState(null); const [projectlessMode,setProjectlessMode]=useState(false); const [generalEnvironmentId,setGeneralEnvironmentId]=useState(null); const [gitInfo,setGitInfo]=useState(null); const [stats,setStats]=useState({}); const [runtime,setRuntime]=useState({});
   const [approvals,setApprovals]=useState([]); const [question,setQuestion]=useState(null); const [elicitations,setElicitations]=useState([]); const [tokenUsage,setTokenUsage]=useState(null);
   const [panel,setPanel]=useState(null); const [rightPanelOpen,setRightPanelOpen]=useState(false); const [rightPanelTab,setRightPanelTab]=useState("files"); const [rightPanelMaximized,setRightPanelMaximized]=useState(false); const [reviewedFiles,setReviewedFiles]=useState([]); const [checkpointByTurn,setCheckpointByTurn]=useState({});
   const [selectedThreadIds,setSelectedThreadIds]=useState(new Set()); const [providerRevision,setProviderRevision]=useState(0);
@@ -452,7 +452,7 @@ export default function App(){
 
   const agentRuntime=settings.agentRuntime||bootstrap.agentRuntime||"codex";
   const provider=settings.modelProvider||bootstrap.provider||"freebuff";
-  const workspaceEnvironmentId=activeThread?.providerMeta?.environmentId??(currentProject?currentProject.environmentId||null:settings.activeEnvironmentId||null);
+  const workspaceEnvironmentId=activeThread?.providerMeta?.environmentId??(projectlessMode?generalEnvironmentId:(currentProject?currentProject.environmentId||null:settings.activeEnvironmentId||null));
   const effectiveProjectSettings=currentProject?.effectiveSettings||{
     defaultModel:settings.defaultModel||null,
     defaultPermissionMode:settings.defaultPermissionMode||"supervised",
@@ -497,6 +497,7 @@ export default function App(){
   }
   async function touchProject(path,environmentId=undefined,{activate=true}={}){
     if(!path)return null;
+    setProjectlessMode(false);setGeneralEnvironmentId(null);
     const resolvedEnvironmentId=environmentId===undefined
       ?(activeThreadRef.current?.providerMeta?.environmentId??settings.activeEnvironmentId??null)
       :(environmentId||null);
@@ -656,7 +657,7 @@ export default function App(){
   },[bootstrap.wsUrl,bootstrap.mock,provider,agentRuntime,providerRevision]);
   useEffect(()=>{if(rpcStatus==="connected"&&rpc)loadSkills(rpc,projectPath)},[projectPath,rpcStatus]);
 
-  useEffect(()=>{const timer=setInterval(async()=>{const [s,r,g]=await Promise.all([api("/api/stats").catch(()=>null),api("/api/runtime").catch(()=>null),projectPath&&!workspaceRemote?api("/api/git/info?path="+encodeURIComponent(projectPath)).catch(()=>null):Promise.resolve(null)]);if(s)setStats(s);if(r)setRuntime(r);setGitInfo(g)},1800);return()=>clearInterval(timer)},[projectPath,workspaceRemote]);
+  useEffect(()=>{const timer=setInterval(async()=>{const [s,r,g]=await Promise.all([api("/api/stats").catch(()=>null),api("/api/runtime").catch(()=>null),!projectlessMode&&projectPath&&!workspaceRemote?api("/api/git/info?path="+encodeURIComponent(projectPath)).catch(()=>null):Promise.resolve(null)]);if(s)setStats(s);if(r)setRuntime(r);setGitInfo(projectlessMode?null:g)},1800);return()=>clearInterval(timer)},[projectPath,workspaceRemote,projectlessMode]);
   useEffect(()=>{if(agentRuntime!=="codex"||provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;refreshFreebuff(model);const timer=setInterval(()=>refreshFreebuff(model),15000);return()=>clearInterval(timer)},[agentRuntime,provider,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
   useEffect(()=>{if(agentRuntime!=="codex"||provider!=="freebuff"||!running||!(bootstrap.loggedIn||bootstrap.mock))return;const ping=()=>{const p=new URLSearchParams({timezone});if(model)p.set("model",model);fetch("/api/freebuff/heartbeat?"+p,{method:"POST"}).catch(()=>{})};ping();const timer=setInterval(ping,45000);return()=>clearInterval(timer)},[agentRuntime,provider,running,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
 
@@ -727,7 +728,7 @@ export default function App(){
         previewFocus:Boolean(rightPanelOpen&&rightPanelTab==="preview"),
         modelPickerOpen:Boolean(modelPickerOpen),
         textInputFocus:Boolean(active&&["INPUT","TEXTAREA","SELECT"].includes(active.tagName)),
-        projectOpen:Boolean(projectPath),
+        projectOpen:Boolean(projectPath&&!projectlessMode),
         threadOpen:Boolean(activeThread?.id),
         running:Boolean(running),
         modalOpen:Boolean(paletteOpen||question||elicitations.length||approvals.length||snoozeRequest||settings.onboardingComplete===false),
@@ -799,7 +800,7 @@ export default function App(){
     };
     window.addEventListener("keydown",key);
     return()=>window.removeEventListener("keydown",key);
-  },[settings,prompt,attachments,section,panel,paletteOpen,question,elicitations.length,approvals.length,snoozeRequest,threadUndo,projectPath,activeThread,running,rightPanelOpen,rightPanelTab,sourceSelectedPr,linkedPullRequests,queued,sidebarOpen,displayThreads,modelPickerOpen,currentProject]);
+  },[settings,prompt,attachments,section,panel,paletteOpen,question,elicitations.length,approvals.length,snoozeRequest,threadUndo,projectPath,projectlessMode,activeThread,running,rightPanelOpen,rightPanelTab,sourceSelectedPr,linkedPullRequests,queued,sidebarOpen,displayThreads,modelPickerOpen,currentProject]);
   useEffect(()=>{if(!running&&queued.length){const next=queued[0];setQueued(prev=>prev.slice(1));startTurn(next.text,next.attachments,next.model||model).catch(error=>setEvents(prev=>[...prev,{id:"queue-error-"+Date.now(),kind:"error",title:error.message,status:"done"}]))}},[running,queued]);
 
   function handleServerRequest(client,message){
@@ -986,11 +987,12 @@ export default function App(){
     if(!thread?.id||!cwd)return null;
     const existing=threadMeta[thread.id]||{};
     const environmentId=existing.environmentId??thread.providerMeta?.environmentId??workspaceEnvironmentId??null;
-    const params=new URLSearchParams({path:String(cwd)});params.set("environmentId",environmentId||"");
-    const info=await api("/api/git/info?"+params).catch(()=>null);
+    const projectless=Object.prototype.hasOwnProperty.call(extra,"projectless")?Boolean(extra.projectless):Boolean(existing.projectless);
+    let info=null;
+    if(!projectless){const params=new URLSearchParams({path:String(cwd)});params.set("environmentId",environmentId||"");info=await api("/api/git/info?"+params).catch(()=>null)}
     return updateThreadMeta(thread.id,{
       cwd:String(cwd),environmentId,branch:existing.branch||(info?.isGit?info.branch||null:null),
-      sectionName:thread.section?.name||"Active",archived:Boolean(thread.archived),...extra,
+      projectless,sectionName:thread.section?.name||"Active",archived:Boolean(thread.archived),...extra,
     });
   }
   function clearThreadUndo(){
@@ -1108,11 +1110,21 @@ export default function App(){
     return {goal:goalData?.goal||null,pullRequests};
   }
   async function newChat(){activeThreadRef.current=null;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([]);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
+  async function newGeneralChat(){
+    const environmentId=workspaceEnvironmentId;
+    const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
+    await newChat();
+    setProjectlessMode(true);setGeneralEnvironmentId(scratch.environmentId||null);setCurrentProject(null);setProjectPath(scratch.path);setGitInfo(null);setWorkspaceMode("current");
+    if(["files","diff","source"].includes(rightPanelTab)){setRightPanelTab("runtime");setRightPanelOpen(false);setRightPanelMaximized(false)}
+    return scratch;
+  }
   async function openThread(thread){
     const threadEnvironmentId=thread.providerMeta?.environmentId||null;
-    if(thread.cwd&&!threadEnvironmentId)await api("/api/worktree/ensure",{method:"POST",body:{path:thread.cwd,environmentId:null}}).catch(error=>{throw new Error("Could not restore this managed worktree: "+error.message)});
-    activeThreadRef.current=thread;setSection("chat");setEvents([]);setAssistantText("");setWorktreeSetup(null);setActiveThread(thread);persistThreadWorkspaceContext(thread,thread.cwd,{archived:false}).catch(()=>{});
-    if(thread.cwd)await touchProject(thread.cwd,threadEnvironmentId);else setProjectPath(projectPath);
+    const savedMeta=threadMeta[thread.id]||{};const projectless=Boolean(savedMeta.projectless);
+    if(thread.cwd&&!threadEnvironmentId&&!projectless)await api("/api/worktree/ensure",{method:"POST",body:{path:thread.cwd,environmentId:null}}).catch(error=>{throw new Error("Could not restore this managed worktree: "+error.message)});
+    activeThreadRef.current=thread;setSection("chat");setEvents([]);setAssistantText("");setWorktreeSetup(null);setActiveThread(thread);persistThreadWorkspaceContext(thread,thread.cwd,{archived:false,projectless}).catch(()=>{});
+    if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(thread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
+    else if(thread.cwd)await touchProject(thread.cwd,threadEnvironmentId);else setProjectPath(projectPath);
     if(!rpc||rpcStatus!=="connected")return;
     const [resumed,cp,goalData,attachmentData]=await Promise.all([
       rpc.request("thread/resume",{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null,excludeTurns:false}).catch(()=>null),
@@ -1228,28 +1240,39 @@ export default function App(){
     if(setup?.session?.id&&setup.waitForSetup){const settled=await waitForDetachedSetup(setup.session.id);if(settled.timeout)throw new Error("Background worktree setup is still running after 30 minutes.");if(settled.exitCode!==0)throw new Error(`Background worktree setup failed with exit code ${settled.exitCode??"unknown"}.`)}
     return worktree;
   }
-  async function createThreadFor(modelId,cwd){const p=presetFor(permissionMode);const dynamicTools=[...TREBELL_BROWSER_TOOLS,...TREBELL_COMPUTER_TOOLS,...TREBELL_SOURCE_CONTROL_TOOLS,...(effectiveProjectSettings.agentDeviceAccess?TREBELL_DEVICE_TOOLS:[])];const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools,developerInstructions:webSearch?"Web research is allowed when useful. You may use trebell_browser for interactive pages.":"Do not use web search or trebell_browser unless the user explicitly requests it."});if(agentRuntime!=="codex"&&result.thread?.providerMeta){setProviderAgent(result.thread.agent||providerAgent||"");const meta=result.thread.providerMeta;applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}if(result.thread?.id)await persistThreadWorkspaceContext(result.thread,cwd,{sectionName:"Active",archived:false}).catch(()=>{});return result.thread}
+  async function createThreadFor(modelId,cwd,{projectless=projectlessMode}={}){
+    const p=presetFor(permissionMode);
+    const dynamicTools=[...TREBELL_BROWSER_TOOLS,...TREBELL_COMPUTER_TOOLS,...TREBELL_SOURCE_CONTROL_TOOLS,...(effectiveProjectSettings.agentDeviceAccess?TREBELL_DEVICE_TOOLS:[])];
+    const researchInstruction=webSearch?"Web research is allowed when useful. You may use trebell_browser for interactive pages.":"Do not use web search or trebell_browser unless the user explicitly requests it.";
+    const developerInstructions=projectless
+      ?"This is a Trebell General chat with no attached project or repository. The working directory is an app-managed scratch workspace. Do not assume it is a codebase, repository, or user project. "+researchInstruction
+      :researchInstruction;
+    const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools,developerInstructions});
+    if(agentRuntime!=="codex"&&result.thread?.providerMeta){setProviderAgent(result.thread.agent||providerAgent||"");const meta=result.thread.providerMeta;applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}
+    if(result.thread?.id)await persistThreadWorkspaceContext(result.thread,cwd,{sectionName:"Active",archived:false,projectless}).catch(()=>{});
+    return result.thread;
+  }
   function inputsFor(text,paths){return [{type:"text",text,text_elements:[]},...(paths||[]).map(path=>{const lower=String(path).toLowerCase();if(/\.(png|jpe?g|gif|webp|bmp)$/.test(lower))return{type:"localImage",path};if(/\.(mp3|wav|m4a|ogg|flac)$/.test(lower))return{type:"localAudio",path};return{type:"mention",name:String(path).split(/[\\/]/).pop(),path}})]}
   async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null){
-    if(!threadOverride&&(cwdOverride||projectPath)===projectPath)await waitForActiveClone();
+    if(!projectlessMode&&!threadOverride&&(cwdOverride||projectPath)===projectPath)await waitForActiveClone();
     await validateAttachmentPaths(paths||[]);
     if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");let thread=threadOverride||activeThread;let cwd=cwdOverride||projectPath||bootstrap.cwd;
-    if(!thread){cwd=await prepareWorktree(cwd,modelId);thread=await createThreadFor(modelId,cwd);activeThreadRef.current=thread;setActiveThread(thread);setThreads(prev=>[thread,...prev]);setProjectPath(cwd)}
+    if(!thread){if(!projectlessMode)cwd=await prepareWorktree(cwd,modelId);thread=await createThreadFor(modelId,cwd,{projectless:projectlessMode});activeThreadRef.current=thread;setActiveThread(thread);setThreads(prev=>[thread,...prev]);setProjectPath(cwd)}
     const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7);setMessages(prev=>[...prev,{id:clientId,role:"user",text}]);setEvents([]);setAssistantText("");setRunning(true);
-    const checkpoint=await api("/api/checkpoints",{method:"POST",body:{cwd,threadId:thread.id,label:text.slice(0,80)}}).catch(()=>null);const p=presetFor(permissionMode);
+    const checkpoint=projectlessMode?null:await api("/api/checkpoints",{method:"POST",body:{cwd,threadId:thread.id,label:text.slice(0,80)}}).catch(()=>null);const p=presetFor(permissionMode);
     const sandboxPolicy=p.sandbox==="danger-full-access"?{type:"dangerFullAccess"}:p.sandbox==="read-only"?{type:"readOnly",networkAccess:false}:{type:"workspaceWrite",writableRoots:[cwd],networkAccess:webSearch,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
     const custom=(settings.customModels||[]).find(item=>item.id===modelId&&item.runtime===agentRuntime&&(agentRuntime!=="codex"||item.provider===provider));
     const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(agentRuntime==="codex"&&custom?.effort?{effort:custom.effort}:{}),...(agentRuntime==="codex"&&custom?.serviceTier?{serviceTierForTurn:custom.serviceTier}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths)});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);
     setMessages(prev=>prev.map(m=>m.id===clientId?{...m,turnId,checkpointId:checkpoint?.id||null}:m));if(checkpoint?.id&&turnId){await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}}).catch(()=>{});setCheckpointByTurn(prev=>({...prev,[turnId]:{...checkpoint,turnId}}))}setAttachments([]);setContextChips([]);return{thread,turnId};
   }
-  async function startDetachedTurn(text,paths,modelId=model,{forceWorktree=false,basePath=null}={}){
+  async function startDetachedTurn(text,paths,modelId=model,{forceWorktree=false,basePath=null,projectless=projectlessMode}={}){
     await validateAttachmentPaths(paths||[]);if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");
-    let cwd=basePath||projectPath||bootstrap.cwd;if(!cwd)throw new Error("Choose a project before starting background work.");cwd=await prepareDetachedWorktree(cwd,modelId,{force:forceWorktree});
+    let cwd=basePath||projectPath||bootstrap.cwd;if(!cwd)throw new Error(projectless?"Could not prepare the General chat workspace.":"Choose a project before starting background work.");if(!projectless)cwd=await prepareDetachedWorktree(cwd,modelId,{force:forceWorktree});
     let thread=null;let turnRequestStarted=false;
     try{
-      thread=await createThreadFor(modelId,cwd);if(!thread?.id)throw new Error("Agent harness did not create a background thread");
+      thread=await createThreadFor(modelId,cwd,{projectless});if(!thread?.id)throw new Error("Agent harness did not create a background thread");
       backgroundThreadsRef.current.add(thread.id);setThreads(prev=>[thread,...prev.filter(item=>item.id!==thread.id)]);
-      const checkpoint=await api("/api/checkpoints",{method:"POST",body:{cwd,threadId:thread.id,label:text.slice(0,80)}}).catch(()=>null);const p=presetFor(permissionMode);
+      const checkpoint=projectless?null:await api("/api/checkpoints",{method:"POST",body:{cwd,threadId:thread.id,label:text.slice(0,80)}}).catch(()=>null);const p=presetFor(permissionMode);
       const sandboxPolicy=p.sandbox==="danger-full-access"?{type:"dangerFullAccess"}:p.sandbox==="read-only"?{type:"readOnly",networkAccess:false}:{type:"workspaceWrite",writableRoots:[cwd],networkAccess:webSearch,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
       const custom=(settings.customModels||[]).find(item=>item.id===modelId&&item.runtime===agentRuntime&&(agentRuntime!=="codex"||item.provider===provider));
       turnRequestStarted=true;
@@ -1352,9 +1375,9 @@ export default function App(){
     if(bootstrap.mock||!rpc||rpcStatus!=="connected"){await send();return}
     if(agentRuntime==="antigravity"&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:"Antigravity does not accept video attachments",status:"done",raw:{}}]);return}
     try{await validateAttachmentPaths(attachments)}catch(error){setEvents(prev=>[...prev,{id:"background-attachment-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
-    const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd,model};
+    const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd,model,projectless:projectlessMode};
     setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);setEvents([]);setAssistantText("");setSection("chat");
-    startDetachedTurn(draft.text,draft.attachments,draft.model,{basePath:draft.projectPath}).catch(async error=>{
+    startDetachedTurn(draft.text,draft.attachments,draft.model,{basePath:draft.projectPath,projectless:draft.projectless}).catch(async error=>{
       await api("/api/stashes",{method:"POST",body:draft}).catch(()=>{});
       setEvents(prev=>[...prev,{id:"background-error-"+Date.now(),kind:"error",title:"Background task failed; draft was stashed: "+(error.message||String(error)),status:"done",raw:{}}]);
       desktopNotify("Background task failed","The draft was saved to Trebell stash.");
@@ -1528,7 +1551,13 @@ export default function App(){
     if(result?.thread){setActiveThread(result.thread);setThreads(prev=>prev.map(thread=>thread.id===result.thread.id?result.thread:thread))}
   }
 
-  function openRightPanel(tab="files"){setRightPanelTab(tab);setRightPanelOpen(true);setSection("chat")}
+  function openRightPanel(tab="files"){
+    if(projectlessMode&&["diff","source"].includes(tab)){
+      setEvents(prev=>[...prev,{id:"general-panel-"+Date.now(),kind:"tool",title:"General chats do not have Git or repository changes.",status:"done",raw:{tab}}]);
+      return;
+    }
+    setRightPanelTab(tab);setRightPanelOpen(true);setSection("chat");
+  }
   function navigateSection(next){
     if(next==="source"){openRightPanel("source");return}
     if(next==="preview"){openRightPanel("preview");return}
@@ -1547,17 +1576,17 @@ export default function App(){
   async function cycleAppearance(){const modes=["system","light","dark"];const next=modes[(modes.indexOf(settings.appearanceMode||"system")+1)%modes.length];await saveAppSettings({appearanceMode:next})}
 
   const activeTitle=titleOf(activeThread);
-  const projectLabel=String(projectPath||activeThread?.cwd||bootstrap.cwd||"Workspace").split(/[\\/]/).filter(Boolean).at(-1)||"Workspace";
+  const projectLabel=projectlessMode?"No project":String(projectPath||activeThread?.cwd||bootstrap.cwd||"Workspace").split(/[\\/]/).filter(Boolean).at(-1)||"Workspace";
   const providerLabel=({freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider);
   const agentRuntimeLabel=({codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime);
   const completedEvents=events.filter(event=>event.status==="done").length;
   const paletteActions=[
     {id:"new",label:"New thread",detail:"Start a clean coding task",shortcut:"Ctrl+N",onRun:newChat},
+    {id:"new-general",label:"New general chat",detail:"Start without attaching a project or repository",onRun:newGeneralChat},
     {id:"folder",label:"Open workspace folder",detail:projectPath||"Choose a local folder",onRun:pickWorkspace},
     {id:"projects",label:"Recent projects",detail:"Switch checkouts or clone a repository",onRun:()=>setSection("projects")},
     {id:"files",label:"Files",detail:"Browse and edit the workspace",onRun:()=>openRightPanel("files")},
-    {id:"diff",label:"Changes",detail:"Inspect the current Git diff",onRun:()=>openRightPanel("diff")},
-    {id:"git",label:"Source control",detail:gitInfo?.branch||"Git and pull requests",onRun:()=>openRightPanel("source")},
+    ...(!projectlessMode?[{id:"diff",label:"Changes",detail:"Inspect the current Git diff",onRun:()=>openRightPanel("diff")},{id:"git",label:"Source control",detail:gitInfo?.branch||"Git and pull requests",onRun:()=>openRightPanel("source")}]:[]),
     ...(activeThread?.id?[{id:"link-pr",label:"Link pull request",detail:"Attach a hosted review to this thread",onRun:async()=>{const url=prompt("Pull request URL");if(url)await linkPullRequestUrl(url,"manual")}}]:[]),
     {id:"terminal",label:"Terminal",detail:"Open the persistent PTY",shortcut:"Ctrl+Shift+T",onRun:()=>setPanel("terminal")},
     ...((currentProject?.scripts||[]).map(script=>({id:"project-action:"+script.id,label:"Run "+script.name,detail:script.command,onRun:()=>runProjectAction(script)}))),
@@ -1588,9 +1617,9 @@ export default function App(){
   />;
 
   function rightPanelContent(){
-    if(rightPanelTab==="files"||rightPanelTab==="diff")return <WorkspacePanel key={rightPanelTab+":"+(workspaceEnvironmentId||"local")} defaultTab={rightPanelTab==="diff"?"diff":"files"} projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} activeThreadId={activeThread?.id} reviewedFiles={reviewedFiles} onReviewedChange={toggleReviewed} onAttachPath={path=>addFiles([path])} onReviewComment={attachReviewComment}/>;
+    if(rightPanelTab==="files"||rightPanelTab==="diff")return <WorkspacePanel key={rightPanelTab+":"+(workspaceEnvironmentId||"local")} defaultTab={rightPanelTab==="diff"&&!projectlessMode?"diff":"files"} allowDiff={!projectlessMode} projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} activeThreadId={activeThread?.id} reviewedFiles={reviewedFiles} onReviewedChange={toggleReviewed} onAttachPath={path=>addFiles([path])} onReviewComment={attachReviewComment}/>;
     if(rightPanelTab==="preview")return previewSurface;
-    if(rightPanelTab==="source")return <SourceControlPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} model={model} provider={provider} threadId={activeThread?.id||null} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} onLinkPrUrl={linkPullRequestUrl} onOpenLinkedThread={openLinkedThread} onSelectedPrChange={setSourceSelectedPr} onLinkedPullRequestsChanged={links=>activeThread?.id&&applyThreadPullRequestLinks(activeThread.id,links)} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
+    if(rightPanelTab==="source")return projectlessMode?<div className="empty-state">General chats are not attached to source control.</div>:<SourceControlPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} model={model} provider={provider} threadId={activeThread?.id||null} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} onLinkPrUrl={linkPullRequestUrl} onOpenLinkedThread={openLinkedThread} onSelectedPrChange={setSourceSelectedPr} onLinkedPullRequestsChanged={links=>activeThread?.id&&applyThreadPullRequestLinks(activeThread.id,links)} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
     if(rightPanelTab==="device")return <DevicePanel/>;
     if(rightPanelTab==="agents"&&agentRuntime==="codex")return <div className="panel-page"><AgentsPage threads={threads} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onRefreshThreads={()=>rpc?loadThreads(rpc):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model} telemetry={threadTelemetry}/></div>;
     if(rightPanelTab==="goal")return <GoalPanel rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={setGoal}/>;
@@ -1627,14 +1656,14 @@ export default function App(){
           <header className="workspace-header">
             <div className="workspace-breadcrumb">
               {!sidebarOpen&&<button className="project-crumb sidebar-reopen" onClick={()=>setSidebarOpen(true)} aria-label="Open sidebar" title="Open sidebar · Ctrl+B"><PanelLeftOpen size={14}/></button>}
-              <button className="project-crumb" onClick={pickWorkspace} title={projectPath||"Open folder"}><FolderCode size={14}/><span>{projectLabel}</span></button><button className="project-switcher" onClick={()=>setSection("projects")} title="Recent projects"><ChevronDown size={12}/></button>
+              <button className={"project-crumb"+(projectlessMode?" projectless":"")} onClick={projectlessMode?()=>setSection("projects"):pickWorkspace} title={projectlessMode?"No project · choose a project":projectPath||"Open folder"}>{projectlessMode?<Sparkles size={14}/>:<FolderCode size={14}/>}<span>{projectLabel}</span></button><button className="project-switcher" onClick={()=>setSection("projects")} title="Projects and General chat"><ChevronDown size={12}/></button>
               <span>/</span>
               <button className="thread-title-button" onDoubleClick={renameThread} onClick={renameThread} title="Rename thread"><strong>{activeTitle}</strong><ChevronDown size={13}/></button>
               {activeThread?.id&&linkedPullRequests.map(pr=><button className="header-pr" key={pr.url||pr.number} onClick={()=>window.open(pr.url,"_blank")}><GitBranch size={11}/>#{pr.number}</button>)}
             </div>
             <div className="workspace-header-actions">
               {gitInfo?.isGit&&<button className="header-control branch-control" onClick={()=>openRightPanel("source")} title="Source control"><GitBranch size={14}/><span>{gitInfo.branch||"detached"}</span></button>}
-              {!workspaceRemote&&<OpenInPicker path={projectPath}/>}
+              {!projectlessMode&&!workspaceRemote&&<OpenInPicker path={projectPath}/>}
               {(currentProject?.scripts||[]).length>0&&(()=>{const script=(currentProject.scripts||[]).find(item=>item.id===currentProject.preferredScriptId)||currentProject.scripts[0];return <button className="header-control" onClick={()=>runProjectAction(script).catch(error=>setEvents(prev=>[...prev,{id:"project-action-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} title={script.command}><Play size={13}/><span>{script.name}</span></button>})()}
               {activeThread?.id&&gitInfo?.isGit&&<button className="header-control" onClick={()=>startReview().catch(error=>setEvents(prev=>[...prev,{id:"review-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} title="Review uncommitted changes"><ShieldCheck size={14}/><span>Review</span></button>}
               {running&&<button className="header-control stop-control" onClick={stop}><CircleStop size={14}/><span>Stop</span></button>}
@@ -1654,19 +1683,15 @@ export default function App(){
               {queued.map(item=><div className="queued-message" key={item.id}><span>Queued</span><p>{item.text}</p><button onClick={()=>sendQueuedNow(item)}>Send now</button><button onClick={()=>{setPrompt(item.text);setAttachments(item.attachments);setContextChips(item.contextChips||[]);setQueued(prev=>prev.filter(x=>x.id!==item.id))}}>Edit</button></div>)}
               {!messages.length&&!events.length&&<div className="welcome">
                 <div className="welcome-mark"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/></div>
-                <h1>What do you want to build?</h1>
-                <p>{agentRuntime==="codex"?`${providerLabel} supplies inference to the Codex harness.`:`${agentRuntimeLabel} is the active coding-agent harness.`} Trebell keeps files, terminal, Git, worktrees, previews and project actions in one workspace.</p>
-                <div className="suggestions">
-                  <button onClick={()=>setPrompt("Inspect this project and explain the architecture.")}>Explain codebase</button>
-                  <button onClick={()=>setPrompt("Find a useful bug, fix it, and run the relevant tests.")}>Fix a bug</button>
-                  <button onClick={()=>setPrompt("Implement the next missing feature and validate it end-to-end.")}>Ship a feature</button>
-                </div>
+                <h1>{projectlessMode?"What do you want to think through?":"What do you want to build?"}</h1>
+                <p>{projectlessMode?"This is a General chat with no attached project. Files and terminal commands stay inside a Trebell-managed scratch workspace.":<>{agentRuntime==="codex"?`${providerLabel} supplies inference to the Codex harness.`:`${agentRuntimeLabel} is the active coding-agent harness.`} Trebell keeps files, terminal, Git, worktrees, previews and project actions in one workspace.</>}</p>
+                <div className="suggestions">{projectlessMode?<><button onClick={()=>setPrompt("Help me plan the architecture for this idea before I choose a repository.")}>Plan an idea</button><button onClick={()=>setPrompt("Research this technical question and give me a practical recommendation: ")}>Research a topic</button><button onClick={()=>setPrompt("Turn this rough idea into a clear technical specification: ")}>Draft a spec</button></>:<><button onClick={()=>setPrompt("Inspect this project and explain the architecture.")}>Explain codebase</button><button onClick={()=>setPrompt("Find a useful bug, fix it, and run the relevant tests.")}>Fix a bug</button><button onClick={()=>setPrompt("Implement the next missing feature and validate it end-to-end.")}>Ship a feature</button></>}</div>
               </div>}
             </div>
           </div>
 
           {currentProject?.cloneJob&&currentProject.cloneJob.status!=="completed"&&<div className={"clone-banner "+currentProject.cloneJob.status} data-testid="clone-banner"><div><strong>{currentProject.cloneJob.phase||"Cloning repository"}</strong><span>{currentProject.cloneJob.status==="failed"?(currentProject.cloneJob.error||"Clone failed"):currentProject.cloneJob.status==="cancelled"?"Clone cancelled":"You can keep writing. Send waits until the repository is ready."}</span></div>{["running","cancelling"].includes(currentProject.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(currentProject.cloneJob.progress)||0)+"%"}}/></i>}<em>{Math.round(currentProject.cloneJob.progress||0)}%</em>{currentProject.cloneJob.status==="running"&&<button onClick={()=>cloneProjectAction("cancel").catch(error=>setEvents(prev=>[...prev,{id:"clone-cancel-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(currentProject.cloneJob.status)&&<button onClick={()=>cloneProjectAction("retry").catch(error=>setEvents(prev=>[...prev,{id:"clone-retry-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))}>Retry clone</button>}</div>}
-          <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={()=>setPromptHistoryIndex(-1)} historyIndex={promptHistoryIndex} onSend={send} onBackgroundSend={sendInBackground} canBackground={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"} running={running} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onCaptureScreen={()=>captureDesktop().catch(error=>setEvents(prev=>[...prev,{id:"screen-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} webSearch={webSearch} setWebSearch={setWebSearch} skills={skills} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={changeProviderAgent} onSkill={onSkill} onFiles={()=>openRightPanel("files")} settings={settings} onStash={stashPrompt} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} onModelPickerOpenChange={setModelPickerOpen}/>
+          <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={()=>setPromptHistoryIndex(-1)} historyIndex={promptHistoryIndex} onSend={send} onBackgroundSend={sendInBackground} canBackground={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"} running={running} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onCaptureScreen={()=>captureDesktop().catch(error=>setEvents(prev=>[...prev,{id:"screen-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} webSearch={webSearch} setWebSearch={setWebSearch} skills={skills} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={changeProviderAgent} onSkill={onSkill} onFiles={()=>openRightPanel("files")} settings={settings} onStash={stashPrompt} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} onModelPickerOpenChange={setModelPickerOpen}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="terminal-drawer-head"><span><SquareTerminal size={14}/> Terminal</span><div><button onClick={()=>attachExcerpt("")} aria-hidden="true" tabIndex={-1} className="terminal-head-spacer"/><button onClick={()=>setPanel(null)} aria-label="Close terminal"><X size={15}/></button></div></div>
@@ -1674,18 +1699,18 @@ export default function App(){
           </div>}
         </div>}
 
-        {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><ProjectsPage currentPath={projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} models={models} onProjectUpdated={project=>{if(project?.path===projectPath&&(project?.environmentId||null)===(workspaceEnvironmentId||null))setCurrentProject(project)}} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></div>}
+        {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onProjectUpdated={project=>{if(project?.path===projectPath&&(project?.environmentId||null)===(workspaceEnvironmentId||null))setCurrentProject(project)}} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></div>}
         {section==="templates"&&<div className="secondary-page"><h1>Templates</h1><p>Reusable starting points that become normal Trebell turns.</p><div className="template-grid">{[["Ship a feature","Inspect the project, plan a useful feature, implement it, run the relevant tests, fix failures, and summarize the result."],["Fix a bug","Reproduce a meaningful bug in this project, diagnose it, fix it, and validate the fix."],["Review codebase","Map this codebase architecture, important execution paths, risks, and highest-value improvements."],["Refactor safely","Choose a worthwhile refactor, preserve behavior, implement focused changes, and run tests."],["Autonomous build","Take this project to a working validated result. Continue through implementation and test failures until it passes."],["Security review","Review this project for concrete security weaknesses and propose or implement safe fixes."]].map(([name,text])=><button key={name} onClick={()=>{setPrompt(text);setSection("chat")}}><BrainCircuit size={20}/><strong>{name}</strong><span>{text}</span></button>)}</div></div>}
         {section==="freebuff"&&agentRuntime==="codex"&&provider==="freebuff"&&<div className="secondary-page"><div className="page-header"><div><h1>Freebuff</h1><p>Account, balance, model pricing and session state.</p></div></div><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model)}/></div>}
         {section==="tools"&&agentRuntime==="codex"&&<div className="secondary-page full"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills}/></div>}
         {section==="environments"&&<div className="secondary-page full"><EnvironmentsPage/></div>}
       {section==="usage"&&<div className="secondary-page full"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><LicensesPage/></div>}
-      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>Agent harnesses, model providers, permissions and desktop behavior.</p></div></div><SettingsPage settings={settings} onSettings={setSettings} onProviderUpdated={(options={})=>{setProviderRevision(v=>v+1);return refreshProviderModels({resetThread:true,...options})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectPath} projectScripts={currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></div>}
+      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>Agent harnesses, model providers, permissions and desktop behavior.</p></div></div><SettingsPage settings={settings} onSettings={setSettings} onProviderUpdated={(options={})=>{setProviderRevision(v=>v+1);return refreshProviderModels({resetThread:true,...options})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectlessMode?null:projectPath} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></div>}
         {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Every unarchived {agentRuntimeLabel} thread stored by Trebell on this machine.</p></div></div><div className="history-page">{threads.map(t=><button key={t.id} onClick={()=>openThread(t)}><FileCode2 size={15}/><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><time>{new Date(t.updatedAt*1000).toLocaleString()}</time></button>)}</div></div>}
       </main>
 
-      {rightPanelOpen&&<RightPanel active={rightPanelTab} maximized={rightPanelMaximized} onToggleMaximized={()=>setRightPanelMaximized(value=>!value)} onActive={setRightPanelTab} onClose={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}>{rightPanelContent()}</RightPanel>}
+      {rightPanelOpen&&<RightPanel active={rightPanelTab} disabledTabs={projectlessMode?["diff","source"]:[]} maximized={rightPanelMaximized} onToggleMaximized={()=>setRightPanelMaximized(value=>!value)} onActive={tab=>openRightPanel(tab)} onClose={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}>{rightPanelContent()}</RightPanel>}
     </div>
 
     <McpElicitationModal key={elicitations[0]?.request?.id||"none"} request={elicitations[0]?.request} onResolve={resolveElicitation}/>

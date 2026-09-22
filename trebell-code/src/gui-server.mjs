@@ -655,6 +655,22 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     const profile=environmentId?environments.get(environmentId):null;
     return profile&&profile.type!=="local"?profile:null;
   }
+  async function ensureGeneralWorkspace(environmentId=null){
+    const profile=remoteEnvironmentProfile(environmentId);
+    if(!profile){
+      const path=join(trebellHome(env),"general");
+      await mkdir(path,{recursive:true});
+      return {path,environmentId:null,environmentName:"Local machine",remote:false};
+    }
+    const result=await environments.execute(environmentId,{
+      command:'root="$HOME/.trebell-code/general"; mkdir -p "$root" && printf "%s" "$root"',
+      cwd:"",timeoutMs:12000,maxOutput:64*1024,
+    });
+    if(result.exitCode!==0)throw new Error(result.stderr||"Could not prepare the general-chat workspace");
+    const path=String(result.stdout||"").trim();
+    if(!path)throw new Error("The selected environment did not report its general-chat workspace");
+    return {path,environmentId:profile.id,environmentName:profile.name,remote:true};
+  }
   function pathInside(rootPath,filePath,{remote=false}={}){
     if(remote){
       const base=posix.normalize(String(rootPath||"/"));const target=posix.normalize(String(filePath||""));
@@ -955,6 +971,15 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           return json(res,200,next);
         }catch(error){return json(res,400,{error:error.message});}
       }
+    }
+    if(url.pathname==="/api/general-workspace"&&req.method==="POST"){
+      try{
+        const body=await readJsonBody(req);
+        const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")
+          ?requestedEnvironmentId(body.environmentId,{fallback:false})
+          :requestedEnvironmentId(null);
+        return json(res,200,await ensureGeneralWorkspace(environmentId));
+      }catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/agent-runtimes"){
       if(req.method==="GET"){

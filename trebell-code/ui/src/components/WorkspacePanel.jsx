@@ -68,7 +68,7 @@ function fileIcon(name){
   return <FileCode2 size={14}/>;
 }
 
-export default function WorkspacePanel({projectPath,environmentId=null,remote=false,defaultTab="files",reviewedFiles=[],onReviewedChange,onAttachPath,onReviewComment}){
+export default function WorkspacePanel({projectPath,environmentId=null,remote=false,defaultTab="files",allowDiff=true,reviewedFiles=[],onReviewedChange,onAttachPath,onReviewComment}){
   const [tab,setTab]=useState(defaultTab==="diff"?"diff":"files");
   const [entries,setEntries]=useState([]);
   const [query,setQuery]=useState("");
@@ -142,7 +142,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
 
   const editable=Boolean(file&&["text","html","markdown","table"].includes(file.kind));
   return <div className="workspace-panel">
-    <div className="panel-tabs"><button className={tab==="files"?"active":""} onClick={()=>setTab("files")}>Files</button><button className={tab==="diff"?"active":""} onClick={()=>{setTab("diff");refreshDiff()}}>Changes {changedPaths.length?"("+changedPaths.length+")":""}</button><button onClick={()=>{refreshTree();refreshDiff()}}><RefreshCw size={13}/></button></div>
+    <div className="panel-tabs"><button className={tab==="files"?"active":""} onClick={()=>setTab("files")}>Files</button>{allowDiff&&<button className={tab==="diff"?"active":""} onClick={()=>{setTab("diff");refreshDiff()}}>Changes {changedPaths.length?"("+changedPaths.length+")":""}</button>}<button onClick={()=>{refreshTree();if(allowDiff)refreshDiff()}}><RefreshCw size={13}/></button></div>
     {tab==="files"&&<div className="workspace-files">
       <div className="workspace-search"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search files…"/></div>
       <div className="workspace-body">
