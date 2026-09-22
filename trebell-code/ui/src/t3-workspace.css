@@ -61,6 +61,7 @@ body{min-width:820px;background:var(--t3-bg);color:var(--t3-text)}
 .thread-main>div{min-width:0}
 .thread-main strong{display:block;font-size:11px;font-weight:560;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .thread-main span:not(.thread-status-dot){display:block;margin-top:2px;font-size:8.5px;color:#737880;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.thread-main .thread-title-line{display:flex;align-items:center;gap:4px;overflow:visible}.thread-main .thread-title-text{display:block;min-width:0;flex:1;margin:0;font:inherit;color:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.thread-main .thread-pr-chip{display:inline-flex;margin:0}
 .thread-status-dot{width:5px;height:5px;border-radius:50%;background:#555b63;justify-self:center}
 .thread-status-dot.pinned{background:#a58af4}.thread-status-dot.snoozed{background:#5c87bc}.thread-status-dot.settled{background:#4f785e}
 .thread-actions{position:absolute;right:4px;top:5px;height:30px;display:none;align-items:center;padding:0 2px;border-radius:6px;background:linear-gradient(90deg,transparent,#1a1c1f 18%)}

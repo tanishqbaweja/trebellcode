@@ -198,7 +198,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     if(method==="thread/delete"){
       const deletedThread=threadStore.get(params.threadId);
       const runtimeSession=sessions.get(params.threadId);if(runtimeSession instanceof ClaudeAgentSession)await runtimeSession.delete().catch(()=>{});else await runtimeSession?.close().catch(()=>{});
-      sessions.delete(params.threadId);threadStore.delete(params.threadId);if(onThreadDeleted)try{await onThreadDeleted(deletedThread)}catch{}return {ok:true}
+      sessions.delete(params.threadId);threadStore.delete(params.threadId);state?.updateThreadMeta?.(params.threadId,{deletedAt:Date.now(),archived:true});if(onThreadDeleted)try{await onThreadDeleted(deletedThread)}catch{}return {ok:true}
     }
     if(method==="thread/section/move"){return {thread:threadStore.update(params.threadId,{section:params.sectionId?{id:params.sectionId,name:params.sectionId}:null})}}
     if(method==="thread/settings/update"){

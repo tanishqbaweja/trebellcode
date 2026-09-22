@@ -67,6 +67,14 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(settings.followUpMode,"steer");
     const meta=await fetch(gui.url+"/api/thread-meta",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId:"thread-test",patch:{pinned:true}})}).then(r=>r.json());
     assert.equal(meta.pinned,true);
+    await fetch(gui.url+"/api/thread-meta",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId:"thread-branch",patch:{
+      cwd:projectPath,environmentId:null,branch:"feature/x",sectionName:"Active",
+      branchPullRequest:{identity:{provider:"github",host:"github.com",repository:"acme/widget",number:21},number:21,title:"Detected review",state:"OPEN",url:"https://github.com/acme/widget/pull/21",headRefName:"feature/x",baseRefName:"main"},
+      lastBranchPullRequestSyncAt:123,
+    }})});
+    const branchReviews=await fetch(gui.url+"/api/source-control/branch-reviews").then(r=>r.json());
+    const detectedReview=branchReviews.items.find(item=>item.threadId==="thread-branch");
+    assert.equal(detectedReview.branch,"feature/x");assert.equal(detectedReview.review.number,21);assert.equal(detectedReview.lastSyncedAt,123);
     const linked=await fetch(gui.url+"/api/source-control/thread-link",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({
       action:"link",threadId:"thread-test",refresh:false,source:"manual",pr:{
         identity:{provider:"github",host:"github.com",repository:"acme/widget",number:17},
@@ -82,6 +90,17 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
       action:"unlink",threadId:"thread-test",identity:{provider:"github",host:"github.com",repository:"acme/widget",number:17},
     })}).then(r=>r.json());
     assert.equal(unlinked.links.length,0);
+    await fetch(gui.url+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({autoSettleMergedThreads:true})});
+    await fetch(gui.url+"/api/source-control/thread-link",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({
+      action:"link",threadId:"thread-settle",refresh:false,source:"manual",pr:{
+        identity:{provider:"github",host:"github.com",repository:"acme/widget",number:18},
+        number:18,title:"Finished review",state:"MERGED",url:"https://github.com/acme/widget/pull/18",headRefName:"done",baseRefName:"main",mergedAt:"2026-09-22T10:00:00Z",
+      },
+    })});
+    const syncedTerminal=await fetch(gui.url+"/api/source-control/thread-link",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"sync",threadId:"thread-settle"})}).then(r=>r.json());
+    assert.equal(syncedTerminal.lifecycle.terminal,true);assert.ok(syncedTerminal.pendingSettlement?.signature);
+    const settlements=await fetch(gui.url+"/api/source-control/settlements").then(r=>r.json());
+    assert.equal(settlements.enabled,true);assert.equal(settlements.items.some(item=>item.threadId==="thread-settle"),true);
 
     const overview=await fetch(gui.url+"/api/freebuff/overview?model=freebuff/deepseek/deepseek-v4-flash&timezone=UTC").then(r=>r.json());
     assert.equal(overview.loggedIn,true);

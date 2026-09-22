@@ -32,6 +32,15 @@ test("legacy implicit System appearance migrates to Dark once",async()=>{
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
+test("pull request auto-settle is opt-in and persists",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-state-auto-settle-"));const env={...process.env,TREBELL_HOME:home};
+  try{
+    const state=new TrebellStateStore(env);assert.equal(state.settings().autoSettleMergedThreads,false);
+    state.updateSettings({autoSettleMergedThreads:true});
+    assert.equal(new TrebellStateStore(env).settings().autoSettleMergedThreads,true);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 
 test("project actions persist, sanitize, inherit preference, and allow clearing overrides", async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-state-actions-"));

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildPullRequestLink, normalizePullRequestIdentity, parsePullRequestUrl, pullRequestIdentityKey } from "../src/pr-link-utils.mjs";
+import { buildPullRequestLink, linkedPullRequestTerminalStatus, normalizePullRequestIdentity, parsePullRequestUrl, pullRequestForBranch, pullRequestIdentityKey } from "../src/pr-link-utils.mjs";
 
 test("pull request URLs normalize to host-level identities",()=>{
   assert.deepEqual(parsePullRequestUrl("https://github.com/Acme/Widget/pull/17"),{provider:"github",host:"github.com",repository:"Acme/Widget",number:17,url:"https://github.com/Acme/Widget/pull/17"});
@@ -27,4 +27,25 @@ test("linked PR payload persists snapshot and native stack metadata",()=>{
   assert.equal(link.snapshot.changedFiles,1);
   assert.equal(link.stack.kind,"native");
   assert.deepEqual(link.stack.layers.map(layer=>layer.number),[1,2]);
+});
+
+test("auto-settle eligibility requires every linked pull request to be freshly terminal",()=>{
+  const merged={identity:{provider:"github",host:"github.com",repository:"acme/widget",number:1},snapshot:{state:"MERGED",syncedAt:"2026-09-22T10:00:00Z",mergedAt:"2026-09-22T09:59:00Z"}};
+  const closed={identity:{provider:"github",host:"github.com",repository:"acme/widget",number:2},snapshot:{state:"CLOSED",syncedAt:"2026-09-22T10:00:00Z",closedAt:"2026-09-22T09:58:00Z"}};
+  const terminal=linkedPullRequestTerminalStatus([merged,closed]);
+  assert.equal(terminal.terminal,true);assert.ok(terminal.signature.includes("github.com|acme/widget|1"));
+  assert.equal(linkedPullRequestTerminalStatus([{...merged,snapshot:{...merged.snapshot,state:"OPEN"}}]).reason,"active");
+  assert.equal(linkedPullRequestTerminalStatus([{...merged,snapshot:{...merged.snapshot,syncedAt:null}}]).reason,"unsynced");
+  assert.equal(linkedPullRequestTerminalStatus([]).reason,"no-links");
+});
+
+test("saved branch discovery selects only the matching open pull request",()=>{
+  const items=[
+    {number:7,title:"Old",state:"CLOSED",url:"https://github.com/acme/widget/pull/7",headRefName:"feature/x",baseRefName:"main",identity:{provider:"github",host:"github.com",repository:"acme/widget",number:7}},
+    {number:8,title:"Current",state:"OPEN",url:"https://github.com/acme/widget/pull/8",headRefName:"feature/x",baseRefName:"main",identity:{provider:"github",host:"github.com",repository:"acme/widget",number:8},stack:{number:42,layers:[]}},
+    {number:9,title:"Other",state:"OPEN",url:"https://github.com/acme/widget/pull/9",headRefName:"feature/y",baseRefName:"main",identity:{provider:"github",host:"github.com",repository:"acme/widget",number:9}},
+  ];
+  const detected=pullRequestForBranch("feature/x",items);
+  assert.equal(detected.number,8);assert.equal(detected.title,"Current");assert.equal(detected.identity.repository,"acme/widget");assert.equal(detected.stack.number,42);
+  assert.equal(pullRequestForBranch("missing",items),null);
 });

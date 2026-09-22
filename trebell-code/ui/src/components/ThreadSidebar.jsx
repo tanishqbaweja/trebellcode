@@ -1,7 +1,7 @@
 import React from "react";
 import {
   Archive, BarChart3, Bot, Clock3, Folder, Globe2, History,
-  MoreHorizontal, Pin, Plus, Search, Settings, SlidersHorizontal, Wrench, Server, PanelLeftClose
+  GitPullRequest, MoreHorizontal, Pin, Plus, Search, Settings, SlidersHorizontal, Wrench, Server, PanelLeftClose
 } from "lucide-react";
 import { formatSnoozeUntil } from "../thread-snooze.js";
 
@@ -17,12 +17,18 @@ function relativeTime(epoch){
 
 function ThreadRow({thread,meta,active,selected,bulk,onOpen,onSelect,onAction,onMove,agentRuntime="codex"}){
   const section=thread.section?.name||"Active";
+  const linked=Array.isArray(meta?.linkedPullRequests)
+    ?meta.linkedPullRequests
+    :(meta?.attachments||[]).filter(item=>item?.attachmentType==="pull_request").map(item=>item.payload||{}).filter(Boolean);
+  const detected=linked.length?null:meta?.branchPullRequest||null;
+  const review=linked[0]||detected;const reviewNumber=review?.identity?.number||review?.number;
+  const reviewLabel=linked.length>1?"#"+reviewNumber+" +"+(linked.length-1):reviewNumber?"#"+reviewNumber:null;
   return <div className={active?"thread-row active":"thread-row"}>
     {bulk&&<input className="thread-select" type="checkbox" checked={selected} onChange={()=>onSelect(thread.id)}/>}
     <button className="thread-main" onClick={()=>onOpen(thread)} title={titleOf(thread)}>
       <span className={"thread-status-dot "+(section==="Pinned"?"pinned":section==="Snoozed"?"snoozed":section==="Settled"?"settled":"")}/>
       <div>
-        <strong>{titleOf(thread)}</strong>
+        <strong className="thread-title-line"><span className="thread-title-text">{titleOf(thread)}</span>{reviewLabel&&<em className={linked.length?"thread-pr-chip linked":"thread-pr-chip detected"} title={linked.length?"Linked pull request":"Detected from saved branch"}><GitPullRequest size={9}/>{reviewLabel}</em>}</strong>
         <span>{section==="Snoozed"&&meta?.snoozedUntil?"Wakes "+formatSnoozeUntil(meta.snoozedUntil):(thread.model?.replace(/^freebuff\//,"")||({codex:"Codex",claude:"Claude",cursor:"Cursor",grok:"Grok",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime))+" · "+relativeTime(thread.updatedAt)}</span>
       </div>
     </button>

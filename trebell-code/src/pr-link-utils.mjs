@@ -74,3 +74,40 @@ export function buildPullRequestLink(pr={},options={}){
     headRefName:clean(pr.headRefName),baseRefName:clean(pr.baseRefName),provider:identity.provider,
   };
 }
+
+export function linkedPullRequestTerminalStatus(links=[]){
+  const items=Array.isArray(links)?links.filter(Boolean):[];
+  if(!items.length)return {terminal:false,reason:"no-links",signature:null};
+  const normalized=items.map(link=>{
+    const state=clean(link.snapshot?.state||link.state).toUpperCase();
+    const syncedAt=link.snapshot?.syncedAt||null;
+    const key=pullRequestIdentityKey(link)||clean(link.url)||String(link.number||"");
+    const terminal=Boolean(syncedAt)&&["MERGED","CLOSED"].includes(state);
+    return {key,state,syncedAt,terminal,closedAt:link.snapshot?.mergedAt||link.snapshot?.closedAt||null};
+  });
+  const unsynced=normalized.find(item=>!item.syncedAt);
+  if(unsynced)return {terminal:false,reason:"unsynced",signature:null};
+  const active=normalized.find(item=>!item.terminal);
+  if(active)return {terminal:false,reason:"active",signature:null};
+  const signature=normalized
+    .map(item=>[item.key,item.state,item.closedAt||""].join(":"))
+    .sort()
+    .join("|");
+  return {terminal:true,reason:"terminal",signature};
+}
+
+export function branchPullRequestSnapshot(pr={}){
+  const identity=normalizePullRequestIdentity(pr.identity||pr);if(!identity)return null;
+  return {
+    identity,number:identity.number,title:clean(pr.title||("PR #"+identity.number)),
+    state:clean(pr.state||"OPEN").toUpperCase(),url:clean(pr.url),
+    headRefName:clean(pr.headRefName),baseRefName:clean(pr.baseRefName),
+    isDraft:Boolean(pr.isDraft),stack:pullRequestStackSnapshot(pr.stack),detectedAt:new Date().toISOString(),
+  };
+}
+
+export function pullRequestForBranch(branch,items=[]){
+  const ref=clean(branch);if(!ref)return null;
+  const match=(Array.isArray(items)?items:[]).find(pr=>clean(pr?.headRefName)===ref&&clean(pr?.state||"OPEN").toUpperCase()==="OPEN");
+  return match?branchPullRequestSnapshot(match):null;
+}

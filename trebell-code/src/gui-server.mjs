@@ -53,7 +53,7 @@ import {
   sourceControlGitAction, sourceControlGitInfo, sourceControlRepositoryIdentity, withSourceControlExecutor,
 } from "./source-control-service.mjs";
 import { prViewedKey, updateViewedRecord, viewedStates } from "./pr-viewed-state.mjs";
-import { buildPullRequestLink, normalizePullRequestIdentity, parsePullRequestUrl, pullRequestIdentityKey } from "./pr-link-utils.mjs";
+import { buildPullRequestLink, linkedPullRequestTerminalStatus, normalizePullRequestIdentity, parsePullRequestUrl, pullRequestForBranch, pullRequestIdentityKey } from "./pr-link-utils.mjs";
 
 const MIME = {
   ".html":"text/html; charset=utf-8",
@@ -549,7 +549,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     attachments.push({attachmentType:"pull_request",identityKey:key,payload:link});
     const dismissed=(meta.dismissedPullRequestKeys||[]).filter(item=>item!==key);
     const legacy=attachments.filter(item=>item?.attachmentType==="pull_request").map(item=>item.payload);
-    state.updateThreadMeta(threadId,{attachments,dismissedPullRequestKeys:dismissed,linkedPullRequests:legacy});
+    state.updateThreadMeta(threadId,{attachments,dismissedPullRequestKeys:dismissed,linkedPullRequests:legacy,autoSettlePending:null,autoSettleAppliedSignature:null});
     return {key,links:threadPullRequestLinks(threadId)};
   }
   function removePullRequestLink(threadId,identity){
@@ -557,7 +557,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     const meta=state.threadMeta(threadId);const attachments=(meta.attachments||[]).filter(item=>!(item?.attachmentType==="pull_request"&&(item.identityKey===key||pullRequestIdentityKey(item.payload||{})===key)));
     const dismissed=[...new Set([...(meta.dismissedPullRequestKeys||[]),key])];
     const legacy=attachments.filter(item=>item?.attachmentType==="pull_request").map(item=>item.payload);
-    state.updateThreadMeta(threadId,{attachments,dismissedPullRequestKeys:dismissed,linkedPullRequests:legacy});
+    state.updateThreadMeta(threadId,{attachments,dismissedPullRequestKeys:dismissed,linkedPullRequests:legacy,autoSettlePending:null});
     return {key,links:threadPullRequestLinks(threadId)};
   }
   function reversePullRequestLinks(identity){
@@ -599,8 +599,57 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     }
     const nonPr=attachments.filter(item=>item?.attachmentType!=="pull_request");const next=[...nonPr,...synced.values()];
     const legacy=[...synced.values()].map(item=>item.payload);
-    state.updateThreadMeta(threadId,{attachments:next,linkedPullRequests:legacy,lastPullRequestSyncAt:Date.now()});
-    return {threadId,links:threadPullRequestLinks(threadId)};
+    const lifecycle=linkedPullRequestTerminalStatus(legacy);const settings=state.settings();
+    const patch={attachments:next,linkedPullRequests:legacy,lastPullRequestSyncAt:Date.now()};
+    if(!lifecycle.terminal){
+      patch.autoSettlePending=null;
+      if(meta.autoSettleAppliedSignature)patch.autoSettleAppliedSignature=null;
+    }else if(settings.autoSettleMergedThreads&&meta.autoSettleAppliedSignature!==lifecycle.signature){
+      patch.autoSettlePending={signature:lifecycle.signature,requestedAt:Date.now(),reason:"pull_requests_terminal"};
+    }
+    state.updateThreadMeta(threadId,patch);
+    return {threadId,links:threadPullRequestLinks(threadId),lifecycle,pendingSettlement:patch.autoSettlePending||null};
+  }
+  async function syncBranchPullRequests({force=false}={}){
+    const now=Date.now();const all=state.listThreadMeta();const candidates=[];
+    for(const [threadId,meta] of Object.entries(all)){
+      if(!meta?.cwd||!meta?.branch||meta.deletedAt||meta.archived||meta.sectionName==="Settled")continue;
+      if(!force&&now-Number(meta.lastBranchPullRequestSyncAt||0)<60_000)continue;
+      candidates.push({threadId,meta,environmentId:meta.environmentId||null,cwd:String(meta.cwd)});
+    }
+    if(!candidates.length)return {checked:0,repositories:0};
+    const locations=new Map();
+    for(const candidate of candidates){
+      const key=(candidate.environmentId||"local")+"|"+candidate.cwd;
+      if(!locations.has(key))locations.set(key,{environmentId:candidate.environmentId,cwd:candidate.cwd,threads:[]});
+      locations.get(key).threads.push(candidate);
+    }
+    const repositories=new Map();
+    for(const location of locations.values()){
+      try{
+        const repo=await inSourceControlEnvironment(location.environmentId,()=>sourceControlRepositoryIdentity(location.cwd));
+        const key=[location.environmentId||"local",repo.provider,repo.host,String(repo.repository||"").toLowerCase()].join("|");
+        if(!repositories.has(key))repositories.set(key,{environmentId:location.environmentId,cwd:location.cwd,provider:repo.provider,repo,threads:[]});
+        repositories.get(key).threads.push(...location.threads);
+      }catch(error){
+        for(const candidate of location.threads)state.updateThreadMeta(candidate.threadId,{branchPullRequestSyncError:error.message||String(error),lastBranchPullRequestAttemptAt:now});
+      }
+    }
+    for(const group of repositories.values()){
+      try{
+        const result=await inSourceControlEnvironment(group.environmentId,()=>listPullRequests(group.cwd,{provider:group.provider}));
+        if(!result?.ok)throw new Error(result?.error||"Could not list pull requests");
+        for(const candidate of group.threads){
+          const detected=pullRequestForBranch(candidate.meta.branch,result.items||[]);
+          state.updateThreadMeta(candidate.threadId,{
+            branchPullRequest:detected,lastBranchPullRequestSyncAt:now,lastBranchPullRequestAttemptAt:now,branchPullRequestSyncError:null,
+          });
+        }
+      }catch(error){
+        for(const candidate of group.threads)state.updateThreadMeta(candidate.threadId,{branchPullRequestSyncError:error.message||String(error),lastBranchPullRequestAttemptAt:now});
+      }
+    }
+    return {checked:candidates.length,repositories:repositories.size};
   }
   function remoteEnvironmentProfile(environmentId){
     const profile=environmentId?environments.get(environmentId):null;
@@ -1260,6 +1309,28 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return json(res,200,await inSourceControlEnvironment(environmentId,()=>pullRequestDetail(cwd,url.searchParams.get("number"),{provider:url.searchParams.get("provider")||null})));
       }catch(error){return json(res,400,{ok:false,error:error.message});}
     }
+    if(url.pathname==="/api/source-control/settlements"&&req.method==="GET"){
+      const enabled=Boolean(state.settings().autoSettleMergedThreads);const items=[];
+      if(enabled)for(const [threadId,meta] of Object.entries(state.listThreadMeta())){
+        const links=(meta.attachments||[]).filter(item=>item?.attachmentType==="pull_request").map(item=>item.payload||{});
+        const lifecycle=linkedPullRequestTerminalStatus(links.length?links:(meta.linkedPullRequests||[]));
+        if(!lifecycle.terminal||meta.autoSettleAppliedSignature===lifecycle.signature)continue;
+        const pending=meta?.autoSettlePending;
+        items.push({threadId,signature:lifecycle.signature,requestedAt:Number(pending?.requestedAt)||null,reason:pending?.reason||"pull_requests_terminal"});
+      }
+      return json(res,200,{enabled,items});
+    }
+    if(url.pathname==="/api/source-control/branch-reviews"&&req.method==="GET"){
+      const items=[];
+      for(const [threadId,meta] of Object.entries(state.listThreadMeta())){
+        if(!meta?.branch||meta.deletedAt)continue;
+        items.push({
+          threadId,branch:meta.branch,review:meta.branchPullRequest||null,
+          lastSyncedAt:Number(meta.lastBranchPullRequestSyncAt)||null,error:meta.branchPullRequestSyncError||null,
+        });
+      }
+      return json(res,200,{items});
+    }
     if(url.pathname==="/api/source-control/thread-link"){
       if(req.method==="GET"){
         try{
@@ -1764,6 +1835,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     if(pullRequestSyncRunning)return;pullRequestSyncRunning=true;
     try{
       const now=Date.now();
+      await syncBranchPullRequests().catch(error=>appServer?.logs?.push({at:Date.now(),stream:"branch-pr-sync",text:error.message+"\n"}));
       for(const [threadId,meta] of Object.entries(state.listThreadMeta())){
         const links=(meta.attachments||[]).filter(item=>item?.attachmentType==="pull_request").map(item=>item.payload||{});
         if(!links.length)continue;
