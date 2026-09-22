@@ -63,6 +63,11 @@ test("project actions persist, sanitize, inherit preference, and allow clearing 
     const again=new TrebellStateStore(env).projects()[0];
     assert.equal(again.scripts[0].previewUrl,"http://localhost:5173");
     assert.equal(again.preferredScriptId,"dev");
+
+    const cleanup=state.touchProject(projectPath,{worktreeCleanup:{mode:"custom",rules:{worktreeAfterDays:5000,worktreeOnMerge:true,worktreeOnDelete:true,worktreeUnchanged:false}}});
+    assert.deepEqual(cleanup.worktreeCleanup,{mode:"custom",rules:{worktreeAfterDays:3650,worktreeOnMerge:true,worktreeOnDelete:true,worktreeUnchanged:false}});
+    assert.equal(state.touchProject(projectPath,{worktreeCleanup:null}).worktreeCleanup,null);
+    assert.deepEqual(state.updateSettings({worktreeCleanup:{mode:"custom",rules:{worktreeAfterDays:14,worktreeUnchanged:true}}}).worktreeCleanup,{mode:"custom",rules:{worktreeAfterDays:14,worktreeOnMerge:false,worktreeOnDelete:false,worktreeUnchanged:true}});
   }finally{await rm(home,{recursive:true,force:true});}
 });
 

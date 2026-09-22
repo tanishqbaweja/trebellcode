@@ -57,6 +57,26 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
       await refresh();
     }catch(err){setError(err.message||String(err));throw err}
   }
+  async function openProject(project){
+    if(project.managedWorktree?.cleanedAt){
+      setBusy(true);setError("");
+      try{await api("/api/worktree/ensure",{method:"POST",body:{path:project.path}});await refresh()}
+      catch(err){setError("Could not restore managed worktree: "+(err.message||String(err)));return}
+      finally{setBusy(false)}
+    }
+    onOpen(project.path);
+  }
+  function cleanupValue(project){return project.worktreeCleanup||null}
+  async function setCleanupMode(project,mode){
+    if(mode==="inherit")return saveProject(project,{worktreeCleanup:null});
+    if(mode==="off")return saveProject(project,{worktreeCleanup:{mode:"off"}});
+    const current=cleanupValue(project)?.mode==="custom"?cleanupValue(project).rules:{};
+    return saveProject(project,{worktreeCleanup:{mode:"custom",rules:{worktreeAfterDays:current?.worktreeAfterDays??30,worktreeOnMerge:Boolean(current?.worktreeOnMerge),worktreeOnDelete:Boolean(current?.worktreeOnDelete),worktreeUnchanged:Boolean(current?.worktreeUnchanged)}}});
+  }
+  async function setCleanupRule(project,key,value){
+    const current=cleanupValue(project)?.mode==="custom"?cleanupValue(project).rules:{};
+    return saveProject(project,{worktreeCleanup:{mode:"custom",rules:{worktreeAfterDays:current?.worktreeAfterDays??30,worktreeOnMerge:Boolean(current?.worktreeOnMerge),worktreeOnDelete:Boolean(current?.worktreeOnDelete),worktreeUnchanged:Boolean(current?.worktreeUnchanged),[key]:value}}});
+  }
 
   async function addLocal(){
     const path=await window.trebellDesktop?.pickDirectory?.();
@@ -187,7 +207,7 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
     <div className="project-groups">{groups.map(group=><section className="project-group" key={group.key}>
       <div className="project-group-head"><Layers3 size={14}/><div><strong>{group.label}</strong><span>{group.projects.length} checkout{group.projects.length===1?"":"s"}</span></div></div>
       <div className="project-grid">{group.projects.map(p=><div className={p.path===currentPath?"project-card active":"project-card"} key={p.id}>
-        <button className="project-open" onClick={()=>onOpen(p.path)}><ProjectIcon project={p}/><div><strong>{p.name}</strong><span>{p.path}</span><small>{p.git?.branch||"not a Git checkout"} · {new Date(p.lastOpenedAt).toLocaleString()}</small></div></button>
+        <button className="project-open" onClick={()=>openProject(p)}><ProjectIcon project={p}/><div><strong>{p.name}</strong><span>{p.path}</span><small>{p.managedWorktree?.cleanedAt?"managed worktree cleaned · click to restore":(p.git?.branch||"not a Git checkout")+" · "+new Date(p.lastOpenedAt).toLocaleString()}</small></div></button>
         <button className="project-remove" onClick={async()=>{await api("/api/projects?id="+encodeURIComponent(p.id),{method:"DELETE"});refresh()}}><Trash2 size={13}/></button>
         <div className="project-overrides">
           <label>Model<select value={p.defaultModel||""} onChange={e=>saveProject(p,{defaultModel:e.target.value||null})}><option value="">Inherit client default</option>{models.map(id=><option key={id} value={id}>{id.replace(/^freebuff\//,"")}</option>)}</select></label>
@@ -197,6 +217,7 @@ export default function ProjectsPage({currentPath,onOpen,onRunScript,onOpenPrevi
         </div>
         <div className="project-identity-toggle"><button onClick={()=>setIdentityOpen(current=>({...current,[p.id]:!current[p.id]}))}><Settings2 size={12}/> Project identity</button></div>
         {identityOpen[p.id]&&<div className="project-identity-editor"><label>Name<input defaultValue={p.name} onBlur={e=>{const value=e.target.value.trim();if(value&&value!==p.name)saveProject(p,{name:value})}}/></label><div className="project-icon-actions"><button onClick={()=>saveProject(p,{icon:null})}>Automatic</button><button onClick={()=>setIconDraft(current=>({...current,[p.id]:{kind:"emoji",value:p.icon?.kind==="emoji"?p.icon.value:"🚀",color:p.icon?.color||autoColor(p.name)}}))}>Emoji</button><button onClick={()=>setIconDraft(current=>({...current,[p.id]:{kind:"monogram",value:p.icon?.kind==="monogram"?p.icon.value:autoMonogram(p.name),color:p.icon?.color||autoColor(p.name)}}))}>Monogram</button><label className="project-image-button"><ImagePlus size={12}/> Image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={e=>importProjectImage(p,e.target.files?.[0])}/></label></div>{iconDraft[p.id]&&<div className="project-icon-draft"><input maxLength={iconDraft[p.id].kind==="monogram"?2:16} value={iconDraft[p.id].value} onChange={e=>setIconDraft(current=>({...current,[p.id]:{...current[p.id],value:e.target.value}}))}/><input type="color" value={iconDraft[p.id].color||autoColor(p.name)} onChange={e=>setIconDraft(current=>({...current,[p.id]:{...current[p.id],color:e.target.value}}))}/><button onClick={async()=>{await saveProject(p,{icon:iconDraft[p.id]});setIconDraft(current=>({...current,[p.id]:null}))}}>Save icon</button></div>}</div>}
+        <div className="project-cleanup"><label>Automatic worktree cleanup<select value={p.worktreeCleanup?.mode||"inherit"} onChange={e=>setCleanupMode(p,e.target.value)}><option value="inherit">Inherit</option><option value="off">Off</option><option value="custom">Custom</option></select></label>{p.worktreeCleanup?.mode==="custom"&&<div className="project-cleanup-rules"><label>After inactive days<input type="number" min="1" max="3650" defaultValue={p.worktreeCleanup.rules?.worktreeAfterDays??""} placeholder="Never" onBlur={e=>setCleanupRule(p,"worktreeAfterDays",e.target.value?Number(e.target.value):null)}/></label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeOnMerge)} onChange={e=>setCleanupRule(p,"worktreeOnMerge",e.target.checked)}/> After merge</label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeOnDelete)} onChange={e=>setCleanupRule(p,"worktreeOnDelete",e.target.checked)}/> After last thread deletion</label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeUnchanged)} onChange={e=>setCleanupRule(p,"worktreeUnchanged",e.target.checked)}/> If unchanged from base</label></div>}</div>
 
         <div className="project-actions">
           <div className="project-actions-head"><span><SquareTerminal size={13}/> Project actions</span><div>{importableScripts(p).length>0&&<button onClick={()=>setSuggestionsOpen(current=>({...current,[p.id]:!current[p.id]}))}><Download size={12}/> Import {importableScripts(p).length}</button>}<button onClick={()=>editScript(p)}><Plus size={12}/> Add action</button></div></div>

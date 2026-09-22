@@ -66,7 +66,7 @@ function formQuestions(params){
   }));
 }
 
-export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,state,environments=null,version="0.0.0",path="/api/agent/ws",log=()=>{}}={}){
+export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,state,environments=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null}={}){
   const wss=new WebSocketServer({noServer:true});
   const sessions=new Map();
   const socketContexts=new Set();
@@ -192,8 +192,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const thread=threadStore.rename(params.threadId,params.name);emit("thread/name/updated",{threadId:params.threadId,name:thread?.name||null});return {thread}
     }
     if(method==="thread/delete"){
+      const deletedThread=threadStore.get(params.threadId);
       const runtimeSession=sessions.get(params.threadId);if(runtimeSession instanceof ClaudeAgentSession)await runtimeSession.delete().catch(()=>{});else await runtimeSession?.close().catch(()=>{});
-      sessions.delete(params.threadId);threadStore.delete(params.threadId);return {ok:true}
+      sessions.delete(params.threadId);threadStore.delete(params.threadId);if(onThreadDeleted)try{await onThreadDeleted(deletedThread)}catch{}return {ok:true}
     }
     if(method==="thread/section/move"){return {thread:threadStore.update(params.threadId,{section:params.sectionId?{id:params.sectionId,name:params.sectionId}:null})}}
     if(method==="thread/settings/update"){

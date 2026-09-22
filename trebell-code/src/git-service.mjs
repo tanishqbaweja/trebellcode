@@ -106,6 +106,13 @@ export async function createWorktree(cwd,{branch,path,baseBranch=null,submodules
   if(submoduleArgs)await git(dest,submoduleArgs,{timeout:10*60_000,maxBuffer:16*1024*1024});
   return {worktree:dest,submodules:submodules||"recursive",info:await gitInfo(info.root)};
 }
+export async function restoreWorktree(cwd,{branch,path,submodules="recursive"}){
+  const info=await gitInfo(cwd);if(!info.isGit)throw new Error("Source workspace is not a Git repository");
+  const dest=resolve(path);const branchName=String(branch||"").trim();if(!branchName)throw new Error("Managed worktree branch is missing");
+  await git(info.root,["worktree","add",dest,branchName],{timeout:180000});
+  const submoduleArgs=worktreeSubmoduleArgs(submodules);if(submoduleArgs)await git(dest,submoduleArgs,{timeout:10*60_000,maxBuffer:16*1024*1024});
+  return {worktree:dest,submodules,info:await gitInfo(info.root)};
+}
 export async function removeWorktree(cwd,path,{force=false}={}){
   const info=await gitInfo(cwd);
   const args=["worktree","remove"];

@@ -12,6 +12,7 @@ const DEFAULT_STATE = Object.freeze({
     defaultPermissionMode: "supervised",
     autoPull: false,
     worktreeSubmodules: "recursive",
+    worktreeCleanup: {mode:"off"},
     appearance: "dark",
     appearanceMode: "system",
     customThemes: [],
@@ -41,6 +42,15 @@ const DEFAULT_STATE = Object.freeze({
 });
 
 function clone(value){ return JSON.parse(JSON.stringify(value)); }
+function normalizeCleanupRules(rules={}){
+  const rawDays=rules?.worktreeAfterDays;const numeric=rawDays==null?null:Math.trunc(Number(rawDays));const worktreeAfterDays=Number.isFinite(numeric)&&numeric>=1?Math.min(3650,numeric):null;
+  return {worktreeAfterDays,worktreeOnMerge:Boolean(rules?.worktreeOnMerge),worktreeOnDelete:Boolean(rules?.worktreeOnDelete),worktreeUnchanged:Boolean(rules?.worktreeUnchanged)};
+}
+function normalizeWorktreeCleanup(value,{allowNull=false}={}){
+  if(value==null)return allowNull?null:{mode:"off"};
+  if(value?.mode==="custom")return {mode:"custom",rules:normalizeCleanupRules(value.rules)};
+  return {mode:"off"};
+}
 
 export class TrebellStateStore {
   constructor(env=process.env){
@@ -54,6 +64,7 @@ export class TrebellStateStore {
       const rawSettings=parsed.settings&&typeof parsed.settings==="object"?parsed.settings:{};
       const projects=Array.isArray(parsed.projects)?parsed.projects:[];
       const settings={...clone(DEFAULT_STATE.settings),...rawSettings};
+      settings.worktreeCleanup=normalizeWorktreeCleanup(settings.worktreeCleanup);
       if(!Object.prototype.hasOwnProperty.call(rawSettings,"onboardingComplete")&&projects.length>0)settings.onboardingComplete=true;
       return {
         ...clone(DEFAULT_STATE),
@@ -77,6 +88,7 @@ export class TrebellStateStore {
   settings(){ return clone(this.state.settings); }
   updateSettings(patch={}){
     if("worktreeSubmodules" in patch&&!['recursive','top-level','none'].includes(String(patch.worktreeSubmodules)))patch={...patch,worktreeSubmodules:'recursive'};
+    if("worktreeCleanup" in patch)patch={...patch,worktreeCleanup:normalizeWorktreeCleanup(patch.worktreeCleanup)};
     this.state.settings={...this.state.settings,...patch};
     this.#save();
     return this.settings();
@@ -116,6 +128,14 @@ export class TrebellStateStore {
     if("worktreeSubmodules" in patch){
       const mode=patch.worktreeSubmodules==null?null:String(patch.worktreeSubmodules);
       project.worktreeSubmodules=["recursive","top-level","none"].includes(mode)?mode:null;
+    }
+    if("worktreeCleanup" in patch)project.worktreeCleanup=normalizeWorktreeCleanup(patch.worktreeCleanup,{allowNull:true});
+    if("managedWorktree" in patch){
+      const raw=patch.managedWorktree;
+      project.managedWorktree=raw&&typeof raw==="object"?{
+        root:String(raw.root||""),branch:String(raw.branch||""),baseBranch:String(raw.baseBranch||""),submodules:["recursive","top-level","none"].includes(raw.submodules)?raw.submodules:"recursive",
+        createdAt:Number(raw.createdAt)||Date.now(),cleanedAt:raw.cleanedAt==null?null:Number(raw.cleanedAt)||null,cleanupReason:raw.cleanupReason?String(raw.cleanupReason):null,
+      }:null;
     }
     if("icon" in patch){
       const raw=patch.icon;

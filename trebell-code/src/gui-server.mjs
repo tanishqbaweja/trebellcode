@@ -26,6 +26,7 @@ import { AgentRuntimeManager, normalizeAgentRuntime } from "./agent-runtime-mana
 import { AgentThreadStore } from "./agent-thread-store.mjs";
 import { attachAgentRelay } from "./agent-relay.mjs";
 import { listLicenses, licenseDetail } from "./license-service.mjs";
+import { WorktreeCleanupService } from "./worktree-cleanup.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
   .then(text=>String(JSON.parse(text).version||"0.0.0"))
@@ -141,7 +142,7 @@ async function stopChildProcess(child){
   try{child.stderr?.destroy();}catch{}
 }
 
-async function startAppServer({appPort,env=process.env,mock=false,provider="freebuff",environments=null,environmentId=null,runtimeInstance=null}){
+async function startAppServer({appPort,env=process.env,mock=false,provider="freebuff",providerPort=null,environments=null,environmentId=null,runtimeInstance=null}){
   if(mock) return { child:null, logs:[], targetUrl:null, readyUrl:null, environment:null };
   if(environmentId&&environments){
     const profile=environments.get(environmentId);
@@ -152,6 +153,7 @@ async function startAppServer({appPort,env=process.env,mock=false,provider="free
           environmentId,
           appPort,
           provider,
+          localProviderPort:providerPort,
           debug:env.TREBELL_GUI_DEBUG==="1",
         });
       }catch(error){
@@ -166,11 +168,12 @@ async function startAppServer({appPort,env=process.env,mock=false,provider="free
       }
     }
   }
-  ensureCodexConfig({port:DEFAULT_PORT,env,provider});
+  const inferencePort=Number.isInteger(providerPort)?providerPort:DEFAULT_PORT;
+  ensureCodexConfig({port:inferencePort,env,provider});
   const command=runtimeInstance?.binaryPath?.trim()||codexBin(env);
   const runtimeHome=runtimeInstance?.homePath?.trim()||codexHome(env);
   const runtimeEnv={...env,...(runtimeInstance?.environment||{}),CODEX_HOME:runtimeHome};
-  const args=[...codexProviderOverrides({port:DEFAULT_PORT,provider}),"app-server","--listen",`ws://127.0.0.1:${appPort}`];
+  const args=[...codexProviderOverrides({port:inferencePort,provider}),"app-server","--listen",`ws://127.0.0.1:${appPort}`];
   const logs=[];
   const pushLog=(chunk,stream)=>{
     const line=String(chunk);
@@ -372,6 +375,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   if(state.settings().modelProvider!==selectedProvider) state.updateSettings({modelProvider:selectedProvider});
   const providerBridgeLogs=[];
   const providerBridge=mock?null:await startProviderBridge({
+    port:0,
     providerManager:providers,
     provider:selectedProvider,
     log:(message)=>{
@@ -379,16 +383,33 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       if(providerBridgeLogs.length>100) providerBridgeLogs.splice(0,providerBridgeLogs.length-100);
     },
   });
-  ensureCodexConfig({port:DEFAULT_PORT,env,provider:selectedProvider});
+  const selectedInferencePort=()=>selectedProvider==="freebuff"?DEFAULT_PORT:(providerBridge?.port??null);
+  ensureCodexConfig({port:selectedInferencePort(),env,provider:selectedProvider});
   let bridge=null;
   let loginPromise=null;
   const checkpoints=new CheckpointService({state,env});
   const terminals=mock ? null : new TerminalManager({env});
+  function worktreeUsage(){
+    const activePaths=[],referencedPaths=[];
+    for(const thread of agentThreads.list()){
+      if(thread.cwd)referencedPaths.push(thread.cwd);
+      if(thread.cwd&&(thread.status?.type==="active"||thread.recovery?.pending))activePaths.push(thread.cwd);
+    }
+    for(const meta of Object.values(state.listThreadMeta())){
+      if(meta?.cwd&&!meta.deletedAt)referencedPaths.push(meta.cwd);
+      if(meta?.cwd&&!meta.deletedAt&&meta.active)activePaths.push(meta.cwd);
+    }
+    for(const session of terminals?.list?.()||[])if(session?.cwd&&session.running)activePaths.push(session.cwd);
+    return {activePaths,referencedPaths};
+  }
+  const cleanupLogs=[];
+  const worktreeCleanup=new WorktreeCleanupService({state,getUsage:worktreeUsage,log:message=>{cleanupLogs.push({at:Date.now(),stream:"cleanup",text:String(message)+"\n"});if(cleanupLogs.length>100)cleanupLogs.splice(0,cleanupLogs.length-100)}});
   let appServer=await startAppServer({
     appPort,
     env,
     mock,
     provider:selectedProvider,
+    providerPort:selectedInferencePort(),
     environments,
     environmentId:state.settings().activeEnvironmentId||null,
     runtimeInstance:agentRuntimes.activeRuntime()==="codex"?agentRuntimes.activeInstance():null,
@@ -400,12 +421,12 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   }
   function markCodexTurnActive(threadId,turnId){
     if(!threadId||!turnId)return;
-    state.updateThreadMeta(threadId,{restartRecovery:{runtime:"codex",bootId,threadId,turnId,status:"active",startedAt:Date.now()}});
+    state.updateThreadMeta(threadId,{active:true,restartRecovery:{runtime:"codex",bootId,threadId,turnId,status:"active",startedAt:Date.now()}});
   }
   function clearCodexRecovery(threadId,status="completed",message=null){
     if(!threadId)return;
     const current=state.threadMeta(threadId)?.restartRecovery;
-    state.updateThreadMeta(threadId,{restartRecovery:current?{...current,bootId,status,finishedAt:Date.now(),...(message?{message}:{})}:undefined});
+    state.updateThreadMeta(threadId,{active:false,restartRecovery:current?{...current,bootId,status,finishedAt:Date.now(),...(message?{message}:{})}:undefined});
   }
   function codexRecoverySnapshot(){
     const enabled=Boolean(state.settings().continueThreadsAfterRestart);
@@ -422,12 +443,13 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     await stopAppServer(appServer);
     selectedProvider=next;
     providerBridge?.setProvider(selectedProvider);
-    ensureCodexConfig({port:DEFAULT_PORT,env,provider:selectedProvider});
+    ensureCodexConfig({port:selectedInferencePort(),env,provider:selectedProvider});
     appServer=await startAppServer({
       appPort,
       env,
       mock,
       provider:selectedProvider,
+      providerPort:selectedInferencePort(),
       environments,
       environmentId:state.settings().activeEnvironmentId||null,
       runtimeInstance:agentRuntimes.activeRuntime()==="codex"?agentRuntimes.activeInstance():null,
@@ -763,6 +785,14 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return json(res,200,{ok:true});
       }
     }
+    if(url.pathname==="/api/worktree/cleanup"&&req.method==="POST"){
+      try{const body=await readJsonBody(req);return json(res,200,await worktreeCleanup.sweep({reason:body.reason||null,path:body.path||null}))}
+      catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/worktree/ensure"&&req.method==="POST"){
+      try{const body=await readJsonBody(req);if(!body.path)throw new Error("path is required");return json(res,200,await worktreeCleanup.ensure(body.path))}
+      catch(error){return json(res,400,{error:error.message});}
+    }
     if(url.pathname==="/api/project-actions/suggestions"&&req.method==="GET"){
       try{return json(res,200,await projectActionSuggestions(url.searchParams.get("path")||process.cwd()));}
       catch(error){return json(res,400,{scripts:[],error:error.message});}
@@ -838,11 +868,12 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
               permissionMode:sourceProject.permissionMode??null,
               workspaceMode:sourceProject.workspaceMode??null,
               worktreeSubmodules:sourceProject.worktreeSubmodules??null,
+              worktreeCleanup:sourceProject.worktreeCleanup??null,
               icon:sourceProject.icon??null,
               scripts:sourceProject.scripts||[],
               preferredScriptId:sourceProject.preferredScriptId??null,
             }:{};
-            state.touchProject(result.worktree,inherited);
+            state.touchProject(result.worktree,{...inherited,managedWorktree:{root:result.info.root,branch:String(body.branch||""),baseBranch:String(body.baseBranch||result.info.branch||""),submodules,createdAt:Date.now(),cleanedAt:null,cleanupReason:null}});
             const setup=(sourceProject?.scripts||[]).find(script=>script.runOnWorktreeCreate);
             if(setup&&!mock&&terminals){
               const spec=commandShellSpec(setup.command,env);
@@ -1229,14 +1260,23 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     enabled:()=>mock || Boolean(appServer?.child && appServer.child.exitCode===null),
     log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"relay",text:message}),
     onClientMessage:message=>{
+      if((message?.method==="thread/resume"||message?.method==="turn/start")&&message.params?.threadId&&message.params?.cwd){
+        state.updateThreadMeta(message.params.threadId,{cwd:message.params.cwd,runtime:"codex",deletedAt:null});
+      }
       if(message?.method==="turn/start"){
         const threadId=message.params?.threadId,model=message.params?.model;if(threadId&&model)codexThreadModels.set(threadId,model);
       }
     },
     onServerMessage:message=>{
       const params=message?.params||{};
-      if(message?.method==="thread/started"&&params.thread?.id&&params.thread?.model)codexThreadModels.set(params.thread.id,params.thread.model);
-      if(message?.method==="thread/deleted"&&params.threadId)codexThreadModels.delete(params.threadId);
+      if(message?.method==="thread/started"&&params.thread?.id){
+        if(params.thread.model)codexThreadModels.set(params.thread.id,params.thread.model);
+        state.updateThreadMeta(params.thread.id,{cwd:params.thread.cwd||null,runtime:"codex",deletedAt:null,active:false});
+      }
+      if(message?.method==="thread/deleted"&&params.threadId){
+        codexThreadModels.delete(params.threadId);const meta=state.threadMeta(params.threadId);state.updateThreadMeta(params.threadId,{deletedAt:Date.now(),active:false});
+        if(meta?.cwd)worktreeCleanup.sweep({reason:"thread-delete",path:meta.cwd}).catch(error=>cleanupLogs.push({at:Date.now(),stream:"cleanup",text:error.message+"\n"}));
+      }
       if(message?.method==="turn/started")markCodexTurnActive(params.threadId,params.turn?.id||params.turnId);
       if(message?.method==="turn/completed")clearCodexRecovery(params.threadId,"completed");
       if(message?.method==="thread/tokenUsage/updated"&&params.threadId&&params.turnId){
@@ -1252,6 +1292,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     environments,
     version:TREBELL_VERSION,
     log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"agent-relay",text:String(message)+"\n"}),
+    onThreadDeleted:thread=>thread?.cwd?worktreeCleanup.sweep({reason:"thread-delete",path:thread.cwd}):null,
   });
 
   await new Promise((resolve,reject)=>{
@@ -1259,6 +1300,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     server.listen(port,host,resolve);
   });
   if(!mock) waitForAppServer(appServer,appPort,15000).catch(()=>false);
+  let cleanupTimer=null;
+  if(!mock){
+    worktreeCleanup.sweep().catch(error=>cleanupLogs.push({at:Date.now(),stream:"cleanup",text:error.message+"\n"}));
+    cleanupTimer=setInterval(()=>worktreeCleanup.sweep().catch(error=>cleanupLogs.push({at:Date.now(),stream:"cleanup",text:error.message+"\n"})),60*60_000);cleanupTimer.unref?.();
+  }
   if(state.settings().remoteAccessEnabled) await syncRemoteControl().catch(error=>{
     appServer?.logs?.push({at:Date.now(),stream:"remote",text:"remote access failed: "+error.message+"\n"});
   });
@@ -1267,6 +1313,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     url:`http://${host==="0.0.0.0"?"127.0.0.1":host}:${port}`,
     server,
     close:async()=>{
+      if(cleanupTimer)clearInterval(cleanupTimer);
       relay.close();
       await agentRelay?.close?.();
       terminalWs?.close();

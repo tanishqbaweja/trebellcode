@@ -10,8 +10,8 @@ function shellJoin(parts){
   return parts.map(quotePosix).join(" ");
 }
 
-function providerPort(provider){
-  return provider==="freebuff"?DEFAULT_PORT:PROVIDER_COMPAT_PORT;
+function providerPort(provider,override=null){
+  return Number.isInteger(override)?override:(provider==="freebuff"?DEFAULT_PORT:PROVIDER_COMPAT_PORT);
 }
 
 export function remoteCodexArgs({provider,baseUrl,listen}){
@@ -79,16 +79,17 @@ export async function startRemoteAppServer({
   environmentId,
   appPort,
   provider,
+  localProviderPort=null,
   debug=false,
 }={}){
   const profile=environments?.get(environmentId);
   if(!profile||profile.type==="local")return null;
   const logs=[];
-  const localProviderPort=providerPort(provider);
+  const resolvedProviderPort=providerPort(provider,localProviderPort);
 
   if(profile.type==="wsl"){
     const network=await wslNetwork(environments,environmentId);
-    const proxy=await createProviderProxy(network.host,localProviderPort);
+    const proxy=await createProviderProxy(network.host,resolvedProviderPort);
     const baseUrl=`http://${network.host}:${proxy.port}/v1`;
     const listen=`ws://0.0.0.0:${appPort}`;
     const command="exec "+shellJoin([profile.codexPath||"codex",...remoteCodexArgs({provider,baseUrl,listen})]);
@@ -124,7 +125,7 @@ export async function startRemoteAppServer({
       "-o","ServerAliveInterval=15",
       "-o","ServerAliveCountMax=3",
       "-L",`127.0.0.1:${appPort}:127.0.0.1:${remoteAppPort}`,
-      "-R",`127.0.0.1:${remoteProviderPort}:127.0.0.1:${localProviderPort}`,
+      "-R",`127.0.0.1:${remoteProviderPort}:127.0.0.1:${resolvedProviderPort}`,
       "-p",String(profile.port||22),
     ];
     if(profile.identityFile)args.push("-i",profile.identityFile);

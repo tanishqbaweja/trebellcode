@@ -34,6 +34,8 @@ test("Codex provider config always uses the Responses API", () => {
     assert.doesNotMatch(text, /wire_api = "chat"/);
     assert.doesNotMatch(text, /env_key\s*=/);
   }
+  const dynamicAgentRouter=renderCodexConfig({provider:"agentrouter",port:28765});
+  assert.match(dynamicAgentRouter,/base_url = "http:\/\/127\.0\.0\.1:28765\/v1"/);
 });
 
 test("ensureCodexConfig writes into Trebell home", () => {
