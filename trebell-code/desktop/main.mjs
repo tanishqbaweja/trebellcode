@@ -2,9 +2,13 @@ import { app, BrowserWindow, ipcMain, shell, dialog, Notification, Tray, Menu, n
 import { existsSync, readFileSync, statSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
+import { createRequire } from "node:module";
 import { createGuiServer } from "../src/gui-server.mjs";
 import { parseFirefoxProfiles, readFirefoxCookieDatabase } from "./firefox-import.mjs";
 import { chromiumCookieDatabase, discoverHeliumProfiles, readHeliumProfileCookies } from "./chromium-import.mjs";
+
+const require=createRequire(import.meta.url);
+const { autoUpdater }=require("electron-updater");
 
 let windowRef=null;
 let gui=null;
@@ -14,10 +18,64 @@ let tray=null;
 let backgroundEnabled=false;
 let snapshotConfig={enabled:false,shortcut:"CommandOrControl+Shift+S",includeText:false};
 let browserRecordingGrantUntil=0;
+let updaterConfigured=false;
+let updaterState={supported:false,status:"idle",currentVersion:null,availableVersion:null,percent:null,transferred:null,total:null,error:null,releaseName:null};
 
 const MIN_ZOOM_FACTOR=0.7;
 const MAX_ZOOM_FACTOR=2.5;
 const ZOOM_STEP=0.1;
+
+function publishUpdaterState(patch={}){
+  updaterState={...updaterState,...patch,currentVersion:app.getVersion?.()||updaterState.currentVersion};
+  try{if(windowRef&&!windowRef.isDestroyed())windowRef.webContents.send("desktop:update:state",updaterState)}catch{}
+  return {...updaterState};
+}
+
+function configureUpdater(){
+  if(updaterConfigured)return updaterState;
+  updaterConfigured=true;
+  if(!app.isPackaged)return publishUpdaterState({supported:false,status:"development",error:null});
+  autoUpdater.autoDownload=false;
+  autoUpdater.autoInstallOnAppQuit=true;
+  autoUpdater.allowPrerelease=false;
+  autoUpdater.on("checking-for-update",()=>publishUpdaterState({supported:true,status:"checking",error:null,percent:null,transferred:null,total:null}));
+  autoUpdater.on("update-available",info=>publishUpdaterState({supported:true,status:"available",availableVersion:info?.version||null,releaseName:info?.releaseName||null,error:null}));
+  autoUpdater.on("update-not-available",info=>publishUpdaterState({supported:true,status:"current",availableVersion:info?.version||app.getVersion(),releaseName:info?.releaseName||null,error:null,percent:null}));
+  autoUpdater.on("download-progress",progress=>publishUpdaterState({supported:true,status:"downloading",percent:Number(progress?.percent)||0,transferred:Number(progress?.transferred)||0,total:Number(progress?.total)||0,error:null}));
+  autoUpdater.on("update-downloaded",info=>publishUpdaterState({supported:true,status:"downloaded",availableVersion:info?.version||updaterState.availableVersion,releaseName:info?.releaseName||updaterState.releaseName,percent:100,error:null}));
+  autoUpdater.on("error",error=>publishUpdaterState({supported:true,status:"error",error:error?.message||String(error)}));
+  return publishUpdaterState({supported:true,status:"idle",error:null});
+}
+
+async function checkDesktopUpdate(){
+  configureUpdater();
+  if(!app.isPackaged)return publishUpdaterState({supported:false,status:"development",error:null});
+  await autoUpdater.checkForUpdates();
+  return {...updaterState};
+}
+
+async function downloadDesktopUpdate(){
+  configureUpdater();
+  if(!app.isPackaged)throw new Error("Desktop updates are only available in packaged builds.");
+  if(updaterState.status!=="available"&&updaterState.status!=="error")throw new Error("No downloadable update is currently available.");
+  publishUpdaterState({status:"downloading",error:null,percent:0});
+  await autoUpdater.downloadUpdate();
+  return {...updaterState};
+}
+
+async function installDesktopUpdate(){
+  configureUpdater();
+  if(!app.isPackaged)throw new Error("Desktop updates are only available in packaged builds.");
+  if(updaterState.status!=="downloaded")throw new Error("Download the update before installing it.");
+  publishUpdaterState({status:"installing",error:null});
+  quitting=true;
+  try{if(agentBrowser&&!agentBrowser.isDestroyed())agentBrowser.destroy()}catch{}
+  try{tray?.destroy();tray=null}catch{}
+  try{if(registeredSnapshotShortcut)globalShortcut.unregister(registeredSnapshotShortcut);registeredSnapshotShortcut=null}catch{}
+  await Promise.resolve(gui?.close?.()).catch(()=>{});
+  setImmediate(()=>autoUpdater.quitAndInstall(false,true));
+  return {ok:true};
+}
 
 function clampZoomFactor(value){
   const numeric=Number(value);
@@ -730,6 +788,10 @@ if(!lock){
   ipcMain.on("window:close",()=>windowRef?.close());
   ipcMain.handle("desktop:background:get",()=>({enabled:backgroundEnabled,...backgroundLoginSettings()}));
   ipcMain.handle("desktop:background:set",(_event,value)=>({enabled:setBackgroundEnabled(value)}));
+  ipcMain.handle("desktop:update:get",()=>configureUpdater());
+  ipcMain.handle("desktop:update:check",()=>checkDesktopUpdate());
+  ipcMain.handle("desktop:update:download",()=>downloadDesktopUpdate());
+  ipcMain.handle("desktop:update:install",()=>installDesktopUpdate());
   ipcMain.handle("snapshot:get",()=>({...snapshotConfig,registered:Boolean(registeredSnapshotShortcut),platform:process.platform,pending:pendingSnapshots().length}));
   ipcMain.handle("snapshot:configure",(_event,config={})=>applySnapshotConfig(config));
   ipcMain.handle("snapshot:pending",()=>pendingSnapshots());
@@ -799,6 +861,8 @@ if(!lock){
     if(snapshotConfig.enabled){try{applySnapshotConfig(snapshotConfig,{persist:false})}catch(error){snapshotConfig={...snapshotConfig,enabled:false};saveDesktopPrefs({...prefs,snapshotConfig});console.error("SnapShot shortcut disabled:",error.message)}}
     if(backgroundEnabled)ensureTray();
     await createWindow();
+    configureUpdater();
+    if(app.isPackaged)setTimeout(()=>checkDesktopUpdate().catch(()=>{}),4000).unref?.();
   }).catch((error)=>{
     console.error(error);
     app.quit();

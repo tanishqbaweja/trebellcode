@@ -147,6 +147,9 @@ Invoke-Native "npx" @("electron-builder","--win","nsis","--x64")
 $InstallerName = "Trebell-Code-Setup-$Version.exe"
 $Installer = Join-Path $Root "desktop-dist\$InstallerName"
 if (-not (Test-Path $Installer)) { throw "Build completed without producing $Installer" }
+$LatestYml = Join-Path $Root "desktop-dist\latest.yml"
+if (-not (Test-Path $LatestYml)) { throw "Build completed without producing latest.yml required by the in-app updater." }
+$Blockmap = "$Installer.blockmap"
 
 $Hash = (Get-FileHash -Algorithm SHA256 $Installer).Hash.ToLowerInvariant()
 $Size = (Get-Item $Installer).Length
@@ -187,9 +190,14 @@ if ($Publish) {
     $Notes = Join-Path $Root "RELEASE_NOTES_v$Version.md"
     if ($Existing) {
       Write-Host "Release $Tag already exists; replacing installer asset."
-      Invoke-Native "gh" @("release","upload",$Tag,$Installer,$MetaPath,"--repo","tanishqbaweja/trebellcode","--clobber")
+      $UploadArgs = @("release","upload",$Tag,$Installer,$MetaPath,$LatestYml)
+      if (Test-Path $Blockmap) { $UploadArgs += $Blockmap }
+      $UploadArgs += @("--repo","tanishqbaweja/trebellcode","--clobber")
+      Invoke-Native "gh" $UploadArgs
     } else {
-      $Args = @("release","create",$Tag,$Installer,$MetaPath,"--repo","tanishqbaweja/trebellcode","--title","Trebell Code $Version","--target","main")
+      $Assets = @($Installer,$MetaPath,$LatestYml)
+      if (Test-Path $Blockmap) { $Assets += $Blockmap }
+      $Args = @("release","create",$Tag) + $Assets + @("--repo","tanishqbaweja/trebellcode","--title","Trebell Code $Version","--target","main")
       if (Test-Path $Notes) { $Args += @("--notes-file",$Notes) } else { $Args += @("--generate-notes") }
       Invoke-Native "gh" $Args
     }

@@ -43,12 +43,16 @@ try {
   for(let attempt=0;attempt<40&&!mainPage;attempt++){
     const pages=browser.contexts().flatMap(context=>context.pages());
     for(const page of pages){
-      const hasBridge=await page.evaluate(()=>Boolean(window.trebellDesktop?.background&&window.trebellDesktop?.browser)).catch(()=>false);
+      const hasBridge=await page.evaluate(()=>Boolean(window.trebellDesktop?.background&&window.trebellDesktop?.browser&&window.trebellDesktop?.updates)).catch(()=>false);
       if(hasBridge){mainPage=page;break;}
     }
     if(!mainPage) await new Promise(r=>setTimeout(r,250));
   }
   if(!mainPage) throw new Error("Installed Trebell renderer did not expose the desktop preload bridge.");
+
+  const updater=await mainPage.evaluate(()=>window.trebellDesktop.updates.get());
+  if(updater?.supported!==true)throw new Error(`Packaged updater is unavailable: ${JSON.stringify(updater)}`);
+  if(!updater.currentVersion)throw new Error("Packaged updater did not report the installed version.");
 
   const vyceKeyAvailable=Boolean(
     process.env.TREBELL_TEST_VYCE_API_KEY||

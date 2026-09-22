@@ -14,6 +14,7 @@ const PROVIDER_LABELS={
 
 export default function SettingsPage({settings,onSettings,onProviderUpdated,runtime,rpcStatus,loggedIn,login,logout,projectPath,modelError,onOpenLicenses}){
   const [update,setUpdate]=useState(null);
+  const [desktopUpdate,setDesktopUpdate]=useState(null);
   const [diagnostics,setDiagnostics]=useState(null);
   const [loading,setLoading]=useState(false);
   const [providerInfo,setProviderInfo]=useState(null);
@@ -188,6 +189,7 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
       loadAgentRuntimes(),
     ]);
     setUpdate(u);setDiagnostics(d);setLoading(false);
+    if(window.trebellDesktop?.updates)window.trebellDesktop.updates.get().then(setDesktopUpdate).catch(()=>{});
     if(window.trebellDesktop?.snapshots)window.trebellDesktop.snapshots.get().then(setSnapshotInfo).catch(()=>{});
     if(window.trebellDesktop?.browser?.importSources)loadBrowserImportSources().catch(()=>{});
   }
@@ -218,6 +220,20 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
   useEffect(()=>{refresh()},[projectPath]);
   useEffect(()=>{loadProviders()},[selected]);
   useEffect(()=>{loadAgentRuntimes()},[selectedAgent]);
+  useEffect(()=>window.trebellDesktop?.updates?.onState?.(setDesktopUpdate),[]);
+
+  async function checkDesktopUpdate(){
+    if(!window.trebellDesktop?.updates)return;
+    try{setDesktopUpdate(await window.trebellDesktop.updates.check())}catch(error){setDesktopUpdate(prev=>({...prev,status:"error",error:error.message||String(error)}))}
+  }
+  async function downloadDesktopUpdate(){
+    if(!window.trebellDesktop?.updates)return;
+    try{setDesktopUpdate(await window.trebellDesktop.updates.download())}catch(error){setDesktopUpdate(prev=>({...prev,status:"error",error:error.message||String(error)}))}
+  }
+  async function installDesktopUpdate(){
+    if(!window.trebellDesktop?.updates)return;
+    try{await window.trebellDesktop.updates.install()}catch(error){setDesktopUpdate(prev=>({...prev,status:"error",error:error.message||String(error)}))}
+  }
 
   const selectedStatus=providerInfo?.providers?.find(p=>p.id===selected)||providerInfo?.status;
   const selectedAgentStatus=agentInfo?.statuses?.find(item=>item.id===agentInfo?.selectedInstanceId)||agentInfo?.statuses?.find(item=>item.kind===selectedAgent);
@@ -309,7 +325,7 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
       <div className="settings-card"><h3>Devices</h3><p>The Device panel can inspect and control local Android emulators or iOS simulators. Physical phones are not controlled. Agent access is separate and off by default.</p><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.agentDeviceAccess)} onChange={e=>save({agentDeviceAccess:e.target.checked})}/> Allow newly started Codex threads to use simulator tools</label></div>
       <div className="settings-card"><h3>Background mode</h3><p>Keep Trebell's local harness running in the system tray after the window closes, and start it with Windows.</p><label className="toggle-line"><input type="checkbox" checked={Boolean(settings.backgroundMode)} onChange={async e=>{const enabled=e.target.checked;await window.trebellDesktop?.background?.set?.(enabled);await save({backgroundMode:enabled})}}/> Keep Trebell running in background</label></div>
       <div className="settings-card keybindings-settings"><h3>Keyboard shortcuts</h3><p>Shortcuts can be conditional. For example, <code>threadOpen && !modalOpen</code> means “only when a thread is open and no dialog is covering the app.”</p>{KEYBINDING_COMMANDS.map(command=>{const rule=keybindingRules.find(item=>item.command===command.id);return <div className="keybinding-row" key={command.id}><strong>{command.label}</strong><label>Shortcut<input value={rule?.key||""} onChange={e=>updateKeybinding(command.id,{key:e.target.value})}/></label><label>When<input value={rule?.when||""} placeholder="Always" onChange={e=>updateKeybinding(command.id,{when:e.target.value})}/></label></div>})}<p className="provider-note">Available contexts: chatFocus, terminalFocus, previewFocus, textInputFocus, projectOpen, threadOpen, running, modalOpen, rightPanelOpen, desktop. Combine them with <code>!</code>, <code>&&</code>, <code>||</code> and parentheses.</p></div>
-      <div className="settings-card"><h3>Updates</h3>{update?.latest?<p>Current: <strong>{update.current}</strong><br/>Latest: <strong>{update.latest}</strong></p>:<p>{update?.error||"Checking releases…"}</p>}{update?.url&&<button onClick={()=>window.open(update.url,"_blank")}><Download size={13}/> Open latest release</button>}</div>
+      <div className="settings-card update-settings"><h3>Updates</h3>{desktopUpdate?.supported?<><p>Current: <strong>{desktopUpdate.currentVersion||update?.current||"unknown"}</strong>{desktopUpdate.availableVersion&&<><br/>Available: <strong>{desktopUpdate.availableVersion}</strong></>}<br/>Status: <strong>{desktopUpdate.status||"idle"}</strong></p>{desktopUpdate.status==="downloading"&&<div className="update-progress"><span style={{width:`${Math.max(0,Math.min(100,desktopUpdate.percent||0))}%`}}/></div>}{desktopUpdate.status==="downloading"&&<p className="provider-note">{Math.round(desktopUpdate.percent||0)}% downloaded</p>}{desktopUpdate.error&&<p className="provider-status-error">{desktopUpdate.error}</p>}<div className="provider-key-actions"><button onClick={checkDesktopUpdate}><RefreshCw size={12}/> Check now</button>{desktopUpdate.status==="available"&&<button className="setting-action" onClick={downloadDesktopUpdate}><Download size={12}/> Download update</button>}{desktopUpdate.status==="downloaded"&&<button className="setting-action" onClick={installDesktopUpdate}>Restart & install</button>}</div></>:<>{update?.latest?<p>Current: <strong>{update.current}</strong><br/>Latest: <strong>{update.latest}</strong></p>:<p>{update?.error||"Checking releases…"}</p>}{update?.url&&<button onClick={()=>window.open(update.url,"_blank")}><Download size={13}/> Open latest release</button>}{desktopUpdate?.status==="development"&&<p className="provider-note">In-app installation is available in packaged Trebell builds.</p>}</>}</div>
       <div className="settings-card"><h3>Diagnostics</h3><p>Runtime and project diagnostics are local to this machine.</p><div className="diag-badges"><span className={runtime?.agentRuntimeStatus?.available||selectedAgent==="codex"?"ok":""}><Activity size={12}/> {selectedAgentStatus?.name||selectedAgent}</span>{selectedAgent==="codex"&&<span className={diagnostics?.runtime?.providerReady?"ok":""}><ShieldCheck size={12}/> {PROVIDER_LABELS[diagnostics?.runtime?.provider||selected]||"Provider"}</span>}</div></div>
     </div>
     <div className="diagnostics-log"><div><strong>Runtime log</strong><button onClick={refresh} disabled={loading}><RefreshCw size={12}/></button></div><pre>{(diagnostics?.logs||[]).map(x=>"["+new Date(x.at).toLocaleTimeString()+"] "+x.stream+": "+x.text).join("")||"No runtime log entries."}</pre></div>
