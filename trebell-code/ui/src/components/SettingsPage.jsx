@@ -250,7 +250,7 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
     <div className="settings-grid">
       <div className="settings-card about-card">
         <div className="about-brand"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/><div><h3>Trebell Code</h3><p>Desktop coding-agent harness</p></div></div>
-        <span className="about-version">v{diagnostics?.version||update?.current||"1.2.0"}</span><button onClick={onOpenLicenses}><FileText size={12}/> View licenses</button>
+        <span className="about-version">v{diagnostics?.version||update?.current||"unknown"}</span><button onClick={onOpenLicenses}><FileText size={12}/> View licenses</button>
       </div>
       <div className="settings-card agent-runtime-settings">
         <h3>Agent harness</h3>

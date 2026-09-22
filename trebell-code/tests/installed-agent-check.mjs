@@ -154,7 +154,22 @@ try{
     `7. Reply with only ${expected}.`,
   ].join("\n"),text_elements:[]} ]});
   const turnId=turn.turn?.id;assert.ok(turnId,"turn/start did not return a turn id");
-  const completed=await rpc.waitFor(msg=>msg.method==="turn/completed"&&(msg.params?.turn?.id===turnId||msg.params?.turnId===turnId),180000);
+  let completed;
+  try{
+    completed=await rpc.waitFor(msg=>msg.method==="turn/completed"&&(msg.params?.turn?.id===turnId||msg.params?.turnId===turnId),180000);
+  }catch(error){
+    const diagnostics=await fetch(base+"/api/diagnostics?path="+encodeURIComponent(workspace)).then(r=>r.json()).catch(()=>null);
+    const resumed=await rpc.request("thread/resume",{threadId:thread.thread.id,model,modelProvider:"vyceai",cwd:workspace,excludeTurns:false}).catch(()=>null);
+    console.error("PACKAGED_AGENT_TIMEOUT_DIAGNOSTICS",JSON.stringify({
+      toolCalls,
+      assistantTail:assistant.slice(-2000),
+      notifications:rpc.notifications.slice(-50).map(msg=>({method:msg.method,turnId:msg.params?.turnId||msg.params?.turn?.id||null,itemType:msg.params?.item?.type||null,status:msg.params?.turn?.status||msg.params?.status||null,message:msg.params?.message||null})),
+      resumedThread:resumed?.thread||null,
+      runtime:diagnostics?.runtime||null,
+      logs:(diagnostics?.logs||[]).slice(-30),
+    },null,2));
+    throw error;
+  }
   const fileProof=decodeText(await readFile(join(workspace,"installed-agent-proof.txt"))).trim();
   assert.equal(fileProof,expected);
   assert.match(assistant,new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")));
