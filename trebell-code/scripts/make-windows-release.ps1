@@ -178,8 +178,12 @@ if ($Publish) {
   Push-Location $RepoRoot
   try {
     $Existing = $false
-    gh release view $Tag --repo tanishqbaweja/trebellcode *> $null
-    if ($LASTEXITCODE -eq 0) { $Existing = $true }
+    $PreviousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    & gh release view $Tag --repo tanishqbaweja/trebellcode *> $null
+    $ReleaseViewExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $PreviousErrorActionPreference
+    if ($ReleaseViewExitCode -eq 0) { $Existing = $true }
     $Notes = Join-Path $Root "RELEASE_NOTES_v$Version.md"
     if ($Existing) {
       Write-Host "Release $Tag already exists; replacing installer asset."
