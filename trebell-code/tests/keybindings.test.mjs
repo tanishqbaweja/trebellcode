@@ -43,3 +43,8 @@ test("queued follow-up shortcut resolves only for a running thread",()=>{
   assert.equal(resolveKeybinding(event("Enter",{ctrlKey:true,shiftKey:true}),{}, {threadOpen:true,running:true,modalOpen:false}),"steerQueued");
   assert.equal(resolveKeybinding(event("Enter",{ctrlKey:true,shiftKey:true}),{}, {threadOpen:true,running:false,modalOpen:false}),null);
 });
+
+test("main sidebar toggle matches Ctrl+B outside modals",()=>{
+  assert.equal(resolveKeybinding(event("b",{ctrlKey:true}),{}, {modalOpen:false}),"sidebarToggle");
+  assert.equal(resolveKeybinding(event("b",{ctrlKey:true}),{}, {modalOpen:true}),null);
+});

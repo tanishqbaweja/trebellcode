@@ -79,6 +79,8 @@ test("project actions persist, sanitize, inherit preference, and allow clearing 
     assert.deepEqual(cleanup.worktreeCleanup,{mode:"custom",rules:{worktreeAfterDays:3650,worktreeOnMerge:true,worktreeOnDelete:true,worktreeUnchanged:false}});
     assert.equal(state.touchProject(projectPath,{worktreeCleanup:null}).worktreeCleanup,null);
     assert.deepEqual(state.updateSettings({worktreeCleanup:{mode:"custom",rules:{worktreeAfterDays:14,worktreeUnchanged:true}}}).worktreeCleanup,{mode:"custom",rules:{worktreeAfterDays:14,worktreeOnMerge:false,worktreeOnDelete:false,worktreeUnchanged:true}});
+    assert.equal(state.updateSettings({panelAnimationMs:999}).panelAnimationMs,400);
+    assert.equal(state.updateSettings({panelAnimationMs:-50}).panelAnimationMs,0);
   }finally{await rm(home,{recursive:true,force:true});}
 });
 

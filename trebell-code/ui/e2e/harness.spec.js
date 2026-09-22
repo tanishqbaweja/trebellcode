@@ -37,6 +37,12 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   const onboarding=page.getByTestId("onboarding");
   if(await onboarding.isVisible().catch(()=>false))await onboarding.getByRole("button",{name:"Finish setup"}).click();
   await expect(page.getByText("Trebell Code").first()).toBeVisible();
+  await expect(page.locator(".sidebar")).toBeVisible();
+  await page.keyboard.press("Control+b");
+  await expect(page.locator(".app-shell")).toHaveClass(/sidebar-collapsed/);
+  await expect(page.getByRole("button",{name:"Open sidebar"})).toBeVisible();
+  await page.keyboard.press("Control+b");
+  await expect(page.locator(".app-shell")).not.toHaveClass(/sidebar-collapsed/);
   await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.mode)).toBe("dark");
   const initialShell=await page.evaluate(()=>({
     sidebar:getComputedStyle(document.querySelector(".sidebar")).backgroundColor,
@@ -121,6 +127,8 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await page.getByRole("button",{name:"Settings"}).click();
   await expect(page.getByRole("heading",{name:"Settings"})).toBeVisible();
   await expect(page.getByText("Follow-up behavior")).toBeVisible();
+  await page.getByLabel("Panel animations").fill("200");
+  await expect.poll(()=>page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue("--panel-animation-ms").trim())).toBe("200ms");
   await expect(page.getByLabel("Default policy")).toHaveValue("off");
   await expect(page.getByText("Update available",{exact:true})).toBeVisible();
   await page.getByRole("button",{name:"Download update"}).click();

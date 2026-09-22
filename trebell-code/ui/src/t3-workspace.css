@@ -1,5 +1,6 @@
 /* T3-style Trebell workspace overlay */
 :root{
+  --panel-animation-ms:0ms;
   --t3-bg:#0b0c0e;
   --t3-sidebar:#111214;
   --t3-raised:#17191c;
@@ -14,8 +15,9 @@
 }
 
 body{min-width:820px;background:var(--t3-bg);color:var(--t3-text)}
-.app-shell{height:100vh;display:grid;grid-template-columns:258px minmax(0,1fr);gap:0;padding:0;background:var(--t3-bg);overflow:hidden}
-.workspace-shell{min-width:0;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);background:var(--t3-bg)}
+.app-shell{height:100vh;display:grid;grid-template-columns:258px minmax(0,1fr);gap:0;padding:0;background:var(--t3-bg);overflow:hidden;transition:grid-template-columns var(--panel-animation-ms) ease}
+.app-shell.sidebar-collapsed{grid-template-columns:0 minmax(0,1fr)}
+.workspace-shell{min-width:0;min-height:0;display:grid;grid-template-columns:minmax(0,1fr);background:var(--t3-bg);transition:grid-template-columns var(--panel-animation-ms) ease}
 .workspace-shell.right-open{grid-template-columns:minmax(520px,1fr) minmax(420px,44vw)}
 .main-frame{min-width:0;min-height:0;position:relative;border:0;border-radius:0;background:var(--t3-bg);box-shadow:none;overflow:hidden}
 .window-bar{height:32px;border-bottom:1px solid var(--t3-soft);background:var(--t3-bg);padding:0;display:flex;align-items:center;justify-content:space-between;-webkit-app-region:drag}
@@ -26,13 +28,15 @@ body{min-width:820px;background:var(--t3-bg);color:var(--t3-text)}
 .window-bar .window-controls .window-close:hover{background:#c42b3b;color:white}
 
 /* thread-first sidebar */
-.sidebar{min-width:0;min-height:0;padding:0;display:flex;flex-direction:column;background:var(--t3-sidebar);border-right:1px solid var(--t3-border);overflow:hidden}
+.sidebar{min-width:0;min-height:0;padding:0;display:flex;flex-direction:column;background:var(--t3-sidebar);border-right:1px solid var(--t3-border);overflow:hidden;transition:opacity var(--panel-animation-ms) ease,transform var(--panel-animation-ms) ease}
+.app-shell.sidebar-collapsed>.sidebar{opacity:0;transform:translateX(-12px);pointer-events:none;border-right-color:transparent}
 .sidebar-titlebar{height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 10px 0 13px;flex:none;-webkit-app-region:drag}
 .sidebar-brand{min-width:0;display:flex;align-items:center;gap:8px;border:0;background:none;padding:5px 6px;color:var(--t3-text);-webkit-app-region:no-drag}
 .sidebar-brand .brand-mark{width:24px;height:24px;display:block;object-fit:contain;margin:0;filter:drop-shadow(0 0 7px rgba(132,104,255,.22))}
 .sidebar-brand strong{font-size:13px;font-weight:650;letter-spacing:-.2px;white-space:nowrap}
 .sidebar-brand em{font-style:normal;color:var(--t3-muted);font-weight:500}
 .sidebar-new-thread,.sidebar-bulk-toggle{width:30px;height:30px;display:grid;place-items:center;border:0;border-radius:7px;background:transparent;color:#92979f;-webkit-app-region:no-drag}
+.sidebar-title-actions{display:flex;align-items:center;gap:2px;-webkit-app-region:no-drag}
 .sidebar-new-thread:hover,.sidebar-bulk-toggle:hover{background:var(--t3-hover);color:#e1e3e6}
 .sidebar-thread-tools{display:flex;align-items:center;gap:4px;padding:4px 8px 8px;flex:none}
 .search-box{flex:1;height:32px;border:0;border-radius:7px;background:transparent;display:flex;align-items:center;gap:7px;padding:0 8px;color:#737980;box-shadow:none}
@@ -159,7 +163,8 @@ body{min-width:820px;background:var(--t3-bg);color:var(--t3-text)}
 .main-frame.terminal-open .conversation-scroll{bottom:calc(34vh + 130px)}
 
 /* bottom terminal */
-.terminal-drawer{position:absolute;left:0;right:0;bottom:0;height:34vh;min-height:260px;z-index:10;border-top:1px solid var(--t3-border);background:#0b0d0f;display:grid;grid-template-rows:34px minmax(0,1fr)}
+.terminal-drawer{position:absolute;left:0;right:0;bottom:0;height:34vh;min-height:260px;z-index:10;border-top:1px solid var(--t3-border);background:#0b0d0f;display:grid;grid-template-rows:34px minmax(0,1fr);animation:trebell-terminal-in var(--panel-animation-ms) ease both}
+@keyframes trebell-terminal-in{from{transform:translateY(10px);opacity:.82}to{transform:translateY(0);opacity:1}}
 .terminal-drawer-head{height:34px;display:flex;align-items:center;justify-content:space-between;padding:0 8px 0 12px;border-bottom:1px solid #1f2226;color:#81878e;font-size:9px}
 .terminal-drawer-head>span{display:flex;align-items:center;gap:6px}
 .terminal-drawer-head button{width:27px;height:27px;border:0;background:transparent;color:#747a82;border-radius:5px}
@@ -171,7 +176,10 @@ body{min-width:820px;background:var(--t3-bg);color:var(--t3-text)}
 .terminal-drawer .terminal-command-line,.terminal-drawer .terminal-foot{border-radius:0}
 
 /* right workbench */
-.context-panel{min-width:0;min-height:0;background:#0d0f11;border-left:1px solid var(--t3-border);display:grid;grid-template-rows:44px minmax(0,1fr);overflow:hidden}
+.context-panel{min-width:0;min-height:0;background:#0d0f11;border-left:1px solid var(--t3-border);display:grid;grid-template-rows:44px minmax(0,1fr);overflow:hidden;animation:trebell-panel-in var(--panel-animation-ms) ease both}
+@keyframes trebell-panel-in{from{opacity:.86;transform:translateX(8px)}to{opacity:1;transform:translateX(0)}}
+.main-frame .composer-wrap,.main-frame .conversation-scroll{transition:bottom var(--panel-animation-ms) ease}
+@media(prefers-reduced-motion:reduce){:root{--panel-animation-ms:0ms!important}.app-shell,.workspace-shell,.sidebar,.main-frame .composer-wrap,.main-frame .conversation-scroll{transition:none!important}.terminal-drawer,.context-panel{animation:none!important}}
 .context-panel-tabs{min-width:0;height:44px;display:flex;align-items:center;gap:4px;padding:0 7px;border-bottom:1px solid var(--t3-soft);background:#0f1113}
 .context-panel-tab-scroll{min-width:0;flex:1;display:flex;align-items:center;gap:2px;overflow-x:auto;scrollbar-width:none}
 .context-panel-tab-scroll::-webkit-scrollbar{display:none}

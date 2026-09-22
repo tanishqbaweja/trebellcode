@@ -2,6 +2,7 @@ import { access } from "node:fs/promises";
 import { join, posix } from "node:path";
 import spawn from "cross-spawn";
 import { trebellHome } from "./paths.mjs";
+import { resolveCodexHomeLayout } from "./codex-home-layout.mjs";
 
 const RUNTIMES=Object.freeze({
   codex:{id:"codex",name:"Codex",protocol:"codex",command:null,multipleInstances:true},
@@ -82,7 +83,10 @@ export class AgentRuntimeManager{
   }
   childEnv(instance){
     const env={...this.env,...(instance?.environment||{})};
-    if(instance?.kind==="codex"&&instance?.homePath)env.CODEX_HOME=instance.homePath;
+    if(instance?.kind==="codex"){
+      const layout=resolveCodexHomeLayout({homePath:instance?.homePath,shadowHomePath:instance?.shadowHomePath});
+      if(layout.effectiveHomePath)env.CODEX_HOME=layout.effectiveHomePath;
+    }
     if(instance?.kind==="claude"&&instance?.homePath)env.CLAUDE_CONFIG_DIR=instance.homePath;
     return env;
   }

@@ -27,6 +27,7 @@ import { AgentThreadStore } from "./agent-thread-store.mjs";
 import { attachAgentRelay } from "./agent-relay.mjs";
 import { listLicenses, licenseDetail } from "./license-service.mjs";
 import { WorktreeCleanupService } from "./worktree-cleanup.mjs";
+import { prepareCodexHome } from "./codex-home-layout.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
   .then(text=>String(JSON.parse(text).version||"0.0.0"))
@@ -171,7 +172,8 @@ async function startAppServer({appPort,env=process.env,mock=false,provider="free
   const inferencePort=Number.isInteger(providerPort)?providerPort:DEFAULT_PORT;
   ensureCodexConfig({port:inferencePort,env,provider});
   const command=runtimeInstance?.binaryPath?.trim()||codexBin(env);
-  const runtimeHome=runtimeInstance?.homePath?.trim()||codexHome(env);
+  const homeLayout=await prepareCodexHome({homePath:runtimeInstance?.homePath?.trim()||codexHome(env),shadowHomePath:runtimeInstance?.shadowHomePath?.trim()||null,defaultHome:codexHome(env)});
+  const runtimeHome=homeLayout.effectiveHomePath||homeLayout.sharedHomePath;
   const runtimeEnv={...env,...(runtimeInstance?.environment||{}),CODEX_HOME:runtimeHome};
   const args=[...codexProviderOverrides({port:inferencePort,provider}),"app-server","--listen",`ws://127.0.0.1:${appPort}`];
   const logs=[];
@@ -192,7 +194,7 @@ async function startAppServer({appPort,env=process.env,mock=false,provider="free
   child.stderr?.on("data",chunk=>pushLog(chunk,"stderr"));
   child.on("error",error=>pushLog(error.stack||error.message,"stderr"));
   child.on("exit",(code,signal)=>pushLog(`app-server exited code=${code} signal=${signal}\n`,"stderr"));
-  return { child, logs, targetUrl:`ws://127.0.0.1:${appPort}`, readyUrl:`http://127.0.0.1:${appPort}/readyz`, environment:null, runtimeInstanceId:runtimeInstance?.id||"codex-default",runtimeHome };
+  return { child, logs, targetUrl:`ws://127.0.0.1:${appPort}`, readyUrl:`http://127.0.0.1:${appPort}/readyz`, environment:null, runtimeInstanceId:runtimeInstance?.id||"codex-default",runtimeHome,sharedRuntimeHome:homeLayout.sharedHomePath,continuationKey:homeLayout.continuationKey };
 }
 
 async function appServerReady(instance,appPort){

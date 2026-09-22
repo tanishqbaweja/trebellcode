@@ -3,7 +3,7 @@ import {
   BrainCircuit, Check, ChevronDown, CircleStop, Code2, Cpu, FileCode2, FileDiff, FolderCode,
   GitBranch, Globe2, HardDrive, Link2, ListTodo, MemoryStick, Network, Paperclip, Plus, Send,
   ShieldCheck, Sparkles, SquareTerminal, WandSparkles, X, Zap, Coins, Mic, Camera,
-  PanelRight, PanelBottom, Command, Target, Play
+  PanelRight, PanelBottom, PanelLeftOpen, Command, Target, Play
 } from "lucide-react";
 import { CodexRpcClient } from "./rpc.js";
 import { api } from "./api.js";
@@ -291,7 +291,8 @@ export default function App(){
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [contextChips,setContextChips]=useState([]);
   const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [selectedModels,setSelectedModels]=useState([]); const [modelError,setModelError]=useState("");
   const [freebuff,setFreebuff]=useState({loggedIn:false}); const [skills,setSkills]=useState([]); const [providerCommands,setProviderCommands]=useState([]); const [providerAgents,setProviderAgents]=useState([]); const [providerAgent,setProviderAgent]=useState("");
-  const [settings,setSettings]=useState({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",appearanceMode:"dark",customThemes:[],keyboardShortcuts:{},agentRuntime:"codex",modelProvider:"freebuff"});
+  const [settings,setSettings]=useState({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,customThemes:[],keyboardShortcuts:{},agentRuntime:"codex",modelProvider:"freebuff"});
+  const [sidebarOpen,setSidebarOpen]=useState(true);
   const [permissionMode,setPermissionMode]=useState("supervised"); const [webSearch,setWebSearch]=useState(true); const [workspaceMode,setWorkspaceMode]=useState("current");
   const [projectPath,setProjectPath]=useState(""); const [currentProject,setCurrentProject]=useState(null); const [gitInfo,setGitInfo]=useState(null); const [stats,setStats]=useState({}); const [runtime,setRuntime]=useState({});
   const [approvals,setApprovals]=useState([]); const [question,setQuestion]=useState(null); const [tokenUsage,setTokenUsage]=useState(null);
@@ -321,6 +322,11 @@ export default function App(){
     };
     apply();media?.addEventListener?.("change",apply);return()=>media?.removeEventListener?.("change",apply);
   },[settings.appearance,settings.appearanceMode,settings.customThemes]);
+  useEffect(()=>{
+    const root=document.documentElement;const media=window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    const apply=()=>{const duration=media?.matches?0:Math.max(0,Math.min(400,Number(settings.panelAnimationMs)||0));root.style.setProperty("--panel-animation-ms",duration+"ms")};
+    apply();media?.addEventListener?.("change",apply);return()=>media?.removeEventListener?.("change",apply);
+  },[settings.panelAnimationMs]);
   useEffect(()=>{activeThreadRef.current=activeThread},[activeThread]);
 
   function updateThreadTelemetry(threadId,patch){
@@ -532,6 +538,7 @@ export default function App(){
         running:Boolean(running),
         modalOpen:Boolean(paletteOpen||question||approvals.length||settings.onboardingComplete===false),
         rightPanelOpen:Boolean(rightPanelOpen),
+        sidebarOpen:Boolean(sidebarOpen),
         desktop:Boolean(window.trebellDesktop),
       };
       const command=resolveKeybinding(event,settings,context);
@@ -539,6 +546,7 @@ export default function App(){
       event.preventDefault();
       if(command==="newChat")newChat();
       else if(command==="commandPalette")setPaletteOpen(value=>!value);
+      else if(command==="sidebarToggle")setSidebarOpen(value=>!value);
       else if(command==="stash")stashPrompt();
       else if(command==="terminal")setPanel(value=>value==="terminal"?null:"terminal");
       else if(command==="files")openRightPanel("files");
@@ -553,7 +561,7 @@ export default function App(){
     };
     window.addEventListener("keydown",key);
     return()=>window.removeEventListener("keydown",key);
-  },[settings,prompt,attachments,section,panel,paletteOpen,question,approvals.length,projectPath,activeThread?.id,running,rightPanelOpen,queued]);
+  },[settings,prompt,attachments,section,panel,paletteOpen,question,approvals.length,projectPath,activeThread?.id,running,rightPanelOpen,queued,sidebarOpen]);
   useEffect(()=>{if(!running&&queued.length){const next=queued[0];setQueued(prev=>prev.slice(1));startTurn(next.text,next.attachments,next.model||model).catch(error=>setEvents(prev=>[...prev,{id:"queue-error-"+Date.now(),kind:"error",title:error.message,status:"done"}]))}},[running,queued]);
 
   function handleServerRequest(client,message){
@@ -1189,8 +1197,8 @@ export default function App(){
     </div>;
   }
 
-  return <div className="app-shell">
-    <ThreadSidebar section={section} setSection={navigateSection} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} onOpen={openThread} onNew={newChat} onThreadAction={threadAction} onMove={moveThreadOrder} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={bulkAction} provider={provider} agentRuntime={agentRuntime}/>
+  return <div className={"app-shell"+(sidebarOpen?"":" sidebar-collapsed")}>
+    <ThreadSidebar section={section} setSection={navigateSection} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} onOpen={openThread} onNew={newChat} onThreadAction={threadAction} onMove={moveThreadOrder} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={bulkAction} provider={provider} agentRuntime={agentRuntime} onCollapse={()=>setSidebarOpen(false)}/>
 
     <div className={"workspace-shell"+(rightPanelOpen?" right-open":"")}>
       <main className={"main-frame"+(panel==="terminal"?" terminal-open":"")}>
@@ -1202,6 +1210,7 @@ export default function App(){
         {(section==="chat"||section==="new")&&<div className="chat-workspace">
           <header className="workspace-header">
             <div className="workspace-breadcrumb">
+              {!sidebarOpen&&<button className="project-crumb sidebar-reopen" onClick={()=>setSidebarOpen(true)} aria-label="Open sidebar" title="Open sidebar · Ctrl+B"><PanelLeftOpen size={14}/></button>}
               <button className="project-crumb" onClick={pickWorkspace} title={projectPath||"Open folder"}><FolderCode size={14}/><span>{projectLabel}</span></button><button className="project-switcher" onClick={()=>setSection("projects")} title="Recent projects"><ChevronDown size={12}/></button>
               <span>/</span>
               <button className="thread-title-button" onDoubleClick={renameThread} onClick={renameThread} title="Rename thread"><strong>{activeTitle}</strong><ChevronDown size={13}/></button>

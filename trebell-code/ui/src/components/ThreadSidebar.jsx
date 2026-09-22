@@ -1,7 +1,7 @@
 import React from "react";
 import {
   Archive, BarChart3, Bot, Clock3, Folder, Globe2, History,
-  MoreHorizontal, Pin, Plus, Search, Settings, SlidersHorizontal, Wrench, Server
+  MoreHorizontal, Pin, Plus, Search, Settings, SlidersHorizontal, Wrench, Server, PanelLeftClose
 } from "lucide-react";
 
 function titleOf(thread){return thread.name||thread.preview||"Untitled task"}
@@ -49,7 +49,7 @@ function UtilityButton({Icon,label,active,onClick}){
 
 export default function ThreadSidebar({
   section,setSection,threads,activeThreadId,query,setQuery,onOpen,onNew,onThreadAction,onMove,
-  selectedIds,setSelectedIds,onBulkAction,provider="freebuff",agentRuntime="codex"
+  selectedIds,setSelectedIds,onBulkAction,provider="freebuff",agentRuntime="codex",onCollapse
 }){
   const groups={
     Pinned:threads.filter(t=>t.section?.name==="Pinned"),
@@ -67,7 +67,7 @@ export default function ThreadSidebar({
       <button className="sidebar-brand" onClick={()=>setSection("chat")} aria-label="Threads">
         <img className="brand-mark" src="/trebell-code-icon.svg" alt="" aria-hidden="true"/><strong>Trebell <em>Code</em></strong>
       </button>
-      <button className="sidebar-new-thread" onClick={onNew} aria-label="New thread" title="New thread"><Plus size={16}/></button>
+      <div className="sidebar-title-actions"><button className="sidebar-new-thread" onClick={onCollapse} aria-label="Collapse sidebar" title="Collapse sidebar · Ctrl+B"><PanelLeftClose size={15}/></button><button className="sidebar-new-thread" onClick={onNew} aria-label="New thread" title="New thread"><Plus size={16}/></button></div>
     </div>
 
     <div className="sidebar-thread-tools">

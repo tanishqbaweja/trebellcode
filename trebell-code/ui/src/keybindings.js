@@ -1,6 +1,7 @@
 export const KEYBINDING_COMMANDS=[
   {id:"newChat",label:"New thread",defaultKey:"Ctrl+N",defaultWhen:"!modalOpen"},
   {id:"commandPalette",label:"Command palette",defaultKey:"Ctrl+K",defaultWhen:""},
+  {id:"sidebarToggle",label:"Toggle main sidebar",defaultKey:"Ctrl+B",defaultWhen:"!modalOpen"},
   {id:"stash",label:"Stash prompt",defaultKey:"Ctrl+S",defaultWhen:"chatFocus && !terminalFocus && !modalOpen"},
   {id:"terminal",label:"Toggle terminal",defaultKey:"Ctrl+Shift+T",defaultWhen:"projectOpen && !modalOpen"},
   {id:"files",label:"Workspace files",defaultKey:"Ctrl+P",defaultWhen:"projectOpen && !modalOpen"},
