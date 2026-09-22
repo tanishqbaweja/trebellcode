@@ -23,6 +23,7 @@
     "test:vyce": "node --env-file-if-exists=../.env tests/live-vyce-smoke.mjs",
     "test:vyce:agent": "node --env-file-if-exists=../.env scripts/live-vyce-agent-test.mjs",
     "test:vyce:background": "node --env-file-if-exists=../.env scripts/live-vyce-background-test.mjs",
+    "test:vyce:fanout": "node --env-file-if-exists=../.env scripts/live-vyce-fanout-test.mjs",
     "prepare:icon": "node scripts/materialize-icon.mjs",
     "release:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make-windows-release.ps1",
     "release:windows:publish": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make-windows-release.ps1 -Publish"
