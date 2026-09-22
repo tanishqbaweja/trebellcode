@@ -1020,6 +1020,16 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return json(res,200,{path,name:basename(path),size:data.length,mime});
       }catch(error){return json(res,400,{error:error.message});}
     }
+    if(url.pathname==="/api/attachments/import"&&req.method==="POST"){
+      try{
+        const body=await readJsonBody(req,512*1024);
+        const paths=Array.isArray(body.paths)?body.paths.slice(0,100):[];
+        if(!paths.length)return json(res,200,{files:[]});
+        const files=[];
+        for(const path of paths)files.push(await environments.prepareAttachment(body.environmentId||null,path));
+        return json(res,200,{files});
+      }catch(error){return json(res,400,{error:error.message});}
+    }
     if(url.pathname==="/api/freebuff/overview"){
       const model=url.searchParams.get("model") || "";
       const timezone=url.searchParams.get("timezone") || "UTC";

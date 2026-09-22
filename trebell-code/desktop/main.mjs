@@ -300,9 +300,13 @@ function browserState(){
 
 async function browserNavigateHistory(direction){
   const browser=await ensureAgentBrowser();const history=browser.webContents.navigationHistory;
-  if(direction==="back"&&history.canGoBack())history.goBack();
-  else if(direction==="forward"&&history.canGoForward())history.goForward();
-  else if(direction==="reload")browser.webContents.reload();
+  const event=direction==="reload"?"did-stop-loading":"did-navigate";
+  const wait=()=>new Promise(resolve=>{let settled=false;const finish=()=>{if(settled)return;settled=true;clearTimeout(timer);browser.webContents.off(event,finish);resolve()};const timer=setTimeout(finish,5000);browser.webContents.once(event,finish)});
+  let pending=null;
+  if(direction==="back"&&history.canGoBack()){pending=wait();history.goBack()}
+  else if(direction==="forward"&&history.canGoForward()){pending=wait();history.goForward()}
+  else if(direction==="reload"){pending=wait();browser.webContents.reload()}
+  if(pending)await pending;
   return browserState();
 }
 
@@ -614,7 +618,7 @@ async function createWindow(){
     if(!request.videoRequested||Date.now()>browserRecordingGrantUntil){callback({});return}
     try{
       const browser=await ensureAgentBrowser({show:true});browserRecordingGrantUntil=0;
-      callback({video:{id:browser.webContents.getMediaSourceId(),name:browser.getTitle()||"Trebell Agent Browser"}});
+      callback({video:{id:browser.getMediaSourceId(),name:browser.getTitle()||"Trebell Agent Browser"}});
     }catch{browserRecordingGrantUntil=0;callback({})}
   });
   installMainZoomControls(windowRef);
@@ -698,7 +702,7 @@ if(!lock){
   ipcMain.handle("browser:state",async()=>browserState());
   ipcMain.handle("browser:history",async(_event,direction)=>browserNavigateHistory(direction));
   ipcMain.handle("browser:viewport",async(_event,payload)=>browserViewport(payload));
-  ipcMain.handle("browser:recording:arm",async()=>{const browser=await ensureAgentBrowser({show:true});browserRecordingGrantUntil=Date.now()+5000;return {ok:true,expiresAt:browserRecordingGrantUntil,sourceId:browser.webContents.getMediaSourceId()};});
+  ipcMain.handle("browser:recording:arm",async()=>{const browser=await ensureAgentBrowser({show:true});browserRecordingGrantUntil=Date.now()+5000;return {ok:true,expiresAt:browserRecordingGrantUntil,sourceId:browser.getMediaSourceId()};});
   ipcMain.handle("desktop:screenshot",async()=>desktopScreenshot());
   ipcMain.handle("computer:screenshot",async()=>desktopScreenshot());
   ipcMain.handle("computer:move",async(_event,payload={})=>computerMove(payload.x,payload.y));

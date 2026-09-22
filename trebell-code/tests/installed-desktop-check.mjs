@@ -123,6 +123,32 @@ try {
   const screenshot=await mainPage.evaluate(()=>window.trebellDesktop.browser.screenshot());
   if(!screenshot?.dataUrl?.startsWith("data:image/png;base64,")) throw new Error("Agent browser screenshot is not a PNG data URL.");
 
+  const viewportState=await mainPage.evaluate(()=>window.trebellDesktop.browser.setViewport(390,844));
+  if(viewportState?.width!==390||viewportState?.height!==844) throw new Error(`Agent browser viewport resize failed: ${viewportState?.width}x${viewportState?.height}`);
+  const secondUrl=fixtureUrl+"/second";
+  await mainPage.evaluate(url=>window.trebellDesktop.browser.navigate(url),secondUrl);
+  let navigationState=await mainPage.evaluate(()=>window.trebellDesktop.browser.state());
+  if(!navigationState?.url?.endsWith("/second")||!navigationState.canGoBack) throw new Error("Agent browser navigation state did not expose back history.");
+  navigationState=await mainPage.evaluate(()=>window.trebellDesktop.browser.back());
+  if(new URL(navigationState.url).pathname!=="/") throw new Error("Agent browser back navigation failed.");
+  navigationState=await mainPage.evaluate(()=>window.trebellDesktop.browser.forward());
+  if(!navigationState.url.endsWith("/second")) throw new Error("Agent browser forward navigation failed.");
+  navigationState=await mainPage.evaluate(()=>window.trebellDesktop.browser.reload());
+  if(!navigationState.url.endsWith("/second")) throw new Error("Agent browser reload changed the active URL.");
+
+  const browserRecording=await mainPage.evaluate(async()=>{
+    await window.trebellDesktop.browser.armRecording();
+    const stream=await navigator.mediaDevices.getDisplayMedia({audio:false,video:{frameRate:{ideal:15,max:15}}});
+    const types=["video/mp4;codecs=avc1","video/webm;codecs=vp9","video/webm;codecs=vp8","video/webm"];
+    const mimeType=types.find(type=>MediaRecorder.isTypeSupported(type))||"";
+    const chunks=[];const recorder=new MediaRecorder(stream,mimeType?{mimeType}:undefined);recorder.ondataavailable=event=>{if(event.data?.size)chunks.push(event.data)};recorder.start(100);
+    await new Promise(resolve=>setTimeout(resolve,1200));
+    await new Promise(resolve=>{recorder.addEventListener("stop",resolve,{once:true});recorder.stop()});
+    const settings=stream.getVideoTracks()[0]?.getSettings?.()||{};for(const track of stream.getTracks())track.stop();const blob=new Blob(chunks,{type:recorder.mimeType||chunks[0]?.type||"video/webm"});
+    return {bytes:blob.size,type:blob.type,width:settings.width||null,height:settings.height||null};
+  });
+  if(!(browserRecording.bytes>1000)||!browserRecording.type.startsWith("video/")) throw new Error(`Agent browser recording did not produce encoded video (${browserRecording.bytes} bytes, ${browserRecording.type}).`);
+
 const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureScreen());
   if(!desktopSnapshot?.dataUrl?.startsWith("data:image/png;base64,")) throw new Error("Desktop snapshot is not a PNG data URL.");
   if(!(desktopSnapshot.width>0&&desktopSnapshot.height>0)) throw new Error("Desktop snapshot dimensions are invalid.");
@@ -178,6 +204,8 @@ const desktopSnapshot=await mainPage.evaluate(()=>window.trebellDesktop.captureS
     ok:true,
     background:{initial,afterEnable,afterDisable},
     browser:{url:snapshot.url,title:snapshot.title,elements:snapshot.elements?.length||0,screenshotBytes:screenshot.dataUrl.length,cookieImport},
+    browserViewport:{width:viewportState.width,height:viewportState.height},
+    browserRecording,
     desktopSnapshot:{width:desktopSnapshot.width,height:desktopSnapshot.height,bytes:desktopSnapshot.dataUrl.length},
     snapShot:{width:captured.width,height:captured.height,title:captured.title,process:captured.process,persistedBytes:persisted.dataBase64.length},
     zoom:{before:zoomBefore,afterCtrlWheelUp:zoomAfter,reset:zoomReset},

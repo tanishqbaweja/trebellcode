@@ -1,5 +1,8 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import { basename, resolve, posix } from "node:path";
 
 const MAX_OUTPUT=2*1024*1024;
 
@@ -218,6 +221,32 @@ export class EnvironmentManager {
       :"printf 'trebell-environment-ok\\n'; pwd; uname -s";
     const result=await this.execute(id,{command,timeoutMs:12000});
     return {...result,ok:result.exitCode===0&&!result.timedOut&&result.stdout.includes("trebell-environment-ok")};
+  }
+
+  async prepareAttachment(id,localPath){
+    const requested=resolve(String(localPath||""));
+    const info=await stat(requested);
+    if(!info.isFile())throw new Error("Attachment path is not a file");
+    const lower=requested.toLowerCase();
+    const image=/\.(png|jpe?g|gif|webp|bmp|svg)$/.test(lower);
+    const maxBytes=image?10*1024*1024:50*1024*1024;
+    if(info.size>maxBytes)throw new Error(`${image?"Image":"Attachment"} is larger than ${Math.round(maxBytes/1024/1024)} MB`);
+    const profile=id?this.get(id):null;
+    if(!profile||profile.type==="local")return {path:requested,size:info.size,copied:false,environmentId:profile?.id||null};
+    const safe=basename(requested).replace(/[^a-zA-Z0-9._-]/g,"_").slice(-100)||"attachment.bin";
+    const root=String(profile.cwd||"/tmp").trim()||"/tmp";
+    const dir=posix.join(root,".trebell","attachments");
+    const remotePath=posix.join(dir,`${Date.now()}-${randomUUID().slice(0,8)}-${safe}`);
+    const child=this.spawnSession(profile.id,{command:`mkdir -p ${quotePosix(dir)} && cat > ${quotePosix(remotePath)}`,cwd:"",stdio:["pipe","pipe","pipe"]});
+    await new Promise((resolveCopy,reject)=>{
+      let stderr="",settled=false;
+      const finish=error=>{if(settled)return;settled=true;error?reject(error):resolveCopy()};
+      child.stderr?.on("data",chunk=>{stderr=(stderr+String(chunk)).slice(-128*1024)});
+      child.once("error",finish);
+      child.once("close",code=>code===0?finish():finish(new Error(stderr.trim()||`Remote attachment copy exited with code ${code}`)));
+      const input=createReadStream(requested);input.once("error",finish);input.pipe(child.stdin);
+    });
+    return {path:remotePath,size:info.size,copied:true,environmentId:profile.id};
   }
 }
 

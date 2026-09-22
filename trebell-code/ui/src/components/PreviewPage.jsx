@@ -78,10 +78,11 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
 
   function normalized(){let next=draft.trim();if(next&&!/^https?:\/\//i.test(next))next="http://"+next;return next}
   function go(){const next=normalized();setUrl(next);if(next)remember(next)}
-  async function agentOpen(){
-    const next=normalized();if(!next)return;setBusy("open");
+  async function openAgentUrl(next){
+    if(!next)return;setBusy("open");
     try{const state=await window.trebellDesktop?.browser?.navigate?.(next);setUrl(next);remember(next,state?.title);setSnapshot(await window.trebellDesktop?.browser?.snapshot?.())}finally{setBusy("")}
   }
+  async function agentOpen(){return openAgentUrl(normalized())}
   async function inspect(){setBusy("inspect");try{const next=await window.trebellDesktop?.browser?.snapshot?.();setSnapshot(next);if(selectedRef&&!next?.elements?.some(el=>el.ref===selectedRef))setSelectedRef(null)}finally{setBusy("")}}
   async function capture(){setBusy("capture");try{const shot=await window.trebellDesktop?.browser?.screenshot?.();if(shot?.dataUrl)await onAttachImage?.(shot.dataUrl)}finally{setBusy("")}}
   async function importCookies(){
@@ -103,7 +104,7 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
     const state=await window.trebellDesktop?.browser?.setViewport?.(next.width,next.height);if(state)setBrowserState(state);
   }
   async function startRecording(){
-    const browser=window.trebellDesktop?.browser;if(!browser?.armRecording||!navigator.mediaDevices?.getDisplayMedia)throw new Error("Browser recording is unavailable in this build.");
+    const browser=window.trebellDesktop?.browser;if(!browser?.armRecording||!navigator.mediaDevices?.getDisplayMedia||typeof MediaRecorder==="undefined")throw new Error("Browser recording is unavailable in this build.");
     setBusy("recording");
     try{
       await browser.armRecording();
@@ -136,7 +137,7 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
 
     <div className="browser-device-toolbar"><MonitorSmartphone size={13}/><select value={VIEWPORTS.find(item=>item.width===viewport.width&&item.height===viewport.height)?.id||"custom"} onChange={e=>{const preset=VIEWPORTS.find(item=>item.id===e.target.value);if(preset)applyViewport(preset.width,preset.height)}}><option value="custom">Custom</option>{VIEWPORTS.map(item=><option key={item.id} value={item.id}>{item.label} · {item.width}×{item.height}</option>)}</select><input type="number" min="320" max="3840" value={viewport.width} onChange={e=>setViewport(v=>({...v,width:e.target.value}))} onBlur={()=>applyViewport(viewport.width,viewport.height)}/><span>×</span><input type="number" min="240" max="2160" value={viewport.height} onChange={e=>setViewport(v=>({...v,height:e.target.value}))} onBlur={()=>applyViewport(viewport.width,viewport.height)}/><button title="Rotate viewport" onClick={()=>applyViewport(viewport.height,viewport.width)}><RotateCw size={12}/></button><button className={recording?"recording active":"recording"} disabled={!!busy&&!recording} onClick={()=>recording?stopRecording().catch(error=>setCookieStatus(error.message)):startRecording().catch(error=>setCookieStatus(error.message))}>{recording?<Square size={11}/>:<Circle size={11}/>} {recording?`Stop ${recordingSeconds}s`:"Record"}</button></div>
 
-    {history.length>0&&<details className="browser-history"><summary><History size={12}/> Recent pages</summary><div>{history.slice(0,12).map(item=><button key={item.url} onClick={()=>{setDraft(item.url);setUrl(item.url);agentOpen().catch(()=>{})}}><span><strong>{item.title||new URL(item.url).host}</strong><small>{item.url}</small></span><time>{new Date(item.lastVisitedAt).toLocaleString()}</time></button>)}</div></details>}
+    {history.length>0&&<details className="browser-history"><summary><History size={12}/> Recent pages</summary><div>{history.slice(0,12).map(item=><button key={item.url} onClick={()=>{setDraft(item.url);openAgentUrl(item.url).catch(()=>{})}}><span><strong>{item.title||new URL(item.url).host}</strong><small>{item.url}</small></span><time>{new Date(item.lastVisitedAt).toLocaleString()}</time></button>)}</div></details>}
 
     <div className="preview-discovery">
       <div className="preview-discovery-head"><span><Radar size={13}/> Local dev servers</span><button onClick={discover} disabled={busy==="servers"}><RefreshCw size={12}/> Detect</button></div>

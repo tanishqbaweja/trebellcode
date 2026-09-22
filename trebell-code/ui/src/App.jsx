@@ -332,15 +332,16 @@ export default function App(){
         const capture=await snapshots.read(id);
         const safeProcess=String(capture.process||"window").replace(/[^a-zA-Z0-9._-]+/g,"-").slice(0,60)||"window";
         const uploaded=await api("/api/attachments/blob",{method:"POST",body:{name:`snapshot-${safeProcess}-${capture.createdAt||Date.now()}.png`,mime:"image/png",dataBase64:capture.dataBase64}});
-        const imagePath=uploaded.path;
+        const [imagePath]=await prepareAttachmentPaths([uploaded.path]);
         setAttachments(prev=>[...new Set([...prev,imagePath])].slice(-MAX_COMPOSER_ATTACHMENTS));
         setContextChips(prev=>[...prev.filter(chip=>chip.path!==imagePath),{id:crypto.randomUUID(),path:imagePath,kind:"snapshot",label:`SnapShot: ${capture.process||"App"}`,detail:capture.title||`${capture.width||"?"}×${capture.height||"?"}`}].slice(-MAX_COMPOSER_ATTACHMENTS));
         if(capture.hasAccessibility&&Array.isArray(capture.accessibility)&&capture.accessibility.length){
           const context={app:capture.process||null,windowTitle:capture.title||null,bounds:capture.bounds||null,controls:capture.accessibility};
           try{
             const metadata=await api("/api/attachments/text",{method:"POST",body:{name:`snapshot-${safeProcess}-ui.json`,text:JSON.stringify(context,null,2)}});
-            setAttachments(prev=>[...new Set([...prev,metadata.path])].slice(-MAX_COMPOSER_ATTACHMENTS));
-            setContextChips(prev=>[...prev.filter(chip=>chip.path!==metadata.path),{id:crypto.randomUUID(),path:metadata.path,kind:"snapshot",label:"SnapShot app text",detail:capture.title||capture.process||"Accessibility context"}].slice(-MAX_COMPOSER_ATTACHMENTS));
+            const [metadataPath]=await prepareAttachmentPaths([metadata.path]);
+            setAttachments(prev=>[...new Set([...prev,metadataPath])].slice(-MAX_COMPOSER_ATTACHMENTS));
+            setContextChips(prev=>[...prev.filter(chip=>chip.path!==metadataPath),{id:crypto.randomUUID(),path:metadataPath,kind:"snapshot",label:"SnapShot app text",detail:capture.title||capture.process||"Accessibility context"}].slice(-MAX_COMPOSER_ATTACHMENTS));
           }catch{}
         }
         setSection("chat");await snapshots.ack(id);
@@ -839,17 +840,26 @@ export default function App(){
     setContextChips(prev=>[...prev.filter(chip=>chip.path!==path),{id:crypto.randomUUID(),path,kind,label,detail}].slice(-MAX_COMPOSER_ATTACHMENTS));
     return path;
   }
-  async function addContextAttachment({name,text,kind="context",label="Context",detail=""}){const d=await api("/api/attachments/text",{method:"POST",body:{name,text}});return addContextPath(d.path,{kind,label,detail})}
+  async function prepareAttachmentPaths(paths){
+    if(!paths?.length)return [];
+    const body={paths};
+    const pinnedEnvironment=activeThreadRef.current?.providerMeta?.environmentId;
+    if(pinnedEnvironment!==undefined)body.environmentId=pinnedEnvironment;
+    const result=await api("/api/attachments/import",{method:"POST",body});
+    return (result.files||[]).map(file=>file.path);
+  }
+  async function addContextAttachment({name,text,kind="context",label="Context",detail=""}){const d=await api("/api/attachments/text",{method:"POST",body:{name,text}});const [path]=await prepareAttachmentPaths([d.path]);return addContextPath(path,{kind,label,detail})}
   function removeContext(path){setContextChips(prev=>prev.filter(chip=>chip.path!==path));setAttachments(prev=>prev.filter(item=>item!==path))}
-  async function pickFiles(){const p=await window.trebellDesktop?.pickFiles?.();if(p?.length){await addFiles(p);return p}return[]}
-  async function blobAttachment(file){const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(",")[1]||"");reader.onerror=reject;reader.readAsDataURL(file)});return api("/api/attachments/blob",{method:"POST",body:{name:file.name,mime:file.type,dataBase64:data}})}
+  async function pickFiles(){const p=await window.trebellDesktop?.pickFiles?.();if(p?.length){const prepared=await prepareAttachmentPaths(p);await addFiles(prepared);return prepared}return[]}
+  async function blobAttachment(file){const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(",")[1]||"");reader.onerror=reject;reader.readAsDataURL(file)});const stored=await api("/api/attachments/blob",{method:"POST",body:{name:file.name,mime:file.type,dataBase64:data}});const [path]=await prepareAttachmentPaths([stored.path]);return {...stored,path}}
   async function captureDesktop(){
     const shot=await window.trebellDesktop?.captureScreen?.();
     if(!shot?.dataUrl)throw new Error("Desktop screenshot is unavailable.");
     const d=await api("/api/attachments/blob",{method:"POST",body:{name:"desktop-snapshot.png",mime:"image/png",dataBase64:String(shot.dataUrl).split(",")[1]||""}});
-    await addContextPath(d.path,{kind:"computer",label:"Desktop snapshot",detail:(shot.width&&shot.height)?shot.width+"×"+shot.height:"PNG capture"});
+    const [path]=await prepareAttachmentPaths([d.path]);
+    await addContextPath(path,{kind:"computer",label:"Desktop snapshot",detail:(shot.width&&shot.height)?shot.width+"×"+shot.height:"PNG capture"});
   }
-  async function onPaste(e){const files=[...(e.clipboardData?.files||[])];if(files.length){e.preventDefault();const uploaded=[];for(const f of files.slice(0,Math.max(0,MAX_COMPOSER_ATTACHMENTS-attachments.length))){try{uploaded.push((await blobAttachment(f)).path)}catch{}}await addFiles(uploaded);return}const text=e.clipboardData?.getData("text/plain")||"";if(text.length>=32768){e.preventDefault();const d=await api("/api/attachments/text",{method:"POST",body:{name:"pasted-context.txt",text}});await addFiles([d.path])}}
+  async function onPaste(e){const files=[...(e.clipboardData?.files||[])];if(files.length){e.preventDefault();const uploaded=[];for(const f of files.slice(0,Math.max(0,MAX_COMPOSER_ATTACHMENTS-attachments.length))){try{uploaded.push((await blobAttachment(f)).path)}catch{}}await addFiles(uploaded);return}const text=e.clipboardData?.getData("text/plain")||"";if(text.length>=32768){e.preventDefault();const d=await api("/api/attachments/text",{method:"POST",body:{name:"pasted-context.txt",text}});const prepared=await prepareAttachmentPaths([d.path]);await addFiles(prepared)}}
   async function onDrop(e){e.preventDefault();const files=[...(e.dataTransfer?.files||[])];const uploaded=[];for(const f of files.slice(0,Math.max(0,MAX_COMPOSER_ATTACHMENTS-attachments.length))){try{uploaded.push((await blobAttachment(f)).path)}catch{}}await addFiles(uploaded)}
   async function attachExcerpt(text){if(!text.trim())return;await addContextAttachment({name:"terminal-context.txt",text,kind:"terminal",label:"Terminal excerpt",detail:text.split(/\r?\n/).length+" lines"});setPanel(null)}
   async function citeAssistant(message){
@@ -882,7 +892,7 @@ export default function App(){
   }
   async function toggleReviewed(path,value){const next=value?[...new Set([...reviewedFiles,path])]:reviewedFiles.filter(x=>x!==path);setReviewedFiles(next);if(activeThread?.id)await updateThreadMeta(activeThread.id,{reviewedFiles:next})}
   function resolveApproval(request,decision){if(!rpc)return;let result={decision};if(request.method==="item/permissions/requestApproval")result={permissions:request.params?.permissions||{},scope:decision==="acceptForSession"?"session":"turn"};rpc.respond(request.id,result);setApprovals(prev=>prev.filter(x=>x.id!==request.id))}
-  async function answerQuestion(answers,files){if(!question)return;const result={};for(const q of question.request.params?.questions||[]){const values=[...(answers[q.id]||[])];if(files.length)values.push("Attached files: "+files.join(", "));result[q.id]={answers:values}}question.client.respond(question.request.id,{answers:result});setQuestion(null)}
+  async function answerQuestion(answers,filesByQuestion={}){if(!question)return;const result={};for(const q of question.request.params?.questions||[]){const values=[...(answers[q.id]||[])];const files=filesByQuestion[q.id]||[];if(files.length)values.push("Attached files:\n"+files.map(path=>"- "+path).join("\n"));result[q.id]={answers:values}}question.client.respond(question.request.id,{answers:result});setQuestion(null)}
   function cancelQuestion(){if(question){question.client.respond(question.request.id,{answers:{}});setQuestion(null)}}
   async function login(){await fetch("/api/login/start",{method:"POST"}).catch(()=>{});const poll=setInterval(async()=>{const data=await api("/api/bootstrap").catch(()=>null);if(data?.loggedIn){clearInterval(poll);setBootstrap(data);await refreshProviderModels();}},1500);setTimeout(()=>clearInterval(poll),120000)}
   async function logout(){await api("/api/logout",{method:"POST"});setBootstrap(prev=>({...prev,loggedIn:false,providerReady:false}));setModels([]);setModel("");setFreebuff({loggedIn:false})}
@@ -962,8 +972,10 @@ export default function App(){
   ];
 
   const previewSurface=<PreviewPage
+    projectPath={projectPath}
     onAttachText={async(name,text,meta={})=>addContextAttachment({name,text,kind:meta.kind||"browser",label:meta.label||"Browser context",detail:meta.detail||""})}
-    onAttachImage={async(dataUrl)=>{const d=await api("/api/attachments/blob",{method:"POST",body:{name:"browser-screenshot.png",mime:"image/png",dataBase64:String(dataUrl).split(",")[1]||""}});await addContextPath(d.path,{kind:"browser",label:"Browser screenshot",detail:"PNG capture"})}}
+    onAttachImage={async(dataUrl)=>{const d=await api("/api/attachments/blob",{method:"POST",body:{name:"browser-screenshot.png",mime:"image/png",dataBase64:String(dataUrl).split(",")[1]||""}});const [path]=await prepareAttachmentPaths([d.path]);await addContextPath(path,{kind:"browser",label:"Browser screenshot",detail:"PNG capture"})}}
+    onAttachFile={async(file,meta={})=>{const d=await blobAttachment(file);await addContextPath(d.path,{kind:meta.kind||"browser",label:meta.label||file.name,detail:meta.detail||`${Math.round(file.size/1024)} KB`})}}
   />;
 
   function rightPanelContent(){
