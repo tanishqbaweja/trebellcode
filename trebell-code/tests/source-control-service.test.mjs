@@ -18,6 +18,7 @@ import {
   revertPullRequest,
   mergePullRequest,
   rebasePullRequestStack,
+  sourceControlGitAction,
   withSourceControlExecutor,
 } from "../src/source-control-service.mjs";
 import { git } from "../src/git-service.mjs";
@@ -133,6 +134,34 @@ test("source control commands stay inside the supplied environment executor",asy
   assert.equal(result.items[0].number,7);
   assert.equal(calls.every(call=>!call.cwd||String(call.cwd).startsWith("/srv/app")),true);
   assert.equal(calls.some(call=>call.command==="gh"&&call.args[0]==="pr"),true);
+});
+
+test("remote auto-pull fetches, verifies default branch and fast-forwards inside the environment executor",async()=>{
+  const calls=[];
+  const executor={
+    run:async(command,args,options={})=>{
+      calls.push({command,args:[...args],cwd:options.cwd});
+      if(command!=="git")return {ok:false,code:1,stdout:"",stderr:"unexpected command"};
+      if(args[0]==="rev-parse"&&args[1]==="--show-toplevel")return {ok:true,code:0,stdout:"/srv/app\n",stderr:""};
+      if(args[0]==="branch")return {ok:true,code:0,stdout:"main\n",stderr:""};
+      if(args[0]==="for-each-ref"&&args.includes("refs/heads"))return {ok:true,code:0,stdout:"main\n",stderr:""};
+      if(args[0]==="for-each-ref")return {ok:true,code:0,stdout:"origin/main\n",stderr:""};
+      if(args[0]==="status")return {ok:true,code:0,stdout:"## main...origin/main [behind 2]\n",stderr:""};
+      if(args[0]==="remote")return {ok:true,code:0,stdout:"origin\thttps://github.com/acme/widget.git (fetch)\norigin\thttps://github.com/acme/widget.git (push)\n",stderr:""};
+      if(args[0]==="worktree")return {ok:true,code:0,stdout:"worktree /srv/app\nHEAD abc\nbranch refs/heads/main\n",stderr:""};
+      if(args[0]==="fetch")return {ok:true,code:0,stdout:"",stderr:""};
+      if(args[0]==="symbolic-ref")return {ok:true,code:0,stdout:"origin/main\n",stderr:""};
+      if(args[0]==="rev-list")return {ok:true,code:0,stdout:"2\t0\n",stderr:""};
+      if(args[0]==="pull")return {ok:true,code:0,stdout:"Updating abc..def\n",stderr:""};
+      return {ok:false,code:1,stdout:"",stderr:"unexpected git "+args.join(" ")};
+    },
+  };
+  const result=await withSourceControlExecutor(executor,()=>sourceControlGitAction("/srv/app",{action:"auto-pull"}));
+  assert.equal(result.ok,true);assert.equal(result.changed,true);assert.equal(result.defaultBranch,"main");assert.equal(result.behind,2);
+  assert.equal(calls.some(call=>call.args[0]==="fetch"&&call.args[1]==="origin"),true);
+  assert.equal(calls.some(call=>call.args[0]==="rev-list"&&call.args.at(-1)==="origin/main...HEAD"),true);
+  assert.equal(calls.some(call=>call.args[0]==="pull"&&call.args[1]==="--ff-only"),true);
+  assert.equal(calls.every(call=>!call.cwd||String(call.cwd).startsWith("/srv/app")),true);
 });
 
 test("Bitbucket REST auth and requests come from the environment executor",async()=>{

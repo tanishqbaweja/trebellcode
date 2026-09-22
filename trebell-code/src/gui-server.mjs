@@ -34,6 +34,7 @@ import { AgentThreadStore } from "./agent-thread-store.mjs";
 import { attachAgentRelay } from "./agent-relay.mjs";
 import { listLicenses, licenseDetail } from "./license-service.mjs";
 import { WorktreeCleanupService } from "./worktree-cleanup.mjs";
+import { sweepAutoPullProjects } from "./auto-pull-service.mjs";
 import { CloneJobService } from "./clone-job-service.mjs";
 import { prepareCodexHome } from "./codex-home-layout.mjs";
 
@@ -1964,6 +1965,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   if(!mock) waitForAppServer(appServer,appPort,15000).catch(()=>false);
   let cleanupTimer=null;
   let pullRequestSyncTimer=null,pullRequestSyncRunning=false;
+  let autoPullTimer=null,autoPullRunning=false;
   const sweepPullRequestLinks=async()=>{
     if(pullRequestSyncRunning)return;pullRequestSyncRunning=true;
     try{
@@ -1981,11 +1983,23 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       }
     }finally{pullRequestSyncRunning=false}
   };
+  const sweepAutoPull=async()=>{
+    if(autoPullRunning)return;autoPullRunning=true;
+    try{
+      await sweepAutoPullProjects({
+        state,
+        pullProject:project=>inSourceControlEnvironment(project.environmentId||null,()=>sourceControlGitAction(project.path,{action:"auto-pull"})),
+        log:message=>appServer?.logs?.push({at:Date.now(),stream:"auto-pull",text:String(message)+"\n"}),
+      });
+    }finally{autoPullRunning=false}
+  };
   if(!mock){
     worktreeCleanup.sweep().catch(error=>cleanupLogs.push({at:Date.now(),stream:"cleanup",text:error.message+"\n"}));
     cleanupTimer=setInterval(()=>worktreeCleanup.sweep().catch(error=>cleanupLogs.push({at:Date.now(),stream:"cleanup",text:error.message+"\n"})),60*60_000);cleanupTimer.unref?.();
     setTimeout(()=>sweepPullRequestLinks().catch(()=>{}),5000).unref?.();
     pullRequestSyncTimer=setInterval(()=>sweepPullRequestLinks().catch(()=>{}),60_000);pullRequestSyncTimer.unref?.();
+    setTimeout(()=>sweepAutoPull().catch(()=>{}),7000).unref?.();
+    autoPullTimer=setInterval(()=>sweepAutoPull().catch(()=>{}),5*60_000);autoPullTimer.unref?.();
   }
   if(state.settings().remoteAccessEnabled) await syncRemoteControl().catch(error=>{
     appServer?.logs?.push({at:Date.now(),stream:"remote",text:"remote access failed: "+error.message+"\n"});
@@ -1997,6 +2011,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     close:async()=>{
       if(cleanupTimer)clearInterval(cleanupTimer);
       if(pullRequestSyncTimer)clearInterval(pullRequestSyncTimer);
+      if(autoPullTimer)clearInterval(autoPullTimer);
       relay.close();
       await agentRelay?.close?.();
       terminalWs?.close();

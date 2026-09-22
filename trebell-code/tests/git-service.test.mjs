@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { git, gitInfo, createBranch, createWorktree, worktreeSubmoduleArgs } from "../src/git-service.mjs";
+import { git, gitInfo, createBranch, createWorktree, safeAutoPull, worktreeSubmoduleArgs } from "../src/git-service.mjs";
 
 test("Git service reports status and branch operations",{timeout:20000},async()=>{
   const dir=await mkdtemp(join(tmpdir(),"trebell-git-"));
@@ -39,4 +39,21 @@ test("worktree creation records the selected submodule policy",{timeout:20000},a
     const created=await createWorktree(root,{branch:"trebell-test-worktree",path:worktree,submodules:"none"});
     assert.equal(created.worktree,worktree);assert.equal(created.submodules,"none");assert.equal((await gitInfo(worktree)).branch,"trebell-test-worktree");
   }finally{await rm(worktree,{recursive:true,force:true}).catch(()=>{});await rm(root,{recursive:true,force:true})}
+});
+
+test("safe auto-pull updates only a clean default branch with no local commits",{timeout:30000},async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-autopull-"));const origin=join(root,"origin.git"),seed=join(root,"seed"),checkout=join(root,"checkout");
+  try{
+    await mkdir(seed,{recursive:true});
+    await git(root,["init","--bare","--initial-branch=main",origin]);
+    await git(seed,["init","-b","main"]);await git(seed,["config","user.email","trebell@example.test"]);await git(seed,["config","user.name","Trebell Test"]);
+    await writeFile(join(seed,"value.txt"),"one\n");await git(seed,["add","value.txt"]);await git(seed,["commit","-m","one"]);await git(seed,["remote","add","origin",origin]);await git(seed,["push","-u","origin","main"]);
+    await git(root,["clone",origin,checkout]);await git(checkout,["config","user.email","trebell@example.test"]);await git(checkout,["config","user.name","Trebell Test"]);
+    await writeFile(join(seed,"value.txt"),"two\n");await git(seed,["add","value.txt"]);await git(seed,["commit","-m","two"]);await git(seed,["push"]);
+    const pulled=await safeAutoPull(checkout);assert.equal(pulled.ok,true);assert.equal(pulled.changed,true);assert.equal(pulled.defaultBranch,"main");assert.equal(await readFile(join(checkout,"value.txt"),"utf8"),"two\n");
+    await git(checkout,["switch","-c","feature"]);await git(checkout,["branch","--set-upstream-to=origin/main","feature"]);
+    const feature=await safeAutoPull(checkout);assert.equal(feature.ok,false);assert.equal(feature.reason,"not_default_branch");
+    await git(checkout,["switch","main"]);await writeFile(join(checkout,"local.txt"),"local\n");await git(checkout,["add","local.txt"]);await git(checkout,["commit","-m","local"]);
+    const ahead=await safeAutoPull(checkout);assert.equal(ahead.ok,false);assert.equal(ahead.reason,"local_commits");assert.equal(ahead.ahead,1);
+  }finally{await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:50})}
 });

@@ -144,8 +144,35 @@ export async function sourceControlGitAction(cwd,{action,name=null,message=null,
     result=await run("git",["commit","-m",subject],{cwd:root,allowFailure:true});
   }else if(action==="fetch"){
     result=await run("git",["fetch","--all","--prune"],{cwd:root,allowFailure:true,timeout:120000});
-  }else if(action==="pull"||action==="auto-pull"){
+  }else if(action==="pull"){
     result=await run("git",["pull","--ff-only"],{cwd:root,allowFailure:true,timeout:120000});
+  }else if(action==="auto-pull"){
+    if(info.status.length)return {ok:false,reason:"dirty",info};
+    if(!info.upstream)return {ok:false,reason:"no_upstream",info};
+    if(!info.branch)return {ok:false,reason:"detached",info};
+    const slash=info.upstream.indexOf("/");if(slash<=0)return {ok:false,reason:"invalid_upstream",info};
+    const remote=info.upstream.slice(0,slash);
+    const fetched=await run("git",["fetch",remote,"--prune"],{cwd:root,allowFailure:true,timeout:120000});
+    if(!fetched.ok)return {ok:false,reason:"fetch_failed",error:(fetched.stderr||fetched.stdout||"Git fetch failed").trim(),info};
+    const refreshed=await serviceGitInfo(root);
+    if(refreshed.status.length)return {ok:false,reason:"dirty",info:refreshed};
+    let defaultBranch=null;
+    const head=await run("git",["symbolic-ref","refs/remotes/"+remote+"/HEAD","--short"],{cwd:root,allowFailure:true});
+    if(head.ok&&head.stdout.trim()){const short=head.stdout.trim();defaultBranch=short.startsWith(remote+"/")?short.slice(remote.length+1):short}
+    if(!defaultBranch){
+      const shown=await run("git",["remote","show",remote],{cwd:root,allowFailure:true,timeout:120000});
+      defaultBranch=shown.ok?(shown.stdout.match(/^\s*HEAD branch:\s*(\S+)\s*$/m)?.[1]||null):null;
+    }
+    if(!defaultBranch)return {ok:false,reason:"default_branch_unknown",info:refreshed};
+    if(refreshed.branch!==defaultBranch)return {ok:false,reason:"not_default_branch",defaultBranch,info:refreshed};
+    const counts=await run("git",["rev-list","--left-right","--count",refreshed.upstream+"...HEAD"],{cwd:root,allowFailure:true});
+    if(!counts.ok)return {ok:false,reason:"compare_failed",error:(counts.stderr||counts.stdout||"Could not compare upstream").trim(),defaultBranch,info:refreshed};
+    const [behindRaw,aheadRaw]=counts.stdout.trim().split(/\s+/);const behind=Number(behindRaw)||0,ahead=Number(aheadRaw)||0;
+    if(ahead>0)return {ok:false,reason:"local_commits",ahead,behind,defaultBranch,info:refreshed};
+    if(behind===0)return {ok:true,changed:false,ahead,behind,defaultBranch,info:refreshed};
+    result=await run("git",["pull","--ff-only"],{cwd:root,allowFailure:true,timeout:120000});
+    if(result&&!result.ok)throw new Error((result.stderr||result.stdout||"Git auto-pull failed").trim());
+    return {ok:true,changed:true,ahead:0,behind,defaultBranch,info:await serviceGitInfo(root),output:(result?.stdout||result?.stderr||"").trim()};
   }else if(action==="push"){
     const args=["push"];
     if(setUpstream){

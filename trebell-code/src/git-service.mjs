@@ -82,12 +82,33 @@ export async function pushRepo(cwd,{setUpstream=false}={}){
   await git(cwd,args); return gitInfo(cwd);
 }
 export async function safeAutoPull(cwd){
-  const info=await gitInfo(cwd);
+  let info=await gitInfo(cwd);
   if(!info.isGit) return {ok:false,reason:"not_git",info};
   if(info.status.length) return {ok:false,reason:"dirty",info};
   if(!info.upstream) return {ok:false,reason:"no_upstream",info};
+  if(!info.branch)return {ok:false,reason:"detached",info};
+  const slash=info.upstream.indexOf("/");if(slash<=0)return {ok:false,reason:"invalid_upstream",info};
+  const remote=info.upstream.slice(0,slash);
+  const fetched=await git(info.root,["fetch",remote,"--prune"],{allowFailure:true,timeout:120000});
+  if(!fetched.ok)return {ok:false,reason:"fetch_failed",error:(fetched.stderr||fetched.stdout||"Git fetch failed").trim(),info};
+  info=await gitInfo(info.root);
+  if(info.status.length)return {ok:false,reason:"dirty",info};
+  let defaultBranch=null;
+  const head=await git(info.root,["symbolic-ref","refs/remotes/"+remote+"/HEAD","--short"],{allowFailure:true});
+  if(head.ok&&head.stdout.trim()){const short=head.stdout.trim();defaultBranch=short.startsWith(remote+"/")?short.slice(remote.length+1):short}
+  if(!defaultBranch){
+    const shown=await git(info.root,["remote","show",remote],{allowFailure:true,timeout:120000});
+    defaultBranch=shown.ok?(shown.stdout.match(/^\s*HEAD branch:\s*(\S+)\s*$/m)?.[1]||null):null;
+  }
+  if(!defaultBranch)return {ok:false,reason:"default_branch_unknown",info};
+  if(info.branch!==defaultBranch)return {ok:false,reason:"not_default_branch",defaultBranch,info};
+  const counts=await git(info.root,["rev-list","--left-right","--count",info.upstream+"...HEAD"],{allowFailure:true});
+  if(!counts.ok)return {ok:false,reason:"compare_failed",error:(counts.stderr||counts.stdout||"Could not compare upstream").trim(),defaultBranch,info};
+  const [behindRaw,aheadRaw]=counts.stdout.trim().split(/\s+/);const behind=Number(behindRaw)||0,ahead=Number(aheadRaw)||0;
+  if(ahead>0)return {ok:false,reason:"local_commits",ahead,behind,defaultBranch,info};
+  if(behind===0)return {ok:true,changed:false,ahead,behind,defaultBranch,info};
   await git(info.root,["pull","--ff-only"]);
-  return {ok:true,info:await gitInfo(info.root)};
+  return {ok:true,changed:true,ahead:0,behind,defaultBranch,info:await gitInfo(info.root)};
 }
 export function worktreeSubmoduleArgs(mode="recursive"){
   if(mode==="none")return null;

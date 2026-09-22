@@ -279,12 +279,14 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   const scopedTargets=scopedSettings.locator(".scoped-settings-targets select");
   await scopedTargets.nth(0).selectOption("ssh-palette");
   await scopedSettings.getByLabel("Permissions").selectOption("full");
+  await scopedSettings.getByLabel("Automatic pull").selectOption("true");
   await expect.poll(async()=>{
     const remoteDefaults=await (await request.get("/api/scoped-settings?environmentId=ssh-palette")).json();
-    return remoteDefaults.effective.defaultPermissionMode;
-  }).toBe("full");
+    return {permission:remoteDefaults.effective.defaultPermissionMode,autoPull:remoteDefaults.effective.autoPull};
+  }).toEqual({permission:"full",autoPull:true});
   await scopedTargets.nth(1).selectOption({label:"Remote App · /srv/app"});
   await expect(scopedSettings.getByLabel("Permissions")).toHaveValue("__inherit__");
+  await expect(scopedSettings.getByLabel("Automatic pull")).toHaveValue("__inherit__");
   await scopedSettings.getByLabel("Permissions").selectOption("edits");
   const projectListing=await (await request.get("/api/projects")).json();
   const remoteProject=projectListing.projects.find(item=>item.environmentId==="ssh-palette"&&item.path==="/srv/app");
