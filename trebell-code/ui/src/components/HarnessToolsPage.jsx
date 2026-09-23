@@ -14,6 +14,15 @@ function formatBytes(value){
   do{scaled/=1024;index++}while(scaled>=1024&&index<units.length-1);
   return (scaled>=100?Math.round(scaled):scaled.toFixed(1))+" "+units[index];
 }
+function importResultSummary(results=[],prefix="Importing"){
+  let successes=0,failures=0;const types=[];
+  for(const result of results||[]){
+    successes+=result?.successes?.length||0;failures+=result?.failures?.length||0;
+    const type=String(result?.itemType||"").trim();if(type&&!types.includes(type))types.push(type);
+  }
+  const typeLabel=types.map(type=>type.replace(/[_-]+/g," ").toLowerCase()).join(", ");
+  return [prefix+(typeLabel?" "+typeLabel:""),successes?successes+" imported":"",failures?failures+" failed":""].filter(Boolean).join(" · ");
+}
 
 export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread,skills=[],onHistoryImported,onSkillsRefresh,platform=""}){
   const [data,setData]=useState({permissions:[],mcp:[],marketplaces:[],apps:[],installedApps:[],hooks:[],features:[],sharedPlugins:[],loadedThreads:[],loadedThreadsMore:false,capabilities:null,account:null,rateLimits:null,usage:null,config:null,requirements:null,memory:null,diagnostics:null,windowsSandbox:null});
@@ -24,6 +33,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [migrations,setMigrations]=useState(null);
   const [migrationHistory,setMigrationHistory]=useState({data:[],connectors:[]});
   const [migrationMessage,setMigrationMessage]=useState("");
+  const [migrationImportId,setMigrationImportId]=useState(null);
   const [historyImport,setHistoryImport]=useState(null);
   const [historyMessage,setHistoryMessage]=useState("");
   const [mcpResult,setMcpResult]=useState(null);
@@ -44,6 +54,8 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [pluginDetail,setPluginDetail]=useState(null);
   const [pluginSkillDetail,setPluginSkillDetail]=useState(null);
   const [pluginMessage,setPluginMessage]=useState("");
+  const [configWarnings,setConfigWarnings]=useState([]);
+  const [hookRuns,setHookRuns]=useState([]);
 
   function routedParams(params){
     const threadId=activeThread?.id;
@@ -134,10 +146,29 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         schedule("mcp");
       }else if(message.method==="account/rateLimits/updated"){
         schedule("rateLimits");
+      }else if(message.method==="configWarning"){
+        const warning=message.params||{};
+        setConfigWarnings(current=>[
+          warning,
+          ...current.filter(item=>!(item.summary===warning.summary&&item.path===warning.path&&item.details===warning.details)),
+        ].slice(0,5));
+      }else if(message.method==="externalAgentConfig/import/progress"&&message.params?.importId===migrationImportId){
+        setMigrationMessage(importResultSummary(message.params?.itemTypeResults,"Importing"));
+      }else if(message.method==="externalAgentConfig/import/completed"&&message.params?.importId===migrationImportId){
+        setMigrationMessage(importResultSummary(message.params?.itemTypeResults,"Import complete"));
+        setMigrationImportId(null);
+        Promise.all([loadMigrationHistory(),loadExternalConfig()]).catch(error=>setErrors(prev=>({...prev,"externalAgentConfig/import":error.message||String(error)})));
+      }else if((message.method==="hook/started"||message.method==="hook/completed")&&message.params?.run){
+        const params=message.params;
+        if(activeThread?.id&&params.threadId!==activeThread.id)return;
+        setHookRuns(current=>{
+          const next=[params.run,...current.filter(run=>run.id!==params.run.id)];
+          return next.sort((a,b)=>Number(b.startedAt||0)-Number(a.startedAt||0)).slice(0,8);
+        });
       }
     });
     return()=>{disposed=true;if(timer)clearTimeout(timer);unsubscribe?.()};
-  },[rpc,rpcStatus,activeThread?.id]);
+  },[rpc,rpcStatus,activeThread?.id,migrationImportId,projectPath]);
   useEffect(()=>{
     const completed=event=>{
       const detail=event.detail||{};setSandboxPending("");
@@ -280,22 +311,9 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     try{
       const started=await request("externalAgentConfig/import",{migrationItems:migrations.items,source:"trebell-code"});
       const importId=started?.importId;if(!importId)throw new Error("Codex did not return an import id.");
+      setMigrationImportId(importId);
       setMigrationMessage("Import started. Waiting for Codex to finish…");
-      let completed=null;
-      for(let attempt=0;attempt<40&&!completed;attempt++){
-        const histories=await loadMigrationHistory();
-        completed=(histories?.data||[]).find(entry=>entry.importId===importId)||null;
-        if(completed)break;
-        await new Promise(resolve=>setTimeout(resolve,350));
-      }
-      if(completed){
-        const successes=completed.successes?.length||0,failures=completed.failures?.length||0;
-        setMigrationMessage([successes&&successes+" imported",failures&&failures+" failed"].filter(Boolean).join(" · ")||"Import completed with no changes.");
-        await loadExternalConfig();
-      }else{
-        setMigrationMessage("Import is still running in Codex. Refresh this page later to see the persisted result.");
-      }
-    }catch(error){setErrors(prev=>({...prev,"externalAgentConfig/import":error.message||String(error)}))}
+    }catch(error){setMigrationImportId(null);setErrors(prev=>({...prev,"externalAgentConfig/import":error.message||String(error)}))}
     finally{setBusy("")}
   }
   async function scanHistory(){
@@ -448,6 +466,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
 
       <Section title="Configuration layers" icon={ShieldCheck} count={data.config?.layers?.length||0}>
         <div className="capability-list">{(data.config?.layers||[]).map((layer,index)=><div key={String(layer.name)+index}><div><strong>{String(layer.name)}</strong><span>{layer.disabledReason||`version ${layer.version}`}</span></div><em className={layer.disabledReason?"":"ok"}>{layer.disabledReason?"disabled":"active"}</em></div>)}</div>
+        {configWarnings.length>0&&<div className="capability-list config-warning-list">{configWarnings.map((warning,index)=><div key={(warning.path||"global")+":"+(warning.summary||index)}><div><strong>{warning.summary||"Configuration warning"}</strong><span>{warning.details||warning.path||"Codex reported a configuration warning."}</span></div><em>warning</em></div>)}</div>}
         {data.config&&<details className="capability-details"><summary>Effective config</summary><pre>{JSON.stringify(data.config.config,null,2)}</pre></details>}
         <ErrorLine value={errors["config/read"]}/>
       </Section>
@@ -520,6 +539,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       <Section title="Hooks" icon={Wrench} count={hookCount}>
         <div className="capability-list">{data.hooks.flatMap(entry=>(entry.hooks||[]).map((hook,index)=><div key={entry.cwd+":"+index}><div><strong>{hook.name||hook.event||"Hook"}</strong><span>{entry.cwd}</span></div><em className="ok">loaded</em></div>))}</div>
         {!hookCount&&<p>No project hooks loaded.</p>}
+        {hookRuns.length>0&&<details className="capability-details" open><summary>Recent hook runs · {hookRuns.length}</summary><div className="capability-list hook-run-list">{hookRuns.map(run=><div key={run.id}><div><strong>{run.eventName||run.id}</strong><span>{run.statusMessage||run.sourcePath||run.handlerType||"Hook execution"}</span></div><em className={run.status==="completed"||run.status==="success"?"ok":""}>{run.durationMs!=null?`${Number(run.durationMs).toLocaleString()} ms`:run.status||"running"}</em></div>)}</div></details>}
         <ErrorLine value={errors["hooks/list"]}/>
       </Section>
 
@@ -541,7 +561,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
 
       <Section title="Import agent configuration" icon={RefreshCw} count={migrations?.items?.length||0}>
         <p>Detect reusable configuration from supported external coding agents in your home directory and this workspace.</p>
-        <div className="capability-actions"><button onClick={detectExternalConfig} disabled={!!busy}>Scan</button>{migrations?.items?.length>0&&<button onClick={importExternalConfig} disabled={!!busy}>Import {migrations.items.length} items</button>}</div>
+        <div className="capability-actions"><button onClick={detectExternalConfig} disabled={!!busy||!!migrationImportId}>Scan</button>{migrations?.items?.length>0&&<button onClick={importExternalConfig} disabled={!!busy||!!migrationImportId}>{migrationImportId?"Importing…":"Import "+migrations.items.length+" items"}</button>}</div>
         <div className="capability-list">{(migrations?.items||[]).map((item,index)=><div key={index}><div><strong>{item.description||String(item.itemType)}</strong><span>{item.cwd||"User scope"}</span></div><em>{String(item.itemType)}</em></div>)}</div>
         {(migrations?.connectors||[]).length>0&&<p>{migrations.connectors.length} connector candidate{migrations.connectors.length===1?"":"s"} detected.</p>}
         {migrationMessage&&<p className="capability-status">{migrationMessage}</p>}

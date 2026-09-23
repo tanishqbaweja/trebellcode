@@ -8,9 +8,9 @@ import { attachCodexRelay } from "../../src/codex-relay.mjs";
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 
-test("external agent imports wait for persisted native completion history",async({page})=>{
+test("external agent imports use native progress and completion notifications",async({page})=>{
   test.setTimeout(35_000);
-  const calls=[];let importStarted=false,postImportHistoryReads=0;
+  const calls=[];let importStarted=false,importCompleted=false,postImportHistoryReads=0,notificationSocket=null;
   const migrationItem={itemType:"SKILLS",description:"Claude skills",cwd:null,details:{plugins:[],skills:[],sessions:[],mcpServers:[],hooks:[],subagents:[],commands:[],memory:[]}};
   const oldHistory={importId:"old-import",providerId:"claude",completedAtMs:Date.now()-60_000,successes:[{itemType:"CONFIG",cwd:null,source:"claude",target:"config.toml",title:null}],failures:[]};
   const completedHistory={importId:"import-new",providerId:"claude",completedAtMs:Date.now(),successes:[{itemType:"SKILLS",cwd:null,source:"claude",target:"skills",title:null}],failures:[{itemType:"MCP_SERVER_CONFIG",errorType:"invalid_config",subErrorType:null,failureStage:"write",message:"One connector could not be imported.",cwd:null,source:"claude"}]};
@@ -18,7 +18,7 @@ test("external agent imports wait for persisted native completion history",async
   const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const sockets=new Set();
   upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
   upstreamWss.on("connection",ws=>{
-    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    sockets.add(ws);notificationSocket=ws;ws.on("close",()=>sockets.delete(ws));
     ws.on("message",data=>{
       const message=JSON.parse(String(data));if(message.id==null||!message.method)return;calls.push(message);let result={};
       if(message.method==="initialize")result={userAgent:"external-import-fixture"};
@@ -26,10 +26,15 @@ test("external agent imports wait for persisted native completion history",async
       else if(message.method==="threadSection/list")result={data:[],nextCursor:null};
       else if(message.method==="skills/list")result={data:[]};
       else if(message.method==="externalAgentConfig/detect")result={items:[migrationItem],connectors:[]};
-      else if(message.method==="externalAgentConfig/import"){importStarted=true;result={importId:"import-new"}}
+      else if(message.method==="externalAgentConfig/import"){
+        importStarted=true;ws.send(JSON.stringify({id:message.id,result:{importId:"import-new"}}));
+        setTimeout(()=>notificationSocket?.send(JSON.stringify({method:"externalAgentConfig/import/progress",params:{importId:"import-new",itemTypeResults:[{itemType:"SKILLS",successes:[completedHistory.successes[0]],failures:[]}]}})),30);
+        setTimeout(()=>{importCompleted=true;notificationSocket?.send(JSON.stringify({method:"externalAgentConfig/import/completed",params:{importId:"import-new",itemTypeResults:[{itemType:"SKILLS",successes:[completedHistory.successes[0]],failures:[]},{itemType:"MCP_SERVER_CONFIG",successes:[],failures:[completedHistory.failures[0]]}]}}))},220);
+        return;
+      }
       else if(message.method==="externalAgentConfig/import/readHistories"){
         if(importStarted)postImportHistoryReads++;
-        result={data:importStarted&&postImportHistoryReads>=2?[completedHistory,oldHistory]:[oldHistory],connectors:[connector]};
+        result={data:importCompleted?[completedHistory,oldHistory]:[oldHistory],connectors:[connector]};
       }
       else if(message.method==="permissionProfile/list"||message.method==="mcpServerStatus/list"||message.method==="hooks/list"||message.method==="experimentalFeature/list"||message.method==="plugin/share/list")result={data:[],nextCursor:null};
       else if(message.method==="plugin/list")result={marketplaces:[],marketplaceLoadErrors:[],featuredPluginIds:[]};
@@ -61,7 +66,8 @@ test("external agent imports wait for persisted native completion history",async
     const card=page.locator(".capability-card").filter({has:page.getByText("Import agent configuration",{exact:true})}).first();
     await expect(card).toContainText("Previous native imports · 1");await expect(card).toContainText("Imported connector candidates · 1");
     await card.getByRole("button",{name:"Scan"}).click();await expect(card).toContainText("Claude skills");await card.getByRole("button",{name:"Import 1 items"}).click();
-    await expect(card).toContainText("1 imported · 1 failed",{timeout:10_000});expect(postImportHistoryReads).toBeGreaterThanOrEqual(2);
+    await expect(card).toContainText("Importing skills · 1 imported");
+    await expect(card).toContainText("Import complete skills, mcp server config · 1 imported · 1 failed",{timeout:10_000});expect(postImportHistoryReads).toBe(1);
     const importCall=calls.find(call=>call.method==="externalAgentConfig/import");expect(importCall?.params).toEqual({migrationItems:[migrationItem],source:"trebell-code"});
     await expect(card).toContainText("Previous native imports · 2");
     await card.getByText("Previous native imports · 2",{exact:true}).click();await expect(card).toContainText("1 imported · 1 failed");
