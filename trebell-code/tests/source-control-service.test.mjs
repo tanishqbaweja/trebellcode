@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -276,6 +276,21 @@ test("pull request branch context excludes unrelated commits added later to the 
     assert.doesNotMatch(context.diffSummary,/later-main\.txt/);
     assert.match(context.diff,/feature\.txt/);
     assert.doesNotMatch(context.diff,/later-main\.txt/);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("source-control branch switching rejects a stale branch name without restoring a same-named dirty file",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-stale-branch-"));
+  try{
+    await git(root,["init"]);await git(root,["config","user.email","trebell@example.test"]);await git(root,["config","user.name","Trebell Test"]);
+    await writeFile(join(root,"base.txt"),"base\n");await git(root,["add","."]);await git(root,["commit","-m","Base"]);
+    const initial=(await git(root,["branch","--show-current"])).stdout.trim();
+    await writeFile(join(root,"obsolete-branch"),"original\n");await git(root,["add","obsolete-branch"]);await git(root,["commit","-m","Tracked file"]);
+    await git(root,["branch","obsolete-branch"]);await git(root,["branch","-D","obsolete-branch"]);
+    await writeFile(join(root,"obsolete-branch"),"uncommitted work\n");
+    await assert.rejects(()=>sourceControlGitAction(root,{action:"branch-switch",name:"obsolete-branch"}),/invalid reference|unknown revision|pathspec|branch/i);
+    assert.equal(await readFile(join(root,"obsolete-branch"),"utf8"),"uncommitted work\n");
+    assert.equal((await git(root,["branch","--show-current"])).stdout.trim(),initial);
   }finally{await rm(root,{recursive:true,force:true})}
 });
 

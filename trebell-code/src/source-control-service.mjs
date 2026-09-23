@@ -233,7 +233,7 @@ export async function sourceControlGitAction(cwd,{action,name=null,message=null,
     result=await run("git",args,{cwd:root,allowFailure:true});
   }else if(action==="branch-switch"){
     const branch=String(name||"").trim();if(!branch)throw new Error("Branch name is required");
-    result=await run("git",["checkout",branch],{cwd:root,allowFailure:true});
+    result=await run("git",["switch",branch],{cwd:root,allowFailure:true});
   }else if(action==="commit"){
     const subject=String(message||"").trim();if(!subject)throw new Error("Commit message is required");
     const add=await run("git",["add","-A"],{cwd:root,allowFailure:true});
