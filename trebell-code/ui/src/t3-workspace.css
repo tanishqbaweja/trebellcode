@@ -677,6 +677,15 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .collaboration-modes but
 html[data-mode="light"]:not([data-custom-theme="true"]) .collaboration-modes strong{color:#303741!important}
 html[data-mode="light"]:not([data-custom-theme="true"]) .collaboration-modes span{color:#687181!important}
 
+/* Thread history light-mode surfaces */
+html[data-mode="light"]:not([data-custom-theme="true"]) .history-page>button{background:#fff!important;border-color:#d9dee8!important;color:#4d5868!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .history-page>button:hover{background:#f6f7fa!important;border-color:#d8c6ed!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .history-page strong,
+html[data-mode="light"]:not([data-custom-theme="true"]) .history-empty strong{color:#303741!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) :where(.history-page span,.history-page time,.history-empty span){color:#687181!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .history-empty{border-color:#d9dee8!important;color:#687181!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .history-empty button{background:#f0eafa!important;border-color:#d8c6ed!important;color:#654b82!important}
+
 
 /* command palette */
 .command-palette-backdrop{position:fixed;inset:0;z-index:120;background:rgba(0,0,0,.42);display:flex;align-items:flex-start;justify-content:center;padding-top:min(18vh,150px);backdrop-filter:blur(2px)}
