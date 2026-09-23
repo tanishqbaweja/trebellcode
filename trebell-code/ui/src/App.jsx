@@ -1514,7 +1514,7 @@ export default function App(){
       }else{setMessages(historyFromThread(resumed.thread,map));setHistoryPage({threadId:resumed.thread.id,nextCursor:null,paginated:false,loading:false})}
       setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex"){const meta=resumed.thread.providerMeta||{};applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}
     }
-    if(agentRuntime==="codex"&&resumed?.thread){
+    if(agentRuntime==="codex"&&!bootstrap.mock&&resumed?.thread){
       const timelineThreadId=thread.id;
       import("./thread-timeline.js")
         .then(({loadLatestTurnTimeline})=>loadLatestTurnTimeline(rpc,timelineThreadId))
