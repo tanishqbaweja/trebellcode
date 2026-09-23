@@ -386,7 +386,7 @@ async function projectActionSuggestions(projectPath){
 
 export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",mock=false,env=process.env}={}){
   const bootId=randomUUID();
-  const dist=resolve(packageRoot,"ui","dist");
+  const dist=String(env.TREBELL_UI_DIST||"").trim()?resolve(String(env.TREBELL_UI_DIST).trim()):resolve(packageRoot,"ui","dist");
   const state=new TrebellStateStore(env);
   const remoteAuth=new RemoteAuthStore(env);
   const devices=new DeviceService({env});
