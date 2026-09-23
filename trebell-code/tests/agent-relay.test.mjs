@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { WebSocket } from "ws";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
-import { agentThreadResumePayload,attachAgentRelay,materializeAgentFork,paginateAgentAttachments,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
+import { agentThreadResumePayload,agentToolLifecycle,attachAgentRelay,materializeAgentFork,paginateAgentAttachments,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
 
 test("rejected Claude rewind restores the original provider session and removed turns",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-claude-rewind-"));
@@ -59,6 +59,19 @@ test("metadata-only agent resumes advertise bounded item history without embeddi
   const bounded=agentThreadResumePayload(thread,{excludeTurns:true});
   assert.equal(bounded.thread.historyMode,"paginated");assert.deepEqual(bounded.thread.turns,[]);assert.ok(bounded.itemsBackwardsCursor);assert.ok(bounded.turnsBackwardsCursor);
   const full=agentThreadResumePayload(thread,{excludeTurns:false});assert.equal(full.thread.turns.length,1);assert.equal(full.itemsBackwardsCursor,undefined);
+});
+
+test("agent tool lifecycle settles one-shot commands and streams only appended output",()=>{
+  const started=agentToolLifecycle({sessionUpdate:"tool_call",toolCallId:"cmd-1",title:"Build",kind:"execute",status:"in_progress",rawOutput:"line one\n"});
+  assert.equal(started.item.type,"commandExecution");assert.equal(started.terminal,false);assert.equal(started.outputDelta,"line one\n");
+  const progress=agentToolLifecycle({sessionUpdate:"tool_call_update",toolCallId:"cmd-1",title:"Build",kind:"execute",status:"in_progress",rawOutput:"line one\nline two\n"},started.output);
+  assert.equal(progress.outputDelta,"line two\n");assert.equal(progress.terminal,false);
+  const completed=agentToolLifecycle({sessionUpdate:"tool_call_update",toolCallId:"cmd-1",title:"Build",kind:"execute",status:"completed",rawOutput:"line one\nline two\ndone\n"},progress.output);
+  assert.equal(completed.outputDelta,"done\n");assert.equal(completed.terminal,true);assert.equal(completed.item.status,"completed");
+  const oneShot=agentToolLifecycle({sessionUpdate:"tool_call",toolCallId:"cmd-2",title:"Quick",kind:"execute",status:"completed",rawOutput:"finished\n"});
+  assert.equal(oneShot.terminal,true);assert.equal(oneShot.outputDelta,"finished\n");
+  const replaced=agentToolLifecycle({sessionUpdate:"tool_call_update",toolCallId:"cmd-3",title:"Rewrite",kind:"execute",status:"in_progress",rawOutput:"replacement"},"old output");
+  assert.equal(replaced.outputDelta,"","non-prefix replacement must not duplicate prior output in the UI");
 });
 
 test("agent turn pagination supports summary, full and metadata-only views with stable cursors",()=>{

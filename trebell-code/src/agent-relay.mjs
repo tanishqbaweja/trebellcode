@@ -7,6 +7,7 @@ import { OpenCodeAgentSession } from "./opencode-agent-session.mjs";
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
 
 const IMAGE_MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".bmp":"image/bmp"};
+const LIVE_TOOL_OUTPUT_LIMIT=256*1024;
 
 function textOfInput(input=[]){return input.filter(item=>item?.type==="text").map(item=>item.text||"").join("\n")}
 
@@ -31,6 +32,19 @@ function acpToolItem(update){
   if(update.kind==="execute")return {type:"commandExecution",id,command:update.title||"Command",cwd:"",processId:null,source:"agent",status,commandActions:[],aggregatedOutput:typeof update.rawOutput==="string"?update.rawOutput:null,exitCode:null,durationMs:null,rawInput:update.rawInput,locations:update.locations||[]};
   if(update.kind==="edit"||update.kind==="delete"||update.kind==="move")return {type:"fileChange",id,status,changes:(update.locations||[]).map(location=>({path:location.path||location.uri||"",kind:update.kind})),rawInput:update.rawInput,rawOutput:update.rawOutput};
   return {type:"dynamicToolCall",id,namespace:"agent",tool:update.title||update.kind||"tool",arguments:update.rawInput??{},status,contentItems:update.content||null,success:update.status==="completed"?true:update.status==="failed"?false:null,durationMs:null,locations:update.locations||[],rawOutput:update.rawOutput};
+}
+
+export function agentToolLifecycle(update,previousOutput=""){
+  const item=acpToolItem(update);
+  const terminal=item.status==="completed"||item.status==="failed";
+  let output="",outputDelta="";
+  if(item.type==="commandExecution"&&typeof item.aggregatedOutput==="string"){
+    output=item.aggregatedOutput.slice(0,LIVE_TOOL_OUTPUT_LIMIT);
+    const previous=String(previousOutput||"").slice(0,LIVE_TOOL_OUTPUT_LIMIT);
+    if(output.startsWith(previous))outputDelta=output.slice(previous.length);
+    else if(!previous)outputDelta=output;
+  }
+  return {item,terminal,output,outputDelta};
 }
 
 function planSteps(update){return (update.entries||update.plan||[]).map(entry=>({step:entry.content||entry.step||entry.text||"Plan step",status:entry.status==="in_progress"?"inProgress":entry.status||"pending",priority:entry.priority||null}))}
@@ -399,6 +413,11 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
   const sessions=new Map();
   const socketContexts=new Set();
   const recoveryInFlight=new Set();
+  const liveToolOutput=new Map();
+  function clearLiveToolOutput(threadId){
+    const prefix=String(threadId||"")+":";
+    for(const key of liveToolOutput.keys())if(key.startsWith(prefix))liveToolOutput.delete(key);
+  }
 
   async function ensureSession(thread,context,{permissionMode="supervised",model=null}={}){
     let session=sessions.get(thread.id);
@@ -450,7 +469,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       }
       persistUsage(null);
       const completed=threadStore.finishTurn(thread.id,turn.id,{status:"failed",error:{message:error.message}});emit("error",{threadId:thread.id,turnId:turn.id,message:error.message});emit("turn/completed",{threadId:thread.id,turn:completed});
-    }).finally(()=>recoveryInFlight.delete(thread.id));
+    }).finally(()=>{clearLiveToolOutput(thread.id);recoveryInFlight.delete(thread.id)});
   }
 
   async function recoverPending(context){
@@ -480,11 +499,20 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     }else if(type==="agent_thought_chunk"){
       if(turnId)emit("item/reasoning/activity",{threadId,turnId,active:true});
     }else if(type==="tool_call"){
-      const item=acpToolItem(update);if(turnId)threadStore.addItem(threadId,turnId,item);emit("item/started",{threadId,turnId,item,startedAtMs:Date.now()});
+      const key=threadId+":"+String(update.toolCallId||"");
+      const lifecycle=agentToolLifecycle(update,liveToolOutput.get(key)||"");const {item}=lifecycle;
+      if(turnId)threadStore.addItem(threadId,turnId,item);
+      emit("item/started",{threadId,turnId,item,startedAtMs:Date.now()});
+      if(lifecycle.outputDelta)emit("item/commandExecution/outputDelta",{threadId,turnId,itemId:item.id,delta:lifecycle.outputDelta});
+      if(lifecycle.terminal){liveToolOutput.delete(key);emit("item/completed",{threadId,turnId,item,completedAtMs:Date.now()})}
+      else if(lifecycle.output)liveToolOutput.set(key,lifecycle.output);
     }else if(type==="tool_call_update"){
-      const item=acpToolItem(update);if(turnId)threadStore.addItem(threadId,turnId,item);
-      if(update.status==="completed"||update.status==="failed")emit("item/completed",{threadId,turnId,item,completedAtMs:Date.now()});
-      else emit("item/tool/progress",{threadId,turnId,item});
+      const key=threadId+":"+String(update.toolCallId||"");
+      const lifecycle=agentToolLifecycle(update,liveToolOutput.get(key)||"");const {item}=lifecycle;
+      if(turnId)threadStore.addItem(threadId,turnId,item);
+      if(lifecycle.outputDelta)emit("item/commandExecution/outputDelta",{threadId,turnId,itemId:item.id,delta:lifecycle.outputDelta});
+      if(lifecycle.terminal){liveToolOutput.delete(key);emit("item/completed",{threadId,turnId,item,completedAtMs:Date.now()})}
+      else{if(lifecycle.output)liveToolOutput.set(key,lifecycle.output);emit("item/tool/progress",{threadId,turnId,item})}
     }else if(type==="plan"){
       if(turnId)emit("turn/plan/updated",{threadId,turnId,plan:planSteps(update)});
     }else if(type==="usage_update"){
