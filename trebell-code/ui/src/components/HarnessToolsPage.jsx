@@ -57,6 +57,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [configWarnings,setConfigWarnings]=useState([]);
   const [hookRuns,setHookRuns]=useState([]);
   const [authRecovery,setAuthRecovery]=useState(null);
+  const [modelNotices,setModelNotices]=useState([]);
 
   function routedParams(params){
     const threadId=activeThread?.id;
@@ -159,6 +160,22 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         const active=message.method==="modelProvider/authRecoveryStarted";
         setAuthRecovery({active,provider:params.provider||"provider",message:params.message||""});
         if(!active)schedule("account");
+      }else if(message.method==="model/rerouted"){
+        const params=message.params||{};
+        if(activeThread?.id&&params.threadId!==activeThread.id)return;
+        const notice={id:"reroute:"+(params.turnId||Date.now()),kind:"reroute",title:(params.fromModel||"model")+" → "+(params.toModel||"model"),detail:params.reason||"Model rerouted"};
+        setModelNotices(current=>[notice,...current.filter(item=>item.id!==notice.id)].slice(0,5));
+      }else if(message.method==="model/safetyBuffering/updated"){
+        const params=message.params||{};
+        if(activeThread?.id&&params.threadId!==activeThread.id)return;
+        const detail=[...(params.reasons||[]),params.fasterModel?"faster model: "+params.fasterModel:null].filter(Boolean).join(" · ");
+        const notice={id:"safety:"+(params.turnId||Date.now()),kind:"safety",title:(params.model||"Model")+" safety buffering "+(params.showBufferingUi?"active":"cleared"),detail};
+        setModelNotices(current=>[notice,...current.filter(item=>item.id!==notice.id)].slice(0,5));
+      }else if(message.method==="model/verification"){
+        const params=message.params||{};
+        if(activeThread?.id&&params.threadId!==activeThread.id)return;
+        const notice={id:"verify:"+(params.turnId||Date.now()),kind:"verification",title:"Model access verified",detail:(params.verifications||[]).join(", ")||"Verification completed"};
+        setModelNotices(current=>[notice,...current.filter(item=>item.id!==notice.id)].slice(0,5));
       }else if(message.method==="configWarning"){
         const warning=message.params||{};
         setConfigWarnings(current=>[
@@ -491,6 +508,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
           <span className={data.capabilities.webSearch?"ok":""}>Web search</span>
           <span className={data.capabilities.imageGeneration?"ok":""}>Image generation</span>
         </div>:<p>No capability report available.</p>}
+        {modelNotices.length>0&&<><p className="capability-status">{modelNotices[0].title}{modelNotices[0].detail?" · "+modelNotices[0].detail:""}</p><details className="capability-details"><summary>Recent model routing & safety · {modelNotices.length}</summary><div className="capability-list">{modelNotices.map(notice=><div key={notice.id}><div><strong>{notice.title}</strong><span>{notice.detail||notice.kind}</span></div><em>{notice.kind}</em></div>)}</div></details></>}
         <ErrorLine value={errors["modelProvider/capabilities/read"]}/>
       </Section>
 
