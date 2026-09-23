@@ -839,6 +839,7 @@ test("light mode stays visually coherent across workspace and panels",async({pag
   await page.setViewportSize({width:1600,height:980});
   await page.getByRole("button",{name:"Projects",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
+  await expect(page.locator(".general-chat-card")).toBeVisible();
   await expect(page.getByRole("button",{name:"Add local project",exact:true})).toHaveCount(0);
   await expect(page.locator(".clone-card")).toHaveCount(0);
   const projectLight=await page.evaluate(()=>({
