@@ -430,7 +430,9 @@ test("major workspace surfaces render their real destinations without horizontal
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   };
 
-  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  const projectCrumb=page.locator(".workspace-breadcrumb .project-crumb").first();
+  await expect(projectCrumb).toHaveAttribute("title","Projects and workspaces");
+  await projectCrumb.click();
   await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
   await expect(page.getByRole("button",{name:"Add local project",exact:true})).toHaveCount(0);
   await expect(page.locator(".clone-card")).toHaveCount(0);
@@ -747,6 +749,11 @@ test("light mode stays visually coherent across workspace and panels",async({pag
   test.setTimeout(40_000);
   await prepare(page,request);
   await page.getByRole("button",{name:"Settings"}).click();
+  await expect(page.getByRole("button",{name:/Desktop/})).toHaveCount(0);
+  await expect(page.getByRole("heading",{name:"Desktop notifications"})).toHaveCount(0);
+  await page.getByLabel("Search settings").fill("browser profiles");
+  await expect(page.getByTestId("settings-search-results")).toContainText(/No settings match.*browser profiles/i);
+  await page.getByLabel("Search settings").press("Escape");
   await page.getByRole("button",{name:/Appearance/}).click();
   await page.getByRole("button",{name:"light",exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.mode)).toBe("light");
@@ -796,12 +803,12 @@ test("light mode stays visually coherent across workspace and panels",async({pag
   await page.setViewportSize({width:1600,height:980});
   await page.getByRole("button",{name:"Projects",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
+  await expect(page.getByRole("button",{name:"Add local project",exact:true})).toHaveCount(0);
+  await expect(page.locator(".clone-card")).toHaveCount(0);
   const projectLight=await page.evaluate(()=>({
     general:getComputedStyle(document.querySelector(".general-chat-card")).backgroundColor,
-    clone:getComputedStyle(document.querySelector(".clone-card")).backgroundColor,
   }));
   expect(projectLight.general).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
-  expect(projectLight.clone).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
   await page.screenshot({path:auditDir+"light-projects-1600x980.png",fullPage:true});
   await page.getByRole("button",{name:"Environments",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Environments & remote access",level:2})).toBeVisible();
