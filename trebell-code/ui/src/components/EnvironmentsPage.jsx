@@ -41,7 +41,10 @@ export default function EnvironmentsPage(){
     try{
       const result=await api("/api/environment/activate",{method:"POST",body:{id:id||null}});
       if(result.error)throw new Error(result.error);
-      setMessage(result.appServerReady?"Agent environment switched. Reconnecting…":"Environment selected, but Codex did not become ready.");
+      const labels={codex:"Codex",claude:"Claude Code",opencode:"OpenCode",cursor:"Cursor",grok:"Grok Build",antigravity:"Antigravity"};
+      const runtimeName=result.agentRuntimeStatus?.name||labels[result.agentRuntime]||"active agent runtime";
+      const ready=result.agentRuntimeReady??result.appServerReady;
+      setMessage(ready?`Environment switched for ${runtimeName}. Reconnecting…`:`Environment selected, but ${runtimeName} is not ready.`);
       setTimeout(()=>window.location.reload(),120);
     }catch(e){setMessage(e.message)}finally{setBusy("")}
   }
@@ -67,7 +70,7 @@ export default function EnvironmentsPage(){
   }
 
   return <div className="environments-page">
-    <div className="capabilities-toolbar"><div><h2>Environments & remote access</h2><p>Run the actual Codex agent session on local Windows, inside WSL, or on an SSH machine. LAN remote control pairs another device with a one-time link and gives it a revocable session.</p></div><button onClick={refresh}><RefreshCw size={13}/> Refresh</button></div>
+    <div className="capabilities-toolbar"><div><h2>Environments & remote access</h2><p>Run the active coding-agent runtime on local Windows, inside WSL, or on an SSH machine. LAN remote control pairs another device with a one-time link and gives it a revocable session.</p></div><button onClick={refresh}><RefreshCw size={13}/> Refresh</button></div>
     {message&&<div className="inline-status">{message}</div>}
     <div className="environment-grid">
       <section className="capability-card">

@@ -1326,11 +1326,30 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         state.updateSettings({activeEnvironmentId:id});
         await agentRelay?.reset?.();
         await restartAppServer(selectedProvider);
+        const appReady=mock||await appServerReady(appServer,appPort);
+        const activeAgentInstance=agentRuntimes.activeInstance();
+        const activeAgentStatus=selectedAgentRuntime==="codex"
+          ?null
+          :await agentRuntimes.probe(activeAgentInstance,{environmentId:id}).catch(error=>({
+            id:activeAgentInstance?.id||null,
+            kind:selectedAgentRuntime,
+            name:selectedAgentRuntime,
+            available:false,
+            message:error instanceof Error?error.message:String(error),
+          }));
+        const agentRuntimeReady=selectedAgentRuntime==="codex"?appReady:(mock||Boolean(activeAgentStatus?.available));
+        const runtimeError=selectedAgentRuntime==="codex"
+          ?(appServer?.error||null)
+          :(agentRuntimeReady?null:(activeAgentStatus?.message||"Active agent runtime is unavailable"));
         return json(res,200,{
           activeEnvironmentId:id,
           activeEnvironment:id?environments.get(id):null,
-          appServerReady:mock||await appServerReady(appServer,appPort),
-          error:appServer?.error||null,
+          agentRuntime:selectedAgentRuntime,
+          agentRuntimeInstanceId:activeAgentInstance?.id||`${selectedAgentRuntime}-default`,
+          agentRuntimeReady,
+          agentRuntimeStatus:activeAgentStatus,
+          appServerReady:appReady,
+          error:runtimeError,
         });
       }catch(error){return json(res,400,{error:error.message});}
     }

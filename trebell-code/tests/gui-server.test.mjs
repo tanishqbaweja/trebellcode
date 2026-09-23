@@ -75,6 +75,10 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(enabledEnvironment.profile.enabled,true);
     const activatedEnvironment=await fetch(gui.url+"/api/environment/activate",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id:"ssh-test"})}).then(r=>r.json());
     assert.equal(activatedEnvironment.activeEnvironmentId,"ssh-test");
+    assert.equal(activatedEnvironment.agentRuntime,"codex");
+    assert.equal(activatedEnvironment.agentRuntimeReady,true);
+    assert.equal(activatedEnvironment.appServerReady,true);
+    assert.ok(activatedEnvironment.agentRuntimeInstanceId);
     const disabledActiveEnvironment=await fetch(gui.url+"/api/environment/enabled",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id:"ssh-test",enabled:false})}).then(r=>r.json());
     assert.equal(disabledActiveEnvironment.activeEnvironmentId,null);
     const afterActiveDisable=await fetch(gui.url+"/api/environments").then(r=>r.json());

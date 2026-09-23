@@ -425,6 +425,7 @@ test("major workspace surfaces render their real destinations without horizontal
 
   await page.getByRole("button",{name:"Environments",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Environments & remote access",level:2})).toBeVisible();
+  await expect(page.locator(".environments-page")).toContainText("Run the active coding-agent runtime");
   const addEnvironment=page.locator(".environment-create .primary");
   await expect(addEnvironment).toBeVisible();
   expect(await addEnvironment.evaluate(node=>getComputedStyle(node).backgroundColor)).not.toBe("rgb(221, 223, 226)");
