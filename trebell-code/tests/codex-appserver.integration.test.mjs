@@ -166,7 +166,6 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
       },
     });
     assert.equal(guardianOverride.ok,true,guardianOverride.error?.message||"thread/approveGuardianDeniedAction failed");
-
     const capabilityCalls=[
       ["account/read",{refreshToken:false}],
       ["account/rateLimits/read",{excludeResetCreditDetails:true}],
@@ -225,6 +224,59 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
     assert.equal(memoryReset.ok,true,memoryReset.error?.message||"memory/reset failed in the disposable integration home");
   } finally {
     try{ws?.close();}catch{}
+    await gui.close();
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
+  }
+});
+
+test("real Codex app-server exposes native project ownership and collaboration modes without starting a turn",{timeout:30000},async()=>{
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  const home=await mkdtemp(join(tmpdir(),"trebell-codex-project-integration-"));
+  const env={...process.env,TREBELL_HOME:home};
+  const gui=await createGuiServer({port,appPort,mock:false,env});
+  let ws;
+  try{
+    let boot=null;
+    for(let i=0;i<80;i++){
+      boot=await fetch(gui.url+"/api/bootstrap").then(r=>r.json());
+      if(boot.appServerReady)break;
+      await new Promise(resolve=>setTimeout(resolve,200));
+    }
+    assert.equal(boot.appServerReady,true,"Codex app-server never became ready");
+    ws=new WebSocket(boot.wsUrl,{origin:gui.url});
+    await new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>reject(new Error("relay websocket did not open")),10000);
+      ws.once("open",()=>{clearTimeout(timer);resolve()});
+      ws.once("error",error=>{clearTimeout(timer);reject(error)});
+    });
+    await rpc(ws,1,"initialize",{clientInfo:{name:"trebell-project-test",title:"Trebell Project Test",version:"0.5.0"},capabilities:{experimentalApi:true}});
+    ws.send(JSON.stringify({method:"initialized",params:{}}));
+
+    const modes=await rpc(ws,2,"collaborationMode/list",{});
+    assert.ok(Array.isArray(modes.data),"collaborationMode/list should return a data array");
+    assert.ok(modes.data.some(item=>item?.mode),"Codex should expose at least one native collaboration mode");
+
+    const nativeProject=await rpc(ws,3,"project/create",{
+      name:"Trebell integration project",
+      roots:[{path:process.cwd()}],
+      metadata:{trebellManaged:"true",trebellProjectId:"trebell-integration-project"},
+      idempotencyKey:"trebell-code:trebell-integration-project",
+    });
+    assert.ok(nativeProject.project?.id,"project/create should return a native project id");
+    const projectedThread=await rpc(ws,4,"thread/start",{
+      cwd:process.cwd(),
+      modelProvider:"freebuff",
+      approvalPolicy:"never",
+      sandbox:"danger-full-access",
+      ephemeral:false,
+      threadSource:"trebell-code",
+      projectId:nativeProject.project.id,
+    });
+    assert.equal(projectedThread.thread?.projectId,nativeProject.project.id,"thread/start should persist native project ownership");
+    const projectList=await rpc(ws,5,"project/list",{limit:100});
+    assert.ok(projectList.data?.some(project=>project.id===nativeProject.project.id),"project/list should include the Trebell-owned native project");
+  }finally{
+    try{ws?.close()}catch{}
     await gui.close();
     await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
   }

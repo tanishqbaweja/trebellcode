@@ -48,6 +48,8 @@ import { DEFAULT_LAYOUT, clampLayoutValue, normalizeLayoutPreferences } from "./
 import { nativeThreadSearchMatches, threadListParams } from "./thread-list-query.js";
 import { resizeTextarea } from "./textarea-size.js";
 import { guardianActionSummary, guardianDeniedEvent } from "./guardian-review.js";
+import { collaborationModePayload, normalizeCollaborationModes } from "./collaboration-mode.js";
+import { ensureCodexProject, sameWorkspacePath } from "./codex-projects.js";
 
 const MAX_COMPOSER_ATTACHMENTS=100;
 const MAX_COMPOSER_CHARS=120_000;
@@ -284,7 +286,7 @@ const SLASH_COMMANDS=[
   ["/clear","Reset the current draft/thread view"],
 ];
 
-function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,submitting=false,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,onFileMentionSearch,onFileMentionAttach,permissionMode,setPermissionMode,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onModelPickerOpenChange}){
+function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,submitting=false,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,onFileMentionSearch,onFileMentionAttach,permissionMode,setPermissionMode,collaborationModes=[],collaborationMode="default",onCollaborationMode,collaborationModeBusy=false,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onModelPickerOpenChange}){
   const [modelOpen,setModelOpen]=useState(false);
   const [listening,setListening]=useState(false);
   const [caret,setCaret]=useState(0);
@@ -410,6 +412,7 @@ function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgr
       <button className="circle-btn" onClick={onPickFiles} title="Attach files" aria-label="Attach files"><Plus size={18}/></button>
       {window.trebellDesktop?.captureScreen&&<button className="circle-btn" onClick={onCaptureScreen} title="Capture desktop screenshot" aria-label="Capture desktop screenshot"><Camera size={15}/></button>}
       <select className="permission-picker" value={permissionMode} onChange={e=>setPermissionMode(e.target.value)}><option value="supervised">Supervised</option><option value="edits">Auto-accept edits</option><option value="auto">Auto</option><option value="full">Full access</option><option value="read-only">Read only</option></select>
+      {agentRuntime==="codex"&&collaborationModes.length>0&&<select data-testid="collaboration-mode-picker" className="permission-picker collaboration-mode-picker" value={collaborationMode} disabled={running||collaborationModeBusy} onChange={e=>onCollaborationMode?.(e.target.value)} title="Codex collaboration mode">{collaborationModes.map(item=><option key={item.mode} value={item.mode}>{item.name} mode</option>)}</select>}
       {!threadOpen&&!projectless&&<select className="workspace-mode" value={workspaceMode} onChange={e=>setWorkspaceMode(e.target.value)}><option value="current">Current workspace</option><option value="worktree">New worktree</option></select>}
     </div><div className="composer-right">
       {!providerReady&&!models.length?<button className="login-btn" onClick={agentRuntime==="codex"&&provider==="freebuff"?login:onConfigureProvider}>{agentRuntime!=="codex"?"Configure "+agentRuntimeLabel:provider==="freebuff"?"Sign in to Freebuff":"Configure "+({agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||"provider")}</button>:<>
@@ -435,6 +438,7 @@ export default function App(){
   const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [section,setSection]=useState("chat");
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [contextChips,setContextChips]=useState([]);
   const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [selectedModels,setSelectedModels]=useState([]); const [modelError,setModelError]=useState(""); const [modelPickerOpen,setModelPickerOpen]=useState(false);
+  const [collaborationModes,setCollaborationModes]=useState([]); const [collaborationMode,setCollaborationMode]=useState("default"); const [collaborationModeBusy,setCollaborationModeBusy]=useState(false);
   const [freebuff,setFreebuff]=useState({loggedIn:false}); const [skills,setSkills]=useState([]); const [providerCommands,setProviderCommands]=useState([]); const [providerAgents,setProviderAgents]=useState([]); const [providerAgent,setProviderAgent]=useState("");
   const [threadRuntimeProfiles,setThreadRuntimeProfiles]=useState({supported:false,currentInstanceId:null,items:[]}); const [threadRuntimeProfileBusy,setThreadRuntimeProfileBusy]=useState("");
   const submittingRef=useRef(false);
@@ -832,6 +836,31 @@ export default function App(){
   async function loadThreads(client){
     const listed=await client.request("thread/list",threadListParams(100)).catch(()=>({data:[]})); setThreads(listed.data||[]); return listed.data||[];
   }
+  async function loadCollaborationModes(client=rpcRef.current){
+    if(agentRuntime!=="codex"||!client){
+      setCollaborationModes([]);setCollaborationMode("default");return[];
+    }
+    const result=await client.request("collaborationMode/list",{}).catch(()=>({data:[]}));
+    const modes=normalizeCollaborationModes(result?.data||[]);
+    setCollaborationModes(modes);
+    setCollaborationMode(current=>modes.some(item=>item.mode===current)?current:(modes.some(item=>item.mode==="default")?"default":modes[0]?.mode||"default"));
+    return modes;
+  }
+  function selectedCollaborationMode(modelId=model){
+    return agentRuntime==="codex"?collaborationModePayload(collaborationModes,collaborationMode,modelId):null;
+  }
+  async function changeCollaborationMode(nextMode){
+    if(!collaborationModes.some(item=>item.mode===nextMode))return;
+    const previous=collaborationMode;setCollaborationMode(nextMode);
+    if(agentRuntime!=="codex"||!rpc||rpcStatus!=="connected"||!activeThread?.id||running)return;
+    const payload=collaborationModePayload(collaborationModes,nextMode,model);if(!payload)return;
+    setCollaborationModeBusy(true);
+    try{await rpc.request("thread/settings/update",{threadId:activeThread.id,collaborationMode:payload})}
+    catch(error){
+      setCollaborationMode(previous);
+      setEvents(prev=>[...prev,{id:"collaboration-mode-error-"+Date.now(),kind:"error",title:"Could not change Codex mode: "+(error.message||String(error)),status:"done",raw:{}}]);
+    }finally{setCollaborationModeBusy(false)}
+  }
   async function loadThreadRuntimeProfiles(client=rpc,threadId=activeThreadRef.current?.id){
     if(!["codex","claude"].includes(agentRuntime)||!client||rpcStatus!=="connected"||!threadId){
       setThreadRuntimeProfiles({supported:false,currentInstanceId:null,items:[]});return {supported:false,currentInstanceId:null,items:[]};
@@ -943,7 +972,7 @@ export default function App(){
     if(!bootstrap.wsUrl||bootstrap.mock)return; let disposed=false,retryTimer=null,client=null;
     const connect=async(attempt=0)=>{
       client=new CodexRpcClient(bootstrap.wsUrl,{clientVersion:bootstrap.version||"0.0.0",onStatus:setRpcStatus,onNotification:handleNotification,onServerRequest:m=>handleServerRequest(client,m)}); rpcRef.current=client;setRpc(client);
-      try{await client.connect();if(disposed)return;await recoverCodexAfterRestart(client);await ensureSections(client);await loadThreads(client);await loadSkills(client,projectPath)}
+      try{await client.connect();if(disposed)return;await recoverCodexAfterRestart(client);await ensureSections(client);await loadThreads(client);await Promise.all([loadSkills(client,projectPath),loadCollaborationModes(client)])}
       catch(error){client.close();if(disposed)return;if(attempt<120){setRpcStatus("connecting");retryTimer=setTimeout(()=>connect(attempt+1),500)}else setRpcStatus("error")}
     };
     connect(); return()=>{disposed=true;clearTimeout(retryTimer);client?.close()};
@@ -1230,6 +1259,17 @@ export default function App(){
       setThreads(prev=>prev.map(t=>t.id===p.threadId?{...t,name:p.name}:t));
       if(isCurrent)setActiveThread(prev=>prev?.id===p.threadId?{...prev,name:p.name}:prev);
     }
+    else if(message.method==="thread/project/updated"){
+      setThreads(prev=>prev.map(t=>t.id===p.threadId?{...t,projectId:p.projectId||null}:t));
+      if(isCurrent){
+        setActiveThread(prev=>prev?.id===p.threadId?{...prev,projectId:p.projectId||null}:prev);
+        if(activeThreadRef.current?.id===p.threadId)activeThreadRef.current={...activeThreadRef.current,projectId:p.projectId||null};
+      }
+    }
+    else if(message.method==="thread/settings/updated"&&isCurrent){
+      const nextMode=p.threadSettings?.collaborationMode?.mode;
+      if(nextMode)setCollaborationMode(nextMode);
+    }
     else if(message.method==="thread/reverted"&&isCurrent)reloadActiveThread();
     else if(message.method==="turn/started"){
       const id=p.turn?.id||p.turnId;
@@ -1491,7 +1531,7 @@ export default function App(){
     if(agentRuntime!=="codex"||!threadId||running||!rpc||rpcStatus!=="connected")return;
     rpc.request("thread/unsubscribe",{threadId}).catch(()=>{});
   }
-  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");setAssistantText("");setQueued([]);setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
+  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");setAssistantText("");setQueued([]);setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
@@ -1522,12 +1562,25 @@ export default function App(){
     const map=Object.fromEntries((cp.checkpoints||[]).filter(x=>x.turnId).map(x=>[x.turnId,x]));setCheckpointByTurn(map);
     if(resumed?.thread){
       activeThreadRef.current=resumed.thread;pendingThreadScrollRestoreRef.current=resumed.thread.id;setActiveThread(resumed.thread);
+      if(agentRuntime==="codex"&&resumed.collaborationMode?.mode&&collaborationModes.some(item=>item.mode===resumed.collaborationMode.mode))setCollaborationMode(resumed.collaborationMode.mode);
       if(agentRuntime==="codex"&&resumed.__trebellHistoryPage&&!resumed.__trebellFullHistoryFallback){
         const page=resumed.__trebellHistoryPage;
         const history=page.kind==="items"?historyFromItemEntries([...(page.data||[])].reverse(),map):historyFromTurns([...(page.data||[])].reverse(),map);
         setMessages(history);setHistoryPage({threadId:resumed.thread.id,nextCursor:page.nextCursor||null,paginated:true,itemPaging:page.kind==="items",loading:false});
       }else{setMessages(historyFromThread(resumed.thread,map));setHistoryPage({threadId:resumed.thread.id,nextCursor:null,paginated:false,loading:false})}
       setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex"){const meta=resumed.thread.providerMeta||{};applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}
+    }
+    if(agentRuntime==="codex"&&!bootstrap.mock&&resumed?.thread&&!projectless&&!threadEnvironmentId&&resumed.thread.cwd){
+      const listed=await api("/api/projects").catch(()=>({projects:[]}));
+      const trebellProject=(listed.projects||[]).find(project=>!project.environmentId&&sameWorkspacePath(project.path,resumed.thread.cwd))||null;
+      const nativeProject=await ensureCodexProject(rpc,{trebellProject,cwd:resumed.thread.cwd}).catch(()=>null);
+      if(nativeProject?.id&&resumed.thread.projectId!==nativeProject.id){
+        const updated=await rpc.request("thread/metadata/update",{threadId:resumed.thread.id,projectId:nativeProject.id}).catch(()=>null);
+        if(updated?.thread){
+          activeThreadRef.current=updated.thread;setActiveThread(updated.thread);
+          setThreads(prev=>prev.map(item=>item.id===updated.thread.id?updated.thread:item));
+        }
+      }
     }
     if(agentRuntime==="codex"&&!bootstrap.mock&&resumed?.thread){
       const timelineThreadId=thread.id;
@@ -1739,7 +1792,16 @@ export default function App(){
     const developerInstructions=projectless
       ?"This is a Trebell General chat with no attached project or repository. The working directory is an app-managed scratch workspace. Do not assume it is a codebase, repository, or user project. "+researchInstruction
       :researchInstruction;
-    const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools,developerInstructions});
+    let nativeProjectId=null;
+    if(agentRuntime==="codex"&&!bootstrap.mock&&!projectless&&!workspaceEnvironmentId){
+      let trebellProject=currentProject&&sameWorkspacePath(currentProject.path,cwd)?currentProject:null;
+      if(!trebellProject){
+        const listed=await api("/api/projects").catch(()=>({projects:[]}));
+        trebellProject=(listed.projects||[]).find(project=>!project.environmentId&&sameWorkspacePath(project.path,cwd))||null;
+      }
+      nativeProjectId=(await ensureCodexProject(rpc,{trebellProject,cwd}).catch(()=>null))?.id||null;
+    }
+    const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(nativeProjectId?{projectId:nativeProjectId}:{}),approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools,developerInstructions});
     if(agentRuntime!=="codex"&&result.thread?.providerMeta){setProviderAgent(result.thread.agent||providerAgent||"");const meta=result.thread.providerMeta;applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}
     if(result.thread?.id)await persistThreadWorkspaceContext(result.thread,cwd,{sectionName:"Active",archived:false,projectless}).catch(()=>{});
     return result.thread;
@@ -1790,7 +1852,8 @@ export default function App(){
     const checkpoint=projectlessMode?null:await api("/api/checkpoints",{method:"POST",body:{cwd,threadId:thread.id,label:text.slice(0,80)}}).catch(()=>null);const p=presetFor(permissionMode);
     const sandboxPolicy=p.sandbox==="danger-full-access"?{type:"dangerFullAccess"}:p.sandbox==="read-only"?{type:"readOnly",networkAccess:false}:{type:"workspaceWrite",writableRoots:[cwd],networkAccess:true,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
     const custom=(settings.customModels||[]).find(item=>item.id===modelId&&item.runtime===agentRuntime&&(agentRuntime!=="codex"||item.provider===provider));
-    const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(agentRuntime==="codex"&&custom?.effort?{effort:custom.effort}:{}),...(agentRuntime==="codex"&&custom?.serviceTier?{serviceTierForTurn:custom.serviceTier}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths)});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);
+    const collaboration=selectedCollaborationMode(modelId);
+    const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(agentRuntime==="codex"&&custom?.effort?{effort:custom.effort}:{}),...(agentRuntime==="codex"&&custom?.serviceTier?{serviceTierForTurn:custom.serviceTier}:{}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths)});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);
     setMessages(prev=>prev.map(m=>m.id===clientId?{...m,turnId,checkpointId:checkpoint?.id||null}:m));if(checkpoint?.id&&turnId){await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}}).catch(()=>{});setCheckpointByTurn(prev=>({...prev,[turnId]:{...checkpoint,turnId}}))}setAttachments([]);setContextChips([]);return{thread,turnId};
   }
   async function startDetachedTurn(text,paths,modelId=model,{forceWorktree=false,basePath=null,projectless=projectlessMode}={}){
@@ -1804,7 +1867,8 @@ export default function App(){
       const sandboxPolicy=p.sandbox==="danger-full-access"?{type:"dangerFullAccess"}:p.sandbox==="read-only"?{type:"readOnly",networkAccess:false}:{type:"workspaceWrite",writableRoots:[cwd],networkAccess:true,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
       const custom=(settings.customModels||[]).find(item=>item.id===modelId&&item.runtime===agentRuntime&&(agentRuntime!=="codex"||item.provider===provider));
       turnRequestStarted=true;
-      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(agentRuntime==="codex"&&custom?.effort?{effort:custom.effort}:{}),...(agentRuntime==="codex"&&custom?.serviceTier?{serviceTierForTurn:custom.serviceTier}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths)});const turnId=result?.turn?.id||null;
+      const collaboration=selectedCollaborationMode(modelId);
+      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(agentRuntime==="codex"&&custom?.effort?{effort:custom.effort}:{}),...(agentRuntime==="codex"&&custom?.serviceTier?{serviceTierForTurn:custom.serviceTier}:{}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths)});const turnId=result?.turn?.id||null;
       if(checkpoint?.id&&turnId)await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}}).catch(()=>{});
       return {thread,turnId,cwd};
     }catch(error){
@@ -2374,7 +2438,7 @@ export default function App(){
           </div>
 
           {currentProject?.cloneJob&&currentProject.cloneJob.status!=="completed"&&<div className={"clone-banner "+currentProject.cloneJob.status} data-testid="clone-banner"><div><strong>{currentProject.cloneJob.phase||"Cloning repository"}</strong><span>{currentProject.cloneJob.status==="failed"?(currentProject.cloneJob.error||"Clone failed"):currentProject.cloneJob.status==="cancelled"?"Clone cancelled":"You can keep writing. Send waits until the repository is ready."}</span></div>{["running","cancelling"].includes(currentProject.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(currentProject.cloneJob.progress)||0)+"%"}}/></i>}<em>{Math.round(currentProject.cloneJob.progress||0)}%</em>{currentProject.cloneJob.status==="running"&&<button onClick={()=>cloneProjectAction("cancel").catch(error=>setEvents(prev=>[...prev,{id:"clone-cancel-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(currentProject.cloneJob.status)&&<button onClick={()=>cloneProjectAction("retry").catch(error=>setEvents(prev=>[...prev,{id:"clone-retry-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))}>Retry clone</button>}</div>}
-          <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={()=>setPromptHistoryIndex(-1)} historyIndex={promptHistoryIndex} onSend={send} onBackgroundSend={sendInBackground} canBackground={!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={changeComposerModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onCaptureScreen={()=>captureDesktop().catch(error=>setEvents(prev=>[...prev,{id:"screen-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} onPaste={onPaste} onDrop={onDrop} onFileMentionSearch={searchComposerFiles} onFileMentionAttach={attachComposerFileMention} permissionMode={permissionMode} setPermissionMode={setPermissionMode} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={changeProviderAgent} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&["codex","opencode","claude"].includes(agentRuntime))} onCompact={compactContext} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={switchThreadRuntimeProfile} onModelPickerOpenChange={setModelPickerOpen}/>
+          <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={()=>setPromptHistoryIndex(-1)} historyIndex={promptHistoryIndex} onSend={send} onBackgroundSend={sendInBackground} canBackground={!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={changeComposerModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onCaptureScreen={()=>captureDesktop().catch(error=>setEvents(prev=>[...prev,{id:"screen-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} onPaste={onPaste} onDrop={onDrop} onFileMentionSearch={searchComposerFiles} onFileMentionAttach={attachComposerFileMention} permissionMode={permissionMode} setPermissionMode={setPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={changeCollaborationMode} collaborationModeBusy={collaborationModeBusy} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={changeProviderAgent} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&["codex","opencode","claude"].includes(agentRuntime))} onCompact={compactContext} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={switchThreadRuntimeProfile} onModelPickerOpenChange={setModelPickerOpen}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="layout-resizer terminal-resizer" data-testid="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" onPointerDown={event=>beginLayoutResize("terminal",event)}/>

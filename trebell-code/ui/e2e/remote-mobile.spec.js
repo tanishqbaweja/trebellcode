@@ -63,7 +63,7 @@ test("Trebell Remote pages bounded item history instead of hydrating full Codex 
     await collaborationMode.selectOption("default");await page.locator("#prompt").fill("Continue with the implementation");await page.locator("#send").click();
     await expect.poll(()=>calls.filter(call=>call.method==="turn/start").length).toBe(1);
     const turnStart=calls.find(call=>call.method==="turn/start");expect(turnStart?.params?.collaborationMode).toEqual({mode:"default",settings:{model:"freebuff/test/coding-fast",reasoning_effort:null,developer_instructions:null}});
-    notificationSocket.send(JSON.stringify({method:"thread/settings/updated",params:{threadId:thread.id,settings:{collaborationMode:{mode:"plan",settings:{model:"freebuff/test/coding-fast",reasoning_effort:"medium",developer_instructions:null}}}}}));
+    notificationSocket.send(JSON.stringify({method:"thread/settings/updated",params:{threadId:thread.id,threadSettings:{collaborationMode:{mode:"plan",settings:{model:"freebuff/test/coding-fast",reasoning_effort:"medium",developer_instructions:null}}}}}));
     await expect(collaborationMode).toHaveValue("plan");
     const listCallsBefore=calls.filter(call=>call.method==="thread/list").length;threadVisible=false;notificationSocket.send(JSON.stringify({method:"thread/deleted",params:{threadId:thread.id}}));
     await expect.poll(()=>calls.filter(call=>call.method==="thread/list").length).toBeGreaterThan(listCallsBefore);
