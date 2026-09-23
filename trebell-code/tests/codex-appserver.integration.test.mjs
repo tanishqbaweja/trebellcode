@@ -137,8 +137,19 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
     });
     assert.ok(recoveryTurn.turn?.id,"Codex must accept an empty-input promptless continuation turn");
     assert.equal(recoveryTurn.turn.status,"inProgress");
-    await rpcOutcome(ws,6,"turn/interrupt",{threadId:recoveryThread.thread.id,turnId:recoveryTurn.turn.id});
-    const guardianOverride=await rpcOutcome(ws,7,"thread/approveGuardianDeniedAction",{
+    const liveFeatures=await rpc(ws,6,"experimentalFeature/list",{limit:200,threadId:recoveryThread.thread.id});
+    const liveSwitch=liveFeatures.data?.find(feature=>feature.name==="step_model_switching");
+    if(liveSwitch?.enabled){
+      const liveTurnSettings=await rpc(ws,7,"turn/settings/update",{threadId:recoveryThread.thread.id,turnId:recoveryTurn.turn.id,serviceTier:null});
+      assert.equal(liveTurnSettings.status,"applied","an enabled running Codex turn should accept native live setting publication");
+    }else{
+      const liveTurnSettings=await rpcOutcome(ws,7,"turn/settings/update",{threadId:recoveryThread.thread.id,turnId:recoveryTurn.turn.id,serviceTier:null});
+      assert.equal(liveTurnSettings.ok,false,"disabled step model switching should remain feature-gated");
+      assert.notEqual(liveTurnSettings.error?.code,-32601,"turn/settings/update must still be a real bundled Codex method");
+      assert.match(String(liveTurnSettings.error?.message||""),/step_model_switching/i);
+    }
+    await rpcOutcome(ws,8,"turn/interrupt",{threadId:recoveryThread.thread.id,turnId:recoveryTurn.turn.id});
+    const guardianOverride=await rpcOutcome(ws,9,"thread/approveGuardianDeniedAction",{
       threadId:recoveryThread.thread.id,
       event:{
         id:"trebell-integration-guardian-review",
