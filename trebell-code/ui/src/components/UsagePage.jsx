@@ -66,22 +66,28 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
   useEffect(()=>{refreshCodex()},[rpc,rpcStatus,activeThread?.id,agentRuntime]);
   useEffect(()=>{
     if(agentRuntime!=="codex"||rpcStatus!=="connected"||!rpc?.subscribeNotifications)return;
-    let disposed=false,accountTimer=null,rateTimer=null;
+    let disposed=false,accountTimer=null,rateTimer=null,usageTimer=null;
     const refreshAccount=()=>{if(accountTimer)clearTimeout(accountTimer);accountTimer=setTimeout(async()=>{
       accountTimer=null;try{const account=await rpc.request("account/read",{refreshToken:false});if(!disposed)setCodex(current=>({...current,account,errors:withoutKey(current.errors,"account")}))}catch(error){if(!disposed)setCodex(current=>({...current,errors:{...current.errors,account:error?.message||String(error)}}))}
     },100)};
     const refreshRateLimits=()=>{if(rateTimer)clearTimeout(rateTimer);rateTimer=setTimeout(async()=>{
       rateTimer=null;try{const rateLimits=await rpc.request("account/rateLimits/read",{excludeResetCreditDetails:false});if(!disposed)setCodex(current=>({...current,rateLimits,errors:withoutKey(current.errors,"rateLimits")}))}catch(error){if(!disposed)setCodex(current=>({...current,errors:{...current.errors,rateLimits:error?.message||String(error)}}))}
     },100)};
+    const refreshUsage=()=>{if(usageTimer)clearTimeout(usageTimer);usageTimer=setTimeout(async()=>{
+      usageTimer=null;try{const usage=await rpc.request("account/usage/read",activeThread?.id?{threadId:activeThread.id}:{});if(!disposed)setCodex(current=>({...current,usage,errors:withoutKey(current.errors,"usage")}))}catch(error){if(!disposed)setCodex(current=>({...current,errors:{...current.errors,usage:error?.message||String(error)}}))}
+    },250)};
     const unsubscribe=rpc.subscribeNotifications(message=>{
       if(message.method==="account/updated")refreshAccount();
       else if(message.method==="account/rateLimits/updated")refreshRateLimits();
       else if(message.method==="modelProvider/authRecoveryCompleted"){
         const params=message.params||{};
         if(!activeThread?.id||params.threadId===activeThread.id)refreshAccount();
+      }else if(message.method==="thread/tokenUsage/updated"||message.method==="turn/completed"){
+        const params=message.params||{};
+        if(!activeThread?.id||!params.threadId||params.threadId===activeThread.id)refreshUsage();
       }
     });
-    return()=>{disposed=true;if(accountTimer)clearTimeout(accountTimer);if(rateTimer)clearTimeout(rateTimer);unsubscribe?.()};
+    return()=>{disposed=true;if(accountTimer)clearTimeout(accountTimer);if(rateTimer)clearTimeout(rateTimer);if(usageTimer)clearTimeout(usageTimer);unsubscribe?.()};
   },[rpc,rpcStatus,activeThread?.id,agentRuntime]);
   useEffect(()=>{refreshRuntimeUsage()},[agentRuntime]);
   useEffect(()=>{api("/api/environments").then(setEnvironmentData).catch(()=>{})},[]);

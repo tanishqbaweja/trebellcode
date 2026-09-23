@@ -10,7 +10,7 @@ async function freePort(){const server=createServer();await new Promise((resolve
 
 test("Usage page refreshes native Codex account and quota updates live",async({page})=>{
   test.setTimeout(30_000);
-  const calls=[];let account={type:"chatgpt",email:"before@example.com",planType:"plus"},usedPercent=20,notificationSocket=null;
+  const calls=[];let account={type:"chatgpt",email:"before@example.com",planType:"plus"},usedPercent=20,lifetimeTokens=12345,notificationSocket=null;
   const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const sockets=new Set();
   upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
   upstreamWss.on("connection",ws=>{
@@ -23,7 +23,7 @@ test("Usage page refreshes native Codex account and quota updates live",async({p
       else if(message.method==="skills/list")result={data:[]};
       else if(message.method==="account/read")result={account,requiresOpenaiAuth:false};
       else if(message.method==="account/rateLimits/read")result={rateLimits:{limitId:"main",limitName:"Coding quota",primary:{usedPercent,resetsAt:Math.floor(Date.now()/1000)+3600}}};
-      else if(message.method==="account/usage/read")result={summary:{lifetimeTokens:12345,currentStreakDays:2,peakDailyTokens:5000,longestRunningTurnSec:90},threadUsage:null};
+      else if(message.method==="account/usage/read")result={summary:{lifetimeTokens,currentStreakDays:2,peakDailyTokens:5000,longestRunningTurnSec:90},threadUsage:null};
       else if(message.method==="account/workspaceMessages/read")result={featureEnabled:false,messages:[]};
       else if(message.method==="experimentalFeature/list"||message.method==="permissionProfile/list"||message.method==="mcpServerStatus/list"||message.method==="app/list"||message.method==="hooks/list"||message.method==="plugin/share/list")result={data:[]};
       else if(message.method==="plugin/list")result={marketplaces:[],marketplaceLoadErrors:[],featuredPluginIds:[]};
@@ -63,6 +63,14 @@ test("Usage page refreshes native Codex account and quota updates live",async({p
     await expect.poll(()=>calls.filter(call=>call.method==="account/read").length).toBeGreaterThan(accountReadsBefore);
     await expect.poll(()=>calls.filter(call=>call.method==="account/rateLimits/read").length).toBeGreaterThan(rateReadsBefore);
     expect(calls.filter(call=>call.method==="account/usage/read").length).toBe(usageReadsBefore);
+    lifetimeTokens=54321;
+    notificationSocket.send(JSON.stringify({method:"thread/tokenUsage/updated",params:{threadId:"background-thread",tokenUsage:{totalTokens:54321}}}));
+    await expect(card).toContainText("54.3K");
+    await expect.poll(()=>calls.filter(call=>call.method==="account/usage/read").length).toBeGreaterThan(usageReadsBefore);
+    const usageReadsAfterTokenUpdate=calls.filter(call=>call.method==="account/usage/read").length;
+    notificationSocket.send(JSON.stringify({method:"account/rateLimits/updated",params:{rateLimits:{primary:{usedPercent:65}}}}));
+    await new Promise(resolve=>setTimeout(resolve,350));
+    expect(calls.filter(call=>call.method==="account/usage/read").length).toBe(usageReadsAfterTokenUpdate);
     await page.setViewportSize({width:1280,height:800});await card.scrollIntoViewIfNeeded();await page.screenshot({path:auditDir+"usage-live-codex-1280x800.png",fullPage:false});
     await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({path:auditDir+"usage-live-codex-light-1280x800.png",fullPage:false});
   }finally{
