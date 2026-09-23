@@ -2332,7 +2332,7 @@ export default function App(){
   const paletteActions=[
     {id:"new",label:"New thread",detail:"Start a clean coding task",shortcut:"Ctrl+N",onRun:newChat},
     {id:"new-general",label:"New general chat",detail:"Start without attaching a project or repository",onRun:newGeneralChat},
-    {id:"folder",label:"Open workspace folder",detail:projectPath||"Choose a local folder",onRun:pickWorkspace},
+    ...(window.trebellDesktop?.pickDirectory?[{id:"folder",label:"Open workspace folder",detail:projectPath||"Choose a local folder",onRun:pickWorkspace}]:[]),
     {id:"projects",label:"Recent projects",detail:"Switch checkouts or clone a repository",onRun:()=>setSection("projects")},
     {id:"files",label:"Files",detail:"Browse and edit the workspace",onRun:()=>openRightPanel("files")},
     ...(!projectlessMode?[{id:"diff",label:"Changes",detail:"Inspect the current Git diff",onRun:()=>openRightPanel("diff")},{id:"git",label:"Source control",detail:gitInfo?.branch||"Git and pull requests",onRun:()=>openRightPanel("source")}]:[]),
@@ -2342,7 +2342,7 @@ export default function App(){
     {id:"browser",label:"Browser",detail:"Open Trebell Agent Browser",onRun:()=>openRightPanel("preview")},
     ...(agentRuntime==="codex"?[{id:"agents",label:"Agents & collaboration",detail:"Delegated threads and collaboration mode",onRun:()=>openRightPanel("agents")}]:[]),
     ...(activeThread?.id?[{id:"goal",label:"Thread goal",detail:goal?.objective||"Set a durable objective",onRun:()=>openRightPanel("goal")}]:[]),
-    ...(activeThread?.id&&gitInfo?.isGit?[{id:"review",label:"Review changes",detail:"Ask Codex to review uncommitted changes",onRun:()=>startReview()}]:[]),
+    ...(activeThread?.id&&gitInfo?.isGit?[{id:"review",label:"Review changes",detail:`Ask ${agentRuntimeLabel} to review uncommitted changes`,onRun:()=>startReview()}]:[]),
     ...(agentRuntime==="codex"?[{id:"tools",label:"Harness capabilities",detail:"Skills, MCP, plugins, apps and hooks",onRun:()=>setSection("tools")}]:[]),
     {id:"environments",label:"Environments",detail:"Local, WSL, SSH and remote access",onRun:()=>setSection("environments")},
     {id:"usage",label:"Usage",detail:"Tokens and cost across recorded turns",onRun:()=>setSection("usage")},
@@ -2355,7 +2355,7 @@ export default function App(){
     {id:"theme-black",label:"Theme: Black",detail:"OLED-friendly black Trebell palette",onRun:()=>saveAppSettings({appearance:"black"})},
     ...(settings.customThemes||[]).map(theme=>({id:"theme-custom:"+theme.id,label:"Theme: "+theme.name,detail:`Custom ${theme.appearance||"dark"} theme`,onRun:()=>saveAppSettings({appearance:theme.id})})),
     {id:"settings",label:"Settings",detail:"Providers, permissions and desktop behavior",onRun:()=>setSection("settings")},
-    {id:"copy",label:"Copy conversation",detail:"Copy this thread as text",onRun:shareThread},
+    ...(activeThread?.id&&messages.length?[{id:"copy",label:"Copy conversation",detail:"Copy this thread as text",onRun:shareThread}]:[]),
   ];
 
   const previewSurface=<PreviewPage
@@ -2470,7 +2470,7 @@ export default function App(){
       </main>
 
       {rightPanelOpen&&!rightPanelMaximized&&<div className="layout-resizer right-panel-resizer" data-testid="right-panel-resizer" role="separator" aria-label="Resize workspace panel" aria-orientation="vertical" onPointerDown={event=>beginLayoutResize("right",event)}/>}
-      {rightPanelOpen&&<RightPanel active={rightPanelTab} disabledTabs={projectlessMode?["diff","source"]:[]} maximized={rightPanelMaximized} onToggleMaximized={()=>setRightPanelMaximized(value=>!value)} onActive={tab=>openRightPanel(tab)} onClose={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}>{rightPanelContent()}</RightPanel>}
+      {rightPanelOpen&&<RightPanel active={rightPanelTab} disabledTabs={projectlessMode?["diff","source"]:[]} hiddenTabs={agentRuntime==="codex"?[]:["agents"]} maximized={rightPanelMaximized} onToggleMaximized={()=>setRightPanelMaximized(value=>!value)} onActive={tab=>openRightPanel(tab)} onClose={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}>{rightPanelContent()}</RightPanel>}
     </div>
 
     <McpElicitationModal key={elicitations[0]?.request?.id||"none"} request={elicitations[0]?.request} onResolve={resolveElicitation} onVerify={verifyMcpUser} verificationAvailable={!workspaceEnvironmentId}/>

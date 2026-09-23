@@ -398,6 +398,10 @@ test("Claude runtime profile editor exposes real auto-compaction settings",async
   await page.screenshot({path:auditDir+"settings-claude-profile-1600x980.png",fullPage:true});
   await page.setViewportSize({width:1280,height:800});
   await page.screenshot({path:auditDir+"settings-claude-profile-1280x800.png",fullPage:true});
+  await page.getByRole("button",{name:"Threads",exact:true}).click();
+  await page.getByTestId("right-panel-toggle").click();
+  await expect(page.getByTestId("right-panel").getByRole("button",{name:"Agents",exact:true})).toHaveCount(0);
+  await page.screenshot({path:auditDir+"claude-right-panel-no-agents-1280x800.png",fullPage:true});
 });
 
 test("major workspace surfaces render their real destinations without horizontal overflow",async({page,request})=>{
@@ -831,6 +835,8 @@ test("custom theme stays coherent across chat panel and command palette",async({
   await expect(page.getByTestId("right-panel")).toBeVisible();
   await page.keyboard.press("Control+k");
   await expect(page.getByTestId("command-palette")).toBeVisible();
+  await expect(page.getByTestId("command-palette").getByText("Open workspace folder",{exact:true})).toHaveCount(0);
+  await expect(page.getByTestId("command-palette").getByText("Copy conversation",{exact:true})).toHaveCount(0);
   const themedSurfaces=await page.evaluate(()=>({
     composer:getComputedStyle(document.querySelector(".composer-wrap")).backgroundColor,
     panel:getComputedStyle(document.querySelector(".context-panel")).backgroundColor,
@@ -892,6 +898,9 @@ test("switching Codex inference provider preserves the active chat and sidebar t
     await threadButton.click();
     await expect(page.getByText("Keep this conversation open while I change inference providers.")).toBeVisible();
     await expect(page.getByText("This message should still be here after the provider switch.")).toBeVisible();
+    await page.keyboard.press("Control+k");
+    await expect(page.getByTestId("command-palette").getByText("Copy conversation",{exact:true})).toBeVisible();
+    await page.keyboard.press("Escape");
     const before=await page.locator(".thread-main").evaluateAll(nodes=>nodes.map(node=>node.getAttribute("title")||node.textContent.trim()));
     await page.screenshot({path:auditDir+"provider-switch-threads-before-1600x980.png",fullPage:true});
 

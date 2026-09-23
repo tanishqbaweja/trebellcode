@@ -12,11 +12,11 @@ const TABS=[
   ["runtime",Cpu,"Runtime"],
 ];
 
-export default function RightPanel({active,onActive,onClose,children,disabledTabs=[],maximized=false,onToggleMaximized}){
+export default function RightPanel({active,onActive,onClose,children,disabledTabs=[],hiddenTabs=[],maximized=false,onToggleMaximized}){
   return <aside className={"context-panel"+(maximized?" maximized":"")} data-testid="right-panel">
     <div className="context-panel-tabs">
       <div className="context-panel-tab-scroll">
-        {TABS.map(([id,Icon,label])=><button
+        {TABS.filter(([id])=>!hiddenTabs.includes(id)).map(([id,Icon,label])=><button
           key={id}
           type="button"
           className={active===id?"active":""}
