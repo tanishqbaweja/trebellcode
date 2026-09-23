@@ -56,6 +56,19 @@ function approvalOption(options,decision){
   return find("reject_once")||find("reject_always")||null;
 }
 
+export function restoreClaudeRejectedRewind(threadStore,threadId,error){
+  const current=threadStore.get(threadId);if(!current)return null;
+  const backup=current.providerMeta?.claudeRewindBackup;
+  if(!backup||!Array.isArray(backup.removedTurns))return null;
+  const providerMeta={...(current.providerMeta||{})};delete providerMeta.claudeFork;delete providerMeta.claudeRewindBackup;
+  const retained=(current.turns||[]).slice(0,Math.max(0,Number(backup.retainedCount)||0));
+  return threadStore.update(threadId,{
+    providerSessionId:backup.sourceSessionId||error?.claudeFork?.sourceSessionId||current.providerSessionId,
+    turns:[...retained,...backup.removedTurns],
+    providerMeta,
+  });
+}
+
 function formQuestions(params){
   const schema=params?.requestedSchema||params?.schema||params?.form||{};
   const properties=schema.properties||{};
@@ -83,7 +96,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     const runtimeCwd=runtimeManager.runtimeCwd(thread.cwd,environmentId);const spawnProcess=runtimeManager.processSpawner(instance,environmentId);const remoteIo=runtimeManager.remoteIo(runtimeCwd,environmentId);
     const common={cwd:runtimeCwd,env:runtimeManager.childEnv(instance),permissionMode,onPermission:request=>context.permission(thread,request),onQuestion:request=>context.userQuestion(thread,request),onUpdate:params=>handleUpdate(thread.id,params),version};
     const runtime=instance.kind==="claude"
-      ?new ClaudeAgentSession({...common,command:runtimeManager.executable(instance),spawnProcess,forkFromSessionId:thread.providerMeta?.claudeFork?.sourceSessionId||null,resumeSessionAt:thread.providerMeta?.claudeFork?.resumeSessionAt||null})
+      ?new ClaudeAgentSession({...common,command:runtimeManager.executable(instance),spawnProcess,forkFromSessionId:thread.providerMeta?.claudeFork?.sourceSessionId||null,resumeSessionAt:thread.providerMeta?.claudeFork?.resumeSessionAt||null,resumeDropsTurn:thread.providerMeta?.claudeFork?.resumeDropsTurn||null})
       :instance.kind==="opencode"
       ?(remoteIo
         ?new AcpAgentSession({...common,runtime:"opencode",command:runtimeManager.executable(instance),args:["acp"],terminals,spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request)})
@@ -104,11 +117,22 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     };
     promptPromise.then(result=>{
       persistUsage(result);
-      const providerMessageId=result?.providerMessageId||result?.userMessageId||null;if(providerMessageId)threadStore.updateTurn(thread.id,turn.id,{providerMessageId});
+      const providerMessageId=result?.providerMessageId||result?.userMessageId||null;
+      const providerUserMessageId=result?.userMessageId||null;
+      if(providerMessageId||providerUserMessageId)threadStore.updateTurn(thread.id,turn.id,{...(providerMessageId?{providerMessageId}:{}),...(providerUserMessageId?{providerUserMessageId}:{})});
       const assistant=String(session.__assistant||"").trim();if(assistant){const item={type:"agentMessage",id:`assistant-${turn.id}`,text:assistant,phase:null,memoryCitation:null,delivery:null,questions:null};threadStore.addItem(thread.id,turn.id,item);emit("item/completed",{threadId:thread.id,turnId:turn.id,item,completedAtMs:Date.now()})}
       const status=result?.stopReason==="cancelled"?"cancelled":result?.stopReason==="refusal"?"failed":"completed";const completed=threadStore.finishTurn(thread.id,turn.id,{status,error:status==="failed"?{message:"Agent refused the turn"}:null});
       emit("turn/completed",{threadId:thread.id,turn:completed});emit("thread/status/changed",{threadId:thread.id,status:threadStore.get(thread.id).status});
     }).catch(error=>{
+      if(error?.code==="CLAUDE_REWIND_REJECTED"){
+        const restored=restoreClaudeRejectedRewind(threadStore,thread.id,error);
+        if(restored){
+          emit("error",{threadId:thread.id,turnId:turn.id,message:"Claude could not safely rewind because the provider transcript changed. The original conversation was restored."});
+          emit("thread/reverted",{threadId:thread.id,thread:restored,recovered:true});
+          emit("thread/status/changed",{threadId:thread.id,status:restored?.status||{type:"idle"}});
+          return;
+        }
+      }
       persistUsage(null);
       const completed=threadStore.finishTurn(thread.id,turn.id,{status:"failed",error:{message:error.message}});emit("error",{threadId:thread.id,turnId:turn.id,message:error.message});emit("turn/completed",{threadId:thread.id,turn:completed});
     }).finally(()=>recoveryInFlight.delete(thread.id));
@@ -161,11 +185,13 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       emit("thread/tokenUsage/updated",{threadId,turnId,tokenUsage:{total:snapshot,last:snapshot,modelContextWindow:size||null,cost:update.cost||null}});
     }else if(type==="diff"){
       emit("turn/diff/updated",{threadId,turnId,diff:update.diff||[]});
+    }else if(type==="claude_fork_materialized"){
+      const current=threadStore.get(threadId)?.providerMeta||{};const next={...current};delete next.claudeFork;delete next.claudeRewindBackup;
+      threadStore.update(threadId,{providerMeta:next});
+      emit("thread/providerMetadata/updated",{threadId,type,update});
     }else if(type==="available_commands_update"||type==="config_option_update"||type==="current_mode_update"||type==="session_info_update"){
       const current=threadStore.get(threadId)?.providerMeta||{};
-      const next={...current,[type]:update};
-      if(type==="session_info_update"&&update.claudeForkMaterialized)delete next.claudeFork;
-      threadStore.update(threadId,{providerMeta:next});
+      threadStore.update(threadId,{providerMeta:{...current,[type]:update}});
       emit("thread/providerMetadata/updated",{threadId,type,update});
     }else if(type==="runtime_error"){
       emit("error",{threadId,turnId,message:update.message||"Agent runtime stopped"});
@@ -260,9 +286,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       if(session instanceof ClaudeAgentSession){
         const index=thread.turns.findIndex(item=>item.id===params.beforeTurnId);const prior=index>0?thread.turns[index-1]:null;const providerMessageId=prior?.providerMessageId||null;
         if(!providerMessageId)throw new Error("Claude Code cannot rewind before the first persisted user message in this thread.");
-        const forked=await session.rewindConversation(providerMessageId);
+        const forked=await session.rewindConversation(providerMessageId,{dropsTurn:turn?.providerUserMessageId||null});
         const currentMeta=threadStore.get(thread.id)?.providerMeta||{};
-        threadStore.update(thread.id,{providerSessionId:forked.sessionId,turns:thread.turns.slice(0,index),providerMeta:{...currentMeta,...(forked.lazyFork?{claudeFork:forked.lazyFork}:{})}});
+        threadStore.update(thread.id,{providerSessionId:forked.sessionId,turns:thread.turns.slice(0,index),providerMeta:{...currentMeta,...(forked.lazyFork?{claudeFork:forked.lazyFork}:{}),claudeRewindBackup:{sourceSessionId:thread.providerSessionId,retainedCount:index,removedTurns:thread.turns.slice(index),createdAt:Date.now()}}});
         emit("thread/reverted",{threadId:thread.id});return {thread:threadStore.get(thread.id)};
       }
       throw Object.assign(new Error(`${runtime} does not expose conversation rewind`),{code:-32601});

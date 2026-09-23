@@ -34,12 +34,12 @@ function usageTotal(usage={}){
 }
 
 export class ClaudeAgentSession{
-  constructor({command="claude",cwd=process.cwd(),env=process.env,permissionMode:mode="supervised",onUpdate,onPermission,onQuestion,version="0.0.0",spawnProcess=null,forkFromSessionId=null,resumeSessionAt=null,sdk=null}={}){
+  constructor({command="claude",cwd=process.cwd(),env=process.env,permissionMode:mode="supervised",onUpdate,onPermission,onQuestion,version="0.0.0",spawnProcess=null,forkFromSessionId=null,resumeSessionAt=null,resumeDropsTurn=null,sdk=null}={}){
     this.command=command;this.cwd=cwd;this.env=env;this.permissionMode=mode;this.onUpdate=onUpdate;this.onPermission=onPermission;this.onQuestion=onQuestion;this.version=version;this.spawnProcess=spawnProcess;
     this.sdk=sdk||{query,getSessionInfo,forkSession,renameSession,getSessionMessages,deleteSession};
     this.helperSharesRuntime=!this.spawnProcess&&String(this.env.CLAUDE_CONFIG_DIR||"")===String(process.env.CLAUDE_CONFIG_DIR||"");
     this.sessionId=null;this.model="sonnet";this.currentQuery=null;this.currentAbort=null;this.closed=false;this.startedOnce=false;this.lastSystem=null;
-    this.forkFromSessionId=forkFromSessionId||null;this.resumeSessionAt=resumeSessionAt||null;
+    this.forkFromSessionId=forkFromSessionId||null;this.resumeSessionAt=resumeSessionAt||null;this.resumeDropsTurn=resumeDropsTurn||null;
     this.initializeResult={agentCapabilities:{loadSession:true,sessionCapabilities:{fork:{},resume:{},close:{}}},agentInfo:{name:"Claude Code"}};
     this.sessionSetup=null;
   }
@@ -58,6 +58,12 @@ export class ClaudeAgentSession{
 
   async prompt(parts,{messageId=null,agent=null}={}){
     if(this.closed)throw new Error("Claude session is closed");
+    const pendingFork=this.forkFromSessionId?{
+      sourceSessionId:this.forkFromSessionId,
+      targetSessionId:this.sessionId,
+      resumeSessionAt:this.resumeSessionAt||null,
+      resumeDropsTurn:this.resumeDropsTurn||null,
+    }:null;
     const text=parts.map(part=>{
       if(part.type==="text")return String(part.text||"");
       if(part.type==="resource_link")return `Attached file: ${String(part.uri||"").replace(/^file:\/\//,"")}`;
@@ -103,19 +109,18 @@ export class ClaudeAgentSession{
       abortController,
       ...(this.spawnProcess?{spawnClaudeCodeProcess:this.spawnProcess}:{}),
       ...(this.forkFromSessionId
-        ?{resume:this.forkFromSessionId,forkSession:true,sessionId:this.sessionId,...(this.resumeSessionAt?{resumeSessionAt:this.resumeSessionAt}:{})}
+        ?{resume:this.forkFromSessionId,forkSession:true,sessionId:this.sessionId,...(this.resumeSessionAt?{resumeSessionAt:this.resumeSessionAt}:{}),...(this.resumeDropsTurn?{resumeDropsTurn:this.resumeDropsTurn}:{})}
         :this.startedOnce?{resume:this.sessionId}:{sessionId:this.sessionId}),
     };
     const runtime=this.sdk.query({prompt:text,options});this.currentQuery=runtime;
-    let result=null;let emittedText="";
+    let result=null;let emittedText="";let lastChainEntryId=null;
     try{
       for await(const message of runtime){
+        if((message.type==="user"||message.type==="assistant"||message.type==="system")&&message.uuid)lastChainEntryId=message.uuid;
         if(message.type==="system"&&message.subtype==="init"){
           this.sessionId=message.session_id||this.sessionId;this.startedOnce=true;this.lastSystem=message;
-          const materializedFork=this.forkFromSessionId?{sourceSessionId:this.forkFromSessionId,resumeSessionAt:this.resumeSessionAt||null,targetSessionId:this.sessionId}:null;
-          this.forkFromSessionId=null;this.resumeSessionAt=null;
           const models=Array.isArray(message.models)?message.models:[];
-          this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"session_info_update",model:message.model,tools:message.tools||[],mcpServers:message.mcp_servers||[],commands:message.slash_commands||[],agents:message.agents||[],capabilities:message.capabilities||[],models,...(materializedFork?{claudeForkMaterialized:materializedFork}:{})}});
+          this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"session_info_update",model:message.model,tools:message.tools||[],mcpServers:message.mcp_servers||[],commands:message.slash_commands||[],agents:message.agents||[],capabilities:message.capabilities||[],models}});
           continue;
         }
         if(message.type==="assistant"){
@@ -144,9 +149,23 @@ export class ClaudeAgentSession{
       }
     }finally{this.currentQuery=null;this.currentAbort=null}
     if(!result)throw new Error("Claude Code ended without a result message");
-    if(result.subtype!=="success")throw new Error(result.errors?.join?.("\n")||result.error||`Claude Code turn failed: ${result.subtype}`);
+    if(result.subtype!=="success"){
+      const error=new Error(result.errors?.join?.("\n")||result.error||`Claude Code turn failed: ${result.subtype}`);
+      if(String(error.message).startsWith("Resume rejected by --resume-drops-turn:")){
+        error.code="CLAUDE_REWIND_REJECTED";error.claudeFork=pendingFork;
+        if(pendingFork){
+          this.sessionId=pendingFork.sourceSessionId;this.startedOnce=true;
+          this.forkFromSessionId=null;this.resumeSessionAt=null;this.resumeDropsTurn=null;
+        }
+      }
+      throw error;
+    }
+    if(pendingFork){
+      this.forkFromSessionId=null;this.resumeSessionAt=null;this.resumeDropsTurn=null;
+      this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"claude_fork_materialized",fork:{...pendingFork,targetSessionId:this.sessionId}}});
+    }
     if(!emittedText&&result.result)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:result.result}}});
-    return {stopReason:result.is_error?"refusal":"end_turn",userMessageId:result.user_message_uuid||messageId||null,raw:result};
+    return {stopReason:result.is_error?"refusal":"end_turn",providerMessageId:lastChainEntryId||null,userMessageId:result.user_message_uuid||messageId||null,raw:result};
   }
 
   async setModel(model){this.model=model||this.model;if(this.currentQuery)await this.currentQuery.setModel(this.model);return {modelId:this.model}}
@@ -161,10 +180,10 @@ export class ClaudeAgentSession{
   }
   async rename(name){this.#requireHostSessionHelper("rename");return this.sdk.renameSession(this.sessionId,name,{dir:this.cwd})}
   async history(){this.#requireHostSessionHelper("history");return this.sdk.getSessionMessages(this.sessionId,{dir:this.cwd,includeSystemMessages:false})}
-  async rewindConversation(upToMessageId){
+  async rewindConversation(upToMessageId,{dropsTurn=null}={}){
     const sourceSessionId=this.sessionId,targetSessionId=randomUUID();
-    this.sessionId=targetSessionId;this.startedOnce=false;this.forkFromSessionId=sourceSessionId;this.resumeSessionAt=upToMessageId||null;
-    return {sessionId:targetSessionId,lazyFork:{sourceSessionId,targetSessionId,resumeSessionAt:this.resumeSessionAt}};
+    this.sessionId=targetSessionId;this.startedOnce=false;this.forkFromSessionId=sourceSessionId;this.resumeSessionAt=upToMessageId||null;this.resumeDropsTurn=dropsTurn||null;
+    return {sessionId:targetSessionId,lazyFork:{sourceSessionId,targetSessionId,resumeSessionAt:this.resumeSessionAt,resumeDropsTurn:this.resumeDropsTurn}};
   }
   async close(){if(this.closed)return;this.closed=true;await this.cancel().catch(()=>{});try{this.currentQuery?.close()}catch{}}
   async delete(){await this.close();this.#requireHostSessionHelper("delete");return this.sdk.deleteSession(this.sessionId,{dir:this.cwd})}

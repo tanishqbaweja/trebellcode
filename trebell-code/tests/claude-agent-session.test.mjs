@@ -9,7 +9,9 @@ function fakeQueryCapture(calls){
       async *[Symbol.asyncIterator](){
         yield {type:"system",subtype:"init",session_id:options.sessionId||options.resume,model:"sonnet",models:[],tools:[],mcp_servers:[],slash_commands:[],agents:[],capabilities:[]};
         yield {type:"assistant",uuid:"assistant-1",message:{content:[{type:"text",text:"ok"}]}};
-        yield {type:"result",subtype:"success",session_id:options.sessionId||options.resume,result:"ok",usage:{}};
+        yield {type:"user",uuid:"tool-result-1",parent_tool_use_id:null,message:{content:[{type:"tool_result",tool_use_id:"tool-1",content:"done"}]}};
+        yield {type:"assistant",uuid:"assistant-final",message:{content:[{type:"text",text:"done"}]}};
+        yield {type:"result",subtype:"success",session_id:options.sessionId||options.resume,result:"ok",usage:{},user_message_uuid:"prompt-1"};
       },
       async setModel(){},async interrupt(){},close(){},
     };
@@ -37,24 +39,54 @@ test("Claude forks materialize lazily through resume plus forkSession in the act
   const fork=await session.fork();
   const forkSession=new ClaudeAgentSession({cwd:"/repo",sdk,onUpdate:value=>updates.push(value),forkFromSessionId:fork.lazyFork.sourceSessionId,resumeSessionAt:fork.lazyFork.resumeSessionAt});
   await forkSession.start({providerSessionId:fork.sessionId});
-  await forkSession.prompt([{type:"text",text:"continue"}]);
+  const result=await forkSession.prompt([{type:"text",text:"continue"}]);
   assert.equal(calls.at(-1).options.resume,"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
   assert.equal(calls.at(-1).options.forkSession,true);
   assert.equal(calls.at(-1).options.sessionId,fork.sessionId);
+  assert.equal(result.providerMessageId,"assistant-final");
+  assert.equal(result.userMessageId,"prompt-1");
   assert.equal(forkSession.forkFromSessionId,null);
-  assert.ok(updates.some(item=>item.update?.claudeForkMaterialized?.targetSessionId===fork.sessionId));
+  assert.ok(updates.some(item=>item.update?.sessionUpdate==="claude_fork_materialized"&&item.update?.fork?.targetSessionId===fork.sessionId));
 });
 
-test("Claude rewind arms a lazy fork at the requested chain entry",async()=>{
+test("Claude rewind arms a validated lazy fork at the requested chain entry",async()=>{
   const calls=[];
   const sdk={query:fakeQueryCapture(calls),getSessionInfo:async()=>({}),renameSession:async()=>{},getSessionMessages:async()=>[],deleteSession:async()=>{}};
   const session=new ClaudeAgentSession({cwd:"/repo",sdk});
   await session.start({providerSessionId:"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"});
-  const rewind=await session.rewindConversation("message-kept");
+  const rewind=await session.rewindConversation("message-kept",{dropsTurn:"prompt-removed"});
   await session.prompt([{type:"text",text:"redo"}]);
   const options=calls.at(-1).options;
   assert.equal(options.resume,"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
   assert.equal(options.forkSession,true);
   assert.equal(options.sessionId,rewind.sessionId);
   assert.equal(options.resumeSessionAt,"message-kept");
+  assert.equal(options.resumeDropsTurn,"prompt-removed");
+});
+
+test("Claude rewind rejection returns the session to its original continuation",async()=>{
+  const calls=[];
+  const sdk={
+    query:({prompt,options})=>{
+      calls.push({prompt,options});
+      return {
+        async *[Symbol.asyncIterator](){
+          yield {type:"system",subtype:"init",session_id:options.sessionId,model:"sonnet",models:[],tools:[],mcp_servers:[],slash_commands:[],agents:[],capabilities:[]};
+          yield {type:"result",subtype:"error_during_execution",session_id:options.sessionId,errors:["Resume rejected by --resume-drops-turn: transcript changed"],usage:{}};
+        },
+        async setModel(){},async interrupt(){},close(){},
+      };
+    },
+    getSessionInfo:async()=>({}),renameSession:async()=>{},getSessionMessages:async()=>[],deleteSession:async()=>{},
+  };
+  const source="cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const session=new ClaudeAgentSession({cwd:"/repo",sdk});
+  await session.start({providerSessionId:source});
+  await session.rewindConversation("kept-entry",{dropsTurn:"removed-prompt"});
+  let failure=null;try{await session.prompt([{type:"text",text:"retry"}])}catch(error){failure=error}
+  assert.equal(failure?.code,"CLAUDE_REWIND_REJECTED");
+  assert.equal(session.sessionId,source);
+  assert.equal(session.startedOnce,true);
+  assert.equal(session.forkFromSessionId,null);
+  assert.equal(calls.at(-1).options.resumeDropsTurn,"removed-prompt");
 });
