@@ -1,12 +1,43 @@
 import { EventEmitter } from "node:events";
+import { homedir } from "node:os";
 import readline from "node:readline";
 import spawn from "cross-spawn";
 
 const DEFAULT_TIMEOUT_MS=180_000;
+export const ACP_STDERR_TAIL_MAX_CHARS=4096;
+
+const PAIRING_URL_PATTERN=/https?:\/\/[^\s]*\/pair#[^\s]*/gi;
+const BEARER_TOKEN_PATTERN=/\bBearer\s+[A-Za-z0-9._\-+=/]+/gi;
+const BASIC_AUTH_PATTERN=/\bAuthorization:\s*Basic\s+\S+/gi;
+const API_KEY_HEADER_PATTERN=/\bx-api-key:\s*\S+/gi;
+const SECRET_TOKEN_PATTERN=/\b(?:sk-[A-Za-z0-9][A-Za-z0-9-]{7,}|ghp_[A-Za-z0-9]+|xox[a-zA-Z]-[A-Za-z0-9-]+)\b/g;
+
+export function appendAcpStderrTail(current,chunk){
+  const next=String(current||"")+String(chunk||"");
+  return next.length<=ACP_STDERR_TAIL_MAX_CHARS?next:next.slice(-ACP_STDERR_TAIL_MAX_CHARS);
+}
+
+export function sanitizeAcpStderrExcerpt(text,environment=process.env){
+  let result=String(text||"").replaceAll("\0","");
+  const homes=[environment.HOME,environment.USERPROFILE,homedir()].filter(value=>typeof value==="string"&&value.length>1);
+  for(const home of new Set(homes))result=result.split(home).join("~");
+  return result
+    .replace(PAIRING_URL_PATTERN,"[pairing-url]")
+    .replace(BEARER_TOKEN_PATTERN,"Bearer [redacted]")
+    .replace(BASIC_AUTH_PATTERN,"Authorization: Basic [redacted]")
+    .replace(API_KEY_HEADER_PATTERN,"x-api-key: [redacted]")
+    .replace(SECRET_TOKEN_PATTERN,"[redacted]")
+    .trim();
+}
 
 function processError(command,error){
   const detail=error instanceof Error?error.message:String(error);
   return new Error(`Could not start ACP runtime '${command}': ${detail}`);
+}
+function processExitError(code,signal,stderr,environment){
+  const base=`ACP runtime exited code=${code} signal=${signal}`;
+  const detail=sanitizeAcpStderrExcerpt(stderr,environment);
+  return new Error(detail?base+"\n"+detail:base);
 }
 
 /** Lightweight ACP v1 JSON-RPC/NDJSON client used by Cursor, Grok and OpenCode. */
@@ -26,6 +57,8 @@ export class AcpClient extends EventEmitter{
     this.child=null;
     this.started=false;
     this.closed=false;
+    this.stderrTail="";
+    this.terminationError=null;
   }
 
   async start(){
@@ -35,6 +68,15 @@ export class AcpClient extends EventEmitter{
       ?this.spawnProcess({command:this.command,args:this.args,cwd:this.cwd,env:this.env,stdio:["pipe","pipe","pipe"]})
       :spawn(this.command,this.args,{cwd:this.cwd,env:this.env,windowsHide:true,stdio:["pipe","pipe","pipe"]});
     this.child=child;
+    readline.createInterface({input:child.stdout,crlfDelay:Infinity}).on("line",line=>this.#handleLine(line));
+    child.stderr?.on("data",chunk=>{
+      const text=String(chunk);
+      this.stderrTail=appendAcpStderrTail(this.stderrTail,text);
+      this.emit("stderr",text);
+      try{this.onStderr?.(text)}catch{}
+    });
+    child.on("error",error=>this.#terminate(processError(this.command,error)));
+    child.on("close",(code,signal)=>this.#terminate(processExitError(code,signal,this.stderrTail,this.env)));
     await new Promise((resolve,reject)=>{
       let settled=false;
       const done=()=>{if(settled)return;settled=true;cleanup();resolve()};
@@ -44,19 +86,12 @@ export class AcpClient extends EventEmitter{
       child.once("error",fail);
     });
     this.started=true;
-    readline.createInterface({input:child.stdout,crlfDelay:Infinity}).on("line",line=>this.#handleLine(line));
-    child.stderr?.on("data",chunk=>{
-      const text=String(chunk);
-      this.emit("stderr",text);
-      try{this.onStderr?.(text)}catch{}
-    });
-    child.on("error",error=>this.#terminate(processError(this.command,error)));
-    child.on("exit",(code,signal)=>this.#terminate(new Error(`ACP runtime exited code=${code} signal=${signal}`)));
+    if(this.closed)throw this.terminationError||new Error("ACP runtime exited during startup");
     return this;
   }
 
   request(method,params={},timeoutMs=this.timeoutMs){
-    if(!this.child||this.closed)return Promise.reject(new Error("ACP runtime is not connected"));
+    if(!this.child||this.closed)return Promise.reject(this.terminationError||new Error("ACP runtime is not connected"));
     const id=this.nextId++;
     this.#write({jsonrpc:"2.0",id,method,params});
     return new Promise((resolve,reject)=>{
@@ -158,6 +193,7 @@ export class AcpClient extends EventEmitter{
 
   #terminate(error){
     if(this.closed)return;
+    this.terminationError=error;
     this.closed=true;
     for(const [id,pending] of this.pending){clearTimeout(pending.timer);pending.reject(error);this.pending.delete(id)}
     this.emit("terminated",error);
