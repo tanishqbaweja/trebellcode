@@ -202,8 +202,16 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     catch(error){setErrors(prev=>({...prev,"plugin/share/updateTargets":error.message||String(error)}))}finally{setBusy("")}
   }
   async function toggleFeature(feature){
-    if(!rpc)return;setBusy("feature:"+feature.name);
-    try{await request("experimentalFeature/enablement/set",{enablement:{[feature.name]:!feature.enabled}});await refresh()}finally{setBusy("")}
+    if(!rpc)return;setBusy("feature:"+feature.name);setErrors(prev=>({...prev,"experimentalFeature/enablement/set":null}));
+    try{
+      const result=await request("experimentalFeature/enablement/set",{enablement:{[feature.name]:!feature.enabled}});
+      if(!Object.prototype.hasOwnProperty.call(result?.enablement||{},feature.name)){
+        setErrors(prev=>({...prev,"experimentalFeature/enablement/set":feature.name+" is read-only through the app-server. Enable it in Codex config, then restart or refresh the runtime."}));
+        return;
+      }
+      await refresh();
+    }catch(error){setErrors(prev=>({...prev,"experimentalFeature/enablement/set":error.message||String(error)}))}
+    finally{setBusy("")}
   }
   async function addMarketplace(){
     const source=marketplaceSource.trim();if(!source||!rpc)return;setBusy("marketplace:add");
@@ -454,7 +462,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
 
       <Section title="Experimental features" icon={FlaskConical} count={data.features.length}>
         <div className="capability-list feature-list">{data.features.map(feature=><div key={feature.name}><div><strong>{feature.displayName||feature.name}</strong><span>{feature.description||feature.stage}</span></div><button className={feature.enabled?"active":""} onClick={()=>toggleFeature(feature)} disabled={!!busy}>{feature.enabled?"On":"Off"}</button></div>)}</div>
-        <ErrorLine value={errors["experimentalFeature/list"]}/>
+        <ErrorLine value={errors["experimentalFeature/list"]}/><ErrorLine value={errors["experimentalFeature/enablement/set"]}/>
       </Section>
 
       <Section title="Conversation history" icon={RefreshCw} count={historyImport?.sessions?.length||0}>
