@@ -56,6 +56,21 @@ test("chat workspace is visually bounded and panes resize",async({page,request})
   await expect(composer.getByRole("button",{name:"Files",exact:true})).toHaveCount(0);
   await expect(composer.getByRole("button",{name:"Skills",exact:true})).toHaveCount(0);
   await page.screenshot({path:auditDir+"chat-1600x980.png",fullPage:true});
+  const composerInput=page.getByTestId("composer");
+  const shortHeight=(await box(composerInput)).height;
+  await composerInput.fill("First line\nSecond line\nThird line\nFourth line");
+  const multilineHeight=(await box(composerInput)).height;
+  expect(multilineHeight).toBeGreaterThan(shortHeight+15);
+  expect(multilineHeight).toBeLessThanOrEqual(160);
+  await page.screenshot({path:auditDir+"chat-composer-multiline-1600x980.png",fullPage:true});
+  await composerInput.fill(Array.from({length:40},(_,index)=>`Long draft line ${index+1} with enough content to exercise bounded composer growth.`).join("\n"));
+  const cappedHeight=(await box(composerInput)).height;
+  expect(cappedHeight).toBeGreaterThanOrEqual(158);
+  expect(cappedHeight).toBeLessThanOrEqual(160);
+  expect(await composerInput.evaluate(node=>getComputedStyle(node).overflowY)).toBe("auto");
+  await page.screenshot({path:auditDir+"chat-composer-capped-1600x980.png",fullPage:true});
+  await composerInput.fill("");
+  expect((await box(composerInput)).height).toBeLessThanOrEqual(shortHeight+1);
 
   const sidebarResizer=page.getByTestId("sidebar-resizer");
   const sidebarHandle=await box(sidebarResizer);
@@ -671,4 +686,45 @@ test("Claude thread can switch compatible account profiles from the model picker
     await new Promise(resolve=>relayServer.close(()=>resolve()));
     await rm(home,{recursive:true,force:true});
   }
+});
+
+test("app navigation history moves across pages and right-panel tabs",async({page,request})=>{
+  test.setTimeout(40_000);
+  await prepare(page,request);
+
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Settings",level:1})).toBeVisible();
+
+  await page.keyboard.down("Control");
+  await page.keyboard.press("[");
+  await page.keyboard.up("Control");
+  await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
+  await page.screenshot({path:auditDir+"navigation-back-projects-1600x980.png",fullPage:true});
+
+  await page.keyboard.down("Control");
+  await page.keyboard.press("]");
+  await page.keyboard.up("Control");
+  await expect(page.getByRole("heading",{name:"Settings",level:1})).toBeVisible();
+
+  await page.getByRole("button",{name:"Threads",exact:true}).click();
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await page.getByTestId("right-panel-toggle").click();
+  const panel=page.getByTestId("right-panel");
+  const tabs=panel.locator(".context-panel-tab-scroll");
+  await expect(tabs.getByRole("button",{name:"Files",exact:true})).toHaveClass(/active/);
+  await tabs.getByRole("button",{name:"Git",exact:true}).click();
+  await expect(tabs.getByRole("button",{name:"Git",exact:true})).toHaveClass(/active/);
+
+  await page.keyboard.down("Control");
+  await page.keyboard.press("[");
+  await page.keyboard.up("Control");
+  await expect(tabs.getByRole("button",{name:"Files",exact:true})).toHaveClass(/active/);
+  await page.screenshot({path:auditDir+"navigation-back-files-panel-1600x980.png",fullPage:true});
+
+  await page.keyboard.down("Control");
+  await page.keyboard.press("]");
+  await page.keyboard.up("Control");
+  await expect(tabs.getByRole("button",{name:"Git",exact:true})).toHaveClass(/active/);
 });

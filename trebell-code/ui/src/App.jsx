@@ -42,6 +42,7 @@ import { parseVisualizationMessage, visualizationUrl } from "./visualization-uti
 import { captureThreadScrollPosition, rememberThreadScrollPosition, restoredThreadScrollTop } from "./thread-scroll.js";
 import { DEFAULT_LAYOUT, clampLayoutValue, normalizeLayoutPreferences } from "./layout-preferences.js";
 import { nativeThreadSearchMatches, threadListParams } from "./thread-list-query.js";
+import { resizeTextarea } from "./textarea-size.js";
 
 const MAX_COMPOSER_ATTACHMENTS=100;
 const MAX_COMPOSER_CHARS=120_000;
@@ -237,7 +238,9 @@ const SLASH_COMMANDS=[
 function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,permissionMode,setPermissionMode,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onModelPickerOpenChange}){
   const [modelOpen,setModelOpen]=useState(false);
   const [listening,setListening]=useState(false);
+  const composerRef=useRef(null);
   const speechSupported=typeof window!=="undefined"&&Boolean(window.SpeechRecognition||window.webkitSpeechRecognition);
+  useLayoutEffect(()=>{resizeTextarea(composerRef.current,{min:40,max:160})},[prompt]);
   useEffect(()=>{onModelPickerOpenChange?.(modelOpen)},[modelOpen,onModelPickerOpenChange]);
   useEffect(()=>{
     const onPicker=event=>{
@@ -306,7 +309,7 @@ function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgr
     {slashOpen&&slashItems.length>0&&<div className="slash-menu">{slashItems.map(([cmd,desc])=><button key={cmd} onMouseDown={e=>{e.preventDefault();setPrompt(cmd+" ")}}><strong>{cmd}</strong><span>{desc}</span></button>)}</div>}
     {(contextChips||[]).length>0&&<div className="context-chip-row" data-testid="context-chips">{contextChips.map(chip=><span className={"context-chip kind-"+(chip.kind||"context")} data-testid="context-chip" key={chip.id||chip.path} title={chip.path}><Link2 size={11}/><strong>{chip.label||"Context"}</strong>{chip.detail&&<small>{chip.detail}</small>}<button onClick={()=>onRemoveContext(chip.path)} title="Remove context"><X size={10}/></button></span>)}</div>}
     <div className="attachment-shelf">{attachments.filter(path=>!contextPaths.has(path)).map(path=><span key={path}><Paperclip size={11}/>{String(path).split(/[\\/]/).pop()}<button onClick={()=>onRemoveAttachment(path)}><X size={10}/></button></span>)}</div>
-    <textarea data-testid="composer" value={prompt} onChange={e=>{onPromptEdit?.();setPrompt(e.target.value)}} onKeyDown={keyDown} onPaste={onPaste} placeholder={providerReady?(running?(agentRuntime==="codex"&&settings.followUpMode==="steer"?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…"):(agentRuntime!=="codex"?`Configure ${agentRuntimeLabel} in Settings…`:provider==="freebuff"?"Sign in to Freebuff to start…":"Configure the selected provider in Settings…")} disabled={!providerReady}/>
+    <textarea ref={composerRef} data-testid="composer" value={prompt} onChange={e=>{onPromptEdit?.();setPrompt(e.target.value)}} onKeyDown={keyDown} onPaste={onPaste} placeholder={providerReady?(running?(agentRuntime==="codex"&&settings.followUpMode==="steer"?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…"):(agentRuntime!=="codex"?`Configure ${agentRuntimeLabel} in Settings…`:provider==="freebuff"?"Sign in to Freebuff to start…":"Configure the selected provider in Settings…")} disabled={!providerReady}/>
     <div className="composer-bar"><div className="composer-left">
       <button className="circle-btn" onClick={onPickFiles} title="Attach files" aria-label="Attach files"><Plus size={18}/></button>
       {window.trebellDesktop?.captureScreen&&<button className="circle-btn" onClick={onCaptureScreen} title="Capture desktop screenshot" aria-label="Capture desktop screenshot"><Camera size={15}/></button>}
@@ -354,8 +357,41 @@ export default function App(){
   const [threadTelemetry,setThreadTelemetry]=useState({});
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false);
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"});
-  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const threadMessageSearchCacheRef=useRef(new Map()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
+  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);
+  const navigationKey=location=>[location.section,location.threadId||"",location.rightPanelOpen?location.rightPanelTab||"files":""].join("|");
+  useEffect(()=>{
+    if(!initialLoaded)return;
+    const history=navigationHistoryRef.current;
+    const location={section,threadId:activeThread?.id||null,rightPanelOpen:Boolean(rightPanelOpen),rightPanelTab:rightPanelTab||"files"};
+    const key=navigationKey(location);
+    if(history.expectedKey){
+      if(key===history.expectedKey)history.expectedKey=null;
+      return;
+    }
+    if(history.entries[history.index]&&navigationKey(history.entries[history.index])===key)return;
+    history.entries=history.entries.slice(0,history.index+1);
+    history.entries.push(location);
+    if(history.entries.length>80)history.entries.shift();
+    history.index=history.entries.length-1;
+  },[initialLoaded,section,activeThread?.id,rightPanelOpen,rightPanelTab]);
+  async function navigateHistory(delta){
+    const history=navigationHistoryRef.current;
+    const nextIndex=history.index+delta;
+    if(nextIndex<0||nextIndex>=history.entries.length)return;
+    const target=history.entries[nextIndex];
+    history.index=nextIndex;history.expectedKey=navigationKey(target);
+    if(target.threadId&&activeThreadRef.current?.id!==target.threadId){
+      const thread=threads.find(item=>item.id===target.threadId);
+      if(thread)await openThread(thread);
+    }else if(!target.threadId&&activeThreadRef.current?.id&&target.section==="chat"){
+      await newChat();
+    }
+    setRightPanelTab(target.rightPanelTab||"files");
+    setRightPanelOpen(Boolean(target.rightPanelOpen));
+    if(!target.rightPanelOpen)setRightPanelMaximized(false);
+    setSection(target.section||"chat");
+  }
   useEffect(()=>{try{localStorage.setItem("trebell-layout-v1",JSON.stringify(layoutPrefs))}catch{}},[layoutPrefs]);
   function beginLayoutResize(kind,event){
     if(event.button!==0)return;
@@ -856,6 +892,8 @@ export default function App(){
       event.preventDefault();
       if(command==="newChat")newChat();
       else if(command==="commandPalette")setPaletteOpen(value=>!value);
+      else if(command==="navigationBack")navigateHistory(-1).catch(()=>{});
+      else if(command==="navigationForward")navigateHistory(1).catch(()=>{});
       else if(command==="sidebarToggle")setSidebarOpen(value=>!value);
       else if(command==="threadStop")stop().catch(()=>{});
       else if(command==="threadSettle"&&activeThread?.id)reversibleThreadAction(activeThread,activeThread.section?.name==="Settled"?"active":"settle").catch(()=>{});
