@@ -184,7 +184,7 @@ export class EnvironmentManager {
         wsl={available:result.exitCode===0,distros,error:result.exitCode===0?null:(result.stderr||"WSL is unavailable")};
       }catch(error){wsl={available:false,distros:[],error:error.message};}
     }
-    return {local:{available:true},ssh,wsl};
+    return {local:{available:true,platform:this.platform},ssh,wsl};
   }
 
   async discover(){

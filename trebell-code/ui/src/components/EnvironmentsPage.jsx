@@ -10,6 +10,8 @@ export default function EnvironmentsPage(){
   const [draft,setDraft]=useState({type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"codex",themeDirectory:""});
   const [busy,setBusy]=useState("");
   const [message,setMessage]=useState("");
+  const localPlatform=data.capabilities?.local?.platform||"local";
+  const localPlatformLabel={win32:"Windows",linux:"Linux",darwin:"macOS"}[localPlatform]||"Local";
 
   async function refresh(){
     const [e,r]=await Promise.all([api("/api/environments"),api("/api/remote-access")]);
@@ -71,15 +73,15 @@ export default function EnvironmentsPage(){
   }
 
   return <div className="environments-page">
-    <div className="capabilities-toolbar"><div><h2>Environments & remote access</h2><p>Run the active coding-agent runtime on local Windows, inside WSL, or on an SSH machine. LAN remote control pairs another device with a one-time link and gives it a revocable session.</p></div><button onClick={refresh}><RefreshCw size={13}/> Refresh</button></div>
+    <div className="capabilities-toolbar"><div><h2>Environments & remote access</h2><p>Run the active coding-agent runtime on this {localPlatformLabel} host, inside WSL when available, or on an SSH machine. LAN remote control pairs another device with a one-time link and gives it a revocable session.</p></div><button onClick={refresh}><RefreshCw size={13}/> Refresh</button></div>
     {message&&<div className="inline-status">{message}</div>}
     <div className="environment-grid">
       <section className="capability-card">
         <div className="capability-card-head"><span><Laptop2 size={15}/><strong>Configured environments</strong></span><em>{data.profiles.length}</em></div>
         <div className="environment-list">
-          <div><div><strong>Local machine</strong><span>WINDOWS · Trebell desktop host</span></div><div>{!data.activeEnvironmentId?<em className="ok">active</em>:<button onClick={()=>activate(null)} disabled={!!busy}>Use for agent</button>}</div></div>
+          <div><div><strong>Local machine</strong><span>{localPlatformLabel.toUpperCase()} · {window.trebellDesktop?"Trebell desktop host":"Trebell host"}</span></div><div>{!data.activeEnvironmentId?<em className="ok">active</em>:<button onClick={()=>activate(null)} disabled={!!busy}>Use for agent</button>}</div></div>
           {data.profiles.map(profile=>{const enabled=profile.enabled!==false;return <div key={profile.id}><div><strong>{profile.name}</strong><span>{profile.type.toUpperCase()} · {profile.cwd||profile.host||profile.distro||"default"}{profile.themeDirectory?" · themes "+profile.themeDirectory:""}{enabled?"":" · switched off"}</span></div><div>{data.activeEnvironmentId===profile.id?<em className="ok">agent active</em>:<button onClick={()=>activate(profile.id)} disabled={!!busy||!enabled}>Use for agent</button>}<button onClick={()=>probe(profile.id)} disabled={!!busy||!enabled}>Test</button><button onClick={()=>setEnabled(profile.id,!enabled)} disabled={!!busy}>{enabled?"Switch off":"Switch on"}</button><button className="danger" onClick={()=>remove(profile.id)} disabled={data.activeEnvironmentId===profile.id}><Trash2 size={12}/></button></div></div>})}</div>
-        {!data.profiles.length&&<p>No saved remote environments. The local Windows agent is active by default.</p>}
+        {!data.profiles.length&&<p>No saved remote environments. The local {localPlatformLabel} agent is active by default.</p>}
       </section>
       <section className="capability-card environment-create">
         <div className="capability-card-head"><span><Plus size={15}/><strong>Add environment</strong></span></div>

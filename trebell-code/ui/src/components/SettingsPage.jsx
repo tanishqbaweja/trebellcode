@@ -388,7 +388,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       </div>}
       <div className="settings-grid">
       <div className="settings-card about-card" {...targetProps("general-about")} hidden={settingsSection!=="general"}>
-        <div className="about-brand"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/><div><h3>Trebell Code</h3><p>Desktop coding-agent harness</p></div></div>
+        <div className="about-brand"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/><div><h3>Trebell Code</h3><p>{desktopAvailable?"Desktop coding-agent harness":"Coding-agent workspace"}</p></div></div>
         <span className="about-version">v{diagnostics?.version||update?.current||"unknown"}</span><button onClick={onOpenLicenses}><FileText size={12}/> View licenses</button>
       </div>
       <div className="settings-card agent-runtime-settings" {...targetProps("agents-harness")} hidden={settingsSection!=="agents"}>
