@@ -5,6 +5,7 @@ export class CodexRpcClient {
     this.onNotification = onNotification;
     this.onServerRequest = onServerRequest;
     this.onStatus = onStatus;
+    this.notificationListeners = new Set();
     this.socket = null;
     this.nextId = 1;
     this.pending = new Map();
@@ -74,6 +75,12 @@ export class CodexRpcClient {
     this.socket.send(JSON.stringify({ method, params }));
   }
 
+  subscribeNotifications(listener) {
+    if (typeof listener !== "function") return () => {};
+    this.notificationListeners.add(listener);
+    return () => this.notificationListeners.delete(listener);
+  }
+
   respond(id, result) {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
     this.socket.send(JSON.stringify({ id, result }));
@@ -111,6 +118,11 @@ export class CodexRpcClient {
       return;
     }
 
-    if (message.method) this.onNotification?.(message);
+    if (message.method) {
+      this.onNotification?.(message);
+      for (const listener of [...this.notificationListeners]) {
+        try { listener(message); } catch {}
+      }
+    }
   }
 }

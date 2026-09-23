@@ -40,3 +40,19 @@ test("Codex RPC initialization advertises MCP form elicitation support",async()=
     client.close();
   }finally{globalThis.WebSocket=original}
 });
+
+test("Codex RPC notifications support independent subscribers without replacing the app handler",async()=>{
+  const original=globalThis.WebSocket;globalThis.WebSocket=MockWebSocket;
+  try{
+    const primary=[],secondary=[];const client=new CodexRpcClient("ws://test",{onNotification:message=>primary.push(message.method)});
+    const unsubscribe=client.subscribeNotifications(message=>secondary.push(message.method));
+    await client.connect();
+    client.socket.emit("message",{data:JSON.stringify({method:"app/list/updated",params:{}})});
+    assert.deepEqual(primary,["app/list/updated"]);assert.deepEqual(secondary,["app/list/updated"]);
+    unsubscribe();
+    client.socket.emit("message",{data:JSON.stringify({method:"mcpServer/startupStatus/updated",params:{}})});
+    assert.deepEqual(primary,["app/list/updated","mcpServer/startupStatus/updated"]);
+    assert.deepEqual(secondary,["app/list/updated"]);
+    client.close();
+  }finally{globalThis.WebSocket=original}
+});
