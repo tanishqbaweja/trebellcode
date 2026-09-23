@@ -34,9 +34,12 @@ function usageTotal(usage={}){
 }
 
 export class ClaudeAgentSession{
-  constructor({command="claude",cwd=process.cwd(),env=process.env,permissionMode:mode="supervised",onUpdate,onPermission,onQuestion,version="0.0.0",spawnProcess=null}={}){
+  constructor({command="claude",cwd=process.cwd(),env=process.env,permissionMode:mode="supervised",onUpdate,onPermission,onQuestion,version="0.0.0",spawnProcess=null,forkFromSessionId=null,resumeSessionAt=null,sdk=null}={}){
     this.command=command;this.cwd=cwd;this.env=env;this.permissionMode=mode;this.onUpdate=onUpdate;this.onPermission=onPermission;this.onQuestion=onQuestion;this.version=version;this.spawnProcess=spawnProcess;
+    this.sdk=sdk||{query,getSessionInfo,forkSession,renameSession,getSessionMessages,deleteSession};
+    this.helperSharesRuntime=!this.spawnProcess&&String(this.env.CLAUDE_CONFIG_DIR||"")===String(process.env.CLAUDE_CONFIG_DIR||"");
     this.sessionId=null;this.model="sonnet";this.currentQuery=null;this.currentAbort=null;this.closed=false;this.startedOnce=false;this.lastSystem=null;
+    this.forkFromSessionId=forkFromSessionId||null;this.resumeSessionAt=resumeSessionAt||null;
     this.initializeResult={agentCapabilities:{loadSession:true,sessionCapabilities:{fork:{},resume:{},close:{}}},agentInfo:{name:"Claude Code"}};
     this.sessionSetup=null;
   }
@@ -44,8 +47,8 @@ export class ClaudeAgentSession{
   async start({providerSessionId=null,model=null}={}){
     this.sessionId=providerSessionId||randomUUID();
     this.model=model||"sonnet";
-    if(providerSessionId){
-      const existing=await getSessionInfo(providerSessionId,{dir:this.cwd}).catch(()=>undefined);
+    if(providerSessionId&&!this.forkFromSessionId){
+      const existing=this.helperSharesRuntime?await this.sdk.getSessionInfo(providerSessionId,{dir:this.cwd}).catch(()=>undefined):true;
       if(!existing)throw new Error(`Claude Code session ${providerSessionId} was not found in ${this.cwd}`);
       this.startedOnce=true;
     }
@@ -99,16 +102,20 @@ export class ClaudeAgentSession{
       includePartialMessages:false,
       abortController,
       ...(this.spawnProcess?{spawnClaudeCodeProcess:this.spawnProcess}:{}),
-      ...(this.startedOnce?{resume:this.sessionId}:{sessionId:this.sessionId}),
+      ...(this.forkFromSessionId
+        ?{resume:this.forkFromSessionId,forkSession:true,sessionId:this.sessionId,...(this.resumeSessionAt?{resumeSessionAt:this.resumeSessionAt}:{})}
+        :this.startedOnce?{resume:this.sessionId}:{sessionId:this.sessionId}),
     };
-    const runtime=query({prompt:text,options});this.currentQuery=runtime;
+    const runtime=this.sdk.query({prompt:text,options});this.currentQuery=runtime;
     let result=null;let emittedText="";
     try{
       for await(const message of runtime){
         if(message.type==="system"&&message.subtype==="init"){
           this.sessionId=message.session_id||this.sessionId;this.startedOnce=true;this.lastSystem=message;
+          const materializedFork=this.forkFromSessionId?{sourceSessionId:this.forkFromSessionId,resumeSessionAt:this.resumeSessionAt||null,targetSessionId:this.sessionId}:null;
+          this.forkFromSessionId=null;this.resumeSessionAt=null;
           const models=Array.isArray(message.models)?message.models:[];
-          this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"session_info_update",model:message.model,tools:message.tools||[],mcpServers:message.mcp_servers||[],commands:message.slash_commands||[],agents:message.agents||[],capabilities:message.capabilities||[],models}});
+          this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"session_info_update",model:message.model,tools:message.tools||[],mcpServers:message.mcp_servers||[],commands:message.slash_commands||[],agents:message.agents||[],capabilities:message.capabilities||[],models,...(materializedFork?{claudeForkMaterialized:materializedFork}:{})}});
           continue;
         }
         if(message.type==="assistant"){
@@ -145,10 +152,20 @@ export class ClaudeAgentSession{
   async setModel(model){this.model=model||this.model;if(this.currentQuery)await this.currentQuery.setModel(this.model);return {modelId:this.model}}
   async cancel(){try{if(this.currentQuery)await this.currentQuery.interrupt();else this.currentAbort?.abort()}catch{this.currentAbort?.abort()}}
   async compact(){return this.prompt([{type:"text",text:"/compact"}])}
-  async fork({upToMessageId=null}={}){return forkSession(this.sessionId,{dir:this.cwd,...(upToMessageId?{upToMessageId}:{})})}
-  async rename(name){return renameSession(this.sessionId,name,{dir:this.cwd})}
-  async history(){return getSessionMessages(this.sessionId,{dir:this.cwd,includeSystemMessages:false})}
-  async rewindConversation(upToMessageId){const forked=await this.fork({upToMessageId});this.sessionId=forked.sessionId;this.startedOnce=true;return forked}
+  async fork({upToMessageId=null}={}){
+    const targetSessionId=randomUUID();
+    return {sessionId:targetSessionId,lazyFork:{sourceSessionId:this.sessionId,targetSessionId,resumeSessionAt:upToMessageId||null}};
+  }
+  #requireHostSessionHelper(operation){
+    if(!this.helperSharesRuntime)throw new Error(`Claude ${operation} is unavailable through the host session helper for this custom or remote Claude home.`);
+  }
+  async rename(name){this.#requireHostSessionHelper("rename");return this.sdk.renameSession(this.sessionId,name,{dir:this.cwd})}
+  async history(){this.#requireHostSessionHelper("history");return this.sdk.getSessionMessages(this.sessionId,{dir:this.cwd,includeSystemMessages:false})}
+  async rewindConversation(upToMessageId){
+    const sourceSessionId=this.sessionId,targetSessionId=randomUUID();
+    this.sessionId=targetSessionId;this.startedOnce=false;this.forkFromSessionId=sourceSessionId;this.resumeSessionAt=upToMessageId||null;
+    return {sessionId:targetSessionId,lazyFork:{sourceSessionId,targetSessionId,resumeSessionAt:this.resumeSessionAt}};
+  }
   async close(){if(this.closed)return;this.closed=true;await this.cancel().catch(()=>{});try{this.currentQuery?.close()}catch{}}
-  async delete(){await this.close();return deleteSession(this.sessionId,{dir:this.cwd})}
+  async delete(){await this.close();this.#requireHostSessionHelper("delete");return this.sdk.deleteSession(this.sessionId,{dir:this.cwd})}
 }

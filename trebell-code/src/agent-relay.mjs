@@ -83,7 +83,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     const runtimeCwd=runtimeManager.runtimeCwd(thread.cwd,environmentId);const spawnProcess=runtimeManager.processSpawner(instance,environmentId);const remoteIo=runtimeManager.remoteIo(runtimeCwd,environmentId);
     const common={cwd:runtimeCwd,env:runtimeManager.childEnv(instance),permissionMode,onPermission:request=>context.permission(thread,request),onQuestion:request=>context.userQuestion(thread,request),onUpdate:params=>handleUpdate(thread.id,params),version};
     const runtime=instance.kind==="claude"
-      ?new ClaudeAgentSession({...common,command:runtimeManager.executable(instance),spawnProcess})
+      ?new ClaudeAgentSession({...common,command:runtimeManager.executable(instance),spawnProcess,forkFromSessionId:thread.providerMeta?.claudeFork?.sourceSessionId||null,resumeSessionAt:thread.providerMeta?.claudeFork?.resumeSessionAt||null})
       :instance.kind==="opencode"
       ?(remoteIo
         ?new AcpAgentSession({...common,runtime:"opencode",command:runtimeManager.executable(instance),args:["acp"],terminals,spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request)})
@@ -162,7 +162,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     }else if(type==="diff"){
       emit("turn/diff/updated",{threadId,turnId,diff:update.diff||[]});
     }else if(type==="available_commands_update"||type==="config_option_update"||type==="current_mode_update"||type==="session_info_update"){
-      const current=threadStore.get(threadId)?.providerMeta||{};threadStore.update(threadId,{providerMeta:{...current,[type]:update}});
+      const current=threadStore.get(threadId)?.providerMeta||{};
+      const next={...current,[type]:update};
+      if(type==="session_info_update"&&update.claudeForkMaterialized)delete next.claudeFork;
+      threadStore.update(threadId,{providerMeta:next});
       emit("thread/providerMetadata/updated",{threadId,type,update});
     }else if(type==="runtime_error"){
       emit("error",{threadId,turnId,message:update.message||"Agent runtime stopped"});
@@ -226,7 +229,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         const init=runtimeSession.initializeResult?.agentCapabilities?.sessionCapabilities||{};if(init.fork==null)throw Object.assign(new Error(`${runtime} does not advertise session forking`),{code:-32601});
         fork=await runtimeSession.client.forkSession({sessionId:source.providerSessionId,cwd:source.cwd,mcpServers:[]});
       }
-      const providerSessionId=fork.sessionId||fork.id;const thread=threadStore.create({runtime,cwd:source.cwd,providerSessionId,model:source.model,agent:source.agent||null,name:source.name?`${source.name} (fork)`:null,providerMeta:{...(source.providerMeta||{}),setup:fork}});return {thread};
+      const providerSessionId=fork.sessionId||fork.id;
+      const providerMeta={...(source.providerMeta||{}),setup:fork};
+      if(runtimeSession instanceof ClaudeAgentSession&&fork.lazyFork)providerMeta.claudeFork=fork.lazyFork;
+      const thread=threadStore.create({runtime,cwd:source.cwd,providerSessionId,model:source.model,agent:source.agent||null,name:source.name?`${source.name} (fork)`:null,providerMeta});return {thread};
     }
     if(method==="turn/start"){
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");const session=await ensureSession(thread,context,{model:params.model||thread.model});
@@ -254,7 +260,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       if(session instanceof ClaudeAgentSession){
         const index=thread.turns.findIndex(item=>item.id===params.beforeTurnId);const prior=index>0?thread.turns[index-1]:null;const providerMessageId=prior?.providerMessageId||null;
         if(!providerMessageId)throw new Error("Claude Code cannot rewind before the first persisted user message in this thread.");
-        const forked=await session.rewindConversation(providerMessageId);threadStore.update(thread.id,{providerSessionId:forked.sessionId,turns:thread.turns.slice(0,index)});emit("thread/reverted",{threadId:thread.id});return {thread:threadStore.get(thread.id)};
+        const forked=await session.rewindConversation(providerMessageId);
+        const currentMeta=threadStore.get(thread.id)?.providerMeta||{};
+        threadStore.update(thread.id,{providerSessionId:forked.sessionId,turns:thread.turns.slice(0,index),providerMeta:{...currentMeta,...(forked.lazyFork?{claudeFork:forked.lazyFork}:{})}});
+        emit("thread/reverted",{threadId:thread.id});return {thread:threadStore.get(thread.id)};
       }
       throw Object.assign(new Error(`${runtime} does not expose conversation rewind`),{code:-32601});
     }
