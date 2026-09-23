@@ -118,7 +118,7 @@ async function run(command,args=[],{env=process.env,cwd=process.cwd(),timeoutMs=
   });
 }
 
-function defaultInstance(kind){return {id:`${kind}-default`,kind,displayName:RUNTIMES[kind].name,enabled:true,binaryPath:null,homePath:null,shadowHomePath:null,serverUrl:null,environment:{}}}
+function defaultInstance(kind){return {id:`${kind}-default`,kind,displayName:RUNTIMES[kind].name,enabled:true,binaryPath:null,homePath:null,shadowHomePath:null,serverUrl:null,autoCompactWindow:null,environment:{}}}
 
 export class AgentRuntimeManager{
   constructor({state,env=process.env,environments=null,platform=process.platform,fetchImpl=globalThis.fetch}={}){this.state=state;this.env=env;this.environments=environments;this.platform=platform;this.fetchImpl=fetchImpl}
@@ -148,6 +148,15 @@ export class AgentRuntimeManager{
     const kind=normalizeAgentRuntime(input.kind);const settings=this.state.settings();const list=Array.isArray(settings.agentRuntimeInstances)?[...settings.agentRuntimeInstances]:[];
     const id=String(input.id||`${kind}-${Date.now()}`);const index=list.findIndex(item=>item.id===id);
     const item={...(index>=0?list[index]:{}),...input,id,kind,displayName:String(input.displayName||RUNTIMES[kind].name),enabled:input.enabled!==false};
+    if(kind==="claude"){
+      const raw=input.autoCompactWindow;
+      if(raw==null||String(raw).trim()==="")item.autoCompactWindow=null;
+      else{
+        const value=Number(raw);
+        if(!Number.isInteger(value)||value<100_000||value>1_000_000)throw new Error("Claude auto-compact threshold must be an integer between 100000 and 1000000 tokens");
+        item.autoCompactWindow=value;
+      }
+    }else delete item.autoCompactWindow;
     if(index>=0)list[index]=item;else list.push(item);this.state.updateSettings({agentRuntimeInstances:list});return item;
   }
   removeInstance(id){

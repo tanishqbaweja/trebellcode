@@ -29,6 +29,20 @@ test("agent runtime registry exposes real harnesses and capability-gates configu
   }
 });
 
+test("Claude runtime profiles validate and persist auto-compact thresholds",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-claude-compact-"));
+  try{
+    const state=new TrebellStateStore({...process.env,TREBELL_HOME:home});
+    const manager=new AgentRuntimeManager({state,env:{...process.env,TREBELL_HOME:home}});
+    const saved=manager.upsertInstance({id:"claude-compact",kind:"claude",displayName:"Claude Compact",autoCompactWindow:"300000"});
+    assert.equal(saved.autoCompactWindow,300000);
+    assert.equal(manager.instances().find(item=>item.id==="claude-compact")?.autoCompactWindow,300000);
+    assert.throws(()=>manager.upsertInstance({id:"claude-bad",kind:"claude",autoCompactWindow:"99999"}),/between 100000 and 1000000/);
+    const cleared=manager.upsertInstance({...saved,autoCompactWindow:""});
+    assert.equal(cleared.autoCompactWindow,null);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 test("runtime installer uses only official allowlisted packages in the selected environment", async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-agent-install-"));
   const env={...process.env,TREBELL_HOME:home};const calls=[];

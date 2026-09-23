@@ -72,7 +72,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   }
   function editInstance(instance=null){
     setInstanceDraft(instance?{...instance}:{
-      id:`${selectedAgent}-${crypto.randomUUID()}`,kind:selectedAgent,displayName:`${(agentInfo?.definitions||[]).find(item=>item.id===selectedAgent)?.name||selectedAgent} profile`,binaryPath:"",homePath:"",serverUrl:"",
+      id:`${selectedAgent}-${crypto.randomUUID()}`,kind:selectedAgent,displayName:`${(agentInfo?.definitions||[]).find(item=>item.id===selectedAgent)?.name||selectedAgent} profile`,binaryPath:"",homePath:"",serverUrl:"",autoCompactWindow:"",
     });
   }
   async function saveInstance(){
@@ -292,6 +292,10 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   useEffect(()=>{loadProviders()},[selected]);
   useEffect(()=>{loadAgentRuntimes()},[selectedAgent]);
   useEffect(()=>{
+    setInstanceDraft(null);
+    setCustomModelEditorOpen(false);
+  },[selectedAgent]);
+  useEffect(()=>{
     const unsubscribe=window.trebellDesktop?.updates?.onState?.(setDesktopUpdate);
     return typeof unsubscribe==="function"?unsubscribe:undefined;
   },[]);
@@ -370,6 +374,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
           <label>Executable path<input value={instanceDraft.binaryPath||""} onChange={e=>setInstanceDraft({...instanceDraft,binaryPath:e.target.value})} placeholder="Leave blank to use the detected CLI"/></label>
           {(instanceDraft.kind==="codex"||instanceDraft.kind==="claude")&&<label>{instanceDraft.kind==="codex"?"CODEX_HOME":"Claude config directory"}<input value={instanceDraft.homePath||""} onChange={e=>setInstanceDraft({...instanceDraft,homePath:e.target.value})} placeholder="Leave blank for Trebell/default profile"/></label>}
           {instanceDraft.kind==="codex"&&<><label>Shadow home path<input value={instanceDraft.shadowHomePath||""} onChange={e=>setInstanceDraft({...instanceDraft,shadowHomePath:e.target.value})} placeholder="Optional account-specific home, e.g. ~/.codex_personal"/></label><p>Optional. Keeps this account's <code>auth.json</code> private while sharing sessions, config, skills, plugins and worktrees from the CODEX_HOME above. Use the same CODEX_HOME across compatible accounts.</p></>}
+          {instanceDraft.kind==="claude"&&<><label>Auto-compact after<input type="number" min="100000" max="1000000" step="1000" value={instanceDraft.autoCompactWindow??""} onChange={e=>setInstanceDraft({...instanceDraft,autoCompactWindow:e.target.value})} placeholder="Claude default"/></label><p>Optional. Compact automatically after 100,000–1,000,000 tokens. Leave blank to use Claude Code's default threshold.</p></>}
           {instanceDraft.kind==="opencode"&&<label>Existing OpenCode server URL<input value={instanceDraft.serverUrl||""} onChange={e=>setInstanceDraft({...instanceDraft,serverUrl:e.target.value})} placeholder="Optional, e.g. http://127.0.0.1:4096"/></label>}
           <div className="provider-key-actions"><button className="setting-action" onClick={saveInstance}>Save profile</button><button onClick={()=>setInstanceDraft(null)}>Cancel</button></div>
         </div>}

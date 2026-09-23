@@ -96,7 +96,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     const runtimeCwd=runtimeManager.runtimeCwd(thread.cwd,environmentId);const spawnProcess=runtimeManager.processSpawner(instance,environmentId);const remoteIo=runtimeManager.remoteIo(runtimeCwd,environmentId);
     const common={cwd:runtimeCwd,env:runtimeManager.childEnv(instance),permissionMode,onPermission:request=>context.permission(thread,request),onQuestion:request=>context.userQuestion(thread,request),onUpdate:params=>handleUpdate(thread.id,params),version};
     const runtime=instance.kind==="claude"
-      ?new ClaudeAgentSession({...common,command:runtimeManager.executable(instance),spawnProcess,forkFromSessionId:thread.providerMeta?.claudeFork?.sourceSessionId||null,resumeSessionAt:thread.providerMeta?.claudeFork?.resumeSessionAt||null,resumeDropsTurn:thread.providerMeta?.claudeFork?.resumeDropsTurn||null})
+      ?new ClaudeAgentSession({...common,command:runtimeManager.executable(instance),spawnProcess,autoCompactWindow:instance.autoCompactWindow||null,forkFromSessionId:thread.providerMeta?.claudeFork?.sourceSessionId||null,resumeSessionAt:thread.providerMeta?.claudeFork?.resumeSessionAt||null,resumeDropsTurn:thread.providerMeta?.claudeFork?.resumeDropsTurn||null})
       :instance.kind==="opencode"
       ?(remoteIo
         ?new AcpAgentSession({...common,runtime:"opencode",command:runtimeManager.executable(instance),args:["acp"],terminals,spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request)})

@@ -179,6 +179,28 @@ test("settings page visual audit",async({page,request})=>{
   expect(compact.scrollWidth).toBeLessThanOrEqual(compact.clientWidth+1);
 });
 
+test("Claude runtime profile editor exposes real auto-compaction settings",async({page,request})=>{
+  test.setTimeout(35_000);
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:"claude-default"}});
+  await page.goto("/");
+  await page.getByRole("button",{name:"Settings"}).click();
+  await page.getByRole("button",{name:/Agents & models/}).click();
+  await expect(page.getByRole("heading",{name:"Agent harness"})).toBeVisible();
+  await expect(page.locator(".agent-runtime-option").filter({hasText:"Claude Code"}).getByText("Active",{exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"Add profile",exact:true}).click();
+  const editor=page.locator(".runtime-profile-editor");
+  await expect(editor).toBeVisible();
+  const threshold=editor.getByLabel("Auto-compact after");
+  await expect(threshold).toBeVisible();
+  await threshold.fill("300000");
+  await expect(threshold).toHaveValue("300000");
+  const metrics=await editor.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"settings-claude-profile-1600x980.png",fullPage:true});
+  await page.setViewportSize({width:1280,height:800});
+  await page.screenshot({path:auditDir+"settings-claude-profile-1280x800.png",fullPage:true});
+});
+
 test("major workspace surfaces render their real destinations without horizontal overflow",async({page,request})=>{
   test.setTimeout(55_000);
   await prepare(page,request);

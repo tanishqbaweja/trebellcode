@@ -31,6 +31,15 @@ test("custom or remote Claude continuation defers host-side transcript validatio
   assert.equal(deleteCalls,0);
 });
 
+test("Claude auto-compact threshold is forwarded to the SDK query",async()=>{
+  const calls=[];
+  const sdk={query:fakeQueryCapture(calls),getSessionInfo:async()=>({}),renameSession:async()=>{},getSessionMessages:async()=>[],deleteSession:async()=>{}};
+  const session=new ClaudeAgentSession({cwd:"/repo",sdk,autoCompactWindow:300000});
+  await session.start();
+  await session.prompt([{type:"text",text:"keep context tidy"}]);
+  assert.equal(calls.at(-1).options.autoCompactWindow,300000);
+});
+
 test("Claude forks materialize lazily through resume plus forkSession in the active runtime",async()=>{
   const calls=[],updates=[];
   const sdk={query:fakeQueryCapture(calls),getSessionInfo:async()=>({}),renameSession:async()=>{},getSessionMessages:async()=>[],deleteSession:async()=>{}};

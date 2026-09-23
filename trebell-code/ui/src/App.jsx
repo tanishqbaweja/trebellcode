@@ -230,7 +230,7 @@ const SLASH_COMMANDS=[
   ["/clear","Reset the current draft/thread view"],
 ];
 
-function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,permissionMode,setPermissionMode,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,onModelPickerOpenChange}){
+function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,permissionMode,setPermissionMode,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,canCompact=false,onCompact,onModelPickerOpenChange}){
   const [modelOpen,setModelOpen]=useState(false);
   const [listening,setListening]=useState(false);
   const speechSupported=typeof window!=="undefined"&&Boolean(window.SpeechRecognition||window.webkitSpeechRecognition);
@@ -314,7 +314,7 @@ function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgr
       <button className={"mic-btn "+(listening?"active":"")} onClick={dictate} disabled={!speechSupported} title={speechSupported?(listening?"Listening…":"Voice dictation"):"Voice dictation is unavailable on this platform"}><Mic size={15}/></button>
       <button data-testid="send" className="send-btn" onClick={onSend} disabled={!providerReady||!prompt.trim()||promptTooLong}>{running&&settings.followUpMode==="queue"?<Plus size={16}/>:<Send size={16}/>}</button>
     </div></div>
-    <div className={"composer-status"+(modelError||promptTooLong?" error":"")}><span>{promptTooLong?`Draft is ${prompt.length.toLocaleString()} characters · maximum ${MAX_COMPOSER_CHARS.toLocaleString()}`:modelError||tokenLabel(tokenUsage,priceConfig)}</span><span>{prompt.length.toLocaleString()}/{MAX_COMPOSER_CHARS.toLocaleString()} · {canBackground?"Ctrl/Cmd+Enter background · ":""}{settings.followUpMode==="steer"?"Steer":"Queue"} follow-ups</span></div>
+    <div className={"composer-status"+(modelError||promptTooLong?" error":"")}><span>{promptTooLong?`Draft is ${prompt.length.toLocaleString()} characters · maximum ${MAX_COMPOSER_CHARS.toLocaleString()}`:modelError||<>{tokenLabel(tokenUsage,priceConfig)}{canCompact&&!running&&<button className="context-compact-btn" type="button" onClick={onCompact} title="Compact conversation context">Compact</button>}</>}</span><span>{prompt.length.toLocaleString()}/{MAX_COMPOSER_CHARS.toLocaleString()} · {canBackground?"Ctrl/Cmd+Enter background · ":""}{settings.followUpMode==="steer"?"Steer":"Queue"} follow-ups</span></div>
   </div>;
 }
 
@@ -555,6 +555,10 @@ export default function App(){
     }
     return d;
   }
+  useEffect(()=>{
+    if(!initialLoaded||section!=="chat"||!providerReady||models.length)return;
+    refreshProviderModels().catch(()=>{});
+  },[initialLoaded,section,providerReady,provider,agentRuntime,models.length]);
   async function touchProject(path,environmentId=undefined,{activate=true}={}){
     if(!path)return null;
     setProjectlessMode(false);setGeneralEnvironmentId(null);
@@ -1384,8 +1388,7 @@ export default function App(){
   async function handleSpecial(text){
     if(!text.startsWith("/"))return null;const [command,...rest]=text.split(/\s+/);
     if(command==="/compact"){
-      if(!["codex","opencode","claude"].includes(agentRuntime)){setEvents(prev=>[...prev,{id:"compact-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose generic context compaction`,status:"done",raw:{}}]);return true}
-      if(activeThread?.id&&rpc)await rpc.request("thread/compact/start",{threadId:activeThread.id});setEvents(prev=>[...prev,{id:"compact-request",kind:"tool",title:"Compacting context",status:"running",raw:{}}]);return true
+      await compactContext();return true
     }
     if(command==="/model"){setSection(provider==="freebuff"?"freebuff":"settings");return true}
     if(command==="/terminal"){setPanel("terminal");return true}
@@ -1408,6 +1411,16 @@ export default function App(){
     if(command==="/clear"){await newChat();return true}
     if(command==="/plan"){setPrompt("Create a clear execution plan, then carry it out. "+rest.join(" "));return true}
     return false;
+  }
+  async function compactContext(){
+    if(!["codex","opencode","claude"].includes(agentRuntime)){setEvents(prev=>[...prev,{id:"compact-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose generic context compaction`,status:"done",raw:{}}]);return}
+    if(!activeThread?.id||!rpc)return;
+    try{
+      await rpc.request("thread/compact/start",{threadId:activeThread.id});
+      setEvents(prev=>[...prev,{id:"compact-request-"+Date.now(),kind:"tool",title:"Compacting context",status:"running",raw:{}}]);
+    }catch(error){
+      setEvents(prev=>[...prev,{id:"compact-error-"+Date.now(),kind:"error",title:"Context compaction failed: "+(error.message||String(error)),status:"done",raw:{}}]);
+    }
   }
   async function send(){
     const text=prompt.trim();if(!text)return;
@@ -1772,7 +1785,7 @@ export default function App(){
           </div>
 
           {currentProject?.cloneJob&&currentProject.cloneJob.status!=="completed"&&<div className={"clone-banner "+currentProject.cloneJob.status} data-testid="clone-banner"><div><strong>{currentProject.cloneJob.phase||"Cloning repository"}</strong><span>{currentProject.cloneJob.status==="failed"?(currentProject.cloneJob.error||"Clone failed"):currentProject.cloneJob.status==="cancelled"?"Clone cancelled":"You can keep writing. Send waits until the repository is ready."}</span></div>{["running","cancelling"].includes(currentProject.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(currentProject.cloneJob.progress)||0)+"%"}}/></i>}<em>{Math.round(currentProject.cloneJob.progress||0)}%</em>{currentProject.cloneJob.status==="running"&&<button onClick={()=>cloneProjectAction("cancel").catch(error=>setEvents(prev=>[...prev,{id:"clone-cancel-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(currentProject.cloneJob.status)&&<button onClick={()=>cloneProjectAction("retry").catch(error=>setEvents(prev=>[...prev,{id:"clone-retry-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))}>Retry clone</button>}</div>}
-          <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={()=>setPromptHistoryIndex(-1)} historyIndex={promptHistoryIndex} onSend={send} onBackgroundSend={sendInBackground} canBackground={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"} running={running} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onCaptureScreen={()=>captureDesktop().catch(error=>setEvents(prev=>[...prev,{id:"screen-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={changeProviderAgent} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} onModelPickerOpenChange={setModelPickerOpen}/>
+          <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={()=>setPromptHistoryIndex(-1)} historyIndex={promptHistoryIndex} onSend={send} onBackgroundSend={sendInBackground} canBackground={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"} running={running} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onCaptureScreen={()=>captureDesktop().catch(error=>setEvents(prev=>[...prev,{id:"screen-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={changeProviderAgent} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&tokenUsage&&["codex","opencode","claude"].includes(agentRuntime))} onCompact={compactContext} onModelPickerOpenChange={setModelPickerOpen}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="layout-resizer terminal-resizer" data-testid="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" onPointerDown={event=>beginLayoutResize("terminal",event)}/>
