@@ -138,8 +138,8 @@ function safeTimezone(value) {
   }
 }
 
-async function requestJson(url, { headers = {}, method = "GET", signal } = {}) {
-  const response = await fetch(url, {
+async function requestJson(url, { headers = {}, method = "GET", signal, fetchImpl = globalThis.fetch } = {}) {
+  const response = await fetchImpl(url, {
     method,
     headers,
     signal: signal ?? AbortSignal.timeout(12_000),
@@ -150,9 +150,9 @@ async function requestJson(url, { headers = {}, method = "GET", signal } = {}) {
   return { ok: response.ok, status: response.status, body };
 }
 
-async function proxySnapshot(bridgePort) {
+async function proxySnapshot(bridgePort,fetchImpl=globalThis.fetch) {
   try {
-    const response = await fetch(`http://127.0.0.1:${bridgePort}/trebell/session-state`, {
+    const response = await fetchImpl(`http://127.0.0.1:${bridgePort}/trebell/session-state`, {
       signal: AbortSignal.timeout(1200),
     });
     if (!response.ok) return null;
@@ -186,12 +186,13 @@ export async function getFreebuffOverview({
   bridgePort = 23333,
   env = process.env,
   apiHost = env.FREEBUFF_API_HOST || FREEBUFF_API_HOST,
+  fetchImpl = globalThis.fetch,
 } = {}) {
   const identity = loadFreebuffIdentity(env);
   if (!identity) return { loggedIn: false, user: null, session: null, streak: null, derived: null };
 
   const tz = safeTimezone(timezone);
-  const proxy = await proxySnapshot(bridgePort);
+  const proxy = await proxySnapshot(bridgePort,fetchImpl);
   const instanceId = proxy?.instanceId || fallbackInstanceId(env);
   const selectedModel = normalizeModelId(model || proxy?.model || "");
   const commonHeaders = {
@@ -212,7 +213,7 @@ export async function getFreebuffOverview({
   };
 
   const [sessionResult, streakResult] = await Promise.all([
-    requestJson(`${apiHost}/api/v1/freebuff/session`, { headers: sessionHeaders }),
+    requestJson(`${apiHost}/api/v1/freebuff/session`, { headers: sessionHeaders, fetchImpl }),
     requestJson(`${apiHost}/api/v1/freebuff/streak`, {
       headers: {
         Authorization: commonHeaders.Authorization,
@@ -220,6 +221,7 @@ export async function getFreebuffOverview({
         "x-trebell-client": commonHeaders["x-trebell-client"],
         "User-Agent": commonHeaders["User-Agent"],
       },
+      fetchImpl,
     }),
   ]);
 

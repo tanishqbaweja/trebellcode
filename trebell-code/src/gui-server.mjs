@@ -88,6 +88,23 @@ const MIME = {
   ".ico":"image/x-icon",
 };
 
+function loopbackHttpUrl(input){
+  const value=input instanceof URL?input:new URL(typeof input==="string"?input:String(input?.url||""));
+  const host=String(value.hostname||"").toLowerCase();
+  return ["http:","https:"].includes(value.protocol)&&["127.0.0.1","localhost","::1","[::1]","0.0.0.0"].includes(host);
+}
+export function offlineE2eFetch(fetchImpl=globalThis.fetch){
+  return async(input,options)=>{
+    let allowed=false,display="unknown";
+    try{
+      const value=input instanceof URL?input:new URL(typeof input==="string"?input:String(input?.url||""));
+      display=value.origin;allowed=loopbackHttpUrl(value);
+    }catch{}
+    if(!allowed)throw new Error("Offline browser E2E blocked external network request: "+display);
+    return fetchImpl(input,options);
+  };
+}
+
 const json = (res,status,body) => {
   const data=Buffer.from(JSON.stringify(body));
   res.writeHead(status,{"content-type":"application/json; charset=utf-8","content-length":String(data.length),"cache-control":"no-store"});
@@ -385,13 +402,15 @@ async function projectActionSuggestions(projectPath){
 }
 
 export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",mock=false,env=process.env}={}){
-  if((env.TREBELL_E2E_OFFLINE==="1"||process.env.TREBELL_E2E_OFFLINE==="1")&&!mock)throw new Error("Offline browser E2E forbids starting a real Trebell provider or Codex app-server.");
+  const offlineE2E=env.TREBELL_E2E_OFFLINE==="1"||process.env.TREBELL_E2E_OFFLINE==="1";
+  if(offlineE2E&&!mock)throw new Error("Offline browser E2E forbids starting a real Trebell provider or Codex app-server.");
+  const fetchImpl=offlineE2E?offlineE2eFetch(globalThis.fetch):globalThis.fetch;
   const bootId=randomUUID();
   const dist=String(env.TREBELL_UI_DIST||"").trim()?resolve(String(env.TREBELL_UI_DIST).trim()):resolve(packageRoot,"ui","dist");
   const state=new TrebellStateStore(env);
   const remoteAuth=new RemoteAuthStore(env);
   const devices=new DeviceService({env});
-  const providers=new ProviderManager({env});
+  const providers=new ProviderManager({env,fetchFn:fetchImpl});
   const environments=new EnvironmentManager({state,env});
   const storedActiveEnvironmentId=state.settings().activeEnvironmentId||null;
   if(storedActiveEnvironmentId&&!environments.get(storedActiveEnvironmentId))state.updateSettings({activeEnvironmentId:null});
@@ -421,7 +440,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       enabled:profile?.enabled!==false,
     }:{id:null,name:"Local machine",type:"local"},effectiveSettings:state.projectSettings(project.path,project.environmentId).effective};
   }
-  const agentRuntimes=new AgentRuntimeManager({state,env,environments});
+  const agentRuntimes=new AgentRuntimeManager({state,env,environments,fetchImpl});
   const codexThreadModels=new Map();
   const agentThreads=new AgentThreadStore(env);
   agentThreads.reconcileRestart({continueAfterRestart:Boolean(state.settings().continueThreadsAfterRestart)});
@@ -485,7 +504,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   }
   function sourceControlExecutor(environmentId){
     const profile=environmentId?environments.get(environmentId):null;
-    if(!profile||profile.type==="local")return null;
+    const localRequest=async(url,options={})=>{
+      const response=await fetchImpl(url,options);const text=await response.text();
+      return {ok:response.ok,status:response.status,text};
+    };
+    if(!profile||profile.type==="local")return {request:localRequest};
     const normalized=result=>({
       ok:Number(result?.exitCode??1)===0&&!result?.timedOut,
       code:Number(result?.exitCode??1),
@@ -511,6 +534,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return values;
       },
       request:async(url,options={})=>{
+        if(offlineE2E&&!loopbackHttpUrl(url))throw new Error("Offline browser E2E blocked external network request: "+String(url));
         const method=String(options.method||"GET").toUpperCase();
         const config=["silent","show-error","max-time = 30","request = "+JSON.stringify(method)];
         if(options.redirect!=="manual")config.push("location");
@@ -1033,7 +1057,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     if(mock) return {text:`Mock Freebuff reply: ${prompt}`,model};
     if(!isLoggedIn(env)) throw new Error("Sign in to Freebuff first.");
     await ensureBridge();
-    const response=await fetch(`http://127.0.0.1:${DEFAULT_PORT}/v1/chat/completions`,{
+    const response=await fetchImpl(`http://127.0.0.1:${DEFAULT_PORT}/v1/chat/completions`,{
       method:"POST",
       headers:{"content-type":"application/json"},
       body:JSON.stringify({model,messages:[{role:"user",content:prompt}],stream:false}),
@@ -2118,7 +2142,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       if(!isLoggedIn(env)) return json(res,200,{loggedIn:false,user:null,session:null,streak:null,derived:null});
       try{
         await ensureBridge();
-        const overview=await getFreebuffOverview({model,timezone,bridgePort:DEFAULT_PORT,env});
+        const overview=await getFreebuffOverview({model,timezone,bridgePort:DEFAULT_PORT,env,fetchImpl});
         return json(res,200,overview);
       }catch(error){
         return json(res,503,{loggedIn:true,error:error instanceof Error?error.message:String(error)});
@@ -2130,7 +2154,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       if(mock) return json(res,200,{ok:true});
       if(!isLoggedIn(env)) return json(res,401,{ok:false,error:"not_logged_in"});
       try{
-        const overview=await getFreebuffOverview({model,timezone,heartbeat:true,bridgePort:DEFAULT_PORT,env});
+        const overview=await getFreebuffOverview({model,timezone,heartbeat:true,bridgePort:DEFAULT_PORT,env,fetchImpl});
         return json(res,200,{ok:true,overview});
       }catch(error){
         return json(res,503,{ok:false,error:error instanceof Error?error.message:String(error)});
@@ -2173,7 +2197,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     }
     if(url.pathname==="/api/update/check"){
       try{
-        const response=await fetch("https://api.github.com/repos/tanishqbaweja/trebellcode/releases/latest",{headers:{"User-Agent":"Trebell-Code/"+TREBELL_VERSION},signal:AbortSignal.timeout(8000)});
+        const response=await fetchImpl("https://api.github.com/repos/tanishqbaweja/trebellcode/releases/latest",{headers:{"User-Agent":"Trebell-Code/"+TREBELL_VERSION},signal:AbortSignal.timeout(8000)});
         const item=await response.json();
         return json(res,response.ok?200:502,{current:TREBELL_VERSION,latest:item.tag_name||null,url:item.html_url||null,name:item.name||null});
       }catch(error){return json(res,502,{current:TREBELL_VERSION,error:error.message});}

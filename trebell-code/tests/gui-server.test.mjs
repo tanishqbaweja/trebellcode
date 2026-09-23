@@ -4,10 +4,26 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
-import { createGuiServer } from "../src/gui-server.mjs";
+import { createGuiServer, offlineE2eFetch } from "../src/gui-server.mjs";
 
 const packageVersion=JSON.parse(await readFile(new URL("../package.json",import.meta.url),"utf8")).version;
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
+
+test("offline browser E2E fetch allows loopback only",async()=>{
+  const requested=[];
+  const guarded=offlineE2eFetch(async(input)=>{
+    requested.push(input instanceof URL?input.href:String(input?.url||input));
+    return new Response("ok",{status:200});
+  });
+  for(const url of ["http://127.0.0.1:3210/health","http://localhost:23333/state","http://[::1]:8080/"]){
+    const response=await guarded(url);
+    assert.equal(response.status,200);
+  }
+  await assert.rejects(()=>guarded("https://api.openai.com/v1/models"),/blocked external network request/);
+  await assert.rejects(()=>guarded("https://api.github.com/repos/tanishqbaweja/trebellcode"),/blocked external network request/);
+  await assert.rejects(()=>guarded("https://example.com/"),/blocked external network request/);
+  assert.equal(requested.length,3);
+});
 
 test("offline browser E2E refuses to start a real provider or Codex app-server",async()=>{
   await assert.rejects(
