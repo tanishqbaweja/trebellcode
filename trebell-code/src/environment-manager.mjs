@@ -23,6 +23,43 @@ function shellCommand(command,args=[]){
   return [command,...args].map(quotePosix).join(" ");
 }
 
+const REMOTE_TOOL_PATH_SCRIPT=`trebell_prepend_path() {
+  if [ -d "$1" ]; then
+    case ":$PATH:" in *":$1:"*) ;; *) PATH="$1:$PATH" ;; esac
+  fi
+}
+trebell_prepend_path "/bin"
+trebell_prepend_path "/usr/bin"
+trebell_prepend_path "/usr/local/bin"
+trebell_prepend_path "/home/linuxbrew/.linuxbrew/bin"
+trebell_prepend_path "/opt/homebrew/bin"
+trebell_prepend_path "$HOME/bin"
+trebell_prepend_path "$HOME/.local/bin"
+VOLTA_HOME="\${VOLTA_HOME:-$HOME/.volta}"; export VOLTA_HOME
+trebell_prepend_path "$VOLTA_HOME/bin"
+trebell_prepend_path "$HOME/.asdf/bin"
+trebell_prepend_path "$HOME/.asdf/shims"
+trebell_prepend_path "$HOME/.local/share/mise/shims"
+trebell_prepend_path "$HOME/.mise/shims"
+FNM_DIR="\${FNM_DIR:-$HOME/.local/share/fnm}"; export FNM_DIR
+trebell_prepend_path "$FNM_DIR"
+trebell_prepend_path "$HOME/.fnm"
+trebell_prepend_path "$HOME/.nodenv/bin"
+trebell_prepend_path "$HOME/.nodenv/shims"
+if [ -d "$HOME/.nvm/versions/node" ]; then
+  for trebell_node_bin in "$HOME"/.nvm/versions/node/*/bin; do
+    [ -d "$trebell_node_bin" ] && trebell_prepend_path "$trebell_node_bin"
+  done
+fi
+export PATH`;
+
+export function remoteToolPathPrelude(){return REMOTE_TOOL_PATH_SCRIPT}
+
+function remoteShellCommand(command,working=""){
+  const run=working?("cd "+quotePosix(working)+" && "+command):command;
+  return REMOTE_TOOL_PATH_SCRIPT+"\n"+run;
+}
+
 function publishedTheme(filename,raw){
   const id=String(filename||"").replace(/\.json$/i,"");
   if(!/^[a-z0-9][a-z0-9._-]{0,79}$/i.test(id)||RESERVED_THEME_IDS.has(id.toLowerCase()))return null;
@@ -233,7 +270,7 @@ export class EnvironmentManager {
       executable="wsl.exe";
       args=[];
       if(profile.distro) args.push("-d",profile.distro);
-      args.push("--","bash","-lc",working?("cd "+quotePosix(working)+" && "+text):text);
+      args.push("--","bash","-lc",remoteShellCommand(text,working));
       return spawn(executable,args,{env:this.env,windowsHide:true,stdio});
     }
     if(profile.type==="ssh"){
@@ -241,7 +278,7 @@ export class EnvironmentManager {
       args=["-o","BatchMode=yes","-o","ConnectTimeout=8","-o","ServerAliveInterval=15","-p",String(normalizedPort(profile.port))];
       if(profile.identityFile) args.push("-i",profile.identityFile);
       const target=profile.user?(profile.user+"@"+profile.host):profile.host;
-      args.push(target,working?("cd "+quotePosix(working)+" && "+text):text);
+      args.push(target,remoteShellCommand(text,working));
       return spawn(executable,args,{env:this.env,windowsHide:true,stdio});
     }
     throw new Error("Unsupported environment type");
@@ -323,14 +360,14 @@ export class EnvironmentManager {
       executable="wsl.exe";
       args=[];
       if(profile.distro) args.push("-d",profile.distro);
-      const remoteCommand=working?("cd "+quotePosix(working)+" && "+text):text;
+      const remoteCommand=remoteShellCommand(text,working);
       args.push("--","bash","-lc",remoteCommand);
     }else if(profile.type==="ssh"){
       executable=this.platform==="win32"?"ssh.exe":"ssh";
       args=["-o","BatchMode=yes","-o","ConnectTimeout=8","-o","ServerAliveInterval=15","-p",String(normalizedPort(profile.port))];
       if(profile.identityFile) args.push("-i",profile.identityFile);
       const target=profile.user?(profile.user+"@"+profile.host):profile.host;
-      args.push(target,working?("cd "+quotePosix(working)+" && "+text):text);
+      args.push(target,remoteShellCommand(text,working));
     }else{
       throw new Error("Unsupported environment type");
     }

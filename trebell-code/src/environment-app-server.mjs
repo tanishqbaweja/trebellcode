@@ -1,6 +1,7 @@
 import { createServer as createTcpServer, connect as tcpConnect } from "node:net";
 import { spawn } from "node:child_process";
 import { DEFAULT_PORT, PROVIDER_COMPAT_PORT } from "./config.mjs";
+import { remoteToolPathPrelude } from "./environment-manager.mjs";
 
 function quotePosix(value){
   return "'" + String(value).replace(/'/g,"'\\''") + "'";
@@ -92,7 +93,7 @@ export async function startRemoteAppServer({
     const proxy=await createProviderProxy(network.host,resolvedProviderPort);
     const baseUrl=`http://${network.host}:${proxy.port}/v1`;
     const listen=`ws://0.0.0.0:${appPort}`;
-    const command="exec "+shellJoin([profile.codexPath||"codex",...remoteCodexArgs({provider,baseUrl,listen})]);
+    const command=remoteToolPathPrelude()+"\nexec "+shellJoin([profile.codexPath||"codex",...remoteCodexArgs({provider,baseUrl,listen})]);
     let child;
     try{
       child=environments.spawnSession(environmentId,{command,cwd:profile.cwd||null});
@@ -116,7 +117,7 @@ export async function startRemoteAppServer({
     const remoteAppPort=appPort;
     const baseUrl=`http://127.0.0.1:${remoteProviderPort}/v1`;
     const listen=`ws://127.0.0.1:${remoteAppPort}`;
-    const remoteCommand=(profile.cwd?"cd "+quotePosix(profile.cwd)+" && ":"")+"exec "+shellJoin([profile.codexPath||"codex",...remoteCodexArgs({provider,baseUrl,listen})]);
+    const remoteCommand=remoteToolPathPrelude()+"\n"+(profile.cwd?"cd "+quotePosix(profile.cwd)+" && ":"")+"exec "+shellJoin([profile.codexPath||"codex",...remoteCodexArgs({provider,baseUrl,listen})]);
     const executable=process.platform==="win32"?"ssh.exe":"ssh";
     const args=[
       "-o","BatchMode=yes",
