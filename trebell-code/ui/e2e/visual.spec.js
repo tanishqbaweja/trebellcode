@@ -431,6 +431,8 @@ test("major workspace surfaces render their real destinations without horizontal
 
   await page.getByRole("button",{name:"Tools",exact:true}).click();
   await expect(page.locator("main")).toContainText(/Harness capabilities|Codex harness is not connected/);
+  const toolsEmpty=page.locator(".capabilities-empty-state");
+  if(await toolsEmpty.count())expect((await toolsEmpty.boundingBox()).height).toBeLessThan(230);
   await assertNoHorizontalOverflow(".secondary-page");
   await page.screenshot({path:auditDir+"tools-1600x980.png",fullPage:true});
 

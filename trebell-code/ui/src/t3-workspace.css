@@ -558,6 +558,10 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .settings-card select{ba
 .capabilities-toolbar p{max-width:680px;margin:0;color:#727880;font-size:10px;line-height:1.55}
 .capabilities-toolbar>button,.capability-actions button,.capability-list button{height:29px;border:1px solid #2b2e33;background:#15171a;border-radius:7px;color:#a2a8af;padding:0 9px;font-size:9px;display:inline-flex;align-items:center;gap:5px}
 .capabilities-toolbar>button:hover,.capability-actions button:hover,.capability-list button:hover{background:#202328;color:#e2e4e7}
+.capabilities-empty-state{width:min(560px,100%);height:auto!important;min-height:170px;margin:18px auto 0;border-radius:10px!important;background:#0d0f11;padding:24px}
+html[data-mode="light"]:not([data-custom-theme="true"]) .capabilities-empty-state{background:#fff!important;border-color:#d9dee8!important;color:#596473!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .capabilities-empty-state strong{color:#303741!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .capabilities-empty-state span{color:#687181!important}
 .capability-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
 .capability-card{min-height:120px;border:1px solid #25282c;background:#111315;border-radius:10px;padding:13px}
 .capability-card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;color:#d4d7da}

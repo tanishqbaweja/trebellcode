@@ -443,7 +443,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     finally{setBusy("")}
   }
 
-  if(rpcStatus!=="connected")return <div className="empty-state"><Wrench size={28}/><strong>Codex harness is not connected</strong><span>Capabilities will appear when app-server is ready.</span></div>;
+  if(rpcStatus!=="connected")return <div className="empty-state capabilities-empty-state"><Wrench size={24}/><strong>Codex harness is not connected</strong><span>Capabilities will appear when app-server is ready.</span></div>;
 
   return <div className="capabilities-page">
     <div className="capabilities-toolbar"><div><h2>Harness capabilities</h2><p>Live inventory from the bundled Codex app-server. These are real runtime capabilities, not a hard-coded parity list.</p></div><button onClick={refresh} disabled={loading}><RefreshCw size={13}/>{loading?"Refreshing…":"Refresh"}</button></div>
