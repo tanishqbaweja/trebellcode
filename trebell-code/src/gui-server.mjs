@@ -36,6 +36,7 @@ import { attachAgentRelay } from "./agent-relay.mjs";
 import { CodexAppServerClient } from "./codex-app-server-client.mjs";
 import { listLicenses, licenseDetail } from "./license-service.mjs";
 import { WorktreeCleanupService } from "./worktree-cleanup.mjs";
+import { StorageCleanupService } from "./storage-cleanup-service.mjs";
 import { sweepAutoPullProjects } from "./auto-pull-service.mjs";
 import { CloneJobService } from "./clone-job-service.mjs";
 import { prepareCodexHome } from "./codex-home-layout.mjs";
@@ -781,6 +782,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   }
   const cleanupLogs=[];
   const worktreeCleanup=new WorktreeCleanupService({state,getUsage:worktreeUsage,log:message=>{cleanupLogs.push({at:Date.now(),stream:"cleanup",text:String(message)+"\n"});if(cleanupLogs.length>100)cleanupLogs.splice(0,cleanupLogs.length-100)}});
+  const storageCleanup=new StorageCleanupService({state,env,terminals,worktreeCleanup,log:message=>{cleanupLogs.push({at:Date.now(),stream:"storage-cleanup",text:String(message)+"\n"});if(cleanupLogs.length>100)cleanupLogs.splice(0,cleanupLogs.length-100)}});
   const cloneJobs=new CloneJobService({state,environments,env,log:message=>appServer?.logs?.push({at:Date.now(),stream:"clone",text:String(message)+"\n"})});
   await cloneJobs.recoverInterrupted();
   let appServer=await startAppServer({
@@ -1449,6 +1451,16 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     if(url.pathname==="/api/worktree/cleanup"&&req.method==="POST"){
       try{const body=await readJsonBody(req);return json(res,200,await worktreeCleanup.sweep({reason:body.reason||null,path:body.path||null}))}
       catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/storage-cleanup"){
+      if(req.method==="GET"){
+        try{return json(res,200,await storageCleanup.snapshot())}
+        catch(error){return json(res,500,{error:error.message});}
+      }
+      if(req.method==="POST"){
+        try{return json(res,200,await storageCleanup.sweep({reason:"manual"}))}
+        catch(error){return json(res,400,{error:error.message});}
+      }
     }
     if(url.pathname==="/api/worktree/ensure"&&req.method==="POST"){
       try{const body=await readJsonBody(req);if(!body.path)throw new Error("path is required");return json(res,200,await worktreeCleanup.ensure(body.path))}
@@ -2213,8 +2225,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     }finally{autoPullRunning=false}
   };
   if(!mock){
-    worktreeCleanup.sweep().catch(error=>cleanupLogs.push({at:Date.now(),stream:"cleanup",text:error.message+"\n"}));
-    cleanupTimer=setInterval(()=>worktreeCleanup.sweep().catch(error=>cleanupLogs.push({at:Date.now(),stream:"cleanup",text:error.message+"\n"})),60*60_000);cleanupTimer.unref?.();
+    storageCleanup.sweep().catch(error=>cleanupLogs.push({at:Date.now(),stream:"storage-cleanup",text:error.message+"\n"}));
+    cleanupTimer=setInterval(()=>storageCleanup.sweep().catch(error=>cleanupLogs.push({at:Date.now(),stream:"storage-cleanup",text:error.message+"\n"})),60*60_000);cleanupTimer.unref?.();
     setTimeout(()=>sweepPullRequestLinks().catch(()=>{}),5000).unref?.();
     pullRequestSyncTimer=setInterval(()=>sweepPullRequestLinks().catch(()=>{}),60_000);pullRequestSyncTimer.unref?.();
     setTimeout(()=>sweepAutoPull().catch(()=>{}),7000).unref?.();

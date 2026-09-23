@@ -20,6 +20,7 @@ const DEFAULT_STATE = Object.freeze({
     sourceControlFollowTemplates: true,
     worktreeSubmodules: "recursive",
     worktreeCleanup: {mode:"off"},
+    storageCleanup: {attachmentsAfterDays:null,terminalHistoryAfterDays:null},
     appearance: "dark",
     appearanceMode: "dark",
     panelAnimationMs: 0,
@@ -62,6 +63,18 @@ function normalizeWorktreeCleanup(value,{allowNull=false}={}){
   if(value==null)return allowNull?null:{mode:"off"};
   if(value?.mode==="custom")return {mode:"custom",rules:normalizeCleanupRules(value.rules)};
   return {mode:"off"};
+}
+function normalizeRetentionDays(value){
+  if(value==null||value==="")return null;
+  const numeric=Math.trunc(Number(value));
+  return Number.isFinite(numeric)&&numeric>=1?Math.min(3650,numeric):null;
+}
+function normalizeStorageCleanup(value={}){
+  const raw=value&&typeof value==="object"&&!Array.isArray(value)?value:{};
+  return {
+    attachmentsAfterDays:normalizeRetentionDays(raw.attachmentsAfterDays),
+    terminalHistoryAfterDays:normalizeRetentionDays(raw.terminalHistoryAfterDays),
+  };
 }
 function normalizePullRequestViewedFiles(value){
   if(!value||typeof value!=="object"||Array.isArray(value))return {};
@@ -141,6 +154,7 @@ export class TrebellStateStore {
       settings.environmentDefaults=Object.fromEntries(Object.entries(rawSettings.environmentDefaults||{}).map(([id,value])=>[String(id),normalizeScopedObject(value)]));
       if(Number(parsed.version||1)<2&&rawSettings.appearanceMode==="system")settings.appearanceMode="dark";
       settings.worktreeCleanup=normalizeWorktreeCleanup(settings.worktreeCleanup);
+      settings.storageCleanup=normalizeStorageCleanup(settings.storageCleanup);
       settings.sourceControlMergeMethod=normalizeScopedSetting("sourceControlMergeMethod",settings.sourceControlMergeMethod);
       settings.sourceControlTextStyle=normalizeScopedSetting("sourceControlTextStyle",settings.sourceControlTextStyle);
       settings.sourceControlTextModel=normalizeScopedSetting("sourceControlTextModel",settings.sourceControlTextModel);
@@ -226,6 +240,7 @@ export class TrebellStateStore {
   updateSettings(patch={}){
     if("worktreeSubmodules" in patch&&!['recursive','top-level','none'].includes(String(patch.worktreeSubmodules)))patch={...patch,worktreeSubmodules:'recursive'};
     if("worktreeCleanup" in patch)patch={...patch,worktreeCleanup:normalizeWorktreeCleanup(patch.worktreeCleanup)};
+    if("storageCleanup" in patch)patch={...patch,storageCleanup:normalizeStorageCleanup(patch.storageCleanup)};
     if("sourceControlMergeMethod" in patch)patch={...patch,sourceControlMergeMethod:normalizeScopedSetting("sourceControlMergeMethod",patch.sourceControlMergeMethod)};
     if("sourceControlTextStyle" in patch)patch={...patch,sourceControlTextStyle:normalizeScopedSetting("sourceControlTextStyle",patch.sourceControlTextStyle)};
     if("sourceControlTextModel" in patch)patch={...patch,sourceControlTextModel:normalizeScopedSetting("sourceControlTextModel",patch.sourceControlTextModel)};

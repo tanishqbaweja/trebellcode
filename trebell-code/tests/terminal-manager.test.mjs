@@ -56,3 +56,29 @@ test("terminal scrollback survives manager restart as stopped history",{timeout:
     await second.close(session.id);assert.equal(second.snapshot(session.id),null);
   }finally{await first?.shutdown().catch(()=>{});await second?.shutdown().catch(()=>{});await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:100})}
 });
+
+test("terminal history pruning removes only stopped sessions older than the cutoff",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-terminal-prune-"));const env={...process.env,TREBELL_HOME:home};
+  const manager=new TerminalManager({env,persist:false});
+  try{
+    manager.sessions.set("old",{id:"old",name:"Old",cwd:home,running:false,updatedAt:100,createdAt:100,buffer:"",exitCode:0});
+    manager.sessions.set("fresh",{id:"fresh",name:"Fresh",cwd:home,running:false,updatedAt:900,createdAt:900,buffer:"",exitCode:0});
+    manager.sessions.set("live",{id:"live",name:"Live",cwd:home,running:true,updatedAt:10,createdAt:10,buffer:"",exitCode:null});
+    const result=manager.pruneStopped({before:500});
+    assert.deepEqual(result,{removed:1,remaining:2});
+    assert.equal(manager.snapshot("old"),null);
+    assert.equal(manager.snapshot("fresh").running,false);
+    assert.equal(manager.snapshot("live").running,true);
+  }finally{await manager.shutdown().catch(()=>{});await rm(home,{recursive:true,force:true})}
+});
+
+test("shutdown preserves the age of already-stopped terminal history",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-terminal-age-"));const env={...process.env,TREBELL_HOME:home};
+  const manager=new TerminalManager({env});
+  try{
+    manager.sessions.set("old",{id:"old",name:"Old",cwd:home,running:false,updatedAt:1234,createdAt:1000,buffer:"history",exitCode:0});
+    await manager.shutdown();
+    const stored=JSON.parse(await import("node:fs/promises").then(fs=>fs.readFile(join(home,"terminal-history.json"),"utf8")));
+    assert.equal(stored.sessions.find(item=>item.id==="old").updatedAt,1234);
+  }finally{await manager.shutdown().catch(()=>{});await rm(home,{recursive:true,force:true})}
+});

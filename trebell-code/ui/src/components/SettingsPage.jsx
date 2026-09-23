@@ -33,6 +33,9 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
   const [browserImportProfile,setBrowserImportProfile]=useState("");
   const [browserImportMessage,setBrowserImportMessage]=useState("");
   const [browserImportBusy,setBrowserImportBusy]=useState(false);
+  const [storageInfo,setStorageInfo]=useState(null);
+  const [storageMessage,setStorageMessage]=useState("");
+  const [storageBusy,setStorageBusy]=useState(false);
   const [themeDraft,setThemeDraft]=useState(null);
   const [themeMessage,setThemeMessage]=useState("");
   const themeImportRef=useRef(null);
@@ -222,11 +225,33 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
       api("/api/diagnostics?path="+encodeURIComponent(projectPath||"")).catch(e=>({error:e.message})),
       loadProviders(),
       loadAgentRuntimes(),
+      loadStorageInfo(),
     ]);
     setUpdate(u);setDiagnostics(d);setLoading(false);
     if(window.trebellDesktop?.updates)window.trebellDesktop.updates.get().then(setDesktopUpdate).catch(()=>{});
     if(window.trebellDesktop?.snapshots)window.trebellDesktop.snapshots.get().then(setSnapshotInfo).catch(()=>{});
     if(window.trebellDesktop?.browser?.importSources)loadBrowserImportSources().catch(()=>{});
+  }
+  async function loadStorageInfo(){
+    const info=await api("/api/storage-cleanup").catch(error=>({error:error.message}));
+    setStorageInfo(info);return info;
+  }
+  async function saveStorageRetention(key,raw){
+    const text=String(raw??"").trim();
+    const value=text?Math.max(1,Math.min(3650,Math.trunc(Number(text)||0))):null;
+    const current=settings.storageCleanup||{};
+    await save({storageCleanup:{...current,[key]:value||null}});
+    await loadStorageInfo();
+  }
+  async function runStorageCleanup(){
+    setStorageBusy(true);setStorageMessage("Running safe cleanup…");
+    try{
+      const result=await api("/api/storage-cleanup",{method:"POST",body:{}});
+      const worktrees=Number(result.worktrees?.removed)||0,attachments=Number(result.attachments?.removed)||0,terminals=Number(result.terminalHistory?.removed)||0;
+      setStorageMessage(`Removed ${worktrees} managed worktree${worktrees===1?"":"s"}, ${attachments} attachment cache file${attachments===1?"":"s"}, and ${terminals} stopped terminal histor${terminals===1?"y":"ies"}.`);
+      await loadStorageInfo();
+    }catch(error){setStorageMessage("Cleanup failed: "+error.message)}
+    finally{setStorageBusy(false)}
   }
   async function loadBrowserImportSources(){
     const info=await window.trebellDesktop?.browser?.importSources?.();if(!info)return;
@@ -362,6 +387,23 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
       <div className="settings-card"><h3>Runtime</h3><p>Harness connection: <strong>{rpcStatus}</strong><br/>Agent: <strong>{selectedAgentStatus?.name||selectedAgent}</strong><br/>Agent runtime: <strong>{runtime?.agentRuntimeStatus?.available||selectedAgent==="codex"?"ready":"not ready"}</strong>{selectedAgent==="codex"&&<><br/>Codex app-server: <strong>{runtime?.appServerReady?"ready":"not ready"}</strong><br/>Inference: <strong>{PROVIDER_LABELS[runtime?.provider||selected]||runtime?.provider||selected}</strong>{(runtime?.provider||selected)==="freebuff"&&<><br/>Freebuff bridge: <strong>{runtime?.bridgeReady?"ready":"not ready"}</strong></>}</>}</p><button onClick={refresh}><RefreshCw size={13}/> Refresh diagnostics</button></div>
       <div className="settings-card"><h3>Follow-up behavior</h3>{selectedAgent==="codex"?<label>While the agent is working<select value={settings.followUpMode||"queue"} onChange={e=>save({followUpMode:e.target.value})}><option value="queue">Queue after current turn</option><option value="steer">Steer current turn immediately</option></select></label>:<p>Follow-ups are queued until the current {selectedAgentStatus?.name||selectedAgent} turn finishes. ACP does not define in-flight steering.</p>}</div>
       <ScopedSettingsCard settings={settings} models={models} onChanged={onScopedSettingsChanged}/>
+      <div className="settings-card storage-settings">
+        <h3>Storage cleanup</h3>
+        <p>Automatic cleanup is opt-in. Trebell only removes its own local attachment cache, stopped terminal history, and managed worktrees that already pass the safe worktree cleanup rules. User project files and Git branches are never deleted by these retention fields.</p>
+        <div className="environment-two">
+          <label>Attachment cache retention
+            <input key={"attachment-retention-"+(settings.storageCleanup?.attachmentsAfterDays??"off")} type="number" min="1" max="3650" defaultValue={settings.storageCleanup?.attachmentsAfterDays??""} placeholder="Off" onBlur={event=>saveStorageRetention("attachmentsAfterDays",event.target.value)}/>
+            <small>Days · blank means off</small>
+          </label>
+          <label>Stopped terminal history
+            <input key={"terminal-retention-"+(settings.storageCleanup?.terminalHistoryAfterDays??"off")} type="number" min="1" max="3650" defaultValue={settings.storageCleanup?.terminalHistoryAfterDays??""} placeholder="Off" onBlur={event=>saveStorageRetention("terminalHistoryAfterDays",event.target.value)}/>
+            <small>Days · running terminals are never pruned</small>
+          </label>
+        </div>
+        <p className="provider-note">{storageInfo?.error?storageInfo.error:`${storageInfo?.attachments?.count??0} cached attachment${storageInfo?.attachments?.count===1?"":"s"} · ${((storageInfo?.attachments?.bytes||0)/1024/1024).toFixed(1)} MB · ${storageInfo?.terminalHistory?.count??0} stopped terminal histor${storageInfo?.terminalHistory?.count===1?"y":"ies"} · ${storageInfo?.worktrees?.managed??0} live managed worktree${storageInfo?.worktrees?.managed===1?"":"s"}`}</p>
+        <div className="provider-key-actions"><button className="setting-action" onClick={runStorageCleanup} disabled={storageBusy}>{storageBusy?"Cleaning…":"Run safe cleanup now"}</button><button onClick={loadStorageInfo} disabled={storageBusy}><RefreshCw size={12}/> Refresh storage</button></div>
+        {storageMessage&&<p className={/failed|error/i.test(storageMessage)?"provider-status-error":"provider-note"}>{storageMessage}</p>}
+      </div>
       {selectedAgent==="codex"&&<div className="settings-card"><h3>Computer use</h3><p>The agent can always inspect a desktop screenshot. Mouse and keyboard control are exposed only when the current thread is in <strong>Full access</strong> mode. This keeps desktop automation explicit instead of silently escalating permissions.</p></div>}
       <div className="settings-card environment-theme-settings">
         <h3>Environment themes</h3>

@@ -26,6 +26,7 @@ export class TerminalManager extends EventEmitter{
   constructor({env=process.env,persist=true}={}){
     super();
     this.env=env;this.persist=persist!==false;this.historyPath=join(trebellHome(env),"terminal-history.json");this.saveTimer=null;
+    this.closed=false;
     this.sessions=new Map(); this.pending=new Map(); this.nextRid=1; this.clients=new Map(); this.exitWaiters=new Map();
     this.#loadHistory();
     this.#startWorker();
@@ -117,6 +118,16 @@ export class TerminalManager extends EventEmitter{
     });
   }
   async close(id){const session=this.sessions.get(id);if(session?.running)await this.#rpc("kill",{id}).catch(()=>{});this.sessions.delete(id);this.#saveHistory();}
+  pruneStopped({before=0}={}){
+    const cutoff=Math.max(0,Number(before)||0);let removed=0;
+    for(const [id,session] of this.sessions.entries()){
+      if(session.running)continue;
+      if(cutoff&&Number(session.updatedAt||session.createdAt||0)>=cutoff)continue;
+      this.sessions.delete(id);this.clients.delete(id);this.exitWaiters.delete(id);removed++;
+    }
+    if(removed)this.#saveHistory();
+    return {removed,remaining:this.sessions.size};
+  }
   attachWebSocket(server,path="/api/terminal/ws"){
     const wss=new WebSocketServer({noServer:true});
     const upgrade=(req,socket,head)=>{
@@ -138,10 +149,15 @@ export class TerminalManager extends EventEmitter{
     return {close:()=>{server.off("upgrade",upgrade);try{wss.close()}catch{}}};
   }
   async shutdown(){
+    if(this.closed)return;this.closed=true;
     clearTimeout(this.saveTimer);this.saveTimer=null;
     for(const session of this.sessions.values()){
-      if(session.running)await this.#rpc("kill",{id:session.id}).catch(()=>{});
-      session.running=false;session.pid=null;session.restored=true;session.updatedAt=Date.now();
+      if(session.running){
+        await this.#rpc("kill",{id:session.id}).catch(()=>{});
+        session.running=false;session.pid=null;session.restored=true;session.updatedAt=Date.now();
+      }else{
+        session.pid=null;session.restored=true;
+      }
     }
     this.#saveHistory();
     await this.#rpc("shutdown").catch(()=>{});

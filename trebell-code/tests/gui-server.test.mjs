@@ -109,6 +109,13 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(blockedVisualization.status,400);
     const settings=await fetch(gui.url+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({followUpMode:"steer"})}).then(r=>r.json());
     assert.equal(settings.followUpMode,"steer");
+    const storageBefore=await fetch(gui.url+"/api/storage-cleanup").then(r=>r.json());
+    assert.deepEqual(storageBefore.settings,{attachmentsAfterDays:null,terminalHistoryAfterDays:null});
+    const storageSettings=await fetch(gui.url+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({storageCleanup:{attachmentsAfterDays:7,terminalHistoryAfterDays:30}})}).then(r=>r.json());
+    assert.deepEqual(storageSettings.storageCleanup,{attachmentsAfterDays:7,terminalHistoryAfterDays:30});
+    const storageSweep=await fetch(gui.url+"/api/storage-cleanup",{method:"POST",headers:{"content-type":"application/json"},body:"{}"}).then(r=>r.json());
+    assert.equal(storageSweep.attachments.enabled,true);assert.equal(storageSweep.attachments.removed,0);
+    assert.equal(storageSweep.terminalHistory.enabled,false);
     const sourceDefaults=await fetch(gui.url+"/api/scoped-settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({environmentId:null,projectId:projectSaved.project.id,patch:{sourceControlMergeMethod:"rebase",sourceControlTextStyle:"repository",sourceControlTextModel:"freebuff/test/coding-fast"},resetKeys:[]})}).then(r=>r.json());
     assert.equal(sourceDefaults.effective.sourceControlMergeMethod,"rebase");
     assert.equal(sourceDefaults.effective.sourceControlTextStyle,"repository");
