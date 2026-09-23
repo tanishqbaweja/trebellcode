@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, rm, stat } from "node:fs/promises";
 import { trebellHome } from "./paths.mjs";
 import { git, gitInfo } from "./git-service.mjs";
+
+const CHECKPOINT_NESTED_REPO_MAX_CANDIDATES=64;
+const NESTED_GIT_ENV_KEYS=["GIT_DIR","GIT_WORK_TREE","GIT_COMMON_DIR","GIT_INDEX_FILE","GIT_OBJECT_DIRECTORY","GIT_ALTERNATE_OBJECT_DIRECTORIES"];
 
 export function isTransientCheckpointGitError(error){
   const message=String(error?.message||error||"");
@@ -26,6 +29,28 @@ export class CheckpointService{
     }
     throw lastError;
   }
+  async #stageCheckpoint(root,childEnv){
+    const stageArgs=["add","-A","--","."];
+    let stageError;
+    try{return await this.#captureGit(root,stageArgs,{env:childEnv})}
+    catch(error){
+      stageError=error;
+      if(!/does not have a commit checked out/i.test(String(error?.message||error||"")))throw error;
+    }
+    const untracked=await this.#captureGit(root,["ls-files","--others","--exclude-standard","-z","--","."],{env:childEnv});
+    const candidates=String(untracked.stdout||"").split("\0").filter(entry=>entry.endsWith("/"));
+    if(candidates.length>CHECKPOINT_NESTED_REPO_MAX_CANDIDATES)throw stageError;
+    const nestedEnv={...process.env};for(const key of NESTED_GIT_ENV_KEYS)delete nestedEnv[key];
+    const exclusions=[];
+    for(const entry of candidates){
+      const nestedCwd=join(root,entry);
+      try{await stat(join(nestedCwd,".git"))}catch{continue}
+      const head=await this.gitFn(nestedCwd,["rev-parse","--verify","HEAD"],{allowFailure:true,env:nestedEnv});
+      if(!head.ok)exclusions.push(":(exclude,literal)"+entry);
+    }
+    if(!exclusions.length)throw stageError;
+    return this.#captureGit(root,[...stageArgs,...exclusions],{env:childEnv});
+  }
   async create({cwd,threadId=null,label=null}){
     const info=await this.gitInfoFn(cwd);
     if(!info.isGit) return {supported:false,reason:"not_git"};
@@ -37,7 +62,7 @@ export class CheckpointService{
     try{
       const head=await this.gitFn(info.root,["rev-parse","HEAD"],{allowFailure:true});
       if(head.ok) await this.#captureGit(info.root,["read-tree","HEAD"],{env:childEnv}); else await this.#captureGit(info.root,["read-tree","--empty"],{env:childEnv});
-      await this.#captureGit(info.root,["add","-A","--","."],{env:childEnv});
+      await this.#stageCheckpoint(info.root,childEnv);
       const tree=(await this.#captureGit(info.root,["write-tree"],{env:childEnv})).stdout.trim();
       const args=["commit-tree",tree,"-m",label||"Trebell Code checkpoint"];
       if(head.ok) args.push("-p",head.stdout.trim());
