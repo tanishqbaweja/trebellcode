@@ -257,6 +257,28 @@ test("browser attach button uploads files without the desktop bridge",async({pag
   await page.screenshot({path:auditDir+"browser-file-attachment-1280x800.png",fullPage:true});
 });
 
+test("command palette keeps failed actions visible with useful feedback",async({page,request})=>{
+  test.setTimeout(30_000);
+  await prepare(page,request);
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await request.post("/api/projects",{data:{path:boot.cwd,name:"Visual Audit Workspace",activate:true,scripts:[{id:"broken-action",name:"Broken action",command:"echo should-not-run"}],preferredScriptId:"broken-action"}});
+  await page.reload();
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await page.route("**/api/project-script/run",route=>route.fulfill({status:400,contentType:"application/json",body:JSON.stringify({error:"Deliberate project action failure"})}));
+  await page.keyboard.press("Control+k");
+  const palette=page.getByTestId("command-palette");
+  await expect(palette).toBeVisible();
+  const action=palette.getByRole("button",{name:/Run Broken action/});
+  await expect(action).toBeVisible();
+  await action.click();
+  await expect(palette).toBeVisible();
+  await expect(palette.getByRole("alert")).toContainText("Deliberate project action failure");
+  await page.setViewportSize({width:1280,height:800});
+  await page.screenshot({path:auditDir+"command-palette-action-error-1280x800.png",fullPage:true});
+  await page.keyboard.press("Escape");
+  await expect(palette).toBeHidden();
+});
+
 test("slash menu only advertises commands that can run in the current context",async({page,request})=>{
   test.setTimeout(30_000);
   await prepare(page,request);

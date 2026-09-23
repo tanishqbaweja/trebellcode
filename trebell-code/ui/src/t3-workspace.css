@@ -30,6 +30,7 @@ html.layout-resizing,html.layout-resizing *{user-select:none!important}
 .surface-loading{min-height:140px;display:grid;place-items:center;color:#737b87;font-size:9px;letter-spacing:.01em}
 .surface-loading.compact{min-height:64px;height:100%}
 html[data-mode="light"]:not([data-custom-theme="true"]) .surface-loading{color:#697482}
+html[data-mode="light"]:not([data-custom-theme="true"]) .command-palette-error{background:#fff1f2;border-color:#e1b4bb;color:#8a3947}
 .main-frame{min-width:0;min-height:0;position:relative;border:0;border-radius:0;background:var(--t3-bg);box-shadow:none;overflow:hidden}
 .window-bar{height:32px;border-bottom:1px solid var(--t3-soft);background:var(--t3-bg);padding:0;display:flex;align-items:center;justify-content:space-between;-webkit-app-region:drag}
 .window-drag-space{flex:1;height:100%}
@@ -736,9 +737,11 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .fb-warning{background:#
 .command-palette-search{height:48px;display:grid;grid-template-columns:20px minmax(0,1fr) auto auto;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid #26292d;color:#777d85}
 .command-palette-search input{height:100%;border:0;background:transparent;outline:0;color:#eceef0;font-size:13px}
 .command-palette-searching{font-size:7px;color:#777d85;white-space:nowrap}
+.command-palette-error{margin:6px 8px 0;padding:7px 9px;border:1px solid #5a2f35;border-radius:7px;background:#23171a;color:#d99aa4;font-size:8.5px;line-height:1.35}
 .command-palette kbd,.command-palette-search kbd{border:1px solid #30343a;background:#1d2024;border-radius:5px;padding:2px 5px;color:#777d85;font:8px/1.2 "Cascadia Mono",Consolas,monospace}
 .command-palette-results{max-height:calc(min(620px,72vh) - 49px);overflow:auto;padding:6px}
 .command-palette-results>button{width:100%;min-height:43px;border:0;border-radius:8px;background:transparent;color:#aeb3ba;display:grid;grid-template-columns:27px minmax(0,1fr) auto;align-items:center;gap:7px;text-align:left;padding:5px 8px}
+.command-palette-results>button:disabled{opacity:.65;cursor:wait}
 .command-palette-results>button:hover,.command-palette-results>button.selected{background:#202328;color:#e5e7ea}
 .command-palette-icon{display:grid;place-items:center;color:#777d86}
 .command-palette-results strong,.command-palette-results small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
