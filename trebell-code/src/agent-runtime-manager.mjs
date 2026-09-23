@@ -18,6 +18,47 @@ const INSTALLABLE_PACKAGES=Object.freeze({
   opencode:"@opencode/cli",
 });
 
+const RUNTIME_COMPATIBILITY=Object.freeze({
+  opencode:Object.freeze({
+    recommendedRange:">=1.14.19",
+    ranges:Object.freeze([
+      Object.freeze({range:"<1.14.19",status:"broken"}),
+      Object.freeze({range:">=1.14.19",status:"supported"}),
+    ]),
+  }),
+});
+
+function parsedSemver(value){
+  const match=String(value||"").match(/(?:^|[^0-9])v?(\d+)\.(\d+)\.(\d+)(?![0-9.-])/i);
+  return match?{raw:match[0].trim().replace(/^v/i,""),major:Number(match[1]),minor:Number(match[2]),patch:Number(match[3])}:null;
+}
+function compareSemver(a,b){
+  for(const key of ["major","minor","patch"]){if(a[key]!==b[key])return a[key]<b[key]?-1:1}
+  return 0;
+}
+function satisfiesSimpleRange(version,range){
+  const parsed=parsedSemver(version);if(!parsed)return false;
+  const clauses=String(range||"").trim().split(/\s+/).filter(Boolean);if(!clauses.length)return false;
+  return clauses.every(clause=>{
+    const match=clause.match(/^(<=|>=|<|>|=)?v?(\d+)\.(\d+)\.(\d+)$/);if(!match)return false;
+    const target={major:Number(match[2]),minor:Number(match[3]),patch:Number(match[4])};const compared=compareSemver(parsed,target);
+    return match[1]==="<"?compared<0:match[1]==="<="?compared<=0:match[1]===">"?compared>0:match[1]===">="?compared>=0:compared===0;
+  });
+}
+export function runtimeCompatibility(kind,version){
+  const policy=RUNTIME_COMPATIBILITY[normalizeAgentRuntime(kind)];if(!policy)return null;
+  const parsed=parsedSemver(version);
+  const normalized=parsed?parsed.raw:null;
+  const matched=normalized?policy.ranges.find(item=>satisfiesSimpleRange(normalized,item.range)):null;
+  const status=matched?.status||"unknown";
+  const message=status==="broken"
+    ?`This ${RUNTIMES[normalizeAgentRuntime(kind)]?.name||kind} version is known to be incompatible with Trebell Code. Use ${policy.recommendedRange}.`
+    :status==="unsupported"
+      ?`This ${RUNTIMES[normalizeAgentRuntime(kind)]?.name||kind} version is outside Trebell Code's supported range. Use ${policy.recommendedRange}.`
+      :status==="graceful"?`This runtime has limited compatibility with Trebell Code. Use ${policy.recommendedRange} for full support.`:null;
+  return {status,message,recommendedVersion:policy.recommendedVersion||null,recommendedRange:policy.recommendedRange||null,version:normalized};
+}
+
 export function normalizeAgentRuntime(value){
   const id=String(value||"codex").trim().toLowerCase();
   return RUNTIMES[id]?id:"codex";
@@ -156,12 +197,23 @@ export class AgentRuntimeManager{
     if(!target)throw new Error((RUNTIMES[normalized]?.name||String(kind||"Harness"))+" is not installable from Trebell Code");
     const npm=await this.#runCommand("npm",["--version"],{timeoutMs:8000,environmentId});
     if(!npm.ok)throw new Error("npm is required to install this harness in the selected environment. Install Node.js/npm there first.");
-    const result=await this.#runCommand("npm",["install","-g",target.packageName],{timeoutMs:180000,environmentId});
+    let packageSpec=target.packageName,targetVersion=null,compatibility=null;
+    if(RUNTIME_COMPATIBILITY[target.runtime]){
+      const viewed=await this.#runCommand("npm",["view",target.packageName,"version","--json"],{timeoutMs:20_000,environmentId});
+      if(!viewed.ok)throw new Error((viewed.stderr||viewed.stdout||"Could not determine the compatible runtime version").trim().slice(-1000));
+      try{targetVersion=String(JSON.parse(String(viewed.stdout||"").trim()))}catch{targetVersion=String(viewed.stdout||"").trim().replace(/^["']|["']$/g,"")}
+      compatibility=runtimeCompatibility(target.runtime,targetVersion);
+      if(!targetVersion||!compatibility||["broken","unsupported","unknown"].includes(compatibility.status)){
+        throw new Error(compatibility?.message||("Trebell could not verify that "+targetVersion+" is compatible. Update was not installed."));
+      }
+      packageSpec=target.packageName+"@"+targetVersion;
+    }
+    const result=await this.#runCommand("npm",["install","-g",packageSpec],{timeoutMs:180000,environmentId});
     if(!result.ok)throw new Error((result.stderr||result.stdout||("Could not install "+target.packageName)).trim().slice(-2000));
     const instances=this.instances();
     const instance=instances.find(item=>item.kind===target.runtime&&item.id===target.runtime+"-default")||instances.find(item=>item.kind===target.runtime)||defaultInstance(target.runtime);
     const status=await this.probe(instance,{environmentId});
-    return {ok:true,runtime:target.runtime,packageName:target.packageName,status,output:(result.stdout||result.stderr||"").trim().slice(-2000)};
+    return {ok:true,runtime:target.runtime,packageName:target.packageName,targetVersion,compatibility,status,output:(result.stdout||result.stderr||"").trim().slice(-2000)};
   }
   acpArgs(instance,permissionMode="supervised",cwd=process.cwd()){
     if(instance.kind==="cursor"){
@@ -200,7 +252,9 @@ export class AgentRuntimeManager{
       try{account=JSON.parse(auth.stdout||"{}");authenticated=Boolean(account.loggedIn)}catch{authenticated=auth.ok}
       if(!authenticated)message="Claude Code is installed but not authenticated";
     }
-    return {id:instance.id,kind:instance.kind,name:def.name,available:authenticated,installed:true,authenticated,protocol:def.protocol,managed:Boolean(def.managed),binary:command,version:(versionResult.stdout||versionResult.stderr).trim().split(/\r?\n/)[0]||null,account,message};
+    const version=(versionResult.stdout||versionResult.stderr).trim().split(/\r?\n/)[0]||null;
+    const compatibility=runtimeCompatibility(instance.kind,version);
+    return {id:instance.id,kind:instance.kind,name:def.name,available:authenticated,installed:true,authenticated,protocol:def.protocol,managed:Boolean(def.managed),binary:command,version,account,message,...(compatibility?{compatibility}:{})};
   }
   async models(instanceOrKind,{environmentId=undefined}={}){
     const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;

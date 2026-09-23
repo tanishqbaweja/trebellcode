@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
-import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
+import { AgentRuntimeManager, runtimeCompatibility } from "../src/agent-runtime-manager.mjs";
 import { AcpAgentSession } from "../src/acp-agent-session.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
 import { TerminalManager } from "../src/terminal-manager.mjs";
@@ -55,6 +55,39 @@ test("runtime installer uses only official allowlisted packages in the selected 
     assert.equal(snapshot.definitions.find(item=>item.id==="claude").installable,true);
     assert.equal(snapshot.definitions.find(item=>item.id==="opencode").packageName,"@opencode/cli");
     assert.equal(snapshot.definitions.find(item=>item.id==="cursor").installable,false);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
+test("OpenCode compatibility blocks known-broken managed updates and pins verified versions",async()=>{
+  assert.equal(runtimeCompatibility("opencode","opencode 1.14.18").status,"broken");
+  assert.equal(runtimeCompatibility("opencode","v1.14.19").status,"supported");
+  assert.equal(runtimeCompatibility("opencode","dev-build").status,"unknown");
+  const home=await mkdtemp(join(tmpdir(),"trebell-opencode-compat-"));const env={...process.env,TREBELL_HOME:home};
+  try{
+    const state=new TrebellStateStore(env);const calls=[];let candidate="1.14.18";
+    const environments={
+      get:id=>id==="ssh-fixture"?{id,name:"Fixture SSH",type:"ssh",cwd:"/srv/app"}:null,
+      executeArgv:async(id,{command,args})=>{
+        calls.push({id,command,args:[...args]});
+        if(command==="npm"&&args[0]==="--version")return {exitCode:0,stdout:"11.0.0\n",stderr:""};
+        if(command==="npm"&&args[0]==="view")return {exitCode:0,stdout:JSON.stringify(candidate)+"\n",stderr:""};
+        if(command==="npm"&&args[0]==="install")return {exitCode:0,stdout:"installed\n",stderr:""};
+        if(command==="opencode"&&args[0]==="--version")return {exitCode:0,stdout:"opencode "+candidate+"\n",stderr:""};
+        if(command==="opencode"&&args[0]==="models")return {exitCode:0,stdout:"fixture/model\n",stderr:""};
+        return {exitCode:1,stdout:"",stderr:"unexpected command"};
+      },
+    };
+    state.updateSettings({activeEnvironmentId:"ssh-fixture"});
+    const manager=new AgentRuntimeManager({state,env,environments});
+    await assert.rejects(()=>manager.install("opencode"),/known to be incompatible/i);
+    assert.equal(calls.some(call=>call.command==="npm"&&call.args[0]==="install"),false);
+    candidate="1.14.19";
+    const installed=await manager.install("opencode");
+    assert.equal(installed.targetVersion,"1.14.19");
+    assert.equal(installed.compatibility.status,"supported");
+    assert.equal(calls.some(call=>call.command==="npm"&&call.args.join(" ")==="install -g @opencode\/cli@1.14.19"),true);
+    const status=await manager.probe("opencode");
+    assert.equal(status.compatibility.status,"supported");
   }finally{await rm(home,{recursive:true,force:true})}
 });
 

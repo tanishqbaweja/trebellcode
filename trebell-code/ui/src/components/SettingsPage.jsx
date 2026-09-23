@@ -282,8 +282,9 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
         <div className="agent-runtime-list">{(agentInfo?.definitions||[]).map(def=>{
           const status=(selectedAgent===def.id?agentInfo?.statuses?.find(item=>item.id===agentInfo?.selectedInstanceId):null)||agentInfo?.statuses?.find(item=>item.kind===def.id&&item.available)||agentInfo?.statuses?.find(item=>item.kind===def.id);
           const active=selectedAgent===def.id;
+          const compatibility=status?.compatibility;const incompatible=["broken","unsupported"].includes(compatibility?.status);
           return <div className="agent-runtime-option" key={def.id}><button className={active?"active":""} disabled={!active&&!status?.available} onClick={()=>!active&&status?.available&&selectAgentRuntime(def.id,status.id)}>
-            <Bot size={14}/><span><strong>{def.name}</strong><small>{status?.available?status?.version||"Ready":status?.message||"Unavailable"}</small></span><em>{active?"Active":status?.available?"Use":"Unavailable"}</em>
+            <Bot size={14}/><span><strong>{def.name}</strong><small>{incompatible?(compatibility.message||"Incompatible runtime version"):status?.available?status?.version||"Ready":status?.message||"Unavailable"}</small></span><em>{active?(incompatible?"Warning":"Active"):status?.available?(incompatible?"Warning":"Use"):"Unavailable"}</em>
           </button>{def.installable&&<button className="agent-runtime-install" disabled={installingAgent===def.id} onClick={()=>installAgentRuntime(def.id)}>{installingAgent===def.id?"Installing…":status?.installed?"Update":"Install"}</button>}</div>;
         })}</div>
         <div className="runtime-profiles">
