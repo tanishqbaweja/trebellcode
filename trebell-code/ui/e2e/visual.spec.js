@@ -698,6 +698,8 @@ test("onboarding and license surfaces are visually intentional",async({page,requ
   await expect(licenses).toBeVisible();
   const licenseMetrics=await licenses.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(licenseMetrics.scroll).toBeLessThanOrEqual(licenseMetrics.client+1);
+  const toolbarBox=await box(page.locator(".licenses-toolbar")),licenseLayoutBox=await box(page.locator(".licenses-layout"));
+  expect(licenseLayoutBox.y-(toolbarBox.y+toolbarBox.height)).toBeLessThanOrEqual(16);
   await page.screenshot({path:auditDir+"licenses-1280x800.png",fullPage:true});
   const firstLicense=page.locator(".licenses-list > button").first();
   await expect(firstLicense).toBeVisible();
