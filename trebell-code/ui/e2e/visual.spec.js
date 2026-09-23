@@ -260,6 +260,21 @@ test("right panel tabs are functional and visually bounded",async({page,request}
     await expect(tab).toBeEnabled();
     await tab.click();
     await expect(tab).toHaveClass(/active/);
+    if(label==="Files"){
+      const search=panel.getByPlaceholder("Search files…");
+      await search.fill("package.json");
+      const packageFile=panel.locator(".tree-list button").filter({hasText:"package.json"}).first();
+      await expect(packageFile).toBeVisible();
+      await packageFile.click();
+      await expect(panel.locator(".file-head strong")).toContainText("package.json");
+      await expect(panel.locator(".syntax-view")).toBeVisible();
+      await page.screenshot({path:auditDir+"panel-files-open-1600x980.png",fullPage:true});
+      await panel.getByRole("button",{name:"Edit",exact:true}).click();
+      await expect(panel.locator(".file-editor")).toBeVisible();
+      await page.screenshot({path:auditDir+"panel-files-edit-1600x980.png",fullPage:true});
+      await panel.getByRole("button",{name:"Cancel",exact:true}).click();
+      await search.fill("");
+    }
     if(label==="Diff")await expect(panel.locator(".changes-empty")).toBeVisible();
     if(label==="Browser")await expect(panel.locator(".preview-empty-state")).toBeVisible();
     if(label==="Git"){
@@ -318,4 +333,71 @@ test("populated chat and overlays remain visually usable",async({page,request})=
   const compactChat=await conversation.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(compactChat.scroll).toBeLessThanOrEqual(compactChat.client+1);
   await page.screenshot({path:auditDir+"chat-populated-1280x800.png",fullPage:true});
+});
+
+test("onboarding and license surfaces are visually intentional",async({page,request})=>{
+  test.setTimeout(45_000);
+  await request.post("/api/settings",{data:{onboardingComplete:false,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff"}});
+  await page.goto("/");
+  const onboarding=page.getByTestId("onboarding");
+  await expect(onboarding).toBeVisible();
+  const dialog=onboarding.getByRole("dialog",{name:"Set up Trebell Code"});
+  const onboardingBox=await box(dialog);
+  expect(onboardingBox.width).toBeLessThanOrEqual(660);
+  expect(onboardingBox.height).toBeLessThan(page.viewportSize().height-30);
+  await page.screenshot({path:auditDir+"onboarding-1600x980.png",fullPage:true});
+  await page.setViewportSize({width:1280,height:800});
+  const compactOnboarding=await box(dialog);
+  expect(compactOnboarding.width).toBeLessThanOrEqual(660);
+  expect(compactOnboarding.height).toBeLessThanOrEqual(770);
+  await page.screenshot({path:auditDir+"onboarding-1280x800.png",fullPage:true});
+  await onboarding.getByRole("button",{name:"Finish setup"}).click();
+  await expect(onboarding).toBeHidden();
+
+  await page.route(/\/api\/licenses$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:[
+    {id:"react@19.1.1",name:"react",version:"19.1.1",license:"MIT",component:"UI runtime"},
+    {id:"playwright@1.55.0",name:"playwright",version:"1.55.0",license:"Apache-2.0",component:"Testing"},
+    {id:"electron@38.1.2",name:"electron",version:"38.1.2",license:"MIT",component:"Desktop runtime"},
+  ]})}));
+  await page.route(/\/api\/licenses\/detail\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    id:"react@19.1.1",name:"react",version:"19.1.1",license:"MIT",homepage:"https://react.dev",text:"MIT License\n\nCopyright fixture authors\n\nPermission is hereby granted, free of charge, to any person obtaining a copy...",
+  })}));
+  await page.getByRole("button",{name:"Settings"}).click();
+  await page.getByRole("button",{name:/General/}).click();
+  await page.getByRole("button",{name:"View licenses"}).click();
+  await expect(page.getByRole("heading",{name:"Open source licenses",level:1})).toBeVisible();
+  const licenses=page.locator(".licenses-page");
+  await expect(licenses).toBeVisible();
+  const licenseMetrics=await licenses.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(licenseMetrics.scroll).toBeLessThanOrEqual(licenseMetrics.client+1);
+  await page.screenshot({path:auditDir+"licenses-1280x800.png",fullPage:true});
+  const firstLicense=page.locator(".licenses-list > button").first();
+  await expect(firstLicense).toBeVisible();
+  await firstLicense.click();
+  await expect(page.locator(".license-detail pre")).toBeVisible();
+  await page.screenshot({path:auditDir+"licenses-detail-1280x800.png",fullPage:true});
+});
+
+test("light mode stays visually coherent across workspace and panels",async({page,request})=>{
+  test.setTimeout(40_000);
+  await prepare(page,request);
+  await page.getByRole("button",{name:"Settings"}).click();
+  await page.getByRole("button",{name:/Appearance/}).click();
+  await page.getByRole("button",{name:"light",exact:true}).click();
+  await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.mode)).toBe("light");
+  await page.getByRole("button",{name:"Threads"}).click();
+  const shell=await page.evaluate(()=>({
+    sidebar:getComputedStyle(document.querySelector(".sidebar")).backgroundColor,
+    main:getComputedStyle(document.querySelector(".main-frame")).backgroundColor,
+    composer:getComputedStyle(document.querySelector(".composer-wrap")).backgroundColor,
+  }));
+  expect(shell.sidebar).not.toBe("rgb(17, 18, 20)");
+  expect(shell.main).not.toBe("rgb(11, 12, 14)");
+  expect(shell.composer).toMatch(/^rgba?\(255, 255, 255/);
+  await page.screenshot({path:auditDir+"light-chat-1600x980.png",fullPage:true});
+  await page.getByTestId("right-panel-toggle").click();
+  await expect(page.getByTestId("right-panel")).toBeVisible();
+  await page.screenshot({path:auditDir+"light-chat-panel-1600x980.png",fullPage:true});
+  await page.setViewportSize({width:1280,height:800});
+  await page.screenshot({path:auditDir+"light-chat-panel-1280x800.png",fullPage:true});
 });
