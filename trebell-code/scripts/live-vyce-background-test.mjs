@@ -15,6 +15,16 @@ async function freePort(){
   const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port;
 }
 function wait(ms){return new Promise(resolve=>setTimeout(resolve,ms))}
+function decodeText(buffer){
+  if(!Buffer.isBuffer(buffer))return String(buffer||"");
+  if(buffer.length>=2&&buffer[0]===0xff&&buffer[1]===0xfe)return buffer.subarray(2).toString("utf16le");
+  if(buffer.length>=2&&buffer[0]===0xfe&&buffer[1]===0xff){
+    const swapped=Buffer.allocUnsafe(buffer.length-2);
+    for(let i=2;i+1<buffer.length;i+=2){swapped[i-2]=buffer[i+1];swapped[i-1]=buffer[i]}
+    return swapped.toString("utf16le");
+  }
+  return buffer.toString("utf8");
+}
 class Rpc{
   constructor(ws){this.ws=ws;this.next=1;this.pending=new Map();this.waiters=[];ws.on("message",data=>this.onMessage(data))}
   request(method,params={}){const id=this.next++;return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{this.pending.delete(id);reject(new Error(method+" timed out"))},180000);this.pending.set(id,{resolve,reject,timer});this.ws.send(JSON.stringify({id,method,params}))})}
@@ -58,7 +68,7 @@ try{
   const turn=await rpc.request("turn/start",{threadId:thread.thread.id,model:MODEL,cwd:worktree,approvalPolicy:"never",sandboxPolicy:{type:"dangerFullAccess"},input:[{type:"text",text:`Use your shell/file tools. Create background-proof.txt in the current workspace containing exactly ${PROOF} and nothing else. Read it back, verify it, then reply exactly BACKGROUND_DONE.`,text_elements:[]}]});assert.ok(turn.turn?.id);
   const completed=await rpc.waitFor(msg=>msg.method==="turn/completed"&&(msg.params?.turn?.id===turn.turn.id||msg.params?.turnId===turn.turn.id));
   assert.equal(completed.params?.turn?.status||completed.params?.status,"completed");
-  assert.equal((await readFile(join(worktree,"background-proof.txt"),"utf8")).trim(),PROOF);
+  assert.equal(decodeText(await readFile(join(worktree,"background-proof.txt"))).trim(),PROOF);
   await assert.rejects(()=>readFile(join(repo,"background-proof.txt"),"utf8"),/ENOENT|no such file/i);
   console.log(JSON.stringify({ok:true,provider:"vyceai",model:MODEL,isolatedWorktree:true,branch:"trebell/live-background",proof:PROOF,turnStatus:"completed"},null,2));
 }finally{
