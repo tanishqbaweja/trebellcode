@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import { createGuiServer } from "../src/gui-server.mjs";
+import { TrebellStateStore } from "../src/trebell-state.mjs";
 
 async function freePort() {
   const server=createServer();
@@ -155,4 +156,57 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
     await gui.close();
     await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
   }
+});
+
+test("compatible Codex profiles switch an existing thread through a separate app-server",{timeout:60000},async()=>{
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  const home=await mkdtemp(join(tmpdir(),"trebell-codex-profiles-"));
+  const env={...process.env,TREBELL_HOME:home};
+  const shared=join(home,"shared-codex"),shadow=join(home,"personal-codex"),isolated=join(home,"isolated-codex");
+  const persisted=new TrebellStateStore(env);
+  persisted.updateSettings({
+    agentRuntime:"codex",
+    agentRuntimeInstanceId:"codex-work",
+    agentRuntimeInstances:[
+      {id:"codex-work",kind:"codex",displayName:"Work",enabled:true,homePath:shared,shadowHomePath:"",environment:{}},
+      {id:"codex-personal",kind:"codex",displayName:"Personal",enabled:true,homePath:shared,shadowHomePath:shadow,environment:{}},
+      {id:"codex-isolated",kind:"codex",displayName:"Isolated",enabled:true,homePath:isolated,shadowHomePath:"",environment:{}},
+    ],
+  });
+  const gui=await createGuiServer({port,appPort,mock:false,env});let ws;
+  try{
+    let boot=null;for(let i=0;i<80;i++){boot=await fetch(gui.url+"/api/bootstrap").then(response=>response.json());if(boot.appServerReady)break;await new Promise(resolve=>setTimeout(resolve,200))}
+    assert.equal(boot.appServerReady,true,"primary Codex profile did not become ready");
+    ws=new WebSocket(boot.wsUrl,{origin:gui.url});await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});
+    await rpc(ws,1,"initialize",{clientInfo:{name:"trebell-profile-test",title:"Trebell Profile Test",version:"1.0.0"},capabilities:{experimentalApi:true}});ws.send(JSON.stringify({method:"initialized",params:{}}));
+    const started=await rpc(ws,2,"thread/start",{cwd:process.cwd(),modelProvider:"freebuff",approvalPolicy:"never",sandbox:"danger-full-access",ephemeral:false,threadSource:"trebell-code"});
+    const threadId=started.thread.id;assert.ok(threadId);
+    const firstTurn=await rpc(ws,3,"turn/start",{threadId,input:[],turnTrigger:"trebell-profile-persistence"});
+    assert.ok(firstTurn.turn?.id);await rpcOutcome(ws,4,"turn/interrupt",{threadId,turnId:firstTurn.turn.id});
+    for(let i=0;i<60;i++){
+      const current=await fetch(gui.url+"/api/thread-meta?threadId="+encodeURIComponent(threadId)).then(response=>response.json());if(current.active===false)break;
+      await new Promise(resolve=>setTimeout(resolve,50));
+    }
+    const profiles=await rpc(ws,5,"thread/runtimeInstances/list",{threadId});
+    assert.equal(profiles.supported,true);assert.equal(profiles.currentInstanceId,"codex-work");assert.equal(profiles.label,"Codex profile");
+    assert.deepEqual(profiles.items.map(item=>item.id).sort(),["codex-personal","codex-work"]);
+    const background=await rpc(ws,20,"thread/start",{cwd:process.cwd(),modelProvider:"freebuff",approvalPolicy:"never",sandbox:"danger-full-access",ephemeral:false,threadSource:"trebell-code"});
+    const backgroundTurn=await rpc(ws,21,"turn/start",{threadId:background.thread.id,input:[],turnTrigger:"trebell-concurrent-thread"});
+    assert.equal(backgroundTurn.turn?.status,"inProgress","a second Codex thread should keep its own writer while another thread changes profiles");
+    for(let i=0;i<60;i++){
+      const current=await fetch(gui.url+"/api/thread-meta?threadId="+encodeURIComponent(background.thread.id)).then(response=>response.json());if(current.active===false)break;
+      await new Promise(resolve=>setTimeout(resolve,50));
+    }
+    const switched=await rpc(ws,6,"thread/runtimeInstance/set",{threadId,instanceId:"codex-personal"});
+    assert.equal(switched.runtimeInstanceId,"codex-personal");
+    const resumed=await rpc(ws,7,"thread/resume",{threadId,modelProvider:"freebuff",excludeTurns:false});
+    assert.equal(resumed.thread.id,threadId);
+    const backgroundSecondTurn=await rpcOutcome(ws,22,"turn/start",{threadId:background.thread.id,input:[],turnTrigger:"trebell-concurrent-thread-after-profile-switch"});
+    assert.equal(backgroundSecondTurn.ok,true,`switching one thread must not tear down or steal another thread's Codex runtime: ${JSON.stringify(backgroundSecondTurn.error||null)}`);
+    assert.ok(backgroundSecondTurn.result?.turn?.id);
+    const after=await rpc(ws,8,"thread/runtimeInstances/list",{threadId});assert.equal(after.currentInstanceId,"codex-personal");
+    const meta=await fetch(gui.url+"/api/thread-meta?threadId="+encodeURIComponent(threadId)).then(response=>response.json());assert.equal(meta.runtimeInstanceId,"codex-personal");
+    const incompatible=await rpcOutcome(ws,9,"thread/runtimeInstance/set",{threadId,instanceId:"codex-isolated"});
+    assert.equal(incompatible.ok,false);assert.match(incompatible.error?.message||"",/different CODEX_HOME/i);
+  }finally{try{ws?.close()}catch{}await gui.close();await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
 });

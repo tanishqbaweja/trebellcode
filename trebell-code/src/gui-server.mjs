@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { createServer as createTcpServer } from "node:net";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createReadStream, statfsSync } from "node:fs";
 import { cpus, freemem, totalmem, tmpdir, loadavg, homedir } from "node:os";
@@ -136,6 +137,15 @@ async function waitForChildExit(child,timeoutMs=3000){
   ]);
 }
 
+async function freeTcpPort(){
+  const server=createTcpServer();
+  await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));
+  const address=server.address();const port=typeof address==="object"&&address?address.port:0;
+  await new Promise(resolve=>server.close(resolve));
+  if(!port)throw new Error("Could not reserve a Codex app-server port");
+  return port;
+}
+
 async function stopChildProcess(child){
   if(!child || child.exitCode!==null) return;
   const pid=child.pid;
@@ -162,12 +172,12 @@ async function stopChildProcess(child){
 }
 
 async function startAppServer({appPort,env=process.env,mock=false,provider="freebuff",providerPort=null,environments=null,environmentId=null,runtimeInstance=null}){
-  if(mock) return { child:null, logs:[], targetUrl:null, readyUrl:null, environment:null };
+  if(mock) return { child:null, logs:[], targetUrl:null, readyUrl:null, environment:null, appPort, runtimeInstanceId:runtimeInstance?.id||"codex-default" };
   if(environmentId&&environments){
     const profile=environments.get(environmentId);
     if(profile&&profile.type!=="local"){
       try{
-        return await startRemoteAppServer({
+        const remote=await startRemoteAppServer({
           environments,
           environmentId,
           appPort,
@@ -175,6 +185,7 @@ async function startAppServer({appPort,env=process.env,mock=false,provider="free
           localProviderPort:providerPort,
           debug:env.TREBELL_GUI_DEBUG==="1",
         });
+        return {...remote,appPort,runtimeInstanceId:runtimeInstance?.id||"codex-default"};
       }catch(error){
         return {
           child:null,
@@ -182,6 +193,8 @@ async function startAppServer({appPort,env=process.env,mock=false,provider="free
           targetUrl:`ws://127.0.0.1:${appPort}`,
           readyUrl:null,
           environment:{id:profile.id,name:profile.name,type:profile.type},
+          appPort,
+          runtimeInstanceId:runtimeInstance?.id||"codex-default",
           error:error instanceof Error?error.message:String(error),
         };
       }
@@ -192,6 +205,7 @@ async function startAppServer({appPort,env=process.env,mock=false,provider="free
   const command=runtimeInstance?.binaryPath?.trim()||codexBin(env);
   const homeLayout=await prepareCodexHome({homePath:runtimeInstance?.homePath?.trim()||codexHome(env),shadowHomePath:runtimeInstance?.shadowHomePath?.trim()||null,defaultHome:codexHome(env)});
   const runtimeHome=homeLayout.effectiveHomePath||homeLayout.sharedHomePath;
+  await mkdir(runtimeHome,{recursive:true});
   const runtimeEnv={...env,...(runtimeInstance?.environment||{}),CODEX_HOME:runtimeHome};
   const args=[...codexProviderOverrides({port:inferencePort,provider}),"app-server","--listen",`ws://127.0.0.1:${appPort}`];
   const logs=[];
@@ -212,7 +226,7 @@ async function startAppServer({appPort,env=process.env,mock=false,provider="free
   child.stderr?.on("data",chunk=>pushLog(chunk,"stderr"));
   child.on("error",error=>pushLog(error.stack||error.message,"stderr"));
   child.on("exit",(code,signal)=>pushLog(`app-server exited code=${code} signal=${signal}\n`,"stderr"));
-  return { child, logs, targetUrl:`ws://127.0.0.1:${appPort}`, readyUrl:`http://127.0.0.1:${appPort}/readyz`, environment:null, runtimeInstanceId:runtimeInstance?.id||"codex-default",runtimeHome,sharedRuntimeHome:homeLayout.sharedHomePath,continuationKey:homeLayout.continuationKey };
+  return { child, logs, targetUrl:`ws://127.0.0.1:${appPort}`, readyUrl:`http://127.0.0.1:${appPort}/readyz`, environment:null, appPort, runtimeInstanceId:runtimeInstance?.id||"codex-default",runtimeHome,sharedRuntimeHome:homeLayout.sharedHomePath,continuationKey:homeLayout.continuationKey };
 }
 
 async function appServerReady(instance,appPort){
@@ -222,11 +236,11 @@ async function appServerReady(instance,appPort){
       return response.ok;
     }catch{return false}
   }
-  return instance?.child ? await probeCodexReady(appPort) : false;
+  return instance?.child ? await probeCodexReady(instance?.appPort||appPort) : false;
 }
 
 async function waitForAppServer(instance,appPort,timeoutMs=15000){
-  if(!instance?.readyUrl) return instance?.child ? await waitForCodexReady(appPort,timeoutMs).catch(()=>false) : false;
+  if(!instance?.readyUrl) return instance?.child ? await waitForCodexReady(instance?.appPort||appPort,timeoutMs).catch(()=>false) : false;
   const started=Date.now();
   while(Date.now()-started<timeoutMs){
     if(await appServerReady(instance,appPort))return true;
@@ -786,16 +800,43 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   const storageCleanup=new StorageCleanupService({state,env,terminals,worktreeCleanup,log:message=>{cleanupLogs.push({at:Date.now(),stream:"storage-cleanup",text:String(message)+"\n"});if(cleanupLogs.length>100)cleanupLogs.splice(0,cleanupLogs.length-100)}});
   const cloneJobs=new CloneJobService({state,environments,env,log:message=>appServer?.logs?.push({at:Date.now(),stream:"clone",text:String(message)+"\n"})});
   await cloneJobs.recoverInterrupted();
-  let appServer=await startAppServer({
-    appPort,
-    env,
-    mock,
-    provider:selectedProvider,
-    providerPort:selectedInferencePort(),
-    environments,
-    environmentId:state.settings().activeEnvironmentId||null,
-    runtimeInstance:agentRuntimes.activeRuntime()==="codex"?agentRuntimes.activeInstance():null,
-  });
+  const codexAppServers=new Map(),codexAppServerStarts=new Map(),codexThreadServerKeys=new Map();
+  const codexPoolKey=(ownerKey,instanceId,environmentId=state.settings().activeEnvironmentId||null)=>String(ownerKey||"catalog")+":"+(environmentId||"local")+":"+String(instanceId||"codex-default");
+  function codexInstance(instanceId=null){
+    const instances=agentRuntimes.instances();
+    if(instanceId){const exact=instances.find(item=>item.kind==="codex"&&item.id===instanceId);if(exact)return exact}
+    const active=agentRuntimes.activeInstance();if(active?.kind==="codex")return active;
+    return instances.find(item=>item.kind==="codex")||null;
+  }
+  async function ensureCodexAppServer(instanceId=null,{environmentId=state.settings().activeEnvironmentId||null,preferredPort=null,ownerKey="catalog"}={}){
+    const instance=codexInstance(instanceId);if(!instance)throw new Error("Codex runtime profile was not found");
+    const key=codexPoolKey(ownerKey,instance.id,environmentId);const current=codexAppServers.get(key);
+    if(current&&(mock||(!current.error&&current.child?.exitCode===null)))return current;
+    if(codexAppServerStarts.has(key))return codexAppServerStarts.get(key);
+    const starting=(async()=>{
+      if(current){await stopAppServer(current);codexAppServers.delete(key)}
+      const targetPort=preferredPort||await freeTcpPort();
+      const started=await startAppServer({appPort:targetPort,env,mock,provider:selectedProvider,providerPort:selectedInferencePort(),environments,environmentId,runtimeInstance:instance});
+      started.poolKey=key;started.ownerKey=ownerKey;started.runtimeInstanceId=instance.id;started.environmentId=environmentId||null;started.continuationKey=agentRuntimes.continuationKey(instance);
+      codexAppServers.set(key,started);
+      if(!mock){const ready=await waitForAppServer(started,targetPort,15000).catch(()=>false);if(!ready&&!started.error)started.error=`Codex app-server profile '${instance.displayName||instance.id}' did not become ready`}
+      return started;
+    })();
+    codexAppServerStarts.set(key,starting);
+    try{return await starting}finally{codexAppServerStarts.delete(key)}
+  }
+  async function stopCodexAppServers(){
+    const servers=[...codexAppServers.values()];codexAppServers.clear();
+    codexThreadServerKeys.clear();
+    await Promise.all(servers.map(server=>stopAppServer(server)));
+  }
+  async function releaseCodexThreadServer(threadId){
+    const id=String(threadId||"").trim();if(!id)return;
+    const key=codexThreadServerKeys.get(id);codexThreadServerKeys.delete(id);if(!key)return;
+    const server=codexAppServers.get(key);codexAppServers.delete(key);codexAppServerStarts.delete(key);
+    if(server)await stopAppServer(server);
+  }
+  let appServer=await ensureCodexAppServer(agentRuntimes.activeRuntime()==="codex"?agentRuntimes.activeInstance().id:null,{preferredPort:appPort,ownerKey:"catalog"});
   let remoteControl=null;
 
   function providerReady(providerId=selectedProvider){
@@ -822,21 +863,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
 
   async function restartAppServer(providerId=selectedProvider){
     const next=normalizeProviderId(providerId);
-    await stopAppServer(appServer);
+    await stopCodexAppServers();
     selectedProvider=next;
     providerBridge?.setProvider(selectedProvider);
     ensureCodexConfig({port:selectedInferencePort(),env,provider:selectedProvider});
-    appServer=await startAppServer({
-      appPort,
-      env,
-      mock,
-      provider:selectedProvider,
-      providerPort:selectedInferencePort(),
-      environments,
-      environmentId:state.settings().activeEnvironmentId||null,
-      runtimeInstance:agentRuntimes.activeRuntime()==="codex"?agentRuntimes.activeInstance():null,
-    });
-    if(!mock) await waitForAppServer(appServer,appPort,15000).catch(()=>false);
+    appServer=await ensureCodexAppServer(agentRuntimes.activeRuntime()==="codex"?agentRuntimes.activeInstance().id:null,{preferredPort:appPort,ownerKey:"catalog"});
     return selectedProvider;
   }
 
@@ -2164,9 +2195,74 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     }
   });
 
+  async function codexThreadProfiles(threadId){
+    const id=String(threadId||"").trim();if(!id)throw Object.assign(new Error("threadId is required"),{code:-32602});
+    const meta=state.threadMeta(id);const environmentId=meta.environmentId??state.settings().activeEnvironmentId??null;
+    const remote=environmentId?environments.get(environmentId):null;
+    if(remote&&remote.type!=="local")return {supported:false,label:"Codex profile",currentInstanceId:meta.runtimeInstanceId||agentRuntimes.activeInstance().id,items:[],reason:"Per-thread Codex profile switching is not yet available inside WSL/SSH environments."};
+    const current=codexInstance(meta.runtimeInstanceId)||codexInstance();if(!current)return {supported:false,label:"Codex profile",currentInstanceId:null,items:[],reason:"No Codex runtime profile is configured."};
+    const compatibleIds=new Set(agentRuntimes.compatibleInstanceIds(current));
+    const compatible=agentRuntimes.instances().filter(instance=>instance.kind==="codex"&&compatibleIds.has(instance.id));
+    const items=await Promise.all(compatible.map(async instance=>{
+      const status=await agentRuntimes.probe(instance,{environmentId}).catch(error=>({available:false,message:error.message||String(error)}));
+      return {id:instance.id,displayName:instance.displayName||instance.id,current:instance.id===current.id,available:Boolean(status?.available),authenticated:status?.authenticated??null,version:status?.version||null,message:status?.message||null};
+    }));
+    return {supported:true,label:"Codex profile",currentInstanceId:current.id,items};
+  }
+  async function setCodexThreadProfile(threadId,instanceId){
+    const id=String(threadId||"").trim(),targetId=String(instanceId||"").trim();if(!id||!targetId)throw Object.assign(new Error("threadId and instanceId are required"),{code:-32602});
+    const meta=state.threadMeta(id);if(meta.active)throw new Error("Stop the running turn before switching Codex profiles.");
+    const environmentId=meta.environmentId??state.settings().activeEnvironmentId??null;const remote=environmentId?environments.get(environmentId):null;
+    if(remote&&remote.type!=="local")throw new Error("Per-thread Codex profile switching is not yet available inside WSL/SSH environments.");
+    const current=codexInstance(meta.runtimeInstanceId)||codexInstance();const target=codexInstance(targetId);
+    if(!target||!current)throw new Error("Codex runtime profile was not found");
+    if(!agentRuntimes.compatibleInstanceIds(current).includes(target.id))throw new Error("This Codex profile uses a different CODEX_HOME, so it cannot continue this thread.");
+    const status=await agentRuntimes.probe(target,{environmentId});if(!status.available)throw new Error(status.message||"The selected Codex profile is unavailable");
+    if(target.id===current.id)return {threadId:id,runtimeInstanceId:target.id};
+    await releaseCodexThreadServer(id);
+    try{
+      const targetServer=await ensureCodexAppServer(target.id,{environmentId,ownerKey:`thread:${id}`});if(targetServer.error)throw new Error(targetServer.error);
+      codexThreadServerKeys.set(id,targetServer.poolKey);
+    }catch(error){
+      const restored=await ensureCodexAppServer(current.id,{environmentId,ownerKey:`thread:${id}`}).catch(()=>null);if(restored&&!restored.error)codexThreadServerKeys.set(id,restored.poolKey);
+      throw error;
+    }
+    state.updateThreadMeta(id,{runtime:"codex",runtimeInstanceId:target.id,environmentId,active:false});
+    return {threadId:id,runtimeInstanceId:target.id};
+  }
+  async function codexRelayTarget(message){
+    const threadId=String(message?.params?.threadId||"").trim();
+    const meta=threadId?state.threadMeta(threadId):{};const environmentId=threadId?(meta.environmentId??state.settings().activeEnvironmentId??null):(state.settings().activeEnvironmentId||null);
+    let instance=threadId&&meta.runtimeInstanceId?codexInstance(meta.runtimeInstanceId):null;if(!instance)instance=codexInstance();
+    if(!instance)throw new Error("Codex runtime profile was not found");
+    const remote=environmentId?environments.get(environmentId):null;
+    let server;
+    if(remote&&remote.type!=="local"){
+      server=await ensureCodexAppServer(instance.id,{environmentId,ownerKey:"catalog"});
+    }else if(message?.method==="thread/start"){
+      server=await ensureCodexAppServer(instance.id,{environmentId,ownerKey:`start:${String(message.id??randomUUID())}`});
+    }else if(threadId){
+      const existingKey=codexThreadServerKeys.get(threadId);const existing=existingKey?codexAppServers.get(existingKey):null;
+      if(existing&&(mock||(!existing.error&&existing.child?.exitCode===null)))server=existing;
+      else{
+        server=await ensureCodexAppServer(instance.id,{environmentId,ownerKey:`thread:${threadId}`});
+        codexThreadServerKeys.set(threadId,server.poolKey);
+      }
+    }else server=appServer;
+    if(server?.error)throw new Error(server.error);
+    if(threadId&&!meta.runtimeInstanceId&&["thread/resume","thread/read","turn/start","turn/interrupt","turn/steer","thread/compact/start","thread/revert","review/start"].includes(message?.method))state.updateThreadMeta(threadId,{runtime:"codex",runtimeInstanceId:instance.id,environmentId});
+    return {key:server.poolKey,url:server.targetUrl};
+  }
+
   const terminalWs=terminals?.attachWebSocket(server);
   const relay=attachCodexRelay(server,{
     targetUrl:()=>appServer?.targetUrl||`ws://127.0.0.1:${appPort}`,
+    resolveTarget:message=>codexRelayTarget(message),
+    handleRequest:async message=>{
+      if(message.method==="thread/runtimeInstances/list")return {handled:true,result:await codexThreadProfiles(message.params?.threadId)};
+      if(message.method==="thread/runtimeInstance/set")return {handled:true,result:await setCodexThreadProfile(message.params?.threadId,message.params?.instanceId)};
+      return null;
+    },
     enabled:()=>mock || Boolean(appServer?.child && appServer.child.exitCode===null),
     log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"relay",text:message}),
     onClientMessage:message=>{
@@ -2177,16 +2273,21 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const threadId=message.params?.threadId,model=message.params?.model;if(threadId&&model)codexThreadModels.set(threadId,model);
       }
     },
-    onServerMessage:message=>{
+    onServerMessage:(message,route)=>{
       const params=message?.params||{};
-      if(message?.method==="thread/started"&&params.thread?.id){
-        if(params.thread.model)codexThreadModels.set(params.thread.id,params.thread.model);
-        state.updateThreadMeta(params.thread.id,{cwd:params.thread.cwd||null,runtime:"codex",environmentId:state.settings().activeEnvironmentId||null,deletedAt:null,active:false});
+      const startedThread=message?.method==="thread/started"?params.thread:(route?.requestMethod==="thread/start"?message?.result?.thread:null);
+      if(startedThread?.id){
+        if(startedThread.model)codexThreadModels.set(startedThread.id,startedThread.model);
+        const routedServer=route?.targetKey?codexAppServers.get(route.targetKey):null;
+        if(routedServer&&!routedServer.environmentId)codexThreadServerKeys.set(startedThread.id,routedServer.poolKey);
+        state.updateThreadMeta(startedThread.id,{cwd:startedThread.cwd||null,runtime:"codex",runtimeInstanceId:routedServer?.runtimeInstanceId||agentRuntimes.activeInstance().id,environmentId:routedServer?.environmentId??state.settings().activeEnvironmentId??null,deletedAt:null,active:false});
       }
       if(message?.method==="thread/deleted"&&params.threadId){
         codexThreadModels.delete(params.threadId);const meta=state.threadMeta(params.threadId);state.updateThreadMeta(params.threadId,{deletedAt:Date.now(),active:false});
+        setTimeout(()=>releaseCodexThreadServer(params.threadId).catch(()=>{}),0);
         if(meta?.cwd)worktreeCleanup.sweep({reason:"thread-delete",path:meta.cwd}).catch(error=>cleanupLogs.push({at:Date.now(),stream:"cleanup",text:error.message+"\n"}));
       }
+      if(message?.method==="thread/archived"&&params.threadId)setTimeout(()=>releaseCodexThreadServer(params.threadId).catch(()=>{}),0);
       if(message?.method==="turn/started")markCodexTurnActive(params.threadId,params.turn?.id||params.turnId);
       if(message?.method==="turn/completed")clearCodexRecovery(params.threadId,"completed");
       if(message?.method==="thread/tokenUsage/updated"&&params.threadId&&params.turnId){
@@ -2267,7 +2368,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         cloneJobs.shutdown(),
         terminals?.shutdown(),
         remoteControl?.close(),
-        stopAppServer(appServer),
+        stopCodexAppServers(),
         stopChildProcess(bridge?.child),
         providerBridge?.close(),
       ]);
