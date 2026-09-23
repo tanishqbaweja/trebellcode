@@ -37,6 +37,7 @@ import { resolveKeybinding } from "./keybindings.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
 import { applyFileMention, fileMentionAt, rankFileMentions } from "./composer-mentions.js";
 import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, reorderQueue } from "./native-queue.js";
+import { historyFromTurns, mergeHistoryMessages } from "./thread-history.js";
 import { normalizeCustomTheme, themeCssVariables } from "./theme-utils.js";
 import { approvalResponse } from "./approval-utils.js";
 import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./fanout-utils.js";
@@ -107,24 +108,8 @@ function modelLabel(id,freebuff){
   if(typeof p?.current==="number")return clean+" · "+p.current+" FB/h"+(p.offPeakActive?" off-peak":"");
   return clean;
 }
-function messageText(item){
-  if(typeof item?.text==="string")return item.text;
-  if(Array.isArray(item?.content))return item.content.map(x=>x?.text||x?.input_text||"").join("");
-  return "";
-}
 function historyFromThread(thread,checkpointByTurn={}){
-  const out=[];
-  for(const turn of thread?.turns||[]){
-    for(const item of turn.items||[]){
-      if(item?.type==="userMessage"){
-        const text=messageText(item).trim();
-        if(text)out.push({id:item.id,role:"user",text,turnId:turn.id,checkpointId:checkpointByTurn[turn.id]?.id||null});
-      }else if(item?.type==="agentMessage"&&item.text?.trim()){
-        out.push({id:item.id,role:"assistant",text:item.text,turnId:turn.id});
-      }
-    }
-  }
-  return out;
+  return historyFromTurns(thread?.turns||[],checkpointByTurn);
 }
 function normalizeItem(item={}){
   const type=item.type||"tool";
@@ -194,9 +179,9 @@ function ActivityTimeline({events,assistantText,onOpenPanel}){
     </details>)}
   </div>{assistantText&&<div className="assistant-answer">{assistantText}</div>}</div>;
 }
-function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId}){
+function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId,canLoadEarlier=false,loadingEarlier=false,onLoadEarlier}){
   const historyRef=useRef(null);
-  return <div className="conversation-history" ref={historyRef}>{messages.map(m=>{
+  return <div className="conversation-history" ref={historyRef}>{canLoadEarlier&&<div className="history-page-control"><button type="button" disabled={loadingEarlier} onClick={onLoadEarlier}>{loadingEarlier?"Loading earlier messages…":"Load earlier messages"}</button></div>}{messages.map(m=>{
     if(m.role==="user")return <div className="user-row" key={m.id}><div className="user-bubble"><p>{m.text}</p>{allowRevert&&m.turnId&&<button className="message-action" onClick={()=>onEditFromHere(m)}>Edit from here</button>}</div></div>;
     const parsed=parseVisualizationMessage(m.text);
     return <div className="history-assistant" key={m.id}><div className="agent-star small"><Sparkles size={12}/></div><div>{parsed.text&&<div className="assistant-message-text" data-assistant-citation-source={m.id}>{parsed.text}</div>}{parsed.visualizations.map((visualization,index)=>{
@@ -384,6 +369,7 @@ export default function App(){
   const [threads,setThreads]=useState([]); const [sections,setSections]=useState({}); const [threadMeta,setThreadMeta]=useState({});
   const [activeThread,setActiveThread]=useState(null); const [activeTurnId,setActiveTurnId]=useState(null);
   const [messages,setMessages]=useState([]); const [events,setEvents]=useState([]); const [assistantText,setAssistantText]=useState("");
+  const [historyPage,setHistoryPage]=useState({threadId:null,nextCursor:null,paginated:false,loading:false});
   const [running,setRunning]=useState(false); const [submitting,setSubmitting]=useState(false); const [queued,setQueued]=useState([]); const [queueMode,setQueueMode]=useState("unknown"); const [queuedEditId,setQueuedEditId]=useState(null);
   const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [section,setSection]=useState("chat");
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [contextChips,setContextChips]=useState([]);
@@ -410,7 +396,7 @@ export default function App(){
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false);
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"});
   const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
-  const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);
+  const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);
   const navigationKey=location=>[location.section,location.threadId||"",location.rightPanelOpen?location.rightPanelTab||"files":""].join("|");
   useEffect(()=>{
     if(!initialLoaded)return;
@@ -489,6 +475,10 @@ export default function App(){
   }
   useLayoutEffect(()=>{
     const node=conversationScrollRef.current;const threadId=activeThread?.id;if(!node||!threadId)return;
+    if(pendingHistoryPrependRef.current?.threadId===threadId){
+      const pending=pendingHistoryPrependRef.current;node.scrollTop=Math.max(0,pending.scrollTop+(node.scrollHeight-pending.scrollHeight));
+      followConversationEndRef.current=false;pendingHistoryPrependRef.current=null;return;
+    }
     if(pendingThreadScrollRestoreRef.current===threadId){
       const position=threadScrollPositionsRef.current.get(threadId)||null;
       node.scrollTop=restoredThreadScrollTop(position,node);
@@ -765,7 +755,7 @@ export default function App(){
       const result=await rpc.request("thread/runtimeInstance/set",{threadId,instanceId});
       let updated=result?.thread;
       if(agentRuntime==="codex"){
-        const resumed=await rpc.request("thread/resume",{threadId,model:model||null,modelProvider:provider,cwd:activeThreadRef.current?.cwd||null,excludeTurns:false});
+        const resumed=await rpc.request("thread/resume",{threadId,model:model||null,modelProvider:provider,cwd:activeThreadRef.current?.cwd||null,excludeTurns:true});
         updated=resumed?.thread||updated;
       }
       if(updated){
@@ -828,8 +818,11 @@ export default function App(){
     const recovery=await api("/api/recovery").catch(()=>null);if(!recovery?.enabled||!recovery.items?.length)return;
     for(const item of recovery.items){
       try{
-        const resumed=await client.request("thread/resume",{threadId:item.threadId,modelProvider:provider,excludeTurns:false});
-        const previous=(resumed?.thread?.turns||[]).find(turn=>turn.id===item.turnId);
+        await client.request("thread/resume",{threadId:item.threadId,modelProvider:provider,excludeTurns:true});
+        let recent;
+        try{recent=await client.request("thread/turns/list",{threadId:item.threadId,limit:20,sortDirection:"desc",itemsView:"notLoaded"})}
+        catch{const legacy=await client.request("thread/read",{threadId:item.threadId,includeTurns:true}).catch(()=>({thread:{turns:[]}}));recent={data:legacy?.thread?.turns||[]}}
+        const previous=(recent?.data||[]).find(turn=>turn.id===item.turnId);
         if(previous&&["completed","failed","cancelled","interrupted"].includes(previous.status)){
           await api("/api/recovery",{method:"POST",body:{threadId:item.threadId,action:"clear"}}).catch(()=>{});continue;
         }
@@ -1310,7 +1303,7 @@ export default function App(){
     if(action==="fork"){
       if(!rpc)return;
       const p=presetFor(permissionMode);
-      const result=await rpc.request("thread/fork",{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||projectPath,approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,threadSource:"trebell-code",excludeTurns:false});
+      const result=await rpc.request("thread/fork",{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||projectPath,approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,threadSource:"trebell-code",excludeTurns:true});
       if(result?.thread){setThreads(prev=>[result.thread,...prev.filter(t=>t.id!==result.thread.id)]);await openThread(result.thread)}
       return;
     }
@@ -1353,7 +1346,7 @@ export default function App(){
     if(agentRuntime!=="codex"||!threadId||running||!rpc||rpcStatus!=="connected")return;
     rpc.request("thread/unsubscribe",{threadId}).catch(()=>{});
   }
-  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([]);setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
+  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setEvents([]);setAssistantText("");setQueued([]);setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
@@ -1368,22 +1361,48 @@ export default function App(){
     const threadEnvironmentId=thread.providerMeta?.environmentId||null;
     const savedMeta=threadMeta[thread.id]||{};const projectless=Boolean(savedMeta.projectless);
     if(thread.cwd&&!threadEnvironmentId&&!projectless)await api("/api/worktree/ensure",{method:"POST",body:{path:thread.cwd,environmentId:null}}).catch(error=>{throw new Error("Could not restore this managed worktree: "+error.message)});
-    activeThreadRef.current=thread;pendingThreadScrollRestoreRef.current=null;followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;setSection("chat");setMessages([]);setEvents([]);setAssistantText("");setWorktreeSetup(null);setActiveThread(thread);persistThreadWorkspaceContext(thread,thread.cwd,{archived:false,projectless}).catch(()=>{});
+    activeThreadRef.current=thread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setEvents([]);setAssistantText("");setWorktreeSetup(null);setActiveThread(thread);persistThreadWorkspaceContext(thread,thread.cwd,{archived:false,projectless}).catch(()=>{});
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(thread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
     else if(thread.cwd)await touchProject(thread.cwd,threadEnvironmentId);else setProjectPath(projectPath);
     if(!rpc||rpcStatus!=="connected")return;
+    const resumePromise=agentRuntime==="codex"
+      ?rpc.request("thread/resume",{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null,excludeTurns:true,initialTurnsPage:{limit:40,sortDirection:"desc",itemsView:"full"}})
+        .then(result=>result?.initialTurnsPage?result:rpc.request("thread/resume",{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null,excludeTurns:false}).then(fallback=>({...fallback,__trebellFullHistoryFallback:true})))
+        .catch(()=>rpc.request("thread/resume",{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null,excludeTurns:false}).then(result=>({...result,__trebellFullHistoryFallback:true})).catch(()=>null))
+      :rpc.request("thread/resume",{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null,excludeTurns:false}).catch(()=>null);
     const [resumed,cp,goalData,attachmentData]=await Promise.all([
-      rpc.request("thread/resume",{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null,excludeTurns:false}).catch(()=>null),
+      resumePromise,
       api("/api/checkpoints?threadId="+encodeURIComponent(thread.id)).catch(()=>({checkpoints:[]})),
       rpc.request("thread/goal/get",{threadId:thread.id}).catch(()=>({goal:null})),
       rpc.request("thread/attachment/list",{threadId:thread.id,limit:100}).catch(()=>({data:[]})),
     ]);
     const map=Object.fromEntries((cp.checkpoints||[]).filter(x=>x.turnId).map(x=>[x.turnId,x]));setCheckpointByTurn(map);
-    if(resumed?.thread){activeThreadRef.current=resumed.thread;pendingThreadScrollRestoreRef.current=resumed.thread.id;setActiveThread(resumed.thread);setMessages(historyFromThread(resumed.thread,map));setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex"){const meta=resumed.thread.providerMeta||{};applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}}
+    if(resumed?.thread){
+      activeThreadRef.current=resumed.thread;pendingThreadScrollRestoreRef.current=resumed.thread.id;setActiveThread(resumed.thread);
+      if(agentRuntime==="codex"&&resumed.initialTurnsPage&&!resumed.__trebellFullHistoryFallback){
+        const page=resumed.initialTurnsPage;setMessages(historyFromTurns([...(page.data||[])].reverse(),map));setHistoryPage({threadId:resumed.thread.id,nextCursor:page.nextCursor||null,paginated:true,loading:false});
+      }else{setMessages(historyFromThread(resumed.thread,map));setHistoryPage({threadId:resumed.thread.id,nextCursor:null,paginated:false,loading:false})}
+      setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex"){const meta=resumed.thread.providerMeta||{};applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}
+    }
     if(agentRuntime==="codex")await loadNativeQueue(rpc,thread.id).catch(error=>setEvents(prev=>[...prev,{id:"queue-load-error-"+Date.now(),kind:"error",title:"Could not load queued follow-ups: "+(error.message||String(error)),status:"done",raw:{}}]));else{setQueueMode("local");setQueued([])}
     const meta=threadMeta[thread.id]||{};setReviewedFiles(meta.reviewedFiles||[]);setGoal(goalData?.goal||null);
     const persisted=(attachmentData?.data||[]).filter(item=>item.attachmentType==="pull_request").map(item=>({...item.payload,__identityKey:item.identityKey}));
     setLinkedPullRequests(persisted.length?persisted:(meta.linkedPullRequests||[]));
+  }
+  async function loadEarlierMessages(){
+    const threadId=activeThreadRef.current?.id;const cursor=historyPage.threadId===threadId?historyPage.nextCursor:null;
+    if(agentRuntime!=="codex"||!rpc||rpcStatus!=="connected"||!threadId||!cursor||historyPage.loading)return;
+    const node=conversationScrollRef.current;setHistoryPage(current=>current.threadId===threadId?{...current,loading:true}:current);
+    try{
+      const page=await rpc.request("thread/turns/list",{threadId,cursor,limit:40,sortDirection:"desc",itemsView:"full"});
+      if(activeThreadRef.current?.id!==threadId)return;
+      const earlier=historyFromTurns([...(page?.data||[])].reverse(),checkpointByTurn);
+      if(earlier.length&&node)pendingHistoryPrependRef.current={threadId,scrollHeight:node.scrollHeight,scrollTop:node.scrollTop};
+      if(earlier.length)setMessages(current=>mergeHistoryMessages(earlier,current));
+      setHistoryPage({threadId,nextCursor:page?.nextCursor||null,paginated:true,loading:false});
+    }catch(error){
+      if(activeThreadRef.current?.id===threadId){setHistoryPage(current=>current.threadId===threadId?{...current,loading:false}:current);setEvents(prev=>[...prev,{id:"history-page-error-"+Date.now(),kind:"error",title:"Could not load earlier messages: "+(error.message||String(error)),status:"done",raw:{}}])}
+    }
   }
   async function openLinkedThread(reference){
     if(!rpc||rpcStatus!=="connected"||!reference?.threadId)throw new Error("The agent harness is not connected.");
@@ -2068,7 +2087,7 @@ export default function App(){
           <div className="conversation-scroll" ref={conversationScrollRef} onScroll={conversationScrolled}>
             <div className="conversation-column">
               <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
-              <Conversation messages={messages} onEditFromHere={editFromHere} onCite={citeAssistant} allowRevert={["codex","opencode","claude"].includes(agentRuntime)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null}/>
+              <Conversation messages={messages} onEditFromHere={editFromHere} onCite={citeAssistant} allowRevert={["codex","opencode","claude"].includes(agentRuntime)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={agentRuntime==="codex"&&historyPage.threadId===activeThread?.id&&Boolean(historyPage.nextCursor)} loadingEarlier={historyPage.loading} onLoadEarlier={loadEarlierMessages}/>
               <ActivityTimeline events={events} assistantText={assistantText} onOpenPanel={name=>name==="workspace"?openRightPanel("diff"):setPanel(name)}/>
               {approvals[0]&&<div className="inline-approval"><ApprovalCard request={approvals[0]} onResolve={resolveApproval}/></div>}
               {queued.map((item,index)=><div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span>{item.native?"Queued in Codex":"Queued"}{queuedEditId===item.id?" · editing":""}</span><p>{item.text}</p><div className="queued-message-actions"><button onClick={()=>sendQueuedNow(item).catch(error=>setEvents(prev=>[...prev,{id:"queue-send-error-"+Date.now(),kind:"error",title:"Could not send queued follow-up: "+(error.message||String(error)),status:"done",raw:{}}]))}>Send now</button><button onClick={()=>editQueued(item)} disabled={queuedEditId===item.id||item.editable===false}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={index===0} onClick={()=>moveQueued(item,-1).catch(error=>setEvents(prev=>[...prev,{id:"queue-reorder-error-"+Date.now(),kind:"error",title:error.message||String(error),status:"done",raw:{}}]))}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={index===queued.length-1} onClick={()=>moveQueued(item,1).catch(error=>setEvents(prev=>[...prev,{id:"queue-reorder-error-"+Date.now(),kind:"error",title:error.message||String(error),status:"done",raw:{}}]))}>↓</button><button onClick={()=>removeQueued(item).catch(error=>setEvents(prev=>[...prev,{id:"queue-delete-error-"+Date.now(),kind:"error",title:error.message||String(error),status:"done",raw:{}}]))}>Remove</button></div></div>)}

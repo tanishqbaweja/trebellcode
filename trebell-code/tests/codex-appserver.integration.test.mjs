@@ -287,3 +287,36 @@ test("native Codex queue persists, edits, reorders, deletes and starts follow-up
     await rpcOutcome(ws,20,"turn/interrupt",{threadId,turnId:launched.turn.id});
   }finally{try{ws?.close()}catch{}await gui.close();await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
 });
+
+test("native Codex history resumes with a bounded turns page and paginates older turns",{timeout:60000},async()=>{
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  const home=await mkdtemp(join(tmpdir(),"trebell-codex-history-page-"));
+  const env={...process.env,TREBELL_HOME:home};const gui=await createGuiServer({port,appPort,mock:false,env});let ws;
+  try{
+    let boot=null;for(let i=0;i<80;i++){boot=await fetch(gui.url+"/api/bootstrap").then(response=>response.json());if(boot.appServerReady)break;await new Promise(resolve=>setTimeout(resolve,200))}
+    assert.equal(boot.appServerReady,true,"Codex app-server did not become ready for history pagination test");
+    ws=new WebSocket(boot.wsUrl,{origin:gui.url});await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});
+    await rpc(ws,1,"initialize",{clientInfo:{name:"trebell-history-test",title:"Trebell History Test",version:"1.0.0"},capabilities:{experimentalApi:true}});ws.send(JSON.stringify({method:"initialized",params:{}}));
+    const started=await rpc(ws,2,"thread/start",{cwd:process.cwd(),modelProvider:"freebuff",approvalPolicy:"never",sandbox:"danger-full-access",ephemeral:false,threadSource:"trebell-code"});
+    const threadId=started.thread.id;assert.ok(threadId);
+    for(let index=0;index<3;index++){
+      const userPersisted=waitNotification(ws,"item/started",params=>params.threadId===threadId&&params.item?.type==="userMessage");
+      const completed=waitNotification(ws,"turn/completed",params=>params.threadId===threadId);
+      const turn=await rpc(ws,10+index*2,"turn/start",{threadId,input:[{type:"text",text:`history pagination turn ${index+1}`,textElements:[]}],turnTrigger:`trebell-history-page-${index+1}`});assert.ok(turn.turn?.id);
+      await userPersisted;
+      if(index===0)await waitForNonEmptyRollout(join(home,"codex","sessions"));
+      await rpcOutcome(ws,11+index*2,"turn/interrupt",{threadId,turnId:turn.turn.id});await completed;
+      for(let attempt=0;attempt<80;attempt++){
+        const current=await fetch(gui.url+"/api/thread-meta?threadId="+encodeURIComponent(threadId)).then(response=>response.json());if(current.active===false)break;
+        await new Promise(resolve=>setTimeout(resolve,25));
+      }
+    }
+    await rpc(ws,20,"thread/unsubscribe",{threadId});await new Promise(resolve=>setTimeout(resolve,150));
+    const resumed=await rpc(ws,21,"thread/resume",{threadId,modelProvider:"freebuff",excludeTurns:true,initialTurnsPage:{limit:1,sortDirection:"desc",itemsView:"full"}});
+    assert.equal(resumed.thread.id,threadId);assert.equal(resumed.thread.turns.length,0,"excludeTurns should keep the resumed thread payload bounded");
+    assert.equal(resumed.initialTurnsPage?.data?.length,1);assert.ok(resumed.initialTurnsPage?.nextCursor,"a one-turn bootstrap page should expose an older-page cursor");
+    const latestId=resumed.initialTurnsPage.data[0].id;
+    const older=await rpc(ws,22,"thread/turns/list",{threadId,cursor:resumed.initialTurnsPage.nextCursor,limit:1,sortDirection:"desc",itemsView:"full"});
+    assert.equal(older.data?.length,1);assert.notEqual(older.data[0].id,latestId);assert.ok(older.nextCursor,"three persisted turns should leave another older page after the second turn");
+  }finally{try{ws?.close()}catch{}await gui.close();await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
+});

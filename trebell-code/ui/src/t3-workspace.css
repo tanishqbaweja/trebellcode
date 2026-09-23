@@ -112,6 +112,7 @@ html.layout-resizing,html.layout-resizing *{user-select:none!important}
 .header-control.stop-control:hover{background:#25161a;color:#efb6be}
 .conversation-scroll{position:absolute;left:0;right:0;top:48px;bottom:134px;overflow:auto;padding:22px 28px 50px;scrollbar-width:thin;scrollbar-color:#33363b transparent}
 .conversation-column{width:min(100%,790px);margin:0 auto}
+.history-page-control{display:flex;justify-content:center;margin:0 0 18px}.history-page-control button{height:28px;border:1px solid #30343a;background:#15171a;color:#8f969f;border-radius:7px;padding:0 11px;font-size:8px}.history-page-control button:hover:not(:disabled){background:#1e2125;color:#c1c6cc}.history-page-control button:disabled{opacity:.55;cursor:wait}
 .user-row{margin:0 0 24px;display:flex;justify-content:flex-end}
 .user-bubble{min-width:0;max-width:min(82%,650px);border:1px solid #272a2e;background:#17191c;border-radius:16px;padding:11px 14px;box-shadow:none}
 .user-bubble p{font-size:13px;line-height:1.55;color:#e2e4e6;overflow-wrap:anywhere}
@@ -451,6 +452,7 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .model-picker-menu,
 html[data-mode="light"]:not([data-custom-theme="true"]) .mini-popover,
 html[data-mode="light"]:not([data-custom-theme="true"]) .slash-menu{background:#fff!important;border-color:var(--t3-border)!important;color:#29313b!important;box-shadow:0 16px 40px rgba(38,45,55,.16)!important}
 html[data-mode="light"]:not([data-custom-theme="true"]) .file-mention-menu{background:#fff!important;border-color:var(--t3-border)!important;box-shadow:0 16px 40px rgba(38,45,55,.16)!important}html[data-mode="light"]:not([data-custom-theme="true"]) .file-mention-menu button{color:#3b4552!important}html[data-mode="light"]:not([data-custom-theme="true"]) .file-mention-menu button:hover,html[data-mode="light"]:not([data-custom-theme="true"]) .file-mention-menu button.active{background:#f0ecf7!important;color:#44345a!important}html[data-mode="light"]:not([data-custom-theme="true"]) .file-mention-menu small{color:#7a8490!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .history-page-control button{background:#fff!important;border-color:#d7dce5!important;color:#697382!important}html[data-mode="light"]:not([data-custom-theme="true"]) .history-page-control button:hover:not(:disabled){background:#f0ecf7!important;color:#4e3b68!important}
 html[data-mode="light"]:not([data-custom-theme="true"]) .thread-menu-popover button,
 html[data-mode="light"]:not([data-custom-theme="true"]) .model-picker-menu>button,
 html[data-mode="light"]:not([data-custom-theme="true"]) .model-runtime-profiles>button,
