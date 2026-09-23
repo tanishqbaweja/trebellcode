@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { WebSocket } from "ws";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
-import { agentThreadResumePayload,attachAgentRelay,materializeAgentFork,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
+import { agentThreadResumePayload,attachAgentRelay,materializeAgentFork,paginateAgentAttachments,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
 
 test("rejected Claude rewind restores the original provider session and removed turns",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-claude-rewind-"));
@@ -151,6 +151,13 @@ test("agent queue pagination uses bounded native-compatible offsets",()=>{
   assert.throws(()=>paginateAgentQueue(queue,{cursor:"wat"}),/invalid queue cursor/i);
 });
 
+test("agent attachment pagination uses bounded native-compatible offsets",()=>{
+  const attachments=[{id:"a1"},{id:"a2"},{id:"a3"}];
+  const first=paginateAgentAttachments(attachments,{limit:2});assert.deepEqual(first.data.map(item=>item.id),["a1","a2"]);assert.equal(first.nextCursor,"2");
+  const second=paginateAgentAttachments(attachments,{cursor:first.nextCursor,limit:2});assert.deepEqual(second.data.map(item=>item.id),["a3"]);assert.equal(second.nextCursor,null);
+  assert.throws(()=>paginateAgentAttachments(attachments,{cursor:"wat"}),/invalid attachment cursor/i);
+});
+
 async function listen(server){
   await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));
   return server.address().port;
@@ -189,6 +196,16 @@ test("agent relay broadcasts Codex-compatible archive, unarchive and delete life
     assert.deepEqual(turnPage.data.map(entry=>entry.id),[turn.id]);assert.deepEqual(turnPage.data[0].items,[]);assert.equal(turnPage.data[0].itemsView,"notLoaded");
     const search=await rpc("thread/searchOccurrences",{threadId:thread.id,searchTerm:"fixture",limit:10});
     assert.deepEqual(search.data.map(entry=>entry.itemId),["user-"+turn.id,"fixture-answer"]);
+    state.updateThreadMeta(thread.id,{attachments:[{attachmentType:"legacy",identityKey:"legacy-1",payload:{old:true}}]});
+    let attachmentPage=await rpc("thread/attachment/list",{threadId:thread.id,limit:1});assert.equal(attachmentPage.data.length,1);assert.ok(attachmentPage.data[0].id);assert.ok(attachmentPage.data[0].createdAt);
+    const created=await rpc("thread/attachment/add",{threadId:thread.id,attachmentType:"pull_request",identityKey:"pr-1",payload:{number:1}});
+    assert.equal(created.outcome,"created");assert.ok(created.attachment.id);
+    const existing=await rpc("thread/attachment/add",{threadId:thread.id,attachmentType:"pull_request",identityKey:"pr-1",payload:{number:999}});
+    assert.equal(existing.outcome,"existing");assert.equal(existing.attachment.id,created.attachment.id);assert.equal(existing.attachment.payload.number,1);
+    attachmentPage=await rpc("thread/attachment/list",{threadId:thread.id,limit:1});assert.equal(attachmentPage.nextCursor,"1");
+    const secondAttachmentPage=await rpc("thread/attachment/list",{threadId:thread.id,cursor:attachmentPage.nextCursor,limit:5});assert.deepEqual(secondAttachmentPage.data.map(item=>item.id),[created.attachment.id]);
+    await rpc("thread/attachment/remove",{threadId:thread.id,attachmentType:"pull_request",identityKey:"pr-1"});
+    assert.equal((await rpc("thread/attachment/list",{threadId:thread.id,limit:10})).data.length,1);
     const q1=await rpc("thread/queue/add",{threadId:thread.id,input:[{type:"text",text:"first"}],clientUserMessageId:"client-1"});
     const q2=await rpc("thread/queue/add",{threadId:thread.id,input:[{type:"text",text:"second"}],clientUserMessageId:"client-2"});
     let queue=await rpc("thread/queue/list",{threadId:thread.id,limit:1});assert.deepEqual(queue.data.map(item=>item.id),[q1.queuedSubmission.id]);assert.equal(queue.nextCursor,"1");
@@ -209,6 +226,7 @@ test("agent relay broadcasts Codex-compatible archive, unarchive and delete life
     const lifecycle=lifecycleMessages();
     assert.deepEqual(lifecycle.map(message=>message.method),["thread/archived","thread/unarchived","thread/deleted"]);
     assert.ok(notifications.filter(message=>message.method==="thread/queue/changed").length>=5);
+    assert.deepEqual(notifications.filter(message=>message.method==="thread/attachment/updated").map(message=>message.params.operation),["created","deleted"]);
     assert.ok(notifications.every(message=>message.params?.threadId===thread.id));
   }finally{
     try{first.close()}catch{}try{second.close()}catch{}

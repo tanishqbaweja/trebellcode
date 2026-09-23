@@ -341,6 +341,29 @@ export function paginateAgentQueue(queue=[],{cursor=null,limit=100}={}){
   return {data,nextCursor:next<(queue||[]).length?String(next):null};
 }
 
+function agentAttachments(state,threadId){
+  const current=state?.threadMeta?.(threadId)?.attachments;
+  const source=Array.isArray(current)?current:[];let changed=false;
+  const attachments=source.map(item=>{
+    const next={...item};
+    if(!next.id){next.id=randomUUID();changed=true}
+    if(!Number.isFinite(Number(next.createdAt))){next.createdAt=Math.floor(Date.now()/1000);changed=true}
+    return next;
+  });
+  if(changed)state?.updateThreadMeta?.(threadId,{attachments});
+  return attachments;
+}
+
+export function paginateAgentAttachments(attachments=[],{cursor=null,limit=100}={}){
+  let offset=0;
+  if(cursor!=null){
+    offset=Number(cursor);
+    if(!Number.isInteger(offset)||offset<0)throw Object.assign(new Error("Invalid attachment cursor"),{code:-32602});
+  }
+  const pageSize=Math.max(1,Math.min(200,Number(limit)||100)),data=(attachments||[]).slice(offset,offset+pageSize),next=offset+data.length;
+  return {data,nextCursor:next<(attachments||[]).length?String(next):null};
+}
+
 function approvalOption(options,decision){
   const find=kind=>options.find(option=>option.kind===kind)?.optionId;
   if(decision==="acceptForSession")return find("allow_always")||find("allow_once")||null;
@@ -574,12 +597,24 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     if(method==="thread/goal/get")return {goal:state.threadMeta(params.threadId)?.goal||null};
     if(method==="thread/goal/set"){const meta=state.updateThreadMeta(params.threadId,{goal:{...(state.threadMeta(params.threadId)?.goal||{}),...params}});emit("thread/goal/updated",{threadId:params.threadId,goal:meta.goal});return {goal:meta.goal}}
     if(method==="thread/goal/clear"){state.updateThreadMeta(params.threadId,{goal:null});emit("thread/goal/cleared",{threadId:params.threadId});return {ok:true}}
-    if(method==="thread/attachment/list")return {data:state.threadMeta(params.threadId)?.attachments||[]};
+    if(method==="thread/attachment/list"){
+      if(!threadStore.get(params.threadId))throw new Error("Thread not found");
+      return paginateAgentAttachments(agentAttachments(state,params.threadId),params);
+    }
     if(method==="thread/attachment/add"){
-      const meta=state.threadMeta(params.threadId);const attachments=[...(meta.attachments||[]),{attachmentType:params.attachmentType,identityKey:params.identityKey,payload:params.payload}];state.updateThreadMeta(params.threadId,{attachments});return {data:attachments};
+      if(!threadStore.get(params.threadId))throw new Error("Thread not found");
+      const attachmentType=String(params.attachmentType||"").trim(),identityKey=String(params.identityKey||"").trim();
+      if(!attachmentType||!identityKey)throw Object.assign(new Error("attachmentType and identityKey are required"),{code:-32602});
+      const attachments=agentAttachments(state,params.threadId),existing=attachments.find(item=>item.attachmentType===attachmentType&&item.identityKey===identityKey);
+      if(existing)return {outcome:"existing",attachment:existing};
+      const attachment={id:randomUUID(),attachmentType,identityKey,payload:params.payload,createdAt:Math.floor(Date.now()/1000)};
+      attachments.push(attachment);state.updateThreadMeta(params.threadId,{attachments});emit("thread/attachment/updated",{threadId:params.threadId,attachmentType,identityKey,attachmentId:attachment.id,operation:"created"});return {outcome:"created",attachment};
     }
     if(method==="thread/attachment/remove"){
-      const meta=state.threadMeta(params.threadId);const attachments=(meta.attachments||[]).filter(item=>!(item.attachmentType===params.attachmentType&&item.identityKey===params.identityKey));state.updateThreadMeta(params.threadId,{attachments});return {data:attachments};
+      if(!threadStore.get(params.threadId))throw new Error("Thread not found");
+      const attachments=agentAttachments(state,params.threadId),target=attachments.find(item=>item.attachmentType===params.attachmentType&&item.identityKey===params.identityKey);
+      if(!target)return {};
+      state.updateThreadMeta(params.threadId,{attachments:attachments.filter(item=>item.id!==target.id)});emit("thread/attachment/updated",{threadId:params.threadId,attachmentType:target.attachmentType,identityKey:target.identityKey,attachmentId:target.id,operation:"deleted"});return {};
     }
     if(method==="thread/queue/list"){
       if(!threadStore.get(params.threadId))throw new Error("Thread not found");
