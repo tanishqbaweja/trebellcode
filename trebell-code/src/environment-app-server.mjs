@@ -2,6 +2,7 @@ import { createServer as createTcpServer, connect as tcpConnect } from "node:net
 import { spawn } from "node:child_process";
 import { DEFAULT_PORT, PROVIDER_COMPAT_PORT } from "./config.mjs";
 import { remoteToolPathPrelude } from "./environment-manager.mjs";
+import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
 
 function quotePosix(value){
   return "'" + String(value).replace(/'/g,"'\\''") + "'";
@@ -32,7 +33,7 @@ export function remoteCodexArgs({provider,baseUrl,listen}){
 
 function attachLogs(child,logs,{debug=false}={}){
   const push=(chunk,stream)=>{
-    const text=String(chunk);
+    const text=boundDiagnosticText(chunk);
     logs.push({at:Date.now(),stream,text});
     if(logs.length>250)logs.splice(0,logs.length-250);
     if(debug)(stream==="stderr"?process.stderr:process.stdout).write(chunk);

@@ -40,6 +40,7 @@ import { StorageCleanupService } from "./storage-cleanup-service.mjs";
 import { sweepAutoPullProjects } from "./auto-pull-service.mjs";
 import { CloneJobService } from "./clone-job-service.mjs";
 import { prepareCodexHome } from "./codex-home-layout.mjs";
+import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
   .then(text=>String(JSON.parse(text).version||"0.0.0"))
@@ -177,7 +178,7 @@ async function startAppServer({appPort,env=process.env,mock=false,provider="free
       }catch(error){
         return {
           child:null,
-          logs:[{at:Date.now(),stream:"environment",text:(error?.stack||error?.message||String(error))+"\n"}],
+          logs:[{at:Date.now(),stream:"environment",text:boundDiagnosticText((error?.stack||error?.message||String(error))+"\n")}],
           targetUrl:`ws://127.0.0.1:${appPort}`,
           readyUrl:null,
           environment:{id:profile.id,name:profile.name,type:profile.type},
@@ -195,7 +196,7 @@ async function startAppServer({appPort,env=process.env,mock=false,provider="free
   const args=[...codexProviderOverrides({port:inferencePort,provider}),"app-server","--listen",`ws://127.0.0.1:${appPort}`];
   const logs=[];
   const pushLog=(chunk,stream)=>{
-    const line=String(chunk);
+    const line=boundDiagnosticText(chunk);
     logs.push({at:Date.now(),stream,text:line});
     if(logs.length>250) logs.splice(0,logs.length-250);
     if(env.TREBELL_GUI_DEBUG==="1") (stream==="stderr"?process.stderr:process.stdout).write(chunk);
@@ -426,7 +427,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     providerManager:providers,
     provider:selectedProvider,
     log:(message)=>{
-      providerBridgeLogs.push({at:Date.now(),stream:"provider-bridge",text:String(message)});
+      providerBridgeLogs.push({at:Date.now(),stream:"provider-bridge",text:boundDiagnosticText(message)});
       if(providerBridgeLogs.length>100) providerBridgeLogs.splice(0,providerBridgeLogs.length-100);
     },
   });

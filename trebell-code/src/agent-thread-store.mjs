@@ -2,8 +2,22 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { trebellHome } from "./paths.mjs";
+import { boundDiagnosticText, boundDiagnosticValue } from "./diagnostic-bounds.mjs";
 
 function clone(value){return JSON.parse(JSON.stringify(value))}
+function persistedItem(item){
+  const next={...item};
+  if(Object.prototype.hasOwnProperty.call(next,"aggregatedOutput")&&next.aggregatedOutput!=null)next.aggregatedOutput=boundDiagnosticText(next.aggregatedOutput,256*1024);
+  if(Object.prototype.hasOwnProperty.call(next,"rawInput"))next.rawInput=boundDiagnosticValue(next.rawInput,{maxChars:128*1024,maxFields:768,maxDepth:12});
+  if(Object.prototype.hasOwnProperty.call(next,"rawOutput")){
+    next.rawOutput=typeof next.rawOutput==="string"
+      ?boundDiagnosticText(next.rawOutput,256*1024)
+      :boundDiagnosticValue(next.rawOutput,{maxChars:256*1024,maxFields:1024,maxDepth:12});
+  }
+  if(Object.prototype.hasOwnProperty.call(next,"arguments"))next.arguments=boundDiagnosticValue(next.arguments,{maxChars:128*1024,maxFields:768,maxDepth:12});
+  if(Object.prototype.hasOwnProperty.call(next,"contentItems"))next.contentItems=boundDiagnosticValue(next.contentItems,{maxChars:128*1024,maxFields:768,maxDepth:12});
+  return next;
+}
 
 export class AgentThreadStore{
   constructor(env=process.env){
@@ -96,8 +110,9 @@ export class AgentThreadStore{
   addItem(threadId,turnId,item){
     const thread=this.data.threads.find(entry=>entry.id===threadId);const turn=thread?.turns?.find(entry=>entry.id===turnId);if(!turn)return null;
     const index=turn.items.findIndex(entry=>entry.id===item.id);
-    if(index>=0)turn.items[index]={...turn.items[index],...item};else turn.items.push(item);
-    thread.updatedAt=Math.floor(Date.now()/1000);this.#save();return clone(item);
+    const stored=persistedItem(index>=0?{...turn.items[index],...item}:item);
+    if(index>=0)turn.items[index]=stored;else turn.items.push(stored);
+    thread.updatedAt=Math.floor(Date.now()/1000);this.#save();return clone(stored);
   }
   finishTurn(threadId,turnId,{status="completed",error=null}={}){
     const thread=this.data.threads.find(item=>item.id===threadId);const turn=thread?.turns?.find(item=>item.id===turnId);if(!turn)return null;
