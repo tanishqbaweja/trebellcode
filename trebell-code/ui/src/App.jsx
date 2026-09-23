@@ -1,4 +1,4 @@
-import React,{useEffect,useLayoutEffect,useMemo,useRef,useState} from "react";
+import React,{useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from "react";
 import {
   BrainCircuit, Check, ChevronDown, CircleStop, Code2, Cpu, FileCode2, FileDiff, FolderCode,
   GitBranch, Globe2, HardDrive, Link2, ListTodo, MemoryStick, Network, Paperclip, Plus, Send,
@@ -35,6 +35,7 @@ import UsagePage from "./components/UsagePage.jsx";
 import LicensesPage from "./components/LicensesPage.jsx";
 import { resolveKeybinding } from "./keybindings.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
+import { applyFileMention, fileMentionAt, rankFileMentions } from "./composer-mentions.js";
 import { normalizeCustomTheme, themeCssVariables } from "./theme-utils.js";
 import { approvalResponse } from "./approval-utils.js";
 import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./fanout-utils.js";
@@ -237,9 +238,13 @@ const SLASH_COMMANDS=[
   ["/clear","Reset the current draft/thread view"],
 ];
 
-function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,permissionMode,setPermissionMode,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onModelPickerOpenChange}){
+function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,onFileMentionSearch,onFileMentionAttach,permissionMode,setPermissionMode,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onModelPickerOpenChange}){
   const [modelOpen,setModelOpen]=useState(false);
   const [listening,setListening]=useState(false);
+  const [caret,setCaret]=useState(0);
+  const [mentionItems,setMentionItems]=useState([]);
+  const [mentionIndex,setMentionIndex]=useState(0);
+  const [mentionBusy,setMentionBusy]=useState(false);
   const composerRef=useRef(null);
   const speechSupported=typeof window!=="undefined"&&Boolean(window.SpeechRecognition||window.webkitSpeechRecognition);
   useLayoutEffect(()=>{resizeTextarea(composerRef.current,{min:40,max:160})},[prompt]);
@@ -269,6 +274,18 @@ function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgr
     window.addEventListener("trebell:model-picker",onPicker);
     return()=>window.removeEventListener("trebell:model-picker",onPicker);
   },[models,setModel,onSelectedModels]);
+  const activeMention=useMemo(()=>fileMentionAt(prompt,caret),[prompt,caret]);
+  useEffect(()=>{
+    let disposed=false;const query=activeMention?.query||"";
+    if(!onFileMentionSearch||!query){setMentionItems([]);setMentionIndex(0);return}
+    const timer=setTimeout(async()=>{
+      try{
+        const items=await onFileMentionSearch(query);if(disposed)return;
+        setMentionItems(rankFileMentions(items,query,{limit:8}));setMentionIndex(0);
+      }catch{if(!disposed)setMentionItems([])}
+    },120);
+    return()=>{disposed=true;clearTimeout(timer)};
+  },[activeMention?.query,onFileMentionSearch]);
   const priceConfig=(settings.customModels||[]).find(item=>item.id===model&&item.runtime===agentRuntime&&(agentRuntime!=="codex"||item.provider===provider))||null;
   function dictate(){
     if(!speechSupported||listening)return;
@@ -286,7 +303,24 @@ function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgr
     };
     recognition.start();
   }
+  async function chooseMention(item){
+    if(!activeMention||!item||mentionBusy)return;
+    setMentionBusy(true);
+    try{
+      await onFileMentionAttach?.(item);
+      const label=item.relativePath||item.name||item.path;
+      const next=applyFileMention(prompt,activeMention,label);
+      onPromptEdit?.();setPrompt(next.text);setMentionItems([]);setCaret(next.caret);
+      requestAnimationFrame(()=>{composerRef.current?.focus();composerRef.current?.setSelectionRange(next.caret,next.caret)});
+    }finally{setMentionBusy(false)}
+  }
   function keyDown(e){
+    if(activeMention&&mentionItems.length){
+      if(e.key==="ArrowDown"){e.preventDefault();setMentionIndex(index=>(index+1)%mentionItems.length);return}
+      if(e.key==="ArrowUp"){e.preventDefault();setMentionIndex(index=>(index-1+mentionItems.length)%mentionItems.length);return}
+      if((e.key==="Enter"||e.key==="Tab")&&!e.shiftKey){e.preventDefault();chooseMention(mentionItems[mentionIndex]);return}
+      if(e.key==="Escape"){e.preventDefault();setMentionItems([]);return}
+    }
     if(e.key==="Enter"&&!e.shiftKey){
       if((e.ctrlKey||e.metaKey)&&canBackground){e.preventDefault();onBackgroundSend?.();return}
       if(!e.ctrlKey&&!e.metaKey&&!e.altKey){e.preventDefault();onSend();return}
@@ -322,9 +356,10 @@ function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgr
   }
   return <div className="composer-wrap" onDragOver={e=>e.preventDefault()} onDrop={onDrop}>
     {slashOpen&&slashItems.length>0&&<div className="slash-menu">{slashItems.map(([cmd,desc])=><button key={cmd} onMouseDown={e=>{e.preventDefault();setPrompt(cmd+" ")}}><strong>{cmd}</strong><span>{desc}</span></button>)}</div>}
+    {activeMention&&mentionItems.length>0&&<div className="file-mention-menu" data-testid="file-mention-menu">{mentionItems.map((item,index)=><button key={item.path||item.relativePath||index} className={index===mentionIndex?"active":""} disabled={mentionBusy} onMouseDown={event=>{event.preventDefault();chooseMention(item)}}><FileCode2 size={13}/><span><strong>{item.name||String(item.path||"").split(/[\\/]/).pop()}</strong><small>{item.relativePath||item.path}</small></span></button>)}</div>}
     {(contextChips||[]).length>0&&<div className="context-chip-row" data-testid="context-chips">{contextChips.map(chip=><span className={"context-chip kind-"+(chip.kind||"context")} data-testid="context-chip" key={chip.id||chip.path} title={chip.path}><Link2 size={11}/><strong>{chip.label||"Context"}</strong>{chip.detail&&<small>{chip.detail}</small>}<button onClick={()=>onRemoveContext(chip.path)} title="Remove context"><X size={10}/></button></span>)}</div>}
     <div className="attachment-shelf">{attachments.filter(path=>!contextPaths.has(path)).map(path=><span key={path}><Paperclip size={11}/>{String(path).split(/[\\/]/).pop()}<button onClick={()=>onRemoveAttachment(path)}><X size={10}/></button></span>)}</div>
-    <textarea ref={composerRef} data-testid="composer" value={prompt} onChange={e=>{onPromptEdit?.();setPrompt(e.target.value)}} onKeyDown={keyDown} onPaste={onPaste} placeholder={providerReady?(running?(agentRuntime==="codex"&&settings.followUpMode==="steer"?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…"):(agentRuntime!=="codex"?`Configure ${agentRuntimeLabel} in Settings…`:provider==="freebuff"?"Sign in to Freebuff to start…":"Configure the selected provider in Settings…")} disabled={!providerReady}/>
+    <textarea ref={composerRef} data-testid="composer" value={prompt} onChange={e=>{onPromptEdit?.();setPrompt(e.target.value);setCaret(e.target.selectionStart)}} onClick={e=>setCaret(e.currentTarget.selectionStart)} onKeyUp={e=>setCaret(e.currentTarget.selectionStart)} onKeyDown={keyDown} onPaste={onPaste} placeholder={providerReady?(running?(agentRuntime==="codex"&&settings.followUpMode==="steer"?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…"):(agentRuntime!=="codex"?`Configure ${agentRuntimeLabel} in Settings…`:provider==="freebuff"?"Sign in to Freebuff to start…":"Configure the selected provider in Settings…")} disabled={!providerReady}/>
     <div className="composer-bar"><div className="composer-left">
       <button className="circle-btn" onClick={onPickFiles} title="Attach files" aria-label="Attach files"><Plus size={18}/></button>
       {window.trebellDesktop?.captureScreen&&<button className="circle-btn" onClick={onCaptureScreen} title="Capture desktop screenshot" aria-label="Capture desktop screenshot"><Camera size={15}/></button>}
@@ -1653,6 +1688,21 @@ export default function App(){
   }
   async function addContextAttachment({name,text,kind="context",label="Context",detail=""}){const d=await api("/api/attachments/text",{method:"POST",body:{name,text}});const [path]=await prepareAttachmentPaths([d.path]);return addContextPath(path,{kind,label,detail})}
   function removeContext(path){setContextChips(prev=>prev.filter(chip=>chip.path!==path));setAttachments(prev=>prev.filter(item=>item!==path))}
+  const searchComposerFiles=useCallback(async query=>{
+    if(projectlessMode||!projectPath||!String(query||"").trim())return [];
+    const params=new URLSearchParams({path:projectPath,q:String(query).trim()});
+    if(workspaceEnvironmentId)params.set("environmentId",workspaceEnvironmentId);
+    const result=await api("/api/workspace/search?"+params.toString());
+    return result.items||[];
+  },[projectlessMode,projectPath,workspaceEnvironmentId]);
+  async function attachComposerFileMention(item){
+    if(!item?.path)return null;
+    const body={paths:[item.path]};if(workspaceEnvironmentId!==undefined)body.environmentId=workspaceEnvironmentId;
+    const imported=await api("/api/attachments/import",{method:"POST",body});
+    const path=imported.files?.[0]?.path||item.path;
+    await addContextPath(path,{kind:"file",label:item.name||String(item.path).split(/[\\/]/).pop()||"File",detail:item.relativePath||item.path});
+    return path;
+  }
   async function pickFiles(){const p=await window.trebellDesktop?.pickFiles?.();if(p?.length){const prepared=await prepareAttachmentPaths(p);await addFiles(prepared);return prepared}return[]}
   async function blobAttachment(file){const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(",")[1]||"");reader.onerror=reject;reader.readAsDataURL(file)});const stored=await api("/api/attachments/blob",{method:"POST",body:{name:file.name,mime:file.type,dataBase64:data}});const [path]=await prepareAttachmentPaths([stored.path]);return {...stored,path}}
   async function captureDesktop(){
@@ -1938,7 +1988,7 @@ export default function App(){
           </div>
 
           {currentProject?.cloneJob&&currentProject.cloneJob.status!=="completed"&&<div className={"clone-banner "+currentProject.cloneJob.status} data-testid="clone-banner"><div><strong>{currentProject.cloneJob.phase||"Cloning repository"}</strong><span>{currentProject.cloneJob.status==="failed"?(currentProject.cloneJob.error||"Clone failed"):currentProject.cloneJob.status==="cancelled"?"Clone cancelled":"You can keep writing. Send waits until the repository is ready."}</span></div>{["running","cancelling"].includes(currentProject.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(currentProject.cloneJob.progress)||0)+"%"}}/></i>}<em>{Math.round(currentProject.cloneJob.progress||0)}%</em>{currentProject.cloneJob.status==="running"&&<button onClick={()=>cloneProjectAction("cancel").catch(error=>setEvents(prev=>[...prev,{id:"clone-cancel-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(currentProject.cloneJob.status)&&<button onClick={()=>cloneProjectAction("retry").catch(error=>setEvents(prev=>[...prev,{id:"clone-retry-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))}>Retry clone</button>}</div>}
-          <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={()=>setPromptHistoryIndex(-1)} historyIndex={promptHistoryIndex} onSend={send} onBackgroundSend={sendInBackground} canBackground={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"} running={running} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onCaptureScreen={()=>captureDesktop().catch(error=>setEvents(prev=>[...prev,{id:"screen-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={changeProviderAgent} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&["codex","opencode","claude"].includes(agentRuntime))} onCompact={compactContext} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={switchThreadRuntimeProfile} onModelPickerOpenChange={setModelPickerOpen}/>
+          <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={()=>setPromptHistoryIndex(-1)} historyIndex={promptHistoryIndex} onSend={send} onBackgroundSend={sendInBackground} canBackground={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"} running={running} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onCaptureScreen={()=>captureDesktop().catch(error=>setEvents(prev=>[...prev,{id:"screen-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} onPaste={onPaste} onDrop={onDrop} onFileMentionSearch={searchComposerFiles} onFileMentionAttach={attachComposerFileMention} permissionMode={permissionMode} setPermissionMode={setPermissionMode} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={changeProviderAgent} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&["codex","opencode","claude"].includes(agentRuntime))} onCompact={compactContext} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={switchThreadRuntimeProfile} onModelPickerOpenChange={setModelPickerOpen}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="layout-resizer terminal-resizer" data-testid="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" onPointerDown={event=>beginLayoutResize("terminal",event)}/>

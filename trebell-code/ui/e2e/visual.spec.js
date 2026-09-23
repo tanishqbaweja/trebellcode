@@ -141,6 +141,42 @@ test("chat workspace is visually bounded and panes resize",async({page,request})
   await expect(shell).toBeVisible();
 });
 
+test("composer file mentions search the workspace and attach the selected file",async({page,request})=>{
+  test.setTimeout(30_000);
+  await prepare(page,request);
+  const composer=page.getByTestId("composer");
+  await composer.fill("Review @pack");
+  const menu=page.getByTestId("file-mention-menu");
+  await expect(menu).toBeVisible();
+  const packageFile=menu.getByRole("button").filter({hasText:"package.json"}).first();
+  await expect(packageFile).toBeVisible();
+  await page.screenshot({path:auditDir+"chat-file-mention-menu-1600x980.png",fullPage:true});
+  await packageFile.click();
+  await expect(menu).toBeHidden();
+  await expect(page.getByTestId("context-chips")).toContainText("package.json");
+  await expect(composer).toHaveValue(/Review @package\.json /);
+  await page.screenshot({path:auditDir+"chat-file-mention-attached-1600x980.png",fullPage:true});
+
+  await page.getByTestId("context-chip").filter({hasText:"package.json"}).getByTitle("Remove context").click();
+  await composer.fill("Open @pack");
+  await expect(menu).toBeVisible();
+  await composer.press("ArrowDown");
+  await composer.press("ArrowUp");
+  await composer.press("Enter");
+  await expect(page.getByTestId("context-chips")).toContainText("package.json");
+
+  await request.post("/api/settings",{data:{appearance:"light",appearanceMode:"light"}});
+  await page.reload();
+  const lightComposer=page.getByTestId("composer");await expect(lightComposer).toBeVisible();
+  await lightComposer.fill("Inspect @pack");
+  await expect(page.getByTestId("file-mention-menu")).toBeVisible();
+  await page.setViewportSize({width:1280,height:800});
+  const mentionBox=await box(page.getByTestId("file-mention-menu")),mainBox=await box(page.locator(".main-frame"));
+  expect(mentionBox.x).toBeGreaterThanOrEqual(mainBox.x);
+  expect(mentionBox.x+mentionBox.width).toBeLessThanOrEqual(mainBox.x+mainBox.width+1);
+  await page.screenshot({path:auditDir+"light-chat-file-mention-menu-1280x800.png",fullPage:true});
+});
+
 test("navigation history shortcuts visibly restore prior app surfaces",async({page,request})=>{
   test.setTimeout(35_000);
   await prepare(page,request);

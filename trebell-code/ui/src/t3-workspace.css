@@ -178,6 +178,8 @@ html.layout-resizing,html.layout-resizing *{user-select:none!important}
 .attachment-shelf,.context-chip-row{padding:0 4px 6px;display:flex;gap:4px;flex-wrap:wrap}
 .attachment-shelf span,.context-chip{height:23px;border:1px solid #2c3035;background:#1a1c1f;border-radius:7px;color:#9ca2aa;font-size:8px}
 .slash-menu{left:0;bottom:calc(100% + 8px);width:330px;border:1px solid #2d3035;background:#151719;border-radius:10px;box-shadow:0 18px 50px rgba(0,0,0,.45)}
+.file-mention-menu{position:absolute;left:0;bottom:calc(100% + 8px);z-index:91;width:min(430px,calc(100vw - 48px));max-height:320px;overflow:auto;border:1px solid #2d3035;background:#151719;border-radius:10px;padding:5px;box-shadow:0 18px 50px rgba(0,0,0,.45)}
+.file-mention-menu button{width:100%;min-height:42px;border:0;background:transparent;color:#aeb4bc;border-radius:7px;padding:6px 8px;display:flex;align-items:center;gap:9px;text-align:left}.file-mention-menu button:hover,.file-mention-menu button.active{background:#22252a;color:#e0e4e9}.file-mention-menu button:disabled{opacity:.62}.file-mention-menu button>svg{flex:none;color:#8570a8}.file-mention-menu button>span{min-width:0;display:grid;gap:2px}.file-mention-menu strong{font-size:9px;font-weight:560;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.file-mention-menu small{font-size:7px;color:#717882;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mini-popover{border-color:#2d3035!important;background:#151719!important}
 .main-frame.terminal-open .composer-wrap{bottom:calc(var(--terminal-height,330px) + 16px)}
 .main-frame.terminal-open .conversation-scroll{bottom:calc(var(--terminal-height,330px) + 130px)}
@@ -447,6 +449,7 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .thread-menu-popover,
 html[data-mode="light"]:not([data-custom-theme="true"]) .model-picker-menu,
 html[data-mode="light"]:not([data-custom-theme="true"]) .mini-popover,
 html[data-mode="light"]:not([data-custom-theme="true"]) .slash-menu{background:#fff!important;border-color:var(--t3-border)!important;color:#29313b!important;box-shadow:0 16px 40px rgba(38,45,55,.16)!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .file-mention-menu{background:#fff!important;border-color:var(--t3-border)!important;box-shadow:0 16px 40px rgba(38,45,55,.16)!important}html[data-mode="light"]:not([data-custom-theme="true"]) .file-mention-menu button{color:#3b4552!important}html[data-mode="light"]:not([data-custom-theme="true"]) .file-mention-menu button:hover,html[data-mode="light"]:not([data-custom-theme="true"]) .file-mention-menu button.active{background:#f0ecf7!important;color:#44345a!important}html[data-mode="light"]:not([data-custom-theme="true"]) .file-mention-menu small{color:#7a8490!important}
 html[data-mode="light"]:not([data-custom-theme="true"]) .thread-menu-popover button,
 html[data-mode="light"]:not([data-custom-theme="true"]) .model-picker-menu>button,
 html[data-mode="light"]:not([data-custom-theme="true"]) .model-runtime-profiles>button,
