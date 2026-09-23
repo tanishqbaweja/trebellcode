@@ -800,7 +800,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   const storageCleanup=new StorageCleanupService({state,env,terminals,worktreeCleanup,log:message=>{cleanupLogs.push({at:Date.now(),stream:"storage-cleanup",text:String(message)+"\n"});if(cleanupLogs.length>100)cleanupLogs.splice(0,cleanupLogs.length-100)}});
   const cloneJobs=new CloneJobService({state,environments,env,log:message=>appServer?.logs?.push({at:Date.now(),stream:"clone",text:String(message)+"\n"})});
   await cloneJobs.recoverInterrupted();
-  const codexAppServers=new Map(),codexAppServerStarts=new Map(),codexThreadServerKeys=new Map();
+  const codexAppServers=new Map(),codexAppServerStarts=new Map(),codexThreadServerKeys=new Map(),codexThreadReleases=new Map();
   const codexPoolKey=(ownerKey,instanceId,environmentId=state.settings().activeEnvironmentId||null)=>String(ownerKey||"catalog")+":"+(environmentId||"local")+":"+String(instanceId||"codex-default");
   function codexInstance(instanceId=null){
     const instances=agentRuntimes.instances();
@@ -826,15 +826,21 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     try{return await starting}finally{codexAppServerStarts.delete(key)}
   }
   async function stopCodexAppServers(){
+    if(codexThreadReleases.size)await Promise.allSettled([...codexThreadReleases.values()]);
     const servers=[...codexAppServers.values()];codexAppServers.clear();
-    codexThreadServerKeys.clear();
+    codexThreadServerKeys.clear();codexThreadReleases.clear();
     await Promise.all(servers.map(server=>stopAppServer(server)));
   }
   async function releaseCodexThreadServer(threadId){
     const id=String(threadId||"").trim();if(!id)return;
-    const key=codexThreadServerKeys.get(id);codexThreadServerKeys.delete(id);if(!key)return;
-    const server=codexAppServers.get(key);codexAppServers.delete(key);codexAppServerStarts.delete(key);
-    if(server)await stopAppServer(server);
+    if(codexThreadReleases.has(id))return codexThreadReleases.get(id);
+    const releasing=(async()=>{
+      const key=codexThreadServerKeys.get(id);codexThreadServerKeys.delete(id);if(!key)return;
+      const server=codexAppServers.get(key);codexAppServers.delete(key);codexAppServerStarts.delete(key);
+      if(server)await stopAppServer(server);
+    })();
+    codexThreadReleases.set(id,releasing);
+    try{return await releasing}finally{if(codexThreadReleases.get(id)===releasing)codexThreadReleases.delete(id)}
   }
   let appServer=await ensureCodexAppServer(agentRuntimes.activeRuntime()==="codex"?agentRuntimes.activeInstance().id:null,{preferredPort:appPort,ownerKey:"catalog"});
   let remoteControl=null;
@@ -2232,6 +2238,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   }
   async function codexRelayTarget(message){
     const threadId=String(message?.params?.threadId||"").trim();
+    if(threadId&&codexThreadReleases.has(threadId))await codexThreadReleases.get(threadId);
     const meta=threadId?state.threadMeta(threadId):{};const environmentId=threadId?(meta.environmentId??state.settings().activeEnvironmentId??null):(state.settings().activeEnvironmentId||null);
     let instance=threadId&&meta.runtimeInstanceId?codexInstance(meta.runtimeInstanceId):null;if(!instance)instance=codexInstance();
     if(!instance)throw new Error("Codex runtime profile was not found");
