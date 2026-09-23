@@ -102,6 +102,22 @@ test("chat workspace is visually bounded and panes resize",async({page,request})
 
 test("settings page visual audit",async({page,request})=>{
   test.setTimeout(45_000);
+  await page.addInitScript(()=>{
+    Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{
+      browser:{
+        importSources:async()=>({platform:"win32",sources:[{id:"firefox",name:"Firefox",running:false,profiles:[{id:"fixture-profile",name:"Fixture profile"}]}]}),
+        importProfile:async()=>({ok:true,imported:3,failed:0,skipped:0}),
+      },
+      snapshots:{
+        get:async()=>({enabled:false,shortcut:"CommandOrControl+Shift+S",includeText:false,playSound:true,sound:"soft-pop",flash:true,animations:true,registered:false,pending:0}),
+        configure:async value=>value,
+        capture:async()=>({ok:true}),
+        pending:async()=>[],
+        onCaptured:()=>()=>{},
+      },
+      background:{set:async()=>({ok:true})},
+    }});
+  });
   await prepare(page,request);
   await page.getByRole("button",{name:"Settings"}).click();
   await expect(page.getByRole("heading",{name:"Settings"})).toBeVisible();
@@ -118,6 +134,8 @@ test("settings page visual audit",async({page,request})=>{
   await expect(page.getByRole("button",{name:/General/})).toHaveAttribute("aria-current","page");
   await expect(page.getByRole("heading",{name:"Follow-up behavior"})).toBeVisible();
   await expect(page.getByRole("heading",{name:"Agent harness"})).toBeHidden();
+  await expect(page.getByRole("heading",{name:"Browser profiles"})).toBeHidden();
+  await expect(page.getByRole("heading",{name:"SnapShots"})).toBeHidden();
   await page.screenshot({path:auditDir+"settings-general-1600x980.png",fullPage:true});
 
   await page.getByRole("button",{name:/Agents & models/}).click();
@@ -141,6 +159,8 @@ test("settings page visual audit",async({page,request})=>{
 
   await page.getByRole("button",{name:/Desktop/}).click();
   await expect(page.getByRole("heading",{name:"Background mode"})).toBeVisible();
+  await expect(page.getByRole("heading",{name:"Browser profiles"})).toBeVisible();
+  await expect(page.getByRole("heading",{name:"SnapShots"})).toBeVisible();
   await page.screenshot({path:auditDir+"settings-desktop-1600x980.png",fullPage:true});
 
   await page.getByRole("button",{name:/Shortcuts/}).click();
@@ -253,4 +273,49 @@ test("right panel tabs are functional and visually bounded",async({page,request}
   await tabStrip.getByRole("button",{name:"Browser",exact:true}).click();
   await assertPanelBounded();
   await page.screenshot({path:auditDir+"panel-browser-1280x800.png",fullPage:true});
+});
+
+test("populated chat and overlays remain visually usable",async({page,request})=>{
+  test.setTimeout(45_000);
+  await prepare(page,request);
+  const composer=page.getByTestId("composer");
+  const longToken="very-long-generated-path-"+"x".repeat(180);
+  const prompt=[
+    "Please inspect this sample output:",
+    longToken,
+    "",
+    "function example(value) {",
+    "  return value + 1;",
+    "}",
+  ].join("\n");
+  await composer.fill(prompt);
+  await page.getByTestId("send").click();
+  await expect(page.locator(".user-bubble")).toContainText("Please inspect this sample output");
+  await expect(page.locator(".assistant-message-text")).toContainText("Mock Freebuff reply:");
+  const conversation=page.locator(".conversation-column");
+  const chatMetrics=await conversation.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(chatMetrics.scroll).toBeLessThanOrEqual(chatMetrics.client+1);
+  await page.screenshot({path:auditDir+"chat-populated-1600x980.png",fullPage:true});
+
+  await page.keyboard.press("Control+k");
+  const palette=page.getByTestId("command-palette");
+  await expect(palette).toBeVisible();
+  await page.screenshot({path:auditDir+"chat-command-palette-1600x980.png",fullPage:true});
+  await page.keyboard.press("Escape");
+  await expect(palette).toBeHidden();
+
+  await page.getByTestId("right-panel-toggle").click();
+  await page.getByTestId("terminal-toggle").click();
+  await expect(page.getByTestId("right-panel")).toBeVisible();
+  await expect(page.getByTestId("drawer")).toBeVisible();
+  const main=await box(page.locator(".main-frame"));
+  const compose=await box(page.locator(".composer-wrap"));
+  expect(compose.x).toBeGreaterThanOrEqual(main.x);
+  expect(compose.x+compose.width).toBeLessThanOrEqual(main.x+main.width+1);
+  await page.screenshot({path:auditDir+"chat-populated-panels-1600x980.png",fullPage:true});
+
+  await page.setViewportSize({width:1280,height:800});
+  const compactChat=await conversation.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(compactChat.scroll).toBeLessThanOrEqual(compactChat.client+1);
+  await page.screenshot({path:auditDir+"chat-populated-1280x800.png",fullPage:true});
 });
