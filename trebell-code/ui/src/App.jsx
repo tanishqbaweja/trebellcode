@@ -23,6 +23,8 @@ import RightPanel from "./components/RightPanel.jsx";
 import HarnessToolsPage from "./components/HarnessToolsPage.jsx";
 import EnvironmentsPage from "./components/EnvironmentsPage.jsx";
 import CommandPalette from "./components/CommandPalette.jsx";
+import AgentBackgroundTerminals from "./components/AgentBackgroundTerminals.jsx";
+import { contextCompactionSignal } from "./provider-session-status.js";
 import GoalPanel from "./components/GoalPanel.jsx";
 import OnboardingModal from "./components/OnboardingModal.jsx";
 import OpenInPicker from "./components/OpenInPicker.jsx";
@@ -39,7 +41,7 @@ import { matchingMessageExcerpt, matchingPullRequestExcerpt } from "./thread-mes
 import { parseVisualizationMessage, visualizationUrl } from "./visualization-utils.js";
 import { captureThreadScrollPosition, rememberThreadScrollPosition, restoredThreadScrollTop } from "./thread-scroll.js";
 import { DEFAULT_LAYOUT, clampLayoutValue, normalizeLayoutPreferences } from "./layout-preferences.js";
-import { threadListParams } from "./thread-list-query.js";
+import { nativeThreadSearchMatches, threadListParams } from "./thread-list-query.js";
 
 const MAX_COMPOSER_ATTACHMENTS=100;
 const MAX_COMPOSER_CHARS=120_000;
@@ -215,6 +217,8 @@ function FreebuffMini({freebuff,model,onOpen}){
 
 const SLASH_COMMANDS=[
   ["/compact","Compact conversation context"],
+  ["/ps","Show Codex background processes"],
+  ["/stop","Stop Codex background processes"],
   ["/plan","Create a plan, then execute it"],
   ["/model","Open model provider settings"],
   ["/terminal","Open persistent terminal"],
@@ -287,7 +291,7 @@ function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgr
     const cmd=raw.startsWith("/")?raw:"/"+raw;const desc=typeof command==="string"?`${agentRuntimeLabel} command`:command?.description||`${agentRuntimeLabel} command`;return [cmd,desc];
   }).filter(Boolean);
   const allSlash=[...SLASH_COMMANDS,...nativeSlash].filter(([cmd],index,array)=>array.findIndex(([candidate])=>candidate===cmd)===index);
-  const slashItems=slashOpen?allSlash.filter(([cmd])=>cmd.startsWith(slashQuery.split(/\s/)[0])&&(["codex","opencode","claude"].includes(agentRuntime)||cmd!=="/compact")&&(agentRuntime==="codex"||cmd!=="/agents")):[];
+  const slashItems=slashOpen?allSlash.filter(([cmd])=>cmd.startsWith(slashQuery.split(/\s/)[0])&&(["codex","opencode","claude"].includes(agentRuntime)||cmd!=="/compact")&&(agentRuntime==="codex"||!["/agents","/ps","/stop"].includes(cmd))):[];
   const contextPaths=new Set((contextChips||[]).map(chip=>chip.path));
   const promptTooLong=prompt.length>MAX_COMPOSER_CHARS;
   const chosenModels=selectedModels.length?selectedModels:(model?[model]:[]);
@@ -662,7 +666,21 @@ export default function App(){
     const results=[];const matched=new Set();
     for(const thread of candidates){
       const excerpt=matchingPullRequestExcerpt(threadMeta[thread.id]||{},needle);
-      if(excerpt){results.push({threadId:thread.id,excerpt:"PR · "+excerpt});matched.add(thread.id)}
+      if(excerpt){results.push({threadId:thread.id,excerpt:"PR · "+excerpt,thread});matched.add(thread.id)}
+    }
+    if(agentRuntime==="codex"){
+      const response=await rpc.request("thread/search",{searchTerm:needle,limit:50,sortKey:"recency_at",sortDirection:"desc",archived:false}).catch(()=>null);
+      if(response?.data){
+        const native=nativeThreadSearchMatches(response);
+        const merged=new Map(results.map(item=>[item.threadId,item]));
+        for(const item of native)if(!merged.has(item.threadId))merged.set(item.threadId,item);
+        if(native.length)setThreads(prev=>{
+          const known=new Set(prev.map(thread=>thread.id));
+          const extra=native.map(item=>item.thread).filter(thread=>thread?.id&&!known.has(thread.id));
+          return extra.length?[...prev,...extra]:prev;
+        });
+        return [...merged.values()];
+      }
     }
     const searchable=candidates.filter(thread=>!matched.has(thread.id));
     const workers=Array.from({length:Math.min(8,searchable.length)},async()=>{
@@ -672,7 +690,7 @@ export default function App(){
           const response=await rpc.request("thread/items/list",{threadId:thread.id,limit:150,sortDirection:"desc"}).catch(()=>({data:[]}));
           cached={updatedAt:version,items:response.data||[]};cache.set(thread.id,cached);
         }
-        const excerpt=matchingMessageExcerpt(cached.items,needle);if(excerpt)results.push({threadId:thread.id,excerpt});
+        const excerpt=matchingMessageExcerpt(cached.items,needle);if(excerpt)results.push({threadId:thread.id,excerpt,thread});
       }
     });
     await Promise.all(workers);
@@ -770,8 +788,8 @@ export default function App(){
   useEffect(()=>{
     if(!query.trim()){setSearchResults(null);return} const q=query.toLowerCase(); const titleMatches=threads.filter(t=>titleOf(t).toLowerCase().includes(q)||(t.cwd||"").toLowerCase().includes(q)||Boolean(matchingPullRequestExcerpt(threadMeta[t.id]||{},q)));
     if(!rpc||rpcStatus!=="connected"||query.length<2){setSearchResults(titleMatches);return}
-    let cancelled=false; const timer=setTimeout(async()=>{const found=new Map(titleMatches.map(t=>[t.id,t]));const rest=threads.filter(t=>!found.has(t.id)).slice(0,35);await Promise.all(rest.map(async t=>{const items=await rpc.request("thread/items/list",{threadId:t.id,limit:150,sortDirection:"desc"}).catch(()=>({data:[]}));if((items.data||[]).some(entry=>messageText(entry.item).toLowerCase().includes(q)))found.set(t.id,t)}));if(!cancelled)setSearchResults([...found.values()])},250);return()=>{cancelled=true;clearTimeout(timer)}
-  },[query,threads,threadMeta,rpc,rpcStatus]);
+    let cancelled=false; const timer=setTimeout(async()=>{const found=new Map(titleMatches.map(t=>[t.id,t]));const matches=await searchThreadMessages(query);for(const match of matches){const thread=match.thread||threads.find(item=>item.id===match.threadId);if(thread)found.set(thread.id,thread)}if(!cancelled)setSearchResults([...found.values()])},250);return()=>{cancelled=true;clearTimeout(timer)}
+  },[query,threads,threadMeta,rpc,rpcStatus,agentRuntime]);
 
   async function copyText(value){const text=String(value||"").trim();if(!text)return false;await navigator.clipboard?.writeText?.(text);return true}
   async function copyActiveReference(){
@@ -1034,11 +1052,27 @@ export default function App(){
     else if(message.method==="thread/attachment/updated"&&isCurrent)loadPersistentThreadData(p.threadId).catch(()=>{});
     else if(message.method==="thread/providerMetadata/updated"){
       setThreads(prev=>prev.map(thread=>thread.id===p.threadId?{...thread,providerMeta:{...(thread.providerMeta||{}),[p.type]:p.update}}:thread));
+      const compaction=p.type==="session_info_update"?contextCompactionSignal(p.update):null;
+      if(compaction&&threadId){
+        const at=Date.now(),id="context-compact-"+threadId;
+        if(compaction.phase==="running"){
+          updateThreadTelemetry(threadId,{currentActivity:{id,kind:"contextCompaction",title:compaction.title,startedAtMs:at},lastActivityAt:at});
+        }else if(compaction.phase==="done"){
+          updateThreadTelemetry(threadId,{currentActivity:null,lastActivity:{id,kind:"contextCompaction",title:compaction.title,completedAtMs:at},lastActivityAt:at,lastError:null});
+        }else{
+          updateThreadTelemetry(threadId,{currentActivity:null,lastActivity:{id,kind:"contextCompaction",title:compaction.title,completedAtMs:at},lastError:compaction.detail||compaction.title,lastActivityAt:at});
+        }
+        if(isCurrent)setEvents(prev=>{
+          const event={id,kind:compaction.phase==="error"?"error":"contextCompaction",title:compaction.detail?compaction.title+": "+compaction.detail:compaction.title,status:compaction.phase==="running"?"running":"done",raw:p.update||{}};
+          return prev.some(item=>item.id===id)?prev.map(item=>item.id===id?{...item,...event}:item):[...prev,event];
+        });
+      }
       if(isCurrent){setActiveThread(prev=>prev?.id===p.threadId?{...prev,providerMeta:{...(prev.providerMeta||{}),[p.type]:p.update}}:prev);applyProviderInventory(p.update||{})}
     }
     else if(message.method==="thread/compacted"){
-      updateThreadTelemetry(threadId,{lastActivity:{kind:"contextCompaction",title:"Context compacted",completedAtMs:Date.now()},lastActivityAt:Date.now()});
-      if(isCurrent)setEvents(prev=>[...prev,{id:"compact-"+Date.now(),kind:"tool",title:"Context compacted",status:"done",raw:p}]);
+      const at=Date.now(),id="context-compact-"+threadId;
+      updateThreadTelemetry(threadId,{currentActivity:null,lastActivity:{id,kind:"contextCompaction",title:"Context compacted",completedAtMs:at},lastActivityAt:at,lastError:null});
+      if(isCurrent)setEvents(prev=>{const event={id,kind:"contextCompaction",title:"Context compacted",status:"done",raw:p};return prev.some(item=>item.id===id)?prev.map(item=>item.id===id?{...item,...event}:item):[...prev,event]});
     }
     else if(message.method==="error"){
       updateThreadTelemetry(threadId,{currentActivity:null,lastError:p.message||"Agent error",lastActivityAt:Date.now()});
@@ -1390,6 +1424,17 @@ export default function App(){
     if(command==="/compact"){
       await compactContext();return true
     }
+    if(command==="/ps"){
+      if(agentRuntime==="codex"&&activeThread?.id)openRightPanel("runtime");
+      else setEvents(prev=>[...prev,{id:"ps-unavailable-"+Date.now(),kind:"error",title:"Background process controls require an open Codex thread",status:"done",raw:{}}]);
+      return true
+    }
+    if(command==="/stop"){
+      if(agentRuntime!=="codex"||!activeThread?.id||!rpc){setEvents(prev=>[...prev,{id:"stop-unavailable-"+Date.now(),kind:"error",title:"Background process controls require an open Codex thread",status:"done",raw:{}}]);return true}
+      try{await rpc.request("thread/backgroundTerminals/clean",{threadId:activeThread.id});setEvents(prev=>[...prev,{id:"background-stop-"+Date.now(),kind:"tool",title:"Stopped agent background processes",status:"done",raw:{}}])}
+      catch(error){setEvents(prev=>[...prev,{id:"background-stop-error-"+Date.now(),kind:"error",title:"Could not stop background processes: "+(error.message||String(error)),status:"done",raw:{}}])}
+      return true
+    }
     if(command==="/model"){setSection(provider==="freebuff"?"freebuff":"settings");return true}
     if(command==="/terminal"){setPanel("terminal");return true}
     if(command==="/diff"){openRightPanel("diff");return true}
@@ -1417,7 +1462,8 @@ export default function App(){
     if(!activeThread?.id||!rpc)return;
     try{
       await rpc.request("thread/compact/start",{threadId:activeThread.id});
-      setEvents(prev=>[...prev,{id:"compact-request-"+Date.now(),kind:"tool",title:"Compacting context",status:"running",raw:{}}]);
+      const id="context-compact-"+activeThread.id;
+      setEvents(prev=>{const event={id,kind:"contextCompaction",title:"Compacting context",status:"running",raw:{}};return prev.some(item=>item.id===id)?prev.map(item=>item.id===id?{...item,...event}:item):[...prev,event]});
     }catch(error){
       setEvents(prev=>[...prev,{id:"compact-error-"+Date.now(),kind:"error",title:"Context compaction failed: "+(error.message||String(error)),status:"done",raw:{}}]);
     }
@@ -1725,6 +1771,7 @@ export default function App(){
         <div><span>Disk</span><strong>{stats.disk||"—"}</strong></div>
         <div><span>Context</span><strong>{tokenLabel(tokenUsage)}</strong></div>
       </section>
+      {agentRuntime==="codex"&&activeThread?.id&&<AgentBackgroundTerminals rpc={rpc} rpcStatus={rpcStatus} threadId={activeThread.id}/>}
       {agentRuntime==="codex"&&provider==="freebuff"&&<FreebuffMini freebuff={freebuff} model={model} onOpen={()=>setSection("freebuff")}/>}
       <section className="runtime-activity"><strong>Latest activity</strong><p>{events.find(event=>event.status==="running")?.title||events.at(-1)?.title||"Waiting for a task"}</p></section>
     </div>;

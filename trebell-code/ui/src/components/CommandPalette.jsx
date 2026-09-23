@@ -35,13 +35,15 @@ export default function CommandPalette({open,onClose,actions=[],projects=[],thre
   const items=useMemo(()=>{
     const raw=query.trim();const actionOnly=raw.startsWith(">");const q=(actionOnly?raw.slice(1):raw).trim().toLowerCase();
     const messageMap=new Map((messageMatches||[]).map(match=>[match.threadId,match.excerpt]));
+    const threadMap=new Map((threads||[]).map(thread=>[thread.id,thread]));
+    for(const match of messageMatches||[])if(match.thread?.id&&!threadMap.has(match.thread.id))threadMap.set(match.thread.id,match.thread);
     const commands=actions.map(action=>({...action,kind:"command"}));
     const projectItems=(projects||[]).map(project=>{
       const environmentId=project.environmentId||"local";
       const environment=project.environment?.name||environmentNames[environmentId]||"Local machine";
       return {id:"project:"+project.id,kind:"project",label:project.name||project.path||"Workspace",detail:environment+" · "+project.path,onRun:()=>onOpenProject?.(project)};
     });
-    const threadItems=(threads||[]).map(thread=>{
+    const threadItems=[...threadMap.values()].map(thread=>{
       const environmentId=thread.providerMeta?.environmentId||"local";
       const environment=environmentNames[environmentId]||"Local machine";
       const excerpt=messageMap.get(thread.id);

@@ -1094,13 +1094,21 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           if("modelProvider" in patch) patch.modelProvider=normalizeProviderId(patch.modelProvider);
           if("agentRuntime" in patch) patch.agentRuntime=normalizeAgentRuntime(patch.agentRuntime);
           const previous=selectedProvider;
-          const previousAgentRuntime=selectedAgentRuntime;
+          const previousAgentRuntime=agentRuntimes.activeRuntime();
+          const previousAgentInstanceId=agentRuntimes.activeInstance().id;
+          let runtimeSelection=null;
+          if("agentRuntime" in patch||"agentRuntimeInstanceId" in patch){
+            const requestedRuntime="agentRuntime" in patch?patch.agentRuntime:previousAgentRuntime;
+            const requestedInstanceId=Object.prototype.hasOwnProperty.call(patch,"agentRuntimeInstanceId")
+              ?(patch.agentRuntimeInstanceId||null)
+              :(requestedRuntime===previousAgentRuntime?previousAgentInstanceId:null);
+            runtimeSelection=await agentRuntimes.setActive({runtime:requestedRuntime,instanceId:requestedInstanceId});
+            selectedAgentRuntime=runtimeSelection.runtime;
+            delete patch.agentRuntime;delete patch.agentRuntimeInstanceId;
+          }
           const next=state.updateSettings(patch);
           if("modelProvider" in patch && patch.modelProvider!==previous) await restartAppServer(patch.modelProvider);
-          if("agentRuntime" in patch && patch.agentRuntime!==previousAgentRuntime){
-            selectedAgentRuntime=patch.agentRuntime;
-            if(selectedAgentRuntime==="codex")await restartAppServer(selectedProvider);
-          }
+          if(runtimeSelection?.runtime==="codex"&&previous===selectedProvider&&(previousAgentRuntime!=="codex"||previousAgentInstanceId!==runtimeSelection.instance.id))await restartAppServer(selectedProvider);
           if("remoteAccessEnabled" in patch||"remoteAccessPort" in patch||"remoteAccessToken" in patch) await syncRemoteControl();
           return json(res,200,next);
         }catch(error){return json(res,400,{error:error.message});}

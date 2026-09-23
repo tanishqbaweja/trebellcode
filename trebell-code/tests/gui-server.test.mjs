@@ -109,6 +109,24 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(blockedVisualization.status,400);
     const settings=await fetch(gui.url+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({followUpMode:"steer"})}).then(r=>r.json());
     assert.equal(settings.followUpMode,"steer");
+    const customCodexId="codex-settings-test";
+    const customCodex=await fetch(gui.url+"/api/agent-runtimes",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"upsert",instance:{id:customCodexId,kind:"codex",displayName:"Settings API test",homePath:join(home,"codex-settings-test")}})}).then(r=>r.json());
+    assert.equal(customCodex.instance.id,customCodexId);
+    const codexSettingsResponse=await fetch(gui.url+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({agentRuntime:"codex",agentRuntimeInstanceId:customCodexId})});
+    assert.equal(codexSettingsResponse.status,200);
+    const codexSettings=await codexSettingsResponse.json();
+    assert.equal(codexSettings.agentRuntime,"codex");assert.equal(codexSettings.agentRuntimeInstanceId,customCodexId);
+    const codexRuntimeSnapshot=await fetch(gui.url+"/api/agent-runtimes").then(r=>r.json());
+    assert.equal(codexRuntimeSnapshot.selectedRuntime,"codex");assert.equal(codexRuntimeSnapshot.selectedInstanceId,customCodexId);
+    const codexBootstrap=await fetch(gui.url+"/api/bootstrap").then(r=>r.json());
+    assert.equal(codexBootstrap.agentRuntime,"codex");assert.equal(codexBootstrap.agentRuntimeInstanceId,customCodexId);
+    const unavailableClaude=await fetch(gui.url+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({agentRuntime:"claude",agentRuntimeInstanceId:"claude-default"})});
+    if(unavailableClaude.status===400){
+      const afterRejectedRuntime=await fetch(gui.url+"/api/agent-runtimes").then(r=>r.json());
+      assert.equal(afterRejectedRuntime.selectedRuntime,"codex");assert.equal(afterRejectedRuntime.selectedInstanceId,customCodexId);
+    }
+    const resetCodex=await fetch(gui.url+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({agentRuntime:"codex",agentRuntimeInstanceId:"codex-default"})});
+    assert.equal(resetCodex.status,200);
     const storageBefore=await fetch(gui.url+"/api/storage-cleanup").then(r=>r.json());
     assert.deepEqual(storageBefore.settings,{attachmentsAfterDays:null,terminalHistoryAfterDays:null});
     const storageSettings=await fetch(gui.url+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({storageCleanup:{attachmentsAfterDays:7,terminalHistoryAfterDays:30}})}).then(r=>r.json());
