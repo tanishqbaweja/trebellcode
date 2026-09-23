@@ -652,6 +652,10 @@ test("populated chat and overlays remain visually usable",async({page,request})=
   await page.setViewportSize({width:1280,height:800});
   const compactChat=await conversation.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(compactChat.scroll).toBeLessThanOrEqual(compactChat.client+1);
+  const compactLeft=await box(page.locator(".composer-left")),compactRight=await box(page.locator(".composer-right"));
+  expect(compactRight.y).toBeGreaterThan(compactLeft.y+10);
+  expect((await box(page.locator(".permission-picker").first())).width).toBeGreaterThanOrEqual(100);
+  expect((await box(page.locator(".workspace-mode"))).width).toBeGreaterThanOrEqual(125);
   await page.screenshot({path:auditDir+"chat-populated-1280x800.png",fullPage:true});
 });
 

@@ -158,7 +158,7 @@ html.layout-resizing,html.layout-resizing *{user-select:none!important}
 .suggestions button:hover{background:#191b1e;border-color:#363a40;color:#cdd0d4}
 
 /* composer */
-.composer-wrap{position:absolute;left:50%;right:auto;bottom:18px;transform:translateX(-50%);width:min(calc(100% - 44px),780px);height:auto;min-height:106px;border:1px solid #2c3035;border-radius:22px;background:rgba(23,25,28,.95);backdrop-filter:blur(18px) saturate(115%);box-shadow:0 16px 38px -22px rgba(0,0,0,.78),inset 0 1px rgba(255,255,255,.025);padding:11px 12px 8px;z-index:12}
+.composer-wrap{position:absolute;left:50%;right:auto;bottom:18px;transform:translateX(-50%);width:min(calc(100% - 44px),780px);height:auto;min-height:106px;border:1px solid #2c3035;border-radius:22px;background:rgba(23,25,28,.95);backdrop-filter:blur(18px) saturate(115%);box-shadow:0 16px 38px -22px rgba(0,0,0,.78),inset 0 1px rgba(255,255,255,.025);padding:11px 12px 8px;z-index:12;container-type:inline-size}
 .composer-wrap:focus-within{border-color:#3b3f46;box-shadow:0 16px 42px -22px rgba(0,0,0,.9),0 0 0 1px rgba(165,138,244,.08)}
 .composer-wrap textarea{width:100%;height:40px;min-height:40px;max-height:160px;resize:none;overflow-y:hidden;background:none;border:0;outline:0;padding:4px 7px 5px;color:#e2e4e7;font-size:12.5px;line-height:1.5}
 .composer-wrap textarea::placeholder{color:#676c73}
@@ -178,6 +178,16 @@ html.layout-resizing,html.layout-resizing *{user-select:none!important}
 .stash-btn:hover,.model-count:hover{background:#22252a;color:#c6c9cd}
 .composer-status{display:flex;justify-content:space-between;gap:8px;padding:3px 7px 0;color:#565c63;font-size:7.5px}
 .context-compact-btn{margin-left:6px;height:18px;border:0;border-radius:5px;background:transparent;color:#747b84;padding:0 5px;font-size:7px;cursor:pointer}.context-compact-btn:hover{background:#1c1f23;color:#c0c5cb}
+@container (max-width:600px){
+  .composer-bar{flex-wrap:wrap;row-gap:3px}
+  .composer-left,.composer-right{width:100%;max-width:none;flex:none;overflow:visible}
+  .composer-left{flex-wrap:wrap}
+  .composer-right{justify-content:flex-end}
+  .permission-picker{flex:0 1 125px;max-width:125px}
+  .workspace-mode{flex:0 1 145px;max-width:145px}
+  .model-picker-wrap{flex:1 1 180px;max-width:220px}
+  .model-picker-button{width:100%;max-width:none;min-width:0}
+}
 .attachment-shelf,.context-chip-row{padding:0 4px 6px;display:flex;gap:4px;flex-wrap:wrap}
 .attachment-shelf span,.context-chip{height:23px;border:1px solid #2c3035;background:#1a1c1f;border-radius:7px;color:#9ca2aa;font-size:8px}
 .slash-menu{left:0;bottom:calc(100% + 8px);width:330px;border:1px solid #2d3035;background:#151719;border-radius:10px;box-shadow:0 18px 50px rgba(0,0,0,.45)}
