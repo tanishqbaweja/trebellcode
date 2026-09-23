@@ -243,6 +243,18 @@ function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgr
   useLayoutEffect(()=>{resizeTextarea(composerRef.current,{min:40,max:160})},[prompt]);
   useEffect(()=>{onModelPickerOpenChange?.(modelOpen)},[modelOpen,onModelPickerOpenChange]);
   useEffect(()=>{
+    if(!modelOpen)return;
+    const pointerDown=event=>{
+      const target=event.target;
+      if(target instanceof Element&&target.closest(".model-picker-wrap"))return;
+      setModelOpen(false);
+    };
+    const keyDown=event=>{if(event.key==="Escape")setModelOpen(false)};
+    window.addEventListener("pointerdown",pointerDown,true);
+    window.addEventListener("keydown",keyDown,true);
+    return()=>{window.removeEventListener("pointerdown",pointerDown,true);window.removeEventListener("keydown",keyDown,true)};
+  },[modelOpen]);
+  useEffect(()=>{
     const onPicker=event=>{
       const action=event.detail?.action;
       if(action==="toggle"){setModelOpen(value=>!value);return}
