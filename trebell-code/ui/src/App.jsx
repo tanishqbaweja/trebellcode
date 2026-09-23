@@ -808,6 +808,7 @@ export default function App(){
         setThreads(prev=>prev.map(thread=>thread.id===updated.id?{...thread,...updated}:thread));
       }
       const profiles=await loadThreadRuntimeProfiles(rpc,threadId);
+      if(agentRuntime==="codex")await loadSkills(rpc,projectPath,true).catch(()=>{});
       const selected=(profiles?.items||[]).find(item=>item.id===instanceId);
       const label=agentRuntime==="codex"?"Codex":"Claude";
       setEvents(prev=>[...prev,{id:"runtime-profile-"+Date.now(),kind:"tool",title:`${label} profile switched to ${selected?.displayName||instanceId}`,status:"done",raw:{instanceId}}]);
@@ -853,9 +854,13 @@ export default function App(){
     if(cache.size>100){const keep=new Set(threads.slice(0,100).map(thread=>thread.id));for(const id of cache.keys())if(!keep.has(id))cache.delete(id)}
     return results;
   }
-  async function loadSkills(client,path=projectPath){
+  async function loadSkills(client,path=projectPath,forceReload=false){
     if(agentRuntime!=="codex")return;
-    if(!path)return; const result=await client.request("skills/list",{cwds:[path]}).catch(()=>({data:[]})); setSkills((result.data||[]).flatMap(x=>x.skills||[]).filter(s=>s.enabled!==false));
+    if(!path)return;
+    const threadId=activeThreadRef.current?.id||null;
+    const params={cwds:[path],forceReload:Boolean(forceReload),...(threadId?{_trebellThreadId:threadId}:{})};
+    const result=await client.request("skills/list",params).catch(()=>({data:[]}));
+    setSkills((result.data||[]).flatMap(x=>x.skills||[]));
   }
   async function recoverCodexAfterRestart(client){
     if(agentRuntime!=="codex")return;
@@ -1222,6 +1227,7 @@ export default function App(){
     else if(message.method==="thread/goal/updated"&&isCurrent)setGoal(p.goal||null);
     else if(message.method==="thread/goal/cleared"&&isCurrent)setGoal(null);
     else if(message.method==="thread/queue/changed"&&isCurrent)loadNativeQueue(rpcRef.current,p.threadId).catch(error=>setEvents(prev=>[...prev,{id:"queue-refresh-error-"+Date.now(),kind:"error",title:"Could not refresh queued follow-ups: "+(error.message||String(error)),status:"done",raw:{}}]));
+    else if(message.method==="skills/changed")loadSkills(rpcRef.current,projectPath,true).catch(()=>{});
     else if(message.method==="windowsSandbox/setupCompleted"){
       window.dispatchEvent(new CustomEvent("trebell:windows-sandbox-setup",{detail:p}));
       desktopNotify(p.success?"Windows sandbox ready":"Windows sandbox setup failed",p.success?`${p.mode==="elevated"?"Elevated":"Unelevated"} Codex sandbox setup completed.`:(p.error||"Codex could not complete Windows sandbox setup."));
@@ -2216,7 +2222,7 @@ export default function App(){
         {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onProjectUpdated={project=>{if(project?.path===projectPath&&(project?.environmentId||null)===(workspaceEnvironmentId||null))setCurrentProject(project)}} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></div>}
         {section==="templates"&&<div className="secondary-page"><h1>Templates</h1><p>Reusable starting points that become normal Trebell turns.</p><div className="template-grid">{[["Ship a feature","Inspect the project, plan a useful feature, implement it, run the relevant tests, fix failures, and summarize the result."],["Fix a bug","Reproduce a meaningful bug in this project, diagnose it, fix it, and validate the fix."],["Review codebase","Map this codebase architecture, important execution paths, risks, and highest-value improvements."],["Refactor safely","Choose a worthwhile refactor, preserve behavior, implement focused changes, and run tests."],["Autonomous build","Take this project to a working validated result. Continue through implementation and test failures until it passes."],["Security review","Review this project for concrete security weaknesses and propose or implement safe fixes."]].map(([name,text])=><button key={name} onClick={()=>{setPrompt(text);setSection("chat")}}><BrainCircuit size={20}/><strong>{name}</strong><span>{text}</span></button>)}</div></div>}
         {section==="freebuff"&&agentRuntime==="codex"&&provider==="freebuff"&&<div className="secondary-page"><div className="page-header"><div><h1>Freebuff</h1><p>Account, balance, model pricing and session state.</p></div></div><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model)}/></div>}
-        {section==="tools"&&agentRuntime==="codex"&&<div className="secondary-page full"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} onHistoryImported={historyImported} platform={bootstrap.platform}/></div>}
+        {section==="tools"&&agentRuntime==="codex"&&<div className="secondary-page full"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} onHistoryImported={historyImported} onSkillsRefresh={()=>loadSkills(rpc,projectPath,true)} platform={bootstrap.platform}/></div>}
         {section==="environments"&&<div className="secondary-page full"><EnvironmentsPage/></div>}
       {section==="usage"&&<div className="secondary-page full"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><LicensesPage/></div>}

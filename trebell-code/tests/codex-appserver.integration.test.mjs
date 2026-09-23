@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
@@ -182,6 +182,13 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
     assert.equal(typeof memoryStatus.v2Ready,"boolean");
     const sandboxReadiness=await rpc(ws,id++,"windowsSandbox/readiness",{});
     assert.ok(["ready","notConfigured","updateRequired"].includes(sandboxReadiness.status),`unexpected Windows sandbox readiness: ${JSON.stringify(sandboxReadiness)}`);
+    const skillDisabled=await rpc(ws,id++,"skills/config/write",{path:null,name:"trebell-integration-skill",enabled:false});
+    assert.equal(skillDisabled.effectiveEnabled,false);
+    const skillEnabled=await rpc(ws,id++,"skills/config/write",{path:null,name:"trebell-integration-skill",enabled:true});
+    assert.equal(skillEnabled.effectiveEnabled,true);
+    const runtimeSkillRoot=join(home,"runtime-skills");await mkdir(runtimeSkillRoot,{recursive:true});
+    const skillRoots=await rpcOutcome(ws,id++,"skills/extraRoots/set",{extraRoots:[runtimeSkillRoot]});
+    assert.equal(skillRoots.ok,true,skillRoots.error?.message||"skills/extraRoots/set failed");
     const memoryReset=await rpcOutcome(ws,id++,"memory/reset");
     assert.equal(memoryReset.ok,true,memoryReset.error?.message||"memory/reset failed in the disposable integration home");
   } finally {

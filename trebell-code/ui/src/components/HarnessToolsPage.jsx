@@ -8,7 +8,7 @@ function Section({title,icon:Icon,count,children}){
 }
 function ErrorLine({value}){return value?<p className="capability-error">{value}</p>:null}
 
-export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread,skills=[],onHistoryImported,platform=""}){
+export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread,skills=[],onHistoryImported,onSkillsRefresh,platform=""}){
   const [data,setData]=useState({permissions:[],mcp:[],marketplaces:[],apps:[],hooks:[],features:[],sharedPlugins:[],capabilities:null,account:null,rateLimits:null,usage:null,config:null,requirements:null,memory:null,windowsSandbox:null});
   const [errors,setErrors]=useState({});
   const [loading,setLoading]=useState(false);
@@ -25,6 +25,8 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [sandboxPending,setSandboxPending]=useState("");
   const [sandboxMessage,setSandboxMessage]=useState("");
   const [sandboxWarning,setSandboxWarning]=useState("");
+  const [skillRootsText,setSkillRootsText]=useState("");
+  const [skillMessage,setSkillMessage]=useState("");
 
   function routedParams(params){
     const threadId=activeThread?.id;
@@ -226,6 +228,27 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     }catch(error){setErrors(prev=>({...prev,"windowsSandbox/setupStart":error.message||String(error)}))}
     finally{setBusy("")}
   }
+  async function toggleSkill(skill){
+    if(!rpc||!skill?.path)return;
+    const next=skill.enabled===false;setBusy("skill:"+skill.path);setSkillMessage("");setErrors(prev=>({...prev,"skills/config/write":null}));
+    try{
+      const result=await request("skills/config/write",{path:skill.path,name:null,enabled:next});
+      setSkillMessage(`${skill.name||"Skill"} is now ${result?.effectiveEnabled===false?"disabled":"enabled"}. This setting is saved in Codex config.`);
+      await onSkillsRefresh?.();
+    }catch(error){setErrors(prev=>({...prev,"skills/config/write":error.message||String(error)}))}
+    finally{setBusy("")}
+  }
+  async function applySkillRoots(){
+    if(!rpc)return;
+    const extraRoots=[...new Set(skillRootsText.split(/\r?\n/).map(value=>value.trim()).filter(Boolean))];
+    setBusy("skill-roots");setSkillMessage("");setErrors(prev=>({...prev,"skills/extraRoots/set":null}));
+    try{
+      await request("skills/extraRoots/set",{extraRoots});
+      setSkillMessage(extraRoots.length?`${extraRoots.length} runtime skill root${extraRoots.length===1?"":"s"} applied. They reset when this Codex app-server restarts.`:"Runtime-only extra skill roots cleared.");
+      await onSkillsRefresh?.();
+    }catch(error){setErrors(prev=>({...prev,"skills/extraRoots/set":error.message||String(error)}))}
+    finally{setBusy("")}
+  }
 
   if(rpcStatus!=="connected")return <div className="empty-state"><Wrench size={28}/><strong>Codex harness is not connected</strong><span>Capabilities will appear when app-server is ready.</span></div>;
 
@@ -306,8 +329,12 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       </Section>
 
       <Section title="Skills" icon={Wrench} count={skills.length}>
-        <div className="capability-list">{skills.map(s=><div key={s.path||s.name}><div><strong>{s.name}</strong><span>{s.description||s.path}</span></div><em className="ok">enabled</em></div>)}</div>
-        {!skills.length&&<p>No enabled skills found for this workspace.</p>}
+        <p>Enable or disable discovered skills with Codex's native config API. Disabled skills stay visible so they can be turned back on.</p>
+        <div className="capability-list skill-list">{skills.map(s=><div key={s.path||s.name}><div><strong>{s.interface?.displayName||s.name}</strong><span>{s.interface?.shortDescription||s.shortDescription||s.description||s.path}{s.scope?` · ${s.scope}`:""}</span></div><button className={s.enabled!==false?"active":""} onClick={()=>toggleSkill(s)} disabled={!!busy||!s.path}>{busy==="skill:"+s.path?"Saving…":s.enabled===false?"Off":"On"}</button></div>)}</div>
+        {!skills.length&&<p>No skills were discovered for this workspace.</p>}
+        <div className="skill-roots-editor"><label><strong>Runtime-only extra roots</strong><span>One absolute skill-directory path per line. Applying replaces this Codex process's extra roots; restarting the app-server clears them.</span></label><textarea value={skillRootsText} onChange={e=>setSkillRootsText(e.target.value)} placeholder={platform==="win32"?"C:\\Users\\me\\skills\nD:\\shared-skills":"/home/me/skills\n/opt/shared-skills"}/><div className="capability-actions"><button onClick={applySkillRoots} disabled={!!busy}>{busy==="skill-roots"?"Applying…":"Apply runtime roots"}</button>{skillRootsText&&<button onClick={()=>setSkillRootsText("")} disabled={!!busy}>Clear draft</button>}</div></div>
+        {skillMessage&&<p className="capability-status">{skillMessage}</p>}
+        <ErrorLine value={errors["skills/config/write"]}/><ErrorLine value={errors["skills/extraRoots/set"]}/>
       </Section>
 
       <Section title="Plugins" icon={Blocks} count={plugins.length}>
