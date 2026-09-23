@@ -1311,6 +1311,14 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       try{return json(res,200,await devices.list())}
       catch(error){return json(res,400,{error:error.message});}
     }
+    if(url.pathname==="/api/device/tool-updates"&&req.method==="GET"){
+      try{return json(res,200,await devices.updates())}
+      catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/device/tool-update"&&req.method==="POST"){
+      try{const body=await readJsonBody(req);return json(res,200,await devices.updateTool(body.tool))}
+      catch(error){return json(res,400,{error:error.message});}
+    }
     if(url.pathname==="/api/usage"){
       if(req.method==="GET"){
         const requested=url.searchParams.getAll("environmentId");

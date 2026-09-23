@@ -1,18 +1,31 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
+import { posix, win32 } from "node:path";
 
 const execFileAsync=promisify(execFile);
 
-async function runText(command,args=[],{timeout=20_000,allowFailure=false}={}){
+async function runText(command,args=[],{timeout=20_000,allowFailure=false,env=process.env}={}){
   try{
-    const result=await execFileAsync(command,args,{windowsHide:true,timeout,maxBuffer:8*1024*1024,encoding:"utf8"});
+    const result=await execFileAsync(command,args,{windowsHide:true,timeout,maxBuffer:8*1024*1024,encoding:"utf8",env});
     return {ok:true,stdout:String(result.stdout||""),stderr:String(result.stderr||"")};
   }catch(error){
     if(!allowFailure)throw new Error(String(error.stderr||error.stdout||error.message||error).trim());
     return {ok:false,stdout:String(error.stdout||""),stderr:String(error.stderr||error.message||""),code:error.code??1};
   }
+}
+
+async function runSdkManager(command,args=[],{timeout=60_000,allowFailure=false,env=process.env,platform=process.platform}={}){
+  if(platform==="win32"&&/\.(?:bat|cmd)$/i.test(String(command||""))){
+    const safe=args.map(value=>String(value)).filter(value=>/^[a-z0-9._;:=+-]+$/i.test(value));
+    if(safe.length!==args.length)throw new Error("Unsupported sdkmanager argument");
+    const comspec=env.ComSpec||env.COMSPEC||"cmd.exe";
+    const result=await runText(comspec,["/d","/s","/c",`call "%TREBELL_SDKMANAGER%" ${safe.map(value=>'"'+value+'"').join(" ")}`],{
+      timeout,allowFailure,env:{...env,TREBELL_SDKMANAGER:String(command)},
+    });
+    return result;
+  }
+  return runText(command,args,{timeout,allowFailure,env});
 }
 
 async function runBuffer(command,args=[],{timeout=20_000}={}){
@@ -24,17 +37,29 @@ async function runBuffer(command,args=[],{timeout=20_000}={}){
   });
 }
 
-async function findCommand(name,candidates=[]){
-  const finder=process.platform==="win32"?"where":"which";
-  const found=await runText(finder,[name],{timeout:4000,allowFailure:true});
+async function findCommand(name,candidates=[],{platform=process.platform,env=process.env}={}){
+  const finder=platform==="win32"?"where":"which";
+  const found=await runText(finder,[name],{timeout:4000,allowFailure:true,env});
   if(found.ok){const first=found.stdout.split(/\r?\n/).map(value=>value.trim()).find(Boolean);if(first)return first}
   return candidates.find(candidate=>candidate&&existsSync(candidate))||null;
 }
 
-function androidCandidates(name){
-  const roots=[process.env.ANDROID_HOME,process.env.ANDROID_SDK_ROOT,process.env.LOCALAPPDATA&&join(process.env.LOCALAPPDATA,"Android","Sdk"),process.env.HOME&&join(process.env.HOME,"Android","Sdk")].filter(Boolean);
-  const executable=process.platform==="win32"?name+".exe":name;
-  return roots.map(root=>name==="emulator"?join(root,"emulator",executable):join(root,"platform-tools",executable));
+function androidCandidates(name,{env=process.env,platform=process.platform,readDirectory=readdirSync}={}){
+  const path=platform==="win32"?win32:posix;
+  const roots=[env.ANDROID_HOME,env.ANDROID_SDK_ROOT,env.LOCALAPPDATA&&path.join(env.LOCALAPPDATA,"Android","Sdk"),env.HOME&&path.join(env.HOME,"Android","Sdk")].filter(Boolean);
+  const executable=platform==="win32"?name+".exe":name;
+  if(name!=="sdkmanager")return roots.map(root=>name==="emulator"?path.join(root,"emulator",executable):path.join(root,"platform-tools",executable));
+  const script=platform==="win32"?"sdkmanager.bat":"sdkmanager";const candidates=[];
+  for(const root of roots){
+    candidates.push(path.join(root,"cmdline-tools","latest","bin",script),path.join(root,"tools","bin",script));
+    try{
+      const versions=readDirectory(path.join(root,"cmdline-tools"),{withFileTypes:true})
+        .filter(entry=>entry?.isDirectory?.()&&entry.name!=="latest")
+        .map(entry=>entry.name).sort().reverse().slice(0,20);
+      for(const version of versions)candidates.push(path.join(root,"cmdline-tools",version,"bin",script));
+    }catch{}
+  }
+  return candidates;
 }
 
 function parseAdbEmulators(raw=""){
@@ -47,22 +72,69 @@ function parseAdbEmulators(raw=""){
 
 function pngSize(buffer){return buffer.length>=24&&buffer.subarray(1,4).toString()==="PNG"?{width:buffer.readUInt32BE(16),height:buffer.readUInt32BE(20)}:{width:null,height:null}}
 function encodedInput(value){return String(value??"").replace(/%/g,"%25").replace(/ /g,"%s")}
+function parseAdbVersion(raw=""){
+  const text=String(raw||"");return {
+    protocol:text.match(/Android Debug Bridge version\s+([^\s]+)/i)?.[1]||null,
+    revision:text.match(/(?:^|\n)Version\s+([^\s]+)/i)?.[1]||null,
+  };
+}
+function parseEmulatorVersion(raw=""){return String(raw||"").match(/Android emulator version\s+([^\s]+)/i)?.[1]||null}
+function parseSdkManagerVersion(raw=""){return String(raw||"").match(/(?:^|\n)\s*([0-9]+(?:\.[0-9A-Za-z_-]+)+)\s*(?:\r?\n|$)/)?.[1]||null}
+function parseSdkManagerUpdates(raw=""){
+  const text=String(raw||"");const marker=text.search(/Available Updates\s*:/i);if(marker<0)return [];
+  const lines=text.slice(marker).split(/\r?\n/).slice(1);const updates=[];
+  for(const line of lines){
+    if(/^\s*(?:Available|Installed)\s+(?:Packages|Updates)\s*:/i.test(line)&&updates.length)break;
+    const parts=line.split("|").map(value=>value.trim());if(parts.length<3)continue;
+    const id=parts[0];if(!["platform-tools","emulator"].includes(id))continue;
+    if(!/\d/.test(parts[1])||!/\d/.test(parts[2]))continue;
+    updates.push({id,installedVersion:parts[1],availableVersion:parts[2],label:id==="platform-tools"?"Android Platform-Tools":"Android Emulator"});
+  }
+  return updates;
+}
 
 export class DeviceService{
-  constructor({env=process.env,platform=process.platform}={}){this.env=env;this.platform=platform;this.adbPath=null;this.emulatorPath=null;this.detectedAt=0}
+  constructor({env=process.env,platform=process.platform}={}){this.env=env;this.platform=platform;this.adbPath=null;this.emulatorPath=null;this.sdkManagerPath=null;this.detectedAt=0}
   async #detect(){
     if(Date.now()-this.detectedAt<15_000)return;this.detectedAt=Date.now();
-    this.adbPath=await findCommand("adb",androidCandidates("adb"));this.emulatorPath=await findCommand("emulator",androidCandidates("emulator"));
+    this.adbPath=await findCommand("adb",androidCandidates("adb",{env:this.env,platform:this.platform}),{platform:this.platform,env:this.env});
+    this.emulatorPath=await findCommand("emulator",androidCandidates("emulator",{env:this.env,platform:this.platform}),{platform:this.platform,env:this.env});
+    this.sdkManagerPath=await findCommand("sdkmanager",androidCandidates("sdkmanager",{env:this.env,platform:this.platform}),{platform:this.platform,env:this.env});
   }
   async capabilities(){
-    await this.#detect();let androidVersion=null;if(this.adbPath){const version=await runText(this.adbPath,["version"],{allowFailure:true});androidVersion=(version.stdout||version.stderr).split(/\r?\n/)[0]||null}
+    await this.#detect();let androidVersion=null,adbRevision=null,emulatorVersion=null,sdkManagerVersion=null;
+    if(this.adbPath){const version=await runText(this.adbPath,["version"],{allowFailure:true,env:this.env});const parsed=parseAdbVersion(version.stdout||version.stderr);androidVersion=parsed.protocol;adbRevision=parsed.revision}
+    if(this.emulatorPath){const version=await runText(this.emulatorPath,["-version"],{allowFailure:true,env:this.env});emulatorVersion=parseEmulatorVersion(version.stdout||version.stderr)}
+    if(this.sdkManagerPath){const version=await runSdkManager(this.sdkManagerPath,["--version"],{allowFailure:true,timeout:15_000,env:this.env,platform:this.platform});sdkManagerVersion=parseSdkManagerVersion(version.stdout||version.stderr)}
     let iosAvailable=false;if(this.platform==="darwin"){iosAvailable=(await runText("xcrun",["simctl","help"],{allowFailure:true,timeout:8000})).ok}
-    return {android:{available:Boolean(this.adbPath),emulatorAvailable:Boolean(this.emulatorPath),version:androidVersion},ios:{available:iosAvailable,reason:this.platform!=="darwin"?"iOS Simulator requires macOS with Xcode.":iosAvailable?null:"Xcode simctl was not found."}};
+    return {android:{
+      available:Boolean(this.adbPath),emulatorAvailable:Boolean(this.emulatorPath),sdkManagerAvailable:Boolean(this.sdkManagerPath),
+      version:androidVersion,adbVersion:androidVersion,adbRevision,emulatorVersion,sdkManagerVersion,
+      tools:[
+        {id:"platform-tools",label:"Android Platform-Tools",installed:Boolean(this.adbPath),version:adbRevision||androidVersion},
+        {id:"emulator",label:"Android Emulator",installed:Boolean(this.emulatorPath),version:emulatorVersion},
+        {id:"sdkmanager",label:"Android SDK Manager",installed:Boolean(this.sdkManagerPath),version:sdkManagerVersion},
+      ],
+    },ios:{available:iosAvailable,reason:this.platform!=="darwin"?"iOS Simulator requires macOS with Xcode.":iosAvailable?null:"Xcode simctl was not found."}};
+  }
+  async updates(){
+    await this.#detect();
+    if(!this.sdkManagerPath)return {available:false,reason:"Android SDK Manager (sdkmanager) was not found.",updates:[],checkedAt:Date.now()};
+    const result=await runSdkManager(this.sdkManagerPath,["--list"],{allowFailure:true,timeout:60_000,env:this.env,platform:this.platform});
+    if(!result.ok)return {available:true,error:(result.stderr||result.stdout||"Could not check Android SDK updates").trim().slice(-2000),updates:[],checkedAt:Date.now()};
+    return {available:true,updates:parseSdkManagerUpdates(result.stdout),checkedAt:Date.now()};
+  }
+  async updateTool(tool){
+    const id=String(tool||"").trim();if(!["platform-tools","emulator"].includes(id))throw new Error("Only Android Platform-Tools and Emulator updates are supported.");
+    await this.#detect();if(!this.sdkManagerPath)throw new Error("Android SDK Manager (sdkmanager) is not installed.");
+    const result=await runSdkManager(this.sdkManagerPath,[id],{allowFailure:true,timeout:10*60_000,env:this.env,platform:this.platform});
+    if(!result.ok)throw new Error((result.stderr||result.stdout||("Could not update "+id)).trim().slice(-3000));
+    this.detectedAt=0;return {ok:true,tool:id,output:(result.stdout||result.stderr||"").trim().slice(-3000),capabilities:await this.capabilities()};
   }
   async list(){
     const capabilities=await this.capabilities();const devices=[];let avds=[];
-    if(this.adbPath){const result=await runText(this.adbPath,["devices","-l"],{allowFailure:true});if(result.ok)devices.push(...parseAdbEmulators(result.stdout))}
-    if(this.emulatorPath){const result=await runText(this.emulatorPath,["-list-avds"],{allowFailure:true});if(result.ok)avds=result.stdout.split(/\r?\n/).map(value=>value.trim()).filter(Boolean)}
+    if(this.adbPath){const result=await runText(this.adbPath,["devices","-l"],{allowFailure:true,env:this.env});if(result.ok)devices.push(...parseAdbEmulators(result.stdout))}
+    if(this.emulatorPath){const result=await runText(this.emulatorPath,["-list-avds"],{allowFailure:true,env:this.env});if(result.ok)avds=result.stdout.split(/\r?\n/).map(value=>value.trim()).filter(Boolean)}
     if(capabilities.ios.available){
       const result=await runText("xcrun",["simctl","list","devices","available","--json"],{allowFailure:true,timeout:15_000});
       if(result.ok)try{const parsed=JSON.parse(result.stdout);for(const [runtime,items] of Object.entries(parsed.devices||{}))for(const item of items||[])devices.push({id:`ios:${item.udid}`,platform:"ios",serial:item.udid,name:item.name,state:item.state,runtime,running:item.state==="Booted"})}catch{}
@@ -70,7 +142,7 @@ export class DeviceService{
     return {capabilities,devices,avds};
   }
   #androidSerial(id){const [platform,serial]=String(id||"").split(":",2);if(platform!=="android"||!serial?.startsWith("emulator-"))throw new Error("Only Android emulators are supported by Trebell device control.");return serial}
-  async #adb(id,args,{allowFailure=false,timeout=20_000}={}){await this.#detect();if(!this.adbPath)throw new Error("Android Platform-Tools (adb) are not installed. Install them or set ANDROID_HOME.");return runText(this.adbPath,["-s",this.#androidSerial(id),...args],{allowFailure,timeout})}
+  async #adb(id,args,{allowFailure=false,timeout=20_000}={}){await this.#detect();if(!this.adbPath)throw new Error("Android Platform-Tools (adb) are not installed. Install them or set ANDROID_HOME.");return runText(this.adbPath,["-s",this.#androidSerial(id),...args],{allowFailure,timeout,env:this.env})}
   async screenshot(id){
     const [platform,serial]=String(id||"").split(":",2);let data;
     if(platform==="android"){await this.#detect();if(!this.adbPath)throw new Error("Android Platform-Tools (adb) are not installed.");this.#androidSerial(id);data=await runBuffer(this.adbPath,["-s",serial,"exec-out","screencap","-p"])}
@@ -102,4 +174,4 @@ export class DeviceService{
   async startAndroid(avd){await this.#detect();if(!this.emulatorPath)throw new Error("Android Emulator is not installed or not on PATH.");const name=String(avd||"").trim();if(!name)throw new Error("AVD name is required");const child=spawn(this.emulatorPath,["-avd",name],{detached:true,stdio:"ignore",windowsHide:true,env:this.env});child.unref();return {ok:true,avd:name,pid:child.pid}}
 }
 
-export { parseAdbEmulators, pngSize };
+export { androidCandidates, parseAdbEmulators, parseAdbVersion, parseEmulatorVersion, parseSdkManagerUpdates, parseSdkManagerVersion, pngSize };
