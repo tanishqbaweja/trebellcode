@@ -304,6 +304,22 @@ export function agentThreadResumePayload(thread,{excludeTurns=false}={}){
   };
 }
 
+export function materializeAgentFork(threadStore,source,{runtime,providerSessionId,providerMeta=null,excludeTurns=false}={}){
+  if(!threadStore||!source?.id||!providerSessionId)throw new Error("Fork materialization requires a source thread and provider session");
+  const created=threadStore.create({
+    runtime:runtime||source.runtime,
+    cwd:source.cwd,
+    providerSessionId,
+    model:source.model||null,
+    agent:source.agent||null,
+    name:source.name?source.name+" (fork)":null,
+    preview:source.preview||null,
+    providerMeta:providerMeta||source.providerMeta||null,
+  });
+  const stored=threadStore.update(created.id,{turns:source.turns||[],forkedFromId:source.id,status:{type:"idle"},archived:false});
+  return {stored,thread:excludeTurns?{...stored,turns:[],historyMode:"paginated"}:stored};
+}
+
 function approvalOption(options,decision){
   const find=kind=>options.find(option=>option.kind===kind)?.optionId;
   if(decision==="acceptForSession")return find("allow_always")||find("allow_once")||null;
@@ -558,7 +574,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const providerSessionId=fork.sessionId||fork.id;
       const providerMeta={...(source.providerMeta||{}),setup:fork};
       if(runtimeSession instanceof ClaudeAgentSession&&fork.lazyFork)providerMeta.claudeFork=fork.lazyFork;
-      const thread=threadStore.create({runtime,cwd:source.cwd,providerSessionId,model:source.model,agent:source.agent||null,name:source.name?`${source.name} (fork)`:null,providerMeta});return {thread};
+      const materialized=materializeAgentFork(threadStore,source,{runtime,providerSessionId,providerMeta,excludeTurns:Boolean(params.excludeTurns)});
+      emit("thread/started",{thread:materialized.thread});return {thread:materialized.thread};
     }
     if(method==="turn/start"){
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");const session=await ensureSession(thread,context,{model:params.model||thread.model});

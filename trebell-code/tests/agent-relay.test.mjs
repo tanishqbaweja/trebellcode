@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { WebSocket } from "ws";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
-import { agentThreadResumePayload,attachAgentRelay,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
+import { agentThreadResumePayload,attachAgentRelay,materializeAgentFork,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
 
 test("rejected Claude rewind restores the original provider session and removed turns",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-claude-rewind-"));
@@ -129,6 +129,19 @@ test("agent global thread search finds persisted visible conversation text beyon
   assert.deepEqual(second.data.map(item=>item.thread.id),["old"]);assert.match(second.data[0].snippet,/Needle in an older request/);assert.doesNotMatch(JSON.stringify([...first.data,...second.data]),/tool secret|draft should disappear/);
   assert.deepEqual(searchAgentThreads(threads,{searchTerm:"needle",archived:true}).data.map(item=>item.thread.id),["archived"]);
   assert.throws(()=>searchAgentThreads(threads,{searchTerm:"different",cursor:first.nextCursor}),/invalid thread search cursor/i);
+});
+
+test("agent forks persist inherited history while bounded responses omit embedded turns",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-agent-fork-"));const store=new AgentThreadStore({...process.env,TREBELL_HOME:home});
+  try{
+    const source=store.create({runtime:"claude",cwd:home,providerSessionId:"source-session",model:"claude-model",name:"Source",preview:"Source preview",providerMeta:{runtimeInstanceId:"claude-default"}});
+    const turn=store.addTurn(source.id,{inputText:"Remember this history"});store.addItem(source.id,turn.id,{id:"fork-answer",type:"agentMessage",text:"Inherited answer"});store.finishTurn(source.id,turn.id);
+    const latest=store.get(source.id);
+    const bounded=materializeAgentFork(store,latest,{runtime:"claude",providerSessionId:"fork-session",providerMeta:{runtimeInstanceId:"claude-default",setup:{forked:true}},excludeTurns:true});
+    assert.equal(bounded.thread.forkedFromId,source.id);assert.equal(bounded.thread.historyMode,"paginated");assert.deepEqual(bounded.thread.turns,[]);
+    const persisted=store.get(bounded.thread.id);assert.equal(persisted.providerSessionId,"fork-session");assert.equal(persisted.forkedFromId,source.id);assert.equal(persisted.turns.length,1);
+    assert.deepEqual(paginateAgentThreadItems(persisted,{sortDirection:"desc",limit:10}).data.map(entry=>entry.item.id),["fork-answer","user-"+turn.id]);
+  }finally{await rm(home,{recursive:true,force:true})}
 });
 
 async function listen(server){
