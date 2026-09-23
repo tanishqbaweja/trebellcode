@@ -63,6 +63,25 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
   async function refresh(){await Promise.all([refreshLocal(),refreshCodex(),refreshRuntimeUsage()])}
   useEffect(()=>{refreshLocal()},[days,selectedEnvironments.join("|")]);
   useEffect(()=>{refreshCodex()},[rpc,rpcStatus,activeThread?.id,agentRuntime]);
+  useEffect(()=>{
+    if(agentRuntime!=="codex"||rpcStatus!=="connected"||!rpc?.subscribeNotifications)return;
+    let disposed=false,accountTimer=null,rateTimer=null;
+    const refreshAccount=()=>{if(accountTimer)clearTimeout(accountTimer);accountTimer=setTimeout(async()=>{
+      accountTimer=null;try{const account=await rpc.request("account/read",{refreshToken:false});if(!disposed)setCodex(current=>({...current,account,errors:{...current.errors,account:undefined}}))}catch(error){if(!disposed)setCodex(current=>({...current,errors:{...current.errors,account:error?.message||String(error)}}))}
+    },100)};
+    const refreshRateLimits=()=>{if(rateTimer)clearTimeout(rateTimer);rateTimer=setTimeout(async()=>{
+      rateTimer=null;try{const rateLimits=await rpc.request("account/rateLimits/read",{excludeResetCreditDetails:false});if(!disposed)setCodex(current=>({...current,rateLimits,errors:{...current.errors,rateLimits:undefined}}))}catch(error){if(!disposed)setCodex(current=>({...current,errors:{...current.errors,rateLimits:error?.message||String(error)}}))}
+    },100)};
+    const unsubscribe=rpc.subscribeNotifications(message=>{
+      if(message.method==="account/updated")refreshAccount();
+      else if(message.method==="account/rateLimits/updated")refreshRateLimits();
+      else if(message.method==="modelProvider/authRecoveryCompleted"){
+        const params=message.params||{};
+        if(!activeThread?.id||params.threadId===activeThread.id)refreshAccount();
+      }
+    });
+    return()=>{disposed=true;if(accountTimer)clearTimeout(accountTimer);if(rateTimer)clearTimeout(rateTimer);unsubscribe?.()};
+  },[rpc,rpcStatus,activeThread?.id,agentRuntime]);
   useEffect(()=>{refreshRuntimeUsage()},[agentRuntime]);
   useEffect(()=>{api("/api/environments").then(setEnvironmentData).catch(()=>{})},[]);
   const computed=useMemo(()=>{

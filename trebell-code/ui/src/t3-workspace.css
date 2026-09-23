@@ -595,6 +595,20 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .connector-runtime-summa
 .inline-status{max-width:1080px;margin:0 auto 10px;padding:8px 10px;border:1px solid #2d3136;border-radius:8px;background:#111315;color:#9299a1;font-size:9px;white-space:pre-wrap}
 @media(max-width:900px){.environment-grid{grid-template-columns:1fr}}
 
+/* Usage-page theme coherence */
+.usage-toolbar>button{height:29px;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;padding:0 9px}
+html[data-mode="light"]:not([data-custom-theme="true"]) :where(.usage-summary>div,.codex-limit-card,.codex-usage-kv>div,.usage-models>div,.workspace-messages>div){background:#f6f7fa!important;border-color:#dde2ea!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) :where(.usage-summary strong,.codex-limit-card>div:first-child strong,.codex-usage-kv strong,.usage-models strong,.usage-models>b){color:#303741!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) :where(.usage-summary span,.usage-summary small,.limit-window span,.limit-window strong,.limit-window small,.limit-meta span,.limit-meta strong,.limit-meta small,.codex-usage-kv span,.usage-models small,.usage-models em){color:#687181!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) :where(.limit-window i,.usage-bars i){background:#e4e8ee!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .usage-table-head{background:#f6f7fa!important;color:#4d5868!important;border-color:#dde2ea!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) :where(.usage-toolbar select,.usage-environment-filter>summary,.usage-toolbar>button){background:#fff!important;border-color:#d7dce5!important;color:#4d5868!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .usage-environment-filter>div{background:#fff!important;border-color:#d7dce5!important;box-shadow:0 14px 40px rgba(28,38,52,.12)!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .usage-environment-filter>div>button{color:#4d5868!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .usage-environment-filter>div>button.active{background:#f0eafa!important;border-color:#d8c6ed!important;color:#654b82!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .usage-environment-filter label{color:#4d5868!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .usage-environment-filter label:hover{background:#f6f7fa!important}
+
 
 /* command palette */
 .command-palette-backdrop{position:fixed;inset:0;z-index:120;background:rgba(0,0,0,.42);display:flex;align-items:flex-start;justify-content:center;padding-top:min(18vh,150px);backdrop-filter:blur(2px)}
