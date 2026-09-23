@@ -11,12 +11,12 @@ async function freePort(){const server=createServer();await new Promise((resolve
 test("Codex plugin discovery exposes native search, details, skill contents and reconcile",async({page})=>{
   test.setTimeout(35_000);
   const thread={id:"plugin-fixture",name:"Plugin fixture",preview:"Native plugin discovery",cwd:process.cwd(),createdAt:Date.now()-1000,updatedAt:Date.now(),turns:[]};
-  let installed=false;const calls=[];
+  let installed=false,appCallable=true,mcpReady=false,rateUsed=12,notificationSocket=null;const calls=[];
   const summary=()=>({id:"weather@official",remotePluginId:"remote-weather",version:"1.2.3",localVersion:installed?"1.2.3":null,name:"weather",source:{type:"remote"},installed,enabled:true,availability:"available",interface:{displayName:"Weather Wizard",shortDescription:"Forecast tools",longDescription:"Search forecasts and weather alerts before installing.",developerName:"Trebell Labs",capabilities:["forecast","alerts"]},keywords:["weather"]});
   const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const sockets=new Set();
   upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
   upstreamWss.on("connection",ws=>{
-    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    sockets.add(ws);notificationSocket=ws;ws.on("close",()=>sockets.delete(ws));
     ws.on("message",data=>{
       const message=JSON.parse(String(data));if(message.id==null||!message.method)return;calls.push(message);let result={};
       const respond=value=>ws.send(JSON.stringify({id:message.id,result:value}));
@@ -38,14 +38,15 @@ test("Codex plugin discovery exposes native search, details, skill contents and 
       else if(message.method==="plugin/reconcile")result={changedPlugins:[{id:"weather@official",hasMcps:true,hasApps:true,hasHooks:true,hasSkills:true}],failedRemotePluginIds:[],failedMaterializationRemotePluginIds:[]};
       else if(message.method==="server/diagnostics")result={process:{id:4242,residentMemoryBytes:268435456,physicalFootprintBytes:314572800},gauges:[{name:"app.requests.in_flight",value:1},{name:"core.threads.live",value:3},{name:"core.turns.active",value:1},{name:"mcp.connections.live",value:2}]};
       else if(message.method==="app/list")result={data:[{id:"weather-app",name:"Weather app",description:"Weather connector runtime fixture",distributionChannel:"plugin",installUrl:null,isAccessible:true,isEnabled:true,pluginDisplayNames:["Weather Wizard"]}],nextCursor:null};
-      else if(message.method==="app/installed")result={apps:[{id:"weather-app",runtimeName:"Weather app",enabled:true,callable:true}]};
+      else if(message.method==="app/installed")result={apps:[{id:"weather-app",runtimeName:"Weather app",enabled:true,callable:appCallable}]};
       else if(message.method==="app/read")result={apps:[{id:"weather-app",name:"Weather app",description:"Weather connector runtime fixture",distributionChannel:"plugin",installUrl:null,pluginDisplayNames:["Weather Wizard"],toolSummaries:[{name:"forecast",title:"Forecast",description:"Read the forecast",isEnabled:true,disabledReason:null,isReadOnly:true}]}],missingAppIds:[]};
       else if(message.method==="experimentalFeature/list")result={data:[{name:"step_model_switching",stage:"underDevelopment",displayName:"Step model switching",description:"Switch models between steps of a running turn.",announcement:null,enabled:false,defaultEnabled:false}],nextCursor:null};
       else if(message.method==="experimentalFeature/enablement/set")result={enablement:{}};
-      else if(message.method==="permissionProfile/list"||message.method==="mcpServerStatus/list"||message.method==="hooks/list"||message.method==="plugin/share/list")result={data:[]};
+      else if(message.method==="mcpServerStatus/list")result={data:[{name:"weather-mcp",runtimeStatus:mcpReady?"connected":"starting",pluginId:"weather@official",serverInfo:null,serverCapabilities:null,tools:{},toolsError:null,resources:[],resourceTemplates:[],authStatus:mcpReady?"oauth":"notLoggedIn"}],nextCursor:null};
+      else if(message.method==="permissionProfile/list"||message.method==="hooks/list"||message.method==="plugin/share/list")result={data:[]};
       else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
       else if(message.method==="account/read")result={account:null,requiresOpenaiAuth:false};
-      else if(message.method==="account/rateLimits/read")result={rateLimits:{}};
+      else if(message.method==="account/rateLimits/read")result={rateLimits:{primary:{usedPercent:rateUsed}}};
       else if(message.method==="account/usage/read")result={};
       else if(message.method==="config/read")result={config:{},layers:[]};
       else if(message.method==="configRequirements/read")result={requirements:{}};
@@ -74,6 +75,23 @@ test("Codex plugin discovery exposes native search, details, skill contents and 
     const installedCall=calls.find(call=>call.method==="app/installed"&&call.params?.forceRefresh===false);expect(installedCall?.params).toEqual({threadId:thread.id,forceRefresh:false});
     await appsCard.getByRole("button",{name:"Refresh runtime"}).click();await expect.poll(()=>calls.filter(call=>call.method==="app/installed"&&call.params?.forceRefresh===true).length).toBe(1);
     await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"tools-app-runtime-1280x800.png",fullPage:false});await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({path:auditDir+"tools-app-runtime-light-1280x800.png",fullPage:false});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});await page.setViewportSize({width:1600,height:980});
+    const diagnosticsCallsBefore=calls.filter(call=>call.method==="server/diagnostics").length;
+    const installedCallsBefore=calls.filter(call=>call.method==="app/installed"&&call.params?.forceRefresh===false).length;
+    const mcpCallsBefore=calls.filter(call=>call.method==="mcpServerStatus/list").length;
+    const rateCallsBefore=calls.filter(call=>call.method==="account/rateLimits/read").length;
+    appCallable=false;mcpReady=true;rateUsed=44;
+    notificationSocket.send(JSON.stringify({method:"app/list/updated",params:{data:[{id:"weather-app",name:"Weather app live",description:"Updated from Codex notification",distributionChannel:"plugin",installUrl:null,isAccessible:true,isEnabled:true,pluginDisplayNames:["Weather Wizard"]}]}}));
+    notificationSocket.send(JSON.stringify({method:"mcpServer/startupStatus/updated",params:{threadId:thread.id,name:"weather-mcp",status:"ready",error:null,failureReason:null}}));
+    notificationSocket.send(JSON.stringify({method:"account/rateLimits/updated",params:{rateLimits:{primary:{usedPercent:44}}}}));
+    await expect(appsCard).toContainText("Weather app live");await expect(appsCard).toContainText("installed");await expect(appsCard).toContainText("1 installed · 0 callable now");
+    const mcpCard=page.locator(".capability-card").filter({has:page.getByText("MCP servers",{exact:true})}).first();await expect(mcpCard).toContainText("connected");await expect(mcpCard).toContainText("oauth");
+    const accountCard=page.locator(".capability-card").filter({has:page.getByText("Account & usage",{exact:true})}).first();await expect(accountCard).toContainText("44%");
+    await expect.poll(()=>calls.filter(call=>call.method==="app/installed"&&call.params?.forceRefresh===false).length).toBeGreaterThan(installedCallsBefore);
+    await expect.poll(()=>calls.filter(call=>call.method==="mcpServerStatus/list").length).toBeGreaterThan(mcpCallsBefore);
+    await expect.poll(()=>calls.filter(call=>call.method==="account/rateLimits/read").length).toBeGreaterThan(rateCallsBefore);
+    expect(calls.filter(call=>call.method==="server/diagnostics").length).toBe(diagnosticsCallsBefore);
+    await page.setViewportSize({width:1280,height:800});await appsCard.scrollIntoViewIfNeeded();await page.screenshot({path:auditDir+"tools-live-native-refresh-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await mcpCard.scrollIntoViewIfNeeded();await page.screenshot({path:auditDir+"tools-live-native-refresh-light-1280x800.png",fullPage:false});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});await page.setViewportSize({width:1600,height:980});
     const featureCard=page.locator(".capability-card").filter({has:page.getByText("Experimental features",{exact:true})}).first();await featureCard.scrollIntoViewIfNeeded();await featureCard.getByRole("button",{name:"Off"}).click();
     await expect(featureCard).toContainText("step_model_switching is read-only through the app-server.");
     expect(calls.some(call=>call.method==="experimentalFeature/enablement/set")).toBe(true);

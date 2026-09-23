@@ -106,6 +106,39 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   }
   useEffect(()=>{refresh()},[rpc,rpcStatus,projectPath,activeThread?.id,platform]);
   useEffect(()=>{
+    if(!rpc?.subscribeNotifications||rpcStatus!=="connected")return;
+    let timer=null;const pending=new Set();let disposed=false;
+    const flush=async()=>{
+      timer=null;if(disposed)return;
+      const kinds=[...pending];pending.clear();const threadId=activeThread?.id||null;
+      if(kinds.includes("apps")){
+        const installed=await call("app/installed",{threadId,forceRefresh:false});
+        if(!disposed&&installed)setData(current=>({...current,installedApps:installed.apps||[]}));
+      }
+      if(kinds.includes("mcp")){
+        const status=await call("mcpServerStatus/list",{limit:100,detail:"full",threadId});
+        if(!disposed&&status)setData(current=>({...current,mcp:status.data||[]}));
+      }
+      if(kinds.includes("rateLimits")){
+        const rateLimits=await call("account/rateLimits/read",{excludeResetCreditDetails:true});
+        if(!disposed&&rateLimits)setData(current=>({...current,rateLimits}));
+      }
+    };
+    const schedule=kind=>{pending.add(kind);if(timer)clearTimeout(timer);timer=setTimeout(flush,100)};
+    const unsubscribe=rpc.subscribeNotifications(message=>{
+      if(message.method==="app/list/updated"){
+        const apps=message.params?.data;
+        if(Array.isArray(apps))setData(current=>({...current,apps}));
+        schedule("apps");
+      }else if(message.method==="mcpServer/startupStatus/updated"||message.method==="mcpServer/oauthLogin/completed"){
+        schedule("mcp");
+      }else if(message.method==="account/rateLimits/updated"){
+        schedule("rateLimits");
+      }
+    });
+    return()=>{disposed=true;if(timer)clearTimeout(timer);unsubscribe?.()};
+  },[rpc,rpcStatus,activeThread?.id]);
+  useEffect(()=>{
     const completed=event=>{
       const detail=event.detail||{};setSandboxPending("");
       if(detail.success){setSandboxMessage(`${detail.mode==="elevated"?"Elevated":"Unelevated"} Windows sandbox setup completed.`);setErrors(prev=>({...prev,"windowsSandbox/setupStart":null}))}
