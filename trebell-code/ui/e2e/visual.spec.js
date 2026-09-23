@@ -718,6 +718,31 @@ test("right panel tabs are functional and visually bounded",async({page,request}
   await page.screenshot({path:auditDir+"panel-agents-light-1600x980.png",fullPage:true});
 });
 
+test("Agent Browser action failures stay visible instead of disappearing",async({page,request})=>{
+  test.setTimeout(30_000);
+  await page.addInitScript(()=>{
+    Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{
+      browser:{
+        state:async()=>({open:false,url:"",title:"",canGoBack:false,canGoForward:false,loading:false,width:1280,height:800}),
+        onState:()=>()=>{},
+        navigate:async()=>{throw new Error("Deliberate Agent Browser navigation failure")},
+        snapshot:async()=>({url:"",title:"",elements:[]}),
+      },
+    }});
+  });
+  await prepare(page,request);
+  await page.locator('.sidebar .sidebar-utility[aria-label="Browser"]').click();
+  const panel=page.getByTestId("right-panel");
+  await expect(panel).toBeVisible();
+  const openAgentBrowser=panel.getByRole("button",{name:"Open agent browser",exact:true});
+  await expect(openAgentBrowser).toBeVisible();
+  await panel.locator(".preview-bar input").fill("http://fixture.invalid/");
+  await openAgentBrowser.click();
+  await expect(panel.getByRole("alert")).toContainText("Deliberate Agent Browser navigation failure");
+  await page.setViewportSize({width:1280,height:800});
+  await page.screenshot({path:auditDir+"agent-browser-action-error-1280x800.png",fullPage:true});
+});
+
 test("populated chat and overlays remain visually usable",async({page,request})=>{
   test.setTimeout(45_000);
   await prepare(page,request);
