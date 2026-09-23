@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:http";
+import { WebSocket } from "ws";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
-import { restoreClaudeRejectedRewind } from "../src/agent-relay.mjs";
+import { attachAgentRelay,restoreClaudeRejectedRewind } from "../src/agent-relay.mjs";
 
 test("rejected Claude rewind restores the original provider session and removed turns",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-claude-rewind-"));
@@ -34,4 +36,41 @@ test("rejected Claude rewind restores the original provider session and removed 
     assert.equal(Object.prototype.hasOwnProperty.call(restored.providerMeta,"claudeFork"),false);
     assert.equal(Object.prototype.hasOwnProperty.call(restored.providerMeta,"claudeRewindBackup"),false);
   }finally{await rm(home,{recursive:true,force:true})}
+});
+
+async function listen(server){
+  await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));
+  return server.address().port;
+}
+async function connect(url){
+  const ws=new WebSocket(url);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});return ws;
+}
+function request(ws){
+  let id=0;return (method,params={})=>new Promise((resolve,reject)=>{
+    const requestId=++id;
+    const onMessage=raw=>{const message=JSON.parse(String(raw));if(message.id!==requestId)return;ws.off("message",onMessage);message.error?reject(new Error(message.error.message)):resolve(message.result)};
+    ws.on("message",onMessage);ws.send(JSON.stringify({id:requestId,method,params}));
+  });
+}
+
+test("agent relay broadcasts Codex-compatible archive, unarchive and delete lifecycle notifications",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-agent-lifecycle-"));
+  const env={...process.env,TREBELL_HOME:home};const threadStore=new AgentThreadStore(env);
+  const thread=threadStore.create({runtime:"claude",cwd:home,providerSessionId:"fixture-session"});
+  const runtimeManager={instances:()=>[],activeInstance:()=>({id:"claude-default",kind:"claude"}),activeRuntime:()=>"claude"};
+  const state={settings:()=>({activeEnvironmentId:null}),updateThreadMeta:()=>({})};
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,version:"test"});
+  const port=await listen(server);const url="ws://127.0.0.1:"+port+"/api/agent/ws";const first=await connect(url),second=await connect(url);const rpc=request(first);const notifications=[];
+  second.on("message",raw=>{const message=JSON.parse(String(raw));if(message.method&&message.id==null)notifications.push(message)});
+  try{
+    await rpc("thread/archive",{threadId:thread.id});
+    await rpc("thread/unarchive",{threadId:thread.id});
+    await rpc("thread/delete",{threadId:thread.id});
+    for(let attempt=0;attempt<50&&notifications.length<3;attempt++)await new Promise(resolve=>setTimeout(resolve,10));
+    assert.deepEqual(notifications.map(message=>message.method),["thread/archived","thread/unarchived","thread/deleted"]);
+    assert.ok(notifications.every(message=>message.params?.threadId===thread.id));
+  }finally{
+    try{first.close()}catch{}try{second.close()}catch{}
+    await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(home,{recursive:true,force:true});
+  }
 });
