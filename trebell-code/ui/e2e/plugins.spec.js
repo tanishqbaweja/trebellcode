@@ -35,6 +35,7 @@ test("Codex plugin discovery exposes native search, details, skill contents and 
       else if(message.method==="plugin/install"){installed=true;respond({});return}
       else if(message.method==="plugin/uninstall"){installed=false;respond({});return}
       else if(message.method==="plugin/reconcile")result={changedPlugins:[{id:"weather@official",hasMcps:true,hasApps:true,hasHooks:true,hasSkills:true}],failedRemotePluginIds:[],failedMaterializationRemotePluginIds:[]};
+      else if(message.method==="server/diagnostics")result={process:{id:4242,residentMemoryBytes:268435456,physicalFootprintBytes:314572800},gauges:[{name:"app.requests.in_flight",value:1},{name:"core.threads.live",value:3},{name:"core.turns.active",value:1},{name:"mcp.connections.live",value:2}]};
       else if(message.method==="permissionProfile/list"||message.method==="mcpServerStatus/list"||message.method==="app/list"||message.method==="hooks/list"||message.method==="experimentalFeature/list"||message.method==="plugin/share/list")result={data:[]};
       else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
       else if(message.method==="account/read")result={account:null,requiresOpenaiAuth:false};
@@ -58,6 +59,11 @@ test("Codex plugin discovery exposes native search, details, skill contents and 
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
     await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
     await page.goto("/");await page.getByRole("button",{name:/Plugin fixture/}).click();await page.getByRole("button",{name:"Tools",exact:true}).click();
+    const diagnostics=page.locator(".capability-card").filter({hasText:"Codex runtime health"});await expect(diagnostics).toContainText("PID 4242");await expect(diagnostics).toContainText("256 MB");await expect(diagnostics).toContainText("Live threads");await expect(diagnostics).toContainText("3");
+    expect(calls.some(call=>call.method==="server/diagnostics")).toBe(true);
+    await page.setViewportSize({width:1280,height:800});await diagnostics.scrollIntoViewIfNeeded();await page.screenshot({path:auditDir+"tools-runtime-health-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({path:auditDir+"tools-runtime-health-light-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});await page.setViewportSize({width:1600,height:980});
     const card=page.locator(".capability-card").filter({has:page.getByText("Plugins",{exact:true})}).first();const search=card.getByPlaceholder("Search plugin catalog");await search.fill("weather");await card.getByRole("button",{name:"Search",exact:true}).click();
     await expect(card).toContainText("Weather Wizard");const searchCall=calls.find(call=>call.method==="plugin/search");expect(searchCall?.params).toEqual({searchTerm:"weather",scope:"global",cwds:[process.cwd()],cursor:null,limit:20});
     const resultRow=card.locator(".plugin-search-results>div").filter({hasText:"Weather Wizard"});await resultRow.getByRole("button",{name:"Details"}).click();

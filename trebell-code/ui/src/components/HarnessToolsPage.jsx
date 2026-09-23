@@ -7,9 +7,16 @@ function Section({title,icon:Icon,count,children}){
   return <section className="capability-card"><div className="capability-card-head"><span><Icon size={15}/><strong>{title}</strong></span>{Number.isFinite(count)&&<em>{count}</em>}</div>{children}</section>;
 }
 function ErrorLine({value}){return value?<p className="capability-error">{value}</p>:null}
+function formatBytes(value){
+  const bytes=Number(value);if(!Number.isFinite(bytes)||bytes<0)return "Unavailable";
+  if(bytes<1024)return bytes+" B";
+  const units=["KB","MB","GB","TB"];let scaled=bytes,index=-1;
+  do{scaled/=1024;index++}while(scaled>=1024&&index<units.length-1);
+  return (scaled>=100?Math.round(scaled):scaled.toFixed(1))+" "+units[index];
+}
 
 export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread,skills=[],onHistoryImported,onSkillsRefresh,platform=""}){
-  const [data,setData]=useState({permissions:[],mcp:[],marketplaces:[],apps:[],hooks:[],features:[],sharedPlugins:[],capabilities:null,account:null,rateLimits:null,usage:null,config:null,requirements:null,memory:null,windowsSandbox:null});
+  const [data,setData]=useState({permissions:[],mcp:[],marketplaces:[],apps:[],hooks:[],features:[],sharedPlugins:[],capabilities:null,account:null,rateLimits:null,usage:null,config:null,requirements:null,memory:null,diagnostics:null,windowsSandbox:null});
   const [errors,setErrors]=useState({});
   const [loading,setLoading]=useState(false);
   const [busy,setBusy]=useState("");
@@ -50,7 +57,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     if(!rpc||rpcStatus!=="connected")return;
     setLoading(true);setErrors({});
     const threadId=activeThread?.id||null;
-    const [permissions,mcp,plugins,apps,hooks,features,sharedPlugins,capabilities,account,rateLimits,usage,config,requirements,memory,windowsSandbox]=await Promise.all([
+    const [permissions,mcp,plugins,apps,hooks,features,sharedPlugins,capabilities,account,rateLimits,usage,config,requirements,memory,diagnostics,windowsSandbox]=await Promise.all([
       call("permissionProfile/list",{limit:100,cwd:projectPath||null}),
       call("mcpServerStatus/list",{limit:100,detail:"full",threadId}),
       call("plugin/list",{cwds:projectPath?[projectPath]:[],forceRefetch:false}),
@@ -65,6 +72,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       call("config/read",{includeLayers:true,cwd:projectPath||null}),
       call("configRequirements/read",{}),
       call("memory/status",{minConsolidatedThreads:20}),
+      call("server/diagnostics",{}),
       platform==="win32"?call("windowsSandbox/readiness",undefined):Promise.resolve(null),
     ]);
     setData({
@@ -82,6 +90,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       config:config||null,
       requirements:requirements?.requirements||null,
       memory:memory||null,
+      diagnostics:diagnostics||null,
       windowsSandbox:windowsSandbox||null,
     });
     setLoading(false);
@@ -325,6 +334,17 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         {!activeThread?.id&&<p>Select a thread to change its memory mode.</p>}
         {memoryMessage&&<p className="capability-status">{memoryMessage}</p>}
         <ErrorLine value={errors["memory/status"]}/><ErrorLine value={errors["thread/memoryMode/set"]}/><ErrorLine value={errors["memory/reset"]}/>
+      </Section>
+
+      <Section title="Codex runtime health" icon={Sparkles} count={data.diagnostics?.gauges?.length||0}>
+        {data.diagnostics?<div className="capability-kv">
+          <div><span>Process</span><strong>PID {data.diagnostics.process?.id||"?"}</strong></div>
+          <div><span>Resident memory</span><strong>{formatBytes(data.diagnostics.process?.residentMemoryBytes)}</strong></div>
+          {data.diagnostics.process?.physicalFootprintBytes!=null&&<div><span>Physical footprint</span><strong>{formatBytes(data.diagnostics.process.physicalFootprintBytes)}</strong></div>}
+          {["core.threads.live","core.turns.active","mcp.connections.live"].map(name=>{const gauge=(data.diagnostics.gauges||[]).find(item=>item.name===name);return gauge?<div key={name}><span>{name==="core.threads.live"?"Live threads":name==="core.turns.active"?"Active turns":"MCP connections"}</span><strong>{Number(gauge.value||0).toLocaleString()}</strong></div>:null})}
+        </div>:<p>Process diagnostics are unavailable from this Codex runtime.</p>}
+        {data.diagnostics?.gauges?.length>0&&<details className="capability-details"><summary>All runtime gauges</summary><pre>{data.diagnostics.gauges.map(gauge=>gauge.name+": "+Number(gauge.value||0).toLocaleString()).join("\n")}</pre></details>}
+        <ErrorLine value={errors["server/diagnostics"]}/>
       </Section>
 
       {platform==="win32"&&<Section title="Windows sandbox" icon={ShieldCheck}>
