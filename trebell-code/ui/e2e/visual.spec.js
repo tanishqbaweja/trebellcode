@@ -56,6 +56,16 @@ test("chat workspace is visually bounded and panes resize",async({page,request})
   await expect(composer.getByRole("button",{name:"Files",exact:true})).toHaveCount(0);
   await expect(composer.getByRole("button",{name:"Skills",exact:true})).toHaveCount(0);
   await page.screenshot({path:auditDir+"chat-1600x980.png",fullPage:true});
+  const modelPicker=page.getByTestId("model-picker");
+  await modelPicker.click();
+  await expect(page.locator(".model-picker-menu")).toBeVisible();
+  await page.screenshot({path:auditDir+"chat-model-picker-open-1600x980.png",fullPage:true});
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".model-picker-menu")).toBeHidden();
+  await modelPicker.click();
+  await expect(page.locator(".model-picker-menu")).toBeVisible();
+  await page.locator(".workspace-header").click({position:{x:20,y:20}});
+  await expect(page.locator(".model-picker-menu")).toBeHidden();
   const composerInput=page.getByTestId("composer");
   const shortHeight=(await box(composerInput)).height;
   await composerInput.fill("First line\nSecond line\nThird line\nFourth line");
@@ -183,6 +193,19 @@ test("settings page visual audit",async({page,request})=>{
   await expect(page.getByRole("heading",{name:"Browser profiles"})).toBeHidden();
   await expect(page.getByRole("heading",{name:"SnapShots"})).toBeHidden();
   await page.screenshot({path:auditDir+"settings-general-1600x980.png",fullPage:true});
+
+  const settingsSearch=page.getByLabel("Search settings");
+  await settingsSearch.fill("command palette");
+  const settingsSearchResults=page.getByTestId("settings-search-results");
+  const commandPaletteResult=settingsSearchResults.getByRole("button",{name:/Command palette/});
+  await expect(commandPaletteResult).toBeVisible();
+  await page.screenshot({path:auditDir+"settings-search-command-1600x980.png",fullPage:true});
+  await commandPaletteResult.click();
+  await expect(page.getByRole("heading",{name:"Keyboard shortcuts"})).toBeVisible();
+  const commandPaletteRow=page.locator(".keybinding-row").filter({hasText:"Command palette"}).first();
+  await expect(commandPaletteRow).toBeInViewport();
+  await expect(commandPaletteRow).toHaveClass(/settings-search-hit/);
+  await page.screenshot({path:auditDir+"settings-search-command-target-1600x980.png",fullPage:true});
 
   await page.getByRole("button",{name:/Agents & models/}).click();
   await expect(page.getByRole("heading",{name:"Agent harness"})).toBeVisible();
@@ -534,6 +557,10 @@ test("light mode stays visually coherent across workspace and panels",async({pag
   await page.getByRole("button",{name:/Appearance/}).click();
   await page.getByRole("button",{name:"light",exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.mode)).toBe("light");
+  await page.getByLabel("Search settings").fill("command palette");
+  await expect(page.getByTestId("settings-search-results").getByRole("button",{name:/Command palette/})).toBeVisible();
+  await page.screenshot({path:auditDir+"light-settings-search-1600x980.png",fullPage:true});
+  await page.getByLabel("Search settings").press("Escape");
   await page.getByRole("button",{name:"Threads"}).click();
   const shell=await page.evaluate(()=>({
     sidebar:getComputedStyle(document.querySelector(".sidebar")).backgroundColor,

@@ -1,7 +1,8 @@
 import React,{useEffect,useRef,useState} from "react";
-import { Activity, Bot, Download, FileText, HardDrive, Keyboard, MonitorCog, Palette, RefreshCw, Settings2, ShieldCheck, SlidersHorizontal } from "lucide-react";
+import { Activity, Bot, Download, FileText, HardDrive, Keyboard, MonitorCog, Palette, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import { api } from "../api.js";
 import { KEYBINDING_COMMANDS, normalizeKeybindingRules } from "../keybindings.js";
+import { searchSettings } from "../settings-search.js";
 import { normalizeCustomTheme } from "../theme-utils.js";
 import ScopedSettingsCard from "./ScopedSettingsCard.jsx";
 
@@ -15,6 +16,7 @@ const PROVIDER_LABELS={
 
 export default function SettingsPage({settings,onSettings,onProviderChanging,onProviderUpdated,runtime,rpcStatus,loggedIn,login,logout,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes}){
   const [settingsSection,setSettingsSection]=useState("general");
+  const [settingsSearch,setSettingsSearch]=useState("");
   const [update,setUpdate]=useState(null);
   const [desktopUpdate,setDesktopUpdate]=useState(null);
   const [diagnostics,setDiagnostics]=useState(null);
@@ -331,20 +333,44 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     ["diagnostics",Activity,"Diagnostics","Runtime health and local logs"],
   ];
   const activeSettingsSection=settingsSections.find(item=>item[0]===settingsSection)||settingsSections[0];
+  const searchResults=searchSettings(settingsSearch,{keybindings:KEYBINDING_COMMANDS,projectScripts}).slice(0,18);
+  const settingsSectionLabels=Object.fromEntries(settingsSections.map(([id,,label])=>[id,label]));
+  function targetProps(id){return {"data-setting-target":id}}
+  function openSearchResult(item){
+    setSettingsSection(item.section);setSettingsSearch("");
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{
+      const exact=document.querySelector(`[data-setting-target="${item.id}"]`);
+      const candidates=[...document.querySelectorAll(".settings-card,.settings-section-slot,.diagnostics-log,.keybinding-row")];
+      const wanted=String(item.title||"").trim().toLowerCase();
+      const fallback=candidates.find(node=>{
+        const heading=node.querySelector("h3,strong");
+        return String(heading?.textContent||"").trim().toLowerCase()===wanted;
+      });
+      const target=exact||fallback||document.querySelector(".settings-section-head");
+      target?.scrollIntoView({block:"center",behavior:"smooth"});
+      target?.classList.add("settings-search-hit");
+      setTimeout(()=>target?.classList.remove("settings-search-hit"),1600);
+    }));
+  }
   return <div className="settings-page redesigned-settings">
-    <nav className="settings-nav" aria-label="Settings categories">
-      {settingsSections.map(([id,Icon,label,description])=><button key={id} type="button" className={settingsSection===id?"active":""} onClick={()=>setSettingsSection(id)} aria-current={settingsSection===id?"page":undefined}>
-        <Icon size={15}/><span><strong>{label}</strong><small>{description}</small></span>
-      </button>)}
-    </nav>
+    <aside className="settings-rail">
+      <label className="settings-search-box"><Search size={13}/><input aria-label="Search settings" value={settingsSearch} onChange={event=>setSettingsSearch(event.target.value)} onKeyDown={event=>{if(event.key==="Escape"){event.preventDefault();setSettingsSearch("")}}} placeholder="Search settings…"/></label>
+      {settingsSearch.trim()?<div className="settings-search-results" data-testid="settings-search-results">
+        {searchResults.length?searchResults.map(item=><button key={item.id} type="button" onClick={()=>openSearchResult(item)}><strong>{item.title}</strong><span>{settingsSectionLabels[item.section]||item.section}</span>{item.description&&<small>{item.description}</small>}</button>):<p>No settings match “{settingsSearch.trim()}”.</p>}
+      </div>:<nav className="settings-nav" aria-label="Settings categories">
+        {settingsSections.map(([id,Icon,label,description])=><button key={id} type="button" className={settingsSection===id?"active":""} onClick={()=>setSettingsSection(id)} aria-current={settingsSection===id?"page":undefined}>
+          <Icon size={15}/><span><strong>{label}</strong><small>{description}</small></span>
+        </button>)}
+      </nav>}
+    </aside>
     <section className="settings-stage">
       <div className="settings-section-head"><div><h2>{activeSettingsSection[2]}</h2><p>{activeSettingsSection[3]}</p></div><span>{settingsSections.findIndex(item=>item[0]===settingsSection)+1} / {settingsSections.length}</span></div>
       <div className="settings-grid">
-      <div className="settings-card about-card" hidden={settingsSection!=="general"}>
+      <div className="settings-card about-card" {...targetProps("general-about")} hidden={settingsSection!=="general"}>
         <div className="about-brand"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/><div><h3>Trebell Code</h3><p>Desktop coding-agent harness</p></div></div>
         <span className="about-version">v{diagnostics?.version||update?.current||"unknown"}</span><button onClick={onOpenLicenses}><FileText size={12}/> View licenses</button>
       </div>
-      <div className="settings-card agent-runtime-settings" hidden={settingsSection!=="agents"}>
+      <div className="settings-card agent-runtime-settings" {...targetProps("agents-harness")} hidden={settingsSection!=="agents"}>
         <h3>Agent harness</h3>
         <p>Choose the coding-agent runtime. Only installed and ready runtimes can be activated.</p>
         <div className="agent-runtime-list">{(agentInfo?.definitions||[]).map(def=>{
@@ -357,7 +383,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
             <Bot size={14}/><span><strong>{def.name}</strong><small>{statusText}</small></span><em>{active?(incompatible||unverified?"Warning":"Active"):status?.available?(incompatible||unverified?"Warning":"Use"):"Unavailable"}</em>
           </button>{def.canAuthenticate&&status?.installed&&status?.authenticated!==true&&<button className="agent-runtime-install" disabled={!!authenticatingAgent} onClick={()=>authenticateAgentRuntime(def.id,status?.id)}>{authenticatingAgent===(status?.id||def.id)?"Opening…":"Sign in"}</button>}{def.installable&&<button className="agent-runtime-install" disabled={installingAgent===def.id} onClick={()=>installAgentRuntime(def.id)}>{installingAgent===def.id?"Installing…":status?.installed?"Update":"Install"}</button>}</div>;
         })}</div>
-        <div className="runtime-profiles">
+        <div className="runtime-profiles" {...targetProps("agents-profiles")}>
           <div className="runtime-profiles-head"><strong>Profiles</strong><button onClick={()=>editInstance()} disabled={selectedAgent==="antigravity"}>Add profile</button></div>
           {selectedInstances.map(instance=>{
             const status=agentInfo?.statuses?.find(item=>item.id===instance.id);const active=agentInfo?.selectedInstanceId===instance.id;
@@ -380,7 +406,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
         </div>}
         <p className={selectedAgentStatus?.available?"provider-note":"provider-status-error"}><strong>{selectedAgentStatus?.name||selectedAgent}</strong> · {selectedAgentStatus?.authenticated==null&&selectedAgentStatus?.message?selectedAgentStatus.message:selectedAgentStatus?.available?"ready":selectedAgentStatus?.message||"setup required"}{agentMessage?" · "+agentMessage:""} <button onClick={loadAgentRuntimes} disabled={!!authenticatingAgent}><RefreshCw size={11}/> Refresh</button></p>
       </div>
-      {selectedAgent==="codex"&&<div className="settings-card provider-settings-card" data-testid="provider-settings-card" aria-busy={providerSwitching?"true":"false"} hidden={settingsSection!=="agents"}>
+      {selectedAgent==="codex"&&<div className="settings-card provider-settings-card" {...targetProps("agents-provider")} data-testid="provider-settings-card" aria-busy={providerSwitching?"true":"false"} hidden={settingsSection!=="agents"}>
         <h3>Model provider</h3>
         <p>Choose the OpenAI-compatible inference service used by the Codex harness.</p>
         <label>Provider
@@ -407,7 +433,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
         </>}
         <p data-testid="provider-status" className={modelError?"provider-status-error":""}><strong>{PROVIDER_LABELS[selected]}</strong> · {providerSwitching?"switching provider…":selectedStatus?.hasKey||selected==="freebuff"?(modelError?"provider error":(providerInfo?.ready?"ready":"configured")):"API key required"}{providerMessage?" · "+providerMessage:""}{modelError?" · "+modelError:""}</p>
       </div>}
-      {["codex","claude","opencode"].includes(selectedAgent)&&<div className="settings-card custom-model-settings" hidden={settingsSection!=="agents"}>
+      {["codex","claude","opencode"].includes(selectedAgent)&&<div className="settings-card custom-model-settings" {...targetProps("agents-models")} hidden={settingsSection!=="agents"}>
         <h3>Custom models</h3>
         <p>Add a model that this harness/provider supports even when discovery does not list it. Prices are optional USD estimates per million tokens.</p>
         <div className="custom-model-list">{customModels.map(item=><div key={`${item.runtime}:${item.provider||""}:${item.id}`}><span><strong>{item.name||item.id}</strong><small>{item.id}{item.effort?` · ${item.effort}`:""}{item.serviceTier?` · ${item.serviceTier}`:""}</small></span><button onClick={()=>removeCustomModel(item)}>Remove</button></div>)}</div>
@@ -419,10 +445,10 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
           <div className="provider-key-actions"><button className="setting-action" onClick={addCustomModel} disabled={!modelDraft.id.trim()}>Save custom model</button><button onClick={()=>setCustomModelEditorOpen(false)}>Cancel</button></div>
         </div>}
       </div>}
-      <div className="settings-card" hidden={settingsSection!=="agents"}><h3>Runtime</h3><p>Harness connection: <strong>{rpcStatus}</strong><br/>Agent: <strong>{selectedAgentStatus?.name||selectedAgent}</strong><br/>Agent runtime: <strong>{runtime?.agentRuntimeStatus?.available||selectedAgent==="codex"?"ready":"not ready"}</strong>{selectedAgent==="codex"&&<><br/>Codex app-server: <strong>{runtime?.appServerReady?"ready":"not ready"}</strong><br/>Inference: <strong>{PROVIDER_LABELS[runtime?.provider||selected]||runtime?.provider||selected}</strong>{(runtime?.provider||selected)==="freebuff"&&<><br/>Freebuff bridge: <strong>{runtime?.bridgeReady?"ready":"not ready"}</strong></>}</>}</p><button onClick={refresh}><RefreshCw size={13}/> Refresh diagnostics</button></div>
-      <div className="settings-card" hidden={settingsSection!=="general"}><h3>Follow-up behavior</h3>{selectedAgent==="codex"?<label>While the agent is working<select value={settings.followUpMode||"queue"} onChange={e=>save({followUpMode:e.target.value})}><option value="queue">Queue after current turn</option><option value="steer">Steer current turn immediately</option></select></label>:<p>Follow-ups are queued until the current {selectedAgentStatus?.name||selectedAgent} turn finishes. ACP does not define in-flight steering.</p>}</div>
-      <div className="settings-section-slot" hidden={settingsSection!=="workspace"}><ScopedSettingsCard settings={settings} models={models} onChanged={onScopedSettingsChanged}/></div>
-      <div className="settings-card storage-settings" hidden={settingsSection!=="workspace"}>
+      <div className="settings-card" {...targetProps("agents-runtime")} hidden={settingsSection!=="agents"}><h3>Runtime</h3><p>Harness connection: <strong>{rpcStatus}</strong><br/>Agent: <strong>{selectedAgentStatus?.name||selectedAgent}</strong><br/>Agent runtime: <strong>{runtime?.agentRuntimeStatus?.available||selectedAgent==="codex"?"ready":"not ready"}</strong>{selectedAgent==="codex"&&<><br/>Codex app-server: <strong>{runtime?.appServerReady?"ready":"not ready"}</strong><br/>Inference: <strong>{PROVIDER_LABELS[runtime?.provider||selected]||runtime?.provider||selected}</strong>{(runtime?.provider||selected)==="freebuff"&&<><br/>Freebuff bridge: <strong>{runtime?.bridgeReady?"ready":"not ready"}</strong></>}</>}</p><button onClick={refresh}><RefreshCw size={13}/> Refresh diagnostics</button></div>
+      <div className="settings-card" {...targetProps("general-followups")} hidden={settingsSection!=="general"}><h3>Follow-up behavior</h3>{selectedAgent==="codex"?<label>While the agent is working<select value={settings.followUpMode||"queue"} onChange={e=>save({followUpMode:e.target.value})}><option value="queue">Queue after current turn</option><option value="steer">Steer current turn immediately</option></select></label>:<p>Follow-ups are queued until the current {selectedAgentStatus?.name||selectedAgent} turn finishes. ACP does not define in-flight steering.</p>}</div>
+      <div className="settings-section-slot" {...targetProps("workspace-defaults")} hidden={settingsSection!=="workspace"}><ScopedSettingsCard settings={settings} models={models} onChanged={onScopedSettingsChanged}/></div>
+      <div className="settings-card storage-settings" {...targetProps("workspace-storage")} hidden={settingsSection!=="workspace"}>
         <h3>Storage cleanup</h3>
         <p>Automatic cleanup is opt-in. Trebell only removes its own local attachment cache, stopped terminal history, and managed worktrees that already pass the safe worktree cleanup rules. User project files and Git branches are never deleted by these retention fields.</p>
         <div className="environment-two">
