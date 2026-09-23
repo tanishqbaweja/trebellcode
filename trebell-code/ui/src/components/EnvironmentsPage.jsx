@@ -1,6 +1,7 @@
 import React,{useEffect,useState} from "react";
 import { Globe2, Laptop2, Plus, RefreshCw, Server, Trash2 } from "lucide-react";
 import { api } from "../api.js";
+import { writeClipboardText } from "../clipboard.js";
 
 export default function EnvironmentsPage(){
   const [data,setData]=useState({profiles:[],activeEnvironmentId:null,activeEnvironment:null,capabilities:{local:{available:true},ssh:{available:false},wsl:{available:false,distros:[]}}});
@@ -60,7 +61,7 @@ export default function EnvironmentsPage(){
   }
   async function createPairing(){
     setBusy("pair");setMessage("");
-    try{const result=await api("/api/remote-access/pair",{method:"POST",body:{}});setPairing(result);const first=result.urls?.[0];if(first&&navigator.clipboard?.writeText){await navigator.clipboard.writeText(first).catch(()=>{});setMessage("Pairing link created and copied. It can be used once before it expires.")}}
+    try{const result=await api("/api/remote-access/pair",{method:"POST",body:{}});setPairing(result);const first=result.urls?.[0];if(first){const copied=await writeClipboardText(first);setMessage(copied?"Pairing link created and copied. It can be used once before it expires.":"Pairing link created. Copy it below before it expires.")}}
     catch(e){setMessage(e.message)}finally{setBusy("")}
   }
   async function revokeDevice(id){
@@ -95,7 +96,7 @@ export default function EnvironmentsPage(){
         <div className="capability-card-head"><span><Globe2 size={15}/><strong>LAN remote control</strong></span><em className={remote.running?"ok":""}>{remote.running?"running":"off"}</em></div>
         <label className="toggle-line"><input type="checkbox" checked={remote.enabled} onChange={e=>saveRemote({enabled:e.target.checked})}/> Enable remote access</label>
         <label>Port<input type="number" min="1024" max="65535" value={remote.port||3211} onChange={e=>setRemote(r=>({...r,port:Number(e.target.value)||3211}))} onBlur={()=>remote.enabled&&saveRemote({port:remote.port})}/></label>
-        {remote.enabled&&<><div className="capability-actions"><button onClick={createPairing} disabled={!!busy}>Create one-time pairing link</button></div>{pairing&&<div className="remote-pairing"><span>Expires {new Date(pairing.expiresAt).toLocaleTimeString()}</span>{(pairing.urls||[]).map(url=><div key={url}><code>{url}</code><button onClick={()=>navigator.clipboard?.writeText?.(url)}>Copy</button></div>)}</div>}<div className="remote-devices"><strong>Paired devices</strong>{(remote.devices||[]).length?(remote.devices||[]).map(device=><div key={device.id}><span><b>{device.name}</b><small>Last seen {new Date(device.lastSeenAt||device.createdAt).toLocaleString()}</small></span><button className="danger" onClick={()=>revokeDevice(device.id)} disabled={!!busy}><Trash2 size={12}/> Revoke</button></div>):<p>No paired devices yet.</p>}</div><div className="remote-urls">{(remote.urls||[]).map(url=><code key={url}>{url}</code>)}</div></>}
+        {remote.enabled&&<><div className="capability-actions"><button onClick={createPairing} disabled={!!busy}>Create one-time pairing link</button></div>{pairing&&<div className="remote-pairing"><span>Expires {new Date(pairing.expiresAt).toLocaleTimeString()}</span>{(pairing.urls||[]).map(url=><div key={url}><code>{url}</code><button onClick={async()=>setMessage(await writeClipboardText(url)?"Pairing link copied.":"Copy failed. Select the pairing link and copy it manually.")}>Copy</button></div>)}</div>}<div className="remote-devices"><strong>Paired devices</strong>{(remote.devices||[]).length?(remote.devices||[]).map(device=><div key={device.id}><span><b>{device.name}</b><small>Last seen {new Date(device.lastSeenAt||device.createdAt).toLocaleString()}</small></span><button className="danger" onClick={()=>revokeDevice(device.id)} disabled={!!busy}><Trash2 size={12}/> Revoke</button></div>):<p>No paired devices yet.</p>}</div><div className="remote-urls">{(remote.urls||[]).map(url=><code key={url}>{url}</code>)}</div></>}
       </section>
       <section className="capability-card">
         <div className="capability-card-head"><span><Server size={15}/><strong>Host capabilities</strong></span></div>

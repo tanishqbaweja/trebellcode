@@ -36,6 +36,7 @@ import { resizeTextarea } from "./textarea-size.js";
 import { guardianActionSummary, guardianDeniedEvent } from "./guardian-review.js";
 import { collaborationModePayload, normalizeCollaborationModes } from "./collaboration-mode.js";
 import { ensureCodexProject, sameWorkspacePath } from "./codex-projects.js";
+import { writeClipboardText } from "./clipboard.js";
 
 const TerminalPanel=lazy(()=>import("./components/TerminalPanel.jsx"));
 const WorkspacePanel=lazy(()=>import("./components/WorkspacePanel.jsx"));
@@ -1054,7 +1055,7 @@ export default function App(){
     let cancelled=false; const timer=setTimeout(async()=>{const found=new Map(titleMatches.map(t=>[t.id,t]));const matches=await searchThreadMessages(query);for(const match of matches){const thread=match.thread||threads.find(item=>item.id===match.threadId);if(thread)found.set(thread.id,thread)}if(!cancelled)setSearchResults([...found.values()])},250);return()=>{cancelled=true;clearTimeout(timer)}
   },[query,threads,threadMeta,rpc,rpcStatus,agentRuntime]);
 
-  async function copyText(value){const text=String(value||"").trim();if(!text)return false;await navigator.clipboard?.writeText?.(text);return true}
+  async function copyText(value){const text=String(value||"").trim();return text?writeClipboardText(text):false}
   async function copyActiveReference(){
     const selectedUrl=rightPanelOpen&&rightPanelTab==="source"?sourceSelectedPr?.url:null;if(selectedUrl){await copyText(selectedUrl);return}
     const linkedUrl=linkedPullRequests.find(link=>link?.url)?.url;
@@ -2229,7 +2230,7 @@ export default function App(){
   async function login(){await fetch("/api/login/start",{method:"POST"}).catch(()=>{});const poll=setInterval(async()=>{const data=await api("/api/bootstrap").catch(()=>null);if(data?.loggedIn){clearInterval(poll);setBootstrap(data);await refreshProviderModels();}},1500);setTimeout(()=>clearInterval(poll),120000)}
   async function logout(){await api("/api/logout",{method:"POST"});setBootstrap(prev=>({...prev,loggedIn:false,providerReady:false}));setModels([]);setModel("");setSelectedModels([]);setFreebuff({loggedIn:false})}
   async function renameThread(){if(!rpc||!activeThread)return;const name=prompt("Rename thread",titleOf(activeThread));if(!name?.trim())return;await rpc.request("thread/name/set",{threadId:activeThread.id,name:name.trim()});setActiveThread(prev=>({...prev,name:name.trim()}));setThreads(prev=>prev.map(t=>t.id===activeThread.id?{...t,name:name.trim()}:t))}
-  async function shareThread(){const text=messages.map(m=>(m.role==="user"?"You":"Trebell Code")+": "+m.text).join("\n\n");if(text)await navigator.clipboard?.writeText(text).catch(()=>{})}
+  async function shareThread(){const text=messages.map(m=>(m.role==="user"?"You":"Trebell Code")+": "+m.text).join("\n\n");if(text)await writeClipboardText(text)}
   async function startReview(){
     if(!rpc||!activeThread?.id)throw new Error("Start or open a thread before reviewing.");
     const result=await rpc.request("review/start",{threadId:activeThread.id,target:{type:"uncommittedChanges"}});
