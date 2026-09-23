@@ -138,6 +138,6 @@ export default function AgentsPage({threads,onOpen,onAction,onRefreshThreads,rpc
     {error&&<p className="provider-status-error">{error}</p>}
     {currentChildren.length>0&&<section className="agent-group"><h4>Current thread <span>{currentChildren.length}</span></h4>{renderAgents(currentChildren)}</section>}
     {otherChildren.length>0&&<section className="agent-group"><h4>{activeThread?.id?"Other agents":"All agents"} <span>{otherChildren.length}</span></h4>{renderAgents(otherChildren)}</section>}
-    {children.length===0&&<div className="empty-state">No subagent threads yet. When Codex delegates work, agents appear here with their live runtime status.</div>}
+    {children.length===0&&<div className="agent-empty-state"><Bot size={18}/><strong>No delegated agents yet</strong><span>When Codex delegates work, subagent threads and their live status will appear here.</span></div>}
   </div>;
 }

@@ -1,19 +1,26 @@
 import { test, expect } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 async function expectModelCatalog(page,labels){
-  const picker=page.getByTestId("model-picker");await expect(picker).toBeVisible();await expect(picker).toBeEnabled();await picker.click();
+  const picker=page.getByTestId("model-picker");await expect(picker).toBeVisible();await expect(picker).toBeEnabled({timeout:15_000});await picker.click();
   const menu=page.locator(".model-picker-menu");await expect(menu).toBeVisible();
   await expect(menu.locator("> button strong")).toHaveText(labels);
   await picker.click();await expect(menu).toBeHidden();
 }
+async function selectProvider(page,value){
+  const selector=page.getByTestId("provider-selector");
+  await selector.selectOption(value);
+  await expect(page.getByTestId("provider-settings-card")).toHaveAttribute("aria-busy","false",{timeout:15_000});
+  await expect(selector).toHaveValue(value);
+}
 
 test("Trebell Code renders the harness and scopes models to the selected provider", async ({ page,request }) => {
   test.setTimeout(45_000);
-  const publishedThemes=fileURLToPath(new URL("../../test-results/e2e-home/themes/",import.meta.url));
+  const publishedThemes=join(process.env.TREBELL_E2E_HOME||join(tmpdir(),"trebell-code-e2e-home"),"themes");
   await mkdir(publishedThemes,{recursive:true});
-  await writeFile(fileURLToPath(new URL("e2e-published.json",new URL("../../test-results/e2e-home/themes/",import.meta.url))),JSON.stringify({name:"E2E Published",appearance:"dark",canvas:"#111827",accent:"#35c98b"}));
+  await writeFile(join(publishedThemes,"e2e-published.json"),JSON.stringify({name:"E2E Published",appearance:"dark",canvas:"#111827",accent:"#35c98b"}));
   await page.addInitScript(()=>{
     const snapshot={url:"http://fixture.local",title:"Preview fixture",text:"Checkout",elements:[{ref:"e7",tag:"button",text:"Submit order",href:""}]};
     window.__trebellZoomFactor=1;
@@ -194,7 +201,7 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await expect(e2eProject.getByLabel("Automatic worktree cleanup")).toHaveValue("inherit");
   await page.getByRole("button",{name:/No project · General chat/}).click();
   await expect(page.getByRole("heading",{name:"What do you want to think through?"})).toBeVisible();
-  await expect(page.locator(".projectless-mode")).toHaveText("General scratch");
+  await expect(page.getByRole("button",{name:"No project",exact:true})).toBeVisible();
   await expect(page.getByText("This is a General chat with no attached project.")).toBeVisible();
   await page.getByRole("button",{name:"Projects",exact:true}).click();
   await page.locator(".project-card").filter({hasText:"E2E Project"}).locator(".project-open").click();
@@ -230,17 +237,19 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await page.getByRole("button",{name:"Settings"}).click();
   await expect(page.getByRole("heading",{name:"Settings"})).toBeVisible();
   await expect(page.getByText("Follow-up behavior")).toBeVisible();
-  await page.getByLabel("Panel animations").fill("200");
-  await expect.poll(()=>page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue("--panel-animation-ms").trim())).toBe("200ms");
-  await expect(page.getByTestId("scoped-settings-card").getByLabel("Automatic worktree cleanup")).toHaveValue("off");
   await expect(page.getByText("Update available",{exact:true})).toBeVisible();
   await page.getByRole("button",{name:"Download update"}).click();
   await expect(page.getByRole("button",{name:"Restart & install"})).toBeVisible();
   page.once("dialog",dialog=>dialog.accept());
   await page.getByRole("button",{name:"Restart & install"}).click();
   await expect.poll(()=>page.evaluate(()=>window.__updateInstalled)).toBe(true);
+  await page.getByRole("button",{name:/Appearance/}).click();
+  await page.getByLabel("Panel animations").fill("200");
+  await expect.poll(()=>page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue("--panel-animation-ms").trim())).toBe("200ms");
   await page.getByRole("button",{name:"light",exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.mode)).toBe("light");
+  await page.getByRole("button",{name:/Workspace/}).click();
+  await expect(page.getByTestId("scoped-settings-card").getByLabel("Automatic worktree cleanup")).toHaveValue("off");
   await page.getByRole("button",{name:"Threads"}).click();
   await expect(page.locator(".workspace-header")).toBeVisible();
   const lightShell=await page.evaluate(()=>({
@@ -256,6 +265,7 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   expect(lightShell.provider).not.toBe("rgb(255, 255, 255)");
   expect(lightShell.composer).toMatch(/^rgba?\(255, 255, 255/);
   await page.getByRole("button",{name:"Settings"}).click();
+  await page.getByRole("button",{name:/Appearance/}).click();
   await page.getByRole("button",{name:"Midnight",exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.theme)).toBe("midnight");
   await page.keyboard.press("Control+k");
@@ -275,6 +285,7 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   expect(darkShell.main).toBe("rgb(11, 12, 14)");
   expect(darkShell.composer).toMatch(/^rgba?\(20, 22, 25/);
   await page.getByRole("button",{name:"Settings"}).click();
+  await page.getByRole("button",{name:/Appearance/}).click();
   await expect(page.getByRole("button",{name:"E2E Published",exact:true})).toBeVisible();
   await page.getByRole("button",{name:"E2E Published",exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.theme)).toBe("environment-local-e2e-published");
@@ -287,10 +298,12 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await page.getByRole("button",{name:"Save & apply"}).click();
   await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.customTheme)).toBe("true");
   await expect.poll(()=>page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue("--purple").trim())).toBe("#4f8cff");
+  await page.getByRole("button",{name:/General/}).click();
   await page.getByRole("button",{name:"View licenses"}).click();
   await expect(page.getByRole("heading",{name:"Open source licenses"})).toBeVisible();
   await expect(page.getByPlaceholder("Search package, version or license")).toBeVisible();
   await page.getByRole("button",{name:"Settings"}).click();
+  await page.getByRole("button",{name:/Workspace/}).click();
   const scopedSettings=page.getByTestId("scoped-settings-card");
   const scopedTargets=scopedSettings.locator(".scoped-settings-targets select");
   await scopedTargets.nth(0).selectOption("ssh-palette");
@@ -330,22 +343,25 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await page.getByLabel("E2E SSH").check();
   await expect(page.locator(".usage-environment-filter summary")).toContainText("E2E SSH");
   await page.getByRole("button",{name:"Settings"}).click();
+  await page.getByRole("button",{name:/Agents & models/}).click();
 
   const providerSelector=page.getByTestId("provider-selector");
 
-  await providerSelector.selectOption("justworker");
+  await selectProvider(page,"justworker");
   await page.getByRole("button",{name:"Threads"}).click();
   await expectModelCatalog(page,["claude-opus-4-8"]);
   await expect(page.getByTestId("model-picker")).toContainText("claude-opus-4-8");
 
   await page.getByRole("button",{name:"Settings"}).click();
-  await providerSelector.selectOption("hcnsec");
+  await page.getByRole("button",{name:/Agents & models/}).click();
+  await selectProvider(page,"hcnsec");
   await page.getByRole("button",{name:"Threads"}).click();
   await expectModelCatalog(page,["glm-5.3"]);
   await expect(page.getByTestId("model-picker")).toContainText("glm-5.3");
 
   await page.getByRole("button",{name:"Settings"}).click();
-  await providerSelector.selectOption("vyceai");
+  await page.getByRole("button",{name:/Agents & models/}).click();
+  await selectProvider(page,"vyceai");
   await page.getByRole("button",{name:"Threads"}).click();
   await expectModelCatalog(page,[
     "claude-sonnet-4-6",
@@ -355,7 +371,8 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   ]);
 
   await page.getByRole("button",{name:"Settings"}).click();
-  await providerSelector.selectOption("agentrouter");
+  await page.getByRole("button",{name:/Agents & models/}).click();
+  await selectProvider(page,"agentrouter");
   await expect.poll(async()=>{
     const providerState=await (await request.get("/api/providers")).json();
     return providerState.selected;
@@ -370,7 +387,8 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   ]);
 
   await page.getByRole("button",{name:"Settings"}).click();
-  await providerSelector.selectOption("freebuff");
+  await page.getByRole("button",{name:/Agents & models/}).click();
+  await selectProvider(page,"freebuff");
   await page.getByRole("button",{name:"Threads"}).click();
   await expectModelCatalog(page,["deepseek/deepseek-v4-flash · 10 FB/h off-peak","test/coding-large","test/coding-fast"]);
   await expect(page.getByRole("button",{name:"Freebuff"})).toBeVisible();

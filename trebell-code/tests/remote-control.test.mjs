@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createRemoteControlServer } from "../src/remote-control.mjs";
 
-test("Trebell Remote uses the selected provider instead of hardcoding Freebuff", async () => {
+test("Trebell Remote keeps thread history provider-independent while new turns use the selected provider", async () => {
   const environments = {
     discover: async () => ({ profiles: [] }),
     probe: async () => ({}),
@@ -26,7 +26,8 @@ test("Trebell Remote uses the selected provider instead of hardcoding Freebuff",
 
   try {
     const html = await fetch(`http://127.0.0.1:${remote.port}/`).then(r => r.text());
-    assert.match(html, /modelProviders:\[statusData\?\.provider\|\|'freebuff'\]/);
+    assert.match(html, /request\('thread\/list',\{limit:50,sortKey:'updated_at',sortDirection:'desc'\}\)/);
+    assert.doesNotMatch(html, /modelProviders:/);
     assert.match(html, /modelProvider:statusData\?\.provider\|\|'freebuff'/);
     assert.doesNotMatch(html, /modelProvider:'freebuff'/);
     assert.match(html, /mcpServer\/elicitation\/request/);

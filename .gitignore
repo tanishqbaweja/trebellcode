@@ -69,6 +69,10 @@ apply_patch/
 # coverage
 coverage/
 
+# Trebell Code test artifacts
+/trebell-code/test-results/
+/trebell-code/visual-audit/
+
 # personal files
 personal/
 

@@ -150,9 +150,9 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
         <div className="file-view">{file&&<div className="file-head"><strong>{file.name}</strong><div>{!remote&&<OpenInPicker path={file.path} compact/>}<button onClick={()=>onAttachPath?.(file.path)}><Paperclip size={13}/> Attach</button>{editable&&<button onClick={()=>setEdit(v=>!v)}>{edit?<X size={13}/>:<FileCode2 size={13}/>} {edit?"Cancel":"Edit"}</button>}{edit&&<button onClick={save}><Save size={13}/> Save</button>}</div></div>}{preview()}</div>
       </div>
     </div>}
-    {tab==="diff"&&<div className="changes-view">
+    {tab==="diff"&&(changedPaths.length?<div className="changes-view">
       <div className="changed-files">{changedPaths.map(path=><div className={reviewedFiles.includes(path)?"changed-file-row reviewed":"changed-file-row"} key={path}><button onClick={()=>onReviewedChange?.(path,!reviewedFiles.includes(path))}><span>{reviewedFiles.includes(path)?<Check size={12}/>:<FileDiff size={12}/>}</span>{path}</button><button className="review-comment" title="Add review comment as context" onClick={()=>{const comment=prompt("Review comment for "+path);if(comment?.trim())onReviewComment?.(path,comment.trim())}}>+</button></div>)}</div>
       <pre className="git-diff">{diff.diff||diff.error||"No unstaged diff."}</pre>
-    </div>}
+    </div>:<div className={"changes-empty"+(diff.error?" error":"")}><FileDiff size={20}/><strong>{diff.error?"Could not load changes":"Working tree clean"}</strong><span>{diff.error||"No unstaged changes to review."}</span></div>)}
   </div>;
 }
