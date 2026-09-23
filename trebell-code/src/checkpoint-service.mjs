@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
-import { mkdir, rm, stat } from "node:fs/promises";
+import { isAbsolute, join, relative, sep } from "node:path";
+import { mkdir, realpath, rm, stat } from "node:fs/promises";
 import { trebellHome } from "./paths.mjs";
 import { git, gitInfo } from "./git-service.mjs";
 
@@ -78,9 +78,37 @@ export class CheckpointService{
   }
   list(threadId=null){return this.state.checkpoints(threadId);}
   link(id,patch){return this.state.updateCheckpoint(id,patch);}
-  async restore(id){
+  async #assertRestoreIsolation(cp,threadId){
+    if(!threadId||cp.threadId!==threadId)throw new Error("Checkpoint file restore is allowed only from the thread that created this checkpoint.");
+    const root=await realpath(cp.root).catch(()=>null);
+    if(!root)throw new Error("Checkpoint repository is unavailable");
+    const meta=this.state.threadMeta?.(threadId)||{};
+    const owner=meta.cwd?await realpath(meta.cwd).catch(()=>null):null;
+    if(!owner||owner!==root)throw new Error("File restore requires the thread to still own its original isolated worktree.");
+    let managed=false;
+    for(const project of this.state.projects?.()||[]){
+      if(!project?.managedWorktree||project.managedWorktree.cleanedAt)continue;
+      const projectPath=await realpath(project.path).catch(()=>null);
+      if(projectPath===root){managed=true;break}
+    }
+    if(!managed)throw new Error("File restore requires an isolated Trebell worktree. Rewind the conversation without restoring files instead.");
+    const isWithin=(parent,child)=>{
+      const rel=relative(parent,child);
+      return rel===""||(!isAbsolute(rel)&&rel!==".."&&!rel.startsWith(".."+sep));
+    };
+    for(const [otherId,other] of Object.entries(this.state.listThreadMeta?.()||{})){
+      if(otherId===threadId||other?.deletedAt||!other?.cwd)continue;
+      const otherPath=await realpath(other.cwd).catch(()=>null);if(!otherPath)continue;
+      if(isWithin(root,otherPath)||isWithin(otherPath,root)){
+        throw new Error("File restore requires an isolated Trebell worktree. This workspace may contain changes from another thread. Rewind the conversation without restoring files instead.");
+      }
+    }
+    return root;
+  }
+  async restore(id,{threadId=null}={}){
     const cp=this.state.checkpoints().find(item=>item.id===id);
     if(!cp) throw new Error("Checkpoint not found");
+    await this.#assertRestoreIsolation(cp,threadId);
     const info=await this.gitInfoFn(cp.root);
     if(!info.isGit) throw new Error("Checkpoint repository is unavailable");
     await this.gitFn(cp.root,["restore","--source",cp.commit,"--staged","--worktree","--","."]);

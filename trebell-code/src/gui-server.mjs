@@ -1748,7 +1748,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     if(url.pathname==="/api/checkpoints/restore" && req.method==="POST"){
       try{
         const body=await readJsonBody(req);
-        return json(res,200,await checkpoints.restore(body.id));
+        return json(res,200,await checkpoints.restore(body.id,{threadId:body.threadId||null}));
       }catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/terminal/sessions"){

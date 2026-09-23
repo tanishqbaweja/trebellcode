@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CheckpointService, isTransientCheckpointGitError } from "../src/checkpoint-service.mjs";
 import { git } from "../src/git-service.mjs";
+import { TrebellStateStore } from "../src/trebell-state.mjs";
 
 test("checkpoint retry classification accepts only transient lock and disappearing-file races",()=>{
   assert.equal(isTransientCheckpointGitError(new Error("fatal: Unable to create '/repo/index.lock': File exists")),true);
@@ -115,4 +116,48 @@ test("checkpoint nested-repository recovery refuses excessive candidates before 
     await assert.rejects(()=>service.create({cwd:"/repo"}),/does not have a commit checked out/);
     assert.equal(nestedProbes,0);
   }finally{await rm(home,{recursive:true,force:true})}
+});
+
+test("file rewind restores only an isolated managed worktree and refuses sibling ownership",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-checkpoint-isolation-"));
+  const home=join(root,"home"),repo=join(root,"repo"),worktree=join(root,"worktree");
+  try{
+    await mkdir(repo,{recursive:true});
+    await git(repo,["init"]);await git(repo,["config","user.email","trebell@example.test"]);await git(repo,["config","user.name","Trebell Test"]);
+    await git(repo,["checkout","-b","main"]);await writeFile(join(repo,"file.txt"),"base\n");await git(repo,["add","."]);await git(repo,["commit","-m","Base"]);
+    await git(repo,["branch","feature"]);await git(repo,["worktree","add",worktree,"feature"]);
+    const env={...process.env,TREBELL_HOME:home};const state=new TrebellStateStore(env);
+    state.touchProject(worktree,{managedWorktree:{root:repo,branch:"feature",baseBranch:"main",submodules:"none",createdAt:Date.now()}});
+    state.updateThreadMeta("thread-owner",{cwd:worktree,archived:false});
+    const service=new CheckpointService({state,env});
+    await writeFile(join(worktree,"file.txt"),"checkpoint\n");
+    const checkpoint=await service.create({cwd:worktree,threadId:"thread-owner",label:"Before change"});
+    await writeFile(join(worktree,"file.txt"),"later\n");
+    await service.restore(checkpoint.id,{threadId:"thread-owner"});
+    assert.equal(await readFile(join(worktree,"file.txt"),"utf8"),"checkpoint\n");
+
+    await writeFile(join(worktree,"file.txt"),"sibling work\n");
+    state.updateThreadMeta("thread-sibling",{cwd:worktree,archived:true});
+    await assert.rejects(()=>service.restore(checkpoint.id,{threadId:"thread-owner"}),/another thread|isolated Trebell worktree/i);
+    assert.equal(await readFile(join(worktree,"file.txt"),"utf8"),"sibling work\n");
+
+    state.updateThreadMeta("thread-sibling",{deletedAt:Date.now()});
+    const nested=join(worktree,"nested-owner");await mkdir(nested,{recursive:true});
+    state.updateThreadMeta("thread-nested",{cwd:nested,archived:false});
+    await assert.rejects(()=>service.restore(checkpoint.id,{threadId:"thread-owner"}),/another thread|isolated Trebell worktree/i);
+    assert.equal(await readFile(join(worktree,"file.txt"),"utf8"),"sibling work\n");
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("file rewind refuses ordinary shared project directories and checkpoint cross-thread use",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-checkpoint-shared-"));const home=join(root,"home"),repo=join(root,"repo");
+  try{
+    await mkdir(repo,{recursive:true});await git(repo,["init"]);await git(repo,["config","user.email","trebell@example.test"]);await git(repo,["config","user.name","Trebell Test"]);
+    await writeFile(join(repo,"file.txt"),"base\n");await git(repo,["add","."]);await git(repo,["commit","-m","Base"]);
+    const env={...process.env,TREBELL_HOME:home};const state=new TrebellStateStore(env);
+    state.touchProject(repo,{});state.updateThreadMeta("thread-owner",{cwd:repo});
+    const service=new CheckpointService({state,env});const checkpoint=await service.create({cwd:repo,threadId:"thread-owner"});
+    await assert.rejects(()=>service.restore(checkpoint.id,{threadId:"thread-other"}),/thread that created/i);
+    await assert.rejects(()=>service.restore(checkpoint.id,{threadId:"thread-owner"}),/isolated Trebell worktree/i);
+  }finally{await rm(root,{recursive:true,force:true})}
 });

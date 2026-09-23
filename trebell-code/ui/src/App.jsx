@@ -1390,7 +1390,17 @@ export default function App(){
     setPrompt(restored.prompt);setAttachments(restored.attachments);setContextChips(restored.contextChips);
     setQueued([]);setRunning(false);
   }
-  async function editFromHere(message){if(!["codex","opencode","claude"].includes(agentRuntime)||!rpc||!activeThread?.id||!message.turnId)return;const restoreFiles=agentRuntime==="codex"?confirm("Also restore workspace files to the checkpoint before this turn?\n\nOK = conversation + files\nCancel = conversation only"):false;if(restoreFiles&&message.checkpointId)await api("/api/checkpoints/restore",{method:"POST",body:{id:message.checkpointId}}).catch(e=>alert(e.message));await rpc.request("thread/revert",{threadId:activeThread.id,beforeTurnId:message.turnId});setPrompt(message.text);await reloadActiveThread()}
+  async function editFromHere(message){
+    if(!["codex","opencode","claude"].includes(agentRuntime)||!rpc||!activeThread?.id||!message.turnId)return;
+    const normalizePath=value=>String(value||"").replace(/\\/g,"/").replace(/\/+$/,"").toLowerCase();
+    const isolatedWorktree=Boolean(
+      agentRuntime==="codex"&&message.checkpointId&&currentProject?.managedWorktree&&!currentProject.managedWorktree.cleanedAt
+      &&normalizePath(currentProject.path)===normalizePath(activeThread.cwd||projectPath)
+    );
+    const restoreFiles=isolatedWorktree?confirm("Also restore workspace files to the checkpoint before this turn?\n\nOK = conversation + files\nCancel = conversation only"):false;
+    if(restoreFiles)await api("/api/checkpoints/restore",{method:"POST",body:{id:message.checkpointId,threadId:activeThread.id}}).catch(e=>alert(e.message));
+    await rpc.request("thread/revert",{threadId:activeThread.id,beforeTurnId:message.turnId});setPrompt(message.text);await reloadActiveThread();
+  }
   async function stashPrompt(){
     if(prompt.trim()||attachments.length){await api("/api/stashes",{method:"POST",body:{text:prompt,attachments,contextChips,projectPath}});setPrompt("");setAttachments([]);setContextChips([]);return}
     const d=await api("/api/stashes").catch(()=>({stashes:[]}));const stash=d.stashes?.[0];if(stash){setPrompt(stash.text||"");setAttachments(stash.attachments||[]);setContextChips(stash.contextChips||[]);await api("/api/stashes?id="+encodeURIComponent(stash.id),{method:"DELETE"})}
