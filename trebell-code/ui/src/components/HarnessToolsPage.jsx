@@ -22,6 +22,8 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [busy,setBusy]=useState("");
   const [marketplaceSource,setMarketplaceSource]=useState("");
   const [migrations,setMigrations]=useState(null);
+  const [migrationHistory,setMigrationHistory]=useState({data:[],connectors:[]});
+  const [migrationMessage,setMigrationMessage]=useState("");
   const [historyImport,setHistoryImport]=useState(null);
   const [historyMessage,setHistoryMessage]=useState("");
   const [mcpResult,setMcpResult]=useState(null);
@@ -57,7 +59,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     if(!rpc||rpcStatus!=="connected")return;
     setLoading(true);setErrors({});
     const threadId=activeThread?.id||null;
-    const [permissions,mcp,plugins,apps,installedApps,hooks,features,sharedPlugins,loadedThreads,capabilities,account,rateLimits,usage,config,requirements,memory,diagnostics,windowsSandbox]=await Promise.all([
+    const [permissions,mcp,plugins,apps,installedApps,hooks,features,sharedPlugins,loadedThreads,capabilities,account,rateLimits,usage,config,requirements,memory,diagnostics,importHistories,windowsSandbox]=await Promise.all([
       call("permissionProfile/list",{limit:100,cwd:projectPath||null}),
       call("mcpServerStatus/list",{limit:100,detail:"full",threadId}),
       call("plugin/list",{cwds:projectPath?[projectPath]:[],forceRefetch:false}),
@@ -75,6 +77,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       call("configRequirements/read",{}),
       call("memory/status",{minConsolidatedThreads:20}),
       call("server/diagnostics",{}),
+      call("externalAgentConfig/import/readHistories",{}),
       platform==="win32"?call("windowsSandbox/readiness",undefined):Promise.resolve(null),
     ]);
     setData({
@@ -98,6 +101,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       diagnostics:diagnostics||null,
       windowsSandbox:windowsSandbox||null,
     });
+    if(importHistories)setMigrationHistory({data:importHistories.data||[],connectors:importHistories.connectors||[]});
     setLoading(false);
   }
   useEffect(()=>{refresh()},[rpc,rpcStatus,projectPath,activeThread?.id,platform]);
@@ -225,15 +229,41 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     if(!rpc)return;setBusy("marketplace:"+(name||"all"));
     try{await request("marketplace/upgrade",{marketplaceName:name});await refresh()}finally{setBusy("")}
   }
+  async function loadExternalConfig(){
+    const result=await request("externalAgentConfig/detect",{includeHome:true,cwds:projectPath?[projectPath]:[],maxSessionAgeDays:90,maxSessions:100});
+    setMigrations(result);return result;
+  }
+  async function loadMigrationHistory(){
+    const result=await request("externalAgentConfig/import/readHistories",{});
+    setMigrationHistory({data:result?.data||[],connectors:result?.connectors||[]});return result;
+  }
   async function detectExternalConfig(){
-    if(!rpc)return;setBusy("migration:detect");
-    try{const result=await request("externalAgentConfig/detect",{includeHome:true,cwds:projectPath?[projectPath]:[],maxSessionAgeDays:90,maxSessions:100});setMigrations(result)}
+    if(!rpc)return;setBusy("migration:detect");setMigrationMessage("");setErrors(prev=>({...prev,"externalAgentConfig/detect":null}));
+    try{await Promise.all([loadExternalConfig(),loadMigrationHistory()])}
     catch(error){setErrors(prev=>({...prev,"externalAgentConfig/detect":error.message||String(error)}))}finally{setBusy("")}
   }
   async function importExternalConfig(){
-    if(!rpc||!migrations?.items?.length)return;setBusy("migration:import");
-    try{await request("externalAgentConfig/import",{migrationItems:migrations.items,source:"trebell-code"});await detectExternalConfig()}
-    catch(error){setErrors(prev=>({...prev,"externalAgentConfig/import":error.message||String(error)}))}finally{setBusy("")}
+    if(!rpc||!migrations?.items?.length)return;setBusy("migration:import");setMigrationMessage("");setErrors(prev=>({...prev,"externalAgentConfig/import":null}));
+    try{
+      const started=await request("externalAgentConfig/import",{migrationItems:migrations.items,source:"trebell-code"});
+      const importId=started?.importId;if(!importId)throw new Error("Codex did not return an import id.");
+      setMigrationMessage("Import started. Waiting for Codex to finish…");
+      let completed=null;
+      for(let attempt=0;attempt<40&&!completed;attempt++){
+        const histories=await loadMigrationHistory();
+        completed=(histories?.data||[]).find(entry=>entry.importId===importId)||null;
+        if(completed)break;
+        await new Promise(resolve=>setTimeout(resolve,350));
+      }
+      if(completed){
+        const successes=completed.successes?.length||0,failures=completed.failures?.length||0;
+        setMigrationMessage([successes&&successes+" imported",failures&&failures+" failed"].filter(Boolean).join(" · ")||"Import completed with no changes.");
+        await loadExternalConfig();
+      }else{
+        setMigrationMessage("Import is still running in Codex. Refresh this page later to see the persisted result.");
+      }
+    }catch(error){setErrors(prev=>({...prev,"externalAgentConfig/import":error.message||String(error)}))}
+    finally{setBusy("")}
   }
   async function scanHistory(){
     setBusy("history:scan");setHistoryMessage("");
@@ -481,7 +511,10 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         <div className="capability-actions"><button onClick={detectExternalConfig} disabled={!!busy}>Scan</button>{migrations?.items?.length>0&&<button onClick={importExternalConfig} disabled={!!busy}>Import {migrations.items.length} items</button>}</div>
         <div className="capability-list">{(migrations?.items||[]).map((item,index)=><div key={index}><div><strong>{item.description||String(item.itemType)}</strong><span>{item.cwd||"User scope"}</span></div><em>{String(item.itemType)}</em></div>)}</div>
         {(migrations?.connectors||[]).length>0&&<p>{migrations.connectors.length} connector candidate{migrations.connectors.length===1?"":"s"} detected.</p>}
-        <ErrorLine value={errors["externalAgentConfig/detect"]}/><ErrorLine value={errors["externalAgentConfig/import"]}/>
+        {migrationMessage&&<p className="capability-status">{migrationMessage}</p>}
+        {(migrationHistory.data||[]).length>0&&<details className="capability-details"><summary>Previous native imports · {migrationHistory.data.length}</summary><div className="capability-list migration-history-list">{migrationHistory.data.slice(0,8).map(entry=>{const successes=entry.successes?.length||0,failures=entry.failures?.length||0;return <div key={entry.importId}><div><strong>{entry.providerId||"External agent import"}</strong><span>{new Date(Number(entry.completedAtMs)||0).toLocaleString()} · {successes} imported{failures?" · "+failures+" failed":""}</span></div><em className={failures?"":"ok"}>{failures?"review":"done"}</em></div>})}</div></details>}
+        {(migrationHistory.connectors||[]).length>0&&<details className="capability-details"><summary>Imported connector candidates · {migrationHistory.connectors.length}</summary><div className="capability-list">{migrationHistory.connectors.map(item=><div key={item.name}><div><strong>{item.name}</strong><span>{Number(item.sessionCount||0).toLocaleString()} imported session{Number(item.sessionCount||0)===1?"":"s"}</span></div><em>candidate</em></div>)}</div></details>}
+        <ErrorLine value={errors["externalAgentConfig/detect"]}/><ErrorLine value={errors["externalAgentConfig/import"]}/><ErrorLine value={errors["externalAgentConfig/import/readHistories"]}/>
       </Section>
     </div>
   </div>;
