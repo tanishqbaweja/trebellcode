@@ -16,7 +16,7 @@ function formatBytes(value){
 }
 
 export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread,skills=[],onHistoryImported,onSkillsRefresh,platform=""}){
-  const [data,setData]=useState({permissions:[],mcp:[],marketplaces:[],apps:[],hooks:[],features:[],sharedPlugins:[],capabilities:null,account:null,rateLimits:null,usage:null,config:null,requirements:null,memory:null,diagnostics:null,windowsSandbox:null});
+  const [data,setData]=useState({permissions:[],mcp:[],marketplaces:[],apps:[],installedApps:[],hooks:[],features:[],sharedPlugins:[],capabilities:null,account:null,rateLimits:null,usage:null,config:null,requirements:null,memory:null,diagnostics:null,windowsSandbox:null});
   const [errors,setErrors]=useState({});
   const [loading,setLoading]=useState(false);
   const [busy,setBusy]=useState("");
@@ -57,11 +57,12 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     if(!rpc||rpcStatus!=="connected")return;
     setLoading(true);setErrors({});
     const threadId=activeThread?.id||null;
-    const [permissions,mcp,plugins,apps,hooks,features,sharedPlugins,capabilities,account,rateLimits,usage,config,requirements,memory,diagnostics,windowsSandbox]=await Promise.all([
+    const [permissions,mcp,plugins,apps,installedApps,hooks,features,sharedPlugins,capabilities,account,rateLimits,usage,config,requirements,memory,diagnostics,windowsSandbox]=await Promise.all([
       call("permissionProfile/list",{limit:100,cwd:projectPath||null}),
       call("mcpServerStatus/list",{limit:100,detail:"full",threadId}),
       call("plugin/list",{cwds:projectPath?[projectPath]:[],forceRefetch:false}),
       call("app/list",{limit:100,threadId,forceRefetch:false}),
+      call("app/installed",{threadId,forceRefresh:false}),
       call("hooks/list",{cwds:projectPath?[projectPath]:[]}),
       call("experimentalFeature/list",{limit:200,threadId}),
       call("plugin/share/list",{}),
@@ -80,6 +81,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       mcp:mcp?.data||[],
       marketplaces:plugins?.marketplaces||[],
       apps:apps?.data||[],
+      installedApps:installedApps?.apps||[],
       hooks:hooks?.data||[],
       features:features?.data||[],
       sharedPlugins:sharedPlugins?.data||[],
@@ -109,6 +111,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   },[rpc,rpcStatus,projectPath,activeThread?.id,platform]);
 
   const plugins=useMemo(()=>data.marketplaces.flatMap(m=>(m.plugins||[]).map(p=>({...p,marketplace:m}))),[data.marketplaces]);
+  const installedAppsById=useMemo(()=>Object.fromEntries((data.installedApps||[]).map(app=>[app.id,app])),[data.installedApps]);
   const hookCount=data.hooks.reduce((n,x)=>n+(x.hooks?.length||0),0);
 
   async function reloadMcp(){
@@ -159,6 +162,14 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     setBusy("plugin:skill:"+skill.name);setErrors(prev=>({...prev,"plugin/skill/read":null}));
     try{const result=await request("plugin/skill/read",{remoteMarketplaceName,remotePluginId,skillName:skill.name});setPluginSkillDetail({name:skill.name,contents:result?.contents||""})}
     catch(error){setErrors(prev=>({...prev,"plugin/skill/read":error.message||String(error)}))}finally{setBusy("")}
+  }
+  async function refreshInstalledApps(){
+    if(!rpc)return;setBusy("apps:installed");setErrors(prev=>({...prev,"app/installed":null}));
+    try{
+      const result=await request("app/installed",{threadId:activeThread?.id||null,forceRefresh:true});
+      setData(current=>({...current,installedApps:result?.apps||[]}));
+    }catch(error){setErrors(prev=>({...prev,"app/installed":error.message||String(error)}))}
+    finally{setBusy("")}
   }
   async function reconcilePlugins(){
     if(!rpc)return;setBusy("plugin:reconcile");setPluginMessage("");setErrors(prev=>({...prev,"plugin/reconcile":null}));
@@ -423,10 +434,11 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       </Section>
 
       <Section title="Apps / connectors" icon={CheckCircle2} count={data.apps.length}>
-        <div className="capability-list">{data.apps.map(app=><div key={app.id}><div><strong>{app.name}</strong><span>{app.description||app.id}</span></div><div className="capability-inline-actions"><em className={app.isAccessible&&app.isEnabled?"ok":""}>{app.isEnabled?(app.isAccessible?"ready":"restricted"):"disabled"}</em><button onClick={()=>readApp(app)} disabled={busy==="app:"+app.id}>Details</button></div></div>)}</div>
+        <div className="connector-runtime-summary"><span>{data.installedApps.length} installed · {data.installedApps.filter(app=>app.callable).length} callable now</span><button onClick={refreshInstalledApps} disabled={!!busy}>{busy==="apps:installed"?"Refreshing…":"Refresh runtime"}</button></div>
+        <div className="capability-list">{data.apps.map(app=>{const runtime=installedAppsById[app.id];const status=runtime?(runtime.callable?"callable":runtime.enabled?"installed":"disabled"):(app.isEnabled?"catalog only":"disabled");return <div key={app.id}><div><strong>{app.name}</strong><span>{app.description||app.id}</span></div><div className="capability-inline-actions"><em className={runtime?.callable?"ok":""}>{status}</em><button onClick={()=>readApp(app)} disabled={busy==="app:"+app.id}>Details</button></div></div>})}</div>
         {!data.apps.length&&<p>No app connectors reported by Codex.</p>}
         {appDetail&&<div className="app-detail"><div className="app-detail-head"><div><strong>{appDetail.name}</strong><span>{appDetail.distributionChannel||appDetail.id}</span></div><button onClick={()=>setAppDetail(null)}>Close</button></div>{appDetail.description&&<p>{appDetail.description}</p>}{appDetail.pluginDisplayNames?.length>0&&<p>Provided by: {appDetail.pluginDisplayNames.join(", ")}</p>}{appDetail.installUrl&&<button className="setting-action" onClick={()=>window.open(appDetail.installUrl,"_blank","noopener,noreferrer")}>Open install page</button>}{appDetail.toolSummaries?.length>0&&<div className="app-tools">{appDetail.toolSummaries.map(tool=><div key={tool.name}><div><strong>{tool.title||tool.name}</strong><span>{tool.description||tool.name}</span></div><em className={tool.isEnabled?"ok":""}>{tool.isEnabled?(tool.isReadOnly?"read only":"enabled"):(tool.disabledReason||"disabled")}</em></div>)}</div>}</div>}
-        <ErrorLine value={errors["app/list"]}/><ErrorLine value={errors["app/read"]}/>
+        <ErrorLine value={errors["app/list"]}/><ErrorLine value={errors["app/installed"]}/><ErrorLine value={errors["app/read"]}/>
       </Section>
 
       <Section title="Hooks" icon={Wrench} count={hookCount}>
