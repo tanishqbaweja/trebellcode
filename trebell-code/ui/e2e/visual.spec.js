@@ -133,6 +133,8 @@ test("chat workspace is visually bounded and panes resize",async({page,request})
   expect(Math.abs((await box(sidebar)).width-sidebarBefore.width)).toBeLessThanOrEqual(2);
   await page.setViewportSize({width:1280,height:800});
   await page.screenshot({path:auditDir+"chat-1280x800.png",fullPage:true});
+  await expect(page.locator(".workspace-mode")).toHaveValue("current");
+  await expect(modelPicker).not.toContainText("deepseek/deepseek");
   const compactOverflow=await composerBar.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(compactOverflow.scroll).toBeLessThanOrEqual(compactOverflow.client+1);
   const compactMain=await box(main),compactComposer=await box(composer);
