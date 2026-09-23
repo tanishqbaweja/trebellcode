@@ -609,6 +609,22 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .usage-environment-filte
 html[data-mode="light"]:not([data-custom-theme="true"]) .usage-environment-filter label{color:#4d5868!important}
 html[data-mode="light"]:not([data-custom-theme="true"]) .usage-environment-filter label:hover{background:#f6f7fa!important}
 
+/* Secondary-page light-mode nested surfaces */
+html[data-mode="light"]:not([data-custom-theme="true"]) .general-chat-card{background:#fff!important;border-color:#d9dee5!important;color:#4d5868!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .general-chat-card:hover{background:#f7f8fa!important;border-color:#d5c8e3!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .general-chat-card strong{color:#242a34!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .general-chat-card small{color:#687181!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .general-chat-card em{background:#f5f0fa!important;border-color:#dacde7!important;color:#72558f!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) :where(.page-actions button,.clone-card button){background:#fff!important;border-color:#d7dce5!important;color:#4d5868!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) :where(.clone-card input,.clone-card select){background:#f6f7fa!important;border-color:#d7dce5!important;color:#303741!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .environment-list>div{background:#f6f7fa!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .environment-list strong{color:#303741!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .environment-list span{color:#687181!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) :where(.environment-create input,.environment-create select,.remote-access-card input){background:#fff!important;border-color:#d7dce5!important;color:#303741!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) :where(.environment-list button,.remote-access-card button){background:#fff!important;border-color:#d7dce5!important;color:#4d5868!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .environment-create .primary{background:#f0eafa!important;border-color:#d8c6ed!important;color:#654b82!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .remote-urls code{background:#f6f7fa!important;color:#596473!important}
+
 
 /* command palette */
 .command-palette-backdrop{position:fixed;inset:0;z-index:120;background:rgba(0,0,0,.42);display:flex;align-items:flex-start;justify-content:center;padding-top:min(18vh,150px);backdrop-filter:blur(2px)}

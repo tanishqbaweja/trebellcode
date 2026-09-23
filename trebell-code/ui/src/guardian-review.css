@@ -2,6 +2,9 @@
 .tool-event.status-error summary strong,
 .tool-event.status-error summary em,
 .tool-event.status-error summary .timeline-marker{color:#d48690!important}
+.tool-event.status-warning summary strong,
+.tool-event.status-warning summary em,
+.tool-event.status-warning summary .timeline-marker{color:#d1a35d!important}
 
 html[data-mode="light"]:not([data-custom-theme="true"]) .guardian-denial-card{
   background:#fff!important;
@@ -24,6 +27,13 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .guardian-denial-card .a
 html[data-mode="light"]:not([data-custom-theme="true"]) .tool-event.status-error summary strong,
 html[data-mode="light"]:not([data-custom-theme="true"]) .tool-event.status-error summary em,
 html[data-mode="light"]:not([data-custom-theme="true"]) .tool-event.status-error summary .timeline-marker{color:#a65361!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .tool-event.status-warning summary strong,
+html[data-mode="light"]:not([data-custom-theme="true"]) .tool-event.status-warning summary em,
+html[data-mode="light"]:not([data-custom-theme="true"]) .tool-event.status-warning summary .timeline-marker{color:#8a672b!important}
+
+html[data-custom-theme="true"] .tool-event.status-warning summary strong,
+html[data-custom-theme="true"] .tool-event.status-warning summary em,
+html[data-custom-theme="true"] .tool-event.status-warning summary .timeline-marker{color:var(--theme-foreground)!important}
 
 html[data-custom-theme="true"] .guardian-denial-card{
   background:var(--panel)!important;

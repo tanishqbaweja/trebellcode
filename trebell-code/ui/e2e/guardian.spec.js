@@ -44,9 +44,16 @@ test("Codex auto-review denial can be explicitly overridden through the native R
     await page.goto("/");await page.getByRole("button",{name:/Auto review fixture/}).click();await expect(page.getByRole("heading",{name:"What do you want to think through?"})).toBeVisible();
 
     const startedAt=Date.now(),completedAt=startedAt+125;
+    notificationSocket.send(JSON.stringify({id:"approval-other-client",method:"item/commandExecution/requestApproval",params:{threadId:thread.id,turnId:"turn-approval",itemId:"cmd-approval",command:["echo","approval"],reason:"Approve this fixture command"}}));
+    const approvalCard=page.locator(".approval-card").filter({hasText:"Approve this fixture command"});await expect(approvalCard).toBeVisible();
+    notificationSocket.send(JSON.stringify({method:"serverRequest/resolved",params:{threadId:thread.id,requestId:"approval-other-client"}}));
+    await expect(approvalCard).toHaveCount(0);
+
     const action={type:"command",source:"unifiedExec",command:"rm generated.tmp",cwd:process.cwd()};
     notificationSocket.send(JSON.stringify({method:"item/autoApprovalReview/started",params:{threadId:thread.id,turnId:"turn-1",startedAtMs:startedAt,reviewId:"review-1",targetItemId:"cmd-1",review:{status:"inProgress",riskLevel:null,userAuthorization:null,rationale:null},action}}));
     await expect(page.getByText(/Auto review · rm generated\.tmp/)).toBeVisible();
+    notificationSocket.send(JSON.stringify({method:"autoApprovalReview/strictReviewRequired",params:{threadId:thread.id,turnId:"turn-1",startedAtMs:startedAt}}));
+    await expect(page.getByText("Additional safety checks are running; some tool calls may take extra time",{exact:true})).toBeVisible();
     notificationSocket.send(JSON.stringify({method:"item/autoApprovalReview/completed",params:{threadId:thread.id,turnId:"turn-1",startedAtMs:startedAt,completedAtMs:completedAt,reviewId:"review-1",targetItemId:"cmd-1",decisionSource:"agent",review:{status:"denied",riskLevel:"high",userAuthorization:"low",rationale:"Deleting this file needs explicit user approval."},action}}));
     const card=page.getByTestId("guardian-denial-card");await expect(card).toBeVisible();await expect(card).toContainText("Auto review denied this action");await expect(card).toContainText("Deleting this file needs explicit user approval.");await expect(card).toContainText("Risk assessment: high");
     await page.screenshot({path:auditDir+"chat-auto-review-denied-1600x980.png",fullPage:true});

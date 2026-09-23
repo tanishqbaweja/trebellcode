@@ -709,6 +709,21 @@ test("light mode stays visually coherent across workspace and panels",async({pag
   await page.screenshot({path:auditDir+"light-chat-panel-1600x980.png",fullPage:true});
   await page.setViewportSize({width:1280,height:800});
   await page.screenshot({path:auditDir+"light-chat-panel-1280x800.png",fullPage:true});
+  await page.setViewportSize({width:1600,height:980});
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
+  const projectLight=await page.evaluate(()=>({
+    general:getComputedStyle(document.querySelector(".general-chat-card")).backgroundColor,
+    clone:getComputedStyle(document.querySelector(".clone-card")).backgroundColor,
+  }));
+  expect(projectLight.general).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
+  expect(projectLight.clone).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
+  await page.screenshot({path:auditDir+"light-projects-1600x980.png",fullPage:true});
+  await page.getByRole("button",{name:"Environments",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Environments & remote access",level:2})).toBeVisible();
+  const environmentLight=await page.locator(".environment-grid .capability-card").first().evaluate(node=>getComputedStyle(node).backgroundColor);
+  expect(environmentLight).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
+  await page.screenshot({path:auditDir+"light-environments-1600x980.png",fullPage:true});
 });
 
 test("populated source control and pull request detail stay usable",async({page,request})=>{
