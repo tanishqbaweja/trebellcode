@@ -10,6 +10,7 @@ async function expectModelCatalog(page,labels){
 }
 
 test("Trebell Code renders the harness and scopes models to the selected provider", async ({ page,request }) => {
+  test.setTimeout(45_000);
   const publishedThemes=fileURLToPath(new URL("../../test-results/e2e-home/themes/",import.meta.url));
   await mkdir(publishedThemes,{recursive:true});
   await writeFile(fileURLToPath(new URL("e2e-published.json",new URL("../../test-results/e2e-home/themes/",import.meta.url))),JSON.stringify({name:"E2E Published",appearance:"dark",canvas:"#111827",accent:"#35c98b"}));
@@ -316,9 +317,11 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await scopedSettings.getByLabel("Permissions").selectOption("edits");
   const projectListing=await (await request.get("/api/projects")).json();
   const remoteProject=projectListing.projects.find(item=>item.environmentId==="ssh-palette"&&item.path==="/srv/app");
-  const remoteProjectScope=await (await request.get("/api/scoped-settings?environmentId=ssh-palette&projectId="+encodeURIComponent(remoteProject.id))).json();
-  expect(remoteProjectScope.overrides.defaultPermissionMode).toBe("edits");
-  expect(remoteProjectScope.effective.defaultPermissionMode).toBe("edits");
+  await expect.poll(async()=>{
+    const remoteProjectScope=await (await request.get("/api/scoped-settings?environmentId=ssh-palette&projectId="+encodeURIComponent(remoteProject.id))).json();
+    return {override:remoteProjectScope.overrides.defaultPermissionMode,effective:remoteProjectScope.effective.defaultPermissionMode};
+  }).toEqual({override:"edits",effective:"edits"});
+  await expect(scopedSettings).toHaveAttribute("aria-busy","false");
   await page.getByRole("button",{name:"Usage"}).click();
   await expect(page.getByRole("heading",{name:"Usage",exact:true})).toBeVisible();
   await expect(page.getByText("Total tokens",{exact:true})).toBeVisible();

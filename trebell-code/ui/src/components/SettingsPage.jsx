@@ -13,7 +13,7 @@ const PROVIDER_LABELS={
   vyceai:"VyceAi",
 };
 
-export default function SettingsPage({settings,onSettings,onProviderUpdated,runtime,rpcStatus,loggedIn,login,logout,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes}){
+export default function SettingsPage({settings,onSettings,onProviderChanging,onProviderUpdated,runtime,rpcStatus,loggedIn,login,logout,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes}){
   const [update,setUpdate]=useState(null);
   const [desktopUpdate,setDesktopUpdate]=useState(null);
   const [diagnostics,setDiagnostics]=useState(null);
@@ -120,7 +120,12 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
       delete selections[environmentThemeCatalog.environmentKey];
       patch={...patch,environmentThemeSelections:selections};
     }
-    const next=await api("/api/settings",{method:"POST",body:patch});
+    const providerChange="modelProvider" in patch&&patch.modelProvider!==settings.modelProvider;
+    const optimistic=providerChange?{...settings,modelProvider:patch.modelProvider}:null;
+    if(optimistic){onProviderChanging?.(patch.modelProvider);onSettings(optimistic)}
+    let next;
+    try{next=await api("/api/settings",{method:"POST",body:patch})}
+    catch(error){if(optimistic){onProviderChanging?.(settings.modelProvider||"freebuff");onSettings(settings)}throw error}
     onSettings(next);
     if("modelProvider" in patch){
       setApiKey("");

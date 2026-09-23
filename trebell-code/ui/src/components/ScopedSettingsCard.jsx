@@ -13,7 +13,10 @@ export default function ScopedSettingsCard({settings={},models=[],onChanged}){
   const [scope,setScope]=useState(null);
   const [message,setMessage]=useState("");
   const [loading,setLoading]=useState(false);
+  const writeQueueRef=React.useRef(Promise.resolve());
+  const selectionRef=React.useRef({environmentId:"local",projectId:""});
   const envValue=environmentId==="local"?null:environmentId;
+  selectionRef.current={environmentId,projectId};
   const envProjects=useMemo(()=>projects.filter(project=>(project.environmentId||null)===(envValue||null)),[projects,envValue]);
   const projectScope=Boolean(projectId);
 
@@ -35,14 +38,23 @@ export default function ScopedSettingsCard({settings={},models=[],onChanged}){
 
   function hasOverride(key){return projectScope&&Object.prototype.hasOwnProperty.call(scope?.overrides||{},key)}
   function value(key){return scope?.effective?.[key]}
-  async function write(key,next){
+  function write(key,next){
+    const targetEnvironmentId=envValue,targetProjectId=projectId||null,targetProjectScope=projectScope;
+    const body={environmentId:targetEnvironmentId,projectId:targetProjectId,patch:{},resetKeys:[]};
+    if(targetProjectScope&&next===INHERIT)body.resetKeys=[key];else body.patch[key]=next;
     setLoading(true);setMessage("");
-    try{
-      const body={environmentId:envValue,projectId:projectId||null,patch:{},resetKeys:[]};
-      if(projectScope&&next===INHERIT)body.resetKeys=[key];else body.patch[key]=next;
-      const result=await api("/api/scoped-settings",{method:"POST",body});setScope(result);await load();onChanged?.(result);
-      setMessage(projectScope&&next===INHERIT?"Project now inherits the environment default.":"Scoped default saved.");
-    }catch(error){setMessage(error.message)}finally{setLoading(false)}
+    const operation=writeQueueRef.current.catch(()=>{}).then(async()=>{
+      const result=await api("/api/scoped-settings",{method:"POST",body});
+      const current=selectionRef.current;
+      const stillCurrent=(current.environmentId==="local"?null:current.environmentId)===targetEnvironmentId&&(current.projectId||null)===targetProjectId;
+      if(stillCurrent)setScope(result);
+      await load();onChanged?.(result);
+      if(stillCurrent)setMessage(targetProjectScope&&next===INHERIT?"Project now inherits the environment default.":"Scoped default saved.");
+      return result;
+    });
+    writeQueueRef.current=operation;
+    operation.catch(error=>setMessage(error.message)).finally(()=>{if(writeQueueRef.current===operation)setLoading(false)});
+    return operation;
   }
   function selectValue(key,fallback=""){return projectScope&&!hasOverride(key)?INHERIT:String(value(key)??fallback)}
   async function setCleanupMode(mode){
@@ -66,7 +78,7 @@ export default function ScopedSettingsCard({settings={},models=[],onChanged}){
   const cleanupMode=projectScope&&!hasOverride("worktreeCleanup")?INHERIT:(value("worktreeCleanup")?.mode||"off");
   const modelValue=selectValue("defaultModel","");
   const sourceTextModelValue=selectValue("sourceControlTextModel","");
-  return <div className="settings-card scoped-settings-card" data-testid="scoped-settings-card">
+  return <div className="settings-card scoped-settings-card" data-testid="scoped-settings-card" aria-busy={loading?"true":"false"}>
     <h3>Project defaults</h3>
     <p>Environment defaults apply to new threads. A project can override only execution-scoped settings; providers, themes, keybindings and credentials stay environment-wide.</p>
     <div className="scoped-settings-targets">

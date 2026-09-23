@@ -1,4 +1,4 @@
-import React,{useEffect,useMemo,useRef,useState} from "react";
+import React,{useEffect,useLayoutEffect,useMemo,useRef,useState} from "react";
 import {
   BrainCircuit, Check, ChevronDown, CircleStop, Code2, Cpu, FileCode2, FileDiff, FolderCode,
   GitBranch, Globe2, HardDrive, Link2, ListTodo, MemoryStick, Network, Paperclip, Plus, Send,
@@ -37,6 +37,7 @@ import { approvalResponse } from "./approval-utils.js";
 import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./fanout-utils.js";
 import { matchingMessageExcerpt, matchingPullRequestExcerpt } from "./thread-message-search.js";
 import { parseVisualizationMessage, visualizationUrl } from "./visualization-utils.js";
+import { captureThreadScrollPosition, rememberThreadScrollPosition, restoredThreadScrollTop } from "./thread-scroll.js";
 
 const MAX_COMPOSER_ATTACHMENTS=100;
 const MAX_COMPOSER_CHARS=120_000;
@@ -346,6 +347,7 @@ export default function App(){
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false);
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"});
   const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const threadMessageSearchCacheRef=useRef(new Map()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
+  const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);
   const displayThreads=searchResults||threads;
   const environmentThemes=useMemo(()=>(environmentThemeCatalog.themes||[]).flatMap(theme=>{
     try{return [{...normalizeCustomTheme(theme,{id:`environment-${environmentThemeCatalog.environmentKey}-${theme.id}`}),publishedId:theme.id,published:true}]}
@@ -356,6 +358,35 @@ export default function App(){
     if(settings.notifications===false)return;
     window.trebellDesktop?.notify?.({title,body,silent:!settings.notificationSound});
   }
+  function rememberConversationPosition(threadId=activeThreadRef.current?.id){
+    const node=conversationScrollRef.current;if(!threadId||!node)return null;
+    const position=captureThreadScrollPosition(node);if(!position)return null;
+    rememberThreadScrollPosition(threadScrollPositionsRef.current,threadId,position);
+    followConversationEndRef.current=position.atEnd;
+    return position;
+  }
+  function conversationScrolled(){
+    const node=conversationScrollRef.current;if(!node)return;
+    const position=captureThreadScrollPosition(node);followConversationEndRef.current=position?.atEnd!==false;
+    const threadId=activeThreadRef.current?.id;if(threadId&&position)rememberThreadScrollPosition(threadScrollPositionsRef.current,threadId,position);
+  }
+  useLayoutEffect(()=>{
+    const node=conversationScrollRef.current;const threadId=activeThread?.id;if(!node||!threadId)return;
+    if(pendingThreadScrollRestoreRef.current===threadId){
+      const position=threadScrollPositionsRef.current.get(threadId)||null;
+      node.scrollTop=restoredThreadScrollTop(position,node);
+      followConversationEndRef.current=position?.atEnd??true;
+      pendingThreadScrollRestoreRef.current=null;
+      return;
+    }
+    if(followConversationEndRef.current)node.scrollTop=Math.max(0,node.scrollHeight-node.clientHeight);
+  },[activeThread?.id,messages.length,events.length,assistantText]);
+  useEffect(()=>{
+    const node=conversationScrollRef.current;if(!node||typeof ResizeObserver==="undefined")return;
+    const content=node.firstElementChild;if(!content)return;
+    const observer=new ResizeObserver(()=>{if(followConversationEndRef.current)node.scrollTop=Math.max(0,node.scrollHeight-node.clientHeight)});
+    observer.observe(content);return()=>observer.disconnect();
+  },[section,activeThread?.id]);
 
   useEffect(()=>{
     const root=document.documentElement;const media=window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -452,6 +483,13 @@ export default function App(){
 
   const agentRuntime=settings.agentRuntime||bootstrap.agentRuntime||"codex";
   const provider=settings.modelProvider||bootstrap.provider||"freebuff";
+  useEffect(()=>{
+    const next=agentRuntime+"\0"+provider;
+    if(modelCatalogScopeRef.current&&modelCatalogScopeRef.current!==next){
+      setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("");
+    }
+    modelCatalogScopeRef.current=next;
+  },[agentRuntime,provider]);
   const workspaceEnvironmentId=activeThread?.providerMeta?.environmentId??(projectlessMode?generalEnvironmentId:(currentProject?currentProject.environmentId||null:settings.activeEnvironmentId||null));
   const effectiveProjectSettings=currentProject?.effectiveSettings||{
     defaultModel:settings.defaultModel||null,
@@ -1109,7 +1147,7 @@ export default function App(){
     if(activeThread?.id===threadId){setGoal(goalData?.goal||null);setLinkedPullRequests(pullRequests)}
     return {goal:goalData?.goal||null,pullRequests};
   }
-  async function newChat(){activeThreadRef.current=null;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([]);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
+  async function newChat(){rememberConversationPosition();activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([]);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
@@ -1119,10 +1157,11 @@ export default function App(){
     return scratch;
   }
   async function openThread(thread){
+    rememberConversationPosition();
     const threadEnvironmentId=thread.providerMeta?.environmentId||null;
     const savedMeta=threadMeta[thread.id]||{};const projectless=Boolean(savedMeta.projectless);
     if(thread.cwd&&!threadEnvironmentId&&!projectless)await api("/api/worktree/ensure",{method:"POST",body:{path:thread.cwd,environmentId:null}}).catch(error=>{throw new Error("Could not restore this managed worktree: "+error.message)});
-    activeThreadRef.current=thread;setSection("chat");setEvents([]);setAssistantText("");setWorktreeSetup(null);setActiveThread(thread);persistThreadWorkspaceContext(thread,thread.cwd,{archived:false,projectless}).catch(()=>{});
+    activeThreadRef.current=thread;pendingThreadScrollRestoreRef.current=null;followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;setSection("chat");setMessages([]);setEvents([]);setAssistantText("");setWorktreeSetup(null);setActiveThread(thread);persistThreadWorkspaceContext(thread,thread.cwd,{archived:false,projectless}).catch(()=>{});
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(thread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
     else if(thread.cwd)await touchProject(thread.cwd,threadEnvironmentId);else setProjectPath(projectPath);
     if(!rpc||rpcStatus!=="connected")return;
@@ -1133,7 +1172,7 @@ export default function App(){
       rpc.request("thread/attachment/list",{threadId:thread.id,limit:100}).catch(()=>({data:[]})),
     ]);
     const map=Object.fromEntries((cp.checkpoints||[]).filter(x=>x.turnId).map(x=>[x.turnId,x]));setCheckpointByTurn(map);
-    if(resumed?.thread){activeThreadRef.current=resumed.thread;setActiveThread(resumed.thread);setMessages(historyFromThread(resumed.thread,map));setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex"){const meta=resumed.thread.providerMeta||{};applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}}
+    if(resumed?.thread){activeThreadRef.current=resumed.thread;pendingThreadScrollRestoreRef.current=resumed.thread.id;setActiveThread(resumed.thread);setMessages(historyFromThread(resumed.thread,map));setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex"){const meta=resumed.thread.providerMeta||{};applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}}
     const meta=threadMeta[thread.id]||{};setReviewedFiles(meta.reviewedFiles||[]);setGoal(goalData?.goal||null);
     const persisted=(attachmentData?.data||[]).filter(item=>item.attachmentType==="pull_request").map(item=>({...item.payload,__identityKey:item.identityKey}));
     setLinkedPullRequests(persisted.length?persisted:(meta.linkedPullRequests||[]));
@@ -1688,7 +1727,7 @@ export default function App(){
             </div>
           </header>
 
-          <div className="conversation-scroll">
+          <div className="conversation-scroll" ref={conversationScrollRef} onScroll={conversationScrolled}>
             <div className="conversation-column">
               <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
               <Conversation messages={messages} onEditFromHere={editFromHere} onCite={citeAssistant} allowRevert={["codex","opencode","claude"].includes(agentRuntime)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null}/>
@@ -1720,7 +1759,7 @@ export default function App(){
         {section==="environments"&&<div className="secondary-page full"><EnvironmentsPage/></div>}
       {section==="usage"&&<div className="secondary-page full"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><LicensesPage/></div>}
-      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>Agent harnesses, model providers, permissions and desktop behavior.</p></div></div><SettingsPage settings={settings} onSettings={setSettings} onProviderUpdated={(options={})=>{setProviderRevision(v=>v+1);return refreshProviderModels({resetThread:true,...options})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={session=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></div>}
+      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>Agent harnesses, model providers, permissions and desktop behavior.</p></div></div><SettingsPage settings={settings} onSettings={setSettings} onProviderChanging={nextProvider=>{modelRefreshSeqRef.current++;modelCatalogScopeRef.current=agentRuntime+"\0"+nextProvider;setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("")}} onProviderUpdated={(options={})=>{setProviderRevision(v=>v+1);return refreshProviderModels({resetThread:true,...options})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={session=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></div>}
         {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Every unarchived {agentRuntimeLabel} thread stored by Trebell on this machine.</p></div></div><div className="history-page">{threads.map(t=><button key={t.id} onClick={()=>openThread(t)}><FileCode2 size={15}/><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><time>{new Date(t.updatedAt*1000).toLocaleString()}</time></button>)}</div></div>}
       </main>
 
