@@ -22,6 +22,7 @@ test("Codex plugin discovery exposes native search, details, skill contents and 
       const respond=value=>ws.send(JSON.stringify({id:message.id,result:value}));
       if(message.method==="initialize")result={userAgent:"plugin-fixture"};
       else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
+      else if(message.method==="thread/loaded/list")result={data:[thread.id,"background-loaded-thread"],nextCursor:null};
       else if(message.method==="threadSection/list")result={data:[],nextCursor:null};
       else if(message.method==="thread/resume"||message.method==="thread/read")result={thread};
       else if(message.method==="thread/goal/get")result={goal:null};
@@ -62,8 +63,8 @@ test("Codex plugin discovery exposes native search, details, skill contents and 
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
     await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
     await page.goto("/");await page.getByRole("button",{name:/Plugin fixture/}).click();await page.getByRole("button",{name:"Tools",exact:true}).click();
-    const diagnostics=page.locator(".capability-card").filter({hasText:"Codex runtime health"});await expect(diagnostics).toContainText("PID 4242");await expect(diagnostics).toContainText("256 MB");await expect(diagnostics).toContainText("Live threads");await expect(diagnostics).toContainText("3");
-    expect(calls.some(call=>call.method==="server/diagnostics")).toBe(true);
+    const diagnostics=page.locator(".capability-card").filter({hasText:"Codex runtime health"});await expect(diagnostics).toContainText("PID 4242");await expect(diagnostics).toContainText("256 MB");await expect(diagnostics).toContainText("Loaded sessions");await expect(diagnostics).toContainText("2");await expect(diagnostics).toContainText("Live threads");await expect(diagnostics).toContainText("3");
+    expect(calls.some(call=>call.method==="server/diagnostics")).toBe(true);expect(calls.find(call=>call.method==="thread/loaded/list")?.params).toEqual({limit:100});
     await page.setViewportSize({width:1280,height:800});await diagnostics.scrollIntoViewIfNeeded();await page.screenshot({path:auditDir+"tools-runtime-health-1280x800.png",fullPage:false});
     await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({path:auditDir+"tools-runtime-health-light-1280x800.png",fullPage:false});
     await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});await page.setViewportSize({width:1600,height:980});

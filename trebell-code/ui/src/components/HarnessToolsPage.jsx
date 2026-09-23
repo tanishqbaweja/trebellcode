@@ -16,7 +16,7 @@ function formatBytes(value){
 }
 
 export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread,skills=[],onHistoryImported,onSkillsRefresh,platform=""}){
-  const [data,setData]=useState({permissions:[],mcp:[],marketplaces:[],apps:[],installedApps:[],hooks:[],features:[],sharedPlugins:[],capabilities:null,account:null,rateLimits:null,usage:null,config:null,requirements:null,memory:null,diagnostics:null,windowsSandbox:null});
+  const [data,setData]=useState({permissions:[],mcp:[],marketplaces:[],apps:[],installedApps:[],hooks:[],features:[],sharedPlugins:[],loadedThreads:[],loadedThreadsMore:false,capabilities:null,account:null,rateLimits:null,usage:null,config:null,requirements:null,memory:null,diagnostics:null,windowsSandbox:null});
   const [errors,setErrors]=useState({});
   const [loading,setLoading]=useState(false);
   const [busy,setBusy]=useState("");
@@ -57,7 +57,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     if(!rpc||rpcStatus!=="connected")return;
     setLoading(true);setErrors({});
     const threadId=activeThread?.id||null;
-    const [permissions,mcp,plugins,apps,installedApps,hooks,features,sharedPlugins,capabilities,account,rateLimits,usage,config,requirements,memory,diagnostics,windowsSandbox]=await Promise.all([
+    const [permissions,mcp,plugins,apps,installedApps,hooks,features,sharedPlugins,loadedThreads,capabilities,account,rateLimits,usage,config,requirements,memory,diagnostics,windowsSandbox]=await Promise.all([
       call("permissionProfile/list",{limit:100,cwd:projectPath||null}),
       call("mcpServerStatus/list",{limit:100,detail:"full",threadId}),
       call("plugin/list",{cwds:projectPath?[projectPath]:[],forceRefetch:false}),
@@ -66,6 +66,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       call("hooks/list",{cwds:projectPath?[projectPath]:[]}),
       call("experimentalFeature/list",{limit:200,threadId}),
       call("plugin/share/list",{}),
+      call("thread/loaded/list",{limit:100}),
       call("modelProvider/capabilities/read",{}),
       call("account/read",{refreshToken:false}),
       call("account/rateLimits/read",{excludeResetCreditDetails:true}),
@@ -85,6 +86,8 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       hooks:hooks?.data||[],
       features:features?.data||[],
       sharedPlugins:sharedPlugins?.data||[],
+      loadedThreads:loadedThreads?.data||[],
+      loadedThreadsMore:Boolean(loadedThreads?.nextCursor),
       capabilities:capabilities||null,
       account:account||null,
       rateLimits:rateLimits||null,
@@ -352,10 +355,12 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
           <div><span>Process</span><strong>PID {data.diagnostics.process?.id||"?"}</strong></div>
           <div><span>Resident memory</span><strong>{formatBytes(data.diagnostics.process?.residentMemoryBytes)}</strong></div>
           {data.diagnostics.process?.physicalFootprintBytes!=null&&<div><span>Physical footprint</span><strong>{formatBytes(data.diagnostics.process.physicalFootprintBytes)}</strong></div>}
+          <div><span>Loaded sessions</span><strong>{data.loadedThreads.length.toLocaleString()}{data.loadedThreadsMore?"+":""}</strong></div>
           {["core.threads.live","core.turns.active","mcp.connections.live"].map(name=>{const gauge=(data.diagnostics.gauges||[]).find(item=>item.name===name);return gauge?<div key={name}><span>{name==="core.threads.live"?"Live threads":name==="core.turns.active"?"Active turns":"MCP connections"}</span><strong>{Number(gauge.value||0).toLocaleString()}</strong></div>:null})}
         </div>:<p>Process diagnostics are unavailable from this Codex runtime.</p>}
+        {data.loadedThreads.length>0&&<details className="capability-details"><summary>Loaded session IDs</summary><pre>{data.loadedThreads.join("\n")}{data.loadedThreadsMore?"\n…more loaded sessions not shown":""}</pre></details>}
         {data.diagnostics?.gauges?.length>0&&<details className="capability-details"><summary>All runtime gauges</summary><pre>{data.diagnostics.gauges.map(gauge=>gauge.name+": "+Number(gauge.value||0).toLocaleString()).join("\n")}</pre></details>}
-        <ErrorLine value={errors["server/diagnostics"]}/>
+        <ErrorLine value={errors["server/diagnostics"]}/><ErrorLine value={errors["thread/loaded/list"]}/>
       </Section>
 
       {platform==="win32"&&<Section title="Windows sandbox" icon={ShieldCheck}>
