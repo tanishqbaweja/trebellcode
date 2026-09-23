@@ -55,6 +55,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [pluginSkillDetail,setPluginSkillDetail]=useState(null);
   const [pluginMessage,setPluginMessage]=useState("");
   const [configWarnings,setConfigWarnings]=useState([]);
+  const [runtimeNotices,setRuntimeNotices]=useState([]);
   const [hookRuns,setHookRuns]=useState([]);
   const [authRecovery,setAuthRecovery]=useState(null);
   const [modelNotices,setModelNotices]=useState([]);
@@ -182,6 +183,15 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
           warning,
           ...current.filter(item=>!(item.summary===warning.summary&&item.path===warning.path&&item.details===warning.details)),
         ].slice(0,5));
+      }else if(message.method==="warning"){
+        const params=message.params||{};
+        if(params.threadId&&activeThread?.id&&params.threadId!==activeThread.id)return;
+        const notice={id:"warning:"+(params.threadId||"global")+":"+(params.message||""),kind:"warning",summary:params.message||"Codex warning",details:null};
+        setRuntimeNotices(current=>[notice,...current.filter(item=>item.id!==notice.id)].slice(0,5));
+      }else if(message.method==="deprecationNotice"){
+        const params=message.params||{};
+        const notice={id:"deprecation:"+(params.summary||""),kind:"deprecated",summary:params.summary||"Deprecated Codex capability",details:params.details||null};
+        setRuntimeNotices(current=>[notice,...current.filter(item=>item.id!==notice.id)].slice(0,5));
       }else if(message.method==="externalAgentConfig/import/progress"&&message.params?.importId===migrationImportId){
         setMigrationMessage(importResultSummary(message.params?.itemTypeResults,"Importing"));
       }else if(message.method==="externalAgentConfig/import/completed"&&message.params?.importId===migrationImportId){
@@ -498,6 +508,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       <Section title="Configuration layers" icon={ShieldCheck} count={data.config?.layers?.length||0}>
         <div className="capability-list">{(data.config?.layers||[]).map((layer,index)=><div key={String(layer.name)+index}><div><strong>{String(layer.name)}</strong><span>{layer.disabledReason||`version ${layer.version}`}</span></div><em className={layer.disabledReason?"":"ok"}>{layer.disabledReason?"disabled":"active"}</em></div>)}</div>
         {configWarnings.length>0&&<div className="capability-list config-warning-list">{configWarnings.map((warning,index)=><div key={(warning.path||"global")+":"+(warning.summary||index)}><div><strong>{warning.summary||"Configuration warning"}</strong><span>{warning.details||warning.path||"Codex reported a configuration warning."}</span></div><em>warning</em></div>)}</div>}
+        {runtimeNotices.length>0&&<div className="capability-list runtime-notice-list">{runtimeNotices.map(notice=><div key={notice.id}><div><strong>{notice.summary}</strong><span>{notice.details||"Reported by the Codex runtime."}</span></div><em>{notice.kind}</em></div>)}</div>}
         {data.config&&<details className="capability-details"><summary>Effective config</summary><pre>{JSON.stringify(data.config.config,null,2)}</pre></details>}
         <ErrorLine value={errors["config/read"]}/>
       </Section>
