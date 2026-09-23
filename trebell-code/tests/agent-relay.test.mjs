@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { WebSocket } from "ws";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
-import { agentThreadResumePayload,attachAgentRelay,paginateAgentThreadItems,restoreClaudeRejectedRewind } from "../src/agent-relay.mjs";
+import { agentThreadResumePayload,attachAgentRelay,paginateAgentThreadItems,paginateAgentThreadTurns,restoreClaudeRejectedRewind } from "../src/agent-relay.mjs";
 
 test("rejected Claude rewind restores the original provider session and removed turns",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-claude-rewind-"));
@@ -57,8 +57,25 @@ test("agent thread item pagination uses stable bounded cursors in both direction
 test("metadata-only agent resumes advertise bounded item history without embedding turns",()=>{
   const thread={id:"thread-1",historyMode:null,turns:[{id:"turn-1",items:[{id:"u1",type:"userMessage",text:"hello"}]}]};
   const bounded=agentThreadResumePayload(thread,{excludeTurns:true});
-  assert.equal(bounded.thread.historyMode,"paginated");assert.deepEqual(bounded.thread.turns,[]);assert.ok(bounded.itemsBackwardsCursor);assert.equal(bounded.turnsBackwardsCursor,null);
+  assert.equal(bounded.thread.historyMode,"paginated");assert.deepEqual(bounded.thread.turns,[]);assert.ok(bounded.itemsBackwardsCursor);assert.ok(bounded.turnsBackwardsCursor);
   const full=agentThreadResumePayload(thread,{excludeTurns:false});assert.equal(full.thread.turns.length,1);assert.equal(full.itemsBackwardsCursor,undefined);
+});
+
+test("agent turn pagination supports summary, full and metadata-only views with stable cursors",()=>{
+  const thread={id:"thread-1",turns:[
+    {id:"turn-1",status:"completed",items:[{id:"u1",type:"userMessage",text:"one"},{id:"tool1",type:"commandExecution"},{id:"draft1",type:"agentMessage",text:"draft"},{id:"a1",type:"agentMessage",text:"final one"}]},
+    {id:"turn-2",status:"completed",items:[{id:"u2",type:"userMessage",text:"two"},{id:"a2",type:"agentMessage",text:"final two"}]},
+    {id:"turn-3",status:"completed",items:[{id:"u3",type:"userMessage",text:"three"},{id:"a3",type:"agentMessage",text:"final three"}]},
+  ]};
+  const summary=paginateAgentThreadTurns(thread,{limit:1,sortDirection:"desc",itemsView:"summary"});
+  assert.equal(summary.data[0].id,"turn-3");assert.equal(summary.data[0].itemsView,"summary");assert.deepEqual(summary.data[0].items.map(item=>item.id),["u3","a3"]);assert.ok(summary.nextCursor);
+  thread.turns.push({id:"turn-4",status:"completed",items:[{id:"u4",type:"userMessage",text:"newer"}]});
+  const older=paginateAgentThreadTurns(thread,{cursor:summary.nextCursor,limit:1,sortDirection:"desc",itemsView:"notLoaded"});
+  assert.equal(older.data[0].id,"turn-2","new turns must not shift an existing turn cursor");assert.equal(older.data[0].itemsView,"notLoaded");assert.deepEqual(older.data[0].items,[]);
+  const full=paginateAgentThreadTurns(thread,{cursor:older.nextCursor,limit:1,sortDirection:"desc",itemsView:"full"});
+  assert.equal(full.data[0].id,"turn-1");assert.deepEqual(full.data[0].items.map(item=>item.id),["u1","tool1","draft1","a1"]);
+  const asc=paginateAgentThreadTurns(thread,{limit:1,sortDirection:"asc",itemsView:"summary"});assert.equal(asc.data[0].id,"turn-1");assert.deepEqual(asc.data[0].items.map(item=>item.id),["u1","a1"]);
+  assert.throws(()=>paginateAgentThreadTurns(thread,{cursor:"bad"}),/invalid thread turn cursor/i);
 });
 
 async function listen(server){
@@ -89,6 +106,8 @@ test("agent relay broadcasts Codex-compatible archive, unarchive and delete life
   try{
     const itemPage=await rpc("thread/items/list",{threadId:thread.id,limit:1,sortDirection:"desc"});
     assert.deepEqual(itemPage.data.map(entry=>entry.item.id),["fixture-answer"]);assert.ok(itemPage.nextCursor);assert.ok(itemPage.backwardsCursor);
+    const turnPage=await rpc("thread/turns/list",{threadId:thread.id,limit:1,sortDirection:"desc",itemsView:"notLoaded"});
+    assert.deepEqual(turnPage.data.map(entry=>entry.id),[turn.id]);assert.deepEqual(turnPage.data[0].items,[]);assert.equal(turnPage.data[0].itemsView,"notLoaded");
     await rpc("thread/archive",{threadId:thread.id});
     await rpc("thread/unarchive",{threadId:thread.id});
     await rpc("thread/delete",{threadId:thread.id});

@@ -58,6 +58,42 @@ function threadItemEntries(thread,turnId=null){
   return data;
 }
 
+function turnCursor(turn){
+  if(!turn?.id)return null;
+  return "agent-turn-v1:"+Buffer.from(String(turn.id),"utf8").toString("base64url");
+}
+
+function parseTurnCursor(cursor){
+  const raw=String(cursor||"");if(!raw.startsWith("agent-turn-v1:"))return null;
+  try{const id=Buffer.from(raw.slice("agent-turn-v1:".length),"base64url").toString("utf8");return id||null}catch{return null}
+}
+
+function turnWithItemsView(turn,itemsView="summary"){
+  const view=String(itemsView||"summary");
+  if(view==="full")return {...turn,items:[...(turn.items||[])],itemsView:"full"};
+  if(view==="notLoaded")return {...turn,items:[],itemsView:"notLoaded"};
+  const items=turn.items||[];const users=items.filter(item=>item?.type==="userMessage");const agents=items.filter(item=>item?.type==="agentMessage");
+  return {...turn,items:[...users,...(agents.length?[agents.at(-1)]:[])],itemsView:"summary"};
+}
+
+export function paginateAgentThreadTurns(thread,{cursor=null,limit=40,sortDirection="desc",itemsView="summary"}={}){
+  const turns=thread?.turns||[];const descending=String(sortDirection||"desc").toLowerCase()!=="asc";
+  const pageSize=Math.max(1,Math.min(200,Number(limit)||40));let start=descending?turns.length-1:0;
+  if(cursor){
+    const anchor=parseTurnCursor(cursor);if(!anchor)throw Object.assign(new Error("Invalid thread turn cursor"),{code:-32602});
+    start=turns.findIndex(turn=>String(turn.id||"")===anchor);if(start<0)throw Object.assign(new Error("Thread turn cursor no longer exists"),{code:-32602});
+  }
+  if(start<0||start>=turns.length)return {data:[],nextCursor:null,backwardsCursor:null};
+  const indexes=[];for(let index=start;index>=0&&index<turns.length&&indexes.length<pageSize;index+=descending?-1:1)indexes.push(index);
+  const data=indexes.map(index=>turnWithItemsView(turns[index],itemsView));
+  const nextIndex=indexes.length?(indexes.at(-1)+(descending?-1:1)):null;
+  return {
+    data,
+    nextCursor:nextIndex!=null&&nextIndex>=0&&nextIndex<turns.length?turnCursor(turns[nextIndex]):null,
+    backwardsCursor:data.length?turnCursor(data[0]):null,
+  };
+}
+
 function itemCursor(entry){
   if(!entry?.turnId||!entry?.item?.id)return null;
   return "agent-item-v1:"+Buffer.from(JSON.stringify([String(entry.turnId),String(entry.item.id)]),"utf8").toString("base64url");
@@ -100,7 +136,7 @@ export function agentThreadResumePayload(thread,{excludeTurns=false}={}){
   return {
     thread:{...thread,turns:[],historyMode:"paginated"},
     itemsBackwardsCursor:entries.length?itemCursor(entries.at(-1)):null,
-    turnsBackwardsCursor:null,
+    turnsBackwardsCursor:thread.turns?.length?turnCursor(thread.turns.at(-1)):null,
   };
 }
 
@@ -310,6 +346,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     if(method==="thread/items/list"){
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
       return paginateAgentThreadItems(thread,params);
+    }
+    if(method==="thread/turns/list"){
+      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      return paginateAgentThreadTurns(thread,params);
     }
     if(method==="thread/name/set"){
       const runtimeSession=sessions.get(params.threadId);if(runtimeSession instanceof ClaudeAgentSession)await runtimeSession.rename(params.name).catch(()=>{});
