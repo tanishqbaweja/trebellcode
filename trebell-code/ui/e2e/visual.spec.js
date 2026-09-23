@@ -828,6 +828,18 @@ test("populated source control and pull request detail stay usable",async({page,
   await page.screenshot({path:auditDir+"source-control-pr-composer-1280x800.png",fullPage:true});
   await compactComposer.getByRole("button",{name:"Close pull request composer"}).click();
   await page.screenshot({path:auditDir+"source-control-pr-detail-1280x800.png",fullPage:true});
+  await page.setViewportSize({width:1600,height:980});
+  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+  const lightSurfaces=await panel.evaluate(node=>({
+    panel:getComputedStyle(node).backgroundColor,
+    source:getComputedStyle(node.querySelector(".source-control")).backgroundColor,
+    detail:getComputedStyle(node.querySelector(".pr-detail")).backgroundColor,
+    file:getComputedStyle(node.querySelector(".pr-file")).backgroundColor,
+    conversation:getComputedStyle(node.querySelector(".review-list > div")).backgroundColor,
+    action:getComputedStyle(node.querySelector(".pr-actions button")).backgroundColor,
+  }));
+  for(const value of Object.values(lightSurfaces))expect(value).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
+  await page.screenshot({path:auditDir+"source-control-pr-detail-light-1600x980.png",fullPage:true});
 });
 
 test("Claude thread can switch compatible account profiles from the model picker",async({page})=>{
