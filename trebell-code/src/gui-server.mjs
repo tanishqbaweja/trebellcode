@@ -1153,6 +1153,38 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         }catch(error){return json(res,400,{error:error.message});}
       }
     }
+    if(url.pathname==="/api/agent-runtime-auth"&&req.method==="POST"){
+      try{
+        const body=await readJsonBody(req);
+        if(String(body.action||"login")!=="login")throw new Error("Unsupported runtime authentication action");
+        const instance=agentRuntimes.instances().find(item=>item.id===String(body.instanceId||""))
+          ||agentRuntimes.instances().find(item=>item.kind===String(body.runtime||""))
+          ||agentRuntimes.activeInstance();
+        const auth=agentRuntimes.authCommand(instance,{action:"login"});
+        const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")
+          ?requestedEnvironmentId(body.environmentId,{fallback:false})
+          :requestedEnvironmentId(null);
+        const cwd=agentRuntimes.runtimeCwd(body.cwd||process.cwd(),environmentId);
+        if(mock){
+          return json(res,200,{ok:true,auth,session:{id:"mock-runtime-auth",name:auth.name+" sign in",cwd,environmentId:environmentId||null,environmentName:"Mock environment",environmentType:environmentId?"remote":"local",running:true}});
+        }
+        const spec=environments.terminalArgvSpec(environmentId,{command:auth.command,args:auth.args,cwd});
+        const session=await terminals.create({
+          cwd:spec.cwd,
+          displayCwd:cwd,
+          cols:120,
+          rows:32,
+          name:auth.name+" sign in",
+          env:environmentId?null:agentRuntimes.childEnv(instance),
+          shell:spec.shell,
+          args:spec.args,
+          environmentId:spec.environmentId,
+          environmentName:spec.environmentName,
+          environmentType:spec.environmentType,
+        });
+        return json(res,200,{ok:true,auth,session});
+      }catch(error){return json(res,400,{ok:false,error:error.message});}
+    }
     if(url.pathname==="/api/agent-runtime-usage"&&req.method==="GET"){
       try{
         const rawEnvironment=url.searchParams.get("environmentId");

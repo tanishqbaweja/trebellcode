@@ -333,6 +333,39 @@ export class EnvironmentManager {
     throw new Error("Unsupported environment type");
   }
 
+  terminalArgvSpec(id,{command,args=[],cwd=null}={}){
+    const profile=id?this.get(id):null;
+    const executable=String(command||"").trim();
+    if(!executable)throw new Error("command is required");
+    if(!profile||profile.type==="local"){
+      return {
+        environmentId:profile?.id||null,
+        environmentName:profile?.name||"Local machine",
+        environmentType:"local",
+        cwd:String(cwd??profile?.cwd??"").trim()||undefined,
+        shell:executable,
+        args:[...args],
+      };
+    }
+    const working=String(cwd??profile.cwd??"").trim();
+    const remoteCommand=REMOTE_TOOL_PATH_SCRIPT+"\n"+(working?("cd "+quotePosix(working)+" && "):"")+"exec "+shellCommand(executable,args);
+    if(profile.type==="wsl"){
+      if(this.platform!=="win32")throw new Error("WSL environments are available only on Windows");
+      const launchArgs=[];if(profile.distro)launchArgs.push("-d",profile.distro);
+      launchArgs.push("--","bash","-lc",remoteCommand);
+      return {environmentId:profile.id,environmentName:profile.name,environmentType:"wsl",cwd:undefined,shell:"wsl.exe",args:launchArgs};
+    }
+    if(profile.type==="ssh"){
+      const shell=this.platform==="win32"?"ssh.exe":"ssh";
+      const launchArgs=["-tt","-o","BatchMode=yes","-o","ConnectTimeout=8","-o","ServerAliveInterval=15","-p",String(normalizedPort(profile.port))];
+      if(profile.identityFile)launchArgs.push("-i",profile.identityFile);
+      const target=profile.user?(profile.user+"@"+profile.host):profile.host;
+      launchArgs.push(target,remoteCommand);
+      return {environmentId:profile.id,environmentName:profile.name,environmentType:"ssh",cwd:undefined,shell,args:launchArgs};
+    }
+    throw new Error("Unsupported environment type");
+  }
+
   spawnArgv(id,{command,args=[],cwd=null,stdio=["pipe","pipe","pipe"]}={}){
     const profile=this.get(id);
     if(!profile) throw new Error("Environment profile was not found");

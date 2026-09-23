@@ -231,6 +231,20 @@ export class AgentRuntimeManager{
     const runtime=normalizeAgentRuntime(kind);const packageName=INSTALLABLE_PACKAGES[runtime]||null;
     return packageName?{runtime,packageName}:null;
   }
+  authCommand(instanceOrKind,{action="login"}={}){
+    const instance=typeof instanceOrKind==="string"
+      ?(this.instances().find(item=>item.id===instanceOrKind)||this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind)))
+      :instanceOrKind;
+    if(action!=="login")throw new Error("Unsupported runtime authentication action");
+    if(instance.kind==="opencode"&&instance.serverUrl)throw new Error("This OpenCode profile uses an external server. Authenticate providers on that server instead.");
+    const args=instance.kind==="claude"?["auth","login"]
+      :instance.kind==="cursor"?["login"]
+      :instance.kind==="grok"?["login"]
+      :instance.kind==="opencode"?["auth","login"]
+      :null;
+    if(!args)throw new Error((RUNTIMES[instance.kind]?.name||instance.kind)+" does not expose an interactive Trebell sign-in command.");
+    return {runtime:instance.kind,instanceId:instance.id,name:RUNTIMES[instance.kind]?.name||instance.kind,command:this.executable(instance),args};
+  }
   async install(kind,{environmentId=undefined}={}){
     const target=this.installable(kind);const normalized=normalizeAgentRuntime(kind);
     if(!target)throw new Error((RUNTIMES[normalized]?.name||String(kind||"Harness"))+" is not installable from Trebell Code");
@@ -377,7 +391,7 @@ export class AgentRuntimeManager{
       const {environment,...safe}=instance;
       return {...safe,environmentKeys:Object.keys(environment||{})};
     });
-    const definitions=this.definitions().map(def=>({...def,installable:Boolean(INSTALLABLE_PACKAGES[def.id]),packageName:INSTALLABLE_PACKAGES[def.id]||null}));
+    const definitions=this.definitions().map(def=>({...def,installable:Boolean(INSTALLABLE_PACKAGES[def.id]),packageName:INSTALLABLE_PACKAGES[def.id]||null,canAuthenticate:["claude","cursor","grok","opencode"].includes(def.id)}));
     const active=this.activeInstance();return {selectedRuntime:this.activeRuntime(),selectedInstanceId:active.id,definitions,instances:publicInstances,statuses};
   }
 }

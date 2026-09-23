@@ -13,7 +13,7 @@ const PROVIDER_LABELS={
   vyceai:"VyceAi",
 };
 
-export default function SettingsPage({settings,onSettings,onProviderUpdated,runtime,rpcStatus,loggedIn,login,logout,projectPath,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes}){
+export default function SettingsPage({settings,onSettings,onProviderUpdated,runtime,rpcStatus,loggedIn,login,logout,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes}){
   const [update,setUpdate]=useState(null);
   const [desktopUpdate,setDesktopUpdate]=useState(null);
   const [diagnostics,setDiagnostics]=useState(null);
@@ -24,6 +24,7 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
   const [agentInfo,setAgentInfo]=useState(null);
   const [agentMessage,setAgentMessage]=useState("");
   const [installingAgent,setInstallingAgent]=useState(null);
+  const [authenticatingAgent,setAuthenticatingAgent]=useState(null);
   const [instanceDraft,setInstanceDraft]=useState(null);
   const [modelDraft,setModelDraft]=useState({id:"",name:"",effort:"",serviceTier:"",inputPrice:"",outputPrice:"",cacheReadPrice:"",cacheWritePrice:""});
   const [snapshotInfo,setSnapshotInfo]=useState({enabled:false,shortcut:"CommandOrControl+Shift+S",includeText:false,playSound:true,sound:"soft-pop",flash:true,animations:true,registered:false,pending:0});
@@ -99,6 +100,16 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
       setAgentMessage(status?.installed&&!status?.authenticated?label+" installed. Sign in with the CLI, then refresh diagnostics.":label+" installed and ready.");
       await onProviderUpdated?.({resetThread:true});
     }catch(error){setAgentMessage(error.message)}finally{setInstallingAgent(null)}
+  }
+  async function authenticateAgentRuntime(kind,instanceId){
+    const definition=(agentInfo?.definitions||[]).find(item=>item.id===kind);if(!definition?.canAuthenticate)return;
+    setAuthenticatingAgent(instanceId||kind);setAgentMessage("Opening "+(definition.name||kind)+" sign in…");
+    try{
+      const result=await api("/api/agent-runtime-auth",{method:"POST",body:{action:"login",runtime:kind,instanceId:instanceId||null,environmentId:runtimeEnvironmentId||null,cwd:projectPath||null}});
+      setAgentMessage("Complete sign in in the terminal, then refresh runtime status.");
+      onOpenRuntimeAuthTerminal?.(result.session);
+    }catch(error){setAgentMessage(error.message)}
+    finally{setAuthenticatingAgent(null)}
   }
   async function save(patch){
     if("appearance" in patch&&environmentThemeCatalog?.environmentKey){
@@ -283,9 +294,11 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
           const status=(selectedAgent===def.id?agentInfo?.statuses?.find(item=>item.id===agentInfo?.selectedInstanceId):null)||agentInfo?.statuses?.find(item=>item.kind===def.id&&item.available)||agentInfo?.statuses?.find(item=>item.kind===def.id);
           const active=selectedAgent===def.id;
           const compatibility=status?.compatibility;const incompatible=["broken","unsupported"].includes(compatibility?.status);
+          const unverified=status?.authenticated==null&&["cursor","grok","opencode"].includes(def.id)&&status?.message;
+          const statusText=incompatible?(compatibility.message||"Incompatible runtime version"):unverified?status.message:status?.available?status?.version||"Ready":status?.message||"Unavailable";
           return <div className="agent-runtime-option" key={def.id}><button className={active?"active":""} disabled={!active&&!status?.available} onClick={()=>!active&&status?.available&&selectAgentRuntime(def.id,status.id)}>
-            <Bot size={14}/><span><strong>{def.name}</strong><small>{incompatible?(compatibility.message||"Incompatible runtime version"):status?.available?status?.version||"Ready":status?.message||"Unavailable"}</small></span><em>{active?(incompatible?"Warning":"Active"):status?.available?(incompatible?"Warning":"Use"):"Unavailable"}</em>
-          </button>{def.installable&&<button className="agent-runtime-install" disabled={installingAgent===def.id} onClick={()=>installAgentRuntime(def.id)}>{installingAgent===def.id?"Installing…":status?.installed?"Update":"Install"}</button>}</div>;
+            <Bot size={14}/><span><strong>{def.name}</strong><small>{statusText}</small></span><em>{active?(incompatible||unverified?"Warning":"Active"):status?.available?(incompatible||unverified?"Warning":"Use"):"Unavailable"}</em>
+          </button>{def.canAuthenticate&&status?.installed&&status?.authenticated!==true&&<button className="agent-runtime-install" disabled={!!authenticatingAgent} onClick={()=>authenticateAgentRuntime(def.id,status?.id)}>{authenticatingAgent===(status?.id||def.id)?"Opening…":"Sign in"}</button>}{def.installable&&<button className="agent-runtime-install" disabled={installingAgent===def.id} onClick={()=>installAgentRuntime(def.id)}>{installingAgent===def.id?"Installing…":status?.installed?"Update":"Install"}</button>}</div>;
         })}</div>
         <div className="runtime-profiles">
           <div className="runtime-profiles-head"><strong>Profiles</strong><button onClick={()=>editInstance()} disabled={selectedAgent==="antigravity"}>Add profile</button></div>
@@ -293,6 +306,7 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
             const status=agentInfo?.statuses?.find(item=>item.id===instance.id);const active=agentInfo?.selectedInstanceId===instance.id;
             return <div className="runtime-profile-row" key={instance.id}>
               <button className={active?"active":""} disabled={!active&&!status?.available} onClick={()=>!active&&status?.available&&selectAgentRuntime(instance.kind,instance.id)}><span><strong>{instance.displayName||instance.id}</strong><small>{status?.available?status.version||"Ready":status?.message||"Unavailable"}</small></span><em>{active?"Active":"Use"}</em></button>
+              {(agentInfo?.definitions||[]).find(item=>item.id===instance.kind)?.canAuthenticate&&status?.installed&&status?.authenticated!==true&&<button onClick={()=>authenticateAgentRuntime(instance.kind,instance.id)} disabled={!!authenticatingAgent}>{authenticatingAgent===instance.id?"Opening…":"Sign in"}</button>}
               <button onClick={()=>editInstance(instance)}>Edit</button>
               {instance.id!==`${instance.kind}-default`&&<button onClick={()=>removeInstance(instance)}>Remove</button>}
             </div>;
@@ -306,7 +320,7 @@ export default function SettingsPage({settings,onSettings,onProviderUpdated,runt
           {instanceDraft.kind==="opencode"&&<label>Existing OpenCode server URL<input value={instanceDraft.serverUrl||""} onChange={e=>setInstanceDraft({...instanceDraft,serverUrl:e.target.value})} placeholder="Optional, e.g. http://127.0.0.1:4096"/></label>}
           <div className="provider-key-actions"><button className="setting-action" onClick={saveInstance}>Save profile</button><button onClick={()=>setInstanceDraft(null)}>Cancel</button></div>
         </div>}
-        <p className={selectedAgentStatus?.available?"provider-note":"provider-status-error"}><strong>{selectedAgentStatus?.name||selectedAgent}</strong> · {selectedAgentStatus?.available?"ready":selectedAgentStatus?.message||"setup required"}{agentMessage?" · "+agentMessage:""}</p>
+        <p className={selectedAgentStatus?.available?"provider-note":"provider-status-error"}><strong>{selectedAgentStatus?.name||selectedAgent}</strong> · {selectedAgentStatus?.authenticated==null&&selectedAgentStatus?.message?selectedAgentStatus.message:selectedAgentStatus?.available?"ready":selectedAgentStatus?.message||"setup required"}{agentMessage?" · "+agentMessage:""} <button onClick={loadAgentRuntimes} disabled={!!authenticatingAgent}><RefreshCw size={11}/> Refresh</button></p>
       </div>
       {selectedAgent==="codex"&&<div className="settings-card provider-settings-card">
         <h3>Model provider</h3>

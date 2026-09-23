@@ -34,6 +34,11 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(runtimeUsage.runtime,"codex");
     assert.deepEqual(runtimeUsage.windows,[]);
     assert.equal(runtimeUsage.unavailable.reason,"unsupported");
+    const runtimeAuth=await fetch(gui.url+"/api/agent-runtime-auth",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"login",runtime:"claude",environmentId:null,cwd:process.cwd()})}).then(r=>r.json());
+    assert.equal(runtimeAuth.ok,true);
+    assert.deepEqual(runtimeAuth.auth.args,["auth","login"]);
+    assert.equal(runtimeAuth.session.id,"mock-runtime-auth");
+    assert.equal(runtimeAuth.session.environmentId,null);
 
     const projectsBefore=await fetch(gui.url+"/api/projects").then(r=>r.json());
     assert.ok(Array.isArray(projectsBefore.projects));

@@ -101,15 +101,18 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
 
   useEffect(()=>{
     const focus=()=>setFocusTick(value=>value+1);
+    const refreshExternal=event=>refresh(event.detail||null).then(()=>setFocusTick(value=>value+1)).catch(()=>{});
     const createNew=()=>create().catch(()=>{});
     const closeActive=()=>{if(activeId)close(activeId).catch(()=>{})};
     const splitPane=event=>split(event.detail?.direction==="vertical"?"vertical":"horizontal").catch(()=>{});
     window.addEventListener("trebell:terminal-focus",focus);
+    window.addEventListener("trebell:terminal-refresh",refreshExternal);
     window.addEventListener("trebell:terminal-new",createNew);
     window.addEventListener("trebell:terminal-close",closeActive);
     window.addEventListener("trebell:terminal-split",splitPane);
     return()=>{
       window.removeEventListener("trebell:terminal-focus",focus);
+      window.removeEventListener("trebell:terminal-refresh",refreshExternal);
       window.removeEventListener("trebell:terminal-new",createNew);
       window.removeEventListener("trebell:terminal-close",closeActive);
       window.removeEventListener("trebell:terminal-split",splitPane);

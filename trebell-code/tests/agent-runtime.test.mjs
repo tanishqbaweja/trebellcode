@@ -127,6 +127,20 @@ test("provider auth probes distinguish authenticated, unauthenticated and unknow
   assert.deepEqual(parseOpenCodeAuthList("— 0 credentials\n— 0 environment variables\n"),{connected:0,authenticated:null});
 });
 
+test("runtime auth commands use the provider's real interactive CLI flow",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-runtime-auth-command-"));const env={...process.env,TREBELL_HOME:home};
+  try{
+    const state=new TrebellStateStore(env);const manager=new AgentRuntimeManager({state,env});
+    assert.deepEqual(manager.authCommand("claude"),{runtime:"claude",instanceId:"claude-default",name:"Claude Code",command:"claude",args:["auth","login"]});
+    assert.deepEqual(manager.authCommand("cursor"),{runtime:"cursor",instanceId:"cursor-default",name:"Cursor",command:"cursor-agent",args:["login"]});
+    assert.deepEqual(manager.authCommand("grok"),{runtime:"grok",instanceId:"grok-default",name:"Grok Build",command:"grok",args:["login"]});
+    assert.deepEqual(manager.authCommand("opencode"),{runtime:"opencode",instanceId:"opencode-default",name:"OpenCode",command:"opencode",args:["auth","login"]});
+    const external=manager.upsertInstance({id:"opencode-external",kind:"opencode",serverUrl:"https://opencode.example.test"});
+    assert.throws(()=>manager.authCommand(external),/external server/i);
+    assert.throws(()=>manager.authCommand("codex"),/does not expose/i);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 test("remote runtime probes use provider-native auth status without treating unknown as signed out",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-runtime-auth-"));const env={...process.env,TREBELL_HOME:home};
   try{

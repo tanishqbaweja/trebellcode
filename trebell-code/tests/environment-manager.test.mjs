@@ -151,3 +151,27 @@ test("terminal specs keep interactive shells inside local, WSL and SSH environme
   assert.equal(ssh.args.at(-2),"dev@build.example");
   assert.equal(ssh.args.at(-1).includes("cd '/srv/app'"),true);
 });
+
+test("terminal argv specs launch provider auth commands directly and quote remote arguments",()=>{
+  const profiles=[
+    {id:"local-profile",name:"Named local",type:"local",cwd:"C:\\code\\app"},
+    {id:"wsl",name:"Ubuntu dev",type:"wsl",cwd:"/home/me/app",distro:"Ubuntu"},
+    {id:"ssh",name:"Build box",type:"ssh",cwd:"/srv/app",host:"build.example",user:"dev",port:2222},
+  ];
+  const manager=new EnvironmentManager({state:stateFor(profiles),platform:"win32"});
+  const local=manager.terminalArgvSpec("local-profile",{command:"C:\\Program Files\\Claude\\claude.exe",args:["auth","login"],cwd:"C:\\code\\app"});
+  assert.equal(local.shell,"C:\\Program Files\\Claude\\claude.exe");
+  assert.deepEqual(local.args,["auth","login"]);
+  assert.equal(local.cwd,"C:\\code\\app");
+
+  const wsl=manager.terminalArgvSpec("wsl",{command:"claude",args:["auth","login"],cwd:"/work/repo"});
+  assert.equal(wsl.shell,"wsl.exe");
+  assert.match(wsl.args.at(-1),/exec 'claude' 'auth' 'login'/);
+  assert.match(wsl.args.at(-1),/linuxbrew/);
+
+  const ssh=manager.terminalArgvSpec("ssh",{command:"opencode",args:["auth","login"],cwd:"/srv/app"});
+  assert.equal(ssh.shell,"ssh.exe");
+  assert.equal(ssh.args.includes("-tt"),true);
+  assert.equal(ssh.args.at(-2),"dev@build.example");
+  assert.match(ssh.args.at(-1),/exec 'opencode' 'auth' 'login'/);
+});
