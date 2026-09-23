@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { WebSocket } from "ws";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
-import { attachAgentRelay,restoreClaudeRejectedRewind } from "../src/agent-relay.mjs";
+import { agentThreadResumePayload,attachAgentRelay,paginateAgentThreadItems,restoreClaudeRejectedRewind } from "../src/agent-relay.mjs";
 
 test("rejected Claude rewind restores the original provider session and removed turns",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-claude-rewind-"));
@@ -38,6 +38,29 @@ test("rejected Claude rewind restores the original provider session and removed 
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
+test("agent thread item pagination uses stable bounded cursors in both directions",()=>{
+  const thread={id:"thread-1",turns:[
+    {id:"turn-1",items:[{id:"u1",type:"userMessage",text:"one"},{id:"a1",type:"agentMessage",text:"answer one"}]},
+    {id:"turn-2",items:[{id:"u2",type:"userMessage",text:"two"},{id:"a2",type:"agentMessage",text:"answer two"}]},
+    {id:"turn-3",items:[{id:"u3",type:"userMessage",text:"three"},{id:"a3",type:"agentMessage",text:"answer three"}]},
+  ]};
+  const latest=paginateAgentThreadItems(thread,{limit:2,sortDirection:"desc"});
+  assert.deepEqual(latest.data.map(entry=>entry.item.id),["a3","u3"]);assert.ok(latest.nextCursor);assert.ok(latest.backwardsCursor);
+  thread.turns.push({id:"turn-4",items:[{id:"u4",type:"userMessage",text:"new while paging"}]});
+  const older=paginateAgentThreadItems(thread,{cursor:latest.nextCursor,limit:2,sortDirection:"desc"});
+  assert.deepEqual(older.data.map(entry=>entry.item.id),["a2","u2"],"newer items must not shift an existing cursor");
+  const turnOnly=paginateAgentThreadItems(thread,{turnId:"turn-2",limit:10,sortDirection:"asc"});
+  assert.deepEqual(turnOnly.data.map(entry=>entry.item.id),["u2","a2"]);assert.equal(turnOnly.nextCursor,null);
+  assert.throws(()=>paginateAgentThreadItems(thread,{cursor:"not-a-cursor"}),/invalid thread item cursor/i);
+});
+
+test("metadata-only agent resumes advertise bounded item history without embedding turns",()=>{
+  const thread={id:"thread-1",historyMode:null,turns:[{id:"turn-1",items:[{id:"u1",type:"userMessage",text:"hello"}]}]};
+  const bounded=agentThreadResumePayload(thread,{excludeTurns:true});
+  assert.equal(bounded.thread.historyMode,"paginated");assert.deepEqual(bounded.thread.turns,[]);assert.ok(bounded.itemsBackwardsCursor);assert.equal(bounded.turnsBackwardsCursor,null);
+  const full=agentThreadResumePayload(thread,{excludeTurns:false});assert.equal(full.thread.turns.length,1);assert.equal(full.itemsBackwardsCursor,undefined);
+});
+
 async function listen(server){
   await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));
   return server.address().port;
@@ -57,12 +80,15 @@ test("agent relay broadcasts Codex-compatible archive, unarchive and delete life
   const home=await mkdtemp(join(tmpdir(),"trebell-agent-lifecycle-"));
   const env={...process.env,TREBELL_HOME:home};const threadStore=new AgentThreadStore(env);
   const thread=threadStore.create({runtime:"claude",cwd:home,providerSessionId:"fixture-session"});
+  const turn=threadStore.addTurn(thread.id,{inputText:"fixture question"});threadStore.addItem(thread.id,turn.id,{id:"fixture-answer",type:"agentMessage",text:"fixture answer"});threadStore.finishTurn(thread.id,turn.id);
   const runtimeManager={instances:()=>[],activeInstance:()=>({id:"claude-default",kind:"claude"}),activeRuntime:()=>"claude"};
   const state={settings:()=>({activeEnvironmentId:null}),updateThreadMeta:()=>({})};
   const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,version:"test"});
   const port=await listen(server);const url="ws://127.0.0.1:"+port+"/api/agent/ws";const first=await connect(url),second=await connect(url);const rpc=request(first);const notifications=[];
   second.on("message",raw=>{const message=JSON.parse(String(raw));if(message.method&&message.id==null)notifications.push(message)});
   try{
+    const itemPage=await rpc("thread/items/list",{threadId:thread.id,limit:1,sortDirection:"desc"});
+    assert.deepEqual(itemPage.data.map(entry=>entry.item.id),["fixture-answer"]);assert.ok(itemPage.nextCursor);assert.ok(itemPage.backwardsCursor);
     await rpc("thread/archive",{threadId:thread.id});
     await rpc("thread/unarchive",{threadId:thread.id});
     await rpc("thread/delete",{threadId:thread.id});
