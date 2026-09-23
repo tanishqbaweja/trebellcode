@@ -3,7 +3,7 @@ import {
   BrainCircuit, Check, ChevronDown, CircleStop, Code2, Cpu, FileCode2, FileDiff, FolderCode,
   GitBranch, Globe2, HardDrive, Link2, ListTodo, MemoryStick, Network, Paperclip, Plus, Send,
   ShieldCheck, Sparkles, SquareTerminal, WandSparkles, X, Zap, Coins, Mic, Camera, History,
-  PanelRight, PanelBottom, PanelLeftOpen, Command, Target, Play
+  PanelRight, PanelBottom, PanelLeftOpen, Command, Target, Play, Search
 } from "lucide-react";
 import { CodexRpcClient } from "./rpc.js";
 import { api } from "./api.js";
@@ -179,12 +179,26 @@ function ActivityTimeline({events,assistantText,onOpenPanel}){
     </details>)}
   </div>{assistantText&&<div className="assistant-answer">{assistantText}</div>}</div>;
 }
-function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId,canLoadEarlier=false,loadingEarlier=false,onLoadEarlier}){
+function ThreadFindBar({state,inputRef,onQuery,onPrevious,onNext,onClose}){
+  if(!state.open)return null;
+  const current=state.index>=0?state.results[state.index]:null;
+  const range=current?.snippetMatchRange||{};const start=Math.max(0,Number(range.start)||0),end=Math.max(start,Number(range.end)||0);
+  const snippet=String(current?.snippet||"");
+  return <div className="thread-find-bar" data-testid="thread-find-bar">
+    <Search size={13}/><input ref={inputRef} data-testid="thread-find-input" value={state.query} onChange={event=>onQuery(event.target.value)} onKeyDown={event=>{if(event.key==="Escape"){event.preventDefault();onClose()}else if(event.key==="Enter"){event.preventDefault();event.shiftKey?onPrevious():onNext()}}} placeholder="Find in this thread"/>
+    <span className="thread-find-count">{state.loading?"Searching…":state.error?"Error":state.results.length?`${state.index+1} / ${state.results.length}${state.nextCursor?"+":""}`:state.query.trim().length>=2?"No matches":""}</span>
+    <button type="button" onClick={onPrevious} disabled={state.loading||state.index<=0} aria-label="Previous match">↑</button><button type="button" onClick={onNext} disabled={state.loading||(!state.results.length)||(state.index>=state.results.length-1&&!state.nextCursor)} aria-label="Next match">↓</button><button type="button" onClick={onClose} aria-label="Close find">×</button>
+    {(current||state.error)&&<div className="thread-find-snippet">{state.error?state.error:<>{snippet.slice(0,start)}<mark>{snippet.slice(start,end)}</mark>{snippet.slice(end)}</>}</div>}
+  </div>;
+}
+
+function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId,canLoadEarlier=false,loadingEarlier=false,onLoadEarlier,activeFindItemId=null}){
   const historyRef=useRef(null);
   return <div className="conversation-history" ref={historyRef}>{canLoadEarlier&&<div className="history-page-control"><button type="button" disabled={loadingEarlier} onClick={onLoadEarlier}>{loadingEarlier?"Loading earlier messages…":"Load earlier messages"}</button></div>}{messages.map(m=>{
-    if(m.role==="user")return <div className="user-row" key={m.id}><div className="user-bubble"><p>{m.text}</p>{allowRevert&&m.turnId&&<button className="message-action" onClick={()=>onEditFromHere(m)}>Edit from here</button>}</div></div>;
+    const activeFind=String(m.id)===String(activeFindItemId||"");
+    if(m.role==="user")return <div className={"user-row"+(activeFind?" find-active":"")} data-message-id={m.id} key={m.id}><div className="user-bubble"><p>{m.text}</p>{allowRevert&&m.turnId&&<button className="message-action" onClick={()=>onEditFromHere(m)}>Edit from here</button>}</div></div>;
     const parsed=parseVisualizationMessage(m.text);
-    return <div className="history-assistant" key={m.id}><div className="agent-star small"><Sparkles size={12}/></div><div>{parsed.text&&<div className="assistant-message-text" data-assistant-citation-source={m.id}>{parsed.text}</div>}{parsed.visualizations.map((visualization,index)=>{
+    return <div className={"history-assistant"+(activeFind?" find-active":"")} data-message-id={m.id} key={m.id}><div className="agent-star small"><Sparkles size={12}/></div><div>{parsed.text&&<div className="assistant-message-text" data-assistant-citation-source={m.id}>{parsed.text}</div>}{parsed.visualizations.map((visualization,index)=>{
       const label=String(visualization.path||visualization.file||"Visualization").split(/[\\/]/).pop();
       return <div className={"inline-visualization-card "+(visualization.mode==="wide"?"wide":"")} key={label+":"+index}><div className="inline-visualization-head"><strong>{label}</strong><span>Interactive visualization</span></div><iframe title={label} src={visualizationUrl(visualization,{projectPath,environmentId,threadId})} sandbox="allow-scripts" referrerPolicy="no-referrer"/></div>;
     })}</div></div>;
@@ -370,6 +384,7 @@ export default function App(){
   const [activeThread,setActiveThread]=useState(null); const [activeTurnId,setActiveTurnId]=useState(null);
   const [messages,setMessages]=useState([]); const [events,setEvents]=useState([]); const [assistantText,setAssistantText]=useState("");
   const [historyPage,setHistoryPage]=useState({threadId:null,nextCursor:null,paginated:false,loading:false});
+  const [threadFind,setThreadFind]=useState({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});
   const [running,setRunning]=useState(false); const [submitting,setSubmitting]=useState(false); const [queued,setQueued]=useState([]); const [queueMode,setQueueMode]=useState("unknown"); const [queuedEditId,setQueuedEditId]=useState(null);
   const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [section,setSection]=useState("chat");
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [contextChips,setContextChips]=useState([]);
@@ -396,7 +411,7 @@ export default function App(){
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false);
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"});
   const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
-  const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);
+  const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
   const navigationKey=location=>[location.section,location.threadId||"",location.rightPanelOpen?location.rightPanelTab||"files":""].join("|");
   useEffect(()=>{
     if(!initialLoaded)return;
@@ -494,6 +509,11 @@ export default function App(){
     const observer=new ResizeObserver(()=>{if(followConversationEndRef.current)node.scrollTop=Math.max(0,node.scrollHeight-node.clientHeight)});
     observer.observe(content);return()=>observer.disconnect();
   },[section,activeThread?.id]);
+  useEffect(()=>{
+    if(!threadFind.open)return;
+    const id=requestAnimationFrame(()=>threadFindInputRef.current?.focus());
+    return()=>cancelAnimationFrame(id);
+  },[threadFind.open]);
 
   useEffect(()=>{
     const root=document.documentElement;const media=window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -610,6 +630,30 @@ export default function App(){
   const workspaceEnvironmentType=currentProject?.environment?.type||(workspaceEnvironmentId&&(workspaceEnvironmentId===settings.activeEnvironmentId)?bootstrap.activeEnvironment?.type:null)||(workspaceEnvironmentId?"remote":"local");
   const workspaceRemote=Boolean(workspaceEnvironmentId&&workspaceEnvironmentType!=="local");
   const providerReady=bootstrap.mock||(agentRuntime==="codex"?(provider==="freebuff"?Boolean(bootstrap.loggedIn):Boolean(bootstrap.providerReady)):Boolean(bootstrap.agentRuntimeReady));
+  useEffect(()=>{
+    if(!threadFind.open)return;
+    const term=threadFind.query.trim();
+    if(term.length<2||agentRuntime!=="codex"||!activeThread?.id||!rpc||rpcStatus!=="connected"){
+      threadFindSeqRef.current++;
+      setThreadFind(current=>({...current,results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null}));
+      return;
+    }
+    const seq=++threadFindSeqRef.current;let disposed=false;
+    const timer=setTimeout(async()=>{
+      setThreadFind(current=>current.query.trim()===term?{...current,loading:true,error:"",activeItemId:null}:current);
+      try{
+        const result=await rpc.request("thread/searchOccurrences",{threadId:activeThread.id,searchTerm:term,limit:50});
+        if(disposed||seq!==threadFindSeqRef.current||activeThreadRef.current?.id!==activeThread.id)return;
+        const results=result?.data||[];
+        setThreadFind(current=>current.query.trim()===term?{...current,results,index:results.length?0:-1,nextCursor:result?.nextCursor||null,loading:false,error:"",activeItemId:results[0]?.itemId||null}:current);
+        if(results[0])await focusThreadFindOccurrence(results[0],seq);
+      }catch(error){
+        if(disposed||seq!==threadFindSeqRef.current)return;
+        setThreadFind(current=>current.query.trim()===term?{...current,results:[],index:-1,nextCursor:null,loading:false,error:error.message||String(error),activeItemId:null}:current);
+      }
+    },160);
+    return()=>{disposed=true;clearTimeout(timer)};
+  },[threadFind.open,threadFind.query,agentRuntime,activeThread?.id,rpc,rpcStatus]);
   useEffect(()=>{setThreadTelemetry({})},[provider,agentRuntime]);
   async function refreshFreebuff(modelOverride=model){
     if(agentRuntime!=="codex"||provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;
@@ -924,6 +968,7 @@ export default function App(){
       const active=document.activeElement;
       const context={
         chatFocus:section==="chat"||section==="new",
+        codexRuntime:agentRuntime==="codex",
         terminalFocus:Boolean(panel==="terminal"&&active?.closest?.(".terminal-drawer")),
         terminalOpen:panel==="terminal",
         previewFocus:Boolean(rightPanelOpen&&rightPanelTab==="preview"),
@@ -955,6 +1000,7 @@ export default function App(){
         const delta=command==="threadPrevious"?-1:1;const next=displayThreads[index>=0?index+delta:-1];
         if(next)openThread(next).catch(()=>{});
       }
+      else if(command==="threadFind")openThreadFind();
       else if(command.startsWith("threadJump")){
         const index=Number(command.slice("threadJump".length))-1;const target=displayThreads[index];
         if(target)openThread(target).catch(()=>{});
@@ -1003,7 +1049,7 @@ export default function App(){
     };
     window.addEventListener("keydown",key);
     return()=>window.removeEventListener("keydown",key);
-  },[settings,prompt,attachments,section,panel,paletteOpen,question,elicitations.length,approvals.length,snoozeRequest,threadUndo,projectPath,projectlessMode,activeThread,running,rightPanelOpen,rightPanelTab,sourceSelectedPr,linkedPullRequests,queued,sidebarOpen,displayThreads,modelPickerOpen,currentProject]);
+  },[settings,prompt,attachments,section,panel,paletteOpen,question,elicitations.length,approvals.length,snoozeRequest,threadUndo,projectPath,projectlessMode,activeThread,running,rightPanelOpen,rightPanelTab,sourceSelectedPr,linkedPullRequests,queued,sidebarOpen,displayThreads,modelPickerOpen,currentProject,agentRuntime]);
   useEffect(()=>{if(agentRuntime==="codex"&&(queueMode==="native"||queued[0]?.native))return;if(!running&&queued.length){const next=queued[0];setQueued(prev=>prev.slice(1));startTurn(next.text,next.attachments,next.model||model).catch(error=>setEvents(prev=>[...prev,{id:"queue-error-"+Date.now(),kind:"error",title:error.message,status:"done"}]))}},[running,queued,queueMode,agentRuntime]);
   useEffect(()=>{setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null)},[agentRuntime]);
 
@@ -1176,6 +1222,15 @@ export default function App(){
     else if(message.method==="thread/goal/updated"&&isCurrent)setGoal(p.goal||null);
     else if(message.method==="thread/goal/cleared"&&isCurrent)setGoal(null);
     else if(message.method==="thread/queue/changed"&&isCurrent)loadNativeQueue(rpcRef.current,p.threadId).catch(error=>setEvents(prev=>[...prev,{id:"queue-refresh-error-"+Date.now(),kind:"error",title:"Could not refresh queued follow-ups: "+(error.message||String(error)),status:"done",raw:{}}]));
+    else if(message.method==="windowsSandbox/setupCompleted"){
+      window.dispatchEvent(new CustomEvent("trebell:windows-sandbox-setup",{detail:p}));
+      desktopNotify(p.success?"Windows sandbox ready":"Windows sandbox setup failed",p.success?`${p.mode==="elevated"?"Elevated":"Unelevated"} Codex sandbox setup completed.`:(p.error||"Codex could not complete Windows sandbox setup."));
+    }
+    else if(message.method==="windows/worldWritableWarning"){
+      window.dispatchEvent(new CustomEvent("trebell:windows-sandbox-warning",{detail:p}));
+      const count=(p.samplePaths||[]).length+(Number(p.extraCount)||0);const detail=p.failedScan?"Codex could not fully scan Windows writable paths.":`${count} Windows path${count===1?"":"s"} may not be protectable by the sandbox.`;
+      setEvents(prev=>[...prev,{id:"windows-sandbox-warning-"+Date.now(),kind:"error",title:detail,status:"done",raw:p}]);desktopNotify("Windows sandbox warning",detail);
+    }
     else if(message.method==="thread/attachment/updated"&&isCurrent)loadPersistentThreadData(p.threadId).catch(()=>{});
     else if(message.method==="thread/runtimeInstance/updated"){
       const updated=p.thread||null;
@@ -1346,7 +1401,7 @@ export default function App(){
     if(agentRuntime!=="codex"||!threadId||running||!rpc||rpcStatus!=="connected")return;
     rpc.request("thread/unsubscribe",{threadId}).catch(()=>{});
   }
-  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setEvents([]);setAssistantText("");setQueued([]);setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
+  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setAssistantText("");setQueued([]);setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
@@ -1361,7 +1416,7 @@ export default function App(){
     const threadEnvironmentId=thread.providerMeta?.environmentId||null;
     const savedMeta=threadMeta[thread.id]||{};const projectless=Boolean(savedMeta.projectless);
     if(thread.cwd&&!threadEnvironmentId&&!projectless)await api("/api/worktree/ensure",{method:"POST",body:{path:thread.cwd,environmentId:null}}).catch(error=>{throw new Error("Could not restore this managed worktree: "+error.message)});
-    activeThreadRef.current=thread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setEvents([]);setAssistantText("");setWorktreeSetup(null);setActiveThread(thread);persistThreadWorkspaceContext(thread,thread.cwd,{archived:false,projectless}).catch(()=>{});
+    activeThreadRef.current=thread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setAssistantText("");setWorktreeSetup(null);setActiveThread(thread);persistThreadWorkspaceContext(thread,thread.cwd,{archived:false,projectless}).catch(()=>{});
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(thread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
     else if(thread.cwd)await touchProject(thread.cwd,threadEnvironmentId);else setProjectPath(projectPath);
     if(!rpc||rpcStatus!=="connected")return;
@@ -1403,6 +1458,52 @@ export default function App(){
     }catch(error){
       if(activeThreadRef.current?.id===threadId){setHistoryPage(current=>current.threadId===threadId?{...current,loading:false}:current);setEvents(prev=>[...prev,{id:"history-page-error-"+Date.now(),kind:"error",title:"Could not load earlier messages: "+(error.message||String(error)),status:"done",raw:{}}])}
     }
+  }
+  function openThreadFind(){
+    if(agentRuntime!=="codex"||!activeThreadRef.current?.id)return;
+    setThreadFind(current=>({...current,open:true,error:""}));
+  }
+  function closeThreadFind(){
+    threadFindSeqRef.current++;
+    setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});
+  }
+  async function focusThreadFindOccurrence(occurrence,expectedSeq=null){
+    if(!occurrence||agentRuntime!=="codex"||!rpc||rpcStatus!=="connected")return;
+    const threadId=activeThreadRef.current?.id;if(!threadId)return;
+    const itemId=String(occurrence.itemId||"");
+    if(itemId&&!messages.some(message=>String(message.id)===itemId)){
+      const page=await rpc.request("thread/turns/list",{threadId,cursor:occurrence.turnCursor,limit:1,itemsView:"full"});
+      if(activeThreadRef.current?.id!==threadId||(expectedSeq!=null&&expectedSeq!==threadFindSeqRef.current))return;
+      const found=historyFromTurns(page?.data||[],checkpointByTurn);
+      if(found.length)setMessages(current=>mergeHistoryMessages(found,current));
+    }
+    if(activeThreadRef.current?.id!==threadId||(expectedSeq!=null&&expectedSeq!==threadFindSeqRef.current))return;
+    setThreadFind(current=>({...current,activeItemId:itemId||current.activeItemId}));
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{
+      const node=conversationScrollRef.current;if(!node)return;
+      const target=[...node.querySelectorAll("[data-message-id]")].find(element=>String(element.dataset.messageId)===itemId);
+      if(target){followConversationEndRef.current=false;target.scrollIntoView({block:"center",behavior:"auto"})}
+    }));
+  }
+  async function stepThreadFind(direction){
+    if(!threadFind.results.length||threadFind.loading)return;
+    if(direction<0){
+      const index=Math.max(0,threadFind.index-1);const occurrence=threadFind.results[index];
+      setThreadFind(current=>({...current,index,activeItemId:occurrence?.itemId||null}));await focusThreadFindOccurrence(occurrence);return;
+    }
+    if(threadFind.index<threadFind.results.length-1){
+      const index=threadFind.index+1;const occurrence=threadFind.results[index];
+      setThreadFind(current=>({...current,index,activeItemId:occurrence?.itemId||null}));await focusThreadFindOccurrence(occurrence);return;
+    }
+    if(!threadFind.nextCursor||!activeThreadRef.current?.id)return;
+    const threadId=activeThreadRef.current.id;setThreadFind(current=>({...current,loading:true,error:""}));
+    try{
+      const result=await rpc.request("thread/searchOccurrences",{threadId,searchTerm:threadFind.query.trim(),cursor:threadFind.nextCursor,limit:50});
+      if(activeThreadRef.current?.id!==threadId)return;
+      const added=result?.data||[];const index=threadFind.results.length;const occurrence=added[0]||null;
+      setThreadFind(current=>({...current,results:[...current.results,...added],index:occurrence?index:current.index,nextCursor:result?.nextCursor||null,loading:false,error:"",activeItemId:occurrence?.itemId||current.activeItemId}));
+      if(occurrence)await focusThreadFindOccurrence(occurrence);
+    }catch(error){if(activeThreadRef.current?.id===threadId)setThreadFind(current=>({...current,loading:false,error:error.message||String(error)}))}
   }
   async function openLinkedThread(reference){
     if(!rpc||rpcStatus!=="connected"||!reference?.threadId)throw new Error("The agent harness is not connected.");
@@ -2084,10 +2185,12 @@ export default function App(){
             </div>
           </header>
 
+          <ThreadFindBar state={threadFind} inputRef={threadFindInputRef} onQuery={query=>setThreadFind(current=>({...current,query,error:""}))} onPrevious={()=>stepThreadFind(-1)} onNext={()=>stepThreadFind(1)} onClose={closeThreadFind}/>
+
           <div className="conversation-scroll" ref={conversationScrollRef} onScroll={conversationScrolled}>
             <div className="conversation-column">
               <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
-              <Conversation messages={messages} onEditFromHere={editFromHere} onCite={citeAssistant} allowRevert={["codex","opencode","claude"].includes(agentRuntime)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={agentRuntime==="codex"&&historyPage.threadId===activeThread?.id&&Boolean(historyPage.nextCursor)} loadingEarlier={historyPage.loading} onLoadEarlier={loadEarlierMessages}/>
+              <Conversation messages={messages} onEditFromHere={editFromHere} onCite={citeAssistant} allowRevert={["codex","opencode","claude"].includes(agentRuntime)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={agentRuntime==="codex"&&historyPage.threadId===activeThread?.id&&Boolean(historyPage.nextCursor)} loadingEarlier={historyPage.loading} onLoadEarlier={loadEarlierMessages} activeFindItemId={threadFind.activeItemId}/>
               <ActivityTimeline events={events} assistantText={assistantText} onOpenPanel={name=>name==="workspace"?openRightPanel("diff"):setPanel(name)}/>
               {approvals[0]&&<div className="inline-approval"><ApprovalCard request={approvals[0]} onResolve={resolveApproval}/></div>}
               {queued.map((item,index)=><div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span>{item.native?"Queued in Codex":"Queued"}{queuedEditId===item.id?" · editing":""}</span><p>{item.text}</p><div className="queued-message-actions"><button onClick={()=>sendQueuedNow(item).catch(error=>setEvents(prev=>[...prev,{id:"queue-send-error-"+Date.now(),kind:"error",title:"Could not send queued follow-up: "+(error.message||String(error)),status:"done",raw:{}}]))}>Send now</button><button onClick={()=>editQueued(item)} disabled={queuedEditId===item.id||item.editable===false}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={index===0} onClick={()=>moveQueued(item,-1).catch(error=>setEvents(prev=>[...prev,{id:"queue-reorder-error-"+Date.now(),kind:"error",title:error.message||String(error),status:"done",raw:{}}]))}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={index===queued.length-1} onClick={()=>moveQueued(item,1).catch(error=>setEvents(prev=>[...prev,{id:"queue-reorder-error-"+Date.now(),kind:"error",title:error.message||String(error),status:"done",raw:{}}]))}>↓</button><button onClick={()=>removeQueued(item).catch(error=>setEvents(prev=>[...prev,{id:"queue-delete-error-"+Date.now(),kind:"error",title:error.message||String(error),status:"done",raw:{}}]))}>Remove</button></div></div>)}
@@ -2113,7 +2216,7 @@ export default function App(){
         {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onProjectUpdated={project=>{if(project?.path===projectPath&&(project?.environmentId||null)===(workspaceEnvironmentId||null))setCurrentProject(project)}} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></div>}
         {section==="templates"&&<div className="secondary-page"><h1>Templates</h1><p>Reusable starting points that become normal Trebell turns.</p><div className="template-grid">{[["Ship a feature","Inspect the project, plan a useful feature, implement it, run the relevant tests, fix failures, and summarize the result."],["Fix a bug","Reproduce a meaningful bug in this project, diagnose it, fix it, and validate the fix."],["Review codebase","Map this codebase architecture, important execution paths, risks, and highest-value improvements."],["Refactor safely","Choose a worthwhile refactor, preserve behavior, implement focused changes, and run tests."],["Autonomous build","Take this project to a working validated result. Continue through implementation and test failures until it passes."],["Security review","Review this project for concrete security weaknesses and propose or implement safe fixes."]].map(([name,text])=><button key={name} onClick={()=>{setPrompt(text);setSection("chat")}}><BrainCircuit size={20}/><strong>{name}</strong><span>{text}</span></button>)}</div></div>}
         {section==="freebuff"&&agentRuntime==="codex"&&provider==="freebuff"&&<div className="secondary-page"><div className="page-header"><div><h1>Freebuff</h1><p>Account, balance, model pricing and session state.</p></div></div><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model)}/></div>}
-        {section==="tools"&&agentRuntime==="codex"&&<div className="secondary-page full"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} onHistoryImported={historyImported}/></div>}
+        {section==="tools"&&agentRuntime==="codex"&&<div className="secondary-page full"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} onHistoryImported={historyImported} platform={bootstrap.platform}/></div>}
         {section==="environments"&&<div className="secondary-page full"><EnvironmentsPage/></div>}
       {section==="usage"&&<div className="secondary-page full"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><LicensesPage/></div>}

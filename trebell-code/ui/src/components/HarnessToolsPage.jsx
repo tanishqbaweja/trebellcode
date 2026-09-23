@@ -1,14 +1,15 @@
 import React,{useEffect,useMemo,useState} from "react";
 import { Blocks, Brain, CheckCircle2, FlaskConical, PlugZap, RefreshCw, ShieldCheck, Sparkles, Wrench } from "lucide-react";
 import { api } from "../api.js";
+import { allowedWindowsSetupModes, windowsSandboxStatus, worldWritableWarningText } from "../windows-sandbox.js";
 
 function Section({title,icon:Icon,count,children}){
   return <section className="capability-card"><div className="capability-card-head"><span><Icon size={15}/><strong>{title}</strong></span>{Number.isFinite(count)&&<em>{count}</em>}</div>{children}</section>;
 }
 function ErrorLine({value}){return value?<p className="capability-error">{value}</p>:null}
 
-export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread,skills=[],onHistoryImported}){
-  const [data,setData]=useState({permissions:[],mcp:[],marketplaces:[],apps:[],hooks:[],features:[],sharedPlugins:[],capabilities:null,account:null,rateLimits:null,usage:null,config:null,memory:null});
+export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread,skills=[],onHistoryImported,platform=""}){
+  const [data,setData]=useState({permissions:[],mcp:[],marketplaces:[],apps:[],hooks:[],features:[],sharedPlugins:[],capabilities:null,account:null,rateLimits:null,usage:null,config:null,requirements:null,memory:null,windowsSandbox:null});
   const [errors,setErrors]=useState({});
   const [loading,setLoading]=useState(false);
   const [busy,setBusy]=useState("");
@@ -21,6 +22,9 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [toolArgs,setToolArgs]=useState({});
   const [memoryMessage,setMemoryMessage]=useState("");
   const [memoryResetArmed,setMemoryResetArmed]=useState(false);
+  const [sandboxPending,setSandboxPending]=useState("");
+  const [sandboxMessage,setSandboxMessage]=useState("");
+  const [sandboxWarning,setSandboxWarning]=useState("");
 
   function routedParams(params){
     const threadId=activeThread?.id;
@@ -36,7 +40,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     if(!rpc||rpcStatus!=="connected")return;
     setLoading(true);setErrors({});
     const threadId=activeThread?.id||null;
-    const [permissions,mcp,plugins,apps,hooks,features,sharedPlugins,capabilities,account,rateLimits,usage,config,memory]=await Promise.all([
+    const [permissions,mcp,plugins,apps,hooks,features,sharedPlugins,capabilities,account,rateLimits,usage,config,requirements,memory,windowsSandbox]=await Promise.all([
       call("permissionProfile/list",{limit:100,cwd:projectPath||null}),
       call("mcpServerStatus/list",{limit:100,detail:"full",threadId}),
       call("plugin/list",{cwds:projectPath?[projectPath]:[],forceRefetch:false}),
@@ -49,7 +53,9 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       call("account/rateLimits/read",{excludeResetCreditDetails:true}),
       call("account/usage/read",threadId?{threadId}:{}),
       call("config/read",{includeLayers:true,cwd:projectPath||null}),
+      call("configRequirements/read",{}),
       call("memory/status",{minConsolidatedThreads:20}),
+      platform==="win32"?call("windowsSandbox/readiness",undefined):Promise.resolve(null),
     ]);
     setData({
       permissions:permissions?.data||[],
@@ -64,11 +70,24 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       rateLimits:rateLimits||null,
       usage:usage||null,
       config:config||null,
+      requirements:requirements?.requirements||null,
       memory:memory||null,
+      windowsSandbox:windowsSandbox||null,
     });
     setLoading(false);
   }
-  useEffect(()=>{refresh()},[rpc,rpcStatus,projectPath,activeThread?.id]);
+  useEffect(()=>{refresh()},[rpc,rpcStatus,projectPath,activeThread?.id,platform]);
+  useEffect(()=>{
+    const completed=event=>{
+      const detail=event.detail||{};setSandboxPending("");
+      if(detail.success){setSandboxMessage(`${detail.mode==="elevated"?"Elevated":"Unelevated"} Windows sandbox setup completed.`);setErrors(prev=>({...prev,"windowsSandbox/setupStart":null}))}
+      else{const error=detail.error||"Windows sandbox setup failed.";setSandboxMessage("");setErrors(prev=>({...prev,"windowsSandbox/setupStart":error}))}
+      refresh();
+    };
+    const warning=event=>setSandboxWarning(worldWritableWarningText(event.detail||{}));
+    window.addEventListener("trebell:windows-sandbox-setup",completed);window.addEventListener("trebell:windows-sandbox-warning",warning);
+    return()=>{window.removeEventListener("trebell:windows-sandbox-setup",completed);window.removeEventListener("trebell:windows-sandbox-warning",warning)};
+  },[rpc,rpcStatus,projectPath,activeThread?.id,platform]);
 
   const plugins=useMemo(()=>data.marketplaces.flatMap(m=>(m.plugins||[]).map(p=>({...p,marketplace:m}))),[data.marketplaces]);
   const hookCount=data.hooks.reduce((n,x)=>n+(x.hooks?.length||0),0);
@@ -197,6 +216,16 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     catch(error){setErrors(prev=>({...prev,"memory/reset":error.message||String(error)}))}
     finally{setBusy("")}
   }
+  async function setupWindowsSandbox(mode){
+    if(!rpc||platform!=="win32"||sandboxPending)return;
+    setBusy("windows-sandbox:"+mode);setSandboxMessage("");setErrors(prev=>({...prev,"windowsSandbox/setupStart":null}));
+    try{
+      const result=await request("windowsSandbox/setupStart",{mode,cwd:projectPath||null});
+      if(result?.started!==true)throw new Error("Codex did not start Windows sandbox setup.");
+      setSandboxPending(mode);setSandboxMessage(`${mode==="elevated"?"Elevated":"Unelevated"} setup started. Windows may ask for permission; Trebell will wait for Codex to report completion.`);
+    }catch(error){setErrors(prev=>({...prev,"windowsSandbox/setupStart":error.message||String(error)}))}
+    finally{setBusy("")}
+  }
 
   if(rpcStatus!=="connected")return <div className="empty-state"><Wrench size={28}/><strong>Codex harness is not connected</strong><span>Capabilities will appear when app-server is ready.</span></div>;
 
@@ -233,6 +262,18 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         {memoryMessage&&<p className="capability-status">{memoryMessage}</p>}
         <ErrorLine value={errors["memory/status"]}/><ErrorLine value={errors["thread/memoryMode/set"]}/><ErrorLine value={errors["memory/reset"]}/>
       </Section>
+
+      {platform==="win32"&&<Section title="Windows sandbox" icon={ShieldCheck}>
+        {data.windowsSandbox?(()=>{const status=windowsSandboxStatus(data.windowsSandbox.status);return <div className="capability-kv"><div><span>Native sandbox</span><strong>{status.label}</strong></div><div><span>Managed setup modes</span><strong>{allowedWindowsSetupModes(data.requirements).length?allowedWindowsSetupModes(data.requirements).map(mode=>mode==="elevated"?"Elevated":"Unelevated").join(" · "):"Policy-managed"}</strong></div></div>})():<p>Windows sandbox readiness is unavailable from this Codex runtime.</p>}
+        {data.windowsSandbox&&<p>{windowsSandboxStatus(data.windowsSandbox.status).detail}</p>}
+        {data.windowsSandbox?.status!=="ready"&&<div className="capability-actions">
+          <button onClick={()=>setupWindowsSandbox("unelevated")} disabled={!!busy||!!sandboxPending||!allowedWindowsSetupModes(data.requirements).includes("unelevated")}>{sandboxPending==="unelevated"?"Setting up…":"Set up unelevated"}</button>
+          <button onClick={()=>setupWindowsSandbox("elevated")} disabled={!!busy||!!sandboxPending||!allowedWindowsSetupModes(data.requirements).includes("elevated")}>{sandboxPending==="elevated"?"Setting up…":"Set up elevated"}</button>
+        </div>}
+        {sandboxMessage&&<p className="capability-status">{sandboxMessage}</p>}
+        {sandboxWarning&&<p className="capability-error">{sandboxWarning}</p>}
+        <ErrorLine value={errors["windowsSandbox/readiness"]}/><ErrorLine value={errors["windowsSandbox/setupStart"]}/><ErrorLine value={errors["configRequirements/read"]}/>
+      </Section>}
 
       <Section title="Configuration layers" icon={ShieldCheck} count={data.config?.layers?.length||0}>
         <div className="capability-list">{(data.config?.layers||[]).map((layer,index)=><div key={String(layer.name)+index}><div><strong>{String(layer.name)}</strong><span>{layer.disabledReason||`version ${layer.version}`}</span></div><em className={layer.disabledReason?"":"ok"}>{layer.disabledReason?"disabled":"active"}</em></div>)}</div>

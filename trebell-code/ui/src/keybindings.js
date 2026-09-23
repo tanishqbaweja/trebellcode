@@ -9,6 +9,7 @@ export const KEYBINDING_COMMANDS=[
   {id:"threadPin",label:"Pin / unpin thread",defaultKey:"",defaultWhen:"threadOpen && !terminalFocus && !modalOpen"},
   {id:"threadPrevious",label:"Previous thread",defaultKey:"Mod+Shift+[",defaultWhen:"threadOpen && !textInputFocus && !terminalFocus && !modalOpen"},
   {id:"threadNext",label:"Next thread",defaultKey:"Mod+Shift+]",defaultWhen:"threadOpen && !textInputFocus && !terminalFocus && !modalOpen"},
+  {id:"threadFind",label:"Find in current Codex thread",defaultKey:"Mod+F",defaultWhen:"threadOpen && chatFocus && codexRuntime && !terminalFocus && !modalOpen"},
   ...Array.from({length:9},(_,index)=>({id:"threadJump"+(index+1),label:"Open thread "+(index+1),defaultKey:"Mod+"+(index+1),defaultWhen:"desktop && !modelPickerOpen && !textInputFocus && !terminalFocus && !modalOpen"})),
   {id:"stash",label:"Stash prompt",defaultKey:"Ctrl+S",defaultWhen:"chatFocus && !terminalFocus && !modalOpen"},
   {id:"terminal",label:"Toggle terminal",defaultKey:"Ctrl+Shift+T",defaultWhen:"projectOpen && !modalOpen"},

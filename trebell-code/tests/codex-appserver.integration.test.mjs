@@ -144,6 +144,7 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
       ["account/rateLimits/read",{excludeResetCreditDetails:true}],
       ["account/usage/read",{}],
       ["config/read",{includeLayers:true,cwd:process.cwd()}],
+      ["configRequirements/read",{}],
       ["mcpServerStatus/list",{limit:20,detail:"full",threadId:null}],
       ["plugin/list",{cwds:[process.cwd()],forceRefetch:false}],
       ["plugin/share/list",{}],
@@ -155,6 +156,7 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
       ["experimentalFeature/list",{limit:100,threadId:null}],
       ["modelProvider/capabilities/read",{}],
       ["memory/status",{minConsolidatedThreads:1}],
+      ["windowsSandbox/readiness",{}],
       ["externalAgentConfig/detect",{includeHome:true,cwds:[process.cwd()],maxSessions:10,maxSessionAgeDays:30}],
     ];
     let id=20;
@@ -178,6 +180,8 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
     const memoryStatus=await rpc(ws,id++,"memory/status",{minConsolidatedThreads:1});
     assert.equal(typeof memoryStatus.v2ConsolidatedThreads,"number");
     assert.equal(typeof memoryStatus.v2Ready,"boolean");
+    const sandboxReadiness=await rpc(ws,id++,"windowsSandbox/readiness",{});
+    assert.ok(["ready","notConfigured","updateRequired"].includes(sandboxReadiness.status),`unexpected Windows sandbox readiness: ${JSON.stringify(sandboxReadiness)}`);
     const memoryReset=await rpcOutcome(ws,id++,"memory/reset");
     assert.equal(memoryReset.ok,true,memoryReset.error?.message||"memory/reset failed in the disposable integration home");
   } finally {
@@ -318,5 +322,11 @@ test("native Codex history resumes with a bounded turns page and paginates older
     const latestId=resumed.initialTurnsPage.data[0].id;
     const older=await rpc(ws,22,"thread/turns/list",{threadId,cursor:resumed.initialTurnsPage.nextCursor,limit:1,sortDirection:"desc",itemsView:"full"});
     assert.equal(older.data?.length,1);assert.notEqual(older.data[0].id,latestId);assert.ok(older.nextCursor,"three persisted turns should leave another older page after the second turn");
+    const searched=await rpc(ws,23,"thread/searchOccurrences",{threadId,searchTerm:"history pagination turn 1",limit:10});
+    assert.ok(searched.data?.length,"native occurrence search should find the persisted first user message");
+    const occurrence=searched.data.find(item=>item.snippet?.toLowerCase().includes("history pagination turn 1"))||searched.data[0];
+    assert.ok(occurrence.turnCursor);assert.ok(occurrence.turnId);assert.ok(occurrence.itemId);
+    const jumped=await rpc(ws,24,"thread/turns/list",{threadId,cursor:occurrence.turnCursor,limit:1,itemsView:"full"});
+    assert.equal(jumped.data?.[0]?.id,occurrence.turnId,"the occurrence turn cursor should hydrate the matching turn directly");
   }finally{try{ws?.close()}catch{}await gui.close();await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
 });

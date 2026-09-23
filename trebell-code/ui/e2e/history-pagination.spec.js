@@ -14,7 +14,8 @@ async function freePort(){
 }
 
 function turn(index){
-  const padding=`Message ${index} `+"history ".repeat(34);
+  const marker=[3,15,18].includes(index)?"needle ":"";
+  const padding=`Message ${index} ${marker}`+"history ".repeat(34);
   return {id:`turn-${index}`,status:"completed",items:[
     {id:`user-${index}`,type:"userMessage",content:[{type:"inputText",text:`User ${padding}`}]},
     {id:`assistant-${index}`,type:"agentMessage",text:`Assistant ${padding}`},
@@ -41,7 +42,17 @@ test("Codex thread history opens from a bounded page and loads older turns on de
         if(message.params.threadId===legacyThread.id)result=message.params.excludeTurns===false?{thread:{...legacyThread,turns:[turn(99)]}}:{thread:legacyThread};
         else result={thread,initialTurnsPage:{data:latest,nextCursor:"older-page",backwardsCursor:"latest-anchor"}};
       }
-      else if(message.method==="thread/turns/list")result={data:message.params.cursor==="older-page"?older:[],nextCursor:null,backwardsCursor:"older-anchor"};
+      else if(message.method==="thread/turns/list"){
+        const direct=String(message.params.cursor||"").match(/^cursor-turn-(\d+)$/);
+        result=direct?{data:[turn(Number(direct[1]))],nextCursor:null,backwardsCursor:null}:{data:message.params.cursor==="older-page"?older:[],nextCursor:null,backwardsCursor:"older-anchor"};
+      }
+      else if(message.method==="thread/searchOccurrences"){
+        if(message.params.cursor==="find-page-2")result={data:[{turnId:"turn-18",itemId:"assistant-18",snippet:"Assistant Message 18 needle history",snippetMatchRange:{start:21,end:27},turnCursor:"cursor-turn-18"}],nextCursor:null};
+        else result={data:[
+          {turnId:"turn-3",itemId:"user-3",snippet:"User Message 3 needle history",snippetMatchRange:{start:15,end:21},turnCursor:"cursor-turn-3"},
+          {turnId:"turn-15",itemId:"assistant-15",snippet:"Assistant Message 15 needle history",snippetMatchRange:{start:21,end:27},turnCursor:"cursor-turn-15"},
+        ],nextCursor:"find-page-2"};
+      }
       else if(message.method==="thread/goal/get")result={goal:null};
       else if(message.method==="thread/attachment/list")result={data:[],nextCursor:null};
       else if(message.method==="thread/queue/list")result={data:[],nextCursor:null};
@@ -68,12 +79,27 @@ test("Codex thread history opens from a bounded page and loads older turns on de
     const resumeCall=calls.find(call=>call.method==="thread/resume");
     expect(resumeCall?.params?.excludeTurns).toBe(true);expect(resumeCall?.params?.initialTurnsPage).toEqual({limit:40,sortDirection:"desc",itemsView:"full"});
     expect(calls.some(call=>call.method==="thread/turns/list")).toBe(false);
+    await page.keyboard.press("Control+f");
+    const findBar=page.getByTestId("thread-find-bar");await expect(findBar).toBeVisible();
+    const findInput=page.getByTestId("thread-find-input");await findInput.fill("needle");
+    await expect(findBar.locator(".thread-find-count")).toHaveText("1 / 2+");
+    await expect(page.locator('[data-message-id="user-3"]')).toHaveClass(/find-active/);
+    const directTurn=calls.find(call=>call.method==="thread/turns/list"&&call.params?.cursor==="cursor-turn-3");expect(directTurn?.params?.limit).toBe(1);
+    await page.screenshot({path:auditDir+"chat-thread-find-1600x980.png",fullPage:true});
+    await findBar.getByRole("button",{name:"Next match"}).click();await expect(findBar.locator(".thread-find-count")).toHaveText("2 / 2+");await expect(page.locator('[data-message-id="assistant-15"]')).toHaveClass(/find-active/);
+    await findBar.getByRole("button",{name:"Next match"}).click();await expect(findBar.locator(".thread-find-count")).toHaveText("3 / 3");await expect(page.locator('[data-message-id="assistant-18"]')).toHaveClass(/find-active/);
+    expect(calls.some(call=>call.method==="thread/searchOccurrences"&&call.params?.cursor==="find-page-2")).toBe(true);
+    await page.setViewportSize({width:1280,height:800});
+    const findBox=await findBar.boundingBox(),workspaceBox=await page.locator(".chat-workspace").boundingBox();expect(findBox).toBeTruthy();expect(workspaceBox).toBeTruthy();expect(findBox.x+findBox.width).toBeLessThanOrEqual(workspaceBox.x+workspaceBox.width+1);
+    await page.screenshot({path:auditDir+"chat-thread-find-1280x800.png",fullPage:true});
+    await page.setViewportSize({width:1600,height:980});
+    await findBar.getByRole("button",{name:"Close find"}).click();await expect(findBar).toBeHidden();
     const scroller=page.locator(".conversation-scroll");await scroller.evaluate(node=>{node.scrollTop=0});
     await page.screenshot({path:auditDir+"chat-paginated-history-1600x980.png",fullPage:true});
     const before=await scroller.evaluate(node=>({top:node.scrollTop,height:node.scrollHeight}));
     await page.getByRole("button",{name:"Load earlier messages"}).click();
     await expect(page.getByText(/User Message 1 history/)).toBeVisible();await expect(page.getByRole("button",{name:"Load earlier messages"})).toHaveCount(0);
-    const turnsCall=calls.find(call=>call.method==="thread/turns/list");expect(turnsCall?.params).toEqual({threadId:thread.id,cursor:"older-page",limit:40,sortDirection:"desc",itemsView:"full"});
+    const turnsCall=calls.find(call=>call.method==="thread/turns/list"&&call.params?.cursor==="older-page");expect(turnsCall?.params).toEqual({threadId:thread.id,cursor:"older-page",limit:40,sortDirection:"desc",itemsView:"full"});
     const after=await scroller.evaluate(node=>({top:node.scrollTop,height:node.scrollHeight}));
     expect(after.height).toBeGreaterThan(before.height);expect(after.top).toBeGreaterThan(0);expect(Math.abs(after.top-(after.height-before.height))).toBeLessThan(80);
     await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"chat-paginated-history-loaded-1280x800.png",fullPage:true});
