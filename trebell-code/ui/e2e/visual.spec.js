@@ -432,6 +432,8 @@ test("major workspace surfaces render their real destinations without horizontal
 
   await page.getByRole("button",{name:"Projects",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
+  await expect(page.getByRole("button",{name:"Add local project",exact:true})).toHaveCount(0);
+  await expect(page.locator(".clone-card")).toHaveCount(0);
   const generalChatCard=page.locator(".general-chat-card");
   await expect(generalChatCard).toBeVisible();
   expect(await generalChatCard.evaluate(node=>getComputedStyle(node).display)).toBe("grid");
@@ -486,6 +488,7 @@ test("project and environment configuration forms stay readable when expanded",a
   await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
   const cloneCard=page.locator(".clone-card");
   await expect(cloneCard).toBeVisible();
+  await expect(cloneCard.getByLabel("Clone environment").locator('option[value="local"]')).toHaveCount(0);
   await cloneCard.getByLabel("Clone environment").selectOption("visual-ssh");
   await expect(cloneCard.getByLabel("Clone parent directory")).toBeVisible();
   await cloneCard.getByLabel("Clone URL").fill("https://github.com/example/visual-audit.git");
@@ -576,7 +579,10 @@ test("right panel tabs are functional and visually bounded",async({page,request}
     if(label==="Diff")await expect(panel.locator(".changes-empty")).toBeVisible();
     if(label==="Browser"){
       await expect(panel.locator(".preview-empty-state")).toBeVisible();
-      await expect(panel).toContainText("active coding agent DOM-aware browser control");
+      await expect(panel).toContainText("Desktop Agent Browser is unavailable here");
+      await expect(panel.locator(".agent-browser-toolbar")).toHaveCount(0);
+      await expect(panel.locator(".browser-device-toolbar")).toHaveCount(0);
+      await expect(panel.locator(".browser-inspector")).toHaveCount(0);
     }
     if(label==="Git"){
       await expect(panel.locator(".source-provider-field")).toBeVisible();
@@ -993,6 +999,7 @@ test("populated source control and pull request detail stay usable",async({page,
   await gitTab.click();
   await expect(gitTab).toHaveClass(/active/);
   await expect(panel.locator(".sc-toolbar select").first()).toHaveValue("feature/ui-polish");
+  await expect(panel.getByRole("button",{name:"Add worktree",exact:true})).toHaveCount(0);
   await expect(panel.getByRole("button",{name:/#142 Polish Trebell desktop interaction states/})).toBeVisible();
   await page.screenshot({path:auditDir+"source-control-populated-1600x980.png",fullPage:true});
 
