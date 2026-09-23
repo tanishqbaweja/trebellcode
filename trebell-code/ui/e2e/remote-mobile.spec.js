@@ -10,16 +10,16 @@ async function freePort(){const server=createServer();await new Promise((resolve
 
 test("Trebell Remote pages bounded item history instead of hydrating full Codex turns",async({page})=>{
   test.setTimeout(30_000);
-  const calls=[];
+  const calls=[];let notificationSocket=null,threadVisible=true;
   const thread={id:"remote-history",name:"Remote bounded history",preview:"Mobile history fixture",historyMode:"paginated",cwd:"C:\\fixture\\repo",createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
   const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const sockets=new Set();
   upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
   upstreamWss.on("connection",ws=>{
-    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    sockets.add(ws);notificationSocket=ws;ws.on("close",()=>sockets.delete(ws));
     ws.on("message",data=>{
       const message=JSON.parse(String(data));if(message.id==null||!message.method)return;calls.push(message);let result={};
       if(message.method==="initialize")result={userAgent:"remote-history-fixture"};
-      else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
+      else if(message.method==="thread/list")result={data:threadVisible?[thread]:[],nextCursor:null};
       else if(message.method==="thread/resume"){
         if(message.params.excludeTurns===false)throw new Error("paginated fixture must not request full turns");
         result={thread,itemsBackwardsCursor:"cursor-latest",turnsBackwardsCursor:"turn-cursor"};
@@ -53,6 +53,9 @@ test("Trebell Remote pages bounded item history instead of hydrating full Codex 
     expect(calls.some(call=>call.method==="thread/resume"&&call.params?.excludeTurns===false)).toBe(false);
     const bounds=await page.locator("main").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(bounds.scroll).toBeLessThanOrEqual(bounds.client+1);
     await page.screenshot({path:auditDir+"remote-bounded-history-390x844.png",fullPage:true});
+    const listCallsBefore=calls.filter(call=>call.method==="thread/list").length;threadVisible=false;notificationSocket.send(JSON.stringify({method:"thread/deleted",params:{threadId:thread.id}}));
+    await expect.poll(()=>calls.filter(call=>call.method==="thread/list").length).toBeGreaterThan(listCallsBefore);
+    await expect(page.getByRole("button",{name:"Remote bounded history"})).toHaveCount(0);await expect(page.locator("#transcript")).toHaveText("");
   }finally{
     await remote.close();
     for(const socket of sockets)try{socket.terminate()}catch{}
