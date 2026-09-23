@@ -454,6 +454,34 @@ test("settings page visual audit",async({page,request})=>{
   expect(compactLight.scrollWidth).toBeLessThanOrEqual(compactLight.clientWidth+1);
 });
 
+test("Freebuff sign-in failures surface immediately without starting a useless poll",async({page,request})=>{
+  test.setTimeout(30_000);
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff"}});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  let bootstrapCalls=0;
+  await page.route(/\/api\/bootstrap$/,route=>{
+    bootstrapCalls++;
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...boot,mock:false,loggedIn:false,providerReady:false,appServerReady:false,wsUrl:null})});
+  });
+  await page.route("**/api/login/start",route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate Freebuff sign-in failure"})}));
+  await page.goto("/");
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await page.getByRole("button",{name:/Agents & models/}).click();
+  const signIn=page.getByRole("button",{name:"Sign in to Freebuff",exact:true});
+  await expect(signIn).toBeVisible();
+  const callsBefore=bootstrapCalls;
+  await signIn.click();
+  const status=page.getByTestId("provider-status");
+  await expect(status).toContainText("Deliberate Freebuff sign-in failure");
+  await expect(status).toHaveClass(/provider-status-error/);
+  await expect(signIn).toBeEnabled();
+  await page.waitForTimeout(1700);
+  expect(bootstrapCalls).toBe(callsBefore);
+  await page.setViewportSize({width:1280,height:800});
+  await status.scrollIntoViewIfNeeded();
+  await page.screenshot({path:auditDir+"freebuff-signin-error-1280x800.png",fullPage:true});
+});
+
 test("Claude runtime profile editor exposes real auto-compaction settings",async({page,request})=>{
   test.setTimeout(35_000);
   await prepare(page,request);

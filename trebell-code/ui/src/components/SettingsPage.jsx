@@ -27,6 +27,8 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   const [apiKey,setApiKey]=useState("");
   const [providerMessage,setProviderMessage]=useState("");
   const [providerSwitching,setProviderSwitching]=useState(false);
+  const [freebuffAuthBusy,setFreebuffAuthBusy]=useState(false);
+  const [freebuffAuthError,setFreebuffAuthError]=useState(false);
   const [agentInfo,setAgentInfo]=useState(null);
   const [agentMessage,setAgentMessage]=useState("");
   const [installingAgent,setInstallingAgent]=useState(null);
@@ -138,6 +140,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     if("modelProvider" in patch){
       setApiKey("");
       setProviderMessage("");
+      setFreebuffAuthError(false);
       try{
         const refreshPromise=onProviderUpdated?.({provider:next.modelProvider||patch.modelProvider,agentRuntime:next.agentRuntime||selectedAgent});
         await Promise.all([loadProviders(),refreshPromise]);
@@ -145,6 +148,16 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     }
     if("customModels" in patch)await onProviderUpdated?.();
     return next;
+  }
+  async function changeFreebuffAuth(){
+    if(freebuffAuthBusy)return;
+    setFreebuffAuthBusy(true);setFreebuffAuthError(false);setProviderMessage(loggedIn?"Signing out…":"Waiting for Freebuff sign-in…");
+    try{
+      if(loggedIn){await logout?.();setProviderMessage("Signed out.")}
+      else{await login?.();setProviderMessage("Signed in.")}
+      await loadProviders();
+    }catch(error){setFreebuffAuthError(true);setProviderMessage(error?.message||String(error)||"Freebuff authentication failed.")}
+    finally{setFreebuffAuthBusy(false)}
   }
   async function selectEnvironmentTheme(theme){
     if(!theme?.publishedId||!environmentThemeCatalog?.environmentKey)return;
@@ -441,7 +454,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
         </label>
         {selected==="freebuff"?<>
           <p>{loggedIn?"Signed in to Freebuff.":"Sign in to use Freebuff inference."}</p>
-          <button className="setting-action" onClick={loggedIn?logout:login}>{loggedIn?"Sign out":"Sign in to Freebuff"}</button>
+          <button className="setting-action" onClick={changeFreebuffAuth} disabled={freebuffAuthBusy}>{freebuffAuthBusy?(loggedIn?"Signing out…":"Waiting for sign-in…"):(loggedIn?"Sign out":"Sign in to Freebuff")}</button>
         </>:<>
           <label>API key
             <input data-testid="provider-api-key" type="password" autoComplete="off" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder={selectedStatus?.hasKey?"Saved key ••••••••":"Paste API key"}/>
@@ -452,7 +465,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
           </div>
           <p className="provider-note">{selected==="agentrouter"?"Models are loaded live from AgentRouter /v1/models for this key.":selected==="vyceai"?"Models are loaded live from Vyce AI /v1/models for this key.":selected==="justworker"?"Available model: claude-opus-4-8.":"Available model: glm-5.3."}</p>
         </>}
-        <p data-testid="provider-status" className={modelError?"provider-status-error":""}><strong>{PROVIDER_LABELS[selected]}</strong> · {providerSwitching?"switching provider…":selectedStatus?.hasKey||selected==="freebuff"?(modelError?"provider error":(providerInfo?.ready?"ready":"configured")):"API key required"}{providerMessage?" · "+providerMessage:""}{modelError?" · "+modelError:""}</p>
+        <p data-testid="provider-status" className={modelError||freebuffAuthError?"provider-status-error":""}><strong>{PROVIDER_LABELS[selected]}</strong> · {providerSwitching?"switching provider…":selectedStatus?.hasKey||selected==="freebuff"?(modelError||freebuffAuthError?"provider error":(providerInfo?.ready?"ready":"configured")):"API key required"}{providerMessage?" · "+providerMessage:""}{modelError?" · "+modelError:""}</p>
       </div>}
       {["codex","claude","opencode"].includes(selectedAgent)&&<div className="settings-card custom-model-settings" {...targetProps("agents-models")} hidden={settingsSection!=="agents"}>
         <h3>Custom models</h3>

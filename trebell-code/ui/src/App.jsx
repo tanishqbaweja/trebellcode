@@ -2236,7 +2236,26 @@ export default function App(){
     if(!result?.proof)throw new Error("Codex did not return a verification proof.");
     return result.proof;
   }
-  async function login(){await fetch("/api/login/start",{method:"POST"}).catch(()=>{});const poll=setInterval(async()=>{const data=await api("/api/bootstrap").catch(()=>null);if(data?.loggedIn){clearInterval(poll);setBootstrap(data);await refreshProviderModels();}},1500);setTimeout(()=>clearInterval(poll),120000)}
+  async function login(){
+    const started=await api("/api/login/start",{method:"POST"});
+    if(started?.started!==true)throw new Error("Freebuff sign-in could not be started.");
+    return new Promise((resolve,reject)=>{
+      let settled=false;
+      const finish=(error,data)=>{
+        if(settled)return;settled=true;clearInterval(poll);clearTimeout(timeout);
+        error?reject(error):resolve(data);
+      };
+      const check=async()=>{
+        const data=await api("/api/bootstrap").catch(()=>null);
+        if(!data?.loggedIn)return;
+        try{setBootstrap(data);await refreshProviderModels();finish(null,data)}
+        catch(error){finish(error)}
+      };
+      const poll=setInterval(check,1500);
+      const timeout=setTimeout(()=>finish(new Error("Freebuff sign-in timed out. Try again.")),120000);
+      check();
+    });
+  }
   async function logout(){await api("/api/logout",{method:"POST"});setBootstrap(prev=>({...prev,loggedIn:false,providerReady:false}));setModels([]);setModel("");setSelectedModels([]);setFreebuff({loggedIn:false})}
   async function renameThread(){if(!rpc||!activeThread)return;const name=prompt("Rename thread",titleOf(activeThread));if(!name?.trim())return;await rpc.request("thread/name/set",{threadId:activeThread.id,name:name.trim()});setActiveThread(prev=>({...prev,name:name.trim()}));setThreads(prev=>prev.map(t=>t.id===activeThread.id?{...t,name:name.trim()}:t))}
   async function shareThread(){const text=messages.map(m=>(m.role==="user"?"You":"Trebell Code")+": "+m.text).join("\n\n");if(text)await writeClipboardText(text)}
