@@ -76,6 +76,82 @@ function turnWithItemsView(turn,itemsView="summary"){
   return {...turn,items:[...users,...(agents.length?[agents.at(-1)]:[])],itemsView:"summary"};
 }
 
+function agentSearchText(item){
+  if(item?.type==="userMessage"){
+    if(typeof item.text==="string")return item.text;
+    return (item.content||[]).filter(part=>part?.type==="text"&&typeof part.text==="string").map(part=>part.text).join("");
+  }
+  if(item?.type==="agentMessage"&&typeof item.text==="string")return item.text.replace(/\s+/g," ").trim();
+  return "";
+}
+
+function literalRanges(text,needle){
+  const lowerNeedle=String(needle||"").toLowerCase();if(!lowerNeedle)return [];
+  let lowered="";const spans=[];let originalOffset=0;
+  for(const character of String(text||"")){
+    const lower=character.toLowerCase(),lowerStart=lowered.length;lowered+=lower;
+    spans.push({lowerStart,lowerEnd:lowered.length,originalStart:originalOffset,originalEnd:originalOffset+character.length});
+    originalOffset+=character.length;
+  }
+  const ranges=[];let from=0;
+  while(from<=lowered.length-lowerNeedle.length){
+    const start=lowered.indexOf(lowerNeedle,from);if(start<0)break;const end=start+lowerNeedle.length;
+    const first=spans.find(span=>span.lowerEnd>start),last=[...spans].reverse().find(span=>span.lowerStart<end);
+    if(first&&last)ranges.push({start:first.originalStart,end:last.originalEnd});
+    from=start+Math.max(1,lowerNeedle.length);
+  }
+  return ranges;
+}
+
+function snippetForRange(text,range){
+  const before=48,after=96;let start=Math.max(0,range.start-before),end=Math.min(text.length,range.end+after);
+  if(start>0&&/[\uDC00-\uDFFF]/.test(text[start]))start--;
+  if(end<text.length&&/[\uD800-\uDBFF]/.test(text[end-1]))end++;
+  const leading=start>0,trailing=end<text.length,prefix=leading?"... ":"",suffix=trailing?" ...":"";
+  return {snippet:prefix+text.slice(start,end)+suffix,snippetMatchRange:{start:prefix.length+range.start-start,end:prefix.length+range.end-start}};
+}
+
+function searchCursor({threadId,searchTerm,turnId,itemId,matchStart}){
+  const payload={threadId:String(threadId),searchTerm:String(searchTerm),turnId:String(turnId),itemId:String(itemId),matchStart:Number(matchStart)||0};
+  return "agent-search-v1:"+Buffer.from(JSON.stringify(payload),"utf8").toString("base64url");
+}
+
+function parseSearchCursor(cursor){
+  const raw=String(cursor||"");if(!raw.startsWith("agent-search-v1:"))return null;
+  try{return JSON.parse(Buffer.from(raw.slice("agent-search-v1:".length),"base64url").toString("utf8"))}catch{return null}
+}
+
+export function searchAgentThreadOccurrences(thread,{threadId=thread?.id,searchTerm="",cursor=null,limit=50}={}){
+  const term=String(searchTerm||"");if(!term.trim())throw Object.assign(new Error("thread/searchOccurrences requires a non-empty searchTerm"),{code:-32602});
+  const occurrences=[];
+  for(const turn of thread?.turns||[]){
+    const items=turn.items||[],finalAgent=[...items].reverse().find(item=>item?.type==="agentMessage")||null;
+    for(const item of items){
+      if(item?.type!=="userMessage"&&item!==finalAgent)continue;
+      const text=agentSearchText(item);if(!text)continue;
+      for(const range of literalRanges(text,term)){
+        const snippet=snippetForRange(text,range);
+        occurrences.push({
+          turnId:turn.id,itemId:item.id,snippet:snippet.snippet,snippetMatchRange:snippet.snippetMatchRange,
+          turnCursor:turnCursor(turn),__matchStart:range.start,
+        });
+      }
+    }
+  }
+  let start=0;
+  if(cursor){
+    const anchor=parseSearchCursor(cursor);
+    if(!anchor||String(anchor.threadId)!==String(threadId)||String(anchor.searchTerm)!==term)throw Object.assign(new Error("Invalid thread search cursor"),{code:-32602});
+    start=occurrences.findIndex(item=>String(item.turnId)===String(anchor.turnId)&&String(item.itemId)===String(anchor.itemId)&&item.__matchStart===Number(anchor.matchStart));
+    if(start<0)throw Object.assign(new Error("Thread search cursor no longer exists"),{code:-32602});
+  }
+  const pageSize=Math.max(1,Math.min(200,Number(limit)||50)),selected=occurrences.slice(start,start+pageSize),next=occurrences[start+pageSize]||null;
+  return {
+    data:selected.map(({__matchStart,...item})=>item),
+    nextCursor:next?searchCursor({threadId,searchTerm:term,turnId:next.turnId,itemId:next.itemId,matchStart:next.__matchStart}):null,
+  };
+}
+
 export function paginateAgentThreadTurns(thread,{cursor=null,limit=40,sortDirection="desc",itemsView="summary"}={}){
   const turns=thread?.turns||[];const descending=String(sortDirection||"desc").toLowerCase()!=="asc";
   const pageSize=Math.max(1,Math.min(200,Number(limit)||40));let start=descending?turns.length-1:0;
@@ -350,6 +426,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     if(method==="thread/turns/list"){
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
       return paginateAgentThreadTurns(thread,params);
+    }
+    if(method==="thread/searchOccurrences"){
+      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      return searchAgentThreadOccurrences(thread,params);
     }
     if(method==="thread/name/set"){
       const runtimeSession=sessions.get(params.threadId);if(runtimeSession instanceof ClaudeAgentSession)await runtimeSession.rename(params.name).catch(()=>{});

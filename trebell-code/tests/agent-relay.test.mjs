@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { WebSocket } from "ws";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
-import { agentThreadResumePayload,attachAgentRelay,paginateAgentThreadItems,paginateAgentThreadTurns,restoreClaudeRejectedRewind } from "../src/agent-relay.mjs";
+import { agentThreadResumePayload,attachAgentRelay,paginateAgentThreadItems,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences } from "../src/agent-relay.mjs";
 
 test("rejected Claude rewind restores the original provider session and removed turns",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-claude-rewind-"));
@@ -78,6 +78,26 @@ test("agent turn pagination supports summary, full and metadata-only views with 
   assert.throws(()=>paginateAgentThreadTurns(thread,{cursor:"bad"}),/invalid thread turn cursor/i);
 });
 
+test("agent thread search returns every visible occurrence while excluding tools and draft assistant messages",()=>{
+  const thread={id:"thread-search",turns:[
+    {id:"turn-1",items:[
+      {id:"u1",type:"userMessage",content:[{type:"text",text:"Needle first and NEEDLE second"}]},
+      {id:"tool1",type:"commandExecution",aggregatedOutput:"needle hidden tool output"},
+      {id:"draft1",type:"agentMessage",text:"needle hidden draft"},
+      {id:"a1",type:"agentMessage",text:"Final answer contains needle once"},
+    ]},
+    {id:"turn-2",items:[{id:"u2",type:"userMessage",text:"No match here"},{id:"a2",type:"agentMessage",text:"Another needle"}]},
+  ]};
+  const first=searchAgentThreadOccurrences(thread,{searchTerm:"needle",limit:2});
+  assert.deepEqual(first.data.map(item=>item.itemId),["u1","u1"]);assert.ok(first.nextCursor);
+  assert.ok(first.data.every(item=>item.snippet.slice(item.snippetMatchRange.start,item.snippetMatchRange.end).toLowerCase()==="needle"));
+  const second=searchAgentThreadOccurrences(thread,{searchTerm:"needle",cursor:first.nextCursor,limit:10});
+  assert.deepEqual(second.data.map(item=>item.itemId),["a1","a2"]);assert.equal(second.nextCursor,null);
+  assert.ok(second.data.every(item=>item.turnCursor?.startsWith("agent-turn-v1:")));
+  assert.doesNotMatch(JSON.stringify([...first.data,...second.data]),/hidden tool output|hidden draft/);
+  assert.throws(()=>searchAgentThreadOccurrences(thread,{searchTerm:"other",cursor:first.nextCursor}),/invalid thread search cursor/i);
+});
+
 async function listen(server){
   await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));
   return server.address().port;
@@ -108,6 +128,8 @@ test("agent relay broadcasts Codex-compatible archive, unarchive and delete life
     assert.deepEqual(itemPage.data.map(entry=>entry.item.id),["fixture-answer"]);assert.ok(itemPage.nextCursor);assert.ok(itemPage.backwardsCursor);
     const turnPage=await rpc("thread/turns/list",{threadId:thread.id,limit:1,sortDirection:"desc",itemsView:"notLoaded"});
     assert.deepEqual(turnPage.data.map(entry=>entry.id),[turn.id]);assert.deepEqual(turnPage.data[0].items,[]);assert.equal(turnPage.data[0].itemsView,"notLoaded");
+    const search=await rpc("thread/searchOccurrences",{threadId:thread.id,searchTerm:"fixture",limit:10});
+    assert.deepEqual(search.data.map(entry=>entry.itemId),["user-"+turn.id,"fixture-answer"]);
     await rpc("thread/archive",{threadId:thread.id});
     await rpc("thread/unarchive",{threadId:thread.id});
     await rpc("thread/delete",{threadId:thread.id});
