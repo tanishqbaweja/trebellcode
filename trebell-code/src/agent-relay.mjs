@@ -121,6 +121,51 @@ function parseSearchCursor(cursor){
   try{return JSON.parse(Buffer.from(raw.slice("agent-search-v1:".length),"base64url").toString("utf8"))}catch{return null}
 }
 
+function threadListSignature(params={}){
+  const cwd=Array.isArray(params.cwd)?params.cwd.map(String):params.cwd==null?null:String(params.cwd);
+  return JSON.stringify({
+    archived:params.archived===true,
+    cwd,
+    section:Object.prototype.hasOwnProperty.call(params,"sectionId")?(params.sectionId??null):"__all__",
+    searchTerm:String(params.searchTerm||""),
+    sortKey:String(params.sortKey||"created_at"),
+    sortDirection:String(params.sortDirection||"desc"),
+  });
+}
+
+function threadListCursor(thread,signature){
+  if(!thread?.id)return null;
+  return "agent-thread-v1:"+Buffer.from(JSON.stringify({id:String(thread.id),signature}),"utf8").toString("base64url");
+}
+
+function parseThreadListCursor(cursor){
+  const raw=String(cursor||"");if(!raw.startsWith("agent-thread-v1:"))return null;
+  try{return JSON.parse(Buffer.from(raw.slice("agent-thread-v1:".length),"base64url").toString("utf8"))}catch{return null}
+}
+
+export function paginateAgentThreads(threads=[],params={}){
+  const archived=params.archived===true;let data=(threads||[]).filter(thread=>Boolean(thread?.archived)===archived);
+  const cwdFilters=(Array.isArray(params.cwd)?params.cwd:[params.cwd]).filter(value=>value!=null&&String(value)!=="").map(String);
+  if(cwdFilters.length)data=data.filter(thread=>cwdFilters.includes(String(thread?.cwd||"")));
+  if(Object.prototype.hasOwnProperty.call(params,"sectionId")){
+    const sectionId=params.sectionId??null;
+    data=data.filter(thread=>sectionId==null?!thread?.section?.id:String(thread?.section?.id||"")===String(sectionId));
+  }
+  const term=String(params.searchTerm||"").trim().toLowerCase();
+  if(term)data=data.filter(thread=>String(thread?.name||thread?.preview||"").toLowerCase().includes(term));
+  const sortKey=String(params.sortKey||"created_at"),direction=String(params.sortDirection||"desc").toLowerCase()==="asc"?1:-1;
+  const sortValue=thread=>sortKey==="created_at"?Number(thread?.createdAt||0):sortKey==="section_position"?Number(thread?.sectionPosition??thread?.updatedAt??0):Number(thread?.updatedAt||thread?.createdAt||0);
+  data.sort((left,right)=>{const delta=sortValue(left)-sortValue(right);if(delta)return delta*direction;return String(left?.id||"").localeCompare(String(right?.id||""))*direction});
+  const signature=threadListSignature(params);let start=0;
+  if(params.cursor){
+    const anchor=parseThreadListCursor(params.cursor);
+    if(!anchor||anchor.signature!==signature)throw Object.assign(new Error("Invalid thread list cursor"),{code:-32602});
+    start=data.findIndex(thread=>String(thread.id)===String(anchor.id));if(start<0)throw Object.assign(new Error("Thread list cursor no longer exists"),{code:-32602});
+  }
+  const pageSize=Math.max(1,Math.min(200,Number(params.limit)||100)),selected=data.slice(start,start+pageSize),next=data[start+pageSize]||null;
+  return {data:selected,nextCursor:next?threadListCursor(next,signature):null,backwardsCursor:selected.length?threadListCursor(selected[0],signature):null};
+}
+
 export function searchAgentThreadOccurrences(thread,{threadId=thread?.id,searchTerm="",cursor=null,limit=50}={}){
   const term=String(searchTerm||"");if(!term.trim())throw Object.assign(new Error("thread/searchOccurrences requires a non-empty searchTerm"),{code:-32602});
   const occurrences=[];
@@ -368,7 +413,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
   async function request(context,method,params={}){
     if(method==="initialize")return {userAgent:"trebell-agent-relay",capabilities:{experimentalApi:true}};
     const runtime=runtimeManager.activeRuntime();
-    if(method==="thread/list")return {data:threadStore.list(runtime).filter(thread=>!thread.archived).slice(0,params.limit||100),nextCursor:null};
+    if(method==="thread/list")return paginateAgentThreads(threadStore.list(runtime),params);
     if(method==="thread/read"){
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
       return {thread:params.includeTurns===false?{...thread,turns:[]}:thread};

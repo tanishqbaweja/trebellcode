@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { WebSocket } from "ws";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
-import { agentThreadResumePayload,attachAgentRelay,paginateAgentThreadItems,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences } from "../src/agent-relay.mjs";
+import { agentThreadResumePayload,attachAgentRelay,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences } from "../src/agent-relay.mjs";
 
 test("rejected Claude rewind restores the original provider session and removed turns",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-claude-rewind-"));
@@ -98,6 +98,25 @@ test("agent thread search returns every visible occurrence while excluding tools
   assert.throws(()=>searchAgentThreadOccurrences(thread,{searchTerm:"other",cursor:first.nextCursor}),/invalid thread search cursor/i);
 });
 
+test("agent thread listing paginates stable filtered sidebar views",()=>{
+  const threads=[
+    {id:"a",name:"Alpha task",cwd:"/repo/a",createdAt:1,updatedAt:40,archived:false,section:null},
+    {id:"b",name:"Beta task",cwd:"/repo/b",createdAt:2,updatedAt:30,archived:false,section:{id:"Pinned",name:"Pinned"}},
+    {id:"c",name:"Gamma task",cwd:"/repo/a",createdAt:3,updatedAt:20,archived:false,section:null},
+    {id:"d",name:"Archived alpha",cwd:"/repo/a",createdAt:4,updatedAt:50,archived:true,section:null},
+  ];
+  const first=paginateAgentThreads(threads,{limit:2,sortKey:"updated_at",sortDirection:"desc"});
+  assert.deepEqual(first.data.map(thread=>thread.id),["a","b"]);assert.ok(first.nextCursor);assert.ok(first.backwardsCursor);
+  threads.push({id:"new",name:"New task",cwd:"/repo/a",createdAt:5,updatedAt:60,archived:false,section:null});
+  const second=paginateAgentThreads(threads,{cursor:first.nextCursor,limit:2,sortKey:"updated_at",sortDirection:"desc"});
+  assert.deepEqual(second.data.map(thread=>thread.id),["c"]);
+  assert.deepEqual(paginateAgentThreads(threads,{archived:true}).data.map(thread=>thread.id),["d"]);
+  assert.deepEqual(paginateAgentThreads(threads,{cwd:"/repo/a",searchTerm:"alpha",sortKey:"updated_at"}).data.map(thread=>thread.id),["a"]);
+  assert.deepEqual(paginateAgentThreads(threads,{sectionId:null}).data.map(thread=>thread.id),["new","c","a"]);
+  assert.deepEqual(paginateAgentThreads(threads,{sectionId:"Pinned"}).data.map(thread=>thread.id),["b"]);
+  assert.throws(()=>paginateAgentThreads(threads,{cursor:first.nextCursor,sortKey:"created_at"}),/invalid thread list cursor/i);
+});
+
 async function listen(server){
   await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));
   return server.address().port;
@@ -124,6 +143,7 @@ test("agent relay broadcasts Codex-compatible archive, unarchive and delete life
   const port=await listen(server);const url="ws://127.0.0.1:"+port+"/api/agent/ws";const first=await connect(url),second=await connect(url);const rpc=request(first);const notifications=[];
   second.on("message",raw=>{const message=JSON.parse(String(raw));if(message.method&&message.id==null)notifications.push(message)});
   try{
+    const listed=await rpc("thread/list",{limit:1,sortKey:"updated_at",sortDirection:"desc"});assert.deepEqual(listed.data.map(item=>item.id),[thread.id]);
     const itemPage=await rpc("thread/items/list",{threadId:thread.id,limit:1,sortDirection:"desc"});
     assert.deepEqual(itemPage.data.map(entry=>entry.item.id),["fixture-answer"]);assert.ok(itemPage.nextCursor);assert.ok(itemPage.backwardsCursor);
     const turnPage=await rpc("thread/turns/list",{threadId:thread.id,limit:1,sortDirection:"desc",itemsView:"notLoaded"});
