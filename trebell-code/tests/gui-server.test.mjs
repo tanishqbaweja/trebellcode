@@ -14,6 +14,17 @@ test("offline browser E2E refuses to start a real provider or Codex app-server",
     ()=>createGuiServer({mock:false,env:{...process.env,TREBELL_E2E_OFFLINE:"1"}}),
     /Offline browser E2E forbids starting a real Trebell provider or Codex app-server/,
   );
+  const previous=process.env.TREBELL_E2E_OFFLINE;
+  process.env.TREBELL_E2E_OFFLINE="1";
+  try{
+    await assert.rejects(
+      ()=>createGuiServer({mock:false,env:{TREBELL_HOME:process.env.TREBELL_HOME||""}}),
+      /Offline browser E2E forbids starting a real Trebell provider or Codex app-server/,
+    );
+  }finally{
+    if(previous==null)delete process.env.TREBELL_E2E_OFFLINE;
+    else process.env.TREBELL_E2E_OFFLINE=previous;
+  }
 });
 
 test("GUI server exposes mock bootstrap, provider models, and health", async () => {
