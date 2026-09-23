@@ -27,6 +27,11 @@ test("Trebell Remote keeps thread history provider-independent while new turns u
   try {
     const html = await fetch(`http://127.0.0.1:${remote.port}/`).then(r => r.text());
     assert.match(html, /request\('thread\/list',\{limit:50,sortKey:'updated_at',sortDirection:'desc'\}\)/);
+    assert.match(html, /request\('thread\/resume',\{\.\.\.params,excludeTurns:true\}\)/);
+    assert.match(html, /request\('thread\/items\/list',\{threadId:th\.id,cursor,limit:100,sortDirection:'desc'\}\)/);
+    assert.match(html, /while\(cursor&&pages<4\)/);
+    assert.match(html, /historyMode==='paginated'/);
+    assert.match(html, /const legacy=await request\('thread\/resume',\{\.\.\.params,excludeTurns:false\}\)/);
     assert.doesNotMatch(html, /modelProviders:/);
     assert.match(html, /modelProvider:statusData\?\.provider\|\|'freebuff'/);
     assert.doesNotMatch(html, /modelProvider:'freebuff'/);
