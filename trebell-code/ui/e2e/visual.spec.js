@@ -843,6 +843,71 @@ test("custom theme stays coherent across chat panel and command palette",async({
   await page.screenshot({path:auditDir+"custom-theme-chat-panel-1280x800.png",fullPage:true});
 });
 
+test("switching Codex inference provider preserves the same sidebar threads",async({page})=>{
+  test.setTimeout(45_000);
+  const thread={id:"provider-independent-thread",name:"Provider independent thread",preview:"Same chat across inference providers",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const rpcMessages=[];
+  const wsHttp=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
+  wsHttp.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  wss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",data=>{
+      const message=JSON.parse(String(data));rpcMessages.push(message);if(message.id==null||!message.method)return;
+      let result={};
+      if(message.method==="initialize")result={userAgent:"provider-thread-fixture"};
+      else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
+      else if(message.method==="threadSection/list"||message.method==="skills/list"||message.method==="collaborationMode/list")result={data:[]};
+      else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
+      ws.send(JSON.stringify({id:message.id,result}));
+    });
+  });
+  const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
+  let provider="freebuff";
+  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
+  const models=()=>provider==="agentrouter"
+    ?{models:["agentrouter/test/coding-fast"],metadata:{provider,models:[{id:"agentrouter/test/coding-fast",name:"Coding Fast",provider}]}}
+    :{models:["freebuff/test/coding-fast"],metadata:{provider,models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider}]}};
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider,providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:settings(),projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}})}));
+    await page.route(/\/api\/settings$/,async route=>{
+      if(route.request().method()==="POST"){const body=route.request().postDataJSON()||{};if(body.modelProvider)provider=body.modelProvider;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())})}
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())});
+    });
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(models())}));
+    await page.route(/\/api\/providers$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selected:provider,providers:[{id:"freebuff",name:"Freebuff",hasKey:true},{id:"agentrouter",name:"AgentRouter",hasKey:true}],status:{id:provider,hasKey:true},ready:true})}));
+    await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    await expect(page.getByRole("button",{name:/Provider independent thread/})).toBeVisible({timeout:10_000});
+    const before=await page.locator(".thread-main").evaluateAll(nodes=>nodes.map(node=>node.getAttribute("title")||node.textContent.trim()));
+    await page.screenshot({path:auditDir+"provider-switch-threads-before-1600x980.png",fullPage:true});
+
+    await page.getByRole("button",{name:"Settings",exact:true}).click();
+    await page.getByRole("button",{name:/Agents & models/}).click();
+    const selector=page.getByTestId("provider-selector");
+    await selector.selectOption("agentrouter");
+    await expect(selector).toHaveValue("agentrouter");
+    await expect(page.getByTestId("provider-settings-card")).toHaveAttribute("aria-busy","false");
+    await expect(page.getByTestId("provider-status")).toContainText("AgentRouter");
+
+    await page.getByRole("button",{name:"Threads",exact:true}).click();
+    await expect(page.getByRole("button",{name:/Provider independent thread/})).toBeVisible();
+    const after=await page.locator(".thread-main").evaluateAll(nodes=>nodes.map(node=>node.getAttribute("title")||node.textContent.trim()));
+    expect(after).toEqual(before);
+    await expect(page.locator(".sidebar-provider")).toContainText("AgentRouter");
+    const listCalls=rpcMessages.filter(message=>message.method==="thread/list");
+    expect(listCalls.length).toBeGreaterThanOrEqual(2);
+    for(const call of listCalls)expect(Object.prototype.hasOwnProperty.call(call.params||{},"modelProviders")).toBe(false);
+    await page.screenshot({path:auditDir+"provider-switch-threads-after-1600x980.png",fullPage:true});
+  }finally{
+    for(const ws of sockets)try{ws.terminate()}catch{}
+    wss.close();await new Promise(resolve=>wsHttp.close(resolve));
+  }
+});
+
 test("populated source control and pull request detail stay usable",async({page,request})=>{
   test.setTimeout(45_000);
   const prActions=[];
