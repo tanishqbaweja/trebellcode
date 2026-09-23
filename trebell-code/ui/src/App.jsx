@@ -2405,7 +2405,7 @@ export default function App(){
       <main className={"main-frame"+(panel==="terminal"?" terminal-open":"")}>
         <div className="window-bar">
           <span className="window-drag-space"/>
-          <div className="window-controls"><button onClick={()=>window.trebellDesktop?.minimize?.()}>—</button><button onClick={()=>window.trebellDesktop?.maximize?.()}>□</button><button className="window-close" onClick={()=>window.trebellDesktop?.close?.()}>×</button></div>
+          {window.trebellDesktop?.minimize&&window.trebellDesktop?.maximize&&window.trebellDesktop?.close&&<div className="window-controls"><button onClick={()=>window.trebellDesktop.minimize()}>—</button><button onClick={()=>window.trebellDesktop.maximize()}>□</button><button className="window-close" onClick={()=>window.trebellDesktop.close()}>×</button></div>}
         </div>
 
         {(section==="chat"||section==="new")&&<div className="chat-workspace">

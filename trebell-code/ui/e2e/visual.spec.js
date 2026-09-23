@@ -40,6 +40,7 @@ async function freePort(){
 test("chat workspace is visually bounded and panes resize",async({page,request})=>{
   test.setTimeout(45_000);
   await prepare(page,request);
+  await expect(page.locator(".window-controls")).toHaveCount(0);
 
   const shell=page.locator(".app-shell");
   const sidebar=page.locator(".sidebar");
