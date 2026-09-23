@@ -257,6 +257,38 @@ test("browser attach button uploads files without the desktop bridge",async({pag
   await page.screenshot({path:auditDir+"browser-file-attachment-1280x800.png",fullPage:true});
 });
 
+test("slash menu only advertises commands that can run in the current context",async({page,request})=>{
+  test.setTimeout(30_000);
+  await prepare(page,request);
+  const composer=page.getByTestId("composer");
+  await composer.fill("/");
+  const menu=page.locator(".slash-menu");
+  await expect(menu).toBeVisible();
+  for(const command of ["/compact","/ps","/stop","/feedback","/goal","/review"]){
+    await expect(menu.getByText(command,{exact:true})).toHaveCount(0);
+  }
+  for(const command of ["/terminal","/diff","/git","/preview","/model","/plan"]){
+    await expect(menu.getByText(command,{exact:true})).toBeVisible();
+  }
+  await page.setViewportSize({width:1280,height:800});
+  await page.screenshot({path:auditDir+"slash-menu-new-task-1280x800.png",fullPage:true});
+
+  await composer.fill("");
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  await page.getByRole("button",{name:/No project · General chat/}).click();
+  await expect(page.getByText("This is a General chat with no attached project.")).toBeVisible();
+  const generalComposer=page.getByTestId("composer");
+  await generalComposer.fill("/");
+  const generalMenu=page.locator(".slash-menu");
+  await expect(generalMenu).toBeVisible();
+  for(const command of ["/compact","/ps","/stop","/feedback","/goal","/review","/diff","/git"]){
+    await expect(generalMenu.getByText(command,{exact:true})).toHaveCount(0);
+  }
+  await expect(generalMenu.getByText("/terminal",{exact:true})).toBeVisible();
+  await expect(generalMenu.getByText("/preview",{exact:true})).toBeVisible();
+  await page.screenshot({path:auditDir+"slash-menu-general-chat-1280x800.png",fullPage:true});
+});
+
 test("settings page visual audit",async({page,request})=>{
   test.setTimeout(45_000);
   await page.addInitScript(()=>{
