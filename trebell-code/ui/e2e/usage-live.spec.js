@@ -59,6 +59,7 @@ test("Usage page refreshes native Codex account and quota updates live",async({p
     notificationSocket.send(JSON.stringify({method:"account/updated",params:{authMode:"chatgpt",planType:"pro"}}));
     notificationSocket.send(JSON.stringify({method:"account/rateLimits/updated",params:{rateLimits:{primary:{usedPercent:65}}}}));
     await expect(card).toContainText("after@example.com");await expect(card).toContainText("35% left");await expect(card).toContainText("Local / legacy · pro");
+    await expect(card.getByText("Unavailable Codex account data")).toHaveCount(0);
     await expect.poll(()=>calls.filter(call=>call.method==="account/read").length).toBeGreaterThan(accountReadsBefore);
     await expect.poll(()=>calls.filter(call=>call.method==="account/rateLimits/read").length).toBeGreaterThan(rateReadsBefore);
     expect(calls.filter(call=>call.method==="account/usage/read").length).toBe(usageReadsBefore);

@@ -14,6 +14,7 @@ function estimateCost(record,settings){
 function runtimeLabel(value){return ({codex:"Codex",claude:"Claude Code",opencode:"OpenCode",cursor:"Cursor",grok:"Grok Build",antigravity:"Antigravity"}[value]||value||"Unknown")}
 function money(value){return Number.isFinite(value)?`$${value.toFixed(value<1?4:2)}`:"—"}
 function duration(value){const seconds=Number(value);if(!Number.isFinite(seconds)||seconds<0)return "—";if(seconds<60)return Math.round(seconds)+"s";const mins=Math.round(seconds/60);return mins<60?mins+"m":Math.floor(mins/60)+"h "+(mins%60)+"m"}
+function withoutKey(object,key){return Object.fromEntries(Object.entries(object||{}).filter(([name])=>name!==key))}
 
 export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected",activeThread=null,agentRuntime="codex"}){
   const [days,setDays]=useState(30);const [data,setData]=useState({records:[],total:{},models:{},runtimes:{},daily:{}});const [loading,setLoading]=useState(false);const [error,setError]=useState("");
@@ -67,10 +68,10 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
     if(agentRuntime!=="codex"||rpcStatus!=="connected"||!rpc?.subscribeNotifications)return;
     let disposed=false,accountTimer=null,rateTimer=null;
     const refreshAccount=()=>{if(accountTimer)clearTimeout(accountTimer);accountTimer=setTimeout(async()=>{
-      accountTimer=null;try{const account=await rpc.request("account/read",{refreshToken:false});if(!disposed)setCodex(current=>({...current,account,errors:{...current.errors,account:undefined}}))}catch(error){if(!disposed)setCodex(current=>({...current,errors:{...current.errors,account:error?.message||String(error)}}))}
+      accountTimer=null;try{const account=await rpc.request("account/read",{refreshToken:false});if(!disposed)setCodex(current=>({...current,account,errors:withoutKey(current.errors,"account")}))}catch(error){if(!disposed)setCodex(current=>({...current,errors:{...current.errors,account:error?.message||String(error)}}))}
     },100)};
     const refreshRateLimits=()=>{if(rateTimer)clearTimeout(rateTimer);rateTimer=setTimeout(async()=>{
-      rateTimer=null;try{const rateLimits=await rpc.request("account/rateLimits/read",{excludeResetCreditDetails:false});if(!disposed)setCodex(current=>({...current,rateLimits,errors:{...current.errors,rateLimits:undefined}}))}catch(error){if(!disposed)setCodex(current=>({...current,errors:{...current.errors,rateLimits:error?.message||String(error)}}))}
+      rateTimer=null;try{const rateLimits=await rpc.request("account/rateLimits/read",{excludeResetCreditDetails:false});if(!disposed)setCodex(current=>({...current,rateLimits,errors:withoutKey(current.errors,"rateLimits")}))}catch(error){if(!disposed)setCodex(current=>({...current,errors:{...current.errors,rateLimits:error?.message||String(error)}}))}
     },100)};
     const unsubscribe=rpc.subscribeNotifications(message=>{
       if(message.method==="account/updated")refreshAccount();
