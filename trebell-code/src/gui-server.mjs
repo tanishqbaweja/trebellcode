@@ -31,7 +31,9 @@ import { ProviderManager, normalizeProviderId } from "./provider-manager.mjs";
 import { startProviderBridge } from "./provider-bridge.mjs";
 import { AgentRuntimeManager, normalizeAgentRuntime } from "./agent-runtime-manager.mjs";
 import { AgentThreadStore } from "./agent-thread-store.mjs";
+import { importClaudeHistory, publicHistoryCandidate, scanLocalAgentHistory } from "./agent-history-import.mjs";
 import { attachAgentRelay } from "./agent-relay.mjs";
+import { CodexAppServerClient } from "./codex-app-server-client.mjs";
 import { listLicenses, licenseDetail } from "./license-service.mjs";
 import { WorktreeCleanupService } from "./worktree-cleanup.mjs";
 import { sweepAutoPullProjects } from "./auto-pull-service.mjs";
@@ -835,6 +837,68 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     return selectedProvider;
   }
 
+  function importedHistorySourceIds(){
+    const ids=new Set();
+    for(const meta of Object.values(state.listThreadMeta())){
+      if(meta?.deletedAt)continue;
+      const sourceId=String(meta?.historyImport?.sourceId||"").trim();if(sourceId)ids.add(sourceId);
+    }
+    for(const thread of agentThreads.list()){
+      const sourceId=String(thread?.providerMeta?.historyImport?.sourceId||"").trim();if(sourceId)ids.add(sourceId);
+    }
+    return ids;
+  }
+  async function localAgentHistory(){
+    const candidates=await scanLocalAgentHistory({
+      env,
+      excludeHomes:[appServer?.runtimeHome,appServer?.sharedRuntimeHome].filter(Boolean),
+      includeClaude:env.TREBELL_HISTORY_DISABLE_CLAUDE!=="1",
+    });
+    const imported=importedHistorySourceIds();
+    return {candidates,publicCandidates:candidates.map(candidate=>publicHistoryCandidate(candidate,{alreadyImported:imported.has(candidate.id)}))};
+  }
+  async function importAgentHistory(sourceIds=[]){
+    const ids=[...new Set((sourceIds||[]).map(value=>String(value||"").trim()).filter(Boolean))].slice(0,50);
+    if(!ids.length)throw new Error("Choose at least one history session to import");
+    const {candidates}=await localAgentHistory();const byId=new Map(candidates.map(candidate=>[candidate.id,candidate]));
+    const importedSources=importedHistorySourceIds();const results=[];let codexClient=null;
+    try{
+      for(const id of ids){
+        const candidate=byId.get(id);
+        if(!candidate){results.push({id,status:"error",error:"History session is no longer available"});continue}
+        if(importedSources.has(id)){results.push({id,source:candidate.source,status:"skipped",reason:"already_imported"});continue}
+        try{
+          if(candidate.source==="claude"){
+            const result=await importClaudeHistory(agentThreads,candidate);
+            const thread=result.thread;
+            state.updateThreadMeta(thread.id,{cwd:candidate.cwd,environmentId:null,historyImport:{source:"claude",sourceId:id,providerSessionId:candidate.providerSessionId,importedAt:Date.now()}});
+            state.touchProject(candidate.cwd,{environmentId:null});
+            importedSources.add(id);
+            results.push({id,source:"claude",status:result.status,threadId:thread.id});
+            continue;
+          }
+          if(candidate.source==="codex"){
+            if(selectedAgentRuntime!=="codex")throw new Error("Switch the active coding harness to Codex before importing Codex history");
+            if(state.settings().activeEnvironmentId)throw new Error("Codex history import is local-only. Switch the active environment to Local machine first");
+            if(!appServer?.targetUrl||appServer?.environment)throw new Error("Local Codex app-server is not available");
+            if(!await waitForAppServer(appServer,appPort,15_000))throw new Error("Local Codex app-server is not ready");
+            if(!codexClient){codexClient=new CodexAppServerClient(appServer.targetUrl,{clientVersion:TREBELL_VERSION});await codexClient.connect()}
+            const forked=await codexClient.forkFromRollout({threadId:candidate.providerSessionId,path:candidate.sourcePath,cwd:candidate.cwd,modelProvider:selectedProvider});
+            const threadId=String(forked?.thread?.id||"").trim();if(!threadId)throw new Error("Codex did not return the imported thread");
+            if(candidate.title)await codexClient.request("thread/name/set",{threadId,name:candidate.title}).catch(()=>{});
+            state.updateThreadMeta(threadId,{cwd:candidate.cwd,environmentId:null,historyImport:{source:"codex",sourceId:id,sourceThreadId:candidate.providerSessionId,importedAt:Date.now()}});
+            state.touchProject(candidate.cwd,{environmentId:null});
+            importedSources.add(id);
+            results.push({id,source:"codex",status:"imported",threadId});
+            continue;
+          }
+          results.push({id,source:candidate.source,status:"error",error:"Unsupported history source"});
+        }catch(error){results.push({id,source:candidate.source,status:"error",error:error instanceof Error?error.message:String(error)})}
+      }
+    }finally{codexClient?.close()}
+    return results;
+  }
+
   async function selectedModels(){
     const mergeCustom=catalog=>{
       if(!["codex","claude","opencode"].includes(selectedAgentRuntime))return catalog;
@@ -1288,6 +1352,23 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           const project=job?.destination?state.project(job.destination,job.environmentId||null):null;
           return json(res,200,{ok:true,job,project:projectWithEnvironment(project)});
         }catch(error){return json(res,400,{ok:false,error:error.message});}
+      }
+    }
+    if(url.pathname==="/api/history-import"){
+      if(req.method==="GET"){
+        try{
+          const {publicCandidates}=await localAgentHistory();
+          return json(res,200,{
+            sessions:publicCandidates,
+            codexImportAvailable:selectedAgentRuntime==="codex"&&!state.settings().activeEnvironmentId&&Boolean(appServer?.targetUrl&&!appServer?.environment),
+          });
+        }catch(error){return json(res,400,{error:error.message})}
+      }
+      if(req.method==="POST"){
+        try{
+          const body=await readJsonBody(req);const results=await importAgentHistory(body.sessionIds||[]);
+          return json(res,200,{ok:results.every(item=>item.status!=="error"),results,projects:state.projects().map(projectWithEnvironment)});
+        }catch(error){return json(res,400,{error:error.message})}
       }
     }
     if(url.pathname==="/api/scoped-settings"){

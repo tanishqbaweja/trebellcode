@@ -374,3 +374,30 @@ test("Trebell Code renders the harness and scopes models to the selected provide
 
   await page.screenshot({path:"test-results/trebell-code-ui.png",fullPage:true});
 });
+
+test("onboarding can import matching local conversation history",async({page,request})=>{
+  await request.post("/api/settings",{data:{onboardingComplete:false}});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  await request.post("/api/projects",{data:{path:boot.cwd,name:"History Workspace",activate:true}});
+  let imported=false;let importBody=null;
+  await page.route("**/api/history-import",async route=>{
+    if(route.request().method()==="POST"){
+      importBody=route.request().postDataJSON();imported=true;
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,results:[{id:"history-1",source:"claude",status:"imported",threadId:"imported-thread"}]})});
+    }
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+      codexImportAvailable:true,
+      sessions:[{id:"history-1",source:"claude",providerSessionId:"claude-history-1",cwd:boot.cwd,title:"Fix the onboarding importer",preview:"Fix the onboarding importer",alreadyImported:imported}],
+    })});
+  });
+  await page.goto("/");
+  const onboarding=page.getByTestId("onboarding");
+  await expect(onboarding).toBeVisible();
+  await expect(onboarding.getByText("4. Conversation history")).toBeVisible();
+  await expect(onboarding.getByText(/1 recent conversation can be copied into Trebell/)).toBeVisible();
+  await onboarding.getByRole("button",{name:"Import history"}).click();
+  await expect.poll(()=>importBody?.sessionIds).toEqual(["history-1"]);
+  await expect(onboarding.getByText(/already imported/)).toBeVisible();
+  await onboarding.getByRole("button",{name:"Finish setup"}).click();
+  await expect(onboarding).toBeHidden();
+});

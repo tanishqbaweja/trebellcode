@@ -1,18 +1,21 @@
 import React,{useEffect,useMemo,useState} from "react";
 import { Blocks, CheckCircle2, FlaskConical, PlugZap, RefreshCw, ShieldCheck, Sparkles, Wrench } from "lucide-react";
+import { api } from "../api.js";
 
 function Section({title,icon:Icon,count,children}){
   return <section className="capability-card"><div className="capability-card-head"><span><Icon size={15}/><strong>{title}</strong></span>{Number.isFinite(count)&&<em>{count}</em>}</div>{children}</section>;
 }
 function ErrorLine({value}){return value?<p className="capability-error">{value}</p>:null}
 
-export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread,skills=[]}){
+export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread,skills=[],onHistoryImported}){
   const [data,setData]=useState({permissions:[],mcp:[],marketplaces:[],apps:[],hooks:[],features:[],sharedPlugins:[],capabilities:null,account:null,rateLimits:null,usage:null,config:null});
   const [errors,setErrors]=useState({});
   const [loading,setLoading]=useState(false);
   const [busy,setBusy]=useState("");
   const [marketplaceSource,setMarketplaceSource]=useState("");
   const [migrations,setMigrations]=useState(null);
+  const [historyImport,setHistoryImport]=useState(null);
+  const [historyMessage,setHistoryMessage]=useState("");
   const [mcpResult,setMcpResult]=useState(null);
   const [appDetail,setAppDetail]=useState(null);
   const [toolArgs,setToolArgs]=useState({});
@@ -129,6 +132,25 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     try{await rpc.request("externalAgentConfig/import",{migrationItems:migrations.items,source:"trebell-code"});await detectExternalConfig()}
     catch(error){setErrors(prev=>({...prev,"externalAgentConfig/import":error.message||String(error)}))}finally{setBusy("")}
   }
+  async function scanHistory(){
+    setBusy("history:scan");setHistoryMessage("");
+    try{setHistoryImport(await api("/api/history-import"))}
+    catch(error){setHistoryMessage(error.message||String(error))}
+    finally{setBusy("")}
+  }
+  async function importHistory(sessionIds){
+    const ids=(sessionIds||[]).filter(Boolean);if(!ids.length)return;
+    setBusy("history:import");setHistoryMessage("");
+    try{
+      const result=await api("/api/history-import",{method:"POST",body:{sessionIds:ids.slice(0,50)}});
+      const imported=(result.results||[]).filter(item=>item.status==="imported").length;
+      const skipped=(result.results||[]).filter(item=>item.status==="skipped").length;
+      const failed=(result.results||[]).filter(item=>item.status==="error").length;
+      setHistoryMessage([imported&&`${imported} imported`,skipped&&`${skipped} already imported`,failed&&`${failed} failed`].filter(Boolean).join(" · ")||"Nothing changed");
+      await scanHistory();await onHistoryImported?.(result);
+    }catch(error){setHistoryMessage(error.message||String(error))}
+    finally{setBusy("")}
+  }
   async function readResource(server,resource){
     if(!rpc)return;setBusy("resource:"+resource.uri);
     try{const result=await rpc.request("mcpServer/resource/read",{threadId:activeThread?.id||null,server:server.name,uri:resource.uri});setMcpResult({title:`${server.name} · ${resource.name||resource.uri}`,value:result})}
@@ -237,6 +259,17 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       <Section title="Experimental features" icon={FlaskConical} count={data.features.length}>
         <div className="capability-list feature-list">{data.features.map(feature=><div key={feature.name}><div><strong>{feature.displayName||feature.name}</strong><span>{feature.description||feature.stage}</span></div><button className={feature.enabled?"active":""} onClick={()=>toggleFeature(feature)} disabled={!!busy}>{feature.enabled?"On":"Off"}</button></div>)}</div>
         <ErrorLine value={errors["experimentalFeature/list"]}/>
+      </Section>
+
+      <Section title="Conversation history" icon={RefreshCw} count={historyImport?.sessions?.length||0}>
+        <p>Copy recent local Codex and Claude conversations into Trebell. Source transcripts stay untouched; imported Codex sessions become independent Trebell forks.</p>
+        <div className="capability-actions">
+          <button onClick={scanHistory} disabled={!!busy}>{busy==="history:scan"?"Scanning…":"Scan history"}</button>
+          {(historyImport?.sessions||[]).some(item=>!item.alreadyImported&&(item.source!=="codex"||historyImport.codexImportAvailable))&&<button onClick={()=>importHistory((historyImport.sessions||[]).filter(item=>!item.alreadyImported&&(item.source!=="codex"||historyImport.codexImportAvailable)).map(item=>item.id))} disabled={!!busy}>{busy==="history:import"?"Importing…":"Import available"}</button>}
+        </div>
+        <div className="capability-list history-import-list">{(historyImport?.sessions||[]).slice(0,30).map(item=><div key={item.id}><div><strong>{item.title||"Untitled conversation"}</strong><span>{item.source==="codex"?"Codex":"Claude"} · {item.cwd}</span></div><div className="capability-inline-actions"><em className={item.alreadyImported?"ok":""}>{item.alreadyImported?"imported":item.source==="codex"&&!historyImport.codexImportAvailable?"needs local Codex":"available"}</em>{!item.alreadyImported&&(item.source!=="codex"||historyImport.codexImportAvailable)&&<button onClick={()=>importHistory([item.id])} disabled={!!busy}>Import</button>}</div></div>)}</div>
+        {historyImport&&!(historyImport.sessions||[]).length&&<p>No recent local agent history was found.</p>}
+        {historyMessage&&<p className="capability-status">{historyMessage}</p>}
       </Section>
 
       <Section title="Import agent configuration" icon={RefreshCw} count={migrations?.items?.length||0}>

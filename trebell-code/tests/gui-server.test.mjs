@@ -11,7 +11,13 @@ async function freePort(){const server=createServer();await new Promise((resolve
 
 test("GUI server exposes mock bootstrap, provider models, and health", async () => {
   const home=await mkdtemp(join(tmpdir(),"trebell-gui-test-"));
-  const env={...process.env,TREBELL_HOME:home};
+  const externalCodexHome=join(home,"external-codex");const externalRollouts=join(externalCodexHome,"sessions","2026","09","23");await mkdir(externalRollouts,{recursive:true});
+  const externalSessionId="12345678-1234-4abc-8123-123456789abc";
+  await writeFile(join(externalRollouts,"rollout-import.jsonl"),[
+    JSON.stringify({timestamp:"2026-09-23T01:00:00Z",type:"session_meta",payload:{id:externalSessionId,cwd:process.cwd()}}),
+    JSON.stringify({type:"event_msg",payload:{type:"user_message",message:"Imported GUI history fixture"}}),
+  ].join("\n"));
+  const env={...process.env,TREBELL_HOME:home,CODEX_HOME:externalCodexHome,TREBELL_HISTORY_DISABLE_CLAUDE:"1"};
   const [port,appPort]=await Promise.all([freePort(),freePort()]);
   const gui=await createGuiServer({port,appPort,mock:true,env});
   try{
@@ -27,6 +33,9 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
 
     const projectsBefore=await fetch(gui.url+"/api/projects").then(r=>r.json());
     assert.ok(Array.isArray(projectsBefore.projects));
+    const historyImport=await fetch(gui.url+"/api/history-import").then(r=>r.json());
+    const codexHistory=historyImport.sessions.find(item=>item.providerSessionId===externalSessionId);
+    assert.equal(codexHistory.source,"codex");assert.equal(codexHistory.title,"Imported GUI history fixture");assert.equal(codexHistory.alreadyImported,false);assert.equal(Object.prototype.hasOwnProperty.call(codexHistory,"sourcePath"),false);
     const projectPath=process.cwd();
     const projectSaved=await fetch(gui.url+"/api/projects",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({
       path:projectPath,

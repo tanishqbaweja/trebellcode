@@ -45,12 +45,28 @@ export class AgentThreadStore{
     return clone(this.data.threads.filter(thread=>!runtime||thread.runtime===runtime).sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0)));
   }
   get(id){return clone(this.data.threads.find(thread=>thread.id===id)||null)}
+  findProviderSession(runtime,providerSessionId){
+    const id=String(providerSessionId||"");if(!id)return null;
+    return clone(this.data.threads.find(thread=>thread.runtime===runtime&&thread.providerSessionId===id)||null);
+  }
   create({runtime,cwd,providerSessionId,model=null,agent=null,name=null,preview=null,providerMeta=null}={}){
     const now=Math.floor(Date.now()/1000);
     const thread={
       id:randomUUID(),runtime:String(runtime||"external"),providerSessionId:String(providerSessionId||""),cwd:String(cwd||process.cwd()),
       model:model||null,agent:agent||null,name:name||null,preview:preview||null,providerMeta:providerMeta||null,createdAt:now,updatedAt:now,
       status:{type:"idle"},turns:[],archived:false,section:null,
+    };
+    this.data.threads.unshift(thread);this.#save();return clone(thread);
+  }
+  importHistory({runtime,cwd,providerSessionId,model=null,agent=null,name=null,preview=null,providerMeta=null,turns=[],createdAt=null,updatedAt=null}={}){
+    const existing=this.findProviderSession(runtime,providerSessionId);if(existing)return existing;
+    const now=Math.floor(Date.now()/1000);
+    const normalizeTime=value=>{const number=Number(value)||0;return number>10_000_000_000?Math.floor(number/1000):Math.floor(number)};
+    const created=normalizeTime(createdAt)||now,updated=normalizeTime(updatedAt)||created;
+    const thread={
+      id:randomUUID(),runtime:String(runtime||"external"),providerSessionId:String(providerSessionId||""),cwd:String(cwd||process.cwd()),
+      model:model||null,agent:agent||null,name:name||null,preview:preview||null,providerMeta:providerMeta||null,createdAt:created,updatedAt:updated,
+      status:{type:"idle"},turns:clone(turns).map(turn=>({...turn,status:"completed"})),archived:false,section:null,
     };
     this.data.threads.unshift(thread);this.#save();return clone(thread);
   }
