@@ -339,6 +339,7 @@ async function closeReportServer() {
 run().then(async () => {
   console.log("TREBELL_LIVE_VALIDATION_OK", JSON.stringify(report, null, 2));
   await closeReportServer();
+  if (process.env.TREBELL_VALIDATION_KEEP_ALIVE !== "1") process.exit(0);
 }).catch(async error => {
   report = {
     ...report,
@@ -349,6 +350,7 @@ run().then(async () => {
     completedAt: new Date().toISOString(),
   };
   console.error("TREBELL_LIVE_VALIDATION_FAILED", report.error);
-  process.exitCode = 1;
   await closeReportServer();
+  if (process.env.TREBELL_VALIDATION_KEEP_ALIVE !== "1") process.exit(1);
+  process.exitCode = 1;
 });
