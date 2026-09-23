@@ -59,6 +59,13 @@ export function buildMcpApprovalResponse(decision){
   return {action:"cancel",content:null,_meta:null};
 }
 
+export function buildUserVerificationResponse(proof){
+  const credentialId=String(proof?.credentialId||"").trim();
+  const signature=String(proof?.signature||"").trim();
+  if(!credentialId||!signature)throw new Error("Codex did not return a valid verification proof");
+  return {action:"accept",content:{credentialId,signature},_meta:null};
+}
+
 function enumOptions(schema){
   if(Array.isArray(schema?.enum))return schema.enum.map(value=>({value,label:String(value)}));
   for(const key of ["oneOf","anyOf"]){

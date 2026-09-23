@@ -2,6 +2,7 @@ import React,{useMemo,useState} from "react";
 import { ExternalLink, PlugZap, ShieldCheck, X } from "lucide-react";
 import {
   buildMcpApprovalResponse,
+  buildUserVerificationResponse,
   coerceElicitationFormContent,
   elicitationApprovalDetails,
   elicitationFormFields,
@@ -14,19 +15,27 @@ function pretty(value){
   try{return JSON.stringify(value)}catch{return String(value)}
 }
 
-export default function McpElicitationModal({request,onResolve}){
+export default function McpElicitationModal({request,onResolve,onVerify,verificationAvailable=true}){
   const kind=mcpElicitationKind(request);
   const params=request?.params||{};
   const details=useMemo(()=>elicitationApprovalDetails(request),[request]);
   const fields=useMemo(()=>elicitationFormFields(request),[request]);
   const [values,setValues]=useState(()=>Object.fromEntries(fields.map(field=>[field.id,field.defaultValue])));
   const [error,setError]=useState("");
+  const [verificationBusy,setVerificationBusy]=useState(false);
   if(!request)return null;
 
   function resolve(response){setError("");onResolve?.(response)}
   function submitForm(){
     try{resolve({action:"accept",content:coerceElicitationFormContent(fields,values),_meta:null})}
     catch(err){setError(err?.message||String(err))}
+  }
+  async function verify(){
+    if(!onVerify||!verificationAvailable)return;
+    setError("");setVerificationBusy(true);
+    try{resolve(buildUserVerificationResponse(await onVerify(request)))}
+    catch(err){setError(err?.message||String(err))}
+    finally{setVerificationBusy(false)}
   }
 
   const message=String(params.message||"").trim();
@@ -72,8 +81,10 @@ export default function McpElicitationModal({request,onResolve}){
     {kind==="verification"&&<>
       <p className="mcp-elicitation-message">{params.title||message||"This request requires device-backed verification."}</p>
       {params.description&&<p className="mcp-approval-note">{params.description}</p>}
-      <div className="inline-error">This Codex verification mode requires a signed device proof. Trebell will not fabricate one.</div>
-      <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button onClick={()=>resolve(buildMcpApprovalResponse("cancel"))}>Cancel request</button></div>
+      {!verificationAvailable&&<div className="inline-error">Device verification is unavailable for remote workspaces.</div>}
+      {verificationAvailable&&!onVerify&&<div className="inline-error">This Trebell runtime cannot request a native verification proof.</div>}
+      {error&&<div className="inline-error">{error}</div>}
+      <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button disabled={verificationBusy} onClick={()=>resolve(buildMcpApprovalResponse("cancel"))}>Cancel request</button>{verificationAvailable&&onVerify&&<button className="primary" disabled={verificationBusy} onClick={verify}>{verificationBusy?"Verifying…":"Verify with device"}</button>}</div>
     </>}
 
     {kind==="unsupported"&&<>

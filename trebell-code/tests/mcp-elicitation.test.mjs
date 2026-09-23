@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildMcpApprovalResponse,
+  buildUserVerificationResponse,
   coerceElicitationFormContent,
   elicitationApprovalDetails,
   elicitationFormFields,
@@ -53,6 +54,13 @@ test("Codex MCP app approvals preserve connector metadata and persistence choice
   assert.deepEqual(buildMcpApprovalResponse("always"),{action:"accept",content:null,_meta:{persist:"always"}});
   assert.deepEqual(buildMcpApprovalResponse("decline"),{action:"decline",content:null,_meta:null});
   assert.deepEqual(buildMcpApprovalResponse("cancel"),{action:"cancel",content:null,_meta:null});
+});
+
+test("user verification responses require a signed native proof",()=>{
+  assert.deepEqual(buildUserVerificationResponse({credentialId:"cred-1",signature:"sig-1"}),{
+    action:"accept",content:{credentialId:"cred-1",signature:"sig-1"},_meta:null,
+  });
+  assert.throws(()=>buildUserVerificationResponse({credentialId:"cred-1"}),/valid verification proof/);
 });
 
 test("generic MCP form elicitations expose typed fields and validated content",()=>{

@@ -2117,6 +2117,17 @@ export default function App(){
     current.client.respond(current.request.id,response);
     setElicitations(prev=>prev.slice(1));
   }
+  async function verifyMcpUser(request){
+    if(agentRuntime!=="codex"||!rpc)throw new Error("Native user verification requires the Codex runtime.");
+    if(workspaceEnvironmentId)throw new Error("Device verification is unavailable for remote workspaces.");
+    const params=request?.params||{};
+    if(params.mode!=="openai/userVerification")throw new Error("This request is not a Codex user-verification challenge.");
+    const challenge=String(params.challenge||"").trim(),title=String(params.title||"").trim(),description=String(params.description||"");
+    if(!challenge||!title)throw new Error("The verification challenge is incomplete.");
+    const result=await rpc.request("userVerification/verify",{challenge,title,description});
+    if(!result?.proof)throw new Error("Codex did not return a verification proof.");
+    return result.proof;
+  }
   async function login(){await fetch("/api/login/start",{method:"POST"}).catch(()=>{});const poll=setInterval(async()=>{const data=await api("/api/bootstrap").catch(()=>null);if(data?.loggedIn){clearInterval(poll);setBootstrap(data);await refreshProviderModels();}},1500);setTimeout(()=>clearInterval(poll),120000)}
   async function logout(){await api("/api/logout",{method:"POST"});setBootstrap(prev=>({...prev,loggedIn:false,providerReady:false}));setModels([]);setModel("");setSelectedModels([]);setFreebuff({loggedIn:false})}
   async function renameThread(){if(!rpc||!activeThread)return;const name=prompt("Rename thread",titleOf(activeThread));if(!name?.trim())return;await rpc.request("thread/name/set",{threadId:activeThread.id,name:name.trim()});setActiveThread(prev=>({...prev,name:name.trim()}));setThreads(prev=>prev.map(t=>t.id===activeThread.id?{...t,name:name.trim()}:t))}
@@ -2387,7 +2398,7 @@ export default function App(){
       {rightPanelOpen&&<RightPanel active={rightPanelTab} disabledTabs={projectlessMode?["diff","source"]:[]} maximized={rightPanelMaximized} onToggleMaximized={()=>setRightPanelMaximized(value=>!value)} onActive={tab=>openRightPanel(tab)} onClose={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}>{rightPanelContent()}</RightPanel>}
     </div>
 
-    <McpElicitationModal key={elicitations[0]?.request?.id||"none"} request={elicitations[0]?.request} onResolve={resolveElicitation}/>
+    <McpElicitationModal key={elicitations[0]?.request?.id||"none"} request={elicitations[0]?.request} onResolve={resolveElicitation} onVerify={verifyMcpUser} verificationAvailable={!workspaceEnvironmentId}/>
     {!elicitations.length&&<QuestionModal request={question?.request} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={pickFiles}/>}
     <SnoozeDialog request={snoozeRequest} onSubmit={submitSnooze} onCancel={()=>setSnoozeRequest(null)}/>
     {threadUndo&&<div className="thread-undo-toast" role="status" aria-live="polite" data-testid="thread-undo-toast"><span>{threadUndo.label}</span><button onClick={undoThreadAction}>Undo</button><em>5s</em></div>}
