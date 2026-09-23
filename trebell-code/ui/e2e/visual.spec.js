@@ -586,6 +586,8 @@ test("right panel tabs are functional and visually bounded",async({page,request}
   const agentsLight=await panel.evaluate(node=>({
     collaboration:getComputedStyle(node.querySelector(".collaboration-card")).backgroundColor,
     empty:getComputedStyle(node.querySelector(".agent-empty-state")).backgroundColor,
+    refresh:getComputedStyle(node.querySelector(".agent-refresh")).backgroundColor,
+    fleet:getComputedStyle(node.querySelector(".agent-fleet-stats span")).backgroundColor,
   }));
   for(const value of Object.values(agentsLight))expect(value).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
   await page.screenshot({path:auditDir+"panel-agents-light-1600x980.png",fullPage:true});

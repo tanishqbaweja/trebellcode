@@ -674,6 +674,11 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .device-screen-wrap{back
 
 /* Agents / collaboration light-mode surfaces */
 html[data-mode="light"]:not([data-custom-theme="true"]) :where(.collaboration-card,.agent-empty-state){background:#fff!important;border-color:#d9dee8!important;color:#303741!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .agent-refresh{background:#f8f9fb!important;border-color:#d7dce5!important;color:#596473!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .agent-fleet-stats span{background:#f1f3f6!important;border-color:#d7dce5!important;color:#687181!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .agent-fleet-stats span.working{background:#eef6fa!important;border-color:#bdd7e5!important;color:#3e708d!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .agent-fleet-stats span.error{background:#fbf0f2!important;border-color:#e6c1c8!important;color:#9b4b59!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .agent-actions button{background:#f8f9fb!important;border-color:#d7dce5!important;color:#596473!important}
 html[data-mode="light"]:not([data-custom-theme="true"]) .collaboration-head span strong,
 html[data-mode="light"]:not([data-custom-theme="true"]) .agent-empty-state strong{color:#303741!important}
 html[data-mode="light"]:not([data-custom-theme="true"]) :where(.collaboration-head span small,.collaboration-card>p,.agent-empty-state span){color:#687181!important}
