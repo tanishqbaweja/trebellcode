@@ -1153,6 +1153,15 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         }catch(error){return json(res,400,{error:error.message});}
       }
     }
+    if(url.pathname==="/api/agent-runtime-usage"&&req.method==="GET"){
+      try{
+        const rawEnvironment=url.searchParams.get("environmentId");
+        const environmentId=rawEnvironment==="local"?null:rawEnvironment?requestedEnvironmentId(rawEnvironment,{fallback:false}):requestedEnvironmentId(null);
+        const instance=agentRuntimes.activeInstance();
+        const usage=await agentRuntimes.usageLimits(instance,{environmentId});
+        return json(res,200,{runtime:instance.kind,instanceId:instance.id,environmentId:environmentId||null,...usage});
+      }catch(error){return json(res,400,{error:error.message});}
+    }
     if(url.pathname==="/api/providers"){
       if(req.method==="GET"){
         return json(res,200,{selected:selectedProvider,providers:providers.definitions(),status:providers.status(selectedProvider),ready:providerReady()});

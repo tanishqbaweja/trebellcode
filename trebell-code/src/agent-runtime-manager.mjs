@@ -1,8 +1,10 @@
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join, posix } from "node:path";
 import spawn from "cross-spawn";
 import { trebellHome } from "./paths.mjs";
 import { resolveCodexHomeLayout } from "./codex-home-layout.mjs";
+import { readAgentRuntimeUsage } from "./agent-usage-limits.mjs";
 
 const RUNTIMES=Object.freeze({
   codex:{id:"codex",name:"Codex",protocol:"codex",command:null,multipleInstances:true},
@@ -82,7 +84,7 @@ async function run(command,args=[],{env=process.env,cwd=process.cwd(),timeoutMs=
 function defaultInstance(kind){return {id:`${kind}-default`,kind,displayName:RUNTIMES[kind].name,enabled:true,binaryPath:null,homePath:null,shadowHomePath:null,serverUrl:null,environment:{}}}
 
 export class AgentRuntimeManager{
-  constructor({state,env=process.env,environments=null}={}){this.state=state;this.env=env;this.environments=environments}
+  constructor({state,env=process.env,environments=null,platform=process.platform,fetchImpl=globalThis.fetch}={}){this.state=state;this.env=env;this.environments=environments;this.platform=platform;this.fetchImpl=fetchImpl}
   definitions(){return Object.values(RUNTIMES).map(item=>({...item}))}
   instances(){
     const configured=Array.isArray(this.state?.settings()?.agentRuntimeInstances)?this.state.settings().agentRuntimeInstances:[];
@@ -273,6 +275,35 @@ export class AgentRuntimeManager{
     if(instance.kind==="grok")return {models:["grok-build"],metadata:[{id:"grok-build",provider:"grok",agent:"Grok Build",dynamic:true}],source:"session"};
     if(instance.kind==="antigravity")return {models:["antigravity-default"],metadata:[{id:"antigravity-default",provider:"antigravity",agent:"Antigravity",dynamic:true}],source:"session"};
     return {models:[],metadata:[],source:"unknown"};
+  }
+  async usageLimits(instanceOrKind,{environmentId=undefined}={}){
+    const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;
+    const profile=this.activeEnvironment(environmentId);
+    if(profile&&profile.type!=="local"&&this.environments){
+      const names=["HOME","XDG_CONFIG_HOME","XDG_DATA_HOME","AGENT_CLI_CREDENTIAL_STORE","CURSOR_AUTH_TOKEN","CURSOR_API_KEY","CURSOR_API_ENDPOINT","XAI_API_KEY","GROK_AUTH","GROK_HOME","GROK_OIDC_ISSUER","GROK_OIDC_CLIENT_ID","GROK_OAUTH2_ISSUER","GROK_OAUTH2_CLIENT_ID","GROK_OAUTH2_PRINCIPAL_TYPE","GROK_OAUTH2_PRINCIPAL_ID","GROK_AUTH_PROVIDER_COMMAND","GROK_LOCAL_AUTH","GROK_CLI_CHAT_PROXY_BASE_URL","GROK_MODELS_BASE_URL","GROK_CONFIG","GROK_CONFIG_PATH","OPENCODE_AUTH_CONTENT","OPENCODE_API_KEY"];
+      const valuesScript=names.map(name=>"printf '"+name+"='; printf '%s' \"$"+"{"+name+"-}\" | base64 | tr -d '\\n'; printf '\\n'").join("; ");
+      const [valuesResult,platformResult]=await Promise.all([
+        this.environments.executeArgv(profile.id,{command:"sh",args:["-lc",valuesScript],cwd:"",timeoutMs:8000,maxOutput:512*1024}),
+        this.environments.executeArgv(profile.id,{command:"uname",args:["-s"],cwd:"",timeoutMs:5000,maxOutput:16*1024}),
+      ]);
+      if(valuesResult.exitCode!==0)return {checkedAt:new Date().toISOString(),windows:[],unavailable:{reason:"probeFailed",message:(RUNTIMES[instance.kind]?.name||instance.kind)+" could not inspect remote account usage."}};
+      const environment={};
+      for(const line of String(valuesResult.stdout||"").split(/\r?\n/)){
+        const separator=line.indexOf("=");if(separator<1)continue;
+        const name=line.slice(0,separator),encoded=line.slice(separator+1);if(!names.includes(name)||!encoded)continue;
+        try{environment[name]=Buffer.from(encoded,"base64").toString("utf8")}catch{}
+      }
+      const remotePlatform=/darwin/i.test(platformResult.stdout||"")?"darwin":"linux";
+      const home=environment.HOME||"/";
+      const readText=async path=>{
+        const result=await this.environments.executeArgv(profile.id,{command:"cat",args:[String(path)],cwd:"",timeoutMs:5000,maxOutput:512*1024});
+        return result.exitCode===0?String(result.stdout||""):null;
+      };
+      return readAgentRuntimeUsage(instance.kind,{environment,platform:remotePlatform,home,readText,joinPath:posix.join,fetchImpl:this.fetchImpl,serverUrl:instance.serverUrl||""});
+    }
+    const environment=this.childEnv(instance);const home=environment.HOME||environment.USERPROFILE||homedir();
+    const readText=async path=>{try{return await readFile(path,"utf8")}catch{return null}};
+    return readAgentRuntimeUsage(instance.kind,{environment,platform:this.platform,home,readText,joinPath:join,fetchImpl:this.fetchImpl,serverUrl:instance.serverUrl||""});
   }
   async snapshot(){
     const instances=this.instances();const statuses=await Promise.all(instances.map(instance=>this.probe(instance)));

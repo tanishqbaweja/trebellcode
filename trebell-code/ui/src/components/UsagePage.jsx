@@ -18,6 +18,7 @@ function duration(value){const seconds=Number(value);if(!Number.isFinite(seconds
 export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected",activeThread=null,agentRuntime="codex"}){
   const [days,setDays]=useState(30);const [data,setData]=useState({records:[],total:{},models:{},runtimes:{},daily:{}});const [loading,setLoading]=useState(false);const [error,setError]=useState("");
   const [codex,setCodex]=useState({account:null,rateLimits:null,usage:null,messages:null,errors:{},loading:false,notice:""});
+  const [runtimeUsage,setRuntimeUsage]=useState({data:null,loading:false,error:""});
   const [environmentData,setEnvironmentData]=useState({profiles:[],activeEnvironmentId:null,activeEnvironment:null});
   const [selectedEnvironments,setSelectedEnvironments]=useState([]);
   const environmentOptions=useMemo(()=>[
@@ -53,9 +54,16 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
       setData(await api("/api/usage?"+params.toString()));
     }catch(err){setError(err.message)}finally{setLoading(false)}
   }
-  async function refresh(){await Promise.all([refreshLocal(),refreshCodex()])}
+  async function refreshRuntimeUsage(){
+    if(!["opencode","cursor","grok"].includes(agentRuntime)){setRuntimeUsage({data:null,loading:false,error:""});return}
+    setRuntimeUsage(current=>({...current,loading:true,error:""}));
+    try{setRuntimeUsage({data:await api("/api/agent-runtime-usage"),loading:false,error:""})}
+    catch(err){setRuntimeUsage({data:null,loading:false,error:err.message||String(err)})}
+  }
+  async function refresh(){await Promise.all([refreshLocal(),refreshCodex(),refreshRuntimeUsage()])}
   useEffect(()=>{refreshLocal()},[days,selectedEnvironments.join("|")]);
   useEffect(()=>{refreshCodex()},[rpc,rpcStatus,activeThread?.id,agentRuntime]);
+  useEffect(()=>{refreshRuntimeUsage()},[agentRuntime]);
   useEffect(()=>{api("/api/environments").then(setEnvironmentData).catch(()=>{})},[]);
   const computed=useMemo(()=>{
     let cost=0,known=0,estimated=0;const modelMap={};
@@ -79,8 +87,9 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
   const threadUsage=codex.usage?.threadUsage||null;
   const resetCredits=codex.rateLimits?.rateLimitResetCredits||null;
   const showLiveCodex=agentRuntime==="codex"&&rpcStatus==="connected"&&(selectedEnvironments.length===0||selectedEnvironments.includes(activeEnvironmentKey));
+  const showLiveRuntime=["opencode","cursor","grok"].includes(agentRuntime)&&(selectedEnvironments.length===0||selectedEnvironments.includes(activeEnvironmentKey));
   return <div className="usage-page">
-    <div className="capabilities-toolbar"><div><h2>Usage</h2><p>Per-turn token and cost history across Trebell harnesses and environments, plus live Codex account limits for the active environment.</p></div><div className="usage-toolbar"><details className="usage-environment-filter"><summary>{environmentFilterLabel}</summary><div><button onClick={()=>setSelectedEnvironments([])} className={selectedEnvironments.length===0?"active":""}>All environments</button>{environmentOptions.map(item=><label key={item.id}><input type="checkbox" checked={selectedEnvironments.includes(item.id)} onChange={()=>toggleEnvironment(item.id)}/><span>{item.name}</span><em>{item.type}</em></label>)}</div></details><select value={days} onChange={e=>setDays(Number(e.target.value))}><option value={7}>7 days</option><option value={30}>30 days</option><option value={90}>90 days</option><option value={365}>1 year</option></select><button onClick={refresh} disabled={loading||codex.loading}><RefreshCw size={13}/>{loading||codex.loading?"Refreshing…":"Refresh"}</button><button onClick={clear} disabled={!data.records?.length}><Trash2 size={13}/> Clear local history</button></div></div>
+    <div className="capabilities-toolbar"><div><h2>Usage</h2><p>Per-turn token and cost history across Trebell harnesses and environments, plus live account limits when the active harness exposes them.</p></div><div className="usage-toolbar"><details className="usage-environment-filter"><summary>{environmentFilterLabel}</summary><div><button onClick={()=>setSelectedEnvironments([])} className={selectedEnvironments.length===0?"active":""}>All environments</button>{environmentOptions.map(item=><label key={item.id}><input type="checkbox" checked={selectedEnvironments.includes(item.id)} onChange={()=>toggleEnvironment(item.id)}/><span>{item.name}</span><em>{item.type}</em></label>)}</div></details><select value={days} onChange={e=>setDays(Number(e.target.value))}><option value={7}>7 days</option><option value={30}>30 days</option><option value={90}>90 days</option><option value={365}>1 year</option></select><button onClick={refresh} disabled={loading||codex.loading||runtimeUsage.loading}><RefreshCw size={13}/>{loading||codex.loading||runtimeUsage.loading?"Refreshing…":"Refresh"}</button><button onClick={clear} disabled={!data.records?.length}><Trash2 size={13}/> Clear local history</button></div></div>
     {error&&<div className="inline-error">{error}</div>}
     {showLiveCodex&&<section className="capability-card codex-account-usage" data-testid="codex-account-usage">
       <div className="capability-card-head"><span><Sparkles size={15}/><strong>Codex account & limits</strong></span><em>{activeEnvironmentName} · {codex.account?.account?.planType||codex.rateLimits?.rateLimits?.planType||"live"}</em></div>
@@ -104,6 +113,14 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
       {codex.messages?.featureEnabled&&codex.messages.messages?.length>0&&<div className="workspace-messages"><strong>Workspace messages</strong>{codex.messages.messages.map(message=><div key={message.messageId}><span>{String(message.messageType||"notice").replaceAll("_"," ")}</span><p>{message.messageBody}</p></div>)}</div>}
       {codex.notice&&<p className="provider-note">{codex.notice}</p>}
       {Object.values(codex.errors).length>0&&<details className="capability-details"><summary>Unavailable Codex account data</summary><pre>{Object.entries(codex.errors).map(([key,value])=>`${key}: ${value}`).join("\n")}</pre></details>}
+    </section>}
+    {showLiveRuntime&&<section className="capability-card codex-account-usage" data-testid="runtime-account-usage">
+      <div className="capability-card-head"><span><Sparkles size={15}/><strong>{runtimeLabel(agentRuntime)} subscription limits</strong></span><em>{activeEnvironmentName} · live</em></div>
+      {runtimeUsage.data?.windows?.length>0?<div className="codex-limit-grid">{runtimeUsage.data.windows.map(window=>{
+        const used=Math.max(0,Math.min(100,Number(window.usedPercent)||0));const remaining=Math.max(0,100-used);
+        return <div className="codex-limit-card" key={window.id}><div><strong>{window.label}</strong><span>{window.kind}</span></div><div className="limit-window"><span>Usage</span><i><b style={{width:`${Math.max(2,used)}%`}}/></i><strong>{used.toFixed(used%1?1:0)}% used</strong><small>{remaining.toFixed(remaining%1?1:0)}% left{window.resetsAt?` · resets ${new Date(window.resetsAt).toLocaleString()}`:""}</small></div></div>;
+      })}</div>:<p>{runtimeUsage.loading?"Loading live subscription limits…":runtimeUsage.data?.unavailable?.message||"This runtime/account does not expose subscription limits to Trebell."}</p>}
+      {runtimeUsage.error&&<div className="usage-warning"><CircleAlert size={14}/><span>{runtimeUsage.error}</span></div>}
     </section>}
     <div className="usage-summary">
       <div><span>Total tokens</span><strong>{formatTokens(data.total?.totalTokens)}</strong><small>{(data.records||[]).length} recorded turns</small></div>

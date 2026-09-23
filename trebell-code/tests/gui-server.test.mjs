@@ -30,6 +30,10 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.ok(models.models.length>=1);
     assert.equal(models.metadata.provider,boot.provider);
     assert.ok(models.metadata.models.every(model=>model.provider===boot.provider));
+    const runtimeUsage=await fetch(gui.url+"/api/agent-runtime-usage").then(r=>r.json());
+    assert.equal(runtimeUsage.runtime,"codex");
+    assert.deepEqual(runtimeUsage.windows,[]);
+    assert.equal(runtimeUsage.unavailable.reason,"unsupported");
 
     const projectsBefore=await fetch(gui.url+"/api/projects").then(r=>r.json());
     assert.ok(Array.isArray(projectsBefore.projects));

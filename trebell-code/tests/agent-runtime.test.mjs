@@ -91,6 +91,31 @@ test("OpenCode compatibility blocks known-broken managed updates and pins verifi
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
+test("remote runtime usage reads the remote login but returns only normalized limits",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-remote-usage-"));const env={...process.env,TREBELL_HOME:home};
+  try{
+    const state=new TrebellStateStore(env);state.updateSettings({activeEnvironmentId:"ssh-usage",agentRuntime:"cursor",agentRuntimeInstanceId:"cursor-default"});
+    const calls=[];
+    const encoded=value=>Buffer.from(value,"utf8").toString("base64");
+    const environments={
+      get:id=>id==="ssh-usage"?{id,name:"Remote usage",type:"ssh",cwd:"/srv/app"}:null,
+      executeArgv:async(id,{command,args})=>{
+        calls.push({id,command,args:[...args]});
+        if(command==="uname")return {exitCode:0,stdout:"Linux\n",stderr:""};
+        if(command==="sh")return {exitCode:0,stdout:"HOME="+encoded("/home/dev")+"\nCURSOR_AUTH_TOKEN="+encoded("remote-private-token")+"\n",stderr:""};
+        return {exitCode:1,stdout:"",stderr:"not found"};
+      },
+    };
+    let authorization="";
+    const manager=new AgentRuntimeManager({state,env,environments,fetchImpl:async(_url,options)=>{authorization=options.headers.authorization;return new Response(JSON.stringify({planUsage:{totalPercentUsed:61}}),{status:200,headers:{"content-type":"application/json"}})}});
+    const limits=await manager.usageLimits("cursor");
+    assert.equal(authorization,"Bearer remote-private-token");
+    assert.equal(limits.windows[0].usedPercent,61);
+    assert.doesNotMatch(JSON.stringify(limits),/remote-private-token/);
+    assert.equal(calls.some(call=>call.command==="sh"),true);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 test("ACP agent session serves bounded filesystem and terminal capabilities end to end", async () => {
   const root=await mkdtemp(join(tmpdir(),"trebell-acp-session-"));
   const fixture=join(root,"fake-acp.mjs");
