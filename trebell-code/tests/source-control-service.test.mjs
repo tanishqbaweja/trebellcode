@@ -21,6 +21,7 @@ import {
   sourceControlGitAction,
   sourceControlPullRequestTemplate,
   sourceControlRecentCommitSubjects,
+  sourceControlReviewRangeContext,
   withSourceControlExecutor,
 } from "../src/source-control-service.mjs";
 import { git } from "../src/git-service.mjs";
@@ -225,6 +226,57 @@ test("pull request template detection ignores non-GitHub repositories",async()=>
   }};
   assert.equal(await withSourceControlExecutor(executor,()=>sourceControlPullRequestTemplate("/srv/app")),null);
   assert.equal(calls.some(call=>call.args[0]==="ls-tree"),false);
+});
+
+test("pull request writing context uses commit range and merge-base diff range against remote base",async()=>{
+  const calls=[];
+  const executor={run:async(command,args,options={})=>{
+    calls.push({command,args:[...args],cwd:options.cwd});
+    if(command!=="git")return {ok:false,code:1,stdout:"",stderr:"unexpected command"};
+    if(args[0]==="rev-parse"&&args[1]==="--show-toplevel")return {ok:true,code:0,stdout:"/srv/app\n",stderr:""};
+    if(args[0]==="branch")return {ok:true,code:0,stdout:"feature\nmain\n",stderr:""};
+    if(args[0]==="for-each-ref"&&args.includes("refs/heads"))return {ok:true,code:0,stdout:"feature\nmain\n",stderr:""};
+    if(args[0]==="for-each-ref")return {ok:true,code:0,stdout:"origin/feature\norigin/main\n",stderr:""};
+    if(args[0]==="status")return {ok:true,code:0,stdout:"## feature...origin/feature\n",stderr:""};
+    if(args[0]==="remote")return {ok:true,code:0,stdout:"origin\thttps://github.com/acme/widget.git (fetch)\norigin\thttps://github.com/acme/widget.git (push)\n",stderr:""};
+    if(args[0]==="worktree")return {ok:true,code:0,stdout:"worktree /srv/app\nHEAD abc\nbranch refs/heads/feature\n",stderr:""};
+    if(args[0]==="symbolic-ref")return {ok:true,code:0,stdout:"origin/main\n",stderr:""};
+    if(args[0]==="rev-parse"&&args[1]==="--verify")return {ok:true,code:0,stdout:"deadbeef\n",stderr:""};
+    if(args[0]==="log"&&args.includes("origin/main..HEAD"))return {ok:true,code:0,stdout:"abc Feature commit\n",stderr:""};
+    if(args[0]==="diff"&&args.includes("--stat"))return {ok:true,code:0,stdout:" feature.txt | 1 +\n",stderr:""};
+    if(args[0]==="diff"&&args.includes("--patch"))return {ok:true,code:0,stdout:"diff --git a/feature.txt b/feature.txt\n",stderr:""};
+    return {ok:false,code:1,stdout:"",stderr:"unexpected git "+args.join(" ")};
+  }};
+  const result=await withSourceControlExecutor(executor,()=>sourceControlReviewRangeContext("/srv/app"));
+  assert.equal(result.baseBranch,"main");
+  assert.equal(result.baseRef,"origin/main");
+  assert.match(result.commitSummary,/Feature commit/);
+  assert.equal(calls.some(call=>call.args[0]==="log"&&call.args.includes("origin/main..HEAD")),true);
+  const diffCalls=calls.filter(call=>call.args[0]==="diff");
+  assert.equal(diffCalls.length,2);
+  assert.equal(diffCalls.every(call=>call.args.includes("origin/main...HEAD")),true);
+});
+
+test("pull request branch context excludes unrelated commits added later to the base branch",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-pr-range-"));
+  const remote=join(root,"remote.git"),repo=join(root,"repo"),peer=join(root,"peer");
+  try{
+    await git(root,["init","--bare",remote]);
+    await git(root,["clone",remote,repo]);
+    await git(repo,["config","user.email","trebell@example.test"]);await git(repo,["config","user.name","Trebell Test"]);
+    await git(repo,["checkout","-b","main"]);await writeFile(join(repo,"base.txt"),"base\n");await git(repo,["add","."]);await git(repo,["commit","-m","Base commit"]);await git(repo,["push","-u","origin","main"]);
+    await git(repo,["checkout","-b","feature"]);await writeFile(join(repo,"feature.txt"),"feature\n");await git(repo,["add","."]);await git(repo,["commit","-m","Feature commit"]);
+    await git(root,["clone",remote,peer]);await git(peer,["checkout","main"]);await git(peer,["config","user.email","trebell@example.test"]);await git(peer,["config","user.name","Trebell Test"]);
+    await writeFile(join(peer,"later-main.txt"),"unrelated\n");await git(peer,["add","."]);await git(peer,["commit","-m","Later main commit"]);await git(peer,["push","origin","main"]);
+    await git(repo,["fetch","origin"]);
+    const context=await sourceControlReviewRangeContext(repo,{base:"main"});
+    assert.match(context.commitSummary,/Feature commit/);
+    assert.doesNotMatch(context.commitSummary,/Later main commit/);
+    assert.match(context.diffSummary,/feature\.txt/);
+    assert.doesNotMatch(context.diffSummary,/later-main\.txt/);
+    assert.match(context.diff,/feature\.txt/);
+    assert.doesNotMatch(context.diff,/later-main\.txt/);
+  }finally{await rm(root,{recursive:true,force:true})}
 });
 
 test("Bitbucket REST auth and requests come from the environment executor",async()=>{

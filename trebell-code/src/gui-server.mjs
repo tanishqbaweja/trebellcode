@@ -53,7 +53,7 @@ import {
   commentOnPullRequest, reviewPullRequest, mergePullRequest, updatePullRequestBranch,
   rebasePullRequestStack,
   checkoutPullRequest, requestPullRequestReviewer, publishRepository, getPullRequestFilesViewed, setPullRequestFilesViewed,
-  sourceControlGitAction, sourceControlGitInfo, sourceControlPullRequestTemplate, sourceControlRecentCommitSubjects, sourceControlRepositoryIdentity, withSourceControlExecutor,
+  sourceControlGitAction, sourceControlGitInfo, sourceControlPullRequestTemplate, sourceControlRecentCommitSubjects, sourceControlRepositoryIdentity, sourceControlReviewRangeContext, withSourceControlExecutor,
 } from "./source-control-service.mjs";
 import { prViewedKey, updateViewedRecord, viewedStates } from "./pr-viewed-state.mjs";
 import { buildPullRequestLink, linkedPullRequestTerminalStatus, normalizePullRequestIdentity, parsePullRequestUrl, pullRequestForBranch, pullRequestIdentityKey } from "./pr-link-utils.mjs";
@@ -1032,7 +1032,9 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     const scoped=state.projectSettings(cwd,environmentId).effective;
     const style=scoped.sourceControlTextStyle||"repository";const selectedModel=scoped.sourceControlTextModel||model||null;
     const customInstructions=String(scoped.sourceControlCustomInstructions||"").trim();const followTemplates=scoped.sourceControlFollowTemplates!==false;
-    const diff=await environmentWorkspaceDiff(cwd,{environments,environmentId});
+    const diff=kind==="review"
+      ?await inSourceControlEnvironment(environmentId,()=>sourceControlReviewRangeContext(cwd))
+      :await environmentWorkspaceDiff(cwd,{environments,environmentId});
     const context=await sourceControlWritingContext(cwd,environmentId,{includeRepositoryInstructions:style==="repository",includeReviewTemplate:kind==="review"&&followTemplates});
     const recent=context.subjects.length?"Recent commit subjects:\n"+context.subjects.map(subject=>"- "+subject).join("\n")+"\n\n":"";
     const instructions=context.instructions.length?"Repository guidance:\n"+context.instructions.map(item=>"### "+item.path+"\n"+item.content.slice(0,6000)).join("\n\n")+"\n\n":"";
@@ -1044,7 +1046,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         styleInstruction,
         "Return strict JSON only with this shape: {\"title\":\"...\",\"body\":\"...\"}.",
         "Keep the title under 100 characters. The body should summarize the change and validation without inventing tests or results.",
-        recent,instructions,template,"Status:\n"+String(diff.status||"").slice(0,12000),"Diff:\n"+String(diff.diff||"").slice(0,60000),
+        recent,instructions,template,
+        diff.baseRef?"Base: "+diff.baseRef:null,
+        diff.commitSummary?"Branch commits:\n"+String(diff.commitSummary).slice(0,12000):null,
+        diff.diffSummary?"Branch diff summary:\n"+String(diff.diffSummary).slice(0,12000):null,
+        "Diff:\n"+String(diff.diff||"").slice(0,60000),
       ].filter(Boolean).join("\n\n")
       :[
         "Write one Git commit subject for the current change.",

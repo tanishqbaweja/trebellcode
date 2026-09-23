@@ -125,6 +125,34 @@ export async function sourceControlRecentCommitSubjects(cwd,{limit=8}={}){
   return result.ok?result.stdout.split(/\r?\n/).map(line=>line.trim()).filter(Boolean):[];
 }
 
+export async function sourceControlReviewRangeContext(cwd,{base=null}={}){
+  const info=await serviceGitInfo(cwd);
+  if(!info.isGit)return {isGit:false,baseBranch:null,baseRef:null,commitSummary:"",diffSummary:"",diff:""};
+  const baseBranch=String(base||await defaultBaseBranch(info.root)).trim();
+  if(!baseBranch)return {isGit:true,baseBranch:null,baseRef:null,commitSummary:"",diffSummary:"",diff:""};
+  const fetchRemotes=[...new Set([
+    ...(info.remotes||[]).filter(item=>item.kind==="fetch"&&item.name==="origin").map(item=>item.name),
+    ...(info.remotes||[]).filter(item=>item.kind==="fetch"&&item.name!=="origin").map(item=>item.name),
+  ])];
+  let baseRef=baseBranch;
+  for(const remote of fetchRemotes){
+    const candidate=remote+"/"+baseBranch;
+    const exists=await run("git",["rev-parse","--verify","--quiet","refs/remotes/"+candidate],{cwd:info.root,allowFailure:true,maxBuffer:64*1024});
+    if(exists.ok&&exists.stdout.trim()){baseRef=candidate;break}
+  }
+  const commitRange=baseRef+"..HEAD",diffRange=baseRef+"...HEAD";
+  const [commits,summary,patch]=await Promise.all([
+    run("git",["log","--oneline",commitRange],{cwd:info.root,allowFailure:true,maxBuffer:512*1024}),
+    run("git",["diff","--stat","--no-ext-diff","--no-color",diffRange],{cwd:info.root,allowFailure:true,maxBuffer:512*1024}),
+    run("git",["diff","--no-ext-diff","--no-color","--patch","--minimal",diffRange],{cwd:info.root,allowFailure:true,maxBuffer:4*1024*1024}),
+  ]);
+  if(!commits.ok||!summary.ok||!patch.ok){
+    const error=[commits,summary,patch].find(result=>!result.ok);
+    throw new Error((error?.stderr||error?.stdout||"Could not compute pull request branch changes").trim());
+  }
+  return {isGit:true,baseBranch,baseRef,commitSummary:commits.stdout||"",diffSummary:summary.stdout||"",diff:patch.stdout||""};
+}
+
 const PR_TEMPLATE_PATHS=[
   ".github/pull_request_template.md",
   ".github/PULL_REQUEST_TEMPLATE.md",
