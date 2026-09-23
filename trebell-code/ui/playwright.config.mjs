@@ -1,14 +1,17 @@
 import { defineConfig } from "@playwright/test";
+import { randomInt } from "node:crypto";
 import { cpSync, mkdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { e2eHome } from "./e2e/test-home.js";
 
 const hostedBaseUrl=String(process.env.TREBELL_E2E_BASE_URL||"").trim();
 const browserChannel=String(process.env.TREBELL_E2E_BROWSER_CHANNEL||"").trim();
-const localPort=Math.max(1024,Math.min(65535,Number(process.env.TREBELL_E2E_PORT)||3210));
+const configuredPort=Number(process.env.TREBELL_E2E_PORT);
+const localPort=Number.isInteger(configuredPort)&&configuredPort>=1024&&configuredPort<=65535?configuredPort:randomInt(32000,60000);
+process.env.TREBELL_E2E_PORT=String(localPort);
 const localBaseUrl="http://127.0.0.1:"+localPort;
-const localTestHome=join(tmpdir(),"trebell-code-e2e-home-"+localPort);
+const localTestHome=e2eHome();
 const localTestUiDist=join(localTestHome,"ui-dist");
 if(process.platform==="win32"&&process.env.COMSPEC) process.env.COMSPEC=process.env.COMSPEC.trim();
 if(!hostedBaseUrl){

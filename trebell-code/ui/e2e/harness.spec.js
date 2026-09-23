@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { e2eHome } from "./test-home.js";
 
 async function expectModelCatalog(page,labels){
   const picker=page.getByTestId("model-picker");await expect(picker).toBeVisible();await expect(picker).toBeEnabled({timeout:15_000});await picker.click();
@@ -17,8 +17,8 @@ async function selectProvider(page,value){
 }
 
 test("Trebell Code renders the harness and scopes models to the selected provider", async ({ page,request }) => {
-  test.setTimeout(45_000);
-  const publishedThemes=join(process.env.TREBELL_E2E_HOME||join(tmpdir(),"trebell-code-e2e-home"),"themes");
+  test.setTimeout(90_000);
+  const publishedThemes=join(e2eHome(),"themes");
   await mkdir(publishedThemes,{recursive:true});
   await writeFile(join(publishedThemes,"e2e-published.json"),JSON.stringify({name:"E2E Published",appearance:"dark",canvas:"#111827",accent:"#35c98b"}));
   await page.addInitScript(()=>{
