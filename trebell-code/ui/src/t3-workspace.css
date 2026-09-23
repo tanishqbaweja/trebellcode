@@ -664,6 +664,19 @@ html[data-mode="light"]:not([data-custom-theme="true"]) :where(.device-tooling-h
 html[data-mode="light"]:not([data-custom-theme="true"]) .device-tool-list>div{border-color:#e1e5ec!important}
 html[data-mode="light"]:not([data-custom-theme="true"]) .device-screen-wrap{background:#f6f7fa!important;border-color:#d9dee8!important}
 
+/* Agents / collaboration light-mode surfaces */
+html[data-mode="light"]:not([data-custom-theme="true"]) :where(.collaboration-card,.agent-empty-state){background:#fff!important;border-color:#d9dee8!important;color:#303741!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .collaboration-head span strong,
+html[data-mode="light"]:not([data-custom-theme="true"]) .agent-empty-state strong{color:#303741!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) :where(.collaboration-head span small,.collaboration-card>p,.agent-empty-state span){color:#687181!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .collaboration-head button{color:#687181!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .collaboration-head button:hover{background:#f6f7fa!important;color:#303741!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .collaboration-modes button{background:#f7f8fa!important;border-color:#d7dce5!important;color:#4d5868!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .collaboration-modes button:hover,
+html[data-mode="light"]:not([data-custom-theme="true"]) .collaboration-modes button.active{background:#f0eafa!important;border-color:#d8c6ed!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .collaboration-modes strong{color:#303741!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .collaboration-modes span{color:#687181!important}
+
 
 /* command palette */
 .command-palette-backdrop{position:fixed;inset:0;z-index:120;background:rgba(0,0,0,.42);display:flex;align-items:flex-start;justify-content:center;padding-top:min(18vh,150px);backdrop-filter:blur(2px)}

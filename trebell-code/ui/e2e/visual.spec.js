@@ -571,6 +571,13 @@ test("right panel tabs are functional and visually bounded",async({page,request}
   }));
   for(const value of Object.values(deviceLight))expect(value).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
   await page.screenshot({path:auditDir+"panel-device-light-1600x980.png",fullPage:true});
+  await tabStrip.getByRole("button",{name:"Agents",exact:true}).click();
+  const agentsLight=await panel.evaluate(node=>({
+    collaboration:getComputedStyle(node.querySelector(".collaboration-card")).backgroundColor,
+    empty:getComputedStyle(node.querySelector(".agent-empty-state")).backgroundColor,
+  }));
+  for(const value of Object.values(agentsLight))expect(value).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
+  await page.screenshot({path:auditDir+"panel-agents-light-1600x980.png",fullPage:true});
 });
 
 test("populated chat and overlays remain visually usable",async({page,request})=>{
