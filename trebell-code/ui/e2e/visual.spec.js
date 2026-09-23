@@ -41,6 +41,8 @@ test("chat workspace is visually bounded and panes resize",async({page,request})
   test.setTimeout(45_000);
   await prepare(page,request);
   await expect(page.locator(".window-controls")).toHaveCount(0);
+  await expect(page.locator(".window-bar")).toBeHidden();
+  expect((await box(page.locator(".chat-workspace"))).y).toBeLessThanOrEqual(1);
 
   const shell=page.locator(".app-shell");
   const sidebar=page.locator(".sidebar");
@@ -67,7 +69,7 @@ test("chat workspace is visually bounded and panes resize",async({page,request})
   await expect(page.locator(".model-picker-menu")).toBeHidden();
   await modelPicker.click();
   await expect(page.locator(".model-picker-menu")).toBeVisible();
-  await page.locator(".workspace-header").click({position:{x:20,y:20}});
+  await page.locator(".conversation-scroll").click({position:{x:20,y:20}});
   await expect(page.locator(".model-picker-menu")).toBeHidden();
   const composerInput=page.getByTestId("composer");
   const shortHeight=(await box(composerInput)).height;
@@ -831,6 +833,7 @@ test("Freebuff dashboard stays visually coherent in light mode",async({page,requ
   await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
   await page.locator(".sidebar-provider").click();
   await expect(page.getByRole("heading",{name:"Freebuff",level:1})).toBeVisible();
+  await expect(page.locator(".fb-hero")).toBeVisible();
   const surfaces=await page.evaluate(()=>({
     hero:getComputedStyle(document.querySelector(".fb-hero")).backgroundColor,
     card:getComputedStyle(document.querySelector(".fb-dashboard-card")).backgroundColor,

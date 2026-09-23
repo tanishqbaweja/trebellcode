@@ -75,7 +75,7 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   expect(initialShell.composer).toMatch(/^rgba?\(20, 22, 25/);
   await page.keyboard.press("Control+k");
   await expect(page.getByTestId("command-palette")).toBeVisible();
-  await expect(page.getByTestId("command-palette")).toContainText("Open workspace folder");
+  await expect(page.getByTestId("command-palette")).not.toContainText("Open workspace folder");
   await expect(page.getByTestId("command-palette")).toContainText("E2E Project");
   await expect(page.getByTestId("command-palette")).toContainText("Remote App");
   await expect(page.getByTestId("command-palette")).toContainText("E2E SSH · /srv/app");
@@ -176,7 +176,8 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await page.getByTestId("terminal-toggle").click();
   await expect(page.getByTestId("drawer")).toBeVisible();
   const createTerminal=page.getByRole("button",{name:"Create terminal"});
-  if(await createTerminal.isVisible().catch(()=>false))await createTerminal.click();
+  await expect(createTerminal).toBeVisible();
+  await createTerminal.click();
   await expect(page.locator(".terminal-pane")).toHaveCount(1);
   await page.locator(".terminal-command-line input").first().click();
   await page.evaluate(()=>window.dispatchEvent(new KeyboardEvent("keydown",{key:"d",ctrlKey:true,bubbles:true,cancelable:true})));
@@ -197,8 +198,7 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await expect(page.getByText("Clone repository")).toBeVisible();
   await page.getByLabel("Clone environment").selectOption("ssh-palette");
   await expect(page.getByLabel("Clone parent directory")).toHaveValue("/srv/app");
-  await page.getByLabel("Clone environment").selectOption("local");
-  await expect(page.getByLabel("Clone parent directory")).toHaveCount(0);
+  await expect(page.getByLabel("Clone environment").locator('option[value="local"]')).toHaveCount(0);
   const e2eProject=page.locator(".project-card").filter({hasText:"E2E Project"});
   await expect(e2eProject.locator(".project-icon")).toHaveText("E2");
   await expect(e2eProject.getByLabel("Submodules")).toHaveValue("top-level");

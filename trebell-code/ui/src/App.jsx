@@ -1,4 +1,4 @@
-import React,{useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from "react";
+import React,{lazy,Suspense,useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from "react";
 import {
   Check, ChevronDown, CircleStop, Code2, Cpu, FileCode2, FileDiff, FolderCode,
   GitBranch, Globe2, HardDrive, Link2, ListTodo, MemoryStick, Network, Paperclip, Plus, Send,
@@ -8,31 +8,17 @@ import {
 import { CodexRpcClient } from "./rpc.js";
 import { api } from "./api.js";
 import ThreadSidebar from "./components/ThreadSidebar.jsx";
-import TerminalPanel from "./components/TerminalPanel.jsx";
-import WorkspacePanel from "./components/WorkspacePanel.jsx";
-import SourceControlPanel from "./components/SourceControlPanel.jsx";
 import QuestionModal from "./components/QuestionModal.jsx";
 import McpElicitationModal from "./components/McpElicitationModal.jsx";
 import AssistantSelectionToolbar from "./components/AssistantSelectionToolbar.jsx";
-import ProjectsPage from "./components/ProjectsPage.jsx";
-import AgentsPage from "./components/AgentsPage.jsx";
-import PreviewPage from "./components/PreviewPage.jsx";
-import SettingsPage from "./components/SettingsPage.jsx";
 import SnoozeDialog from "./components/SnoozeDialog.jsx";
-import FreebuffPage from "./components/FreebuffPage.jsx";
 import RightPanel from "./components/RightPanel.jsx";
-import HarnessToolsPage from "./components/HarnessToolsPage.jsx";
-import EnvironmentsPage from "./components/EnvironmentsPage.jsx";
 import CommandPalette from "./components/CommandPalette.jsx";
 import AgentBackgroundTerminals from "./components/AgentBackgroundTerminals.jsx";
 import { contextCompactionSignal } from "./provider-session-status.js";
-import GoalPanel from "./components/GoalPanel.jsx";
 import OnboardingModal from "./components/OnboardingModal.jsx";
 import OpenInPicker from "./components/OpenInPicker.jsx";
 import WorktreeSetupCard from "./components/WorktreeSetupCard.jsx";
-import DevicePanel from "./components/DevicePanel.jsx";
-import UsagePage from "./components/UsagePage.jsx";
-import LicensesPage from "./components/LicensesPage.jsx";
 import { resolveKeybinding } from "./keybindings.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
 import { applyFileMention, fileMentionAt, rankFileMentions } from "./composer-mentions.js";
@@ -50,6 +36,25 @@ import { resizeTextarea } from "./textarea-size.js";
 import { guardianActionSummary, guardianDeniedEvent } from "./guardian-review.js";
 import { collaborationModePayload, normalizeCollaborationModes } from "./collaboration-mode.js";
 import { ensureCodexProject, sameWorkspacePath } from "./codex-projects.js";
+
+const TerminalPanel=lazy(()=>import("./components/TerminalPanel.jsx"));
+const WorkspacePanel=lazy(()=>import("./components/WorkspacePanel.jsx"));
+const SourceControlPanel=lazy(()=>import("./components/SourceControlPanel.jsx"));
+const ProjectsPage=lazy(()=>import("./components/ProjectsPage.jsx"));
+const AgentsPage=lazy(()=>import("./components/AgentsPage.jsx"));
+const PreviewPage=lazy(()=>import("./components/PreviewPage.jsx"));
+const SettingsPage=lazy(()=>import("./components/SettingsPage.jsx"));
+const FreebuffPage=lazy(()=>import("./components/FreebuffPage.jsx"));
+const HarnessToolsPage=lazy(()=>import("./components/HarnessToolsPage.jsx"));
+const EnvironmentsPage=lazy(()=>import("./components/EnvironmentsPage.jsx"));
+const GoalPanel=lazy(()=>import("./components/GoalPanel.jsx"));
+const DevicePanel=lazy(()=>import("./components/DevicePanel.jsx"));
+const UsagePage=lazy(()=>import("./components/UsagePage.jsx"));
+const LicensesPage=lazy(()=>import("./components/LicensesPage.jsx"));
+
+function DeferredSurface({children,label="Loading…",compact=false}){
+  return <Suspense fallback={<div className={"surface-loading"+(compact?" compact":"")} role="status">{label}</div>}>{children}</Suspense>;
+}
 
 const MAX_COMPOSER_ATTACHMENTS=100;
 const MAX_COMPOSER_CHARS=120_000;
@@ -2414,7 +2419,7 @@ export default function App(){
     "--right-panel-width":layoutPrefs.rightPanelWidth+"px",
     "--terminal-height":layoutPrefs.terminalHeight+"px",
   };
-  return <div className={"app-shell"+(sidebarOpen?"":" sidebar-collapsed")} style={layoutStyle}>
+  return <div className={"app-shell"+(sidebarOpen?"":" sidebar-collapsed")+(window.trebellDesktop?" desktop-shell":" hosted-shell")} style={layoutStyle}>
     <ThreadSidebar section={section} setSection={navigateSection} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} onOpen={openThread} onNew={newChat} onThreadAction={threadAction} onMove={moveThreadOrder} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={bulkAction} provider={provider} agentRuntime={agentRuntime} threadMeta={threadMeta} onCollapse={()=>setSidebarOpen(false)}/>
     {sidebarOpen&&<div className="layout-resizer sidebar-resizer" data-testid="sidebar-resizer" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" onPointerDown={event=>beginLayoutResize("sidebar",event)}/>}
 
@@ -2472,22 +2477,22 @@ export default function App(){
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="layout-resizer terminal-resizer" data-testid="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" onPointerDown={event=>beginLayoutResize("terminal",event)}/>
             <div className="terminal-drawer-head"><span><SquareTerminal size={14}/> Terminal</span><div><button onClick={()=>attachExcerpt("")} aria-hidden="true" tabIndex={-1} className="terminal-head-spacer"/><button onClick={()=>setPanel(null)} aria-label="Close terminal"><X size={15}/></button></div></div>
-            <TerminalPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} onAttachExcerpt={attachExcerpt}/>
+            <DeferredSurface label="Loading terminal…" compact><TerminalPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} onAttachExcerpt={attachExcerpt}/></DeferredSurface>
           </div>}
         </div>}
 
-        {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onProjectUpdated={project=>{if(project?.path===projectPath&&(project?.environmentId||null)===(workspaceEnvironmentId||null))setCurrentProject(project)}} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></div>}
-        {section==="freebuff"&&agentRuntime==="codex"&&provider==="freebuff"&&<div className="secondary-page"><div className="page-header"><div><h1>Freebuff</h1><p>Account, balance, model pricing and session state.</p></div></div><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model)}/></div>}
-        {section==="tools"&&agentRuntime==="codex"&&<div className="secondary-page full"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} onHistoryImported={historyImported} onSkillsRefresh={()=>loadSkills(rpc,projectPath,true)} platform={bootstrap.platform}/></div>}
-        {section==="environments"&&<div className="secondary-page full"><EnvironmentsPage/></div>}
-      {section==="usage"&&<div className="secondary-page full"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></div>}
-        {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><LicensesPage/></div>}
-      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>Agent harnesses, model providers, permissions and desktop behavior.</p></div></div><SettingsPage settings={settings} onSettings={setSettings} onProviderChanging={nextProvider=>{modelRefreshSeqRef.current++;modelCatalogScopeRef.current=agentRuntime+"\0"+nextProvider;setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("")}} onProviderUpdated={(options={})=>{setProviderRevision(v=>v+1);return refreshProviderModels({...options,resetThread:options.resetThread??false})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={session=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></div>}
+        {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><DeferredSurface label="Loading projects…"><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onProjectUpdated={project=>{if(project?.path===projectPath&&(project?.environmentId||null)===(workspaceEnvironmentId||null))setCurrentProject(project)}} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></DeferredSurface></div>}
+        {section==="freebuff"&&agentRuntime==="codex"&&provider==="freebuff"&&<div className="secondary-page"><div className="page-header"><div><h1>Freebuff</h1><p>Account, balance, model pricing and session state.</p></div></div><DeferredSurface label="Loading Freebuff…"><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model)}/></DeferredSurface></div>}
+        {section==="tools"&&agentRuntime==="codex"&&<div className="secondary-page full"><DeferredSurface label="Loading harness capabilities…"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} onHistoryImported={historyImported} onSkillsRefresh={()=>loadSkills(rpc,projectPath,true)} platform={bootstrap.platform}/></DeferredSurface></div>}
+        {section==="environments"&&<div className="secondary-page full"><DeferredSurface label="Loading environments…"><EnvironmentsPage/></DeferredSurface></div>}
+      {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}
+        {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><DeferredSurface label="Loading licenses…"><LicensesPage/></DeferredSurface></div>}
+      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>Agent harnesses, model providers, permissions and desktop behavior.</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage settings={settings} onSettings={setSettings} onProviderChanging={nextProvider=>{modelRefreshSeqRef.current++;modelCatalogScopeRef.current=agentRuntime+"\0"+nextProvider;setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("")}} onProviderUpdated={(options={})=>{setProviderRevision(v=>v+1);return refreshProviderModels({...options,resetThread:options.resetThread??false})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={session=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></DeferredSurface></div>}
         {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Every unarchived {agentRuntimeLabel} thread stored by Trebell on this machine.</p></div></div><div className="history-page">{threads.length?threads.map(t=><button key={t.id} onClick={()=>openThread(t)}><FileCode2 size={15}/><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><time>{new Date(t.updatedAt*1000).toLocaleString()}</time></button>):<div className="history-empty"><History size={22}/><strong>No thread history yet</strong><span>Start a task or General chat and it will appear here.</span><button onClick={newChat}>Start a new task</button></div>}</div></div>}
       </main>
 
       {rightPanelOpen&&!rightPanelMaximized&&<div className="layout-resizer right-panel-resizer" data-testid="right-panel-resizer" role="separator" aria-label="Resize workspace panel" aria-orientation="vertical" onPointerDown={event=>beginLayoutResize("right",event)}/>}
-      {rightPanelOpen&&<RightPanel active={rightPanelTab} disabledTabs={projectlessMode?["diff","source"]:[]} hiddenTabs={agentRuntime==="codex"?[]:["agents"]} maximized={rightPanelMaximized} onToggleMaximized={()=>setRightPanelMaximized(value=>!value)} onActive={tab=>openRightPanel(tab)} onClose={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}>{rightPanelContent()}</RightPanel>}
+      {rightPanelOpen&&<RightPanel active={rightPanelTab} disabledTabs={projectlessMode?["diff","source"]:[]} hiddenTabs={agentRuntime==="codex"?[]:["agents"]} maximized={rightPanelMaximized} onToggleMaximized={()=>setRightPanelMaximized(value=>!value)} onActive={tab=>openRightPanel(tab)} onClose={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}><DeferredSurface label="Loading panel…" compact>{rightPanelContent()}</DeferredSurface></RightPanel>}
     </div>
 
     <McpElicitationModal key={elicitations[0]?.request?.id||"none"} request={elicitations[0]?.request} onResolve={resolveElicitation} onVerify={verifyMcpUser} verificationAvailable={!workspaceEnvironmentId}/>
