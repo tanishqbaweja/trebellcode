@@ -19,10 +19,14 @@ test("Trebell Remote pages bounded item history instead of hydrating full Codex 
     ws.on("message",data=>{
       const message=JSON.parse(String(data));if(message.id==null||!message.method)return;calls.push(message);let result={};
       if(message.method==="initialize")result={userAgent:"remote-history-fixture"};
+      else if(message.method==="collaborationMode/list")result={data:[
+        {name:"Plan",mode:"plan",model:null,reasoning_effort:"medium"},
+        {name:"Default",mode:"default",model:null,reasoning_effort:null},
+      ]};
       else if(message.method==="thread/list")result={data:threadVisible?[thread]:[],nextCursor:null};
       else if(message.method==="thread/resume"){
         if(message.params.excludeTurns===false)throw new Error("paginated fixture must not request full turns");
-        result={thread,itemsBackwardsCursor:"cursor-latest",turnsBackwardsCursor:"turn-cursor"};
+        result={thread,itemsBackwardsCursor:"cursor-latest",turnsBackwardsCursor:"turn-cursor",collaborationMode:{mode:"plan",settings:{model:"freebuff/test/coding-fast",reasoning_effort:"medium",developer_instructions:null}}};
       }else if(message.method==="thread/items/list"&&message.params.cursor==="cursor-latest")result={data:[
         {turnId:"turn-2",item:{id:"a2",type:"agentMessage",text:"Second answer"}},
         {turnId:"turn-2",item:{id:"u2",type:"userMessage",text:"Second question"}},
@@ -31,6 +35,7 @@ test("Trebell Remote pages bounded item history instead of hydrating full Codex 
         {turnId:"turn-1",item:{id:"a1",type:"agentMessage",text:"First answer"}},
         {turnId:"turn-1",item:{id:"u1",type:"userMessage",text:"First question"}},
       ],nextCursor:null,backwardsCursor:"cursor-older"};
+      else if(message.method==="turn/start")result={turn:{id:"turn-3",status:"inProgress"}};
       ws.send(JSON.stringify({id:message.id,result}));
     });
   });
@@ -46,13 +51,20 @@ test("Trebell Remote pages bounded item history instead of hydrating full Codex 
     await page.evaluate(()=>localStorage.setItem("trebellRemoteSession","remote-e2e-token"));
     await page.reload();
     await expect(page.locator("#connection")).toHaveText("Connected");
+    const collaborationMode=page.locator("#collaborationMode");await expect(collaborationMode).toBeVisible();await expect(collaborationMode).toHaveValue("default");
     await page.getByRole("button",{name:"Remote bounded history"}).click();
+    await expect(collaborationMode).toHaveValue("plan");
     await expect(page.locator("#transcript")).toHaveText("You: First question\n\nTrebell: First answer\n\nYou: Second question\n\nTrebell: Second answer");
     const resume=calls.find(call=>call.method==="thread/resume");expect(resume?.params?.excludeTurns).toBe(true);
     const pages=calls.filter(call=>call.method==="thread/items/list");expect(pages.map(call=>call.params.cursor)).toEqual(["cursor-latest","cursor-older"]);expect(pages.every(call=>call.params.limit===100&&call.params.sortDirection==="desc")).toBe(true);
     expect(calls.some(call=>call.method==="thread/resume"&&call.params?.excludeTurns===false)).toBe(false);
     const bounds=await page.locator("main").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(bounds.scroll).toBeLessThanOrEqual(bounds.client+1);
     await page.screenshot({path:auditDir+"remote-bounded-history-390x844.png",fullPage:true});
+    await collaborationMode.selectOption("default");await page.locator("#prompt").fill("Continue with the implementation");await page.locator("#send").click();
+    await expect.poll(()=>calls.filter(call=>call.method==="turn/start").length).toBe(1);
+    const turnStart=calls.find(call=>call.method==="turn/start");expect(turnStart?.params?.collaborationMode).toEqual({mode:"default",settings:{model:"freebuff/test/coding-fast",reasoning_effort:null,developer_instructions:null}});
+    notificationSocket.send(JSON.stringify({method:"thread/settings/updated",params:{threadId:thread.id,settings:{collaborationMode:{mode:"plan",settings:{model:"freebuff/test/coding-fast",reasoning_effort:"medium",developer_instructions:null}}}}}));
+    await expect(collaborationMode).toHaveValue("plan");
     const listCallsBefore=calls.filter(call=>call.method==="thread/list").length;threadVisible=false;notificationSocket.send(JSON.stringify({method:"thread/deleted",params:{threadId:thread.id}}));
     await expect.poll(()=>calls.filter(call=>call.method==="thread/list").length).toBeGreaterThan(listCallsBefore);
     await expect(page.getByRole("button",{name:"Remote bounded history"})).toHaveCount(0);await expect(page.locator("#transcript")).toHaveText("");

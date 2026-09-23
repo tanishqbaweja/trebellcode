@@ -34,6 +34,10 @@ test("Trebell Remote keeps thread history provider-independent while new turns u
     assert.match(html, /const legacy=await request\('thread\/resume',\{\.\.\.params,excludeTurns:false\}\)/);
     assert.match(html, /\['thread\/started','thread\/name\/updated','thread\/archived','thread\/unarchived','thread\/deleted','thread\/closed'\]\.includes\(msg\.method\)/);
     assert.match(html, /clearActiveThread\(p\.threadId\)/);
+    assert.match(html, /request\('collaborationMode\/list',\{\}\)/);
+    assert.match(html, /function collaborationModePayload\(\)/);
+    assert.match(html, /\.\.\.\(collaborationMode\?\{collaborationMode\}:\{\}\)/);
+    assert.match(html, /thread\/settings\/updated/);
     assert.doesNotMatch(html, /modelProviders:/);
     assert.match(html, /modelProvider:statusData\?\.provider\|\|'freebuff'/);
     assert.doesNotMatch(html, /modelProvider:'freebuff'/);
