@@ -686,6 +686,26 @@ html[data-mode="light"]:not([data-custom-theme="true"]) :where(.history-page spa
 html[data-mode="light"]:not([data-custom-theme="true"]) .history-empty{border-color:#d9dee8!important;color:#687181!important}
 html[data-mode="light"]:not([data-custom-theme="true"]) .history-empty button{background:#f0eafa!important;border-color:#d8c6ed!important;color:#654b82!important}
 
+/* Freebuff dashboard light-mode surfaces */
+html[data-mode="light"]:not([data-custom-theme="true"]) .fb-hero{background:radial-gradient(circle at 80% 10%,rgba(130,74,220,.10),transparent 34%),linear-gradient(135deg,#fff,#f7f3fb)!important;border-color:#d8c6ed!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .fb-hero span,
+html[data-mode="light"]:not([data-custom-theme="true"]) .fb-hero small{color:#687181!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .fb-hero strong{color:#4d3b66!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .fb-hero button{background:#f0eafa!important;border-color:#d8c6ed!important;color:#654b82!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) :where(.fb-dashboard-card,.fb-model-table,.fb-raw,.fb-product-signals section){background:#fff!important;border-color:#d9dee8!important;color:#303741!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .fb-dashboard-card span,
+html[data-mode="light"]:not([data-custom-theme="true"]) .fb-dashboard-card small,
+html[data-mode="light"]:not([data-custom-theme="true"]) .fb-raw span{color:#687181!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .fb-dashboard-card strong,
+html[data-mode="light"]:not([data-custom-theme="true"]) .fb-raw code{color:#303741!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .fb-model-table>div{border-color:#e1e5ec!important;color:#4d5868!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .fb-model-table .fb-table-head{background:#f6f7fa!important;color:#687181!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .fb-model-table>div.selected{background:#f0eafa!important;color:#654b82!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .fb-raw>div{border-color:#e1e5ec!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .fb-product-signals pre{color:#596473!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .fb-offpeak{background:#f1faf3!important;border-color:#b9ddc1!important;color:#3d7a4d!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .fb-warning{background:#fff4f5!important;border-color:#e2b8bf!important;color:#914b58!important}
+
 
 /* command palette */
 .command-palette-backdrop{position:fixed;inset:0;z-index:120;background:rgba(0,0,0,.42);display:flex;align-items:flex-start;justify-content:center;padding-top:min(18vh,150px);backdrop-filter:blur(2px)}

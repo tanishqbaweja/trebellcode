@@ -769,6 +769,22 @@ test("light mode stays visually coherent across workspace and panels",async({pag
   await page.screenshot({path:auditDir+"light-history-1600x980.png",fullPage:true});
 });
 
+test("Freebuff dashboard stays visually coherent in light mode",async({page,request})=>{
+  test.setTimeout(30_000);
+  await prepare(page,request);
+  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+  await page.locator(".sidebar-provider").click();
+  await expect(page.getByRole("heading",{name:"Freebuff",level:1})).toBeVisible();
+  const surfaces=await page.evaluate(()=>({
+    hero:getComputedStyle(document.querySelector(".fb-hero")).backgroundColor,
+    card:getComputedStyle(document.querySelector(".fb-dashboard-card")).backgroundColor,
+    table:getComputedStyle(document.querySelector(".fb-model-table")).backgroundColor,
+    raw:getComputedStyle(document.querySelector(".fb-raw")).backgroundColor,
+  }));
+  for(const value of Object.values(surfaces))expect(value).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
+  await page.screenshot({path:auditDir+"freebuff-light-1600x980.png",fullPage:true});
+});
+
 test("populated source control and pull request detail stay usable",async({page,request})=>{
   test.setTimeout(45_000);
   const prActions=[];
