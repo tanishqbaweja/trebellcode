@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { WebSocket } from "ws";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
-import { agentThreadResumePayload,attachAgentRelay,materializeAgentFork,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
+import { agentThreadResumePayload,attachAgentRelay,materializeAgentFork,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
 
 test("rejected Claude rewind restores the original provider session and removed turns",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-claude-rewind-"));
@@ -144,6 +144,13 @@ test("agent forks persist inherited history while bounded responses omit embedde
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
+test("agent queue pagination uses bounded native-compatible offsets",()=>{
+  const queue=[{id:"q1"},{id:"q2"},{id:"q3"}];
+  const first=paginateAgentQueue(queue,{limit:2});assert.deepEqual(first.data.map(item=>item.id),["q1","q2"]);assert.equal(first.nextCursor,"2");
+  const second=paginateAgentQueue(queue,{cursor:first.nextCursor,limit:2});assert.deepEqual(second.data.map(item=>item.id),["q3"]);assert.equal(second.nextCursor,null);
+  assert.throws(()=>paginateAgentQueue(queue,{cursor:"wat"}),/invalid queue cursor/i);
+});
+
 async function listen(server){
   await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));
   return server.address().port;
@@ -165,7 +172,11 @@ test("agent relay broadcasts Codex-compatible archive, unarchive and delete life
   const thread=threadStore.create({runtime:"claude",cwd:home,providerSessionId:"fixture-session"});
   const turn=threadStore.addTurn(thread.id,{inputText:"fixture question"});threadStore.addItem(thread.id,turn.id,{id:"fixture-answer",type:"agentMessage",text:"fixture answer"});threadStore.finishTurn(thread.id,turn.id);
   const runtimeManager={instances:()=>[],activeInstance:()=>({id:"claude-default",kind:"claude"}),activeRuntime:()=>"claude"};
-  const state={settings:()=>({activeEnvironmentId:null}),updateThreadMeta:()=>({})};
+  const meta=new Map();const state={
+    settings:()=>({activeEnvironmentId:null}),
+    threadMeta:id=>meta.get(id)||{},
+    updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next},
+  };
   const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,version:"test"});
   const port=await listen(server);const url="ws://127.0.0.1:"+port+"/api/agent/ws";const first=await connect(url),second=await connect(url);const rpc=request(first);const notifications=[];
   second.on("message",raw=>{const message=JSON.parse(String(raw));if(message.method&&message.id==null)notifications.push(message)});
@@ -178,11 +189,26 @@ test("agent relay broadcasts Codex-compatible archive, unarchive and delete life
     assert.deepEqual(turnPage.data.map(entry=>entry.id),[turn.id]);assert.deepEqual(turnPage.data[0].items,[]);assert.equal(turnPage.data[0].itemsView,"notLoaded");
     const search=await rpc("thread/searchOccurrences",{threadId:thread.id,searchTerm:"fixture",limit:10});
     assert.deepEqual(search.data.map(entry=>entry.itemId),["user-"+turn.id,"fixture-answer"]);
+    const q1=await rpc("thread/queue/add",{threadId:thread.id,input:[{type:"text",text:"first"}],clientUserMessageId:"client-1"});
+    const q2=await rpc("thread/queue/add",{threadId:thread.id,input:[{type:"text",text:"second"}],clientUserMessageId:"client-2"});
+    let queue=await rpc("thread/queue/list",{threadId:thread.id,limit:1});assert.deepEqual(queue.data.map(item=>item.id),[q1.queuedSubmission.id]);assert.equal(queue.nextCursor,"1");
+    queue=await rpc("thread/queue/list",{threadId:thread.id,cursor:queue.nextCursor,limit:2});assert.deepEqual(queue.data.map(item=>item.id),[q2.queuedSubmission.id]);
+    const updated=await rpc("thread/queue/update",{threadId:thread.id,queuedSubmissionId:q2.queuedSubmission.id,input:[{type:"text",text:"second edited"}]});assert.equal(updated.queuedSubmission.clientUserMessageId,"client-2");assert.equal(updated.queuedSubmission.input[0].text,"second edited");
+    await rpc("thread/queue/reorder",{threadId:thread.id,queuedSubmissionIds:[q2.queuedSubmission.id,q1.queuedSubmission.id]});
+    queue=await rpc("thread/queue/list",{threadId:thread.id,limit:10});assert.deepEqual(queue.data.map(item=>item.id),[q2.queuedSubmission.id,q1.queuedSubmission.id]);
+    await assert.rejects(rpc("thread/queue/reorder",{threadId:thread.id,queuedSubmissionIds:[q1.queuedSubmission.id]}),/every queued submission/i);
+    const activeTurn=threadStore.addTurn(thread.id,{inputText:"active"});await assert.rejects(rpc("thread/queue/start",{threadId:thread.id,queuedSubmissionId:q2.queuedSubmission.id}),/active or pending turn/i);
+    threadStore.finishTurn(thread.id,activeTurn.id);queue=await rpc("thread/queue/list",{threadId:thread.id,limit:10});assert.equal(queue.data.length,2,"failed queue start must not consume the draft");
+    const deleted=await rpc("thread/queue/delete",{threadId:thread.id,queuedSubmissionId:q1.queuedSubmission.id});assert.equal(deleted.deleted,true);
+    assert.equal((await rpc("thread/queue/list",{threadId:thread.id,limit:10})).data.length,1);
     await rpc("thread/archive",{threadId:thread.id});
     await rpc("thread/unarchive",{threadId:thread.id});
     await rpc("thread/delete",{threadId:thread.id});
-    for(let attempt=0;attempt<50&&notifications.length<3;attempt++)await new Promise(resolve=>setTimeout(resolve,10));
-    assert.deepEqual(notifications.map(message=>message.method),["thread/archived","thread/unarchived","thread/deleted"]);
+    const lifecycleMessages=()=>notifications.filter(message=>["thread/archived","thread/unarchived","thread/deleted"].includes(message.method));
+    for(let attempt=0;attempt<50&&lifecycleMessages().length<3;attempt++)await new Promise(resolve=>setTimeout(resolve,10));
+    const lifecycle=lifecycleMessages();
+    assert.deepEqual(lifecycle.map(message=>message.method),["thread/archived","thread/unarchived","thread/deleted"]);
+    assert.ok(notifications.filter(message=>message.method==="thread/queue/changed").length>=5);
     assert.ok(notifications.every(message=>message.params?.threadId===thread.id));
   }finally{
     try{first.close()}catch{}try{second.close()}catch{}

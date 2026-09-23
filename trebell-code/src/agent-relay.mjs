@@ -320,6 +320,27 @@ export function materializeAgentFork(threadStore,source,{runtime,providerSession
   return {stored,thread:excludeTurns?{...stored,turns:[],historyMode:"paginated"}:stored};
 }
 
+function agentQueue(state,threadId){
+  const queue=state?.threadMeta?.(threadId)?.queuedSubmissions;
+  return Array.isArray(queue)?queue.map(item=>({...item,input:[...(item.input||[])]})):[];
+}
+
+function saveAgentQueue(state,threadId,queue){
+  state?.updateThreadMeta?.(threadId,{queuedSubmissions:queue});
+  return queue;
+}
+
+export function paginateAgentQueue(queue=[],{cursor=null,limit=100}={}){
+  let offset=0;
+  if(cursor!=null){
+    offset=Number(cursor);
+    if(!Number.isInteger(offset)||offset<0)throw Object.assign(new Error("Invalid queue cursor"),{code:-32602});
+  }
+  const pageSize=Math.max(1,Math.min(200,Number(limit)||100)),data=(queue||[]).slice(offset,offset+pageSize);
+  const next=offset+data.length;
+  return {data,nextCursor:next<(queue||[]).length?String(next):null};
+}
+
 function approvalOption(options,decision){
   const find=kind=>options.find(option=>option.kind===kind)?.optionId;
   if(decision==="acceptForSession")return find("allow_always")||find("allow_once")||null;
@@ -559,6 +580,42 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     }
     if(method==="thread/attachment/remove"){
       const meta=state.threadMeta(params.threadId);const attachments=(meta.attachments||[]).filter(item=>!(item.attachmentType===params.attachmentType&&item.identityKey===params.identityKey));state.updateThreadMeta(params.threadId,{attachments});return {data:attachments};
+    }
+    if(method==="thread/queue/list"){
+      if(!threadStore.get(params.threadId))throw new Error("Thread not found");
+      return paginateAgentQueue(agentQueue(state,params.threadId),params);
+    }
+    if(method==="thread/queue/add"){
+      if(!threadStore.get(params.threadId))throw new Error("Thread not found");
+      if(!Array.isArray(params.input)||!params.input.length)throw Object.assign(new Error("Queued submission input is required"),{code:-32602});
+      const queue=agentQueue(state,params.threadId),queuedSubmission={id:randomUUID(),input:params.input,clientUserMessageId:String(params.clientUserMessageId||"")};
+      queue.push(queuedSubmission);saveAgentQueue(state,params.threadId,queue);emit("thread/queue/changed",{threadId:params.threadId});return {queuedSubmission};
+    }
+    if(method==="thread/queue/update"){
+      if(!threadStore.get(params.threadId))throw new Error("Thread not found");
+      if(!Array.isArray(params.input)||!params.input.length)throw Object.assign(new Error("Queued submission input is required"),{code:-32602});
+      const queue=agentQueue(state,params.threadId),index=queue.findIndex(item=>item.id===params.queuedSubmissionId);if(index<0)throw Object.assign(new Error("Queued submission not found: "+params.queuedSubmissionId),{code:-32602});
+      queue[index]={...queue[index],input:params.input};saveAgentQueue(state,params.threadId,queue);emit("thread/queue/changed",{threadId:params.threadId});return {queuedSubmission:queue[index]};
+    }
+    if(method==="thread/queue/delete"){
+      if(!threadStore.get(params.threadId))throw new Error("Thread not found");
+      const queue=agentQueue(state,params.threadId),next=queue.filter(item=>item.id!==params.queuedSubmissionId),deleted=next.length!==queue.length;
+      if(deleted){saveAgentQueue(state,params.threadId,next);emit("thread/queue/changed",{threadId:params.threadId})}
+      return {deleted};
+    }
+    if(method==="thread/queue/reorder"){
+      if(!threadStore.get(params.threadId))throw new Error("Thread not found");
+      const queue=agentQueue(state,params.threadId),ids=(params.queuedSubmissionIds||[]).map(String),known=new Map(queue.map(item=>[item.id,item]));
+      if(ids.length!==queue.length||new Set(ids).size!==ids.length||ids.some(id=>!known.has(id)))throw Object.assign(new Error("Queued submission order must contain every queued submission exactly once"),{code:-32602});
+      const next=ids.map(id=>known.get(id));saveAgentQueue(state,params.threadId,next);emit("thread/queue/changed",{threadId:params.threadId});return {};
+    }
+    if(method==="thread/queue/start"){
+      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      if(thread.status?.type==="active")throw Object.assign(new Error("Thread already has an active or pending turn"),{code:-32602});
+      const queue=agentQueue(state,params.threadId),index=params.queuedSubmissionId?queue.findIndex(item=>item.id===params.queuedSubmissionId):0;
+      if(index<0||!queue[index])throw Object.assign(new Error("Queued submission not found"),{code:-32602});
+      const submission=queue[index],started=await request(context,"turn/start",{threadId:params.threadId,input:submission.input});
+      const next=queue.filter((_,itemIndex)=>itemIndex!==index);saveAgentQueue(state,params.threadId,next);emit("thread/queue/changed",{threadId:params.threadId});return {turn:started.turn};
     }
     if(method==="thread/archive"){await sessions.get(params.threadId)?.close().catch(()=>{});sessions.delete(params.threadId);const thread=threadStore.update(params.threadId,{archived:true});if(!thread)throw new Error("Thread not found");emit("thread/archived",{threadId:params.threadId});return {thread}}
     if(method==="thread/unarchive"){const thread=threadStore.update(params.threadId,{archived:false});if(!thread)throw new Error("Thread not found");emit("thread/unarchived",{threadId:params.threadId});return {thread}}
