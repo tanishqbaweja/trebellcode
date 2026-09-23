@@ -312,6 +312,7 @@ function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgr
   const chosenModels=selectedModels.length?selectedModels:(model?[model]:[]);
   const runtimeProfileItems=runtimeProfiles?.items||[];
   const currentRuntimeProfile=runtimeProfileItems.find(item=>item.id===runtimeProfiles?.currentInstanceId)||null;
+  const runtimeProfileLabel=runtimeProfiles?.label||`${agentRuntimeLabel} profile`;
   function pickModel(event,id){
     const next=nextModelSelection(chosenModels,id,{shiftKey:event.shiftKey,allowMulti:allowMultiModel});
     onSelectedModels?.(next);if(!next.includes(model))setModel(next[0]||id);
@@ -330,7 +331,7 @@ function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgr
     </div><div className="composer-right">
       {!providerReady&&!models.length?<button className="login-btn" onClick={agentRuntime==="codex"&&provider==="freebuff"?login:onConfigureProvider}>{agentRuntime!=="codex"?"Configure "+agentRuntimeLabel:provider==="freebuff"?"Sign in to Freebuff":"Configure "+({agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||"provider")}</button>:<>
         {agentRuntime!=="codex"&&providerAgents.length>0&&<select className="agent-picker" value={providerAgent||""} onChange={e=>onProviderAgent?.(e.target.value)} title="Provider agent"><option value="">Default agent</option>{providerAgents.map(agent=>{const name=typeof agent==="string"?agent:agent.name;const mode=typeof agent==="string"?"":agent.mode;return <option key={name} value={name}>{name}{mode?` · ${mode}`:""}</option>})}</select>}
-        <div className="model-picker-wrap"><button data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onClick={()=>setModelOpen(value=>!value)} title={!providerReady?"Provider reconnecting":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}><span className="model-picker-current"><strong>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||modelLabel(model,freebuff)||modelError||"No models")}</strong>{runtimeProfileItems.length>1&&currentRuntimeProfile&&<small>{currentRuntimeProfile.displayName}</small>}</span><ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu">{runtimeProfileItems.length>1&&<div className="model-runtime-profiles"><p>Claude profile</p>{runtimeProfileItems.map(item=><button key={item.id} className={item.id===runtimeProfiles.currentInstanceId?"selected":""} disabled={!item.available||item.authenticated===false||Boolean(runtimeProfileBusy)||running} onClick={()=>{onRuntimeProfile?.(item.id);setModelOpen(false)}}><span>{item.id===runtimeProfiles.currentInstanceId?<Check size={11}/>:<i/>}<strong>{item.displayName}</strong></span><small>{runtimeProfileBusy===item.id?"Switching…":item.available?(item.authenticated===false?"Sign-in required":item.version||"Ready"):item.message||"Unavailable"}</small></button>)}</div>}{models.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id,freebuff)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.agent||""}</small></button>})}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
+        <div className="model-picker-wrap"><button data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onClick={()=>setModelOpen(value=>!value)} title={!providerReady?"Provider reconnecting":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}><span className="model-picker-current"><strong>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||modelLabel(model,freebuff)||modelError||"No models")}</strong>{runtimeProfileItems.length>1&&currentRuntimeProfile&&<small>{currentRuntimeProfile.displayName}</small>}</span><ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu">{runtimeProfileItems.length>1&&<div className="model-runtime-profiles"><p>{runtimeProfileLabel}</p>{runtimeProfileItems.map(item=><button key={item.id} className={item.id===runtimeProfiles.currentInstanceId?"selected":""} disabled={!item.available||item.authenticated===false||Boolean(runtimeProfileBusy)||running} onClick={()=>{onRuntimeProfile?.(item.id);setModelOpen(false)}}><span>{item.id===runtimeProfiles.currentInstanceId?<Check size={11}/>:<i/>}<strong>{item.displayName}</strong></span><small>{runtimeProfileBusy===item.id?"Switching…":item.available?(item.authenticated===false?"Sign-in required":item.version||"Ready"):item.message||"Unavailable"}</small></button>)}</div>}{models.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id,freebuff)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.agent||""}</small></button>})}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
       </>}
       <button className={"mic-btn "+(listening?"active":"")} onClick={dictate} disabled={!speechSupported} title={speechSupported?(listening?"Listening…":"Voice dictation"):"Voice dictation is unavailable on this platform"}><Mic size={15}/></button>
       <button data-testid="send" className="send-btn" onClick={onSend} disabled={!providerReady||!prompt.trim()||promptTooLong}>{running&&settings.followUpMode==="queue"?<Plus size={16}/>:<Send size={16}/>}</button>
@@ -712,27 +713,34 @@ export default function App(){
     const listed=await client.request("thread/list",threadListParams(100)).catch(()=>({data:[]})); setThreads(listed.data||[]); return listed.data||[];
   }
   async function loadThreadRuntimeProfiles(client=rpc,threadId=activeThreadRef.current?.id){
-    if(agentRuntime!=="claude"||!client||rpcStatus!=="connected"||!threadId){
+    if(!["codex","claude"].includes(agentRuntime)||!client||rpcStatus!=="connected"||!threadId){
       setThreadRuntimeProfiles({supported:false,currentInstanceId:null,items:[]});return {supported:false,currentInstanceId:null,items:[]};
     }
     const result=await client.request("thread/runtimeInstances/list",{threadId}).catch(error=>({supported:false,currentInstanceId:null,items:[],reason:error.message||String(error)}));
     setThreadRuntimeProfiles(result||{supported:false,currentInstanceId:null,items:[]});return result;
   }
   async function switchThreadRuntimeProfile(instanceId){
-    const threadId=activeThreadRef.current?.id;if(agentRuntime!=="claude"||!rpc||rpcStatus!=="connected"||!threadId||!instanceId)return;
+    const threadId=activeThreadRef.current?.id;if(!["codex","claude"].includes(agentRuntime)||!rpc||rpcStatus!=="connected"||!threadId||!instanceId)return;
     setThreadRuntimeProfileBusy(instanceId);
     try{
       const result=await rpc.request("thread/runtimeInstance/set",{threadId,instanceId});
-      const updated=result?.thread;
+      let updated=result?.thread;
+      if(agentRuntime==="codex"){
+        const resumed=await rpc.request("thread/resume",{threadId,model:model||null,modelProvider:provider,cwd:activeThreadRef.current?.cwd||null,excludeTurns:false});
+        updated=resumed?.thread||updated;
+      }
       if(updated){
+        activeThreadRef.current=updated;
         setActiveThread(prev=>prev?.id===updated.id?updated:prev);
         setThreads(prev=>prev.map(thread=>thread.id===updated.id?{...thread,...updated}:thread));
       }
       const profiles=await loadThreadRuntimeProfiles(rpc,threadId);
       const selected=(profiles?.items||[]).find(item=>item.id===instanceId);
-      setEvents(prev=>[...prev,{id:"runtime-profile-"+Date.now(),kind:"tool",title:`Claude profile switched to ${selected?.displayName||instanceId}`,status:"done",raw:{instanceId}}]);
+      const label=agentRuntime==="codex"?"Codex":"Claude";
+      setEvents(prev=>[...prev,{id:"runtime-profile-"+Date.now(),kind:"tool",title:`${label} profile switched to ${selected?.displayName||instanceId}`,status:"done",raw:{instanceId}}]);
     }catch(error){
-      setEvents(prev=>[...prev,{id:"runtime-profile-error-"+Date.now(),kind:"error",title:"Could not switch Claude profile: "+(error.message||String(error)),status:"done",raw:{instanceId}}]);
+      const label=agentRuntime==="codex"?"Codex":"Claude";
+      setEvents(prev=>[...prev,{id:"runtime-profile-error-"+Date.now(),kind:"error",title:`Could not switch ${label} profile: `+(error.message||String(error)),status:"done",raw:{instanceId}}]);
     }finally{setThreadRuntimeProfileBusy("")}
   }
   async function searchThreadMessages(queryText){
@@ -814,7 +822,7 @@ export default function App(){
   },[bootstrap.wsUrl,bootstrap.mock,provider,agentRuntime,providerRevision]);
   useEffect(()=>{if(rpcStatus==="connected"&&rpc)loadSkills(rpc,projectPath)},[projectPath,rpcStatus]);
   useEffect(()=>{
-    if(agentRuntime==="claude"&&rpcStatus==="connected"&&rpc&&activeThread?.id){loadThreadRuntimeProfiles(rpc,activeThread.id);return}
+    if(["codex","claude"].includes(agentRuntime)&&rpcStatus==="connected"&&rpc&&activeThread?.id){loadThreadRuntimeProfiles(rpc,activeThread.id);return}
     setThreadRuntimeProfiles({supported:false,currentInstanceId:null,items:[]});setThreadRuntimeProfileBusy("");
   },[agentRuntime,rpc,rpcStatus,activeThread?.id]);
 

@@ -5,7 +5,9 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { WebSocketServer } from "ws";
 import { attachAgentRelay } from "../../src/agent-relay.mjs";
+import { attachCodexRelay } from "../../src/codex-relay.mjs";
 import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
 
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));
@@ -792,6 +794,79 @@ test("Claude thread can switch compatible account profiles from the model picker
     await relay.close();
     await new Promise(resolve=>relayServer.close(()=>resolve()));
     await rm(home,{recursive:true,force:true});
+  }
+});
+
+test("Codex thread can switch compatible account profiles from the model picker",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"codex-profile-fixture",name:"Codex profile switch fixture",preview:"Shared CODEX_HOME account switching",cwd:process.cwd(),createdAt:Date.now()-1000,updatedAt:Date.now(),turns:[]};
+  const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const upstreamSockets=new Set();
+  upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
+  upstreamWss.on("connection",ws=>{
+    upstreamSockets.add(ws);ws.on("close",()=>upstreamSockets.delete(ws));
+    ws.on("message",data=>{
+      const message=JSON.parse(String(data));if(message.id==null||!message.method)return;
+      let result={};
+      if(message.method==="initialize")result={userAgent:"codex-profile-fixture"};
+      else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
+      else if(message.method==="threadSection/list")result={data:[],nextCursor:null};
+      else if(message.method==="skills/list")result={data:[]};
+      else if(message.method==="thread/resume"||message.method==="thread/read")result={thread};
+      else if(message.method==="thread/items/list")result={data:[],nextCursor:null};
+      ws.send(JSON.stringify({id:message.id,result}));
+    });
+  });
+  const upstreamPort=await freePort();await new Promise((resolve,reject)=>upstreamHttp.listen(upstreamPort,"127.0.0.1",resolve).once("error",reject));
+  let currentInstanceId="codex-work";
+  const profiles=[
+    {id:"codex-work",displayName:"Codex Work",available:true,authenticated:true,version:"fixture-1.0"},
+    {id:"codex-personal",displayName:"Codex Personal",available:true,authenticated:true,version:"fixture-1.0"},
+    {id:"codex-signed-out",displayName:"Codex Signed Out",available:true,authenticated:false,version:"fixture-1.0"},
+  ];
+  const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});
+  const relay=attachCodexRelay(relayServer,{
+    targetUrl:`ws://127.0.0.1:${upstreamPort}`,
+    handleRequest:async message=>{
+      if(message.method==="thread/runtimeInstances/list")return {handled:true,result:{supported:true,label:"Codex profile",currentInstanceId,items:profiles}};
+      if(message.method==="thread/runtimeInstance/set"){
+        if(message.params?.instanceId==="codex-signed-out")throw new Error("Sign-in required");
+        currentInstanceId=message.params?.instanceId||currentInstanceId;return {handled:true,result:{threadId:thread.id,runtimeInstanceId:currentInstanceId}};
+      }
+      return null;
+    },
+  });
+  const relayPort=await freePort();await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+      mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,
+      wsUrl:`ws://127.0.0.1:${relayPort}/api/codex/ws`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null,
+    })}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+      settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-work",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},
+      projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null,runtimeInstanceId:"codex-work"}},
+    })}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+    await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    await expect(page.getByRole("button",{name:/Codex profile switch fixture/})).toBeVisible({timeout:10_000});
+    await page.getByRole("button",{name:/Codex profile switch fixture/}).click();
+    const picker=page.getByTestId("model-picker");await expect(picker).toBeEnabled();await expect(picker).toContainText("Codex Work");
+    await picker.click();
+    const profilesMenu=page.locator(".model-runtime-profiles");await expect(profilesMenu).toBeVisible();await expect(profilesMenu).toContainText("Codex profile");
+    await expect(profilesMenu.getByRole("button",{name:/Codex Work/})).toHaveClass(/selected/);
+    await expect(profilesMenu.getByRole("button",{name:/Codex Personal/})).toBeEnabled();
+    const signedOut=profilesMenu.getByRole("button",{name:/Codex Signed Out/});await expect(signedOut).toBeDisabled();await expect(signedOut).toContainText("Sign-in required");
+    await page.screenshot({path:auditDir+"chat-codex-profile-picker-1600x980.png",fullPage:true});
+    await profilesMenu.getByRole("button",{name:/Codex Personal/}).click();await expect(picker).toContainText("Codex Personal");
+    await picker.click();await expect(profilesMenu.getByRole("button",{name:/Codex Personal/})).toHaveClass(/selected/);
+    await page.screenshot({path:auditDir+"chat-codex-profile-switched-1600x980.png",fullPage:true});
+    await page.setViewportSize({width:1280,height:800});const compact=await page.locator(".composer-bar").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(compact.scroll).toBeLessThanOrEqual(compact.client+1);
+    await page.screenshot({path:auditDir+"chat-codex-profile-switched-1280x800.png",fullPage:true});
+  }finally{
+    relay.close();for(const ws of upstreamSockets)try{ws.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayServer.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))]);
   }
 });
 
