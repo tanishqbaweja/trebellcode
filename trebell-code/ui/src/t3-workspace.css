@@ -250,7 +250,7 @@ html.layout-resizing,html.layout-resizing *{user-select:none!important}
 .page-header{max-width:1000px;margin:0 auto 22px}
 .secondary-page h1,.page-header h1{font-size:22px;font-weight:620;letter-spacing:-.45px;margin:8px 0 5px}
 .secondary-page>p,.page-header p{font-size:10px;color:#71777e;margin:0}
-.settings-page:not(.redesigned-settings),.projects-page,.freebuff-page,.history-page,.template-grid{max-width:1000px;margin:0 auto}
+.settings-page:not(.redesigned-settings),.projects-page,.freebuff-page,.history-page{max-width:1000px;margin:0 auto}
 .settings-page.redesigned-settings{width:min(1180px,100%);margin:0 auto;display:grid;grid-template-columns:190px minmax(0,1fr);gap:20px;align-items:start}
 .settings-page.redesigned-settings [hidden]{display:none!important}
 .settings-rail{position:sticky;top:0;min-width:0;display:grid;gap:6px}
@@ -313,8 +313,6 @@ html.layout-resizing,html.layout-resizing *{user-select:none!important}
   .settings-grid>.agent-runtime-settings,.settings-grid>.custom-model-settings,.settings-grid>.keybindings-settings,.settings-section-slot{grid-column:auto}
   .keybinding-row{grid-template-columns:1fr}.keybinding-row>strong{padding-top:3px}
 }
-.template-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
-.template-grid button{min-height:110px;border-color:#25282c;background:#111315;border-radius:9px}
 .history-page button{border-color:#24272b!important;background:#111315!important}
 .history-empty{min-height:240px;border:1px dashed #292d32;border-radius:10px;display:grid;place-items:center;align-content:center;gap:7px;text-align:center;color:#6f7680}.history-empty svg{color:#8d69b3}.history-empty strong{font-size:11px;color:#c4c8ce}.history-empty span{font-size:8px;color:#737a82}.history-empty button{margin-top:3px;min-height:29px;padding:0 10px;border:1px solid #37303f!important;background:#19151f!important;color:#bba7ce!important;border-radius:7px}
 .general-chat-card{width:100%;min-height:72px;border:1px solid #2a2d32!important;background:#111315!important;color:#90979f!important;border-radius:9px!important;display:grid!important;grid-template-columns:34px minmax(0,1fr) auto!important;gap:10px!important;align-items:center!important;text-align:left!important;padding:11px 13px!important}
