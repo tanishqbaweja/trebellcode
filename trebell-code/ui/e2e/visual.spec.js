@@ -279,6 +279,37 @@ test("command palette keeps failed actions visible with useful feedback",async({
   await expect(palette).toBeHidden();
 });
 
+test("terminal failures keep backend and visible session state in sync",async({page,request})=>{
+  test.setTimeout(30_000);
+  await prepare(page,request);
+  await page.getByTestId("terminal-toggle").click();
+  const drawer=page.getByTestId("drawer");
+  await expect(drawer).toBeVisible();
+  const newButton=drawer.locator(".terminal-new");
+  await expect(newButton).toBeVisible();
+  await newButton.click();
+  await expect(drawer.locator(".terminal-pane")).toHaveCount(1);
+
+  await page.route("**/api/terminal/sessions*",route=>{
+    if(route.request().method()==="DELETE")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate terminal close failure"})});
+    return route.continue();
+  });
+  await drawer.locator(".terminal-tabs button.active span").click();
+  await expect(drawer.getByRole("alert")).toContainText("Deliberate terminal close failure");
+  await expect(drawer.locator(".terminal-pane")).toHaveCount(1);
+  await page.unroute("**/api/terminal/sessions*");
+
+  await page.route("**/api/terminal/sessions",route=>{
+    if(route.request().method()==="POST")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate terminal create failure"})});
+    return route.continue();
+  });
+  await newButton.click();
+  await expect(drawer.getByRole("alert")).toContainText("Deliberate terminal create failure");
+  await expect(drawer.locator(".terminal-pane")).toHaveCount(1);
+  await page.setViewportSize({width:1280,height:800});
+  await page.screenshot({path:auditDir+"terminal-action-error-1280x800.png",fullPage:true});
+});
+
 test("slash menu only advertises commands that can run in the current context",async({page,request})=>{
   test.setTimeout(30_000);
   await prepare(page,request);

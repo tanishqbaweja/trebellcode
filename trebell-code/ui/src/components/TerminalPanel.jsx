@@ -13,13 +13,16 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   const [outputs,setOutputs]=useState({});
   const [lines,setLines]=useState({});
   const [focusTick,setFocusTick]=useState(0);
+  const [error,setError]=useState("");
   const sockets=useRef(new Map());
   const outputRefs=useRef(new Map());
   const inputRefs=useRef(new Map());
   const environmentQuery=()=>"?"+new URLSearchParams({environmentId:environmentId||""}).toString();
 
   async function refresh(preferredId=null){
-    const data=await api("/api/terminal/sessions"+environmentQuery()).catch(()=>({sessions:[]}));
+    let data;
+    try{data=await api("/api/terminal/sessions"+environmentQuery());setError("")}
+    catch(cause){setError(cause?.message||String(cause)||"Could not load terminal sessions.");return sessions}
     const list=data.sessions||[];setSessions(list);
     const target=preferredId||(activeId&&list.some(session=>session.id===activeId)?activeId:null)||list[0]?.id||null;
     setActiveId(target);
@@ -62,26 +65,31 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
     setSessions(previous=>[...previous,data.session]);setLines(previous=>({...previous,[data.session.id]:""}));return data.session;
   }
   async function create(){
-    const session=await createSession();setPaneIds([session.id]);setActiveId(session.id);setFocusTick(value=>value+1);return session;
+    try{const session=await createSession();setError("");setPaneIds([session.id]);setActiveId(session.id);setFocusTick(value=>value+1);return session}
+    catch(cause){setError(cause?.message||String(cause)||"Could not create terminal.");return null}
   }
   async function split(direction="horizontal"){
-    let current=paneIds;
-    if(!current.length){
-      const base=activeId||sessions[0]?.id;
-      if(base)current=[base];
-      else{const first=await createSession();current=[first.id]}
-    }
-    if(current.length>=MAX_SPLIT_PANES)return;
-    const session=await createSession();setSplitDirection(direction);setPaneIds([...current,session.id]);setActiveId(session.id);setFocusTick(value=>value+1);
+    try{
+      let current=paneIds;
+      if(!current.length){
+        const base=activeId||sessions[0]?.id;
+        if(base)current=[base];
+        else{const first=await createSession();current=[first.id]}
+      }
+      if(current.length>=MAX_SPLIT_PANES)return;
+      const session=await createSession();setError("");setSplitDirection(direction);setPaneIds([...current,session.id]);setActiveId(session.id);setFocusTick(value=>value+1);
+    }catch(cause){setError(cause?.message||String(cause)||"Could not split terminal.")}
   }
   async function close(id){
-    await api("/api/terminal/sessions?id="+encodeURIComponent(id),{method:"DELETE"}).catch(()=>{});
+    try{await api("/api/terminal/sessions?id="+encodeURIComponent(id),{method:"DELETE"});setError("")}
+    catch(cause){setError(cause?.message||String(cause)||"Could not close terminal.");return false}
     sockets.current.get(id)?.close();sockets.current.delete(id);
     const remainingSessions=sessions.filter(session=>session.id!==id);setSessions(remainingSessions);
     let remainingPanes=paneIds.filter(paneId=>paneId!==id);
     if(!remainingPanes.length&&remainingSessions[0])remainingPanes=[remainingSessions[0].id];
     setPaneIds(remainingPanes);setOutputs(previous=>{const next={...previous};delete next[id];return next});setLines(previous=>{const next={...previous};delete next[id];return next});
     if(id===activeId)setActiveId(remainingPanes[0]||remainingSessions[0]?.id||null);
+    return true;
   }
   function selectSession(id){
     setActiveId(id);setFocusTick(value=>value+1);
@@ -94,17 +102,18 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   }
   function send(id,event){
     event?.preventDefault();const line=lines[id]||"";const socket=sockets.current.get(id);
-    if(!line||socket?.readyState!==WebSocket.OPEN)return;
-    socket.send(JSON.stringify({type:"input",data:line+"\r"}));setLines(previous=>({...previous,[id]:""}));
+    if(!line)return;
+    if(socket?.readyState!==WebSocket.OPEN){setError("Terminal is reconnecting. Try again in a moment.");return}
+    setError("");socket.send(JSON.stringify({type:"input",data:line+"\r"}));setLines(previous=>({...previous,[id]:""}));
   }
-  function ctrlC(id){sockets.current.get(id)?.send(JSON.stringify({type:"input",data:"\x03"}))}
+  function ctrlC(id){const socket=sockets.current.get(id);if(socket?.readyState!==WebSocket.OPEN){setError("Terminal is reconnecting. Try again in a moment.");return}setError("");socket.send(JSON.stringify({type:"input",data:"\x03"}))}
 
   useEffect(()=>{
     const focus=()=>setFocusTick(value=>value+1);
-    const refreshExternal=event=>refresh(event.detail||null).then(()=>setFocusTick(value=>value+1)).catch(()=>{});
-    const createNew=()=>create().catch(()=>{});
-    const closeActive=()=>{if(activeId)close(activeId).catch(()=>{})};
-    const splitPane=event=>split(event.detail?.direction==="vertical"?"vertical":"horizontal").catch(()=>{});
+    const refreshExternal=event=>refresh(event.detail||null).then(()=>setFocusTick(value=>value+1));
+    const createNew=()=>create();
+    const closeActive=()=>{if(activeId)close(activeId)};
+    const splitPane=event=>split(event.detail?.direction==="vertical"?"vertical":"horizontal");
     window.addEventListener("trebell:terminal-focus",focus);
     window.addEventListener("trebell:terminal-refresh",refreshExternal);
     window.addEventListener("trebell:terminal-new",createNew);
@@ -128,13 +137,16 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
       <button title="Split horizontally" onClick={()=>split("horizontal")} disabled={paneSessions.length>=MAX_SPLIT_PANES}><Columns2 size={13}/></button>
       <button title="Split vertically" onClick={()=>split("vertical")} disabled={paneSessions.length>=MAX_SPLIT_PANES}><Rows2 size={13}/></button>
     </div>
-    {!paneSessions.length?<div className="terminal-empty"><SquareTerminal size={30}/><strong>No terminal session</strong><button onClick={create}>Create terminal</button></div>:<div className={"terminal-panes "+(paneSessions.length>1?"split "+splitDirection:"")} style={paneStyle}>
+    <div className="terminal-content">
+      {error&&<div className="terminal-error" role="alert">{error}</div>}
+      {!paneSessions.length?<div className="terminal-empty"><SquareTerminal size={30}/><strong>No terminal session</strong><button onClick={create}>Create terminal</button></div>:<div className={"terminal-panes "+(paneSessions.length>1?"split "+splitDirection:"")} style={paneStyle}>
       {paneSessions.map(session=><section key={session.id} className={"terminal-pane"+(session.id===activeId?" active":"")} onMouseDown={()=>session.id!==activeId&&setActiveId(session.id)}>
         <div className="terminal-pane-head"><span><SquareTerminal size={11}/>{session.name||"Terminal"}</span>{paneSessions.length>1&&<button onClick={()=>close(session.id)} aria-label={"Close "+(session.name||"terminal")}><X size={10}/></button>}</div>
         <pre ref={node=>node?outputRefs.current.set(session.id,node):outputRefs.current.delete(session.id)} className="terminal-screen">{outputs[session.id]||"Terminal connected.\n"}</pre>
         <form className="terminal-command-line" onSubmit={event=>send(session.id,event)}><span>$</span><input ref={node=>node?inputRefs.current.set(session.id,node):inputRefs.current.delete(session.id)} value={lines[session.id]||""} onChange={event=>setLines(previous=>({...previous,[session.id]:event.target.value}))} placeholder={session.running?"Type a command…":"Stopped terminal history"} disabled={!session.running}/><button type="button" onClick={()=>ctrlC(session.id)} disabled={!session.running}>Ctrl+C</button><button disabled={!session.running}>Send</button></form>
         <div className="terminal-foot"><span>{session.restored?"Restored history · ":""}{session.environmentName||environmentName} · {session.cwd||projectPath||"Home"}</span><button onClick={()=>onAttachExcerpt?.((outputs[session.id]||"").slice(-8000))}><Paperclip size={12}/> Attach recent output</button></div>
       </section>)}
-    </div>}
+      </div>}
+    </div>
   </div>;
 }
