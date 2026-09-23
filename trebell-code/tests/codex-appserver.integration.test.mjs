@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
@@ -16,6 +16,21 @@ async function freePort() {
   return port;
 }
 
+async function waitForNonEmptyRollout(root,{timeoutMs=5000}={}){
+  const started=Date.now();
+  while(Date.now()-started<timeoutMs){
+    try{
+      const entries=await readdir(root,{recursive:true});
+      for(const entry of entries){
+        if(!String(entry).endsWith(".jsonl"))continue;
+        const info=await stat(join(root,String(entry))).catch(()=>null);if(info?.size>0)return join(root,String(entry));
+      }
+    }catch{}
+    await new Promise(resolve=>setTimeout(resolve,25));
+  }
+  throw new Error("Codex rollout did not become non-empty before timeout");
+}
+
 function rpc(ws,id,method,params={}) {
   return new Promise((resolve,reject)=>{
     const timer=setTimeout(()=>reject(new Error(`${method} timed out`)),15000);
@@ -25,7 +40,7 @@ function rpc(ws,id,method,params={}) {
       if(msg.id!==id) return;
       clearTimeout(timer);
       ws.off("message",onMessage);
-      if(msg.error) reject(new Error(msg.error.message||JSON.stringify(msg.error)));
+      if(msg.error) reject(new Error(`${method}: ${msg.error.message||JSON.stringify(msg.error)}`));
       else resolve(msg.result);
     };
     ws.on("message",onMessage);
@@ -46,6 +61,14 @@ function rpcOutcome(ws,id,method,params={}) {
     };
     ws.on("message",onMessage);
     ws.send(JSON.stringify({id,method,params}));
+  });
+}
+
+function waitNotification(ws,method,predicate=()=>true,timeoutMs=15000){
+  return new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>{ws.off("message",onMessage);reject(new Error(`${method} notification timed out`))},timeoutMs);
+    const onMessage=data=>{let message;try{message=JSON.parse(String(data))}catch{return}if(message.method!==method||!predicate(message.params||{}))return;clearTimeout(timer);ws.off("message",onMessage);resolve(message.params||{})};
+    ws.on("message",onMessage);
   });
 }
 
@@ -191,22 +214,18 @@ test("compatible Codex profiles switch an existing thread through a separate app
     assert.equal(memoryDisabled.ok,true,memoryDisabled.error?.message||"thread memory disable failed");
     const memoryEnabled=await rpcOutcome(ws,31,"thread/memoryMode/set",{threadId,mode:"enabled"});
     assert.equal(memoryEnabled.ok,true,memoryEnabled.error?.message||"thread memory enable failed");
+    const firstStartedNotification=waitNotification(ws,"turn/started",params=>params.threadId===threadId);
+    const firstCompletedNotification=waitNotification(ws,"turn/completed",params=>params.threadId===threadId);
     const firstTurn=await rpc(ws,3,"turn/start",{threadId,input:[],turnTrigger:"trebell-profile-persistence"});
-    assert.ok(firstTurn.turn?.id);await rpcOutcome(ws,4,"turn/interrupt",{threadId,turnId:firstTurn.turn.id});
-    for(let i=0;i<60;i++){
-      const current=await fetch(gui.url+"/api/thread-meta?threadId="+encodeURIComponent(threadId)).then(response=>response.json());if(current.active===false)break;
-      await new Promise(resolve=>setTimeout(resolve,50));
-    }
+    assert.ok(firstTurn.turn?.id);await firstStartedNotification;await rpcOutcome(ws,4,"turn/interrupt",{threadId,turnId:firstTurn.turn.id});await firstCompletedNotification;
     const profiles=await rpc(ws,5,"thread/runtimeInstances/list",{threadId});
     assert.equal(profiles.supported,true);assert.equal(profiles.currentInstanceId,"codex-work");assert.equal(profiles.label,"Codex profile");
     assert.deepEqual(profiles.items.map(item=>item.id).sort(),["codex-personal","codex-work"]);
     const background=await rpc(ws,20,"thread/start",{cwd:process.cwd(),modelProvider:"freebuff",approvalPolicy:"never",sandbox:"danger-full-access",ephemeral:false,threadSource:"trebell-code"});
+    const backgroundCompletedNotification=waitNotification(ws,"turn/completed",params=>params.threadId===background.thread.id);
     const backgroundTurn=await rpc(ws,21,"turn/start",{threadId:background.thread.id,input:[],turnTrigger:"trebell-concurrent-thread"});
     assert.equal(backgroundTurn.turn?.status,"inProgress","a second Codex thread should keep its own writer while another thread changes profiles");
-    for(let i=0;i<60;i++){
-      const current=await fetch(gui.url+"/api/thread-meta?threadId="+encodeURIComponent(background.thread.id)).then(response=>response.json());if(current.active===false)break;
-      await new Promise(resolve=>setTimeout(resolve,50));
-    }
+    await backgroundCompletedNotification;
     const switched=await rpc(ws,6,"thread/runtimeInstance/set",{threadId,instanceId:"codex-personal"});
     assert.equal(switched.runtimeInstanceId,"codex-personal");
     const resumed=await rpc(ws,7,"thread/resume",{threadId,modelProvider:"freebuff",excludeTurns:false});
@@ -224,5 +243,47 @@ test("compatible Codex profiles switch an existing thread through a separate app
     assert.equal(resumedAfterUnsubscribe.result?.thread?.id,threadId);
     const incompatible=await rpcOutcome(ws,9,"thread/runtimeInstance/set",{threadId,instanceId:"codex-isolated"});
     assert.equal(incompatible.ok,false);assert.match(incompatible.error?.message||"",/different CODEX_HOME/i);
+  }finally{try{ws?.close()}catch{}await gui.close();await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
+});
+
+test("native Codex queue persists, edits, reorders, deletes and starts follow-ups",{timeout:60000},async()=>{
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  const home=await mkdtemp(join(tmpdir(),"trebell-codex-queue-"));
+  const env={...process.env,TREBELL_HOME:home};const gui=await createGuiServer({port,appPort,mock:false,env});let ws;
+  try{
+    let boot=null;for(let i=0;i<80;i++){boot=await fetch(gui.url+"/api/bootstrap").then(response=>response.json());if(boot.appServerReady)break;await new Promise(resolve=>setTimeout(resolve,200))}
+    assert.equal(boot.appServerReady,true,"Codex app-server did not become ready for queue test");
+    ws=new WebSocket(boot.wsUrl,{origin:gui.url});await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});
+    await rpc(ws,1,"initialize",{clientInfo:{name:"trebell-queue-test",title:"Trebell Queue Test",version:"1.0.0"},capabilities:{experimentalApi:true}});ws.send(JSON.stringify({method:"initialized",params:{}}));
+    const started=await rpc(ws,2,"thread/start",{cwd:process.cwd(),modelProvider:"freebuff",approvalPolicy:"never",sandbox:"danger-full-access",ephemeral:false,threadSource:"trebell-code"});
+    const threadId=started.thread.id;assert.ok(threadId);
+    const seedTurn=await rpc(ws,3,"turn/start",{threadId,input:[],turnTrigger:"trebell-queue-persistence"});
+    assert.ok(seedTurn.turn?.id);await waitForNonEmptyRollout(join(home,"codex","sessions"));await rpcOutcome(ws,4,"turn/interrupt",{threadId,turnId:seedTurn.turn.id});
+    for(let i=0;i<60;i++){
+      const current=await fetch(gui.url+"/api/thread-meta?threadId="+encodeURIComponent(threadId)).then(response=>response.json());if(current.active===false)break;
+      await new Promise(resolve=>setTimeout(resolve,50));
+    }
+    await rpc(ws,5,"thread/unsubscribe",{threadId});await new Promise(resolve=>setTimeout(resolve,150));
+    const first=await rpc(ws,6,"thread/queue/add",{threadId,input:[{type:"text",text:"first queued follow-up",textElements:[]}],clientUserMessageId:"queue-first"});
+    const second=await rpc(ws,7,"thread/queue/add",{threadId,input:[{type:"text",text:"second queued follow-up",textElements:[]}],clientUserMessageId:"queue-second"});
+    assert.ok(first.queuedSubmission?.id);assert.ok(second.queuedSubmission?.id);
+    let listed=await rpc(ws,8,"thread/queue/list",{threadId,limit:20});
+    assert.deepEqual(listed.data.map(item=>item.clientUserMessageId),["queue-first","queue-second"]);
+    const updated=await rpc(ws,9,"thread/queue/update",{threadId,queuedSubmissionId:second.queuedSubmission.id,input:[{type:"text",text:"second queued follow-up edited",textElements:[]}]});
+    assert.equal(updated.queuedSubmission.input?.[0]?.text,"second queued follow-up edited");
+    await rpc(ws,10,"thread/queue/reorder",{threadId,queuedSubmissionIds:[second.queuedSubmission.id,first.queuedSubmission.id]});
+    listed=await rpc(ws,11,"thread/queue/list",{threadId,limit:20});assert.deepEqual(listed.data.map(item=>item.id),[second.queuedSubmission.id,first.queuedSubmission.id]);
+    const deleted=await rpc(ws,12,"thread/queue/delete",{threadId,queuedSubmissionId:first.queuedSubmission.id});assert.equal(deleted.deleted,true);
+    listed=await rpc(ws,13,"thread/queue/list",{threadId,limit:20});assert.deepEqual(listed.data.map(item=>item.id),[second.queuedSubmission.id]);
+    const third=await rpc(ws,14,"thread/queue/add",{threadId,input:[{type:"text",text:"third queued follow-up",textElements:[]}],clientUserMessageId:"queue-third"});assert.ok(third.queuedSubmission?.id);
+    const autoStarted=waitNotification(ws,"turn/started",params=>params.threadId===threadId);
+    await rpc(ws,15,"thread/resume",{threadId,modelProvider:"freebuff",excludeTurns:false});
+    const autoTurn=await autoStarted;const autoTurnId=autoTurn.turn?.id||autoTurn.turnId;assert.ok(autoTurnId,"resume should auto-dispatch the first queued submission");
+    const interrupted=waitNotification(ws,"turn/completed",params=>params.threadId===threadId&&(params.turn?.id||params.turnId)===autoTurnId);
+    await rpcOutcome(ws,16,"turn/interrupt",{threadId,turnId:autoTurnId});await interrupted;
+    listed=await rpc(ws,17,"thread/queue/list",{threadId,limit:20});assert.deepEqual(listed.data.map(item=>item.id),[third.queuedSubmission.id]);
+    const launched=await rpc(ws,18,"thread/queue/start",{threadId,queuedSubmissionId:third.queuedSubmission.id});assert.equal(launched.turn?.status,"inProgress");
+    const afterStart=await rpc(ws,19,"thread/queue/list",{threadId,limit:20});assert.equal(afterStart.data.length,0);
+    await rpcOutcome(ws,20,"turn/interrupt",{threadId,turnId:launched.turn.id});
   }finally{try{ws?.close()}catch{}await gui.close();await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
 });

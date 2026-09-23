@@ -142,9 +142,10 @@ html.layout-resizing,html.layout-resizing *{user-select:none!important}
 .inline-approval{margin:8px 0 24px 34px}
 .approval-card{max-width:650px;border:1px solid #44385d!important;background:#15131a!important;border-radius:10px!important;padding:12px!important}
 .queued-message{margin:8px 0 16px 34px;border:1px dashed #35383d;background:#111315;border-radius:9px;padding:10px}
+.queued-message.editing{border-color:#66527d;background:#151219}
 .queued-message span{font-size:8px;color:#81709d;text-transform:uppercase;letter-spacing:.06em}
 .queued-message p{font-size:11px;color:#aeb3ba;margin:5px 0}
-.queued-message button{height:25px;border:0;background:#1b1d20;color:#9298a0;border-radius:5px;font-size:8px;margin-right:4px}
+.queued-message-actions{display:flex;align-items:center;gap:4px;flex-wrap:wrap}.queued-message button{height:25px;border:0;background:#1b1d20;color:#9298a0;border-radius:5px;font-size:8px;padding:0 8px}.queued-message button:disabled{opacity:.38;cursor:not-allowed}.queued-message button:hover:not(:disabled){background:#24272b;color:#c2c7ce}
 .welcome{min-height:calc(100vh - 250px);height:auto;padding:0 0 80px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
 .welcome-mark{width:42px;height:42px;border-radius:12px;display:grid;place-items:center;border:1px solid #332d43;background:#16141c}
 .welcome-mark img{width:38px;height:38px;display:block;object-fit:contain;filter:drop-shadow(0 0 10px rgba(132,104,255,.18))}

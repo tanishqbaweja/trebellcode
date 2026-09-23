@@ -36,6 +36,7 @@ import LicensesPage from "./components/LicensesPage.jsx";
 import { resolveKeybinding } from "./keybindings.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
 import { applyFileMention, fileMentionAt, rankFileMentions } from "./composer-mentions.js";
+import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, reorderQueue } from "./native-queue.js";
 import { normalizeCustomTheme, themeCssVariables } from "./theme-utils.js";
 import { approvalResponse } from "./approval-utils.js";
 import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./fanout-utils.js";
@@ -238,7 +239,7 @@ const SLASH_COMMANDS=[
   ["/clear","Reset the current draft/thread view"],
 ];
 
-function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,onFileMentionSearch,onFileMentionAttach,permissionMode,setPermissionMode,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onModelPickerOpenChange}){
+function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,submitting=false,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,onFileMentionSearch,onFileMentionAttach,permissionMode,setPermissionMode,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onModelPickerOpenChange}){
   const [modelOpen,setModelOpen]=useState(false);
   const [listening,setListening]=useState(false);
   const [caret,setCaret]=useState(0);
@@ -359,7 +360,7 @@ function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgr
     {activeMention&&mentionItems.length>0&&<div className="file-mention-menu" data-testid="file-mention-menu">{mentionItems.map((item,index)=><button key={item.path||item.relativePath||index} className={index===mentionIndex?"active":""} disabled={mentionBusy} onMouseDown={event=>{event.preventDefault();chooseMention(item)}}><FileCode2 size={13}/><span><strong>{item.name||String(item.path||"").split(/[\\/]/).pop()}</strong><small>{item.relativePath||item.path}</small></span></button>)}</div>}
     {(contextChips||[]).length>0&&<div className="context-chip-row" data-testid="context-chips">{contextChips.map(chip=><span className={"context-chip kind-"+(chip.kind||"context")} data-testid="context-chip" key={chip.id||chip.path} title={chip.path}><Link2 size={11}/><strong>{chip.label||"Context"}</strong>{chip.detail&&<small>{chip.detail}</small>}<button onClick={()=>onRemoveContext(chip.path)} title="Remove context"><X size={10}/></button></span>)}</div>}
     <div className="attachment-shelf">{attachments.filter(path=>!contextPaths.has(path)).map(path=><span key={path}><Paperclip size={11}/>{String(path).split(/[\\/]/).pop()}<button onClick={()=>onRemoveAttachment(path)}><X size={10}/></button></span>)}</div>
-    <textarea ref={composerRef} data-testid="composer" value={prompt} onChange={e=>{onPromptEdit?.();setPrompt(e.target.value);setCaret(e.target.selectionStart)}} onClick={e=>setCaret(e.currentTarget.selectionStart)} onKeyUp={e=>setCaret(e.currentTarget.selectionStart)} onKeyDown={keyDown} onPaste={onPaste} placeholder={providerReady?(running?(agentRuntime==="codex"&&settings.followUpMode==="steer"?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…"):(agentRuntime!=="codex"?`Configure ${agentRuntimeLabel} in Settings…`:provider==="freebuff"?"Sign in to Freebuff to start…":"Configure the selected provider in Settings…")} disabled={!providerReady}/>
+    <textarea ref={composerRef} data-testid="composer" value={prompt} onChange={e=>{onPromptEdit?.();setPrompt(e.target.value);setCaret(e.target.selectionStart)}} onClick={e=>setCaret(e.currentTarget.selectionStart)} onKeyUp={e=>setCaret(e.currentTarget.selectionStart)} onKeyDown={keyDown} onPaste={onPaste} placeholder={submitting?"Sending…":providerReady?(running?(agentRuntime==="codex"&&settings.followUpMode==="steer"?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…"):(agentRuntime!=="codex"?`Configure ${agentRuntimeLabel} in Settings…`:provider==="freebuff"?"Sign in to Freebuff to start…":"Configure the selected provider in Settings…")} disabled={!providerReady||submitting}/>
     <div className="composer-bar"><div className="composer-left">
       <button className="circle-btn" onClick={onPickFiles} title="Attach files" aria-label="Attach files"><Plus size={18}/></button>
       {window.trebellDesktop?.captureScreen&&<button className="circle-btn" onClick={onCaptureScreen} title="Capture desktop screenshot" aria-label="Capture desktop screenshot"><Camera size={15}/></button>}
@@ -371,7 +372,7 @@ function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgr
         <div className="model-picker-wrap"><button data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onClick={()=>setModelOpen(value=>!value)} title={!providerReady?"Provider reconnecting":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}><span className="model-picker-current"><strong>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||modelLabel(model,freebuff)||modelError||"No models")}</strong>{runtimeProfileItems.length>1&&currentRuntimeProfile&&<small>{currentRuntimeProfile.displayName}</small>}</span><ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu">{runtimeProfileItems.length>1&&<div className="model-runtime-profiles"><p>{runtimeProfileLabel}</p>{runtimeProfileItems.map(item=><button key={item.id} className={item.id===runtimeProfiles.currentInstanceId?"selected":""} disabled={!item.available||item.authenticated===false||Boolean(runtimeProfileBusy)||running} onClick={()=>{onRuntimeProfile?.(item.id);setModelOpen(false)}}><span>{item.id===runtimeProfiles.currentInstanceId?<Check size={11}/>:<i/>}<strong>{item.displayName}</strong></span><small>{runtimeProfileBusy===item.id?"Switching…":item.available?(item.authenticated===false?"Sign-in required":item.version||"Ready"):item.message||"Unavailable"}</small></button>)}</div>}{models.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id,freebuff)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.agent||""}</small></button>})}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
       </>}
       <button className={"mic-btn "+(listening?"active":"")} onClick={dictate} disabled={!speechSupported} title={speechSupported?(listening?"Listening…":"Voice dictation"):"Voice dictation is unavailable on this platform"}><Mic size={15}/></button>
-      <button data-testid="send" className="send-btn" onClick={onSend} disabled={!providerReady||!prompt.trim()||promptTooLong}>{running&&settings.followUpMode==="queue"?<Plus size={16}/>:<Send size={16}/>}</button>
+      <button data-testid="send" className="send-btn" onClick={onSend} disabled={!providerReady||submitting||!prompt.trim()||promptTooLong}>{running&&settings.followUpMode==="queue"?<Plus size={16}/>:<Send size={16}/>}</button>
     </div></div>
     <div className={"composer-status"+(modelError||promptTooLong?" error":"")}><span>{promptTooLong?`Draft is ${prompt.length.toLocaleString()} characters · maximum ${MAX_COMPOSER_CHARS.toLocaleString()}`:modelError||<>{tokenLabel(tokenUsage,priceConfig)}{canCompact&&!running&&<button className="context-compact-btn" type="button" onClick={onCompact} title="Compact conversation context">Compact</button>}</>}</span><span>{prompt.length.toLocaleString()}/{MAX_COMPOSER_CHARS.toLocaleString()} · {canBackground?"Ctrl/Cmd+Enter background · ":""}{settings.followUpMode==="steer"?"Steer":"Queue"} follow-ups</span></div>
   </div>;
@@ -383,12 +384,13 @@ export default function App(){
   const [threads,setThreads]=useState([]); const [sections,setSections]=useState({}); const [threadMeta,setThreadMeta]=useState({});
   const [activeThread,setActiveThread]=useState(null); const [activeTurnId,setActiveTurnId]=useState(null);
   const [messages,setMessages]=useState([]); const [events,setEvents]=useState([]); const [assistantText,setAssistantText]=useState("");
-  const [running,setRunning]=useState(false); const [queued,setQueued]=useState([]);
+  const [running,setRunning]=useState(false); const [submitting,setSubmitting]=useState(false); const [queued,setQueued]=useState([]); const [queueMode,setQueueMode]=useState("unknown"); const [queuedEditId,setQueuedEditId]=useState(null);
   const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [section,setSection]=useState("chat");
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [contextChips,setContextChips]=useState([]);
   const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [selectedModels,setSelectedModels]=useState([]); const [modelError,setModelError]=useState(""); const [modelPickerOpen,setModelPickerOpen]=useState(false);
   const [freebuff,setFreebuff]=useState({loggedIn:false}); const [skills,setSkills]=useState([]); const [providerCommands,setProviderCommands]=useState([]); const [providerAgents,setProviderAgents]=useState([]); const [providerAgent,setProviderAgent]=useState("");
   const [threadRuntimeProfiles,setThreadRuntimeProfiles]=useState({supported:false,currentInstanceId:null,items:[]}); const [threadRuntimeProfileBusy,setThreadRuntimeProfileBusy]=useState("");
+  const submittingRef=useRef(false);
   const [settings,setSettings]=useState({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,customThemes:[],keyboardShortcuts:{},agentRuntime:"codex",modelProvider:"freebuff"});
   const [environmentThemeCatalog,setEnvironmentThemeCatalog]=useState({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]});
   const [sidebarOpen,setSidebarOpen]=useState(true);
@@ -641,7 +643,7 @@ export default function App(){
     setModelMeta(Object.fromEntries((d?.metadata?.models||[]).map(item=>[item.id,item])));
     const next=ids.includes(model)?model:(ids[0]||"");
     setModels(ids);setModel(next);setSelectedModels(next?[next]:[]);
-    if(resetThread){setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([])}
+    if(resetThread){setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([]);setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null)}
     if(targetRuntime==="codex"&&targetProvider==="freebuff"&&next){
       const params=new URLSearchParams({timezone,model:next});
       api("/api/freebuff/overview?"+params).then(data=>{if(seq===modelRefreshSeqRef.current&&data)setFreebuff(data)}).catch(()=>{});
@@ -1009,7 +1011,8 @@ export default function App(){
     window.addEventListener("keydown",key);
     return()=>window.removeEventListener("keydown",key);
   },[settings,prompt,attachments,section,panel,paletteOpen,question,elicitations.length,approvals.length,snoozeRequest,threadUndo,projectPath,projectlessMode,activeThread,running,rightPanelOpen,rightPanelTab,sourceSelectedPr,linkedPullRequests,queued,sidebarOpen,displayThreads,modelPickerOpen,currentProject]);
-  useEffect(()=>{if(!running&&queued.length){const next=queued[0];setQueued(prev=>prev.slice(1));startTurn(next.text,next.attachments,next.model||model).catch(error=>setEvents(prev=>[...prev,{id:"queue-error-"+Date.now(),kind:"error",title:error.message,status:"done"}]))}},[running,queued]);
+  useEffect(()=>{if(agentRuntime==="codex"&&(queueMode==="native"||queued[0]?.native))return;if(!running&&queued.length){const next=queued[0];setQueued(prev=>prev.slice(1));startTurn(next.text,next.attachments,next.model||model).catch(error=>setEvents(prev=>[...prev,{id:"queue-error-"+Date.now(),kind:"error",title:error.message,status:"done"}]))}},[running,queued,queueMode,agentRuntime]);
+  useEffect(()=>{setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null)},[agentRuntime]);
 
   function handleServerRequest(client,message){
     if(message.method==="item/tool/requestUserInput"){setQuestion({client,request:message});desktopNotify("Trebell Code needs input","The running agent asked you a question.");return}
@@ -1158,6 +1161,10 @@ export default function App(){
       const completedAtMs=p.completedAtMs||Date.now();
       updateThreadTelemetry(threadId,current=>({currentActivity:current.currentActivity?.id===item.id?null:current.currentActivity,lastActivity:{id:item.id,kind:item.kind,title:item.title,durationMs:p.item?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs}));
       if(isCurrent){
+        if(p.item.type==="userMessage"&&String(p.item.clientId||"").startsWith("trebell-queue-")){
+          const draft=queuedSubmissionDraft({input:p.item.content||[]});const id=p.item.clientId;
+          setMessages(prev=>prev.some(message=>message.id===id)?prev:[...prev,{id,role:"user",text:draft.draftText||draft.text,turnId:p.turnId||null}]);
+        }
         if(p.item.type==="agentMessage"&&p.item.text?.trim()){setMessages(prev=>prev.some(m=>m.id===p.item.id)?prev:[...prev,{id:p.item.id,role:"assistant",text:p.item.text,turnId:p.turnId||null}]);setAssistantText("")}
         setEvents(prev=>prev.some(e=>e.id===item.id)?prev.map(e=>e.id===item.id?{...e,...item}:e):[...prev,item]);
       }
@@ -1175,6 +1182,7 @@ export default function App(){
     }
     else if(message.method==="thread/goal/updated"&&isCurrent)setGoal(p.goal||null);
     else if(message.method==="thread/goal/cleared"&&isCurrent)setGoal(null);
+    else if(message.method==="thread/queue/changed"&&isCurrent)loadNativeQueue(rpcRef.current,p.threadId).catch(error=>setEvents(prev=>[...prev,{id:"queue-refresh-error-"+Date.now(),kind:"error",title:"Could not refresh queued follow-ups: "+(error.message||String(error)),status:"done",raw:{}}]));
     else if(message.method==="thread/attachment/updated"&&isCurrent)loadPersistentThreadData(p.threadId).catch(()=>{});
     else if(message.method==="thread/runtimeInstance/updated"){
       const updated=p.thread||null;
@@ -1345,7 +1353,7 @@ export default function App(){
     if(agentRuntime!=="codex"||!threadId||running||!rpc||rpcStatus!=="connected")return;
     rpc.request("thread/unsubscribe",{threadId}).catch(()=>{});
   }
-  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([]);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
+  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([]);setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
@@ -1372,6 +1380,7 @@ export default function App(){
     ]);
     const map=Object.fromEntries((cp.checkpoints||[]).filter(x=>x.turnId).map(x=>[x.turnId,x]));setCheckpointByTurn(map);
     if(resumed?.thread){activeThreadRef.current=resumed.thread;pendingThreadScrollRestoreRef.current=resumed.thread.id;setActiveThread(resumed.thread);setMessages(historyFromThread(resumed.thread,map));setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex"){const meta=resumed.thread.providerMeta||{};applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}}
+    if(agentRuntime==="codex")await loadNativeQueue(rpc,thread.id).catch(error=>setEvents(prev=>[...prev,{id:"queue-load-error-"+Date.now(),kind:"error",title:"Could not load queued follow-ups: "+(error.message||String(error)),status:"done",raw:{}}]));else{setQueueMode("local");setQueued([])}
     const meta=threadMeta[thread.id]||{};setReviewedFiles(meta.reviewedFiles||[]);setGoal(goalData?.goal||null);
     const persisted=(attachmentData?.data||[]).filter(item=>item.attachmentType==="pull_request").map(item=>({...item.payload,__identityKey:item.identityKey}));
     setLinkedPullRequests(persisted.length?persisted:(meta.linkedPullRequests||[]));
@@ -1490,7 +1499,43 @@ export default function App(){
     if(result.thread?.id)await persistThreadWorkspaceContext(result.thread,cwd,{sectionName:"Active",archived:false,projectless}).catch(()=>{});
     return result.thread;
   }
-  function inputsFor(text,paths){return [{type:"text",text,text_elements:[]},...(paths||[]).map(path=>{const lower=String(path).toLowerCase();if(/\.(png|jpe?g|gif|webp|bmp)$/.test(lower))return{type:"localImage",path};if(/\.(mp3|wav|m4a|ogg|flac)$/.test(lower))return{type:"localAudio",path};return{type:"mention",name:String(path).split(/[\\/]/).pop(),path}})]}
+  function inputsFor(text,paths){return [{type:"text",text,textElements:[]},...(paths||[]).map(path=>{const lower=String(path).toLowerCase();if(/\.(png|jpe?g|gif|webp|bmp)$/.test(lower))return{type:"localImage",path};if(/\.(mp3|wav|m4a|ogg|flac)$/.test(lower))return{type:"localAudio",path};return{type:"mention",name:String(path).split(/[\\/]/).pop(),path}})]}
+  async function loadNativeQueue(client=rpcRef.current,threadId=activeThreadRef.current?.id){
+    if(agentRuntime!=="codex"||!client||!threadId)return false;
+    try{
+      let cursor=null;const submissions=[];
+      do{
+        const result=await client.request("thread/queue/list",{threadId,cursor,limit:100});
+        submissions.push(...(result?.data||[]));cursor=result?.nextCursor||null;
+      }while(cursor&&submissions.length<1000);
+      if(activeThreadRef.current?.id===threadId){setQueued(previous=>mergeNativeQueue(previous,submissions));setQueueMode("native");setQueuedEditId(current=>submissions.some(item=>item.id===current)?current:null)}
+      return true;
+    }catch(error){
+      if(nativeQueueUnavailable(error)){if(activeThreadRef.current?.id===threadId)setQueueMode("local");return false}
+      throw error;
+    }
+  }
+  async function saveNativeQueuedFollowup(text,paths,chips,{queuedId=null}={}){
+    if(agentRuntime!=="codex"||!rpc||!activeThread?.id||queueMode==="local")return false;
+    await validateAttachmentPaths(paths||[]);
+    try{
+      const input=inputsFor(text,paths);
+      if(queuedId){
+        const result=await rpc.request("thread/queue/update",{threadId:activeThread.id,queuedSubmissionId:queuedId,input});
+        const draft={...queuedSubmissionDraft(result?.queuedSubmission||{}),contextChips:[...(chips||[])],model};
+        setQueued(previous=>previous.map(item=>item.id===queuedId?draft:item));setQueuedEditId(null);
+      }else{
+        const clientUserMessageId="trebell-queue-"+crypto.randomUUID();
+        const result=await rpc.request("thread/queue/add",{threadId:activeThread.id,input,clientUserMessageId});
+        const draft={...queuedSubmissionDraft(result?.queuedSubmission||{}),contextChips:[...(chips||[])],model};
+        setQueued(previous=>[...previous.filter(item=>item.id!==draft.id),draft]);
+      }
+      setQueueMode("native");return true;
+    }catch(error){
+      if(nativeQueueUnavailable(error)){setQueueMode("local");setQueuedEditId(null);return false}
+      throw error;
+    }
+  }
   async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null){
     if(!projectlessMode&&!threadOverride&&(cwdOverride||projectPath)===projectPath)await waitForActiveClone();
     await validateAttachmentPaths(paths||[]);
@@ -1607,22 +1652,40 @@ export default function App(){
       setEvents(prev=>[...prev,{id:"compact-error-"+Date.now(),kind:"error",title:"Context compaction failed: "+(error.message||String(error)),status:"done",raw:{}}]);
     }
   }
-  async function send(){
+  async function dispatchSend(){
     const text=prompt.trim();if(!text)return;
     if(prompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"prompt-too-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{length:prompt.length}}]);return}
-    const special=await handleSpecial(text);if(special===true){setPrompt("");return}
+    if(text.startsWith("/")){const special=await handleSpecial(text);if(special===true){setPrompt("");return}}
+    if(agentRuntime==="antigravity"&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:"Antigravity does not accept video attachments",status:"done",raw:{}}]);return}
+    if(agentRuntime==="codex"&&queuedEditId&&rpc&&activeThread&&queueMode!=="local"){
+      const draft={text,attachments:[...attachments],contextChips:[...contextChips]};setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);
+      try{
+        if(await saveNativeQueuedFollowup(draft.text,draft.attachments,draft.contextChips,{queuedId:queuedEditId}))return;
+        setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);setEvents(prev=>[...prev,{id:"queue-update-unavailable-"+Date.now(),kind:"error",title:"This Codex runtime does not support editing native queued follow-ups.",status:"done",raw:{}}]);return;
+      }catch(error){setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);setEvents(prev=>[...prev,{id:"queue-update-error-"+Date.now(),kind:"error",title:"Could not update queued follow-up: "+(error.message||String(error)),status:"done",raw:{}}]);return}
+    }
+    if(running){
+      const draft={text,attachments:[...attachments],contextChips:[...contextChips],model};setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);
+      if(agentRuntime==="codex"&&settings.followUpMode==="steer"&&rpc&&activeThread&&activeTurnId){try{await validateAttachmentPaths(draft.attachments);await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(draft.text,draft.attachments)});setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:draft.text,turnId:activeTurnId}])}catch(error){setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);throw error}return}
+      if(agentRuntime==="codex"&&rpc&&activeThread&&queueMode!=="local"){
+        try{if(await saveNativeQueuedFollowup(draft.text,draft.attachments,draft.contextChips))return;setQueued(prev=>[...prev,{id:crypto.randomUUID(),...draft}]);return}
+        catch(error){setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);setEvents(prev=>[...prev,{id:"queue-add-error-"+Date.now(),kind:"error",title:"Could not queue follow-up: "+(error.message||String(error)),status:"done",raw:{}}]);return}
+      }
+      try{await validateAttachmentPaths(draft.attachments);setQueued(prev=>[...prev,{id:crypto.randomUUID(),...draft}])}
+      catch(error){setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);setEvents(prev=>[...prev,{id:"queue-local-error-"+Date.now(),kind:"error",title:"Could not queue follow-up: "+(error.message||String(error)),status:"done",raw:{}}])}return;
+    }
     try{await waitForActiveClone()}catch(error){setEvents(prev=>[...prev,{id:"clone-wait-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
     if(await sendModelFanout(text))return;
-    if(agentRuntime==="antigravity"&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:"Antigravity does not accept video attachments",status:"done",raw:{}}]);return}
-    if(running){
-      await validateAttachmentPaths(attachments);
-      if(agentRuntime==="codex"&&settings.followUpMode==="steer"&&rpc&&activeThread&&activeTurnId){await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(text,attachments)});setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text,turnId:activeTurnId}]);setPrompt("");setAttachments([]);setContextChips([]);return}
-      setQueued(prev=>[...prev,{id:crypto.randomUUID(),text,attachments:[...attachments],contextChips:[...contextChips],model}]);setPrompt("");setAttachments([]);setContextChips([]);return;
-    }
     try{await validateAttachmentPaths(attachments)}catch(e){setEvents(prev=>[...prev,{id:"attachment-error-"+Date.now(),kind:"error",title:e.message,status:"done",raw:{}}]);return}
     setPrompt("");setPromptHistoryIndex(-1);setSection("chat");
     if(bootstrap.mock||!rpc||rpcStatus!=="connected"){setMessages(prev=>[...prev,{id:"user-"+Date.now(),role:"user",text}]);setRunning(true);try{const d=await api("/api/chat/direct",{method:"POST",body:{prompt:text,model}});setMessages(prev=>[...prev,{id:"assistant-"+Date.now(),role:"assistant",text:d.text||""}]);setEvents([{id:"fallback",kind:"tool",title:({freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||"Provider")+" direct response",status:"done",raw:{}}])}catch(e){setEvents([{id:"error",kind:"error",title:e.message,status:"done",raw:{}}])}finally{setRunning(false);setAttachments([]);setContextChips([])}return}
     await startTurn(text,attachments,model).catch(e=>{setRunning(false);setEvents([{id:"send-error",kind:"error",title:e.message,status:"done",raw:{}}])});
+  }
+  async function send(){
+    if(submittingRef.current)return;
+    submittingRef.current=true;setSubmitting(true);
+    try{return await dispatchSend()}
+    finally{submittingRef.current=false;setSubmitting(false)}
   }
   async function sendInBackground(){
     if(activeThread?.id||running){await send();return}
@@ -1642,9 +1705,40 @@ export default function App(){
       desktopNotify("Background task failed","The draft was saved to Trebell stash.");
     });
   }
-  async function sendQueuedNow(item){await validateAttachmentPaths(item.attachments||[]);setQueued(prev=>prev.filter(q=>q.id!==item.id));if(agentRuntime==="codex"&&running&&rpc&&activeThread&&activeTurnId){await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments)});setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,turnId:activeTurnId}])}else if(running)setQueued(prev=>[item,...prev]);else await startTurn(item.text,item.attachments,item.model||model)}
+  async function sendQueuedNow(item){
+    if(item?.native&&agentRuntime==="codex"&&rpc&&activeThread?.id){
+      if(running&&activeTurnId){
+        const originalInput=item.input?.length?item.input:inputsFor(item.draftText||item.text,item.attachments);const originalClientId=item.clientUserMessageId||("trebell-queue-"+crypto.randomUUID());
+        try{
+          await rpc.request("thread/queue/delete",{threadId:activeThread.id,queuedSubmissionId:item.id});
+          await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:originalInput});
+          setQueued(prev=>prev.filter(q=>q.id!==item.id));setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.draftText||item.text,turnId:activeTurnId}]);return;
+        }catch(error){
+          await rpc.request("thread/queue/add",{threadId:activeThread.id,input:originalInput,clientUserMessageId:originalClientId}).catch(()=>{});await loadNativeQueue(rpc,activeThread.id).catch(()=>{});throw error;
+        }
+      }
+      const result=await rpc.request("thread/queue/start",{threadId:activeThread.id,queuedSubmissionId:item.id});const turnId=result?.turn?.id||null;
+      setRunning(Boolean(turnId));setActiveTurnId(turnId);setQueued(prev=>prev.filter(q=>q.id!==item.id));
+      if(turnId)setMessages(prev=>[...prev,{id:item.clientUserMessageId||("queue-start-"+item.id),role:"user",text:item.draftText||item.text,turnId}]);return;
+    }
+    await validateAttachmentPaths(item.attachments||[]);setQueued(prev=>prev.filter(q=>q.id!==item.id));if(agentRuntime==="codex"&&running&&rpc&&activeThread&&activeTurnId){await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments)});setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,turnId:activeTurnId}])}else if(running)setQueued(prev=>[item,...prev]);else await startTurn(item.text,item.attachments,item.model||model)
+  }
+  async function editQueued(item){
+    if(item?.native){if(!item.editable){setEvents(prev=>[...prev,{id:"queue-edit-unavailable-"+Date.now(),kind:"error",title:"This queued follow-up contains input Trebell cannot safely edit yet.",status:"done",raw:{}}]);return}setQueuedEditId(item.id)}else setQueued(prev=>prev.filter(entry=>entry.id!==item.id));
+    setPrompt(item.draftText??item.text??"");setAttachments(item.attachments||[]);setContextChips(item.contextChips||[]);
+  }
+  async function removeQueued(item){
+    if(item?.native&&rpc&&activeThread?.id){await rpc.request("thread/queue/delete",{threadId:activeThread.id,queuedSubmissionId:item.id});if(queuedEditId===item.id)setQueuedEditId(null)}
+    setQueued(prev=>prev.filter(entry=>entry.id!==item.id));
+  }
+  async function moveQueued(item,direction){
+    const next=reorderQueue(queued,item.id,direction);if(next===queued||next.map(entry=>entry.id).join("\0")===queued.map(entry=>entry.id).join("\0"))return;
+    if(item?.native&&rpc&&activeThread?.id)await rpc.request("thread/queue/reorder",{threadId:activeThread.id,queuedSubmissionIds:next.map(entry=>entry.id)});
+    setQueued(next);
+  }
   async function stop(){
     if(rpc&&activeThread?.id&&activeTurnId)await rpc.request("turn/interrupt",{threadId:activeThread.id,turnId:activeTurnId}).catch(()=>{});
+    if(agentRuntime==="codex"&&queueMode==="native"){setRunning(false);setActiveTurnId(null);await loadNativeQueue(rpc,activeThread?.id).catch(()=>{});return}
     const restored=restoreQueuedDraft({prompt,attachments,contextChips,queued,maxAttachments:MAX_COMPOSER_ATTACHMENTS});
     setPrompt(restored.prompt);setAttachments(restored.attachments);setContextChips(restored.contextChips);
     setQueued([]);setRunning(false);
@@ -1977,7 +2071,7 @@ export default function App(){
               <Conversation messages={messages} onEditFromHere={editFromHere} onCite={citeAssistant} allowRevert={["codex","opencode","claude"].includes(agentRuntime)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null}/>
               <ActivityTimeline events={events} assistantText={assistantText} onOpenPanel={name=>name==="workspace"?openRightPanel("diff"):setPanel(name)}/>
               {approvals[0]&&<div className="inline-approval"><ApprovalCard request={approvals[0]} onResolve={resolveApproval}/></div>}
-              {queued.map(item=><div className="queued-message" key={item.id}><span>Queued</span><p>{item.text}</p><button onClick={()=>sendQueuedNow(item)}>Send now</button><button onClick={()=>{setPrompt(item.text);setAttachments(item.attachments);setContextChips(item.contextChips||[]);setQueued(prev=>prev.filter(x=>x.id!==item.id))}}>Edit</button></div>)}
+              {queued.map((item,index)=><div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span>{item.native?"Queued in Codex":"Queued"}{queuedEditId===item.id?" · editing":""}</span><p>{item.text}</p><div className="queued-message-actions"><button onClick={()=>sendQueuedNow(item).catch(error=>setEvents(prev=>[...prev,{id:"queue-send-error-"+Date.now(),kind:"error",title:"Could not send queued follow-up: "+(error.message||String(error)),status:"done",raw:{}}]))}>Send now</button><button onClick={()=>editQueued(item)} disabled={queuedEditId===item.id||item.editable===false}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={index===0} onClick={()=>moveQueued(item,-1).catch(error=>setEvents(prev=>[...prev,{id:"queue-reorder-error-"+Date.now(),kind:"error",title:error.message||String(error),status:"done",raw:{}}]))}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={index===queued.length-1} onClick={()=>moveQueued(item,1).catch(error=>setEvents(prev=>[...prev,{id:"queue-reorder-error-"+Date.now(),kind:"error",title:error.message||String(error),status:"done",raw:{}}]))}>↓</button><button onClick={()=>removeQueued(item).catch(error=>setEvents(prev=>[...prev,{id:"queue-delete-error-"+Date.now(),kind:"error",title:error.message||String(error),status:"done",raw:{}}]))}>Remove</button></div></div>)}
               {!messages.length&&!events.length&&<div className="welcome">
                 <div className="welcome-mark"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/></div>
                 <h1>{projectlessMode?"What do you want to think through?":"What do you want to build?"}</h1>
@@ -1988,7 +2082,7 @@ export default function App(){
           </div>
 
           {currentProject?.cloneJob&&currentProject.cloneJob.status!=="completed"&&<div className={"clone-banner "+currentProject.cloneJob.status} data-testid="clone-banner"><div><strong>{currentProject.cloneJob.phase||"Cloning repository"}</strong><span>{currentProject.cloneJob.status==="failed"?(currentProject.cloneJob.error||"Clone failed"):currentProject.cloneJob.status==="cancelled"?"Clone cancelled":"You can keep writing. Send waits until the repository is ready."}</span></div>{["running","cancelling"].includes(currentProject.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(currentProject.cloneJob.progress)||0)+"%"}}/></i>}<em>{Math.round(currentProject.cloneJob.progress||0)}%</em>{currentProject.cloneJob.status==="running"&&<button onClick={()=>cloneProjectAction("cancel").catch(error=>setEvents(prev=>[...prev,{id:"clone-cancel-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(currentProject.cloneJob.status)&&<button onClick={()=>cloneProjectAction("retry").catch(error=>setEvents(prev=>[...prev,{id:"clone-retry-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))}>Retry clone</button>}</div>}
-          <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={()=>setPromptHistoryIndex(-1)} historyIndex={promptHistoryIndex} onSend={send} onBackgroundSend={sendInBackground} canBackground={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"} running={running} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onCaptureScreen={()=>captureDesktop().catch(error=>setEvents(prev=>[...prev,{id:"screen-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} onPaste={onPaste} onDrop={onDrop} onFileMentionSearch={searchComposerFiles} onFileMentionAttach={attachComposerFileMention} permissionMode={permissionMode} setPermissionMode={setPermissionMode} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={changeProviderAgent} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&["codex","opencode","claude"].includes(agentRuntime))} onCompact={compactContext} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={switchThreadRuntimeProfile} onModelPickerOpenChange={setModelPickerOpen}/>
+          <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={()=>setPromptHistoryIndex(-1)} historyIndex={promptHistoryIndex} onSend={send} onBackgroundSend={sendInBackground} canBackground={!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onCaptureScreen={()=>captureDesktop().catch(error=>setEvents(prev=>[...prev,{id:"screen-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} onPaste={onPaste} onDrop={onDrop} onFileMentionSearch={searchComposerFiles} onFileMentionAttach={attachComposerFileMention} permissionMode={permissionMode} setPermissionMode={setPermissionMode} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={changeProviderAgent} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&["codex","opencode","claude"].includes(agentRuntime))} onCompact={compactContext} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={switchThreadRuntimeProfile} onModelPickerOpenChange={setModelPickerOpen}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="layout-resizer terminal-resizer" data-testid="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" onPointerDown={event=>beginLayoutResize("terminal",event)}/>

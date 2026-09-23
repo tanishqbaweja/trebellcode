@@ -161,7 +161,7 @@ try{
     let lastError=null;
     for(let attempt=0;attempt<=retries;attempt++){
       const callsBefore=toolCalls.length;
-      const turn=await rpc.request("turn/start",{threadId:thread.thread.id,model,cwd:workspace,approvalPolicy:"never",sandboxPolicy:{type:"dangerFullAccess"},input:[{type:"text",text,text_elements:[]}]});
+      const turn=await rpc.request("turn/start",{threadId:thread.thread.id,model,cwd:workspace,approvalPolicy:"never",sandboxPolicy:{type:"dangerFullAccess"},input:[{type:"text",text,textElements:[]}]});
       const turnId=turn.turn?.id;assert.ok(turnId,`${label}: turn/start did not return a turn id`);
       try{
         const completed=await rpc.waitFor(msg=>msg.method==="turn/completed"&&(msg.params?.turn?.id===turnId||msg.params?.turnId===turnId),timeoutMs);
