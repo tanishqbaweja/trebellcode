@@ -13,6 +13,7 @@ import WorkspacePanel from "./components/WorkspacePanel.jsx";
 import SourceControlPanel from "./components/SourceControlPanel.jsx";
 import QuestionModal from "./components/QuestionModal.jsx";
 import McpElicitationModal from "./components/McpElicitationModal.jsx";
+import AssistantSelectionToolbar from "./components/AssistantSelectionToolbar.jsx";
 import ProjectsPage from "./components/ProjectsPage.jsx";
 import AgentsPage from "./components/AgentsPage.jsx";
 import PreviewPage from "./components/PreviewPage.jsx";
@@ -192,14 +193,15 @@ function ActivityTimeline({events,assistantText,onOpenPanel}){
   </div>{assistantText&&<div className="assistant-answer">{assistantText}</div>}</div>;
 }
 function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId}){
-  return <div className="conversation-history">{messages.map(m=>{
+  const historyRef=useRef(null);
+  return <div className="conversation-history" ref={historyRef}>{messages.map(m=>{
     if(m.role==="user")return <div className="user-row" key={m.id}><div className="user-bubble"><p>{m.text}</p>{allowRevert&&m.turnId&&<button className="message-action" onClick={()=>onEditFromHere(m)}>Edit from here</button>}</div></div>;
     const parsed=parseVisualizationMessage(m.text);
-    return <div className="history-assistant" key={m.id}><div className="agent-star small"><Sparkles size={12}/></div><div>{parsed.text&&<div className="assistant-message-text">{parsed.text}</div>}{parsed.visualizations.map((visualization,index)=>{
+    return <div className="history-assistant" key={m.id}><div className="agent-star small"><Sparkles size={12}/></div><div>{parsed.text&&<div className="assistant-message-text" data-assistant-citation-source={m.id}>{parsed.text}</div>}{parsed.visualizations.map((visualization,index)=>{
       const label=String(visualization.path||visualization.file||"Visualization").split(/[\\/]/).pop();
       return <div className={"inline-visualization-card "+(visualization.mode==="wide"?"wide":"")} key={label+":"+index}><div className="inline-visualization-head"><strong>{label}</strong><span>Interactive visualization</span></div><iframe title={label} src={visualizationUrl(visualization,{projectPath,environmentId,threadId})} sandbox="allow-scripts" referrerPolicy="no-referrer"/></div>;
-    })}<button className="message-action" onClick={()=>onCite?.(m)}>Cite response</button></div></div>;
-  })}</div>;
+    })}</div></div>;
+  })}<AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));if(message)onCite?.(message,text)}}/></div>;
 }
 function ApprovalCard({request,onResolve}){
   if(!request)return null;
@@ -1304,7 +1306,11 @@ export default function App(){
     if(activeThread?.id===threadId){setGoal(goalData?.goal||null);setLinkedPullRequests(pullRequests)}
     return {goal:goalData?.goal||null,pullRequests};
   }
-  async function newChat(){rememberConversationPosition();activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([]);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
+  function releaseInactiveCodexThread(threadId){
+    if(agentRuntime!=="codex"||!threadId||running||!rpc||rpcStatus!=="connected")return;
+    rpc.request("thread/unsubscribe",{threadId}).catch(()=>{});
+  }
+  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([]);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
@@ -1315,6 +1321,7 @@ export default function App(){
   }
   async function openThread(thread){
     rememberConversationPosition();
+    const previousThreadId=activeThreadRef.current?.id;if(previousThreadId&&previousThreadId!==thread.id)releaseInactiveCodexThread(previousThreadId);
     const threadEnvironmentId=thread.providerMeta?.environmentId||null;
     const savedMeta=threadMeta[thread.id]||{};const projectless=Boolean(savedMeta.projectless);
     if(thread.cwd&&!threadEnvironmentId&&!projectless)await api("/api/worktree/ensure",{method:"POST",body:{path:thread.cwd,environmentId:null}}).catch(error=>{throw new Error("Could not restore this managed worktree: "+error.message)});
@@ -1662,11 +1669,13 @@ export default function App(){
   }
   async function onDrop(e){e.preventDefault();const files=[...(e.dataTransfer?.files||[])];const uploaded=[];for(const f of files.slice(0,Math.max(0,MAX_COMPOSER_ATTACHMENTS-attachments.length))){try{uploaded.push((await blobAttachment(f)).path)}catch{}}await addFiles(uploaded)}
   async function attachExcerpt(text){if(!text.trim())return;await addContextAttachment({name:"terminal-context.txt",text,kind:"terminal",label:"Terminal excerpt",detail:text.split(/\r?\n/).length+" lines"});setPanel(null)}
-  async function citeAssistant(message){
-    if(!message?.text?.trim())return;
-    const text=["Assistant response citation",activeThread?.name||activeThread?.id||"current thread","",message.text].join("\n");
-    await addContextAttachment({name:"assistant-citation.txt",text,kind:"citation",label:"Assistant citation",detail:activeThread?.name||"Current thread"});
-    setPrompt(prev=>(prev?prev+" ":"")+"Use the attached assistant citation as context. ");
+  async function citeAssistant(message,excerpt=""){
+    const selected=String(excerpt||"").trim();
+    const source=selected||message?.text?.trim();if(!source)return;
+    const threadLabel=activeThread?.name||activeThread?.id||"current thread";
+    const text=[selected?"Assistant response excerpt":"Assistant response citation","Thread: "+threadLabel,message?.id?"Message: "+message.id:null,"",source].filter(value=>value!=null).join("\n");
+    await addContextAttachment({name:"assistant-citation.txt",text,kind:"citation",label:selected?"Assistant excerpt":"Assistant citation",detail:selected?`${selected.length.toLocaleString()} chars · ${threadLabel}`:threadLabel});
+    setPrompt(prev=>(prev?prev+" ":"")+(selected?"Use the cited assistant excerpt as context. ":"Use the attached assistant citation as context. "));
   }
   async function attachReviewComment(path,comment){
     const text=["Code review comment","File: "+path,"",comment].join("\n");

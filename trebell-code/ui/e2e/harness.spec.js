@@ -124,8 +124,12 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await expect(page.getByText("Mock Freebuff reply: Build and validate a private local converter.")).toBeVisible({timeout:10000});
   await expect(page.getByRole("group").getByText("Freebuff direct response")).toBeVisible();
 
-  await page.getByRole("button",{name:"Cite response"}).click();
-  await expect(page.getByTestId("context-chips")).toContainText("Assistant citation");
+  const assistantResponse=page.locator(".assistant-message-text").last();
+  await assistantResponse.evaluate(node=>{
+    const selection=window.getSelection();selection.removeAllRanges();selection.selectAllChildren(node);document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.getByTestId("assistant-selection-cite").click();
+  await expect(page.getByTestId("context-chips")).toContainText("Assistant excerpt");
 
   await page.getByTestId("right-panel-toggle").click();
   await expect(page.getByTestId("right-panel")).toBeVisible();

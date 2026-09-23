@@ -496,6 +496,25 @@ test("populated chat and overlays remain visually usable",async({page,request})=
   expect(chatMetrics.scroll).toBeLessThanOrEqual(chatMetrics.client+1);
   await page.screenshot({path:auditDir+"chat-populated-1600x980.png",fullPage:true});
 
+  const assistantText=page.locator(".assistant-message-text").last();
+  await assistantText.evaluate(node=>{
+    const selection=window.getSelection();
+    selection.removeAllRanges();
+    selection.selectAllChildren(node);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  const citeSelection=page.getByTestId("assistant-selection-cite");
+  await expect(citeSelection).toBeVisible();
+  await expect(page.getByRole("button",{name:"Cite response",exact:true})).toHaveCount(0);
+  await page.screenshot({path:auditDir+"chat-assistant-selection-cite-1600x980.png",fullPage:true});
+  await citeSelection.click();
+  const citationChip=page.getByTestId("context-chip").filter({hasText:"Assistant excerpt"});
+  await expect(citationChip).toBeVisible();
+  await expect(composer).toHaveValue(/cited assistant excerpt/i);
+  await page.screenshot({path:auditDir+"chat-assistant-selection-context-1600x980.png",fullPage:true});
+  await citationChip.getByTitle("Remove context").click();
+  await composer.fill("");
+
   await page.keyboard.press("Control+k");
   const palette=page.getByTestId("command-palette");
   await expect(palette).toBeVisible();
@@ -594,6 +613,17 @@ test("light mode stays visually coherent across workspace and panels",async({pag
   expect(shell.main).not.toBe("rgb(11, 12, 14)");
   expect(shell.composer).toMatch(/^rgba?\(255, 255, 255/);
   await page.screenshot({path:auditDir+"light-chat-1600x980.png",fullPage:true});
+  await page.getByTestId("composer").fill("Give me a short light-mode citation fixture.");
+  await page.getByTestId("send").click();
+  const lightAssistant=page.locator(".assistant-message-text").last();
+  await expect(lightAssistant).toContainText("Mock Freebuff reply:");
+  await lightAssistant.evaluate(node=>{
+    const selection=window.getSelection();selection.removeAllRanges();selection.selectAllChildren(node);document.dispatchEvent(new Event("selectionchange"));
+  });
+  await expect(page.getByTestId("assistant-selection-cite")).toBeVisible();
+  await page.screenshot({path:auditDir+"light-chat-assistant-selection-cite-1600x980.png",fullPage:true});
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("assistant-selection-cite")).toBeHidden();
   await page.getByTestId("right-panel-toggle").click();
   await expect(page.getByTestId("right-panel")).toBeVisible();
   await page.screenshot({path:auditDir+"light-chat-panel-1600x980.png",fullPage:true});
@@ -800,12 +830,13 @@ test("Claude thread can switch compatible account profiles from the model picker
 test("Codex thread can switch compatible account profiles from the model picker",async({page})=>{
   test.setTimeout(35_000);
   const thread={id:"codex-profile-fixture",name:"Codex profile switch fixture",preview:"Shared CODEX_HOME account switching",cwd:process.cwd(),createdAt:Date.now()-1000,updatedAt:Date.now(),turns:[]};
+  const upstreamMessages=[];
   const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const upstreamSockets=new Set();
   upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
   upstreamWss.on("connection",ws=>{
     upstreamSockets.add(ws);ws.on("close",()=>upstreamSockets.delete(ws));
     ws.on("message",data=>{
-      const message=JSON.parse(String(data));if(message.id==null||!message.method)return;
+      const message=JSON.parse(String(data));upstreamMessages.push(message);if(message.id==null||!message.method)return;
       let result={};
       if(message.method==="initialize")result={userAgent:"codex-profile-fixture"};
       else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
@@ -865,6 +896,9 @@ test("Codex thread can switch compatible account profiles from the model picker"
     await page.screenshot({path:auditDir+"chat-codex-profile-switched-1600x980.png",fullPage:true});
     await page.setViewportSize({width:1280,height:800});const compact=await page.locator(".composer-bar").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(compact.scroll).toBeLessThanOrEqual(compact.client+1);
     await page.screenshot({path:auditDir+"chat-codex-profile-switched-1280x800.png",fullPage:true});
+    await picker.click();
+    await page.getByRole("button",{name:"New thread"}).click();
+    await expect.poll(()=>upstreamMessages.some(message=>message.method==="thread/unsubscribe"&&message.params?.threadId===thread.id)).toBe(true);
   }finally{
     relay.close();for(const ws of upstreamSockets)try{ws.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayServer.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))]);
   }
