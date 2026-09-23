@@ -138,6 +138,13 @@ export function attachCodexRelay(httpServer, {
             context.serverRequestRoutes.set(relayId,{record,originalId:message.id});
             sendBrowser({...message,id:relayId});return;
           }
+          if(message?.method==="serverRequest/resolved"&&message.params&&Object.prototype.hasOwnProperty.call(message.params,"requestId")){
+            const route=[...context.serverRequestRoutes.entries()].find(([,value])=>value.record===record&&value.originalId===message.params.requestId);
+            if(route){
+              const [relayId]=route;context.serverRequestRoutes.delete(relayId);
+              sendBrowser({...message,params:{...message.params,requestId:relayId}});return;
+            }
+          }
           sendBrowser(message);
         });
         upstream.on("close",(code,reason)=>{

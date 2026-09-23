@@ -139,6 +139,26 @@ test("Codex relay namespaces server request ids and returns replies to the origi
   }finally{try{session?.client.close()}catch{}relay.close();await Promise.all([work.close(),personal.close(),new Promise(resolve=>relayHttp.close(resolve))])}
 });
 
+test("Codex relay rewrites resolved server-request ids back to renderer ids",async()=>{
+  const work=await routedUpstream("work");
+  const relayHttp=createServer((_req,res)=>{res.statusCode=404;res.end()});
+  const relay=attachCodexRelay(relayHttp,{targetUrl:work.url});
+  await new Promise(resolve=>relayHttp.listen(0,"127.0.0.1",resolve));
+  let session;
+  try{
+    session=await relayClient(relayHttp);await session.request("initialize",{clientInfo:{name:"relay-test"},capabilities:{experimentalApi:true}});session.client.send(JSON.stringify({method:"initialized",params:{}}));
+    const upstream=[...work.sockets][0],messages=[];
+    const collect=data=>messages.push(JSON.parse(String(data)));session.client.on("message",collect);
+    upstream.send(JSON.stringify({id:19,method:"item/commandExecution/requestApproval",params:{threadId:"work-thread",turnId:"turn-1",itemId:"cmd-1"}}));
+    for(let i=0;i<50&&!messages.some(item=>item.method==="item/commandExecution/requestApproval");i++)await new Promise(resolve=>setTimeout(resolve,10));
+    const request=messages.find(item=>item.method==="item/commandExecution/requestApproval");assert.ok(request);assert.notEqual(request.id,19);
+    upstream.send(JSON.stringify({method:"serverRequest/resolved",params:{threadId:"work-thread",requestId:19}}));
+    for(let i=0;i<50&&!messages.some(item=>item.method==="serverRequest/resolved");i++)await new Promise(resolve=>setTimeout(resolve,10));
+    const resolved=messages.find(item=>item.method==="serverRequest/resolved");assert.equal(resolved?.params?.requestId,request.id);
+    session.client.off("message",collect);
+  }finally{try{session?.client.close()}catch{}relay.close();await Promise.all([work.close(),new Promise(resolve=>relayHttp.close(resolve))])}
+});
+
 test("Codex relay reports the originating request method and params with upstream responses",async()=>{
   const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});
   upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
