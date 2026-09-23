@@ -8,7 +8,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal}){
   const [error,setError]=useState("");
   useEffect(()=>{setObjective(goal?.objective||"");setBudget(goal?.tokenBudget==null?"":String(goal.tokenBudget))},[goal?.threadId,goal?.objective,goal?.tokenBudget]);
   if(!thread?.id)return <div className="empty-state"><Target size={28}/><strong>No active thread</strong><span>Start or open a thread before setting a durable goal.</span></div>;
-  if(rpcStatus!=="connected")return <div className="empty-state"><Target size={28}/><strong>Codex harness is reconnecting</strong><span>Thread goals are stored by the bundled Codex app-server.</span></div>;
+  if(rpcStatus!=="connected")return <div className="empty-state"><Target size={28}/><strong>Agent harness is reconnecting</strong><span>This thread's durable goal will be available again when the active harness reconnects.</span></div>;
   async function setGoal(patch){
     if(!rpc)return;setBusy("save");setError("");
     try{const result=await rpc.request("thread/goal/set",{threadId:thread.id,...patch});onGoal?.(result?.goal||null)}
@@ -27,7 +27,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal}){
   }
   const status=goal?.status||"not set";
   return <div className="goal-panel">
-    <div className="goal-panel-head"><Target size={19}/><div><strong>Thread goal</strong><span>Durable objective stored by Codex, independent of the chat transcript.</span></div><em className={"goal-status status-"+String(status).replace(/[^a-z]/gi,"").toLowerCase()}>{status}</em></div>
+    <div className="goal-panel-head"><Target size={19}/><div><strong>Thread goal</strong><span>Durable objective stored with this thread, independent of the chat transcript.</span></div><em className={"goal-status status-"+String(status).replace(/[^a-z]/gi,"").toLowerCase()}>{status}</em></div>
     {error&&<div className="inline-error">{error}</div>}
     <label>Objective<textarea value={objective} onChange={e=>setObjective(e.target.value)} maxLength={4000} placeholder="What should this thread keep working toward?"/></label>
     <label>Token budget <span>(optional)</span><input type="number" min="1" step="1" value={budget} onChange={e=>setBudget(e.target.value)} placeholder="No fixed budget"/></label>

@@ -541,10 +541,17 @@ test("right panel tabs are functional and visually bounded",async({page,request}
       await search.fill("");
     }
     if(label==="Diff")await expect(panel.locator(".changes-empty")).toBeVisible();
-    if(label==="Browser")await expect(panel.locator(".preview-empty-state")).toBeVisible();
+    if(label==="Browser"){
+      await expect(panel.locator(".preview-empty-state")).toBeVisible();
+      await expect(panel).toContainText("active coding agent DOM-aware browser control");
+    }
     if(label==="Git"){
       await expect(panel.locator(".source-provider-field")).toBeVisible();
       await expect(panel.locator(".pr-empty-state")).toBeVisible();
+    }
+    if(label==="Goal"){
+      await expect(panel).toContainText("No active thread");
+      await expect(panel).not.toContainText("Codex");
     }
     await assertPanelBounded();
     await page.screenshot({path:auditDir+"panel-"+slug+"-1600x980.png",fullPage:true});
