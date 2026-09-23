@@ -99,6 +99,13 @@ test("thread navigation and terminal-local new use context-specific defaults",()
   assert.equal(resolveKeybinding(event("n",{ctrlKey:true}),{}, {projectOpen:true,terminalFocus:false,modalOpen:false}),"newChat");
 });
 
+test("app navigation history uses Mod brackets without stealing editor or terminal input",()=>{
+  assert.equal(resolveKeybinding(event("[",{ctrlKey:true}),{}, {textInputFocus:false,terminalFocus:false,modalOpen:false}),"navigationBack");
+  assert.equal(resolveKeybinding(event("]",{metaKey:true}),{}, {textInputFocus:false,terminalFocus:false,modalOpen:false}),"navigationForward");
+  assert.equal(resolveKeybinding(event("[",{ctrlKey:true}),{}, {textInputFocus:true,terminalFocus:false,modalOpen:false}),null);
+  assert.equal(resolveKeybinding(event("]",{ctrlKey:true}),{}, {textInputFocus:false,terminalFocus:true,modalOpen:false}),null);
+});
+
 test("right panel and preview commands resolve only in their real contexts",()=>{
   assert.equal(resolveKeybinding(event("b",{ctrlKey:true,altKey:true}),{}, {terminalFocus:false,modalOpen:false}),"rightPanelToggle");
   assert.equal(resolveKeybinding(event("d",{ctrlKey:true}),{}, {terminalFocus:false,modalOpen:false}),"diffToggle");

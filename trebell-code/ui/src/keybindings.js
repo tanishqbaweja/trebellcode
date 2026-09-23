@@ -1,6 +1,8 @@
 export const KEYBINDING_COMMANDS=[
   {id:"newChat",label:"New thread",defaultKey:"Ctrl+N",defaultWhen:"!modalOpen"},
   {id:"commandPalette",label:"Command palette",defaultKey:"Ctrl+K",defaultWhen:""},
+  {id:"navigationBack",label:"Navigate back",defaultKey:"Mod+[",defaultWhen:"!textInputFocus && !terminalFocus && !modalOpen"},
+  {id:"navigationForward",label:"Navigate forward",defaultKey:"Mod+]",defaultWhen:"!textInputFocus && !terminalFocus && !modalOpen"},
   {id:"sidebarToggle",label:"Toggle main sidebar",defaultKey:"Ctrl+B",defaultWhen:"!modalOpen"},
   {id:"threadStop",label:"Stop running thread",defaultKey:"",defaultWhen:"threadOpen && running && !terminalFocus && !modalOpen"},
   {id:"threadSettle",label:"Settle / un-settle thread",defaultKey:"Ctrl+Shift+S",defaultWhen:"threadOpen && !terminalFocus && !modalOpen"},

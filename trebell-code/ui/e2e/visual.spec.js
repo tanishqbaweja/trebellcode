@@ -129,6 +129,23 @@ test("chat workspace is visually bounded and panes resize",async({page,request})
   await expect(shell).toBeVisible();
 });
 
+test("navigation history shortcuts visibly restore prior app surfaces",async({page,request})=>{
+  test.setTimeout(35_000);
+  await prepare(page,request);
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Settings",level:1})).toBeVisible();
+
+  await page.keyboard.press("Control+[");
+  await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
+  await page.screenshot({path:auditDir+"navigation-back-projects-1600x980.png",fullPage:true});
+
+  await page.keyboard.press("Control+]");
+  await expect(page.getByRole("heading",{name:"Settings",level:1})).toBeVisible();
+  await page.screenshot({path:auditDir+"navigation-forward-settings-1600x980.png",fullPage:true});
+});
+
 test("settings page visual audit",async({page,request})=>{
   test.setTimeout(45_000);
   await page.addInitScript(()=>{
