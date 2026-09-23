@@ -733,7 +733,7 @@ export default function App(){
     setModelMeta(Object.fromEntries((d?.metadata?.models||[]).map(item=>[item.id,item])));
     const next=ids.includes(model)?model:(ids[0]||"");
     setModels(ids);setModel(next);setSelectedModels(next?[next]:[]);
-    if(resetThread){setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([]);setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null)}
+    if(resetThread){activeThreadRef.current=null;setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([]);setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null)}
     if(targetRuntime==="codex"&&targetProvider==="freebuff"&&next){
       const params=new URLSearchParams({timezone,model:next});
       api("/api/freebuff/overview?"+params).then(data=>{if(seq===modelRefreshSeqRef.current&&data)setFreebuff(data)}).catch(()=>{});
@@ -977,7 +977,12 @@ export default function App(){
     if(!bootstrap.wsUrl||bootstrap.mock)return; let disposed=false,retryTimer=null,client=null;
     const connect=async(attempt=0)=>{
       client=new CodexRpcClient(bootstrap.wsUrl,{clientVersion:bootstrap.version||"0.0.0",onStatus:setRpcStatus,onNotification:handleNotification,onServerRequest:m=>handleServerRequest(client,m)}); rpcRef.current=client;setRpc(client);
-      try{await client.connect();if(disposed)return;await recoverCodexAfterRestart(client);await ensureSections(client);await loadThreads(client);await Promise.all([loadSkills(client,projectPath),loadCollaborationModes(client)])}
+      try{
+        await client.connect();if(disposed)return;await recoverCodexAfterRestart(client);await ensureSections(client);
+        const listed=await loadThreads(client);const activeId=activeThreadRef.current?.id;const reopen=activeId?(listed||[]).find(thread=>thread.id===activeId):null;
+        if(reopen)await openThread(reopen,{client,preserveSection:true});
+        await Promise.all([loadSkills(client,projectPath),loadCollaborationModes(client)]);
+      }
       catch(error){client.close();if(disposed)return;if(attempt<120){setRpcStatus("connecting");retryTimer=setTimeout(()=>connect(attempt+1),500)}else setRpcStatus("error")}
     };
     connect(); return()=>{disposed=true;clearTimeout(retryTimer);client?.close()};
@@ -1547,24 +1552,24 @@ export default function App(){
     if(["files","diff","source"].includes(rightPanelTab)){setRightPanelTab("runtime");setRightPanelOpen(false);setRightPanelMaximized(false)}
     return scratch;
   }
-  async function openThread(thread){
+  async function openThread(thread,{client=rpc,preserveSection=false}={}){
     rememberConversationPosition();
     const previousThreadId=activeThreadRef.current?.id;if(previousThreadId&&previousThreadId!==thread.id)releaseInactiveCodexThread(previousThreadId);
     const threadEnvironmentId=thread.providerMeta?.environmentId||null;
     const savedMeta=threadMeta[thread.id]||{};const projectless=Boolean(savedMeta.projectless);
     if(thread.cwd&&!threadEnvironmentId&&!projectless)await api("/api/worktree/ensure",{method:"POST",body:{path:thread.cwd,environmentId:null}}).catch(error=>{throw new Error("Could not restore this managed worktree: "+error.message)});
-    activeThreadRef.current=thread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");setAssistantText("");setWorktreeSetup(null);setActiveThread(thread);persistThreadWorkspaceContext(thread,thread.cwd,{archived:false,projectless}).catch(()=>{});
+    activeThreadRef.current=thread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection)setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");setAssistantText("");setWorktreeSetup(null);setActiveThread(thread);persistThreadWorkspaceContext(thread,thread.cwd,{archived:false,projectless}).catch(()=>{});
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(thread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
     else if(thread.cwd)await touchProject(thread.cwd,threadEnvironmentId);else setProjectPath(projectPath);
-    if(!rpc||rpcStatus!=="connected")return;
+    if(!client||(client===rpc&&rpcStatus!=="connected"))return;
     const resumePromise=agentRuntime==="codex"
-      ?resumeCodexWithBoundedHistory(rpc,{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null})
-      :rpc.request("thread/resume",{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null,excludeTurns:false}).catch(()=>null);
+      ?resumeCodexWithBoundedHistory(client,{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null})
+      :client.request("thread/resume",{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null,excludeTurns:false}).catch(()=>null);
     const [resumed,cp,goalData,attachmentData]=await Promise.all([
       resumePromise,
       api("/api/checkpoints?threadId="+encodeURIComponent(thread.id)).catch(()=>({checkpoints:[]})),
-      rpc.request("thread/goal/get",{threadId:thread.id}).catch(()=>({goal:null})),
-      rpc.request("thread/attachment/list",{threadId:thread.id,limit:100}).catch(()=>({data:[]})),
+      client.request("thread/goal/get",{threadId:thread.id}).catch(()=>({goal:null})),
+      client.request("thread/attachment/list",{threadId:thread.id,limit:100}).catch(()=>({data:[]})),
     ]);
     const map=Object.fromEntries((cp.checkpoints||[]).filter(x=>x.turnId).map(x=>[x.turnId,x]));setCheckpointByTurn(map);
     if(resumed?.thread){
@@ -1580,9 +1585,9 @@ export default function App(){
     if(agentRuntime==="codex"&&!bootstrap.mock&&resumed?.thread&&!projectless&&!threadEnvironmentId&&resumed.thread.cwd){
       const listed=await api("/api/projects").catch(()=>({projects:[]}));
       const trebellProject=(listed.projects||[]).find(project=>!project.environmentId&&sameWorkspacePath(project.path,resumed.thread.cwd))||null;
-      const nativeProject=await ensureCodexProject(rpc,{trebellProject,cwd:resumed.thread.cwd}).catch(()=>null);
+      const nativeProject=await ensureCodexProject(client,{trebellProject,cwd:resumed.thread.cwd}).catch(()=>null);
       if(nativeProject?.id&&resumed.thread.projectId!==nativeProject.id){
-        const updated=await rpc.request("thread/metadata/update",{threadId:resumed.thread.id,projectId:nativeProject.id}).catch(()=>null);
+        const updated=await client.request("thread/metadata/update",{threadId:resumed.thread.id,projectId:nativeProject.id}).catch(()=>null);
         if(updated?.thread){
           activeThreadRef.current=updated.thread;setActiveThread(updated.thread);
           setThreads(prev=>prev.map(item=>item.id===updated.thread.id?updated.thread:item));
@@ -1592,7 +1597,7 @@ export default function App(){
     if(agentRuntime==="codex"&&!bootstrap.mock&&resumed?.thread){
       const timelineThreadId=thread.id;
       import("./thread-timeline.js")
-        .then(({loadLatestTurnTimeline})=>loadLatestTurnTimeline(rpc,timelineThreadId))
+        .then(({loadLatestTurnTimeline})=>loadLatestTurnTimeline(client,timelineThreadId))
         .then(timeline=>{
           if(activeThreadRef.current?.id!==timelineThreadId||!timeline.items.length)return;
           const restored=timeline.items.map(item=>{
@@ -1606,7 +1611,7 @@ export default function App(){
         })
         .catch(()=>{});
     }
-    if(agentRuntime==="codex")await loadNativeQueue(rpc,thread.id).catch(error=>setEvents(prev=>[...prev,{id:"queue-load-error-"+Date.now(),kind:"error",title:"Could not load queued follow-ups: "+(error.message||String(error)),status:"done",raw:{}}]));else{setQueueMode("local");setQueued([])}
+    if(agentRuntime==="codex")await loadNativeQueue(client,thread.id).catch(error=>setEvents(prev=>[...prev,{id:"queue-load-error-"+Date.now(),kind:"error",title:"Could not load queued follow-ups: "+(error.message||String(error)),status:"done",raw:{}}]));else{setQueueMode("local");setQueued([])}
     const meta=threadMeta[thread.id]||{};setReviewedFiles(meta.reviewedFiles||[]);setGoal(goalData?.goal||null);
     const persisted=(attachmentData?.data||[]).filter(item=>item.attachmentType==="pull_request").map(item=>({...item.payload,__identityKey:item.identityKey}));
     setLinkedPullRequests(persisted.length?persisted:(meta.linkedPullRequests||[]));
@@ -2460,7 +2465,7 @@ export default function App(){
         {section==="environments"&&<div className="secondary-page full"><EnvironmentsPage/></div>}
       {section==="usage"&&<div className="secondary-page full"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><LicensesPage/></div>}
-      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>Agent harnesses, model providers, permissions and desktop behavior.</p></div></div><SettingsPage settings={settings} onSettings={setSettings} onProviderChanging={nextProvider=>{modelRefreshSeqRef.current++;modelCatalogScopeRef.current=agentRuntime+"\0"+nextProvider;setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("")}} onProviderUpdated={(options={})=>{setProviderRevision(v=>v+1);return refreshProviderModels({resetThread:true,...options})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={session=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></div>}
+      {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>Agent harnesses, model providers, permissions and desktop behavior.</p></div></div><SettingsPage settings={settings} onSettings={setSettings} onProviderChanging={nextProvider=>{modelRefreshSeqRef.current++;modelCatalogScopeRef.current=agentRuntime+"\0"+nextProvider;setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("")}} onProviderUpdated={(options={})=>{setProviderRevision(v=>v+1);return refreshProviderModels({...options,resetThread:options.resetThread??false})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={session=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></div>}
         {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Every unarchived {agentRuntimeLabel} thread stored by Trebell on this machine.</p></div></div><div className="history-page">{threads.length?threads.map(t=><button key={t.id} onClick={()=>openThread(t)}><FileCode2 size={15}/><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><time>{new Date(t.updatedAt*1000).toLocaleString()}</time></button>):<div className="history-empty"><History size={22}/><strong>No thread history yet</strong><span>Start a task or General chat and it will appear here.</span><button onClick={newChat}>Start a new task</button></div>}</div></div>}
       </main>
 

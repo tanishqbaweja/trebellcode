@@ -71,7 +71,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       setAgentInfo(result);
       onSettings(await api("/api/settings"));
       setAgentMessage(`${result.selected?.status?.name||kind} selected.`);
-      await onProviderUpdated?.({agentRuntime:result.selectedRuntime||kind,provider:selected});
+      await onProviderUpdated?.({agentRuntime:result.selectedRuntime||kind,provider:selected,resetThread:true});
     }catch(error){setAgentMessage(error.message)}
   }
   function editInstance(instance=null){

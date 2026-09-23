@@ -843,9 +843,13 @@ test("custom theme stays coherent across chat panel and command palette",async({
   await page.screenshot({path:auditDir+"custom-theme-chat-panel-1280x800.png",fullPage:true});
 });
 
-test("switching Codex inference provider preserves the same sidebar threads",async({page})=>{
+test("switching Codex inference provider preserves the active chat and sidebar threads",async({page})=>{
   test.setTimeout(45_000);
-  const thread={id:"provider-independent-thread",name:"Provider independent thread",preview:"Same chat across inference providers",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const turn={id:"provider-turn-1",status:"completed",items:[
+    {id:"provider-user-1",type:"userMessage",text:"Keep this conversation open while I change inference providers."},
+    {id:"provider-assistant-1",type:"agentMessage",text:"This message should still be here after the provider switch."},
+  ]};
+  const thread={id:"provider-independent-thread",name:"Provider independent thread",preview:"Same chat across inference providers",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[turn]};
   const rpcMessages=[];
   const wsHttp=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
   wsHttp.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
@@ -856,6 +860,8 @@ test("switching Codex inference provider preserves the same sidebar threads",asy
       let result={};
       if(message.method==="initialize")result={userAgent:"provider-thread-fixture"};
       else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
+      else if(message.method==="thread/resume")result=message.params?.excludeTurns?{thread:{...thread,turns:[]},turnsBackwardsCursor:"turn-page-1"}:{thread};
+      else if(message.method==="thread/turns/list")result={data:[turn],nextCursor:null};
       else if(message.method==="threadSection/list"||message.method==="skills/list"||message.method==="collaborationMode/list")result={data:[]};
       else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
       ws.send(JSON.stringify({id:message.id,result}));
@@ -881,7 +887,11 @@ test("switching Codex inference provider preserves the same sidebar threads",asy
     await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
     await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
     await page.goto("/");
-    await expect(page.getByRole("button",{name:/Provider independent thread/})).toBeVisible({timeout:10_000});
+    const threadButton=page.getByRole("button",{name:/Provider independent thread/});
+    await expect(threadButton).toBeVisible({timeout:10_000});
+    await threadButton.click();
+    await expect(page.getByText("Keep this conversation open while I change inference providers.")).toBeVisible();
+    await expect(page.getByText("This message should still be here after the provider switch.")).toBeVisible();
     const before=await page.locator(".thread-main").evaluateAll(nodes=>nodes.map(node=>node.getAttribute("title")||node.textContent.trim()));
     await page.screenshot({path:auditDir+"provider-switch-threads-before-1600x980.png",fullPage:true});
 
@@ -892,9 +902,13 @@ test("switching Codex inference provider preserves the same sidebar threads",asy
     await expect(selector).toHaveValue("agentrouter");
     await expect(page.getByTestId("provider-settings-card")).toHaveAttribute("aria-busy","false");
     await expect(page.getByTestId("provider-status")).toContainText("AgentRouter");
+    await expect(page.getByRole("heading",{name:"Settings",level:1})).toBeVisible();
 
     await page.getByRole("button",{name:"Threads",exact:true}).click();
-    await expect(page.getByRole("button",{name:/Provider independent thread/})).toBeVisible();
+    await expect(page.locator('.thread-main[title="Provider independent thread"]')).toBeVisible();
+    await expect(page.getByText("Keep this conversation open while I change inference providers.")).toBeVisible();
+    await expect(page.getByText("This message should still be here after the provider switch.")).toBeVisible();
+    await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","Provider independent thread");
     const after=await page.locator(".thread-main").evaluateAll(nodes=>nodes.map(node=>node.getAttribute("title")||node.textContent.trim()));
     expect(after).toEqual(before);
     await expect(page.locator(".sidebar-provider")).toContainText("AgentRouter");
