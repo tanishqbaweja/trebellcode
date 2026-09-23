@@ -154,6 +154,10 @@ function compactModelLabel(id,freebuff){
   const short=qualified.includes("/")?qualified.split("/").filter(Boolean).pop():qualified;
   return [short,...detail].filter(Boolean).join(" · ");
 }
+function attachmentDisplayName(path){
+  const name=String(path||"").split(/[\\/]/).pop()||"attachment";
+  return name.replace(/^\d{10,}-[0-9a-f]{8}-(?=.)/i,"");
+}
 function historyFromThread(thread,checkpointByTurn={}){
   return historyFromTurns(thread?.turns||[],checkpointByTurn);
 }
@@ -411,7 +415,7 @@ function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgr
     {slashOpen&&slashItems.length>0&&<div className="slash-menu">{slashItems.map(([cmd,desc])=><button key={cmd} onMouseDown={e=>{e.preventDefault();setPrompt(cmd+" ")}}><strong>{cmd}</strong><span>{desc}</span></button>)}</div>}
     {activeMention&&mentionItems.length>0&&<div className="file-mention-menu" data-testid="file-mention-menu">{mentionItems.map((item,index)=><button key={item.path||item.relativePath||index} className={index===mentionIndex?"active":""} disabled={mentionBusy} onMouseDown={event=>{event.preventDefault();chooseMention(item)}}><FileCode2 size={13}/><span><strong>{item.name||String(item.path||"").split(/[\\/]/).pop()}</strong><small>{item.relativePath||item.path}</small></span></button>)}</div>}
     {(contextChips||[]).length>0&&<div className="context-chip-row" data-testid="context-chips">{contextChips.map(chip=><span className={"context-chip kind-"+(chip.kind||"context")} data-testid="context-chip" key={chip.id||chip.path} title={chip.path}><Link2 size={11}/><strong>{chip.label||"Context"}</strong>{chip.detail&&<small>{chip.detail}</small>}<button onClick={()=>onRemoveContext(chip.path)} title="Remove context"><X size={10}/></button></span>)}</div>}
-    <div className="attachment-shelf">{attachments.filter(path=>!contextPaths.has(path)).map(path=><span key={path}><Paperclip size={11}/>{String(path).split(/[\\/]/).pop()}<button onClick={()=>onRemoveAttachment(path)}><X size={10}/></button></span>)}</div>
+    <div className="attachment-shelf">{attachments.filter(path=>!contextPaths.has(path)).map(path=><span key={path} title={attachmentDisplayName(path)}><Paperclip size={11}/>{attachmentDisplayName(path)}<button onClick={()=>onRemoveAttachment(path)}><X size={10}/></button></span>)}</div>
     <textarea ref={composerRef} data-testid="composer" value={prompt} onChange={e=>{onPromptEdit?.();setPrompt(e.target.value);setCaret(e.target.selectionStart)}} onClick={e=>setCaret(e.currentTarget.selectionStart)} onKeyUp={e=>setCaret(e.currentTarget.selectionStart)} onKeyDown={keyDown} onPaste={onPaste} placeholder={submitting?"Sending…":providerReady?(running?(agentRuntime==="codex"&&settings.followUpMode==="steer"?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…"):(agentRuntime!=="codex"?`Configure ${agentRuntimeLabel} in Settings…`:provider==="freebuff"?"Sign in to Freebuff to start…":"Configure the selected provider in Settings…")} disabled={!providerReady||submitting}/>
     <div className="composer-bar"><div className="composer-left">
       <button className="circle-btn" onClick={onPickFiles} title="Attach files" aria-label="Attach files"><Plus size={18}/></button>
@@ -2118,7 +2122,20 @@ export default function App(){
     await addContextPath(path,{kind:"file",label:item.name||String(item.path).split(/[\\/]/).pop()||"File",detail:item.relativePath||item.path});
     return path;
   }
-  async function pickFiles(){const p=await window.trebellDesktop?.pickFiles?.();if(p?.length){const prepared=await prepareAttachmentPaths(p);await addFiles(prepared);return prepared}return[]}
+  async function pickFiles(){
+    const native=window.trebellDesktop?.pickFiles;
+    if(native){const p=await native();if(p?.length){const prepared=await prepareAttachmentPaths(p);await addFiles(prepared);return prepared}return[]}
+    const files=await new Promise(resolve=>{
+      const input=document.createElement("input");input.type="file";input.multiple=true;input.hidden=true;document.body.appendChild(input);let settled=false;
+      const done=value=>{if(settled)return;settled=true;input.remove();resolve(value)};
+      input.addEventListener("change",()=>done([...(input.files||[])]),{once:true});
+      input.addEventListener("cancel",()=>done([]),{once:true});
+      window.addEventListener("focus",()=>setTimeout(()=>{if(!settled&&!input.files?.length)done([])},250),{once:true});
+      input.click();
+    });
+    const uploaded=[];for(const file of files.slice(0,Math.max(0,MAX_COMPOSER_ATTACHMENTS-attachments.length))){try{uploaded.push((await blobAttachment(file)).path)}catch{}}
+    await addFiles(uploaded);return uploaded;
+  }
   async function blobAttachment(file){const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(",")[1]||"");reader.onerror=reject;reader.readAsDataURL(file)});const stored=await api("/api/attachments/blob",{method:"POST",body:{name:file.name,mime:file.type,dataBase64:data}});const [path]=await prepareAttachmentPaths([stored.path]);return {...stored,path}}
   async function captureDesktop(){
     const shot=await window.trebellDesktop?.captureScreen?.();

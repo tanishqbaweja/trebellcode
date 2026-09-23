@@ -240,6 +240,21 @@ test("navigation history shortcuts visibly restore prior app surfaces",async({pa
   await page.screenshot({path:auditDir+"navigation-forward-settings-1600x980.png",fullPage:true});
 });
 
+test("browser attach button uploads files without the desktop bridge",async({page,request})=>{
+  test.setTimeout(30_000);
+  await prepare(page,request);
+  await expect(page.locator(".window-controls")).toHaveCount(0);
+  const [chooser]=await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.getByRole("button",{name:"Attach files"}).click(),
+  ]);
+  await chooser.setFiles({name:"browser-attachment.txt",mimeType:"text/plain",buffer:Buffer.from("browser attachment fixture\n")});
+  await expect(page.locator(".attachment-shelf span")).toHaveText(/browser-attachment\.txt/);
+  await expect(page.locator(".attachment-shelf span")).not.toContainText(/^\d{10,}-/);
+  await page.setViewportSize({width:1280,height:800});
+  await page.screenshot({path:auditDir+"browser-file-attachment-1280x800.png",fullPage:true});
+});
+
 test("settings page visual audit",async({page,request})=>{
   test.setTimeout(45_000);
   await page.addInitScript(()=>{
