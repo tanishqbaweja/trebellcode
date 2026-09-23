@@ -806,6 +806,41 @@ test("Freebuff dashboard stays visually coherent in light mode",async({page,requ
   await page.screenshot({path:auditDir+"freebuff-light-1600x980.png",fullPage:true});
 });
 
+test("custom theme stays coherent across chat panel and command palette",async({page,request})=>{
+  test.setTimeout(40_000);
+  await prepare(page,request);
+  const theme={
+    id:"visual-aubergine",name:"Visual Aubergine",appearance:"dark",canvas:"#21182b",accent:"#d17aff",
+    colors:{foreground:"#f5edf8",success:"#66d59b",error:"#ff8095",warning:"#f0c36a"},
+  };
+  await request.post("/api/settings",{data:{customThemes:[theme],appearance:theme.id,appearanceMode:"dark"}});
+  await page.reload();
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.customTheme)).toBe("true");
+  const variables=await page.evaluate(()=>({
+    accent:document.documentElement.style.getPropertyValue("--purple").trim(),
+    canvas:document.documentElement.style.getPropertyValue("--theme-canvas").trim(),
+    foreground:document.documentElement.style.getPropertyValue("--theme-foreground").trim(),
+  }));
+  expect(variables.accent).toBe("#d17aff");
+  expect(variables.foreground).toBe("#f5edf8");
+  expect(variables.canvas).toBeTruthy();
+  await page.getByTestId("right-panel-toggle").click();
+  await expect(page.getByTestId("right-panel")).toBeVisible();
+  await page.keyboard.press("Control+k");
+  await expect(page.getByTestId("command-palette")).toBeVisible();
+  const themedSurfaces=await page.evaluate(()=>({
+    composer:getComputedStyle(document.querySelector(".composer-wrap")).backgroundColor,
+    panel:getComputedStyle(document.querySelector(".context-panel")).backgroundColor,
+    palette:getComputedStyle(document.querySelector(".command-palette")).backgroundColor,
+  }));
+  for(const value of Object.values(themedSurfaces))expect(value).toBeTruthy();
+  await page.screenshot({path:auditDir+"custom-theme-chat-panel-palette-1600x980.png",fullPage:true});
+  await page.keyboard.press("Escape");
+  await page.setViewportSize({width:1280,height:800});
+  await page.screenshot({path:auditDir+"custom-theme-chat-panel-1280x800.png",fullPage:true});
+});
+
 test("populated source control and pull request detail stay usable",async({page,request})=>{
   test.setTimeout(45_000);
   const prActions=[];
