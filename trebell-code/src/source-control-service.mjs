@@ -125,6 +125,68 @@ export async function sourceControlRecentCommitSubjects(cwd,{limit=8}={}){
   return result.ok?result.stdout.split(/\r?\n/).map(line=>line.trim()).filter(Boolean):[];
 }
 
+const PR_TEMPLATE_PATHS=[
+  ".github/pull_request_template.md",
+  ".github/PULL_REQUEST_TEMPLATE.md",
+  "pull_request_template.md",
+  "PULL_REQUEST_TEMPLATE.md",
+  "docs/pull_request_template.md",
+  "docs/PULL_REQUEST_TEMPLATE.md",
+];
+const PR_TEMPLATE_DIRECTORIES=[
+  ".github/PULL_REQUEST_TEMPLATE",
+  "PULL_REQUEST_TEMPLATE",
+  "docs/PULL_REQUEST_TEMPLATE",
+];
+function parseTemplateTreeEntries(raw){
+  const entries=[];
+  for(const record of String(raw||"").split("\0")){
+    if(!record)continue;
+    const tab=record.indexOf("\t");if(tab<0)continue;
+    const [mode,type,objectId]=record.slice(0,tab).split(" ");
+    if(type!=="blob"||!["100644","100755"].includes(mode)||!/^[0-9a-f]{40,64}$/i.test(objectId||""))continue;
+    entries.push({objectId,path:record.slice(tab+1)});
+  }
+  return entries;
+}
+async function readTemplateBlob(root,entry){
+  const result=await run("git",["cat-file","blob",entry.objectId],{cwd:root,allowFailure:true,maxBuffer:64*1024});
+  if(!result.ok)return null;
+  const text=String(result.stdout||"").trim();
+  if(!text)return null;
+  return text.length>8000?text.slice(0,8000)+"\n\n[truncated]":text;
+}
+export async function sourceControlPullRequestTemplate(cwd,{treeish="HEAD"}={}){
+  const info=await serviceGitInfo(cwd);if(!info.isGit)return null;
+  const origin=info.remotes.find(item=>item.name==="origin"&&item.kind==="fetch")||info.remotes.find(item=>item.kind==="fetch");
+  if(detectSourceControlProvider(origin?.url||"")!=="github")return null;
+  const treePaths=[...PR_TEMPLATE_PATHS,...PR_TEMPLATE_DIRECTORIES];
+  const listed=await run("git",["ls-tree","-r","-z","--full-tree",String(treeish||"HEAD"),"--",...treePaths],{cwd:info.root,allowFailure:true,maxBuffer:128*1024});
+  if(!listed.ok)return null;
+  const entries=parseTemplateTreeEntries(listed.stdout);
+  const byPath=new Map(entries.map(entry=>[entry.path,entry]));
+  for(const path of PR_TEMPLATE_PATHS){
+    const entry=byPath.get(path);if(!entry)continue;
+    const template=await readTemplateBlob(info.root,entry);if(template)return template;
+  }
+  for(const directory of PR_TEMPLATE_DIRECTORIES){
+    const prefix=directory+"/";
+    const candidates=entries.filter(entry=>{
+      if(!entry.path.startsWith(prefix))return false;
+      const relative=entry.path.slice(prefix.length);
+      return !relative.includes("/")&&relative.toLowerCase().endsWith(".md");
+    });
+    const templates=[];
+    for(const entry of candidates){
+      const template=await readTemplateBlob(info.root,entry);
+      if(template)templates.push(template);
+      if(templates.length>1)return null;
+    }
+    if(templates.length===1)return templates[0];
+  }
+  return null;
+}
+
 export async function sourceControlGitAction(cwd,{action,name=null,message=null,setUpstream=false,startPoint=null,path=null,force=false}={}){
   const base=String(cwd||"").trim();
   if(!base)throw new Error("Repository path is required");

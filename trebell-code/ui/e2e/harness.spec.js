@@ -281,18 +281,23 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await scopedSettings.getByLabel("Permissions").selectOption("full");
   await scopedSettings.getByLabel("Automatic pull").selectOption("true");
   await scopedSettings.getByLabel("Default PR merge").selectOption("rebase");
-  await scopedSettings.getByLabel("Git text style").selectOption("repository");
+  await scopedSettings.getByLabel("Git text style").selectOption("custom");
   await scopedSettings.getByLabel("Git text model").selectOption("freebuff/test/coding-fast");
+  await scopedSettings.getByLabel("Follow PR templates").selectOption("false");
+  await scopedSettings.getByLabel("Custom Git instructions").fill("Prefix titles with the ticket ID.");
+  await scopedSettings.getByLabel("Custom Git instructions").blur();
   await expect.poll(async()=>{
     const remoteDefaults=await (await request.get("/api/scoped-settings?environmentId=ssh-palette")).json();
-    return {permission:remoteDefaults.effective.defaultPermissionMode,autoPull:remoteDefaults.effective.autoPull,merge:remoteDefaults.effective.sourceControlMergeMethod,style:remoteDefaults.effective.sourceControlTextStyle,textModel:remoteDefaults.effective.sourceControlTextModel};
-  }).toEqual({permission:"full",autoPull:true,merge:"rebase",style:"repository",textModel:"freebuff/test/coding-fast"});
+    return {permission:remoteDefaults.effective.defaultPermissionMode,autoPull:remoteDefaults.effective.autoPull,merge:remoteDefaults.effective.sourceControlMergeMethod,style:remoteDefaults.effective.sourceControlTextStyle,textModel:remoteDefaults.effective.sourceControlTextModel,instructions:remoteDefaults.effective.sourceControlCustomInstructions,templates:remoteDefaults.effective.sourceControlFollowTemplates};
+  }).toEqual({permission:"full",autoPull:true,merge:"rebase",style:"custom",textModel:"freebuff/test/coding-fast",instructions:"Prefix titles with the ticket ID.",templates:false});
   await scopedTargets.nth(1).selectOption({label:"Remote App · /srv/app"});
   await expect(scopedSettings.getByLabel("Permissions")).toHaveValue("__inherit__");
   await expect(scopedSettings.getByLabel("Automatic pull")).toHaveValue("__inherit__");
   await expect(scopedSettings.getByLabel("Default PR merge")).toHaveValue("__inherit__");
   await expect(scopedSettings.getByLabel("Git text style")).toHaveValue("__inherit__");
   await expect(scopedSettings.getByLabel("Git text model")).toHaveValue("__inherit__");
+  await expect(scopedSettings.getByLabel("Follow PR templates")).toHaveValue("__inherit__");
+  await expect(scopedSettings.getByLabel("Custom Git instructions")).toHaveValue("Prefix titles with the ticket ID.");
   await scopedSettings.getByLabel("Permissions").selectOption("edits");
   const projectListing=await (await request.get("/api/projects")).json();
   const remoteProject=projectListing.projects.find(item=>item.environmentId==="ssh-palette"&&item.path==="/srv/app");

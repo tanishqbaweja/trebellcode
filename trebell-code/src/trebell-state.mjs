@@ -14,8 +14,10 @@ const DEFAULT_STATE = Object.freeze({
     defaultWorkspaceMode: "current",
     autoPull: false,
     sourceControlMergeMethod: "squash",
-    sourceControlTextStyle: "concise",
+    sourceControlTextStyle: "repository",
     sourceControlTextModel: null,
+    sourceControlCustomInstructions: "",
+    sourceControlFollowTemplates: true,
     worktreeSubmodules: "recursive",
     worktreeCleanup: {mode:"off"},
     appearance: "dark",
@@ -95,6 +97,8 @@ export const PROJECT_SCOPED_SETTING_KEYS=Object.freeze([
   "sourceControlMergeMethod",
   "sourceControlTextStyle",
   "sourceControlTextModel",
+  "sourceControlCustomInstructions",
+  "sourceControlFollowTemplates",
   "agentDeviceAccess",
 ]);
 function normalizeScopedSetting(key,value){
@@ -104,8 +108,10 @@ function normalizeScopedSetting(key,value){
   if(key==="worktreeSubmodules")return ["recursive","top-level","none"].includes(String(value))?String(value):"recursive";
   if(key==="worktreeCleanup")return normalizeWorktreeCleanup(value);
   if(key==="sourceControlMergeMethod")return ["squash","merge","rebase"].includes(String(value))?String(value):"squash";
-  if(key==="sourceControlTextStyle")return ["concise","descriptive","repository"].includes(String(value))?String(value):"concise";
+  if(key==="sourceControlTextStyle"){const text=String(value);if(text==="concise"||text==="descriptive")return "repository";return ["repository","conventional","custom"].includes(text)?text:"repository"}
   if(key==="sourceControlTextModel"){const text=String(value??"").trim();return text||null}
+  if(key==="sourceControlCustomInstructions")return String(value??"").trim().slice(0,12000);
+  if(key==="sourceControlFollowTemplates")return value!==false;
   if(key==="autoPull"||key==="agentDeviceAccess")return Boolean(value);
   return undefined;
 }
@@ -138,6 +144,8 @@ export class TrebellStateStore {
       settings.sourceControlMergeMethod=normalizeScopedSetting("sourceControlMergeMethod",settings.sourceControlMergeMethod);
       settings.sourceControlTextStyle=normalizeScopedSetting("sourceControlTextStyle",settings.sourceControlTextStyle);
       settings.sourceControlTextModel=normalizeScopedSetting("sourceControlTextModel",settings.sourceControlTextModel);
+      settings.sourceControlCustomInstructions=normalizeScopedSetting("sourceControlCustomInstructions",settings.sourceControlCustomInstructions);
+      settings.sourceControlFollowTemplates=normalizeScopedSetting("sourceControlFollowTemplates",settings.sourceControlFollowTemplates);
       if(!Object.prototype.hasOwnProperty.call(rawSettings,"onboardingComplete")&&projects.length>0)settings.onboardingComplete=true;
       return {
         ...clone(DEFAULT_STATE),
@@ -171,6 +179,8 @@ export class TrebellStateStore {
       sourceControlMergeMethod:normalizeScopedSetting("sourceControlMergeMethod",this.state.settings.sourceControlMergeMethod),
       sourceControlTextStyle:normalizeScopedSetting("sourceControlTextStyle",this.state.settings.sourceControlTextStyle),
       sourceControlTextModel:normalizeScopedSetting("sourceControlTextModel",this.state.settings.sourceControlTextModel),
+      sourceControlCustomInstructions:normalizeScopedSetting("sourceControlCustomInstructions",this.state.settings.sourceControlCustomInstructions),
+      sourceControlFollowTemplates:normalizeScopedSetting("sourceControlFollowTemplates",this.state.settings.sourceControlFollowTemplates),
       agentDeviceAccess:Boolean(this.state.settings.agentDeviceAccess),
     };
     const id=normalizeEnvironmentId(environmentId);if(!id)return clone(base);
@@ -219,6 +229,8 @@ export class TrebellStateStore {
     if("sourceControlMergeMethod" in patch)patch={...patch,sourceControlMergeMethod:normalizeScopedSetting("sourceControlMergeMethod",patch.sourceControlMergeMethod)};
     if("sourceControlTextStyle" in patch)patch={...patch,sourceControlTextStyle:normalizeScopedSetting("sourceControlTextStyle",patch.sourceControlTextStyle)};
     if("sourceControlTextModel" in patch)patch={...patch,sourceControlTextModel:normalizeScopedSetting("sourceControlTextModel",patch.sourceControlTextModel)};
+    if("sourceControlCustomInstructions" in patch)patch={...patch,sourceControlCustomInstructions:normalizeScopedSetting("sourceControlCustomInstructions",patch.sourceControlCustomInstructions)};
+    if("sourceControlFollowTemplates" in patch)patch={...patch,sourceControlFollowTemplates:normalizeScopedSetting("sourceControlFollowTemplates",patch.sourceControlFollowTemplates)};
     if("panelAnimationMs" in patch){const value=Math.round(Number(patch.panelAnimationMs)||0);patch={...patch,panelAnimationMs:Math.max(0,Math.min(400,value))}}
     this.state.settings={...this.state.settings,...patch};
     this.#save();

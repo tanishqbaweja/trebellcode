@@ -19,6 +19,7 @@ import {
   mergePullRequest,
   rebasePullRequestStack,
   sourceControlGitAction,
+  sourceControlPullRequestTemplate,
   sourceControlRecentCommitSubjects,
   withSourceControlExecutor,
 } from "../src/source-control-service.mjs";
@@ -183,6 +184,47 @@ test("recent commit subjects are read through the selected environment executor"
   const subjects=await withSourceControlExecutor(executor,()=>sourceControlRecentCommitSubjects("/srv/app",{limit:5}));
   assert.deepEqual(subjects,["Use conventional subject","Fix checkout race"]);
   assert.equal(calls.some(call=>call.args[0]==="log"&&call.cwd==="/srv/app"),true);
+});
+
+test("GitHub pull request templates are read from committed blobs through the selected environment executor",async()=>{
+  const calls=[];
+  const template="## What changed\n\n## Verification";
+  const executor={run:async(command,args,options={})=>{
+    calls.push({command,args:[...args],cwd:options.cwd});
+    if(command!=="git")return {ok:false,code:1,stdout:"",stderr:"unexpected command"};
+    if(args[0]==="rev-parse"&&args[1]==="--show-toplevel")return {ok:true,code:0,stdout:"/srv/app\n",stderr:""};
+    if(args[0]==="branch")return {ok:true,code:0,stdout:"main\n",stderr:""};
+    if(args[0]==="for-each-ref"&&args.includes("refs/heads"))return {ok:true,code:0,stdout:"main\n",stderr:""};
+    if(args[0]==="for-each-ref")return {ok:true,code:0,stdout:"origin/main\n",stderr:""};
+    if(args[0]==="status")return {ok:true,code:0,stdout:"## main...origin/main\n",stderr:""};
+    if(args[0]==="remote")return {ok:true,code:0,stdout:"origin\thttps://github.com/acme/widget.git (fetch)\norigin\thttps://github.com/acme/widget.git (push)\n",stderr:""};
+    if(args[0]==="worktree")return {ok:true,code:0,stdout:"worktree /srv/app\nHEAD abc\nbranch refs/heads/main\n",stderr:""};
+    if(args[0]==="ls-tree")return {ok:true,code:0,stdout:"100644 blob 0123456789012345678901234567890123456789\t.github/pull_request_template.md\0",stderr:""};
+    if(args[0]==="cat-file")return {ok:true,code:0,stdout:template+"\n",stderr:""};
+    return {ok:false,code:1,stdout:"",stderr:"unexpected git "+args.join(" ")};
+  }};
+  const result=await withSourceControlExecutor(executor,()=>sourceControlPullRequestTemplate("/srv/app"));
+  assert.equal(result,template);
+  assert.equal(calls.some(call=>call.args[0]==="ls-tree"&&call.args.includes("HEAD")),true);
+  assert.equal(calls.some(call=>call.args[0]==="cat-file"&&call.cwd==="/srv/app"),true);
+});
+
+test("pull request template detection ignores non-GitHub repositories",async()=>{
+  const calls=[];
+  const executor={run:async(command,args,options={})=>{
+    calls.push({command,args:[...args],cwd:options.cwd});
+    if(command!=="git")return {ok:false,code:1,stdout:"",stderr:"unexpected command"};
+    if(args[0]==="rev-parse"&&args[1]==="--show-toplevel")return {ok:true,code:0,stdout:"/srv/app\n",stderr:""};
+    if(args[0]==="branch")return {ok:true,code:0,stdout:"main\n",stderr:""};
+    if(args[0]==="for-each-ref"&&args.includes("refs/heads"))return {ok:true,code:0,stdout:"main\n",stderr:""};
+    if(args[0]==="for-each-ref")return {ok:true,code:0,stdout:"origin/main\n",stderr:""};
+    if(args[0]==="status")return {ok:true,code:0,stdout:"## main...origin/main\n",stderr:""};
+    if(args[0]==="remote")return {ok:true,code:0,stdout:"origin\thttps://gitlab.com/acme/widget.git (fetch)\norigin\thttps://gitlab.com/acme/widget.git (push)\n",stderr:""};
+    if(args[0]==="worktree")return {ok:true,code:0,stdout:"worktree /srv/app\nHEAD abc\nbranch refs/heads/main\n",stderr:""};
+    return {ok:false,code:1,stdout:"",stderr:"unexpected git "+args.join(" ")};
+  }};
+  assert.equal(await withSourceControlExecutor(executor,()=>sourceControlPullRequestTemplate("/srv/app")),null);
+  assert.equal(calls.some(call=>call.args[0]==="ls-tree"),false);
 });
 
 test("Bitbucket REST auth and requests come from the environment executor",async()=>{

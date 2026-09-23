@@ -51,7 +51,7 @@ import {
   commentOnPullRequest, reviewPullRequest, mergePullRequest, updatePullRequestBranch,
   rebasePullRequestStack,
   checkoutPullRequest, requestPullRequestReviewer, publishRepository, getPullRequestFilesViewed, setPullRequestFilesViewed,
-  sourceControlGitAction, sourceControlGitInfo, sourceControlRecentCommitSubjects, sourceControlRepositoryIdentity, withSourceControlExecutor,
+  sourceControlGitAction, sourceControlGitInfo, sourceControlPullRequestTemplate, sourceControlRecentCommitSubjects, sourceControlRepositoryIdentity, withSourceControlExecutor,
 } from "./source-control-service.mjs";
 import { prViewedKey, updateViewedRecord, viewedStates } from "./pr-viewed-state.mjs";
 import { buildPullRequestLink, linkedPullRequestTerminalStatus, normalizePullRequestIdentity, parsePullRequestUrl, pullRequestForBranch, pullRequestIdentityKey } from "./pr-link-utils.mjs";
@@ -936,45 +936,53 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     const parsed=JSON.parse(raw);
     return {text:parsed?.choices?.[0]?.message?.content ?? "",model,raw:parsed};
   }
-  function sourceControlStyleInstruction(style){
-    if(style==="descriptive")return "Use a clear, specific engineering style. Prefer a descriptive subject over a vague one. Explain why the change matters in the review body.";
-    if(style==="repository")return "Match this repository's existing writing conventions. Follow patterns from recent commit subjects and repository instructions when they are present.";
-    return "Be concise and direct. Avoid filler, marketing language, and redundant detail.";
+  function sourceControlStyleInstruction(style,kind,customInstructions=""){
+    if(style==="conventional")return kind==="review"
+      ?"Keep the pull request title concise and specific. Do not force Conventional Commit syntax into the pull request title."
+      :"Use Conventional Commits for the commit subject. Prefer the narrowest accurate type and include a scope only when it is obvious from the diff.";
+    if(style==="custom")return customInstructions?"Follow these source-control writing instructions exactly:\n"+customInstructions:"Use a clear, specific engineering style and avoid filler.";
+    return kind==="review"
+      ?"Follow the repository's established pull request title and body style when examples are available."
+      :"Follow the repository's established commit message style when examples are available.";
   }
-  async function sourceControlWritingContext(cwd,environmentId,{includeInstructions=false}={}){
-    const subjects=await inSourceControlEnvironment(environmentId,()=>sourceControlRecentCommitSubjects(cwd,{limit:10})).catch(()=>[]);
-    const instructions=[];
-    if(includeInstructions){
-      for(const relativePath of ["AGENTS.md","CLAUDE.md","CONTRIBUTING.md",".github/pull_request_template.md"]){
-        try{
-          const filePath=remoteEnvironmentProfile(environmentId)?relativePath:join(cwd,relativePath);
-          const file=await environmentWorkspaceFile(filePath,12_000,{root:cwd,environments,environmentId});
-          const content=String(file.content||"").trim();if(content)instructions.push({path:relativePath,content});
-        }catch{}
-      }
+  async function sourceControlWritingContext(cwd,environmentId,{includeRepositoryInstructions=false,includeReviewTemplate=false}={}){
+    const subjects=includeRepositoryInstructions?await inSourceControlEnvironment(environmentId,()=>sourceControlRecentCommitSubjects(cwd,{limit:10})).catch(()=>[]):[];
+    const instructions=[];const paths=[];
+    if(includeRepositoryInstructions)paths.push("AGENTS.md","CLAUDE.md","CONTRIBUTING.md");
+    for(const relativePath of [...new Set(paths)]){
+      try{
+        const filePath=remoteEnvironmentProfile(environmentId)?relativePath:join(cwd,relativePath);
+        const file=await environmentWorkspaceFile(filePath,12_000,{root:cwd,environments,environmentId});
+        const content=String(file.content||"").trim();if(content)instructions.push({path:relativePath,content});
+      }catch{}
     }
-    return {subjects,instructions};
+    const reviewTemplate=includeReviewTemplate
+      ?await inSourceControlEnvironment(environmentId,()=>sourceControlPullRequestTemplate(cwd)).catch(()=>null)
+      :null;
+    return {subjects,instructions,reviewTemplate};
   }
   async function sourceControlTextRequest({cwd,environmentId,kind,model=null}){
     const scoped=state.projectSettings(cwd,environmentId).effective;
-    const style=scoped.sourceControlTextStyle||"concise";const selectedModel=scoped.sourceControlTextModel||model||null;
+    const style=scoped.sourceControlTextStyle||"repository";const selectedModel=scoped.sourceControlTextModel||model||null;
+    const customInstructions=String(scoped.sourceControlCustomInstructions||"").trim();const followTemplates=scoped.sourceControlFollowTemplates!==false;
     const diff=await environmentWorkspaceDiff(cwd,{environments,environmentId});
-    const context=await sourceControlWritingContext(cwd,environmentId,{includeInstructions:style==="repository"});
+    const context=await sourceControlWritingContext(cwd,environmentId,{includeRepositoryInstructions:style==="repository",includeReviewTemplate:kind==="review"&&followTemplates});
     const recent=context.subjects.length?"Recent commit subjects:\n"+context.subjects.map(subject=>"- "+subject).join("\n")+"\n\n":"";
-    const instructions=context.instructions.length?"Repository instructions:\n"+context.instructions.map(item=>"### "+item.path+"\n"+item.content.slice(0,6000)).join("\n\n")+"\n\n":"";
-    const styleInstruction=sourceControlStyleInstruction(style);
+    const instructions=context.instructions.length?"Repository guidance:\n"+context.instructions.map(item=>"### "+item.path+"\n"+item.content.slice(0,6000)).join("\n\n")+"\n\n":"";
+    const template=context.reviewTemplate?"Repository pull request template:\n"+String(context.reviewTemplate).slice(0,8000)+"\n\n":"";
+    const styleInstruction=sourceControlStyleInstruction(style,kind,customInstructions);
     const prompt=kind==="review"
       ?[
         "Generate a pull request title and description for the current change.",
         styleInstruction,
         "Return strict JSON only with this shape: {\"title\":\"...\",\"body\":\"...\"}.",
         "Keep the title under 100 characters. The body should summarize the change and validation without inventing tests or results.",
-        recent,instructions,"Status:\n"+String(diff.status||"").slice(0,12000),"Diff:\n"+String(diff.diff||"").slice(0,60000),
+        recent,instructions,template,"Status:\n"+String(diff.status||"").slice(0,12000),"Diff:\n"+String(diff.diff||"").slice(0,60000),
       ].filter(Boolean).join("\n\n")
       :[
         "Write one Git commit subject for the current change.",
         styleInstruction,
-        "Use imperative mood when it fits the repository convention. Keep it under 100 characters. Return only the subject with no quotes or markdown.",
+        "Keep the subject under 100 characters. Return only the subject with no quotes or markdown.",
         recent,instructions,"Status:\n"+String(diff.status||"").slice(0,12000),"Diff:\n"+String(diff.diff||"").slice(0,60000),
       ].filter(Boolean).join("\n\n");
     if(mock)return kind==="review"
