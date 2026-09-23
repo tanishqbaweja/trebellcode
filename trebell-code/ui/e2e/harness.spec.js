@@ -397,7 +397,6 @@ test("Trebell Code renders the harness and scopes models to the selected provide
 });
 
 test("onboarding can import matching local conversation history",async({page,request})=>{
-  await request.post("/api/settings",{data:{onboardingComplete:false}});
   const boot=await (await request.get("/api/bootstrap")).json();
   await request.post("/api/projects",{data:{path:boot.cwd,name:"History Workspace",activate:true}});
   let imported=false;let importBody=null;
@@ -411,6 +410,11 @@ test("onboarding can import matching local conversation history",async({page,req
       sessions:[{id:"history-1",source:"claude",providerSessionId:"claude-history-1",cwd:boot.cwd,title:"Fix the onboarding importer",preview:"Fix the onboarding importer",alreadyImported:imported}],
     })});
   });
+  await request.post("/api/settings",{data:{onboardingComplete:false}});
+  await expect.poll(async()=>{
+    const state=await (await request.get("/api/state")).json();
+    return state.settings?.onboardingComplete;
+  }).toBe(false);
   await page.goto("/");
   const onboarding=page.getByTestId("onboarding");
   await expect(onboarding).toBeVisible();

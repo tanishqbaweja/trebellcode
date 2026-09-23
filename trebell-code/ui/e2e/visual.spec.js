@@ -233,6 +233,60 @@ test("major workspace surfaces render their real destinations without horizontal
   await page.screenshot({path:auditDir+"agents-panel-1280x800.png",fullPage:true});
 });
 
+test("project and environment configuration forms stay readable when expanded",async({page,request})=>{
+  test.setTimeout(50_000);
+  await prepare(page,request);
+  await request.post("/api/environments",{data:{id:"visual-ssh",name:"Visual SSH",type:"ssh",host:"example.invalid",user:"dev",cwd:"/srv/app",port:22}});
+
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
+  const cloneCard=page.locator(".clone-card");
+  await expect(cloneCard).toBeVisible();
+  await cloneCard.getByLabel("Clone environment").selectOption("visual-ssh");
+  await expect(cloneCard.getByLabel("Clone parent directory")).toBeVisible();
+  await cloneCard.getByLabel("Clone URL").fill("https://github.com/example/visual-audit.git");
+  await cloneCard.getByLabel("Clone parent directory").fill("/srv/projects");
+  const cloneMetrics=await cloneCard.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(cloneMetrics.scroll).toBeLessThanOrEqual(cloneMetrics.client+1);
+
+  const projectCard=page.locator(".project-card").first();
+  await expect(projectCard).toBeVisible();
+  await projectCard.getByRole("button",{name:"Project identity"}).click();
+  await expect(projectCard.locator(".project-identity-editor")).toBeVisible();
+  await projectCard.getByRole("button",{name:"Add action"}).click();
+  await expect(projectCard.locator(".project-action-editor")).toBeVisible();
+  const projectMetrics=await projectCard.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(projectMetrics.scroll).toBeLessThanOrEqual(projectMetrics.client+1);
+  await page.screenshot({path:auditDir+"projects-expanded-1600x980.png",fullPage:true});
+
+  await page.setViewportSize({width:1280,height:800});
+  await page.screenshot({path:auditDir+"projects-expanded-1280x800.png",fullPage:true});
+
+  await page.route(/\/api\/environments$/,async route=>{
+    if(route.request().method()!=="GET")return route.continue();
+    await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+      profiles:[],activeEnvironmentId:null,activeEnvironment:null,
+      capabilities:{local:{available:true},wsl:{available:true,distros:["Ubuntu-24.04"]},ssh:{available:true,version:"OpenSSH_for_Windows_9.5"}},
+    })});
+  });
+  await page.route(/\/api\/remote-access$/,async route=>{
+    if(route.request().method()!=="GET")return route.continue();
+    await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,running:false,port:3211,urls:[],devices:[]})});
+  });
+  await page.getByRole("button",{name:"Environments",exact:true}).click();
+  const addCard=page.locator(".environment-create");
+  await expect(addCard).toBeVisible();
+  await addCard.getByLabel("Type").selectOption("ssh");
+  await expect(addCard.getByLabel("Host")).toBeVisible();
+  await addCard.getByLabel("Name").fill("Production sandbox");
+  await addCard.getByLabel("Working directory").fill("/srv/trebell");
+  await addCard.getByLabel("Host").fill("dev.example.com");
+  await addCard.getByLabel("User").fill("trebell");
+  const envMetrics=await addCard.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(envMetrics.scroll).toBeLessThanOrEqual(envMetrics.client+1);
+  await page.screenshot({path:auditDir+"environments-ssh-form-1280x800.png",fullPage:true});
+});
+
 test("right panel tabs are functional and visually bounded",async({page,request})=>{
   test.setTimeout(60_000);
   await prepare(page,request);
@@ -400,4 +454,60 @@ test("light mode stays visually coherent across workspace and panels",async({pag
   await page.screenshot({path:auditDir+"light-chat-panel-1600x980.png",fullPage:true});
   await page.setViewportSize({width:1280,height:800});
   await page.screenshot({path:auditDir+"light-chat-panel-1280x800.png",fullPage:true});
+});
+
+test("populated source control and pull request detail stay usable",async({page,request})=>{
+  test.setTimeout(45_000);
+  await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    isGit:true,root:"H:\\Github Repositories\\Trebell\\trebell-code",branch:"feature/ui-polish",branches:["main","feature/ui-polish"],upstream:"origin/feature/ui-polish",
+    status:[{code:" M",path:"ui/src/App.jsx"},{code:"??",path:"ui/e2e/new-visual.spec.js"}],
+    remotes:[{name:"origin",url:"https://github.com/example/trebellcode.git"}],
+    worktrees:[{path:"H:\\Github Repositories\\Trebell\\trebell-code",branch:"feature/ui-polish"},{path:"H:\\Github Repositories\\Trebell\\trebell-code-review",branch:"review/pr-142"}],
+  })}));
+  await page.route(/\/api\/source-control\/diagnostics\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    selectedProvider:"github",detectedProvider:"github",git:{version:"git version 2.51.0.windows.1"},
+    providers:{github:{label:"GitHub",installed:true,authenticated:true}},
+    capabilities:{github:{create:true,comment:true,review:true,merge:true,updateBranch:true,edit:true,checkout:true,reviewers:true,approveWorkflows:true,autoMerge:true,revert:true,editComments:true}},
+  })}));
+  const listPr={number:142,title:"Polish Trebell desktop interaction states",state:"OPEN",headRefName:"feature/ui-polish",baseRefName:"main",provider:"github",url:"https://github.com/example/trebellcode/pull/142"};
+  await page.route(/\/api\/source-control\/prs\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    items:[listPr,{number:139,title:"Add remote runtime diagnostics",state:"OPEN",headRefName:"runtime-diagnostics",baseRefName:"main",provider:"github",url:"https://github.com/example/trebellcode/pull/139"}],
+    capabilities:{create:true,comment:true,review:true,merge:true,updateBranch:true,edit:true,checkout:true,reviewers:true,approveWorkflows:true,autoMerge:true,revert:true,editComments:true},
+  })}));
+  await page.route(/\/api\/source-control\/pr-detail\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    provider:"github",
+    item:{...listPr,body:"Improves visual regression coverage and makes dense desktop workflows easier to scan.",identity:{provider:"github",host:"github.com",repository:"example/trebellcode",number:142},
+      files:[
+        {path:"ui/src/App.jsx",additions:42,deletions:11,patch:"@@ -10,3 +10,7 @@\n+const polished = true;\n+function keepPanelsReadable() {}"},
+        {path:"ui/src/styles.css",additions:68,deletions:9,patch:"@@ -200,3 +200,8 @@\n+.workspace { min-width: 0; }"},
+      ],
+      comments:[{id:"comment-1",author:{login:"reviewer-one"},body:"The new resize behavior feels much better."},{id:"comment-2",author:{login:"trebell-dev"},body:"Added compact empty states.",canEdit:true}],
+      reviews:[{id:"review-1",author:{login:"reviewer-two"},state:"APPROVED",body:"Looks good after the visual pass."}],
+      statusCheckRollup:[{name:"unit-tests",status:"COMPLETED",conclusion:"SUCCESS"},{name:"playwright",status:"COMPLETED",conclusion:"SUCCESS"}],
+      awaitingWorkflowApproval:["build-windows"],
+    },
+  })}));
+  await page.route(/\/api\/source-control\/thread-link\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({threads:[]})}));
+  await page.route(/\/api\/source-control\/pr-viewed\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({store:"environment",files:[{path:"ui/src/App.jsx",state:"viewed"},{path:"ui/src/styles.css",state:"unviewed"}]})}));
+
+  await prepare(page,request);
+  await page.getByTestId("right-panel-toggle").click();
+  const panel=page.getByTestId("right-panel");
+  const gitTab=panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true});
+  await gitTab.click();
+  await expect(gitTab).toHaveClass(/active/);
+  await expect(panel.locator(".sc-toolbar select").first()).toHaveValue("feature/ui-polish");
+  await expect(panel.getByRole("button",{name:/#142 Polish Trebell desktop interaction states/})).toBeVisible();
+  await page.screenshot({path:auditDir+"source-control-populated-1600x980.png",fullPage:true});
+
+  await panel.getByRole("button",{name:/#142 Polish Trebell desktop interaction states/}).click();
+  await expect(panel.getByRole("heading",{name:/#142 Polish Trebell desktop interaction states/})).toBeVisible();
+  await expect(panel.getByText("The new resize behavior feels much better.")).toBeVisible();
+  const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"source-control-pr-detail-1600x980.png",fullPage:true});
+  await page.setViewportSize({width:1280,height:800});
+  await panel.getByRole("button",{name:/#142 Polish Trebell desktop interaction states/}).click();
+  await expect(panel.getByRole("heading",{name:/#142 Polish Trebell desktop interaction states/})).toBeInViewport();
+  await page.screenshot({path:auditDir+"source-control-pr-detail-1280x800.png",fullPage:true});
 });

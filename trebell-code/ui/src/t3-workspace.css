@@ -213,9 +213,14 @@ html.layout-resizing,html.layout-resizing *{user-select:none!important}
 .context-panel .preview-frame,.context-panel .browser-inspector{min-height:0}
 .context-panel .preview-frame iframe,.context-panel .browser-inspector{height:100%;min-height:0}
 .context-panel .preview-note{display:none}
-.context-panel .source-control{padding:8px;gap:8px}
+.context-panel .source-control{padding:8px;gap:8px;container-type:inline-size}
 .context-panel .sc-grid{grid-template-columns:1fr}
 .context-panel .pr-layout{grid-template-columns:minmax(180px,34%) minmax(0,1fr)}
+@container (max-width:620px){
+  .context-panel .pr-layout{grid-template-columns:1fr;min-height:0}
+  .context-panel .pr-list{max-height:175px}
+  .context-panel .pr-detail{min-height:300px}
+}
 .context-panel .panel-page{padding:10px}
 .runtime-surface{padding:10px;display:grid;gap:8px}
 .runtime-summary,.runtime-grid,.runtime-activity{border:1px solid #25282c;background:#121416;border-radius:9px;padding:11px}
@@ -512,10 +517,10 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .settings-card select{ba
 @media(max-width:900px){.capability-grid{grid-template-columns:1fr}}
 
 .environment-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
-.environment-create{display:grid;gap:8px}.environment-create label,.remote-access-card label{display:grid;gap:5px;color:#777d84;font-size:8.5px}
-.environment-create input,.environment-create select,.remote-access-card input{height:31px;border:1px solid #2a2d31;background:#0d0f11;border-radius:7px;color:#b9bec4;padding:0 9px;font-size:9px;outline:0}
+.environment-create{display:grid;gap:8px;min-width:0}.environment-create label,.remote-access-card label{display:grid;gap:5px;min-width:0;color:#777d84;font-size:8.5px}
+.environment-create input,.environment-create select,.remote-access-card input{width:100%;min-width:0;height:31px;box-sizing:border-box;border:1px solid #2a2d31;background:#0d0f11;border-radius:7px;color:#b9bec4;padding:0 9px;font-size:9px;outline:0}
 .environment-create .primary{height:31px;border:1px solid #3c3248;border-radius:7px;background:#1a1520;color:#c9b4dc;font-size:9px;display:flex;align-items:center;justify-content:center;gap:5px}.environment-create .primary:hover{background:#211a29;border-color:#58456b;color:#e0d1ed}
-.environment-two{display:grid;grid-template-columns:1fr 100px;gap:7px}
+.environment-two{display:grid;grid-template-columns:minmax(0,1fr) 100px;gap:7px;min-width:0}
 .environment-list{display:grid;gap:4px}.environment-list>div{min-height:45px;padding:7px 8px;background:#0d0f11;border-radius:7px;display:flex;align-items:center;justify-content:space-between;gap:9px}
 .environment-list strong,.environment-list span{display:block}.environment-list strong{font-size:9.5px;color:#c8ccd1}.environment-list span{font-size:8px;color:#687078;margin-top:2px}
 .environment-list>div>div:last-child{display:flex;gap:4px}.environment-list button,.remote-access-card button{height:27px;border:1px solid #2b2e33;background:#15171a;border-radius:6px;color:#a0a6ad;font-size:8px;padding:0 8px}
