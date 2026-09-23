@@ -597,6 +597,7 @@ test("right panel tabs are functional and visually bounded",async({page,request}
     await expect(tab).toBeEnabled();
     await tab.click();
     await expect(tab).toHaveClass(/active/);
+    if(label==="Browser"||label==="Agents")await expect(page.locator(`.sidebar .sidebar-utility[aria-label="${label}"]`)).toHaveClass(/active/);
     if(label==="Files"){
       const search=panel.getByPlaceholder("Search files…");
       await search.fill("package.json");
@@ -619,14 +620,21 @@ test("right panel tabs are functional and visually bounded",async({page,request}
       await expect(panel.locator(".agent-browser-toolbar")).toHaveCount(0);
       await expect(panel.locator(".browser-device-toolbar")).toHaveCount(0);
       await expect(panel.locator(".browser-inspector")).toHaveCount(0);
+      await expect(page.locator('.sidebar-utility[aria-label="Browser"]')).toHaveClass(/active/);
     }
     if(label==="Git"){
       await expect(panel.locator(".source-provider-field")).toBeVisible();
       await expect(panel.locator(".pr-empty-state")).toBeVisible();
     }
+    if(label==="Device")await expect(panel.locator(".device-panel")).toBeVisible();
     if(label==="Goal"){
       await expect(panel).toContainText("No active thread");
       await expect(panel).not.toContainText("Codex");
+    }
+    if(label==="Agents"){
+      await expect(panel.locator(".collaboration-card")).toBeVisible();
+      await expect(panel.locator(".agent-empty-state")).toBeVisible();
+      await expect(page.locator('.sidebar-utility[aria-label="Agents"]')).toHaveClass(/active/);
     }
     await assertPanelBounded();
     await page.screenshot({path:auditDir+"panel-"+slug+"-1600x980.png",fullPage:true});

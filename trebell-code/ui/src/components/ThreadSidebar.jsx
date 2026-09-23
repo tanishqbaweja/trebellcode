@@ -63,7 +63,8 @@ function UtilityButton({Icon,label,active,onClick}){
 
 export default function ThreadSidebar({
   section,setSection,threads,activeThreadId,query,setQuery,onOpen,onNew,onThreadAction,onMove,
-  selectedIds,setSelectedIds,onBulkAction,provider="freebuff",agentRuntime="codex",threadMeta={},onCollapse
+  selectedIds,setSelectedIds,onBulkAction,provider="freebuff",agentRuntime="codex",threadMeta={},onCollapse,
+  rightPanelOpen=false,rightPanelTab="files"
 }){
   const searchRef=useRef(null);
   useEffect(()=>{
@@ -121,8 +122,8 @@ export default function ThreadSidebar({
     <div className="sidebar-footer">
       <div className="sidebar-utilities">
         <UtilityButton Icon={Folder} label="Projects" active={section==="projects"} onClick={()=>setSection("projects")}/>
-        <UtilityButton Icon={Globe2} label="Browser" active={section==="preview"} onClick={()=>setSection("preview")}/>
-        {agentRuntime==="codex"&&<UtilityButton Icon={Bot} label="Agents" active={section==="agents"} onClick={()=>setSection("agents")}/>}
+        <UtilityButton Icon={Globe2} label="Browser" active={rightPanelOpen&&rightPanelTab==="preview"} onClick={()=>setSection("preview")}/>
+        {agentRuntime==="codex"&&<UtilityButton Icon={Bot} label="Agents" active={rightPanelOpen&&rightPanelTab==="agents"} onClick={()=>setSection("agents")}/>}
         <UtilityButton Icon={History} label="History" active={section==="history"} onClick={()=>setSection("history")}/>
         <UtilityButton Icon={BarChart3} label="Usage" active={section==="usage"} onClick={()=>setSection("usage")}/>
         {agentRuntime==="codex"&&<UtilityButton Icon={Wrench} label="Tools" active={section==="tools"} onClick={()=>setSection("tools")}/>}

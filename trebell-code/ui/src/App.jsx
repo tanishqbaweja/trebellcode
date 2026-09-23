@@ -2430,7 +2430,7 @@ export default function App(){
     "--terminal-height":layoutPrefs.terminalHeight+"px",
   };
   return <div className={"app-shell"+(sidebarOpen?"":" sidebar-collapsed")+(window.trebellDesktop?" desktop-shell":" hosted-shell")} style={layoutStyle}>
-    <ThreadSidebar section={section} setSection={navigateSection} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} onOpen={openThread} onNew={newChat} onThreadAction={threadAction} onMove={moveThreadOrder} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={bulkAction} provider={provider} agentRuntime={agentRuntime} threadMeta={threadMeta} onCollapse={()=>setSidebarOpen(false)}/>
+    <ThreadSidebar section={section} setSection={navigateSection} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} onOpen={openThread} onNew={newChat} onThreadAction={threadAction} onMove={moveThreadOrder} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={bulkAction} provider={provider} agentRuntime={agentRuntime} threadMeta={threadMeta} onCollapse={()=>setSidebarOpen(false)} rightPanelOpen={rightPanelOpen} rightPanelTab={rightPanelTab}/>
     {sidebarOpen&&<div className="layout-resizer sidebar-resizer" data-testid="sidebar-resizer" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" onPointerDown={event=>beginLayoutResize("sidebar",event)}/>}
 
     <div className={"workspace-shell"+(rightPanelOpen?" right-open":"")+(rightPanelOpen&&rightPanelMaximized?" right-maximized":"")}>
