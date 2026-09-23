@@ -305,8 +305,8 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await page.getByRole("button",{name:"Settings"}).click();
   await page.getByRole("button",{name:/Workspace/}).click();
   const scopedSettings=page.getByTestId("scoped-settings-card");
-  const scopedTargets=scopedSettings.locator(".scoped-settings-targets select");
-  await scopedTargets.nth(0).selectOption("ssh-palette");
+  const settingsScope=page.getByTestId("settings-scope-sentence");
+  await settingsScope.getByLabel("Environment scope").selectOption("ssh-palette");
   await scopedSettings.getByLabel("Permissions").selectOption("full");
   await scopedSettings.getByLabel("Automatic pull").selectOption("true");
   await scopedSettings.getByLabel("Default PR merge").selectOption("rebase");
@@ -319,7 +319,7 @@ test("Trebell Code renders the harness and scopes models to the selected provide
     const remoteDefaults=await (await request.get("/api/scoped-settings?environmentId=ssh-palette")).json();
     return {permission:remoteDefaults.effective.defaultPermissionMode,autoPull:remoteDefaults.effective.autoPull,merge:remoteDefaults.effective.sourceControlMergeMethod,style:remoteDefaults.effective.sourceControlTextStyle,textModel:remoteDefaults.effective.sourceControlTextModel,instructions:remoteDefaults.effective.sourceControlCustomInstructions,templates:remoteDefaults.effective.sourceControlFollowTemplates};
   }).toEqual({permission:"full",autoPull:true,merge:"rebase",style:"custom",textModel:"freebuff/test/coding-fast",instructions:"Prefix titles with the ticket ID.",templates:false});
-  await scopedTargets.nth(1).selectOption({label:"Remote App · /srv/app"});
+  await settingsScope.getByLabel("Project scope").selectOption({label:"Remote App"});
   await expect(scopedSettings.getByLabel("Permissions")).toHaveValue("__inherit__");
   await expect(scopedSettings.getByLabel("Automatic pull")).toHaveValue("__inherit__");
   await expect(scopedSettings.getByLabel("Default PR merge")).toHaveValue("__inherit__");
@@ -334,6 +334,10 @@ test("Trebell Code renders the harness and scopes models to the selected provide
     const remoteProjectScope=await (await request.get("/api/scoped-settings?environmentId=ssh-palette&projectId="+encodeURIComponent(remoteProject.id))).json();
     return {override:remoteProjectScope.overrides.defaultPermissionMode,effective:remoteProjectScope.effective.defaultPermissionMode};
   }).toEqual({override:"edits",effective:"edits"});
+  await settingsScope.getByLabel("Environment scope").selectOption("local");
+  await expect(settingsScope.getByLabel("Project scope")).toHaveValue("");
+  await expect(settingsScope.getByLabel("Project scope").locator("option",{hasText:"Remote App"})).toHaveCount(0);
+  await expect(settingsScope.getByLabel("Project scope").locator("option",{hasText:"E2E Project"})).toHaveCount(1);
   await expect(scopedSettings).toHaveAttribute("aria-busy","false");
   await page.getByRole("button",{name:"Usage"}).click();
   await expect(page.getByRole("heading",{name:"Usage",exact:true})).toBeVisible();

@@ -5,11 +5,14 @@ import { api } from "../api.js";
 const INHERIT="__inherit__";
 const PERMISSIONS=[["supervised","Supervised"],["edits","Auto-accept edits"],["auto","Auto"],["full","Full access"],["read-only","Read only"]];
 
-export default function ScopedSettingsCard({settings={},models=[],onChanged}){
+export default function ScopedSettingsCard({settings={},models=[],onChanged,scopeEnvironmentId=null,scopeProjectId=null,onScopeChange,onCatalog,showScopeTargets=true}){
   const [environmentData,setEnvironmentData]=useState({profiles:[]});
   const [projects,setProjects]=useState([]);
-  const [environmentId,setEnvironmentId]=useState(settings.activeEnvironmentId||"local");
-  const [projectId,setProjectId]=useState("");
+  const [internalEnvironmentId,setInternalEnvironmentId]=useState(settings.activeEnvironmentId||"local");
+  const [internalProjectId,setInternalProjectId]=useState("");
+  const controlledScope=scopeEnvironmentId!=null;
+  const environmentId=controlledScope?scopeEnvironmentId:internalEnvironmentId;
+  const projectId=controlledScope?(scopeProjectId||""):internalProjectId;
   const [scope,setScope]=useState(null);
   const [message,setMessage]=useState("");
   const [loading,setLoading]=useState(false);
@@ -22,7 +25,8 @@ export default function ScopedSettingsCard({settings={},models=[],onChanged}){
 
   async function load(){
     const [environments,projectData]=await Promise.all([api("/api/environments"),api("/api/projects")]);
-    setEnvironmentData(environments);setProjects(projectData.projects||[]);
+    const nextProjects=projectData.projects||[];
+    setEnvironmentData(environments);setProjects(nextProjects);onCatalog?.({environmentData:environments,projects:nextProjects});
   }
   async function loadScope(nextEnvironment=environmentId,nextProject=projectId){
     setLoading(true);setMessage("");
@@ -34,7 +38,20 @@ export default function ScopedSettingsCard({settings={},models=[],onChanged}){
   }
   useEffect(()=>{load().catch(error=>setMessage(error.message))},[]);
   useEffect(()=>{loadScope()},[environmentId,projectId]);
-  useEffect(()=>{if(projectId&&!envProjects.some(project=>project.id===projectId))setProjectId("")},[environmentId,projects]);
+  useEffect(()=>{
+    if(!projectId||envProjects.some(project=>project.id===projectId))return;
+    if(controlledScope)onScopeChange?.({environmentId,projectId:""});
+    else setInternalProjectId("");
+  },[environmentId,projectId,projects,controlledScope,onScopeChange]);
+
+  function changeEnvironment(next){
+    if(controlledScope)onScopeChange?.({environmentId:next,projectId:""});
+    else{setInternalEnvironmentId(next);setInternalProjectId("")}
+  }
+  function changeProject(next){
+    if(controlledScope)onScopeChange?.({environmentId,projectId:next});
+    else setInternalProjectId(next);
+  }
 
   function hasOverride(key){return projectScope&&Object.prototype.hasOwnProperty.call(scope?.overrides||{},key)}
   function value(key){return scope?.effective?.[key]}
@@ -81,10 +98,10 @@ export default function ScopedSettingsCard({settings={},models=[],onChanged}){
   return <div className="settings-card scoped-settings-card" data-testid="scoped-settings-card" aria-busy={loading?"true":"false"}>
     <h3>Project defaults</h3>
     <p>Environment defaults apply to new threads. A project can override only execution-scoped settings; providers, themes, keybindings and credentials stay environment-wide.</p>
-    <div className="scoped-settings-targets">
-      <label>Environment<select value={environmentId} onChange={event=>{setEnvironmentId(event.target.value);setProjectId("")}}><option value="local">Local machine</option>{(environmentData.profiles||[]).map(profile=><option key={profile.id} value={profile.id}>{profile.name} · {profile.type.toUpperCase()}</option>)}</select></label>
-      <label>Project<select value={projectId} onChange={event=>setProjectId(event.target.value)}><option value="">All projects / environment defaults</option>{envProjects.map(project=><option key={project.id} value={project.id}>{project.name} · {project.path}</option>)}</select></label>
-    </div>
+    {showScopeTargets&&<div className="scoped-settings-targets">
+      <label>Environment<select value={environmentId} onChange={event=>changeEnvironment(event.target.value)}><option value="local">Local machine</option>{(environmentData.profiles||[]).map(profile=><option key={profile.id} value={profile.id}>{profile.name} · {profile.type.toUpperCase()}</option>)}</select></label>
+      <label>Project<select value={projectId} onChange={event=>changeProject(event.target.value)}><option value="">All projects / environment defaults</option>{envProjects.map(project=><option key={project.id} value={project.id}>{project.name} · {project.path}</option>)}</select></label>
+    </div>}
     {scope&&<div className="scoped-settings-grid">
       <label>Default model<select value={modelValue} onChange={event=>write("defaultModel",event.target.value===INHERIT?INHERIT:(event.target.value||null))}>{projectScope&&<option value={INHERIT}>Inherit · {scope.defaults.defaultModel||"provider default"}</option>}<option value="">Provider default</option>{value("defaultModel")&&!models.includes(value("defaultModel"))&&<option value={value("defaultModel")}>{value("defaultModel")}</option>}{models.map(id=><option key={id} value={id}>{id.replace(/^freebuff\//,"")}</option>)}</select></label>
       <label>Permissions<select value={selectValue("defaultPermissionMode","supervised")} onChange={event=>write("defaultPermissionMode",event.target.value)}>{projectScope&&<option value={INHERIT}>Inherit · {scope.defaults.defaultPermissionMode}</option>}{PERMISSIONS.map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></label>

@@ -271,6 +271,7 @@ html.layout-resizing,html.layout-resizing *{user-select:none!important}
 .settings-section-head h2{margin:0;font-size:15px;line-height:1.2;color:#d9dcdf}
 .settings-section-head p{margin:4px 0 0;font-size:8px;color:#6f7680}
 .settings-section-head>span{font-size:7px;color:#5f6670;padding-top:2px}
+.settings-scope-sentence{min-width:0;display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:2px 2px 4px;color:#747b84;font-size:9px}.settings-scope-sentence>span{white-space:nowrap}.settings-scope-sentence select{width:auto;max-width:260px;height:27px;border:0;background:transparent;color:#bda6d2;border-radius:6px;padding:0 22px 0 5px;font-size:9px;font-weight:560;outline:0;cursor:pointer}.settings-scope-sentence select:hover,.settings-scope-sentence select:focus{background:#19151f;color:#d7c3e9}.settings-scope-sentence small{flex-basis:100%;font-size:7px;color:#626a74;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;align-items:start}
 .settings-section-slot{min-width:0;grid-column:1/-1}.settings-section-slot>.settings-card{height:auto}
 .settings-grid>.agent-runtime-settings,.settings-grid>.custom-model-settings,.settings-grid>.keybindings-settings{grid-column:1/-1}
@@ -429,6 +430,13 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .settings-search-results
 html[data-mode="light"]:not([data-custom-theme="true"]) .settings-nav button:hover{background:#eef1f4!important;color:#343b45!important}
 html[data-mode="light"]:not([data-custom-theme="true"]) .settings-nav button.active{background:#ece7f7!important;color:#46346e!important}
 html[data-mode="light"]:not([data-custom-theme="true"]) .settings-search-hit{outline-color:#9a7ac1!important;box-shadow:0 0 0 3px rgba(121,84,166,.12)!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .settings-section-head{border-color:#d9dee5!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .settings-section-head h2{color:#242a34!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .settings-section-head p{color:#687181!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .settings-section-head>span{color:#7b8490!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .settings-scope-sentence{color:#68717c!important}html[data-mode="light"]:not([data-custom-theme="true"]) .settings-scope-sentence select{color:#674985!important}html[data-mode="light"]:not([data-custom-theme="true"]) .settings-scope-sentence select:hover,html[data-mode="light"]:not([data-custom-theme="true"]) .settings-scope-sentence select:focus{background:#eee8f6!important;color:#4f326e!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .scoped-cleanup{background:#f8f9fb!important;border-color:#d7dce5!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .scoped-settings-card>.provider-key-actions button{background:#fff!important;border-color:#d7dce5!important;color:#4d5868!important}
 html[data-mode="light"]:not([data-custom-theme="true"]) .bulk-bar{background:#e8ebef!important;border-color:var(--t3-border)!important}
 html[data-mode="light"]:not([data-custom-theme="true"]) .thread-actions{background:linear-gradient(90deg,transparent,var(--t3-hover) 18%)!important}
 html[data-mode="light"]:not([data-custom-theme="true"]) .thread-menu-popover,

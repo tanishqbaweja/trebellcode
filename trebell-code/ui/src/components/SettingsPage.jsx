@@ -17,6 +17,8 @@ const PROVIDER_LABELS={
 export default function SettingsPage({settings,onSettings,onProviderChanging,onProviderUpdated,runtime,rpcStatus,loggedIn,login,logout,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes}){
   const [settingsSection,setSettingsSection]=useState("general");
   const [settingsSearch,setSettingsSearch]=useState("");
+  const [workspaceScope,setWorkspaceScope]=useState({environmentId:settings.activeEnvironmentId||"local",projectId:""});
+  const [workspaceScopeCatalog,setWorkspaceScopeCatalog]=useState({environmentData:{profiles:[]},projects:[]});
   const [update,setUpdate]=useState(null);
   const [desktopUpdate,setDesktopUpdate]=useState(null);
   const [diagnostics,setDiagnostics]=useState(null);
@@ -335,6 +337,10 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   const activeSettingsSection=settingsSections.find(item=>item[0]===settingsSection)||settingsSections[0];
   const searchResults=searchSettings(settingsSearch,{keybindings:KEYBINDING_COMMANDS,projectScripts}).slice(0,18);
   const settingsSectionLabels=Object.fromEntries(settingsSections.map(([id,,label])=>[id,label]));
+  const workspaceEnvironmentValue=workspaceScope.environmentId==="local"?null:workspaceScope.environmentId;
+  const workspaceProjects=workspaceScopeCatalog.projects.filter(project=>(project.environmentId||null)===(workspaceEnvironmentValue||null));
+  const workspaceEnvironment=workspaceScope.environmentId==="local"?null:(workspaceScopeCatalog.environmentData.profiles||[]).find(profile=>profile.id===workspaceScope.environmentId);
+  const workspaceProject=workspaceProjects.find(project=>project.id===workspaceScope.projectId)||null;
   function targetProps(id){return {"data-setting-target":id}}
   function openSearchResult(item){
     setSettingsSection(item.section);setSettingsSearch("");
@@ -365,6 +371,19 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     </aside>
     <section className="settings-stage">
       <div className="settings-section-head"><div><h2>{activeSettingsSection[2]}</h2><p>{activeSettingsSection[3]}</p></div><span>{settingsSections.findIndex(item=>item[0]===settingsSection)+1} / {settingsSections.length}</span></div>
+      {settingsSection==="workspace"&&<div className="settings-scope-sentence" data-testid="settings-scope-sentence">
+        <span>Applying settings for</span>
+        <select aria-label="Project scope" value={workspaceScope.projectId} onChange={event=>setWorkspaceScope(current=>({...current,projectId:event.target.value}))}>
+          <option value="">All projects</option>
+          {workspaceProjects.map(project=><option key={project.id} value={project.id}>{project.name}</option>)}
+        </select>
+        <span>on</span>
+        <select aria-label="Environment scope" value={workspaceScope.environmentId} onChange={event=>setWorkspaceScope({environmentId:event.target.value,projectId:""})}>
+          <option value="local">Local machine</option>
+          {(workspaceScopeCatalog.environmentData.profiles||[]).map(profile=><option key={profile.id} value={profile.id}>{profile.name} · {profile.type.toUpperCase()}</option>)}
+        </select>
+        <small>{workspaceProject?workspaceProject.path:(workspaceEnvironment?workspaceEnvironment.name+" defaults":"Local environment defaults")}</small>
+      </div>}
       <div className="settings-grid">
       <div className="settings-card about-card" {...targetProps("general-about")} hidden={settingsSection!=="general"}>
         <div className="about-brand"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/><div><h3>Trebell Code</h3><p>Desktop coding-agent harness</p></div></div>
@@ -447,7 +466,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       </div>}
       <div className="settings-card" {...targetProps("agents-runtime")} hidden={settingsSection!=="agents"}><h3>Runtime</h3><p>Harness connection: <strong>{rpcStatus}</strong><br/>Agent: <strong>{selectedAgentStatus?.name||selectedAgent}</strong><br/>Agent runtime: <strong>{runtime?.agentRuntimeStatus?.available||selectedAgent==="codex"?"ready":"not ready"}</strong>{selectedAgent==="codex"&&<><br/>Codex app-server: <strong>{runtime?.appServerReady?"ready":"not ready"}</strong><br/>Inference: <strong>{PROVIDER_LABELS[runtime?.provider||selected]||runtime?.provider||selected}</strong>{(runtime?.provider||selected)==="freebuff"&&<><br/>Freebuff bridge: <strong>{runtime?.bridgeReady?"ready":"not ready"}</strong></>}</>}</p><button onClick={refresh}><RefreshCw size={13}/> Refresh diagnostics</button></div>
       <div className="settings-card" {...targetProps("general-followups")} hidden={settingsSection!=="general"}><h3>Follow-up behavior</h3>{selectedAgent==="codex"?<label>While the agent is working<select value={settings.followUpMode||"queue"} onChange={e=>save({followUpMode:e.target.value})}><option value="queue">Queue after current turn</option><option value="steer">Steer current turn immediately</option></select></label>:<p>Follow-ups are queued until the current {selectedAgentStatus?.name||selectedAgent} turn finishes. ACP does not define in-flight steering.</p>}</div>
-      <div className="settings-section-slot" {...targetProps("workspace-defaults")} hidden={settingsSection!=="workspace"}><ScopedSettingsCard settings={settings} models={models} onChanged={onScopedSettingsChanged}/></div>
+      <div className="settings-section-slot" {...targetProps("workspace-defaults")} hidden={settingsSection!=="workspace"}><ScopedSettingsCard settings={settings} models={models} onChanged={onScopedSettingsChanged} scopeEnvironmentId={workspaceScope.environmentId} scopeProjectId={workspaceScope.projectId} onScopeChange={setWorkspaceScope} onCatalog={setWorkspaceScopeCatalog} showScopeTargets={false}/></div>
       <div className="settings-card storage-settings" {...targetProps("workspace-storage")} hidden={settingsSection!=="workspace"}>
         <h3>Storage cleanup</h3>
         <p>Automatic cleanup is opt-in. Trebell only removes its own local attachment cache, stopped terminal history, and managed worktrees that already pass the safe worktree cleanup rules. User project files and Git branches are never deleted by these retention fields.</p>

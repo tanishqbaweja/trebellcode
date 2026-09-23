@@ -220,7 +220,17 @@ test("settings page visual audit",async({page,request})=>{
 
   await page.getByRole("button",{name:/Workspace/}).click();
   await expect(page.getByRole("heading",{name:"Storage cleanup"})).toBeVisible();
+  const scopeSentence=page.getByTestId("settings-scope-sentence");
+  await expect(scopeSentence).toBeVisible();
+  await expect(scopeSentence).toContainText("Applying settings for");
+  await expect(scopeSentence.getByLabel("Project scope")).toHaveValue("");
+  await expect(page.locator(".scoped-settings-targets")).toHaveCount(0);
   await page.screenshot({path:auditDir+"settings-workspace-1600x980.png",fullPage:true});
+  await scopeSentence.getByLabel("Project scope").selectOption({label:"Visual Audit Workspace"});
+  await expect(page.getByTestId("scoped-settings-card").getByLabel("Permissions")).toHaveValue("__inherit__");
+  await expect(scopeSentence).toContainText("Visual Audit Workspace");
+  await page.screenshot({path:auditDir+"settings-workspace-project-scope-1600x980.png",fullPage:true});
+  await scopeSentence.getByLabel("Project scope").selectOption("");
 
   await page.getByRole("button",{name:/Appearance/}).click();
   await expect(page.getByRole("heading",{name:"Appearance",level:3})).toBeVisible();
@@ -561,6 +571,17 @@ test("light mode stays visually coherent across workspace and panels",async({pag
   await expect(page.getByTestId("settings-search-results").getByRole("button",{name:/Command palette/})).toBeVisible();
   await page.screenshot({path:auditDir+"light-settings-search-1600x980.png",fullPage:true});
   await page.getByLabel("Search settings").press("Escape");
+  await page.getByRole("button",{name:/Workspace/}).click();
+  await expect(page.getByTestId("settings-scope-sentence")).toBeVisible();
+  const workspaceLight=await page.evaluate(()=>({
+    heading:getComputedStyle(document.querySelector(".settings-section-head h2")).color,
+    cleanup:getComputedStyle(document.querySelector(".scoped-cleanup")).backgroundColor,
+    action:getComputedStyle(document.querySelector(".scoped-settings-card > .provider-key-actions button")).backgroundColor,
+  }));
+  expect(workspaceLight.heading).toBe("rgb(36, 42, 52)");
+  expect(workspaceLight.cleanup).toBe("rgb(248, 249, 251)");
+  expect(workspaceLight.action).toBe("rgb(255, 255, 255)");
+  await page.screenshot({path:auditDir+"light-settings-workspace-scope-1600x980.png",fullPage:true});
   await page.getByRole("button",{name:"Threads"}).click();
   const shell=await page.evaluate(()=>({
     sidebar:getComputedStyle(document.querySelector(".sidebar")).backgroundColor,
