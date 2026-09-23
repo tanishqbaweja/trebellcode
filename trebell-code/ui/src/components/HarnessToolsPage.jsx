@@ -1,5 +1,5 @@
 import React,{useEffect,useMemo,useState} from "react";
-import { Blocks, CheckCircle2, FlaskConical, PlugZap, RefreshCw, ShieldCheck, Sparkles, Wrench } from "lucide-react";
+import { Blocks, Brain, CheckCircle2, FlaskConical, PlugZap, RefreshCw, ShieldCheck, Sparkles, Wrench } from "lucide-react";
 import { api } from "../api.js";
 
 function Section({title,icon:Icon,count,children}){
@@ -8,7 +8,7 @@ function Section({title,icon:Icon,count,children}){
 function ErrorLine({value}){return value?<p className="capability-error">{value}</p>:null}
 
 export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread,skills=[],onHistoryImported}){
-  const [data,setData]=useState({permissions:[],mcp:[],marketplaces:[],apps:[],hooks:[],features:[],sharedPlugins:[],capabilities:null,account:null,rateLimits:null,usage:null,config:null});
+  const [data,setData]=useState({permissions:[],mcp:[],marketplaces:[],apps:[],hooks:[],features:[],sharedPlugins:[],capabilities:null,account:null,rateLimits:null,usage:null,config:null,memory:null});
   const [errors,setErrors]=useState({});
   const [loading,setLoading]=useState(false);
   const [busy,setBusy]=useState("");
@@ -19,16 +19,24 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [mcpResult,setMcpResult]=useState(null);
   const [appDetail,setAppDetail]=useState(null);
   const [toolArgs,setToolArgs]=useState({});
+  const [memoryMessage,setMemoryMessage]=useState("");
+  const [memoryResetArmed,setMemoryResetArmed]=useState(false);
 
+  function routedParams(params){
+    const threadId=activeThread?.id;
+    if(!threadId)return params;
+    return {...(params&&typeof params==="object"&&!Array.isArray(params)?params:{}),_trebellThreadId:threadId};
+  }
+  async function request(name,params){return rpc.request(name,routedParams(params))}
   async function call(name,params){
-    try{return await rpc.request(name,params)}
+    try{return await request(name,params)}
     catch(error){setErrors(prev=>({...prev,[name]:error.message||String(error)}));return null}
   }
   async function refresh(){
     if(!rpc||rpcStatus!=="connected")return;
     setLoading(true);setErrors({});
     const threadId=activeThread?.id||null;
-    const [permissions,mcp,plugins,apps,hooks,features,sharedPlugins,capabilities,account,rateLimits,usage,config]=await Promise.all([
+    const [permissions,mcp,plugins,apps,hooks,features,sharedPlugins,capabilities,account,rateLimits,usage,config,memory]=await Promise.all([
       call("permissionProfile/list",{limit:100,cwd:projectPath||null}),
       call("mcpServerStatus/list",{limit:100,detail:"full",threadId}),
       call("plugin/list",{cwds:projectPath?[projectPath]:[],forceRefetch:false}),
@@ -41,6 +49,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       call("account/rateLimits/read",{excludeResetCreditDetails:true}),
       call("account/usage/read",threadId?{threadId}:{}),
       call("config/read",{includeLayers:true,cwd:projectPath||null}),
+      call("memory/status",{minConsolidatedThreads:20}),
     ]);
     setData({
       permissions:permissions?.data||[],
@@ -55,6 +64,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       rateLimits:rateLimits||null,
       usage:usage||null,
       config:config||null,
+      memory:memory||null,
     });
     setLoading(false);
   }
@@ -65,17 +75,17 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
 
   async function reloadMcp(){
     if(!rpc)return;setBusy("mcp");
-    try{await rpc.request("config/mcpServer/reload",undefined);await refresh()}finally{setBusy("")}
+    try{await request("config/mcpServer/reload",undefined);await refresh()}finally{setBusy("")}
   }
   async function loginMcp(name){
     if(!rpc)return;setBusy("mcp:"+name);
-    try{await rpc.request("mcpServer/oauth/login",{name,threadId:activeThread?.id||null});await refresh()}finally{setBusy("")}
+    try{await request("mcpServer/oauth/login",{name,threadId:activeThread?.id||null});await refresh()}finally{setBusy("")}
   }
   async function togglePlugin(plugin){
     if(!rpc)return;setBusy("plugin:"+plugin.id);
     try{
-      if(plugin.installed)await rpc.request("plugin/uninstall",{pluginId:plugin.id});
-      else await rpc.request("plugin/install",{
+      if(plugin.installed)await request("plugin/uninstall",{pluginId:plugin.id});
+      else await request("plugin/install",{
         pluginName:plugin.name,
         marketplacePath:plugin.marketplace?.path||null,
         remoteMarketplaceName:plugin.marketplace?.path?null:(plugin.marketplace?.name||null),
@@ -87,49 +97,49 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   async function shareLocalPlugin(plugin){
     const pluginPath=plugin?.source?.type==="local"?plugin.source.path:null;if(!rpc||!pluginPath)return;
     setBusy("share:"+plugin.id);setErrors(prev=>({...prev,"plugin/share/save":null}));
-    try{await rpc.request("plugin/share/save",{pluginPath,...(plugin.remotePluginId?{remotePluginId:plugin.remotePluginId}:{}),discoverability:plugin.shareContext?.discoverability||"PRIVATE",shareTargets:(plugin.shareContext?.sharePrincipals||[]).filter(principal=>principal.role!=="owner"&&["reader","editor"].includes(principal.role)).map(principal=>({principalType:principal.principalType,principalId:principal.principalId,role:principal.role}))});await refresh()}
+    try{await request("plugin/share/save",{pluginPath,...(plugin.remotePluginId?{remotePluginId:plugin.remotePluginId}:{}),discoverability:plugin.shareContext?.discoverability||"PRIVATE",shareTargets:(plugin.shareContext?.sharePrincipals||[]).filter(principal=>principal.role!=="owner"&&["reader","editor"].includes(principal.role)).map(principal=>({principalType:principal.principalType,principalId:principal.principalId,role:principal.role}))});await refresh()}
     catch(error){setErrors(prev=>({...prev,"plugin/share/save":error.message||String(error)}))}finally{setBusy("")}
   }
   async function checkoutSharedPlugin(item){
     const remotePluginId=item?.plugin?.remotePluginId;if(!rpc||!remotePluginId)return;setBusy("checkout:"+remotePluginId);
-    try{await rpc.request("plugin/share/checkout",{remotePluginId});await refresh()}
+    try{await request("plugin/share/checkout",{remotePluginId});await refresh()}
     catch(error){setErrors(prev=>({...prev,"plugin/share/checkout":error.message||String(error)}))}finally{setBusy("")}
   }
   async function deleteSharedPlugin(item){
     const remotePluginId=item?.plugin?.remotePluginId;if(!rpc||!remotePluginId)return;setBusy("delete-share:"+remotePluginId);
-    try{await rpc.request("plugin/share/delete",{remotePluginId});await refresh()}
+    try{await request("plugin/share/delete",{remotePluginId});await refresh()}
     catch(error){setErrors(prev=>({...prev,"plugin/share/delete":error.message||String(error)}))}finally{setBusy("")}
   }
   async function updateShareDiscoverability(item,discoverability){
     const context=item?.plugin?.shareContext;const remotePluginId=item?.plugin?.remotePluginId||context?.remotePluginId;if(!rpc||!remotePluginId)return;setBusy("share-visibility:"+remotePluginId);
     const shareTargets=(context?.sharePrincipals||[]).filter(principal=>principal.role!=="owner"&&["reader","editor"].includes(principal.role)).map(principal=>({principalType:principal.principalType,principalId:principal.principalId,role:principal.role}));
-    try{await rpc.request("plugin/share/updateTargets",{remotePluginId,discoverability,shareTargets});await refresh()}
+    try{await request("plugin/share/updateTargets",{remotePluginId,discoverability,shareTargets});await refresh()}
     catch(error){setErrors(prev=>({...prev,"plugin/share/updateTargets":error.message||String(error)}))}finally{setBusy("")}
   }
   async function toggleFeature(feature){
     if(!rpc)return;setBusy("feature:"+feature.name);
-    try{await rpc.request("experimentalFeature/enablement/set",{enablement:{[feature.name]:!feature.enabled}});await refresh()}finally{setBusy("")}
+    try{await request("experimentalFeature/enablement/set",{enablement:{[feature.name]:!feature.enabled}});await refresh()}finally{setBusy("")}
   }
   async function addMarketplace(){
     const source=marketplaceSource.trim();if(!source||!rpc)return;setBusy("marketplace:add");
-    try{await rpc.request("marketplace/add",{source});setMarketplaceSource("");await refresh()}finally{setBusy("")}
+    try{await request("marketplace/add",{source});setMarketplaceSource("");await refresh()}finally{setBusy("")}
   }
   async function removeMarketplace(name){
     if(!rpc||!name)return;setBusy("marketplace:"+name);
-    try{await rpc.request("marketplace/remove",{marketplaceName:name});await refresh()}finally{setBusy("")}
+    try{await request("marketplace/remove",{marketplaceName:name});await refresh()}finally{setBusy("")}
   }
   async function upgradeMarketplace(name=null){
     if(!rpc)return;setBusy("marketplace:"+(name||"all"));
-    try{await rpc.request("marketplace/upgrade",{marketplaceName:name});await refresh()}finally{setBusy("")}
+    try{await request("marketplace/upgrade",{marketplaceName:name});await refresh()}finally{setBusy("")}
   }
   async function detectExternalConfig(){
     if(!rpc)return;setBusy("migration:detect");
-    try{const result=await rpc.request("externalAgentConfig/detect",{includeHome:true,cwds:projectPath?[projectPath]:[],maxSessionAgeDays:90,maxSessions:100});setMigrations(result)}
+    try{const result=await request("externalAgentConfig/detect",{includeHome:true,cwds:projectPath?[projectPath]:[],maxSessionAgeDays:90,maxSessions:100});setMigrations(result)}
     catch(error){setErrors(prev=>({...prev,"externalAgentConfig/detect":error.message||String(error)}))}finally{setBusy("")}
   }
   async function importExternalConfig(){
     if(!rpc||!migrations?.items?.length)return;setBusy("migration:import");
-    try{await rpc.request("externalAgentConfig/import",{migrationItems:migrations.items,source:"trebell-code"});await detectExternalConfig()}
+    try{await request("externalAgentConfig/import",{migrationItems:migrations.items,source:"trebell-code"});await detectExternalConfig()}
     catch(error){setErrors(prev=>({...prev,"externalAgentConfig/import":error.message||String(error)}))}finally{setBusy("")}
   }
   async function scanHistory(){
@@ -153,22 +163,39 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   }
   async function readResource(server,resource){
     if(!rpc)return;setBusy("resource:"+resource.uri);
-    try{const result=await rpc.request("mcpServer/resource/read",{threadId:activeThread?.id||null,server:server.name,uri:resource.uri});setMcpResult({title:`${server.name} · ${resource.name||resource.uri}`,value:result})}
+    try{const result=await request("mcpServer/resource/read",{threadId:activeThread?.id||null,server:server.name,uri:resource.uri});setMcpResult({title:`${server.name} · ${resource.name||resource.uri}`,value:result})}
     catch(error){setMcpResult({title:"MCP resource error",value:{error:error.message}})}finally{setBusy("")}
   }
   async function runMcpTool(server,toolName){
     if(!rpc||!activeThread?.id)return;
     let args={};const raw=toolArgs[server.name+":"+toolName]?.trim();if(raw){try{args=JSON.parse(raw)}catch{setMcpResult({title:"Invalid tool arguments",value:{error:"Arguments must be valid JSON."}});return}}
     setBusy("tool:"+server.name+":"+toolName);
-    try{const result=await rpc.request("mcpServer/tool/call",{threadId:activeThread.id,server:server.name,tool:toolName,arguments:args});setMcpResult({title:`${server.name} · ${toolName}`,value:result})}
+    try{const result=await request("mcpServer/tool/call",{threadId:activeThread.id,server:server.name,tool:toolName,arguments:args});setMcpResult({title:`${server.name} · ${toolName}`,value:result})}
     catch(error){setMcpResult({title:"MCP tool error",value:{error:error.message}})}finally{setBusy("")}
   }
   async function readApp(app){
     if(!rpc||!app?.id)return;setBusy("app:"+app.id);setErrors(prev=>({...prev,"app/read":null}));
     try{
-      const result=await rpc.request("app/read",{appIds:[app.id],threadId:activeThread?.id||null,includeTools:true});
+      const result=await request("app/read",{appIds:[app.id],threadId:activeThread?.id||null,includeTools:true});
       const detail=result?.apps?.[0];if(!detail)throw new Error(result?.missingAppIds?.includes(app.id)?"Connector metadata is unavailable":"Codex did not return connector metadata");setAppDetail({...app,...detail});
     }catch(error){setErrors(prev=>({...prev,"app/read":error.message||String(error)}))}finally{setBusy("")}
+  }
+  async function setThreadMemoryMode(mode){
+    if(!rpc||!activeThread?.id)return;
+    setBusy("memory:"+mode);setMemoryMessage("");setErrors(prev=>({...prev,"thread/memoryMode/set":null}));
+    try{
+      await request("thread/memoryMode/set",{threadId:activeThread.id,mode});
+      setMemoryMessage(`Memory ${mode} for this thread.`);
+    }catch(error){setErrors(prev=>({...prev,"thread/memoryMode/set":error.message||String(error)}))}
+    finally{setBusy("")}
+  }
+  async function resetMemory(){
+    if(!rpc)return;
+    if(!memoryResetArmed){setMemoryResetArmed(true);setMemoryMessage("Click Confirm reset to clear the current Codex memory store.");return}
+    setBusy("memory:reset");setErrors(prev=>({...prev,"memory/reset":null}));setMemoryMessage("");
+    try{await request("memory/reset",undefined);setMemoryMessage("Codex memory was reset.");setMemoryResetArmed(false);await refresh()}
+    catch(error){setErrors(prev=>({...prev,"memory/reset":error.message||String(error)}))}
+    finally{setBusy("")}
   }
 
   if(rpcStatus!=="connected")return <div className="empty-state"><Wrench size={28}/><strong>Codex harness is not connected</strong><span>Capabilities will appear when app-server is ready.</span></div>;
@@ -188,6 +215,23 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
           {data.rateLimits?.rateLimits?.secondary&&<div><span>Secondary usage</span><strong>{Math.round(Number(data.rateLimits.rateLimits.secondary.usedPercent)||0)}%</strong></div>}
         </div>:<p>Codex did not return account metadata for this inference route.</p>}
         <ErrorLine value={errors["account/read"]}/><ErrorLine value={errors["account/rateLimits/read"]}/><ErrorLine value={errors["account/usage/read"]}/>
+      </Section>
+
+      <Section title="Codex memory" icon={Brain}>
+        {data.memory?<div className="capability-kv">
+          <div><span>Consolidated threads</span><strong>{Number(data.memory.v2ConsolidatedThreads||0).toLocaleString()}</strong></div>
+          <div><span>V2 memory readiness</span><strong>{data.memory.v2Ready?"Ready":"Building"}</strong></div>
+        </div>:<p>Memory readiness is unavailable from this Codex runtime.</p>}
+        <p>Readiness uses Codex's default threshold of 20 consolidated threads. This status reports readiness only; it does not expose memory contents.</p>
+        <div className="capability-actions">
+          <button onClick={()=>setThreadMemoryMode("enabled")} disabled={!!busy||!activeThread?.id}>Enable for this thread</button>
+          <button onClick={()=>setThreadMemoryMode("disabled")} disabled={!!busy||!activeThread?.id}>Disable for this thread</button>
+          <button onClick={resetMemory} disabled={!!busy}>{memoryResetArmed?"Confirm reset":"Reset memory"}</button>
+          {memoryResetArmed&&<button onClick={()=>{setMemoryResetArmed(false);setMemoryMessage("")}} disabled={!!busy}>Cancel</button>}
+        </div>
+        {!activeThread?.id&&<p>Select a thread to change its memory mode.</p>}
+        {memoryMessage&&<p className="capability-status">{memoryMessage}</p>}
+        <ErrorLine value={errors["memory/status"]}/><ErrorLine value={errors["thread/memoryMode/set"]}/><ErrorLine value={errors["memory/reset"]}/>
       </Section>
 
       <Section title="Configuration layers" icon={ShieldCheck} count={data.config?.layers?.length||0}>

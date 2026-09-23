@@ -155,3 +155,24 @@ test("Codex relay reports the originating request method and params with upstrea
     assert.deepEqual(contexts.at(-1)?.requestParams,{threadId:"thread-a"});
   }finally{try{session?.client.close()}catch{}relay.close();upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}
 });
+
+test("Codex relay uses Trebell thread routing hints without forwarding them upstream",async()=>{
+  const work=await routedUpstream("work"),personal=await routedUpstream("personal");
+  const relayHttp=createServer((_req,res)=>{res.statusCode=404;res.end()});
+  const relay=attachCodexRelay(relayHttp,{
+    targetUrl:work.url,
+    resolveTarget:message=>message?.params?._trebellThreadId==="personal-thread"?{key:"personal",url:personal.url}:{key:"work",url:work.url},
+  });
+  await new Promise(resolve=>relayHttp.listen(0,"127.0.0.1",resolve));
+  let session;
+  try{
+    session=await relayClient(relayHttp);
+    await session.request("initialize",{clientInfo:{name:"relay-test"},capabilities:{experimentalApi:true}});session.client.send(JSON.stringify({method:"initialized",params:{}}));
+    assert.equal((await session.request("memory/status",{minConsolidatedThreads:20,_trebellThreadId:"personal-thread"})).name,"personal");
+    assert.equal((await session.request("memory/reset",{_trebellThreadId:"personal-thread"})).name,"personal");
+    const status=personal.received.find(message=>message.method==="memory/status");
+    const reset=personal.received.find(message=>message.method==="memory/reset");
+    assert.deepEqual(status?.params,{minConsolidatedThreads:20});
+    assert.equal(Object.prototype.hasOwnProperty.call(reset||{},"params"),false);
+  }finally{try{session?.client.close()}catch{}relay.close();await Promise.all([work.close(),personal.close(),new Promise(resolve=>relayHttp.close(resolve))])}
+});

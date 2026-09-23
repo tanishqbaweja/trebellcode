@@ -2237,7 +2237,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     return {threadId:id,runtimeInstanceId:target.id};
   }
   async function codexRelayTarget(message){
-    const threadId=String(message?.params?.threadId||"").trim();
+    const threadId=String(message?.params?.threadId||message?.params?._trebellThreadId||"").trim();
     if(threadId&&codexThreadReleases.has(threadId))await codexThreadReleases.get(threadId);
     const meta=threadId?state.threadMeta(threadId):{};const environmentId=threadId?(meta.environmentId??state.settings().activeEnvironmentId??null):(state.settings().activeEnvironmentId||null);
     let instance=threadId&&meta.runtimeInstanceId?codexInstance(meta.runtimeInstanceId):null;if(!instance)instance=codexInstance();

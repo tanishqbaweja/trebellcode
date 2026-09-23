@@ -131,6 +131,7 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
       ["hooks/list",{cwds:[process.cwd()]}],
       ["experimentalFeature/list",{limit:100,threadId:null}],
       ["modelProvider/capabilities/read",{}],
+      ["memory/status",{minConsolidatedThreads:1}],
       ["externalAgentConfig/detect",{includeHome:true,cwds:[process.cwd()],maxSessions:10,maxSessionAgeDays:30}],
     ];
     let id=20;
@@ -151,6 +152,11 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
       assert.notEqual(apps.error?.code,-32601,"app/list must exist in the bundled Codex app-server");
       assert.doesNotMatch(String(apps.error?.message||""),/method not found|unknown method/i);
     }
+    const memoryStatus=await rpc(ws,id++,"memory/status",{minConsolidatedThreads:1});
+    assert.equal(typeof memoryStatus.v2ConsolidatedThreads,"number");
+    assert.equal(typeof memoryStatus.v2Ready,"boolean");
+    const memoryReset=await rpcOutcome(ws,id++,"memory/reset");
+    assert.equal(memoryReset.ok,true,memoryReset.error?.message||"memory/reset failed in the disposable integration home");
   } finally {
     try{ws?.close();}catch{}
     await gui.close();
@@ -181,6 +187,10 @@ test("compatible Codex profiles switch an existing thread through a separate app
     await rpc(ws,1,"initialize",{clientInfo:{name:"trebell-profile-test",title:"Trebell Profile Test",version:"1.0.0"},capabilities:{experimentalApi:true}});ws.send(JSON.stringify({method:"initialized",params:{}}));
     const started=await rpc(ws,2,"thread/start",{cwd:process.cwd(),modelProvider:"freebuff",approvalPolicy:"never",sandbox:"danger-full-access",ephemeral:false,threadSource:"trebell-code"});
     const threadId=started.thread.id;assert.ok(threadId);
+    const memoryDisabled=await rpcOutcome(ws,30,"thread/memoryMode/set",{threadId,mode:"disabled"});
+    assert.equal(memoryDisabled.ok,true,memoryDisabled.error?.message||"thread memory disable failed");
+    const memoryEnabled=await rpcOutcome(ws,31,"thread/memoryMode/set",{threadId,mode:"enabled"});
+    assert.equal(memoryEnabled.ok,true,memoryEnabled.error?.message||"thread memory enable failed");
     const firstTurn=await rpc(ws,3,"turn/start",{threadId,input:[],turnTrigger:"trebell-profile-persistence"});
     assert.ok(firstTurn.turn?.id);await rpcOutcome(ws,4,"turn/interrupt",{threadId,turnId:firstTurn.turn.id});
     for(let i=0;i<60;i++){

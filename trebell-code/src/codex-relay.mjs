@@ -168,6 +168,13 @@ export function attachCodexRelay(httpServer, {
           }catch(error){sendBrowser({id:message.id,error:errorPayload(error)});return}
         }
         const route=await routeFor(message);const record=await ensureUpstream(route);
+        let forwardedMessage=message,forwardedRaw=raw;
+        if(message?.params&&typeof message.params==="object"&&!Array.isArray(message.params)&&Object.prototype.hasOwnProperty.call(message.params,"_trebellThreadId")){
+          const params={...message.params};delete params._trebellThreadId;
+          forwardedMessage={...message};
+          if(Object.keys(params).length)forwardedMessage.params=params;else delete forwardedMessage.params;
+          forwardedRaw=JSON.stringify(forwardedMessage);
+        }
         if(message?.method==="initialize"){
           context.initializeParams=message.params||{};if(context.primaryKey===null)context.primaryKey=record.key;
         }
@@ -175,8 +182,8 @@ export function attachCodexRelay(httpServer, {
           context.initialized=true;record.initialized=true;
           for(const other of context.upstreams.values())if(other!==record&&!other.initialized)await initializeSecondary(other);
         }
-        if(message?.method&&Object.prototype.hasOwnProperty.call(message,"id"))record.forwardedRequests.set(message.id,{method:message.method,params:message.params||{}});
-        record.socket.send(raw,{binary:false});
+        if(message?.method&&Object.prototype.hasOwnProperty.call(message,"id"))record.forwardedRequests.set(message.id,{method:message.method,params:forwardedMessage?.params||{}});
+        record.socket.send(forwardedRaw,{binary:false});
       };
 
       browserSocket.on("message",(data,isBinary)=>{

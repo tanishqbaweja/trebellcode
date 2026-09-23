@@ -866,7 +866,7 @@ test("Claude thread can switch compatible account profiles from the model picker
 test("Codex thread can switch compatible account profiles from the model picker",async({page})=>{
   test.setTimeout(35_000);
   const thread={id:"codex-profile-fixture",name:"Codex profile switch fixture",preview:"Shared CODEX_HOME account switching",cwd:process.cwd(),createdAt:Date.now()-1000,updatedAt:Date.now(),turns:[]};
-  const upstreamMessages=[];
+  const upstreamMessages=[],clientMessages=[];
   const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const upstreamSockets=new Set();
   upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
   upstreamWss.on("connection",ws=>{
@@ -880,6 +880,12 @@ test("Codex thread can switch compatible account profiles from the model picker"
       else if(message.method==="skills/list")result={data:[]};
       else if(message.method==="thread/resume"||message.method==="thread/read")result={thread};
       else if(message.method==="thread/items/list")result={data:[],nextCursor:null};
+      else if(message.method==="memory/status")result={v2ConsolidatedThreads:23,v2Ready:true};
+      else if(message.method==="permissionProfile/list"||message.method==="mcpServerStatus/list"||message.method==="app/list"||message.method==="hooks/list"||message.method==="experimentalFeature/list"||message.method==="plugin/share/list")result={data:[]};
+      else if(message.method==="plugin/list")result={marketplaces:[]};
+      else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
+      else if(message.method==="account/read")result={account:{type:"chatgpt",email:"fixture@example.com",planType:"plus"},requiresOpenaiAuth:false};
+      else if(message.method==="config/read")result={config:{},layers:[]};
       ws.send(JSON.stringify({id:message.id,result}));
     });
   });
@@ -893,6 +899,7 @@ test("Codex thread can switch compatible account profiles from the model picker"
   const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});
   const relay=attachCodexRelay(relayServer,{
     targetUrl:`ws://127.0.0.1:${upstreamPort}`,
+    onClientMessage:message=>clientMessages.push(message),
     handleRequest:async message=>{
       if(message.method==="thread/runtimeInstances/list")return {handled:true,result:{supported:true,label:"Codex profile",currentInstanceId,items:profiles}};
       if(message.method==="thread/runtimeInstance/set"){
@@ -932,6 +939,42 @@ test("Codex thread can switch compatible account profiles from the model picker"
     await page.screenshot({path:auditDir+"chat-codex-profile-switched-1600x980.png",fullPage:true});
     await page.setViewportSize({width:1280,height:800});const compact=await page.locator(".composer-bar").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(compact.scroll).toBeLessThanOrEqual(compact.client+1);
     await page.screenshot({path:auditDir+"chat-codex-profile-switched-1280x800.png",fullPage:true});
+
+    await page.setViewportSize({width:1600,height:980});
+    await page.getByRole("button",{name:"Tools",exact:true}).click();
+    await expect(page.getByRole("heading",{name:"Harness capabilities",level:2})).toBeVisible();
+    const memoryCard=page.locator(".capability-card").filter({hasText:"Codex memory"});
+    await expect(memoryCard).toContainText("23");
+    await expect(memoryCard).toContainText("Ready");
+    await expect.poll(()=>clientMessages.some(message=>message.method==="memory/status"&&message.params?._trebellThreadId===thread.id)).toBe(true);
+    await expect.poll(()=>clientMessages.some(message=>message.method==="account/read"&&message.params?._trebellThreadId===thread.id)).toBe(true);
+    const upstreamMemoryStatus=upstreamMessages.find(message=>message.method==="memory/status");
+    const upstreamAccountRead=upstreamMessages.find(message=>message.method==="account/read");
+    expect(upstreamMemoryStatus?.params).toEqual({minConsolidatedThreads:20});
+    expect(upstreamAccountRead?.params).toEqual({refreshToken:false});
+    await memoryCard.getByRole("button",{name:"Disable for this thread"}).click();
+    await expect(memoryCard).toContainText("Memory disabled for this thread.");
+    await expect.poll(()=>upstreamMessages.some(message=>message.method==="thread/memoryMode/set"&&message.params?.threadId===thread.id&&message.params?.mode==="disabled"&&!Object.prototype.hasOwnProperty.call(message.params,"_trebellThreadId"))).toBe(true);
+    await memoryCard.getByRole("button",{name:"Enable for this thread"}).click();
+    await expect(memoryCard).toContainText("Memory enabled for this thread.");
+    await expect.poll(()=>upstreamMessages.some(message=>message.method==="thread/memoryMode/set"&&message.params?.mode==="enabled")).toBe(true);
+    await memoryCard.getByRole("button",{name:"Reset memory"}).click();
+    await expect(memoryCard.getByRole("button",{name:"Confirm reset"})).toBeVisible();
+    await expect(memoryCard).toContainText("Click Confirm reset");
+    expect(upstreamMessages.some(message=>message.method==="memory/reset")).toBe(false);
+    await page.screenshot({path:auditDir+"tools-codex-memory-confirm-1600x980.png",fullPage:true});
+    await memoryCard.getByRole("button",{name:"Confirm reset"}).click();
+    await expect(memoryCard).toContainText("Codex memory was reset.");
+    await expect.poll(()=>clientMessages.some(message=>message.method==="memory/reset"&&message.params?._trebellThreadId===thread.id)).toBe(true);
+    await expect.poll(()=>upstreamMessages.some(message=>message.method==="memory/reset")).toBe(true);
+    const upstreamReset=upstreamMessages.find(message=>message.method==="memory/reset");
+    expect(Object.prototype.hasOwnProperty.call(upstreamReset||{},"params")).toBe(false);
+    await page.setViewportSize({width:1280,height:800});
+    const toolsMetrics=await page.locator(".secondary-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(toolsMetrics.scroll).toBeLessThanOrEqual(toolsMetrics.client+1);
+    await page.screenshot({path:auditDir+"tools-codex-memory-1280x800.png",fullPage:true});
+
+    await page.getByRole("button",{name:"Threads",exact:true}).click();
+    await expect(picker).toBeVisible();
     await picker.click();
     await page.getByRole("button",{name:"New thread"}).click();
     await expect.poll(()=>upstreamMessages.some(message=>message.method==="thread/unsubscribe"&&message.params?.threadId===thread.id)).toBe(true);
