@@ -718,6 +718,8 @@ test("light mode stays visually coherent across workspace and panels",async({pag
   await page.getByRole("button",{name:/Appearance/}).click();
   await page.getByRole("button",{name:"light",exact:true}).click();
   await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.mode)).toBe("light");
+  const appearanceButtons=await page.evaluate(()=>[...document.querySelectorAll(".theme-settings button,.environment-theme-settings button")].map(node=>getComputedStyle(node).backgroundColor));
+  for(const value of appearanceButtons)expect(value).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
   await page.getByLabel("Search settings").fill("command palette");
   await expect(page.getByTestId("settings-search-results").getByRole("button",{name:/Command palette/})).toBeVisible();
   await page.screenshot({path:auditDir+"light-settings-search-1600x980.png",fullPage:true});
