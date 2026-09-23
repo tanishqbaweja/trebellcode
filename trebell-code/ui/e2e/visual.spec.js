@@ -181,11 +181,38 @@ test("settings page visual audit",async({page,request})=>{
 
 test("Claude runtime profile editor exposes real auto-compaction settings",async({page,request})=>{
   test.setTimeout(35_000);
-  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:"claude-default"}});
-  await page.goto("/");
+  await prepare(page,request);
+  const baseSettings=await (await request.get("/api/settings")).json();
+  const baseAgentInfo=await (await request.get("/api/agent-runtimes")).json();
+  let selectedRuntime="codex";
+  const runtimeFixture=()=>{
+    const instances=[...(baseAgentInfo.instances||[])];
+    if(!instances.some(item=>item.id==="claude-default"))instances.push({id:"claude-default",kind:"claude",displayName:"Claude Code"});
+    const statuses=(baseAgentInfo.statuses||[]).filter(item=>item.id!=="claude-default");
+    statuses.push({id:"claude-default",kind:"claude",name:"Claude Code",available:true,installed:true,authenticated:true,version:"fixture"});
+    const selectedInstanceId=selectedRuntime+"-default";
+    return {...baseAgentInfo,instances,statuses,selectedRuntime,selectedInstanceId};
+  };
+  await page.route("**/api/agent-runtimes",async route=>{
+    if(route.request().method()==="GET")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(runtimeFixture())});
+    const body=route.request().postDataJSON?.()||{};
+    if(body.action==="select"){
+      selectedRuntime=body.runtime||selectedRuntime;
+      const snapshot=runtimeFixture();
+      const instance=snapshot.instances.find(item=>item.id===(body.instanceId||snapshot.selectedInstanceId))||snapshot.instances.find(item=>item.kind===selectedRuntime);
+      const status=snapshot.statuses.find(item=>item.id===instance?.id)||{id:instance?.id,kind:selectedRuntime,available:true};
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...snapshot,selected:{runtime:selectedRuntime,instance,status}})});
+    }
+    return route.continue();
+  });
+  await page.route("**/api/settings",async route=>{
+    if(route.request().method()==="GET")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...baseSettings,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedRuntime+"-default"})});
+    return route.continue();
+  });
   await page.getByRole("button",{name:"Settings"}).click();
   await page.getByRole("button",{name:/Agents & models/}).click();
   await expect(page.getByRole("heading",{name:"Agent harness"})).toBeVisible();
+  await page.locator(".agent-runtime-option").filter({hasText:"Claude Code"}).locator("button").first().click();
   await expect(page.locator(".agent-runtime-option").filter({hasText:"Claude Code"}).getByText("Active",{exact:true})).toBeVisible();
   await page.getByRole("button",{name:"Add profile",exact:true}).click();
   const editor=page.locator(".runtime-profile-editor");
