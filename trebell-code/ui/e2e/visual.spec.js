@@ -560,6 +560,17 @@ test("right panel tabs are functional and visually bounded",async({page,request}
   await tabStrip.getByRole("button",{name:"Browser",exact:true}).click();
   await assertPanelBounded();
   await page.screenshot({path:auditDir+"panel-browser-1280x800.png",fullPage:true});
+  await page.setViewportSize({width:1600,height:980});
+  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+  await tabStrip.getByRole("button",{name:"Device",exact:true}).click();
+  const deviceLight=await panel.evaluate(node=>({
+    panel:getComputedStyle(node.querySelector(".device-panel")).backgroundColor,
+    tooling:getComputedStyle(node.querySelector(".device-tooling")).backgroundColor,
+    select:getComputedStyle(node.querySelector(".device-toolbar select")).backgroundColor,
+    button:getComputedStyle(node.querySelector(".device-tooling button")).backgroundColor,
+  }));
+  for(const value of Object.values(deviceLight))expect(value).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
+  await page.screenshot({path:auditDir+"panel-device-light-1600x980.png",fullPage:true});
 });
 
 test("populated chat and overlays remain visually usable",async({page,request})=>{

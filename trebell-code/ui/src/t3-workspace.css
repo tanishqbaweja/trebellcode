@@ -653,6 +653,17 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .license-detail-head str
 html[data-mode="light"]:not([data-custom-theme="true"]) :where(.licenses-list small,.licenses-list em,.license-detail-head span,.license-detail>p){color:#687181!important}
 html[data-mode="light"]:not([data-custom-theme="true"]) .license-detail-head{border-color:#e1e5ec!important}
 
+/* Device / Computer Use light-mode nested surfaces */
+html[data-mode="light"]:not([data-custom-theme="true"]) :where(.device-tooling,.device-setup){background:#fff!important;border-color:#d9dee8!important;color:#303741!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) :where(.device-toolbar select,.device-type input){background:#fff!important;border-color:#d7dce5!important;color:#303741!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) :where(.device-toolbar button,.device-controls button,.device-type button,.device-avds button,.device-tooling button){background:#f7f8fa!important;border-color:#d7dce5!important;color:#4d5868!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .device-tooling-head strong,
+html[data-mode="light"]:not([data-custom-theme="true"]) .device-tool-list strong,
+html[data-mode="light"]:not([data-custom-theme="true"]) .device-setup strong{color:#303741!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) :where(.device-tooling-head span,.device-tool-list small,.device-tool-list em,.device-tooling>p,.device-setup p,.device-avds>strong){color:#687181!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .device-tool-list>div{border-color:#e1e5ec!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .device-screen-wrap{background:#f6f7fa!important;border-color:#d9dee8!important}
+
 
 /* command palette */
 .command-palette-backdrop{position:fixed;inset:0;z-index:120;background:rgba(0,0,0,.42);display:flex;align-items:flex-start;justify-content:center;padding-top:min(18vh,150px);backdrop-filter:blur(2px)}
