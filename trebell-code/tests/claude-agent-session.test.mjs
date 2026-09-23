@@ -40,6 +40,16 @@ test("Claude auto-compact threshold is forwarded to the SDK query",async()=>{
   assert.equal(calls.at(-1).options.autoCompactWindow,300000);
 });
 
+test("Claude manual compact sends the native compact command through the active session",async()=>{
+  const calls=[];
+  const sdk={query:fakeQueryCapture(calls),getSessionInfo:async()=>({}),renameSession:async()=>{},getSessionMessages:async()=>[],deleteSession:async()=>{}};
+  const session=new ClaudeAgentSession({cwd:"/repo",sdk});
+  await session.start({providerSessionId:"dddddddd-dddd-4ddd-8ddd-dddddddddddd"});
+  await session.compact();
+  assert.equal(calls.at(-1).prompt,"/compact");
+  assert.equal(calls.at(-1).options.resume,"dddddddd-dddd-4ddd-8ddd-dddddddddddd");
+});
+
 test("Claude forks materialize lazily through resume plus forkSession in the active runtime",async()=>{
   const calls=[],updates=[];
   const sdk={query:fakeQueryCapture(calls),getSessionInfo:async()=>({}),renameSession:async()=>{},getSessionMessages:async()=>[],deleteSession:async()=>{}};

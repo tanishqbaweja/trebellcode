@@ -580,6 +580,7 @@ test("light mode stays visually coherent across workspace and panels",async({pag
 
 test("populated source control and pull request detail stay usable",async({page,request})=>{
   test.setTimeout(45_000);
+  const prActions=[];
   await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
     isGit:true,root:"H:\\Github Repositories\\Trebell\\trebell-code",branch:"feature/ui-polish",branches:["main","feature/ui-polish"],upstream:"origin/feature/ui-polish",
     status:[{code:" M",path:"ui/src/App.jsx"},{code:"??",path:"ui/e2e/new-visual.spec.js"}],
@@ -589,12 +590,12 @@ test("populated source control and pull request detail stay usable",async({page,
   await page.route(/\/api\/source-control\/diagnostics\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
     selectedProvider:"github",detectedProvider:"github",git:{version:"git version 2.51.0.windows.1"},
     providers:{github:{label:"GitHub",installed:true,authenticated:true}},
-    capabilities:{github:{create:true,comment:true,review:true,merge:true,updateBranch:true,edit:true,checkout:true,reviewers:true,approveWorkflows:true,autoMerge:true,revert:true,editComments:true}},
+    capabilities:{github:{create:true,comment:true,review:true,requestChanges:true,merge:true,updateBranch:true,edit:true,checkout:true,reviewers:true,approveWorkflows:true,autoMerge:true,revert:true,editComments:true}},
   })}));
   const listPr={number:142,title:"Polish Trebell desktop interaction states",state:"OPEN",headRefName:"feature/ui-polish",baseRefName:"main",provider:"github",url:"https://github.com/example/trebellcode/pull/142"};
   await page.route(/\/api\/source-control\/prs\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
     items:[listPr,{number:139,title:"Add remote runtime diagnostics",state:"OPEN",headRefName:"runtime-diagnostics",baseRefName:"main",provider:"github",url:"https://github.com/example/trebellcode/pull/139"}],
-    capabilities:{create:true,comment:true,review:true,merge:true,updateBranch:true,edit:true,checkout:true,reviewers:true,approveWorkflows:true,autoMerge:true,revert:true,editComments:true},
+    capabilities:{create:true,comment:true,review:true,requestChanges:true,merge:true,updateBranch:true,edit:true,checkout:true,reviewers:true,approveWorkflows:true,autoMerge:true,revert:true,editComments:true},
   })}));
   await page.route(/\/api\/source-control\/pr-detail\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
     provider:"github",
@@ -611,6 +612,10 @@ test("populated source control and pull request detail stay usable",async({page,
   })}));
   await page.route(/\/api\/source-control\/thread-link\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({threads:[]})}));
   await page.route(/\/api\/source-control\/pr-viewed\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({store:"environment",files:[{path:"ui/src/App.jsx",state:"viewed"},{path:"ui/src/styles.css",state:"unviewed"}]})}));
+  await page.route(/\/api\/source-control\/pr-action$/,route=>{
+    prActions.push(route.request().postDataJSON());
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})});
+  });
 
   await prepare(page,request);
   await page.getByTestId("right-panel-toggle").click();
@@ -625,12 +630,47 @@ test("populated source control and pull request detail stay usable",async({page,
   await panel.getByRole("button",{name:/#142 Polish Trebell desktop interaction states/}).click();
   await expect(panel.getByRole("heading",{name:/#142 Polish Trebell desktop interaction states/})).toBeVisible();
   await expect(panel.getByText("The new resize behavior feels much better.")).toBeVisible();
+  await expect(panel.getByRole("button",{name:"Approve",exact:true})).toHaveCount(0);
+  await panel.getByRole("button",{name:"Comment / review",exact:true}).click();
+  const composer=panel.getByTestId("pr-composer");
+  await expect(composer).toBeVisible();
+  const commentDraft=composer.getByLabel("Pull request comment");
+  await commentDraft.fill("Looks good overall; leaving one note.");
+  await composer.getByRole("tab",{name:"Review",exact:true}).click();
+  await composer.getByLabel("Review verdict").selectOption("REQUEST_CHANGES");
+  const reviewDraft=composer.getByLabel("Review summary");
+  await reviewDraft.fill("Please address the remaining resize edge case.");
+  await composer.getByRole("tab",{name:"Comment",exact:true}).click();
+  await expect(commentDraft).toHaveValue("Looks good overall; leaving one note.");
+  await page.screenshot({path:auditDir+"source-control-pr-composer-comment-1600x980.png",fullPage:true});
+  await composer.locator(".pr-composer-submit button").click();
+  await expect.poll(()=>prActions.length).toBe(1);
+  expect(prActions[0]).toMatchObject({action:"comment",number:142,body:"Looks good overall; leaving one note."});
+
+  await panel.getByRole("button",{name:"Comment / review",exact:true}).click();
+  const reopened=panel.getByTestId("pr-composer");
+  await reopened.getByRole("tab",{name:"Review",exact:true}).click();
+  await expect(reopened.getByLabel("Review summary")).toHaveValue("Please address the remaining resize edge case.");
+  await expect(reopened.getByLabel("Review verdict")).toHaveValue("REQUEST_CHANGES");
+  await page.screenshot({path:auditDir+"source-control-pr-composer-review-1600x980.png",fullPage:true});
+  await reopened.locator(".pr-composer-submit button").click();
+  await expect.poll(()=>prActions.length).toBe(2);
+  expect(prActions[1]).toMatchObject({action:"review",number:142,event:"REQUEST_CHANGES",body:"Please address the remaining resize edge case."});
   const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   await page.screenshot({path:auditDir+"source-control-pr-detail-1600x980.png",fullPage:true});
   await page.setViewportSize({width:1280,height:800});
   await panel.getByRole("button",{name:/#142 Polish Trebell desktop interaction states/}).click();
   await expect(panel.getByRole("heading",{name:/#142 Polish Trebell desktop interaction states/})).toBeInViewport();
+  await panel.getByRole("button",{name:"Comment / review",exact:true}).click();
+  const compactComposer=panel.getByTestId("pr-composer");
+  await compactComposer.getByRole("tab",{name:"Review",exact:true}).click();
+  await compactComposer.getByLabel("Review summary").fill("Compact-width review draft.");
+  const compactComposerBox=await box(compactComposer),panelBodyBox=await box(panel.locator(".context-panel-body"));
+  expect(compactComposerBox.x).toBeGreaterThanOrEqual(panelBodyBox.x);
+  expect(compactComposerBox.x+compactComposerBox.width).toBeLessThanOrEqual(panelBodyBox.x+panelBodyBox.width+1);
+  await page.screenshot({path:auditDir+"source-control-pr-composer-1280x800.png",fullPage:true});
+  await compactComposer.getByRole("button",{name:"Close pull request composer"}).click();
   await page.screenshot({path:auditDir+"source-control-pr-detail-1280x800.png",fullPage:true});
 });
 
@@ -703,6 +743,8 @@ test("Claude thread can switch compatible account profiles from the model picker
     const picker=page.getByTestId("model-picker");
     await expect(picker).toBeEnabled();
     await expect(picker).toContainText("Claude Work");
+    await expect(page.getByRole("button",{name:"Compact",exact:true})).toBeVisible();
+    await page.screenshot({path:auditDir+"chat-claude-compact-context-1600x980.png",fullPage:true});
     await picker.click();
     const profilesMenu=page.locator(".model-runtime-profiles");
     await expect(profilesMenu).toBeVisible();
