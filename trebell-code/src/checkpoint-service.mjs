@@ -6,6 +6,7 @@ import { git, gitInfo } from "./git-service.mjs";
 
 const CHECKPOINT_NESTED_REPO_MAX_CANDIDATES=64;
 const NESTED_GIT_ENV_KEYS=["GIT_DIR","GIT_WORK_TREE","GIT_COMMON_DIR","GIT_INDEX_FILE","GIT_OBJECT_DIRECTORY","GIT_ALTERNATE_OBJECT_DIRECTORIES"];
+const CHECKPOINT_DURABLE_WRITE=["-c","core.fsync=objects,reference","-c","core.fsyncMethod=fsync"];
 
 export function isTransientCheckpointGitError(error){
   const message=String(error?.message||error||"");
@@ -29,10 +30,11 @@ export class CheckpointService{
     }
     throw lastError;
   }
+  #durable(args){return [...CHECKPOINT_DURABLE_WRITE,...args]}
   async #stageCheckpoint(root,childEnv){
     const stageArgs=["add","-A","--","."];
     let stageError;
-    try{return await this.#captureGit(root,stageArgs,{env:childEnv})}
+    try{return await this.#captureGit(root,this.#durable(stageArgs),{env:childEnv})}
     catch(error){
       stageError=error;
       if(!/does not have a commit checked out/i.test(String(error?.message||error||"")))throw error;
@@ -49,7 +51,7 @@ export class CheckpointService{
       if(!head.ok)exclusions.push(":(exclude,literal)"+entry);
     }
     if(!exclusions.length)throw stageError;
-    return this.#captureGit(root,[...stageArgs,...exclusions],{env:childEnv});
+    return this.#captureGit(root,this.#durable([...stageArgs,...exclusions]),{env:childEnv});
   }
   async create({cwd,threadId=null,label=null}){
     const info=await this.gitInfoFn(cwd);
@@ -63,12 +65,12 @@ export class CheckpointService{
       const head=await this.gitFn(info.root,["rev-parse","HEAD"],{allowFailure:true});
       if(head.ok) await this.#captureGit(info.root,["read-tree","HEAD"],{env:childEnv}); else await this.#captureGit(info.root,["read-tree","--empty"],{env:childEnv});
       await this.#stageCheckpoint(info.root,childEnv);
-      const tree=(await this.#captureGit(info.root,["write-tree"],{env:childEnv})).stdout.trim();
+      const tree=(await this.#captureGit(info.root,this.#durable(["write-tree"]),{env:childEnv})).stdout.trim();
       const args=["commit-tree",tree,"-m",label||"Trebell Code checkpoint"];
       if(head.ok) args.push("-p",head.stdout.trim());
-      const commit=(await this.#captureGit(info.root,args,{env:childEnv})).stdout.trim();
+      const commit=(await this.#captureGit(info.root,this.#durable(args),{env:childEnv})).stdout.trim();
       const ref=`refs/trebell/checkpoints/${id}`;
-      await this.#captureGit(info.root,["update-ref",ref,commit]);
+      await this.#captureGit(info.root,this.#durable(["update-ref",ref,commit]));
       const item=this.state.addCheckpoint({id,threadId,root:info.root,commit,ref,label:label||null});
       return {supported:true,...item};
     }finally{

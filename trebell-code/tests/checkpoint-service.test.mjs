@@ -7,6 +7,12 @@ import { CheckpointService, isTransientCheckpointGitError } from "../src/checkpo
 import { git } from "../src/git-service.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
 
+function gitCommand(args){
+  let index=0;
+  while(args[index]==="-c")index+=2;
+  return args[index];
+}
+
 test("checkpoint retry classification accepts only transient lock and disappearing-file races",()=>{
   assert.equal(isTransientCheckpointGitError(new Error("fatal: Unable to create '/repo/index.lock': File exists")),true);
   assert.equal(isTransientCheckpointGitError(new Error('error: open("/repo/file"): No such file or directory')),true);
@@ -21,16 +27,17 @@ test("checkpoint capture retries a transient Git failure without restarting the 
   const state={addCheckpoint:item=>({...item,createdAt:1}),checkpoints:()=>[],updateCheckpoint:()=>null};
   const gitFn=async(_cwd,args)=>{
     calls.push([...args]);
-    if(args[0]==="rev-parse")return {ok:true,stdout:"head123\n",stderr:""};
-    if(args[0]==="read-tree")return {ok:true,stdout:"",stderr:""};
-    if(args[0]==="add"){
+    const command=gitCommand(args);
+    if(command==="rev-parse")return {ok:true,stdout:"head123\n",stderr:""};
+    if(command==="read-tree")return {ok:true,stdout:"",stderr:""};
+    if(command==="add"){
       addAttempts++;
       if(addAttempts===1)throw new Error("fatal: Unable to create '/repo/private-index.lock': File exists");
       return {ok:true,stdout:"",stderr:""};
     }
-    if(args[0]==="write-tree")return {ok:true,stdout:"tree123\n",stderr:""};
-    if(args[0]==="commit-tree")return {ok:true,stdout:"commit123\n",stderr:""};
-    if(args[0]==="update-ref")return {ok:true,stdout:"",stderr:""};
+    if(command==="write-tree")return {ok:true,stdout:"tree123\n",stderr:""};
+    if(command==="commit-tree")return {ok:true,stdout:"commit123\n",stderr:""};
+    if(command==="update-ref")return {ok:true,stdout:"",stderr:""};
     throw new Error("unexpected git "+args.join(" "));
   };
   try{
@@ -43,8 +50,8 @@ test("checkpoint capture retries a transient Git failure without restarting the 
     assert.equal(checkpoint.supported,true);
     assert.equal(addAttempts,2);
     assert.deepEqual(sleeps,[75]);
-    assert.equal(calls.filter(args=>args[0]==="read-tree").length,1);
-    assert.equal(calls.filter(args=>args[0]==="write-tree").length,1);
+    assert.equal(calls.filter(args=>gitCommand(args)==="read-tree").length,1);
+    assert.equal(calls.filter(args=>gitCommand(args)==="write-tree").length,1);
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
@@ -56,9 +63,10 @@ test("checkpoint capture does not retry non-transient Git failures",async()=>{
     gitInfoFn:async()=>({isGit:true,root:"/repo"}),
     sleepFn:async()=>{sleepCalls++},
     gitFn:async(_cwd,args)=>{
-      if(args[0]==="rev-parse")return {ok:true,stdout:"head123\n",stderr:""};
-      if(args[0]==="read-tree")return {ok:true,stdout:"",stderr:""};
-      if(args[0]==="add"){addAttempts++;throw new Error("fatal: index file corrupt")}
+      const command=gitCommand(args);
+      if(command==="rev-parse")return {ok:true,stdout:"head123\n",stderr:""};
+      if(command==="read-tree")return {ok:true,stdout:"",stderr:""};
+      if(command==="add"){addAttempts++;throw new Error("fatal: index file corrupt")}
       throw new Error("unexpected git "+args.join(" "));
     },
   });
@@ -105,16 +113,41 @@ test("checkpoint nested-repository recovery refuses excessive candidates before 
     gitInfoFn:async()=>({isGit:true,root:"/repo"}),
     gitFn:async(cwd,args)=>{
       if(cwd!=="/repo")nestedProbes++;
-      if(args[0]==="rev-parse")return {ok:true,stdout:"head123\n",stderr:""};
-      if(args[0]==="read-tree")return {ok:true,stdout:"",stderr:""};
-      if(args[0]==="add")throw new Error("error: 'empty-0/' does not have a commit checked out\nfatal: adding files failed");
-      if(args[0]==="ls-files")return {ok:true,stdout:candidates,stderr:""};
+      const command=gitCommand(args);
+      if(command==="rev-parse")return {ok:true,stdout:"head123\n",stderr:""};
+      if(command==="read-tree")return {ok:true,stdout:"",stderr:""};
+      if(command==="add")throw new Error("error: 'empty-0/' does not have a commit checked out\nfatal: adding files failed");
+      if(command==="ls-files")return {ok:true,stdout:candidates,stderr:""};
       throw new Error("unexpected git "+args.join(" "));
     },
   });
   try{
     await assert.rejects(()=>service.create({cwd:"/repo"}),/does not have a commit checked out/);
     assert.equal(nestedProbes,0);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
+test("checkpoint objects and refs request fsync before state publication",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-checkpoint-fsync-"));const calls=[];let published=false;
+  const state={addCheckpoint:item=>{published=true;return {...item,createdAt:1}},checkpoints:()=>[],updateCheckpoint:()=>null};
+  const gitFn=async(_cwd,args)=>{
+    assert.equal(published,false,"checkpoint state must not publish before Git finishes");
+    calls.push([...args]);const command=gitCommand(args);
+    if(command==="rev-parse")return {ok:true,stdout:"head123\n",stderr:""};
+    if(command==="read-tree"||command==="add"||command==="update-ref")return {ok:true,stdout:"",stderr:""};
+    if(command==="write-tree")return {ok:true,stdout:"tree123\n",stderr:""};
+    if(command==="commit-tree")return {ok:true,stdout:"commit123\n",stderr:""};
+    throw new Error("unexpected git "+args.join(" "));
+  };
+  try{
+    await new CheckpointService({state,env:{...process.env,TREBELL_HOME:home},gitFn,gitInfoFn:async()=>({isGit:true,root:"/repo"})}).create({cwd:"/repo"});
+    assert.equal(published,true);
+    for(const command of ["add","write-tree","commit-tree","update-ref"]){
+      const args=calls.find(item=>gitCommand(item)===command);assert.ok(args,command+" was called");
+      assert.equal(args[0],"-c");assert.equal(args[1],"core.fsync=objects,reference");
+      assert.equal(args[2],"-c");assert.equal(args[3],"core.fsyncMethod=fsync");
+      assert.equal(args[4],command);
+    }
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
