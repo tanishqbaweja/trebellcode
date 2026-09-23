@@ -26,6 +26,16 @@ export default function EnvironmentsPage(){
     }catch(e){setMessage(e.message)}finally{setBusy("")}
   }
   async function remove(id){await api("/api/environments?id="+encodeURIComponent(id),{method:"DELETE"});await refresh()}
+  async function setEnabled(id,enabled){
+    setBusy("enabled:"+id);setMessage("");
+    try{
+      const wasActive=data.activeEnvironmentId===id;
+      const result=await api("/api/environment/enabled",{method:"POST",body:{id,enabled}});
+      await refresh();
+      setMessage(enabled?"Environment switched on.":"Environment switched off. Its configuration is still saved.");
+      if(wasActive&&!enabled&&result.activeEnvironmentId!==id)setTimeout(()=>window.location.reload(),120);
+    }catch(e){setMessage(e.message)}finally{setBusy("")}
+  }
   async function activate(id){
     setBusy("activate:"+(id||"local"));setMessage("");
     try{
@@ -64,7 +74,7 @@ export default function EnvironmentsPage(){
         <div className="capability-card-head"><span><Laptop2 size={15}/><strong>Configured environments</strong></span><em>{data.profiles.length}</em></div>
         <div className="environment-list">
           <div><div><strong>Local machine</strong><span>WINDOWS · Trebell desktop host</span></div><div>{!data.activeEnvironmentId?<em className="ok">active</em>:<button onClick={()=>activate(null)} disabled={!!busy}>Use for agent</button>}</div></div>
-          {data.profiles.map(profile=><div key={profile.id}><div><strong>{profile.name}</strong><span>{profile.type.toUpperCase()} · {profile.cwd||profile.host||profile.distro||"default"}{profile.themeDirectory?" · themes "+profile.themeDirectory:""}</span></div><div>{data.activeEnvironmentId===profile.id?<em className="ok">agent active</em>:<button onClick={()=>activate(profile.id)} disabled={!!busy}>Use for agent</button>}<button onClick={()=>probe(profile.id)} disabled={!!busy}>Test</button><button className="danger" onClick={()=>remove(profile.id)} disabled={data.activeEnvironmentId===profile.id}><Trash2 size={12}/></button></div></div>)}</div>
+          {data.profiles.map(profile=>{const enabled=profile.enabled!==false;return <div key={profile.id}><div><strong>{profile.name}</strong><span>{profile.type.toUpperCase()} · {profile.cwd||profile.host||profile.distro||"default"}{profile.themeDirectory?" · themes "+profile.themeDirectory:""}{enabled?"":" · switched off"}</span></div><div>{data.activeEnvironmentId===profile.id?<em className="ok">agent active</em>:<button onClick={()=>activate(profile.id)} disabled={!!busy||!enabled}>Use for agent</button>}<button onClick={()=>probe(profile.id)} disabled={!!busy||!enabled}>Test</button><button onClick={()=>setEnabled(profile.id,!enabled)} disabled={!!busy}>{enabled?"Switch off":"Switch on"}</button><button className="danger" onClick={()=>remove(profile.id)} disabled={data.activeEnvironmentId===profile.id}><Trash2 size={12}/></button></div></div>})}</div>
         {!data.profiles.length&&<p>No saved remote environments. The local Windows agent is active by default.</p>}
       </section>
       <section className="capability-card environment-create">

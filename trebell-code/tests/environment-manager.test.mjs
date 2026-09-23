@@ -11,9 +11,23 @@ function stateFor(profiles){
   return {
     environments:()=>profiles,
     upsertEnvironment:value=>value,
+    setEnvironmentEnabled:(id,enabled)=>{
+      const profile=profiles.find(item=>item.id===id);if(!profile)return null;
+      profile.enabled=enabled!==false;return {...profile};
+    },
     removeEnvironment:()=>true,
   };
 }
+
+test("disabled environments remain listed but cannot be used until re-enabled",()=>{
+  const profiles=[{id:"ssh",name:"SSH",type:"ssh",cwd:"/srv/app",host:"example.invalid",port:22,enabled:false}];
+  const manager=new EnvironmentManager({state:stateFor(profiles)});
+  assert.equal(manager.list()[0].enabled,false);
+  assert.equal(manager.get("ssh"),null);
+  assert.equal(manager.get("ssh",{includeDisabled:true}).name,"SSH");
+  assert.equal(manager.setEnabled("ssh",true).enabled,true);
+  assert.equal(manager.get("ssh").id,"ssh");
+});
 
 test("prepareAttachment keeps local files local",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-env-local-"));

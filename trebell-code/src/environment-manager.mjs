@@ -85,6 +85,7 @@ function validateProfile(input={}){
     id:String(input.id||randomUUID()),
     name:String(input.name||labels[type]).trim().slice(0,100),
     type,
+    enabled:input.enabled!==false,
     cwd:String(input.cwd||"").trim(),
     createdAt:Number(input.createdAt)||Date.now(),
     updatedAt:Date.now(),
@@ -112,11 +113,20 @@ export class EnvironmentManager {
   }
 
   list(){ return this.state.environments(); }
-  get(id){ return this.state.environments().find(x=>x.id===id)||null; }
+  get(id,{includeDisabled=false}={}){
+    const profile=this.state.environments().find(x=>x.id===id)||null;
+    return profile&&(includeDisabled||profile.enabled!==false)?profile:null;
+  }
 
   upsert(profile){
     const existing=profile?.id?this.state.environments().find(x=>x.id===profile.id):null;
     return this.state.upsertEnvironment(validateProfile({...existing,...profile,createdAt:existing?.createdAt||profile?.createdAt}));
+  }
+
+  setEnabled(id,enabled){
+    const existing=this.get(id,{includeDisabled:true});
+    if(!existing)throw new Error("Environment profile was not found");
+    return this.state.setEnvironmentEnabled(id,enabled);
   }
 
   remove(id){ return this.state.removeEnvironment(id); }

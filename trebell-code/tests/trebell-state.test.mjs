@@ -146,6 +146,22 @@ test("projects with the same remote path stay distinct across environments",asyn
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
+test("environment enabled state persists without deleting the saved profile",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-env-enabled-"));
+  const env={...process.env,TREBELL_HOME:home};
+  try{
+    const state=new TrebellStateStore(env);
+    const profile=state.upsertEnvironment({id:"ssh-a",name:"Remote",type:"ssh",host:"example.test"});
+    assert.equal(profile.enabled,true);
+    assert.equal(state.setEnvironmentEnabled("ssh-a",false).enabled,false);
+    assert.equal(state.environments()[0].enabled,false);
+    const restarted=new TrebellStateStore(env);
+    assert.equal(restarted.environments()[0].enabled,false);
+    assert.equal(restarted.setEnvironmentEnabled("ssh-a",true).enabled,true);
+    assert.equal(restarted.environments()[0].name,"Remote");
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 test("scoped settings resolve environment defaults and project overrides without leaking between environments",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-state-scopes-"));const env={...process.env,TREBELL_HOME:home};
   try{

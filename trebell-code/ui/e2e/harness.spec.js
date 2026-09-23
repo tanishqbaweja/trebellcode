@@ -78,6 +78,21 @@ test("Trebell Code renders the harness and scopes models to the selected provide
   await paletteSearch.fill("");
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("command-palette")).toBeHidden();
+  await page.getByRole("button",{name:"Environments"}).click();
+  const remoteEnvironmentRow=page.locator(".environment-list > div").filter({hasText:"E2E SSH"});
+  await remoteEnvironmentRow.getByRole("button",{name:"Switch off"}).click();
+  await expect(remoteEnvironmentRow).toContainText("switched off");
+  await expect(remoteEnvironmentRow.getByRole("button",{name:"Use for agent"})).toBeDisabled();
+  await expect.poll(async()=>{
+    const environments=await (await request.get("/api/environments")).json();
+    return environments.profiles.find(item=>item.id==="ssh-palette")?.enabled;
+  }).toBe(false);
+  await remoteEnvironmentRow.getByRole("button",{name:"Switch on"}).click();
+  await expect.poll(async()=>{
+    const environments=await (await request.get("/api/environments")).json();
+    return environments.profiles.find(item=>item.id==="ssh-palette")?.enabled;
+  }).toBe(true);
+  await page.getByRole("button",{name:"Threads"}).click();
   await expect(page.getByTestId("model-picker")).toBeVisible();
   await expectModelCatalog(page,["deepseek/deepseek-v4-flash · 10 FB/h off-peak","test/coding-large","test/coding-fast"]);
   await expect(page.getByRole("button",{name:"New thread"})).toBeVisible();

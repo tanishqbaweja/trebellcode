@@ -154,7 +154,7 @@ export class TrebellStateStore {
         settings,
         projects,
         threadMeta:parsed.threadMeta&&typeof parsed.threadMeta==="object"?parsed.threadMeta:{},
-        environments:Array.isArray(parsed.environments)?parsed.environments:[],
+        environments:Array.isArray(parsed.environments)?parsed.environments.map(profile=>({...profile,enabled:profile?.enabled!==false})):[],
         stashes:Array.isArray(parsed.stashes)?parsed.stashes:[],
         checkpoints:Array.isArray(parsed.checkpoints)?parsed.checkpoints:[],
         usageRecords:Array.isArray(parsed.usageRecords)?parsed.usageRecords:[],
@@ -240,13 +240,18 @@ export class TrebellStateStore {
   upsertEnvironment(profile={}){
     const id=String(profile.id||randomUUID());
     let item=this.state.environments.find(x=>x.id===id);
-    if(item) Object.assign(item,profile,{id,updatedAt:Date.now()});
+    if(item) Object.assign(item,profile,{id,enabled:profile.enabled===undefined?item.enabled!==false:profile.enabled!==false,updatedAt:Date.now()});
     else{
-      item={...profile,id,createdAt:Number(profile.createdAt)||Date.now(),updatedAt:Date.now()};
+      item={...profile,id,enabled:profile.enabled!==false,createdAt:Number(profile.createdAt)||Date.now(),updatedAt:Date.now()};
       this.state.environments.push(item);
     }
     this.#save();
     return clone(item);
+  }
+  setEnvironmentEnabled(id,enabled){
+    const item=this.state.environments.find(x=>x.id===id);
+    if(!item)return null;
+    item.enabled=enabled!==false;item.updatedAt=Date.now();this.#save();return clone(item);
   }
   removeEnvironment(id){
     const before=this.state.environments.length;

@@ -38,6 +38,23 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
       id:"ssh-test",name:"Remote test",type:"ssh",host:"example.invalid",cwd:"/srv/app",
     })}).then(r=>r.json());
     assert.equal(remoteEnvironment.profile.id,"ssh-test");
+    assert.equal(remoteEnvironment.profile.enabled,true);
+    const disabledEnvironment=await fetch(gui.url+"/api/environment/enabled",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id:"ssh-test",enabled:false})}).then(r=>r.json());
+    assert.equal(disabledEnvironment.profile.enabled,false);
+    const disabledActivationResponse=await fetch(gui.url+"/api/environment/activate",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id:"ssh-test"})});
+    assert.equal(disabledActivationResponse.status,400);
+    assert.match((await disabledActivationResponse.json()).error,/switched off/i);
+    const environmentsWhileDisabled=await fetch(gui.url+"/api/environments").then(r=>r.json());
+    assert.equal(environmentsWhileDisabled.profiles.find(profile=>profile.id==="ssh-test").enabled,false);
+    const enabledEnvironment=await fetch(gui.url+"/api/environment/enabled",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id:"ssh-test",enabled:true})}).then(r=>r.json());
+    assert.equal(enabledEnvironment.profile.enabled,true);
+    const activatedEnvironment=await fetch(gui.url+"/api/environment/activate",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id:"ssh-test"})}).then(r=>r.json());
+    assert.equal(activatedEnvironment.activeEnvironmentId,"ssh-test");
+    const disabledActiveEnvironment=await fetch(gui.url+"/api/environment/enabled",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id:"ssh-test",enabled:false})}).then(r=>r.json());
+    assert.equal(disabledActiveEnvironment.activeEnvironmentId,null);
+    const afterActiveDisable=await fetch(gui.url+"/api/environments").then(r=>r.json());
+    assert.equal(afterActiveDisable.activeEnvironmentId,null);
+    await fetch(gui.url+"/api/environment/enabled",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id:"ssh-test",enabled:true})});
     const remoteProject=await fetch(gui.url+"/api/projects",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({
       path:"/srv/app",environmentId:"ssh-test",
       scripts:[{id:"remote-dev",name:"Remote dev",command:"npm run dev"}],

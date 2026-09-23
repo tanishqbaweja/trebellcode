@@ -374,6 +374,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   const devices=new DeviceService({env});
   const providers=new ProviderManager({env});
   const environments=new EnvironmentManager({state,env});
+  const storedActiveEnvironmentId=state.settings().activeEnvironmentId||null;
+  if(storedActiveEnvironmentId&&!environments.get(storedActiveEnvironmentId))state.updateSettings({activeEnvironmentId:null});
   function requestedEnvironmentId(value,{fallback=true}={}){
     if(value===undefined||value===null)return fallback?(state.settings().activeEnvironmentId||null):null;
     const text=String(value).trim();return text||null;
@@ -388,7 +390,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   }
   function projectWithEnvironment(project){
     if(!project)return project;
-    const profile=project.environmentId?environments.get(project.environmentId):null;
+    const profile=project.environmentId?environments.get(project.environmentId,{includeDisabled:true}):null;
     const cloneJob=project.cloneJob?{
       id:project.cloneJob.id,url:project.cloneJob.url,status:project.cloneJob.status,progress:project.cloneJob.progress,
       phase:project.cloneJob.phase,error:project.cloneJob.error||null,startedAt:project.cloneJob.startedAt,completedAt:project.cloneJob.completedAt||null,
@@ -397,6 +399,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       id:project.environmentId,
       name:profile?.name||"Unavailable environment",
       type:profile?.type||"unknown",
+      enabled:profile?.enabled!==false,
     }:{id:null,name:"Local machine",type:"local"},effectiveSettings:state.projectSettings(project.path,project.environmentId).effective};
   }
   const agentRuntimes=new AgentRuntimeManager({state,env,environments});
@@ -1137,11 +1140,29 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return json(res,200,{ok,activeEnvironmentId:state.settings().activeEnvironmentId||null});
       }
     }
+    if(url.pathname==="/api/environment/enabled"&&req.method==="POST"){
+      try{
+        const body=await readJsonBody(req);const id=String(body.id||"").trim();if(!id)throw new Error("id is required");
+        const profile=environments.get(id,{includeDisabled:true});if(!profile)throw new Error("Environment profile was not found");
+        const enabled=body.enabled!==false;const updated=environments.setEnabled(id,enabled);
+        let activeEnvironmentId=state.settings().activeEnvironmentId||null;
+        if(!enabled&&activeEnvironmentId===id){
+          activeEnvironmentId=null;state.updateSettings({activeEnvironmentId:null});
+          await agentRelay?.reset?.();
+          await restartAppServer(selectedProvider);
+        }
+        return json(res,200,{ok:true,profile:updated,activeEnvironmentId,appServerReady:mock||await appServerReady(appServer,appPort)});
+      }catch(error){return json(res,400,{error:error.message});}
+    }
     if(url.pathname==="/api/environment/activate"&&req.method==="POST"){
       try{
         const body=await readJsonBody(req);
         const id=body.id?String(body.id):null;
-        if(id&&!environments.get(id)) throw new Error("Environment profile was not found");
+        if(id){
+          const profile=environments.get(id,{includeDisabled:true});
+          if(!profile)throw new Error("Environment profile was not found");
+          if(profile.enabled===false)throw new Error("Environment is switched off. Turn it on before using it for agents.");
+        }
         state.updateSettings({activeEnvironmentId:id});
         await agentRelay?.reset?.();
         await restartAppServer(selectedProvider);
