@@ -60,6 +60,13 @@ test("Codex thread history opens from bounded item pages and loads older items o
       else if(message.method==="thread/goal/get")result={goal:null};
       else if(message.method==="thread/attachment/list")result={data:[],nextCursor:null};
       else if(message.method==="thread/queue/list")result={data:[],nextCursor:null};
+      else if(message.method==="thread/timeline/list"){
+        result=message.params.threadId===thread.id?{data:[
+          {type:"turnStarted",position:100,turnId:"turn-20",startedAt:Date.now()-1500},
+          {type:"item",position:101,turnId:"turn-20",item:{id:"history-command-20",type:"commandExecution",command:"npm test -- --runInBand",cwd:process.cwd(),status:"completed",aggregatedOutput:"20 tests passed",exitCode:0,durationMs:1200}},
+          {type:"turnCompleted",position:102,turnId:"turn-20",status:"completed",startedAt:Date.now()-1500,completedAt:Date.now()-300,durationMs:1200},
+        ],nextCursor:null,activeRealtimeSessionAtPageStart:null}:{data:[],nextCursor:null,activeRealtimeSessionAtPageStart:null};
+      }
       else if(message.method==="thread/items/list"){
         if(message.params.turnId){
           const direct=String(message.params.turnId).match(/^turn-(\d+)$/);result={data:direct?entries([turn(Number(direct[1]))]):[],nextCursor:null};
@@ -94,6 +101,9 @@ test("Codex thread history opens from bounded item pages and loads older items o
     const initialItems=calls.find(call=>call.method==="thread/items/list"&&call.params?.cursor==="latest-items");
     expect(initialItems?.params).toEqual({threadId:thread.id,cursor:"latest-items",limit:100,sortDirection:"desc"});
     expect(calls.some(call=>call.method==="thread/turns/list")).toBe(false);
+    const restoredCommand=page.locator(".tool-event").filter({hasText:"npm test -- --runInBand"});await expect(restoredCommand).toBeVisible();await restoredCommand.locator("summary").click();await expect(restoredCommand).toContainText("20 tests passed");
+    const timelineCall=calls.find(call=>call.method==="thread/timeline/list"&&call.params?.threadId===thread.id);expect(timelineCall?.params).toEqual({threadId:thread.id,cursor:null,limit:100});
+    await page.setViewportSize({width:1280,height:800});await restoredCommand.scrollIntoViewIfNeeded();await page.screenshot({path:auditDir+"chat-restored-activity-1280x800.png",fullPage:false});await page.setViewportSize({width:1600,height:980});
     await page.keyboard.press("Control+f");
     const findBar=page.getByTestId("thread-find-bar");await expect(findBar).toBeVisible();
     const findInput=page.getByTestId("thread-find-input");await findInput.fill("needle");

@@ -47,6 +47,7 @@ import { captureThreadScrollPosition, rememberThreadScrollPosition, restoredThre
 import { DEFAULT_LAYOUT, clampLayoutValue, normalizeLayoutPreferences } from "./layout-preferences.js";
 import { nativeThreadSearchMatches, threadListParams } from "./thread-list-query.js";
 import { resizeTextarea } from "./textarea-size.js";
+import { guardianActionSummary, guardianDeniedEvent } from "./guardian-review.js";
 
 const MAX_COMPOSER_ATTACHMENTS=100;
 const MAX_COMPOSER_CHARS=120_000;
@@ -152,6 +153,7 @@ function historyFromThread(thread,checkpointByTurn={}){
 function normalizeItem(item={}){
   const type=item.type||"tool";
   let title=item.title||item.name||item.description||"Agent activity";
+  if(type==="plan")title="Plan";
   if(type==="commandExecution")title=Array.isArray(item.command)?item.command.join(" "):(item.command||"Running command");
   if(type==="fileChange")title="Editing files";
   if(type==="mcpToolCall")title=(item.server?item.server+" / ":"")+(item.tool||item.name||"MCP tool");
@@ -250,6 +252,12 @@ function ApprovalCard({request,onResolve}){
   const title=permissions?"Additional access requested":request.method.includes("fileChange")||request.method==="applyPatchApproval"?"File changes need approval":p.networkApprovalContext?.host?"Network access needs approval":"Command needs approval";
   const detail=permissions?[network&&"Network access",fileSystem&&"Filesystem access"].filter(Boolean).join(" + "):(p.networkApprovalContext?.host?`${p.networkApprovalContext.protocol||"network"}://${p.networkApprovalContext.host}`:p.reason||p.command||p.path||request.method);
   return <div className="approval-card"><div className="card-title"><ShieldCheck size={16}/><strong>{title}</strong></div><p>{detail||p.reason||request.method}</p>{permissions&&<pre className="approval-permissions">{JSON.stringify(p.permissions||{},null,2)}</pre>}<div className="approval-actions"><button onClick={()=>onResolve(request,"decline")}>Deny</button><button onClick={()=>onResolve(request,"acceptForSession")}>Allow session</button><button className="approve" onClick={()=>onResolve(request,"accept")}>Allow once</button></div></div>;
+}
+function GuardianDenialCard({review,busy,onApprove,onDismiss}){
+  if(!review)return null;
+  const detail=guardianActionSummary(review.action||{});
+  const risk=review.review?.riskLevel;
+  return <div className="approval-card guardian-denial-card" data-testid="guardian-denial-card"><div className="card-title"><ShieldCheck size={16}/><strong>Auto review denied this action</strong></div><p>{detail}</p>{review.review?.rationale&&<p>{review.review.rationale}</p>}{risk&&<small>Risk assessment: {risk}</small>}<div className="approval-actions"><button onClick={()=>onDismiss(review)} disabled={busy}>Dismiss</button><button className="approve" onClick={()=>onApprove(review)} disabled={busy}>{busy?"Allowing…":"Allow anyway"}</button></div></div>;
 }
 function FreebuffMini({freebuff,model,onOpen}){
   const balance=freebuff?.derived?.balance;
@@ -440,6 +448,7 @@ export default function App(){
   const [permissionMode,setPermissionMode]=useState("supervised"); const [workspaceMode,setWorkspaceMode]=useState("current");
   const [projectPath,setProjectPath]=useState(""); const [currentProject,setCurrentProject]=useState(null); const [projectlessMode,setProjectlessMode]=useState(false); const [generalEnvironmentId,setGeneralEnvironmentId]=useState(null); const [gitInfo,setGitInfo]=useState(null); const [stats,setStats]=useState({}); const [runtime,setRuntime]=useState({});
   const [approvals,setApprovals]=useState([]); const [question,setQuestion]=useState(null); const [elicitations,setElicitations]=useState([]); const [tokenUsage,setTokenUsage]=useState(null);
+  const [guardianDenials,setGuardianDenials]=useState([]); const [guardianBusy,setGuardianBusy]=useState("");
   const [panel,setPanel]=useState(null); const [rightPanelOpen,setRightPanelOpen]=useState(false); const [rightPanelTab,setRightPanelTab]=useState("files"); const [rightPanelMaximized,setRightPanelMaximized]=useState(false); const [reviewedFiles,setReviewedFiles]=useState([]); const [checkpointByTurn,setCheckpointByTurn]=useState({});
   const [selectedThreadIds,setSelectedThreadIds]=useState(new Set()); const [providerRevision,setProviderRevision]=useState(0);
   const [snoozeRequest,setSnoozeRequest]=useState(null); const [threadUndo,setThreadUndo]=useState(null);
@@ -1251,6 +1260,28 @@ export default function App(){
         setEvents(prev=>prev.some(e=>e.id===item.id)?prev.map(e=>e.id===item.id?{...e,...item}:e):[...prev,item]);
       }
     }
+    else if(message.method==="item/autoApprovalReview/started"){
+      const id="auto-review-"+String(p.reviewId||Date.now()),title="Auto review · "+guardianActionSummary(p.action||{});
+      updateThreadTelemetry(threadId,{currentActivity:{id,kind:"autoReview",title,startedAtMs:p.startedAtMs||Date.now()},lastActivityAt:p.startedAtMs||Date.now()});
+      if(isCurrent)setEvents(prev=>{const event={id,kind:"autoReview",title,status:"running",raw:p};return prev.some(item=>item.id===id)?prev.map(item=>item.id===id?event:item):[...prev,event]});
+    }
+    else if(message.method==="item/autoApprovalReview/completed"){
+      const id="auto-review-"+String(p.reviewId||Date.now()),status=p.review?.status||"completed",title="Auto review · "+guardianActionSummary(p.action||{});
+      updateThreadTelemetry(threadId,current=>({currentActivity:current.currentActivity?.id===id?null:current.currentActivity,lastActivity:{id,kind:"autoReview",title,durationMs:p.completedAtMs&&p.startedAtMs?Math.max(0,p.completedAtMs-p.startedAtMs):null,completedAtMs:p.completedAtMs||Date.now()},lastActivityAt:p.completedAtMs||Date.now()}));
+      if(isCurrent){
+        setEvents(prev=>{const failed=status==="denied"||status==="timedOut";const event={id,kind:failed?"error":"autoReview",title:status==="denied"?title+" · denied":status==="timedOut"?title+" · timed out":title,status:failed?"error":"done",raw:p};return prev.some(item=>item.id===id)?prev.map(item=>item.id===id?event:item):[...prev,event]});
+        if(status==="denied"){
+          setGuardianDenials(prev=>[...prev.filter(item=>item.reviewId!==p.reviewId),p].slice(-5));
+          desktopNotify("Auto review denied an action",titleOf(activeThreadRef.current)+" needs your decision.");
+        }
+      }
+    }
+    else if(message.method==="guardianWarning"){
+      if(isCurrent){
+        setEvents(prev=>[...prev,{id:"guardian-warning-"+Date.now(),kind:"error",title:p.message||"Auto review warning",status:"done",raw:p}]);
+        desktopNotify("Auto review warning",p.message||"Codex reported an auto-review warning.");
+      }
+    }
     else if(message.method==="item/agentMessage/delta"&&isCurrent)setAssistantText(prev=>prev+(p.delta||p.text||""));
     else if(message.method==="item/commandExecution/outputDelta"&&isCurrent){const id=p.itemId||"command";setEvents(prev=>prev.map(e=>e.id===id?{...e,output:(e.output||"")+(p.delta||"")}:e))}
     else if(message.method==="item/mcpToolCall/progress"){
@@ -1445,7 +1476,7 @@ export default function App(){
     if(agentRuntime!=="codex"||!threadId||running||!rpc||rpcStatus!=="connected")return;
     rpc.request("thread/unsubscribe",{threadId}).catch(()=>{});
   }
-  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setAssistantText("");setQueued([]);setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
+  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");setAssistantText("");setQueued([]);setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
@@ -1460,7 +1491,7 @@ export default function App(){
     const threadEnvironmentId=thread.providerMeta?.environmentId||null;
     const savedMeta=threadMeta[thread.id]||{};const projectless=Boolean(savedMeta.projectless);
     if(thread.cwd&&!threadEnvironmentId&&!projectless)await api("/api/worktree/ensure",{method:"POST",body:{path:thread.cwd,environmentId:null}}).catch(error=>{throw new Error("Could not restore this managed worktree: "+error.message)});
-    activeThreadRef.current=thread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setAssistantText("");setWorktreeSetup(null);setActiveThread(thread);persistThreadWorkspaceContext(thread,thread.cwd,{archived:false,projectless}).catch(()=>{});
+    activeThreadRef.current=thread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");setAssistantText("");setWorktreeSetup(null);setActiveThread(thread);persistThreadWorkspaceContext(thread,thread.cwd,{archived:false,projectless}).catch(()=>{});
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(thread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
     else if(thread.cwd)await touchProject(thread.cwd,threadEnvironmentId);else setProjectPath(projectPath);
     if(!rpc||rpcStatus!=="connected")return;
@@ -1482,6 +1513,23 @@ export default function App(){
         setMessages(history);setHistoryPage({threadId:resumed.thread.id,nextCursor:page.nextCursor||null,paginated:true,itemPaging:page.kind==="items",loading:false});
       }else{setMessages(historyFromThread(resumed.thread,map));setHistoryPage({threadId:resumed.thread.id,nextCursor:null,paginated:false,loading:false})}
       setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex"){const meta=resumed.thread.providerMeta||{};applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}
+    }
+    if(agentRuntime==="codex"&&resumed?.thread){
+      const timelineThreadId=thread.id;
+      import("./thread-timeline.js")
+        .then(({loadLatestTurnTimeline})=>loadLatestTurnTimeline(rpc,timelineThreadId))
+        .then(timeline=>{
+          if(activeThreadRef.current?.id!==timelineThreadId||!timeline.items.length)return;
+          const restored=timeline.items.map(item=>{
+            const event=normalizeItem(item);
+            return {...event,status:item.status?event.status:"done",output:item.aggregatedOutput||""};
+          });
+          setEvents(current=>{
+            const liveIds=new Set(current.map(event=>String(event.id)));
+            return [...restored.filter(event=>!liveIds.has(String(event.id))),...current];
+          });
+        })
+        .catch(()=>{});
     }
     if(agentRuntime==="codex")await loadNativeQueue(rpc,thread.id).catch(error=>setEvents(prev=>[...prev,{id:"queue-load-error-"+Date.now(),kind:"error",title:"Could not load queued follow-ups: "+(error.message||String(error)),status:"done",raw:{}}]));else{setQueueMode("local");setQueued([])}
     const meta=threadMeta[thread.id]||{};setReviewedFiles(meta.reviewedFiles||[]);setGoal(goalData?.goal||null);
@@ -2035,6 +2083,18 @@ export default function App(){
   function resolveApproval(request,decision){
     if(!rpc)return;rpc.respond(request.id,approvalResponse(request,decision));setApprovals(prev=>prev.filter(x=>x.id!==request.id));
   }
+  async function approveGuardianDenial(review){
+    if(!rpc||!review?.threadId||guardianBusy)return;
+    const reviewId=String(review.reviewId||crypto.randomUUID());setGuardianBusy(reviewId);
+    try{
+      await rpc.request("thread/approveGuardianDeniedAction",{threadId:review.threadId,event:guardianDeniedEvent(review)});
+      setGuardianDenials(prev=>prev.filter(item=>item.reviewId!==review.reviewId));
+      setEvents(prev=>[...prev,{id:"auto-review-override-"+Date.now(),kind:"autoReview",title:"Auto review denial overridden by user",status:"done",raw:{reviewId:review.reviewId}}]);
+    }catch(error){
+      setEvents(prev=>[...prev,{id:"auto-review-override-error-"+Date.now(),kind:"error",title:"Could not override auto review: "+(error.message||String(error)),status:"done",raw:{reviewId:review.reviewId}}]);
+    }finally{setGuardianBusy("")}
+  }
+  function dismissGuardianDenial(review){setGuardianDenials(prev=>prev.filter(item=>item.reviewId!==review.reviewId))}
   async function answerQuestion(answers,filesByQuestion={}){if(!question)return;await validateAttachmentPaths(Object.values(filesByQuestion).flat());const result={};for(const q of question.request.params?.questions||[]){const values=[...(answers[q.id]||[])];const files=filesByQuestion[q.id]||[];if(files.length)values.push("Attached files:\n"+files.map(path=>"- "+path).join("\n"));result[q.id]={answers:values}}question.client.respond(question.request.id,{answers:result});setQuestion(null)}
   function cancelQuestion(){if(question){question.client.respond(question.request.id,{answers:{}});setQuestion(null)}}
   function resolveElicitation(response){
@@ -2254,6 +2314,7 @@ export default function App(){
               <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
               <Conversation messages={messages} onEditFromHere={editFromHere} onCite={citeAssistant} allowRevert={["codex","opencode","claude"].includes(agentRuntime)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={agentRuntime==="codex"&&historyPage.threadId===activeThread?.id&&Boolean(historyPage.nextCursor)} loadingEarlier={historyPage.loading} onLoadEarlier={loadEarlierMessages} activeFindItemId={threadFind.activeItemId}/>
               <ActivityTimeline events={events} assistantText={assistantText} onOpenPanel={name=>name==="workspace"?openRightPanel("diff"):setPanel(name)}/>
+              {guardianDenials.map(review=><div className="inline-approval" key={review.reviewId}><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div>)}
               {approvals[0]&&<div className="inline-approval"><ApprovalCard request={approvals[0]} onResolve={resolveApproval}/></div>}
               {queued.map((item,index)=><div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span>{item.native?"Queued in Codex":"Queued"}{queuedEditId===item.id?" · editing":""}</span><p>{item.text}</p><div className="queued-message-actions"><button onClick={()=>sendQueuedNow(item).catch(error=>setEvents(prev=>[...prev,{id:"queue-send-error-"+Date.now(),kind:"error",title:"Could not send queued follow-up: "+(error.message||String(error)),status:"done",raw:{}}]))}>Send now</button><button onClick={()=>editQueued(item)} disabled={queuedEditId===item.id||item.editable===false}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={index===0} onClick={()=>moveQueued(item,-1).catch(error=>setEvents(prev=>[...prev,{id:"queue-reorder-error-"+Date.now(),kind:"error",title:error.message||String(error),status:"done",raw:{}}]))}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={index===queued.length-1} onClick={()=>moveQueued(item,1).catch(error=>setEvents(prev=>[...prev,{id:"queue-reorder-error-"+Date.now(),kind:"error",title:error.message||String(error),status:"done",raw:{}}]))}>↓</button><button onClick={()=>removeQueued(item).catch(error=>setEvents(prev=>[...prev,{id:"queue-delete-error-"+Date.now(),kind:"error",title:error.message||String(error),status:"done",raw:{}}]))}>Remove</button></div></div>)}
               {!messages.length&&!events.length&&<div className="welcome">

@@ -1,0 +1,44 @@
+.guardian-denial-card>small{display:block;margin:0 0 9px;color:#a6a0b4;font-size:9px}
+.tool-event.status-error summary strong,
+.tool-event.status-error summary em,
+.tool-event.status-error summary .timeline-marker{color:#d48690!important}
+
+html[data-mode="light"]:not([data-custom-theme="true"]) .guardian-denial-card{
+  background:#fff!important;
+  border-color:#c8b5e3!important;
+  color:#29313c!important;
+}
+html[data-mode="light"]:not([data-custom-theme="true"]) .guardian-denial-card .card-title{color:#65458d!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .guardian-denial-card p{color:#687181!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .guardian-denial-card>small{color:#596473!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .guardian-denial-card .approval-actions button{
+  background:#f7f8fa!important;
+  border-color:#d7dce5!important;
+  color:#4d5868!important;
+}
+html[data-mode="light"]:not([data-custom-theme="true"]) .guardian-denial-card .approval-actions button.approve{
+  background:#eee8fb!important;
+  border-color:#b49bd8!important;
+  color:#5d3b8a!important;
+}
+html[data-mode="light"]:not([data-custom-theme="true"]) .tool-event.status-error summary strong,
+html[data-mode="light"]:not([data-custom-theme="true"]) .tool-event.status-error summary em,
+html[data-mode="light"]:not([data-custom-theme="true"]) .tool-event.status-error summary .timeline-marker{color:#a65361!important}
+
+html[data-custom-theme="true"] .guardian-denial-card{
+  background:var(--panel)!important;
+  border-color:var(--line)!important;
+  color:var(--theme-foreground)!important;
+}
+html[data-custom-theme="true"] .guardian-denial-card .card-title{color:var(--theme-foreground)!important}
+html[data-custom-theme="true"] .guardian-denial-card p,
+html[data-custom-theme="true"] .guardian-denial-card>small{color:var(--muted)!important}
+html[data-custom-theme="true"] .guardian-denial-card .approval-actions button{
+  background:var(--panel2)!important;
+  border-color:var(--line)!important;
+  color:var(--theme-foreground)!important;
+}
+html[data-custom-theme="true"] .guardian-denial-card .approval-actions button.approve{
+  background:color-mix(in srgb,var(--purple) 20%,var(--panel2))!important;
+  border-color:var(--purple)!important;
+}

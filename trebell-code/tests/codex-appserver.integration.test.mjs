@@ -138,6 +138,23 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
     assert.ok(recoveryTurn.turn?.id,"Codex must accept an empty-input promptless continuation turn");
     assert.equal(recoveryTurn.turn.status,"inProgress");
     await rpcOutcome(ws,6,"turn/interrupt",{threadId:recoveryThread.thread.id,turnId:recoveryTurn.turn.id});
+    const guardianOverride=await rpcOutcome(ws,7,"thread/approveGuardianDeniedAction",{
+      threadId:recoveryThread.thread.id,
+      event:{
+        id:"trebell-integration-guardian-review",
+        target_item_id:"trebell-integration-command",
+        turn_id:recoveryTurn.turn.id,
+        started_at_ms:Date.now()-10,
+        completed_at_ms:Date.now(),
+        status:"denied",
+        risk_level:"low",
+        user_authorization:"high",
+        rationale:"Integration test denial used to verify native override routing.",
+        decision_source:"agent",
+        action:{type:"command",source:"shell",command:"echo trebell-guardian-override",cwd:process.cwd()},
+      },
+    });
+    assert.equal(guardianOverride.ok,true,guardianOverride.error?.message||"thread/approveGuardianDeniedAction failed");
 
     const capabilityCalls=[
       ["account/read",{refreshToken:false}],
@@ -237,9 +254,13 @@ test("compatible Codex profiles switch an existing thread through a separate app
     assert.equal(profiles.supported,true);assert.equal(profiles.currentInstanceId,"codex-work");assert.equal(profiles.label,"Codex profile");
     assert.deepEqual(profiles.items.map(item=>item.id).sort(),["codex-personal","codex-work"]);
     const background=await rpc(ws,20,"thread/start",{cwd:process.cwd(),modelProvider:"freebuff",approvalPolicy:"never",sandbox:"danger-full-access",ephemeral:false,threadSource:"trebell-code"});
+    const backgroundStartedNotification=waitNotification(ws,"turn/started",params=>params.threadId===background.thread.id);
     const backgroundCompletedNotification=waitNotification(ws,"turn/completed",params=>params.threadId===background.thread.id);
     const backgroundTurn=await rpc(ws,21,"turn/start",{threadId:background.thread.id,input:[],turnTrigger:"trebell-concurrent-thread"});
     assert.equal(backgroundTurn.turn?.status,"inProgress","a second Codex thread should keep its own writer while another thread changes profiles");
+    await backgroundStartedNotification;
+    const backgroundInterrupted=await rpcOutcome(ws,32,"turn/interrupt",{threadId:background.thread.id,turnId:backgroundTurn.turn.id});
+    assert.equal(backgroundInterrupted.ok,true,backgroundInterrupted.error?.message||"background turn interrupt failed");
     await backgroundCompletedNotification;
     const switched=await rpc(ws,6,"thread/runtimeInstance/set",{threadId,instanceId:"codex-personal"});
     assert.equal(switched.runtimeInstanceId,"codex-personal");
