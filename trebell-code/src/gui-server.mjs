@@ -385,6 +385,7 @@ async function projectActionSuggestions(projectPath){
 }
 
 export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",mock=false,env=process.env}={}){
+  if(env.TREBELL_E2E_OFFLINE==="1"&&!mock)throw new Error("Offline browser E2E forbids starting a real Trebell provider or Codex app-server.");
   const bootId=randomUUID();
   const dist=String(env.TREBELL_UI_DIST||"").trim()?resolve(String(env.TREBELL_UI_DIST).trim()):resolve(packageRoot,"ui","dist");
   const state=new TrebellStateStore(env);

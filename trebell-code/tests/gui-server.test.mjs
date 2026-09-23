@@ -9,6 +9,13 @@ import { createGuiServer } from "../src/gui-server.mjs";
 const packageVersion=JSON.parse(await readFile(new URL("../package.json",import.meta.url),"utf8")).version;
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
 
+test("offline browser E2E refuses to start a real provider or Codex app-server",async()=>{
+  await assert.rejects(
+    ()=>createGuiServer({mock:false,env:{...process.env,TREBELL_E2E_OFFLINE:"1"}}),
+    /Offline browser E2E forbids starting a real Trebell provider or Codex app-server/,
+  );
+});
+
 test("GUI server exposes mock bootstrap, provider models, and health", async () => {
   const home=await mkdtemp(join(tmpdir(),"trebell-gui-test-"));
   const externalCodexHome=join(home,"external-codex");const externalRollouts=join(externalCodexHome,"sessions","2026","09","23");await mkdir(externalRollouts,{recursive:true});
