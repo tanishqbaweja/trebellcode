@@ -11,7 +11,7 @@ async function freePort(){const server=createServer();await new Promise((resolve
 test("Codex plugin discovery exposes native search, details, skill contents and reconcile",async({page})=>{
   test.setTimeout(35_000);
   const thread={id:"plugin-fixture",name:"Plugin fixture",preview:"Native plugin discovery",cwd:process.cwd(),createdAt:Date.now()-1000,updatedAt:Date.now(),turns:[]};
-  let installed=false,appCallable=true,mcpReady=false,rateUsed=12,notificationSocket=null;const calls=[];
+  let installed=false,appCallable=true,mcpReady=false,rateUsed=12,account=null,notificationSocket=null;const calls=[];
   const summary=()=>({id:"weather@official",remotePluginId:"remote-weather",version:"1.2.3",localVersion:installed?"1.2.3":null,name:"weather",source:{type:"remote"},installed,enabled:true,availability:"available",interface:{displayName:"Weather Wizard",shortDescription:"Forecast tools",longDescription:"Search forecasts and weather alerts before installing.",developerName:"Trebell Labs",capabilities:["forecast","alerts"]},keywords:["weather"]});
   const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const sockets=new Set();
   upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
@@ -46,7 +46,7 @@ test("Codex plugin discovery exposes native search, details, skill contents and 
       else if(message.method==="hooks/list")result={data:[{cwd:process.cwd(),hooks:[{name:"session-check",event:"beforeTurn"}]}]};
       else if(message.method==="permissionProfile/list"||message.method==="plugin/share/list")result={data:[]};
       else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
-      else if(message.method==="account/read")result={account:null,requiresOpenaiAuth:false};
+      else if(message.method==="account/read")result={account,requiresOpenaiAuth:false};
       else if(message.method==="account/rateLimits/read")result={rateLimits:{primary:{usedPercent:rateUsed}}};
       else if(message.method==="account/usage/read")result={};
       else if(message.method==="config/read")result={config:{},layers:[]};
@@ -84,13 +84,20 @@ test("Codex plugin discovery exposes native search, details, skill contents and 
     notificationSocket.send(JSON.stringify({method:"app/list/updated",params:{data:[{id:"weather-app",name:"Weather app live",description:"Updated from Codex notification",distributionChannel:"plugin",installUrl:null,isAccessible:true,isEnabled:true,pluginDisplayNames:["Weather Wizard"]}]}}));
     notificationSocket.send(JSON.stringify({method:"mcpServer/startupStatus/updated",params:{threadId:thread.id,name:"weather-mcp",status:"ready",error:null,failureReason:null}}));
     notificationSocket.send(JSON.stringify({method:"account/rateLimits/updated",params:{rateLimits:{primary:{usedPercent:44}}}}));
+    account={type:"chatgpt",email:"live@example.com",planType:"pro"};
+    notificationSocket.send(JSON.stringify({method:"account/updated",params:{authMode:"chatgpt",planType:"pro"}}));
+    notificationSocket.send(JSON.stringify({method:"modelProvider/authRecoveryStarted",params:{threadId:thread.id,turnId:"turn-live",provider:"freebuff",message:"Refreshing provider credentials"}}));
     notificationSocket.send(JSON.stringify({method:"configWarning",params:{summary:"Invalid hook timeout",details:"Expected a positive duration.",path:process.cwd()+"/.codex/config.toml",range:null}}));
     const hookRun={id:"hook-run-1",eventName:"beforeTurn",handlerType:"command",executionMode:"blocking",scope:"project",sourcePath:process.cwd()+"/.codex/hooks/session-check",source:"project",displayOrder:0,status:"running",statusMessage:"Checking workspace",startedAt:Date.now(),completedAt:null,durationMs:null,entries:[]};
     notificationSocket.send(JSON.stringify({method:"hook/started",params:{threadId:thread.id,turnId:"turn-live",run:hookRun}}));
     notificationSocket.send(JSON.stringify({method:"hook/completed",params:{threadId:thread.id,turnId:"turn-live",run:{...hookRun,status:"completed",statusMessage:"Lint checks passed",completedAt:Date.now()+42,durationMs:42}}}));
     await expect(appsCard).toContainText("Weather app live");await expect(appsCard).toContainText("installed");await expect(appsCard).toContainText("1 installed · 0 callable now");
     const mcpCard=page.locator(".capability-card").filter({has:page.getByText("MCP servers",{exact:true})}).first();await expect(mcpCard).toContainText("connected");await expect(mcpCard).toContainText("oauth");
-    const accountCard=page.locator(".capability-card").filter({has:page.getByText("Account & usage",{exact:true})}).first();await expect(accountCard).toContainText("44%");
+    const accountCard=page.locator(".capability-card").filter({has:page.getByText("Account & usage",{exact:true})}).first();await expect(accountCard).toContainText("44%");await expect(accountCard).toContainText("live@example.com");await expect(accountCard).toContainText("Recovering freebuff authentication");
+    notificationSocket.send(JSON.stringify({method:"modelProvider/authRecoveryCompleted",params:{threadId:thread.id,turnId:"turn-live",provider:"freebuff",message:"Provider credentials recovered"}}));
+    await expect(accountCard).toContainText("Recovered freebuff authentication: Provider credentials recovered");
+    await page.setViewportSize({width:1280,height:800});await accountCard.scrollIntoViewIfNeeded();await page.screenshot({path:auditDir+"tools-auth-recovery-1280x800.png",fullPage:false});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({path:auditDir+"tools-auth-recovery-light-1280x800.png",fullPage:false});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});await page.setViewportSize({width:1600,height:980});
     const configCard=page.locator(".capability-card").filter({has:page.getByText("Configuration layers",{exact:true})}).first();await expect(configCard).toContainText("Invalid hook timeout");await expect(configCard).toContainText("Expected a positive duration.");
     const hooksCard=page.locator(".capability-card").filter({has:page.getByText("Hooks",{exact:true})}).first();await expect(hooksCard).toContainText("beforeTurn");await expect(hooksCard).toContainText("Lint checks passed");await expect(hooksCard).toContainText("42 ms");
     await expect.poll(()=>calls.filter(call=>call.method==="app/installed"&&call.params?.forceRefresh===false).length).toBeGreaterThan(installedCallsBefore);

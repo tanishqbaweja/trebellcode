@@ -56,6 +56,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [pluginMessage,setPluginMessage]=useState("");
   const [configWarnings,setConfigWarnings]=useState([]);
   const [hookRuns,setHookRuns]=useState([]);
+  const [authRecovery,setAuthRecovery]=useState(null);
 
   function routedParams(params){
     const threadId=activeThread?.id;
@@ -135,6 +136,10 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         const rateLimits=await call("account/rateLimits/read",{excludeResetCreditDetails:true});
         if(!disposed&&rateLimits)setData(current=>({...current,rateLimits}));
       }
+      if(kinds.includes("account")){
+        const account=await call("account/read",{refreshToken:false});
+        if(!disposed&&account)setData(current=>({...current,account}));
+      }
     };
     const schedule=kind=>{pending.add(kind);if(timer)clearTimeout(timer);timer=setTimeout(flush,100)};
     const unsubscribe=rpc.subscribeNotifications(message=>{
@@ -146,6 +151,14 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         schedule("mcp");
       }else if(message.method==="account/rateLimits/updated"){
         schedule("rateLimits");
+      }else if(message.method==="account/updated"){
+        schedule("account");
+      }else if(message.method==="modelProvider/authRecoveryStarted"||message.method==="modelProvider/authRecoveryCompleted"){
+        const params=message.params||{};
+        if(activeThread?.id&&params.threadId!==activeThread.id)return;
+        const active=message.method==="modelProvider/authRecoveryStarted";
+        setAuthRecovery({active,provider:params.provider||"provider",message:params.message||""});
+        if(!active)schedule("account");
       }else if(message.method==="configWarning"){
         const warning=message.params||{};
         setConfigWarnings(current=>[
@@ -419,6 +432,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
           {data.rateLimits?.rateLimits?.primary&&<div><span>Primary usage</span><strong>{Math.round(Number(data.rateLimits.rateLimits.primary.usedPercent)||0)}%</strong></div>}
           {data.rateLimits?.rateLimits?.secondary&&<div><span>Secondary usage</span><strong>{Math.round(Number(data.rateLimits.rateLimits.secondary.usedPercent)||0)}%</strong></div>}
         </div>:<p>Codex did not return account metadata for this inference route.</p>}
+        {authRecovery&&<p className="capability-status">{authRecovery.active?"Recovering":"Recovered"} {authRecovery.provider} authentication{authRecovery.message?": "+authRecovery.message:""}</p>}
         <ErrorLine value={errors["account/read"]}/><ErrorLine value={errors["account/rateLimits/read"]}/><ErrorLine value={errors["account/usage/read"]}/>
       </Section>
 
