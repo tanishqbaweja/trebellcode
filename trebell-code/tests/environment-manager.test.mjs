@@ -29,6 +29,13 @@ test("disabled environments remain listed but cannot be used until re-enabled",(
   assert.equal(manager.get("ssh").id,"ssh");
 });
 
+test("local environment capabilities report the actual host platform",async()=>{
+  const manager=new EnvironmentManager({state:stateFor([]),platform:"linux"});
+  const capabilities=await manager.capabilities();
+  assert.equal(capabilities.local.available,true);
+  assert.equal(capabilities.local.platform,"linux");
+});
+
 test("prepareAttachment keeps local files local",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-env-local-"));
   try{
