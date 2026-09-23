@@ -338,6 +338,15 @@ test("settings page visual audit",async({page,request})=>{
   await page.screenshot({path:auditDir+"settings-general-1280x800.png",fullPage:true});
   const compact=await pageShell.evaluate(node=>({clientWidth:node.clientWidth,scrollWidth:node.scrollWidth}));
   expect(compact.scrollWidth).toBeLessThanOrEqual(compact.clientWidth+1);
+  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+  await page.getByRole("button",{name:/Workspace/}).click();
+  await expect(page.getByRole("heading",{name:"Storage cleanup"})).toBeVisible();
+  await page.screenshot({path:auditDir+"settings-workspace-light-1280x800.png",fullPage:true});
+  await page.getByRole("button",{name:/Diagnostics/}).click();
+  await expect(page.getByText("No runtime activity yet",{exact:true})).toBeVisible();
+  await page.screenshot({path:auditDir+"settings-diagnostics-light-1280x800.png",fullPage:true});
+  const compactLight=await pageShell.evaluate(node=>({clientWidth:node.clientWidth,scrollWidth:node.scrollWidth}));
+  expect(compactLight.scrollWidth).toBeLessThanOrEqual(compactLight.clientWidth+1);
 });
 
 test("Claude runtime profile editor exposes real auto-compaction settings",async({page,request})=>{
