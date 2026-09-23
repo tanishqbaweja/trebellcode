@@ -1873,13 +1873,13 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
 
     if(url.pathname==="/api/bootstrap"){
       const appReady=mock || await appServerReady(appServer,appPort);
-      const agentSnapshot=await agentRuntimes.snapshot().catch(()=>({selectedRuntime:selectedAgentRuntime,selectedInstanceId:`${selectedAgentRuntime}-default`,statuses:[]}));
-      const activeAgentStatus=agentSnapshot.statuses?.find(item=>item.id===agentSnapshot.selectedInstanceId)||null;
+      const activeAgentInstance=agentRuntimes.activeInstance();
+      const activeAgentStatus=await agentRuntimes.probe(activeAgentInstance).catch(()=>null);
       return json(res,200,{
         mock,
         loggedIn:mock || isLoggedIn(env),
         agentRuntime:selectedAgentRuntime,
-        agentRuntimeInstanceId:agentSnapshot.selectedInstanceId,
+        agentRuntimeInstanceId:activeAgentInstance?.id||`${selectedAgentRuntime}-default`,
         agentRuntimeReady:selectedAgentRuntime==="codex"?appReady:Boolean(activeAgentStatus?.available),
         agentRuntimeStatus:activeAgentStatus,
         provider:selectedProvider,
