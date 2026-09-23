@@ -1210,7 +1210,14 @@ export default function App(){
     const p=message.params||{};
     const threadId=p.threadId||null;
     const isCurrent=notificationIsActive(threadId);
-    if(message.method==="thread/started"&&p.thread){
+    if(message.method==="serverRequest/resolved"){
+      const requestId=String(p.requestId??"");
+      const matches=request=>request&&String(request.id)===requestId&&(!p.threadId||!request.params?.threadId||request.params.threadId===p.threadId);
+      setApprovals(prev=>prev.filter(request=>!matches(request)));
+      setQuestion(current=>current&&matches(current.request)?null:current);
+      setElicitations(prev=>prev.filter(item=>!matches(item.request)));
+    }
+    else if(message.method==="thread/started"&&p.thread){
       setThreads(prev=>[p.thread,...prev.filter(t=>t.id!==p.thread.id)]);
       if(activeThreadRef.current?.id===p.thread.id)setActiveThread(p.thread);
     }
@@ -1274,6 +1281,14 @@ export default function App(){
           setGuardianDenials(prev=>[...prev.filter(item=>item.reviewId!==p.reviewId),p].slice(-5));
           desktopNotify("Auto review denied an action",titleOf(activeThreadRef.current)+" needs your decision.");
         }
+      }
+    }
+    else if(message.method==="autoApprovalReview/strictReviewRequired"){
+      if(isCurrent){
+        const id="strict-review-"+String(p.turnId||p.startedAtMs||Date.now());
+        const title="Additional safety checks are running; some tool calls may take extra time";
+        setEvents(prev=>prev.some(item=>item.id===id)?prev:[...prev,{id,kind:"autoReview",title,status:"warning",raw:p}]);
+        desktopNotify("Additional safety review",title);
       }
     }
     else if(message.method==="guardianWarning"){
