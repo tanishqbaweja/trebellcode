@@ -27,6 +27,14 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [sandboxWarning,setSandboxWarning]=useState("");
   const [skillRootsText,setSkillRootsText]=useState("");
   const [skillMessage,setSkillMessage]=useState("");
+  const [pluginSearchTerm,setPluginSearchTerm]=useState("");
+  const [pluginSearchScope,setPluginSearchScope]=useState("global");
+  const [pluginSearchResults,setPluginSearchResults]=useState([]);
+  const [pluginSearchCursor,setPluginSearchCursor]=useState(null);
+  const [pluginSearchRan,setPluginSearchRan]=useState(false);
+  const [pluginDetail,setPluginDetail]=useState(null);
+  const [pluginSkillDetail,setPluginSkillDetail]=useState(null);
+  const [pluginMessage,setPluginMessage]=useState("");
 
   function routedParams(params){
     const threadId=activeThread?.id;
@@ -105,6 +113,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   async function togglePlugin(plugin){
     if(!rpc)return;setBusy("plugin:"+plugin.id);
     try{
+      const nextInstalled=!plugin.installed;
       if(plugin.installed)await request("plugin/uninstall",{pluginId:plugin.id});
       else await request("plugin/install",{
         pluginName:plugin.name,
@@ -112,8 +121,40 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         remoteMarketplaceName:plugin.marketplace?.path?null:(plugin.marketplace?.name||null),
         installAttemptId:crypto.randomUUID(),
       });
+      setPluginSearchResults(current=>current.map(result=>result.plugin?.id===plugin.id?{...result,plugin:{...result.plugin,installed:nextInstalled}}:result));
+      setPluginDetail(current=>current?.summary?.id===plugin.id?{...current,summary:{...current.summary,installed:nextInstalled}}:current);
       await refresh();
     }finally{setBusy("")}
+  }
+  async function searchPlugins({append=false}={}){
+    const searchTerm=pluginSearchTerm.trim();if(!rpc||searchTerm.length<2)return;
+    setBusy("plugin:search");setErrors(prev=>({...prev,"plugin/search":null}));if(!append)setPluginSearchRan(false);
+    try{
+      const result=await request("plugin/search",{searchTerm,scope:pluginSearchScope,cwds:projectPath?[projectPath]:null,cursor:append?pluginSearchCursor:null,limit:20});
+      setPluginSearchResults(current=>append?[...current,...(result?.data||[])]:result?.data||[]);
+      setPluginSearchCursor(result?.nextCursor||null);setPluginSearchRan(true);
+    }catch(error){setErrors(prev=>({...prev,"plugin/search":error.message||String(error)}))}
+    finally{setBusy("")}
+  }
+  async function readPlugin(plugin,marketplace={}){
+    if(!rpc||!plugin?.name)return;setBusy("plugin:read:"+plugin.id);setErrors(prev=>({...prev,"plugin/read":null}));setPluginSkillDetail(null);
+    try{
+      const result=await request("plugin/read",{marketplacePath:marketplace.path||null,remoteMarketplaceName:marketplace.path?null:(marketplace.name||null),pluginName:plugin.name});
+      setPluginDetail(result?.plugin||null);
+    }catch(error){setErrors(prev=>({...prev,"plugin/read":error.message||String(error)}))}
+    finally{setBusy("")}
+  }
+  async function readPluginSkill(skill){
+    const remotePluginId=pluginDetail?.summary?.remotePluginId,remoteMarketplaceName=pluginDetail?.marketplaceName;
+    if(!rpc||!remotePluginId||!remoteMarketplaceName||!skill?.name)return;
+    setBusy("plugin:skill:"+skill.name);setErrors(prev=>({...prev,"plugin/skill/read":null}));
+    try{const result=await request("plugin/skill/read",{remoteMarketplaceName,remotePluginId,skillName:skill.name});setPluginSkillDetail({name:skill.name,contents:result?.contents||""})}
+    catch(error){setErrors(prev=>({...prev,"plugin/skill/read":error.message||String(error)}))}finally{setBusy("")}
+  }
+  async function reconcilePlugins(){
+    if(!rpc)return;setBusy("plugin:reconcile");setPluginMessage("");setErrors(prev=>({...prev,"plugin/reconcile":null}));
+    try{const result=await request("plugin/reconcile",{reason:"trebell-tools-refresh"});const changed=result?.changedPlugins?.length||0,failed=result?.failedRemotePluginIds?.length||0;setPluginMessage(`${changed} plugin change${changed===1?"":"s"} reconciled${failed?` · ${failed} failed`:""}.`);await refresh()}
+    catch(error){setErrors(prev=>({...prev,"plugin/reconcile":error.message||String(error)}))}finally{setBusy("")}
   }
   async function shareLocalPlugin(plugin){
     const pluginPath=plugin?.source?.type==="local"?plugin.source.path:null;if(!rpc||!pluginPath)return;
@@ -338,9 +379,15 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       </Section>
 
       <Section title="Plugins" icon={Blocks} count={plugins.length}>
-        <div className="capability-list">{plugins.map(plugin=><div key={plugin.marketplace.name+":"+plugin.id}><div><strong>{plugin.name}</strong><span>{plugin.marketplace.name}{plugin.version?" · "+plugin.version:""}{plugin.shareContext?.shareUrl?" · shared":""}</span></div><div className="capability-inline-actions">{plugin.source?.type==="local"&&<button onClick={()=>shareLocalPlugin(plugin)} disabled={!!busy}>{plugin.shareContext?.remotePluginId?"Update share":"Share privately"}</button>}<button onClick={()=>togglePlugin(plugin)} disabled={!!busy||plugin.availability==="unavailable"}>{plugin.installed?"Uninstall":"Install"}</button></div></div>)}</div>
-        {!plugins.length&&<p>No plugin catalog is available in this runtime.</p>}
-        <ErrorLine value={errors["plugin/list"]}/><ErrorLine value={errors["plugin/share/save"]}/>
+        <div className="plugin-search-controls"><input value={pluginSearchTerm} onChange={e=>{setPluginSearchTerm(e.target.value);setPluginSearchResults([]);setPluginSearchCursor(null);setPluginSearchRan(false);setPluginDetail(null);setPluginSkillDetail(null)}} onKeyDown={e=>{if(e.key==="Enter")searchPlugins()}} placeholder="Search plugin catalog"/><select value={pluginSearchScope} onChange={e=>{setPluginSearchScope(e.target.value);setPluginSearchResults([]);setPluginSearchCursor(null);setPluginSearchRan(false);setPluginDetail(null);setPluginSkillDetail(null)}}><option value="global">Global</option><option value="workspace">Workspace</option><option value="personal">Personal</option></select><button onClick={()=>searchPlugins()} disabled={!!busy||pluginSearchTerm.trim().length<2}>{busy==="plugin:search"?"Searching…":"Search"}</button><button onClick={reconcilePlugins} disabled={!!busy}>Reconcile</button></div>
+        {pluginSearchResults.length>0&&<div className="capability-list plugin-search-results">{pluginSearchResults.map(result=>{const plugin=result.plugin||{};const marketplace={name:result.marketplaceName,path:result.marketplacePath};return <div key={(result.marketplaceName||"")+":"+(plugin.id||plugin.name)}><div><strong>{plugin.interface?.displayName||plugin.name}</strong><span>{plugin.interface?.shortDescription||plugin.interface?.longDescription||result.marketplaceName}{plugin.version?" · "+plugin.version:""}</span></div><div className="capability-inline-actions"><button onClick={()=>readPlugin(plugin,marketplace)} disabled={!!busy}>Details</button><button onClick={()=>togglePlugin({...plugin,marketplace})} disabled={!!busy||plugin.availability==="unavailable"}>{plugin.installed?"Uninstall":"Install"}</button></div></div>})}</div>}
+        {pluginSearchCursor&&<div className="capability-actions"><button onClick={()=>searchPlugins({append:true})} disabled={!!busy}>Load more</button></div>}
+        {pluginSearchRan&&!pluginSearchResults.length&&!busy&&!errors["plugin/search"]&&<p>No plugins matched this search.</p>}
+        {!pluginSearchRan&&<div className="capability-list">{plugins.map(plugin=><div key={plugin.marketplace.name+":"+plugin.id}><div><strong>{plugin.interface?.displayName||plugin.name}</strong><span>{plugin.marketplace.name}{plugin.version?" · "+plugin.version:""}{plugin.shareContext?.shareUrl?" · shared":""}</span></div><div className="capability-inline-actions"><button onClick={()=>readPlugin(plugin,plugin.marketplace)} disabled={!!busy}>Details</button>{plugin.source?.type==="local"&&<button onClick={()=>shareLocalPlugin(plugin)} disabled={!!busy}>{plugin.shareContext?.remotePluginId?"Update share":"Share privately"}</button>}<button onClick={()=>togglePlugin(plugin)} disabled={!!busy||plugin.availability==="unavailable"}>{plugin.installed?"Uninstall":"Install"}</button></div></div>)}</div>}
+        {!pluginSearchRan&&!plugins.length&&<p>No plugin catalog is available in this runtime.</p>}
+        {pluginDetail&&<div className="plugin-detail"><div className="plugin-detail-head"><div><strong>{pluginDetail.summary?.interface?.displayName||pluginDetail.summary?.name}</strong><span>{pluginDetail.marketplaceName}{pluginDetail.summary?.version?` · ${pluginDetail.summary.version}`:""}{pluginDetail.summary?.interface?.developerName?` · ${pluginDetail.summary.interface.developerName}`:""}</span></div><button onClick={()=>{setPluginDetail(null);setPluginSkillDetail(null)}}>Close</button></div>{(pluginDetail.description||pluginDetail.summary?.interface?.longDescription)&&<p>{pluginDetail.description||pluginDetail.summary.interface.longDescription}</p>}{pluginDetail.summary?.interface?.capabilities?.length>0&&<div className="capability-badges">{pluginDetail.summary.interface.capabilities.map(capability=><span className="ok" key={capability}>{capability}</span>)}</div>}<div className="plugin-detail-counts"><span>{pluginDetail.skills?.length||0} skills</span><span>{pluginDetail.hooks?.length||0} hooks</span><span>{pluginDetail.apps?.length||0} apps</span><span>{pluginDetail.mcpServers?.length||0} MCP servers</span><span>{pluginDetail.scheduledTasks?.length||0} scheduled tasks</span></div>{pluginDetail.skills?.length>0&&<div className="plugin-detail-skills">{pluginDetail.skills.map(skill=><div key={skill.name}><div><strong>{skill.interface?.displayName||skill.name}</strong><span>{skill.interface?.shortDescription||skill.shortDescription||skill.description}</span></div>{pluginDetail.summary?.remotePluginId&&pluginDetail.marketplaceName&&<button onClick={()=>readPluginSkill(skill)} disabled={!!busy}>{busy==="plugin:skill:"+skill.name?"Reading…":"Read skill"}</button>}</div>)}</div>}{pluginSkillDetail&&<details className="capability-details" open><summary>{pluginSkillDetail.name} · SKILL.md</summary><pre>{pluginSkillDetail.contents||"No skill contents were returned."}</pre></details>}</div>}
+        {pluginMessage&&<p className="capability-status">{pluginMessage}</p>}
+        <ErrorLine value={errors["plugin/list"]}/><ErrorLine value={errors["plugin/search"]}/><ErrorLine value={errors["plugin/read"]}/><ErrorLine value={errors["plugin/skill/read"]}/><ErrorLine value={errors["plugin/reconcile"]}/><ErrorLine value={errors["plugin/share/save"]}/>
       </Section>
 
       <Section title="Shared plugins" icon={Blocks} count={data.sharedPlugins.length}>

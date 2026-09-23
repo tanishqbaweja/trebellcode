@@ -1,0 +1,75 @@
+import { test,expect } from "@playwright/test";
+import { mkdirSync } from "node:fs";
+import { createServer } from "node:http";
+import { fileURLToPath } from "node:url";
+import { WebSocketServer } from "ws";
+import { attachCodexRelay } from "../../src/codex-relay.mjs";
+
+const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
+async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
+
+test("Codex plugin discovery exposes native search, details, skill contents and reconcile",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"plugin-fixture",name:"Plugin fixture",preview:"Native plugin discovery",cwd:process.cwd(),createdAt:Date.now()-1000,updatedAt:Date.now(),turns:[]};
+  let installed=false;const calls=[];
+  const summary=()=>({id:"weather@official",remotePluginId:"remote-weather",version:"1.2.3",localVersion:installed?"1.2.3":null,name:"weather",source:{type:"remote"},installed,enabled:true,availability:"available",interface:{displayName:"Weather Wizard",shortDescription:"Forecast tools",longDescription:"Search forecasts and weather alerts before installing.",developerName:"Trebell Labs",capabilities:["forecast","alerts"]},keywords:["weather"]});
+  const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const sockets=new Set();
+  upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
+  upstreamWss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",data=>{
+      const message=JSON.parse(String(data));if(message.id==null||!message.method)return;calls.push(message);let result={};
+      const respond=value=>ws.send(JSON.stringify({id:message.id,result:value}));
+      if(message.method==="initialize")result={userAgent:"plugin-fixture"};
+      else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
+      else if(message.method==="threadSection/list")result={data:[],nextCursor:null};
+      else if(message.method==="thread/resume"||message.method==="thread/read")result={thread};
+      else if(message.method==="thread/goal/get")result={goal:null};
+      else if(message.method==="thread/attachment/list"||message.method==="thread/queue/list"||message.method==="thread/items/list")result={data:[],nextCursor:null};
+      else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
+      else if(message.method==="skills/list")result={data:[]};
+      else if(message.method==="plugin/list")result={marketplaces:installed?[{name:"official",path:null,plugins:[summary()]}]:[],marketplaceLoadErrors:[],featuredPluginIds:[]};
+      else if(message.method==="plugin/search")result={data:[{plugin:summary(),marketplaceName:"official",marketplacePath:null}],nextCursor:null};
+      else if(message.method==="plugin/read")result={plugin:{marketplaceName:"official",marketplacePath:null,summary:summary(),shareUrl:null,description:"A full weather plugin used to verify discovery.",skills:[{name:"forecast",description:"Forecast skill",shortDescription:"Get the forecast",interface:{displayName:"Forecast skill",shortDescription:"Get the forecast"},path:null,enabled:true}],onboardingSkill:null,hooks:[{key:"weather-hook",eventName:"sessionStart"}],apps:[{id:"weather-app",name:"Weather app"}],appTemplates:[],mcpServers:["weather-mcp"],scheduledTasks:[{key:"daily-weather",name:"Daily weather",prompt:"Check weather",schedule:{type:"daily",time:"08:00"}}]}};
+      else if(message.method==="plugin/skill/read")result={contents:"# Forecast skill\nUse the weather tools to check forecasts."};
+      else if(message.method==="plugin/install"){installed=true;respond({});return}
+      else if(message.method==="plugin/uninstall"){installed=false;respond({});return}
+      else if(message.method==="plugin/reconcile")result={changedPlugins:[{id:"weather@official",hasMcps:true,hasApps:true,hasHooks:true,hasSkills:true}],failedRemotePluginIds:[],failedMaterializationRemotePluginIds:[]};
+      else if(message.method==="permissionProfile/list"||message.method==="mcpServerStatus/list"||message.method==="app/list"||message.method==="hooks/list"||message.method==="experimentalFeature/list"||message.method==="plugin/share/list")result={data:[]};
+      else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
+      else if(message.method==="account/read")result={account:null,requiresOpenaiAuth:false};
+      else if(message.method==="account/rateLimits/read")result={rateLimits:{}};
+      else if(message.method==="account/usage/read")result={};
+      else if(message.method==="config/read")result={config:{},layers:[]};
+      else if(message.method==="configRequirements/read")result={requirements:{}};
+      else if(message.method==="memory/status")result={v2ConsolidatedThreads:20,v2Ready:true};
+      else if(message.method==="thread/unsubscribe")result={status:"unsubscribed"};
+      respond(result);
+    });
+  });
+  const upstreamPort=await freePort();await new Promise((resolve,reject)=>upstreamHttp.listen(upstreamPort,"127.0.0.1",resolve).once("error",reject));
+  const relayHttp=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachCodexRelay(relayHttp,{targetUrl:`ws://127.0.0.1:${upstreamPort}`});
+  const relayPort=await freePort();await new Promise((resolve,reject)=>relayHttp.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${relayPort}/api/codex/ws`,cwd:process.cwd(),platform:"linux",version:"plugin-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+    await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.goto("/");await page.getByRole("button",{name:/Plugin fixture/}).click();await page.getByRole("button",{name:"Tools",exact:true}).click();
+    const card=page.locator(".capability-card").filter({has:page.getByText("Plugins",{exact:true})}).first();const search=card.getByPlaceholder("Search plugin catalog");await search.fill("weather");await card.getByRole("button",{name:"Search",exact:true}).click();
+    await expect(card).toContainText("Weather Wizard");const searchCall=calls.find(call=>call.method==="plugin/search");expect(searchCall?.params).toEqual({searchTerm:"weather",scope:"global",cwds:[process.cwd()],cursor:null,limit:20});
+    const resultRow=card.locator(".plugin-search-results>div").filter({hasText:"Weather Wizard"});await resultRow.getByRole("button",{name:"Details"}).click();
+    await expect(card).toContainText("Trebell Labs");await expect(card).toContainText("1 skills");await expect(card).toContainText("1 scheduled tasks");
+    const detailCall=calls.find(call=>call.method==="plugin/read");expect(detailCall?.params).toEqual({marketplacePath:null,remoteMarketplaceName:"official",pluginName:"weather"});
+    await card.getByRole("button",{name:"Read skill"}).click();await expect(card).toContainText("Use the weather tools to check forecasts.");
+    expect(calls.find(call=>call.method==="plugin/skill/read")?.params).toEqual({remoteMarketplaceName:"official",remotePluginId:"remote-weather",skillName:"forecast"});
+    await resultRow.getByRole("button",{name:"Install"}).click();await expect(resultRow.getByRole("button",{name:"Uninstall"})).toBeVisible();
+    const installCall=calls.find(call=>call.method==="plugin/install");expect(installCall?.params?.pluginName).toBe("weather");expect(installCall?.params?.remoteMarketplaceName).toBe("official");expect(installCall?.params?.marketplacePath).toBeNull();expect(installCall?.params?.installAttemptId).toBeTruthy();
+    await card.getByRole("button",{name:"Reconcile"}).click();await expect(card).toContainText("1 plugin change reconciled.");expect(calls.some(call=>call.method==="plugin/reconcile"&&call.params?.reason==="trebell-tools-refresh")).toBe(true);
+    await page.screenshot({path:auditDir+"tools-plugin-discovery-1600x980.png",fullPage:true});
+    await page.setViewportSize({width:1280,height:800});const overflow=await card.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(overflow.scroll).toBeLessThanOrEqual(overflow.client+1);await page.screenshot({path:auditDir+"tools-plugin-discovery-1280x800.png",fullPage:true});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({path:auditDir+"tools-plugin-discovery-light-1280x800.png",fullPage:true});
+  }finally{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}
+});
