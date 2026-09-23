@@ -1,6 +1,6 @@
 import { test,expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
-import { mkdtemp,rm } from "node:fs/promises";
+import { mkdir,mkdtemp,rm,writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -175,6 +175,28 @@ test("composer file mentions search the workspace and attach the selected file",
   expect(mentionBox.x).toBeGreaterThanOrEqual(mainBox.x);
   expect(mentionBox.x+mentionBox.width).toBeLessThanOrEqual(mainBox.x+mainBox.width+1);
   await page.screenshot({path:auditDir+"light-chat-file-mention-menu-1280x800.png",fullPage:true});
+});
+
+test("composer file mentions use fuzzy shared workspace search",async({page,request})=>{
+  test.setTimeout(30_000);
+  const dir=await mkdtemp(join(tmpdir(),"trebell-fuzzy-mention-"));
+  try{
+    const components=join(dir,"src","components"),utils=join(dir,"src","utils");
+    await Promise.all([mkdir(components,{recursive:true}),mkdir(utils,{recursive:true})]);
+    await Promise.all([
+      writeFile(join(components,"UserCard.jsx"),"export const UserCard=()=>null;\n","utf8"),
+      writeFile(join(utils,"compareUsers.js"),"export function compareUsers(){}\n","utf8"),
+    ]);
+    await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff"}});
+    await request.post("/api/projects",{data:{path:dir,name:"Fuzzy Mention Workspace",activate:true}});
+    await page.goto("/");
+    const composer=page.getByTestId("composer");await expect(composer).toBeVisible();await composer.fill("Inspect @ucard");
+    const menu=page.getByTestId("file-mention-menu");await expect(menu).toBeVisible();
+    const match=menu.getByRole("button").filter({hasText:"UserCard.jsx"}).first();await expect(match).toBeVisible();
+    await expect(menu).not.toContainText("compareUsers.js");
+    await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"chat-fuzzy-file-mention-1280x800.png",fullPage:true});
+    await match.click();await expect(page.getByTestId("context-chips")).toContainText("UserCard.jsx");await expect(composer).toHaveValue(/Inspect @src[\\/]components[\\/]UserCard\.jsx /);
+  }finally{await rm(dir,{recursive:true,force:true})}
 });
 
 test("navigation history shortcuts visibly restore prior app surfaces",async({page,request})=>{

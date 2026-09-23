@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import {
   environmentWorkspaceDiff,
   environmentWorkspaceFile,
@@ -13,6 +15,8 @@ import {
   workspaceWriteFile,
 } from "../src/workspace.mjs";
 
+const execFileAsync=promisify(execFile);
+
 test("workspace search and write are backed by real files",async()=>{
   const dir=await mkdtemp(join(tmpdir(),"trebell-workspace-"));
   try{
@@ -21,6 +25,24 @@ test("workspace search and write are backed by real files",async()=>{
     const result=await workspaceSearch(dir,"example");
     assert.equal(result.items.length,1);
     assert.equal(result.items[0].path,path);
+    const fuzzy=await workspaceSearch(dir,"exjs");
+    assert.equal(fuzzy.items[0].path,path);
+  }finally{await rm(dir,{recursive:true,force:true});}
+});
+
+test("workspace search uses Git discovery and fuzzy ranking beyond the old tree depth",async()=>{
+  const dir=await mkdtemp(join(tmpdir(),"trebell-workspace-git-"));
+  try{
+    await execFileAsync("git",["init","-q"],{cwd:dir});
+    const deep=join(dir,"src","components","nested","a","b","c","d","e","f","UserCard.jsx");
+    const compare=join(dir,"src","utils","compareUsers.js");
+    await workspaceWriteFile(deep,"export const UserCard=()=>null;\n");
+    await workspaceWriteFile(compare,"export function compareUsers(){}\n");
+    const userCard=await workspaceSearch(dir,"ucard",{limit:10});
+    assert.equal(userCard.source,"git");
+    assert.equal(userCard.items[0].path,deep);
+    const users=await workspaceSearch(dir,"cmpusr",{limit:10});
+    assert.equal(users.items[0].path,compare);
   }finally{await rm(dir,{recursive:true,force:true});}
 });
 
@@ -35,6 +57,7 @@ function remoteEnvironment(){
       if(options.command==="find"&&options.args.includes("d"))return {exitCode:0,stdout:"/srv/app/src\n/srv/app/docs\n",stderr:""};
       if(options.command==="find"&&options.args.includes("f"))return {exitCode:0,stdout:"/srv/app/src/index.js\n/srv/app/README.md\n",stderr:""};
       if(options.command==="cat")return {exitCode:0,stdout:"export const ok=1;\n",stderr:""};
+      if(options.command==="git"&&options.args.includes("ls-files"))return {exitCode:0,stdout:"src/index.js\0README.md\0",stderr:""};
       if(options.command==="git"&&options.args[0]==="rev-parse")return {exitCode:0,stdout:"/srv/app\n",stderr:""};
       if(options.command==="git"&&options.args[0]==="diff")return {exitCode:0,stdout:"+remote change\n",stderr:""};
       if(options.command==="git"&&options.args[0]==="status")return {exitCode:0,stdout:" M src/index.js\n",stderr:""};
@@ -53,6 +76,9 @@ test("remote workspace tree, search, read, diff and write stay inside the select
   ]);
   const search=await environmentWorkspaceSearch("/srv/app","index",{...options,limit:10});
   assert.deepEqual(search.items.map(item=>item.path),["/srv/app/src/index.js"]);
+  const fuzzySearch=await environmentWorkspaceSearch("/srv/app","sidx",{...options,limit:10});
+  assert.equal(fuzzySearch.source,"git");
+  assert.deepEqual(fuzzySearch.items.map(item=>item.path),["/srv/app/src/index.js"]);
   const file=await environmentWorkspaceFile("/srv/app/src/index.js",512000,{...options,root:"/srv/app"});
   assert.equal(file.content,"export const ok=1;\n");
   const diff=await environmentWorkspaceDiff("/srv/app",options);

@@ -31,6 +31,74 @@ function remoteFindArgs(root,depth,type){
   return args;
 }
 
+function gitFileEntries(raw,root,{remote=false}={}){
+  const value=String(raw||"");
+  const paths=(value.includes("\0")?value.split("\0"):value.split(/\r?\n/)).map(item=>item.trim()).filter(Boolean);
+  return paths.filter(relativePath=>{
+    const parts=relativePath.replace(/\\/g,"/").split("/").filter(Boolean);
+    return parts.length&&!parts.some(part=>SKIP.has(part))&&!parts.includes("..");
+  }).map(relativePath=>{
+    const normalized=remote?relativePath.replace(/\\/g,"/"):relativePath;
+    const path=remote?posix.join(root,normalized):resolve(root,normalized);
+    const name=remote?posix.basename(normalized):basename(normalized);
+    return {name,path,relativePath:normalized,isDirectory:false,isFile:true,depth:Math.max(0,normalized.replace(/\\/g,"/").split("/").length-1)};
+  });
+}
+
+function compactSearchText(value){return String(value||"").toLowerCase().replace(/[^a-z0-9]/g,"")}
+function subsequenceScore(query,value){
+  if(!query||!value)return null;
+  let cursor=0,first=-1,previous=-2,gaps=0,streak=0;
+  for(const character of query){
+    const index=value.indexOf(character,cursor);if(index<0)return null;
+    if(first<0)first=index;
+    gaps+=Math.max(0,index-cursor);
+    if(index===previous+1)streak++;
+    previous=index;cursor=index+1;
+  }
+  return first*2+gaps*4+Math.max(0,value.length-query.length)*0.08-streak*1.5;
+}
+
+function workspaceSearchScore(entry,query){
+  const needle=String(query||"").trim().toLowerCase().replace(/\\/g,"/");
+  if(!needle)return null;
+  const name=String(entry.name||"").toLowerCase().replace(/\\/g,"/");
+  const path=String(entry.relativePath||entry.path||"").toLowerCase().replace(/\\/g,"/");
+  if(name===needle)return 0;
+  if(path===needle)return 2;
+  if(name.startsWith(needle))return 10+(name.length-needle.length)*0.05;
+  if(path.startsWith(needle))return 20+(path.length-needle.length)*0.03;
+  const nameIndex=name.indexOf(needle);if(nameIndex>=0)return 30+nameIndex+(name.length-needle.length)*0.05;
+  const pathIndex=path.indexOf(needle);if(pathIndex>=0)return 40+pathIndex+(path.length-needle.length)*0.03;
+  const compactNeedle=compactSearchText(needle);if(!compactNeedle)return null;
+  const nameFuzzy=subsequenceScore(compactNeedle,compactSearchText(name));
+  const pathFuzzy=subsequenceScore(compactNeedle,compactSearchText(path));
+  if(nameFuzzy==null&&pathFuzzy==null)return null;
+  return Math.min(nameFuzzy==null?Infinity:60+nameFuzzy,pathFuzzy==null?Infinity:80+pathFuzzy);
+}
+
+export function rankWorkspaceSearchItems(entries,query,{limit=100}={}){
+  const bounded=Math.max(1,Math.min(500,Number(limit)||100));
+  return (entries||[]).filter(entry=>entry?.isFile!==false).map(entry=>({entry,score:workspaceSearchScore(entry,query)}))
+    .filter(item=>item.score!=null&&Number.isFinite(item.score))
+    .sort((a,b)=>a.score-b.score||String(a.entry.relativePath||a.entry.path||"").length-String(b.entry.relativePath||b.entry.path||"").length||String(a.entry.relativePath||a.entry.path||"").localeCompare(String(b.entry.relativePath||b.entry.path||"")))
+    .slice(0,bounded).map(item=>item.entry);
+}
+
+async function localGitFiles(root){
+  try{
+    const {stdout}=await execFileAsync("git",["-C",root,"ls-files","-co","--exclude-standard","-z"],{windowsHide:true,maxBuffer:16*1024*1024,timeout:12000});
+    return {available:true,entries:gitFileEntries(stdout,root)};
+  }catch{return {available:false,entries:[]}}
+}
+
+async function remoteGitFiles(environments,environmentId,root){
+  try{
+    const result=await environments.executeArgv(environmentId,{command:"git",args:["-C",root,"ls-files","-co","--exclude-standard","-z"],cwd:"",timeoutMs:15000,maxOutput:16*1024*1024});
+    return result.exitCode===0?{available:true,entries:gitFileEntries(result.stdout,root,{remote:true})}:{available:false,entries:[]};
+  }catch{return {available:false,entries:[]}}
+}
+
 async function remoteTree(environments,environmentId,root,{depth=3,limit=500}={}){
   const profile=remoteProfile(environments,environmentId);if(!profile)return null;
   const base=posix.normalize(String(root||profile.cwd||"/"));
@@ -141,26 +209,24 @@ export async function environmentWorkspaceFile(filePath,maxBytes=512_000,{root=n
 
 export async function workspaceSearch(root, query, { limit = 100 } = {}) {
   const absolute=resolve(root||process.cwd());
-  const needle=String(query||"").trim().toLowerCase();
+  const needle=String(query||"").trim();
   if(!needle) return {root:absolute,items:[]};
-  const tree=await workspaceTree(absolute,{depth:8,limit:3000});
-  const items=tree.entries
-    .filter(entry=>entry.isFile && (entry.name.toLowerCase().includes(needle)||entry.relativePath.toLowerCase().includes(needle)))
-    .slice(0,limit);
-  return {root:absolute,items};
+  const gitFiles=await localGitFiles(absolute);
+  if(gitFiles.available)return {root:absolute,items:rankWorkspaceSearchItems(gitFiles.entries,needle,{limit}),source:"git"};
+  const tree=await workspaceTree(absolute,{depth:12,limit:12000});
+  return {root:absolute,items:rankWorkspaceSearchItems(tree.entries,needle,{limit}),source:"tree",truncated:tree.truncated};
 }
 
 export async function environmentWorkspaceSearch(root,query,{limit=100,environments=null,environmentId=null}={}){
   const profile=remoteProfile(environments,environmentId);
   if(!profile)return workspaceSearch(root,query,{limit});
   const absolute=posix.normalize(String(root||profile.cwd||"/"));
-  const needle=String(query||"").trim().toLowerCase();
+  const needle=String(query||"").trim();
   if(!needle)return {root:absolute,items:[],environmentId};
-  const tree=await remoteTree(environments,environmentId,absolute,{depth:8,limit:3000});
-  const items=tree.entries
-    .filter(entry=>entry.isFile&&(entry.name.toLowerCase().includes(needle)||entry.relativePath.toLowerCase().includes(needle)))
-    .slice(0,limit);
-  return {root:absolute,items,environmentId};
+  const gitFiles=await remoteGitFiles(environments,environmentId,absolute);
+  if(gitFiles.available)return {root:absolute,items:rankWorkspaceSearchItems(gitFiles.entries,needle,{limit}),environmentId,source:"git"};
+  const tree=await remoteTree(environments,environmentId,absolute,{depth:12,limit:8000});
+  return {root:absolute,items:rankWorkspaceSearchItems(tree.entries,needle,{limit}),environmentId,source:"tree",truncated:tree.truncated};
 }
 
 export async function workspaceWriteFile(filePath, content) {
