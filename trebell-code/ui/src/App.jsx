@@ -37,7 +37,7 @@ import { resolveKeybinding } from "./keybindings.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
 import { applyFileMention, fileMentionAt, rankFileMentions } from "./composer-mentions.js";
 import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, reorderQueue } from "./native-queue.js";
-import { historyFromTurns, mergeHistoryMessages } from "./thread-history.js";
+import { historyFromItemEntries, historyFromTurns, mergeHistoryMessages } from "./thread-history.js";
 import { normalizeCustomTheme, themeCssVariables } from "./theme-utils.js";
 import { approvalResponse } from "./approval-utils.js";
 import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./fanout-utils.js";
@@ -50,6 +50,44 @@ import { resizeTextarea } from "./textarea-size.js";
 
 const MAX_COMPOSER_ATTACHMENTS=100;
 const MAX_COMPOSER_CHARS=120_000;
+const CODEX_HISTORY_ITEM_PAGE_LIMIT=100;
+const CODEX_HISTORY_ITEM_SCAN_PAGES=4;
+const CODEX_HISTORY_TURN_PAGE_LIMIT=40;
+
+function visibleHistoryEntry(entry){
+  const item=entry?.item;
+  return item?.type==="userMessage"||item?.type==="agentMessage";
+}
+
+async function loadCodexItemHistoryPage(rpc,threadId,cursor){
+  let nextCursor=cursor||null,backwardsCursor=null;const data=[];
+  for(let pageIndex=0;nextCursor&&pageIndex<CODEX_HISTORY_ITEM_SCAN_PAGES;pageIndex++){
+    const page=await rpc.request("thread/items/list",{threadId,cursor:nextCursor,limit:CODEX_HISTORY_ITEM_PAGE_LIMIT,sortDirection:"desc"});
+    if(pageIndex===0)backwardsCursor=page?.backwardsCursor||null;
+    data.push(...(page?.data||[]));nextCursor=page?.nextCursor||null;
+    if(data.some(visibleHistoryEntry)||!nextCursor)break;
+  }
+  return {data,nextCursor,backwardsCursor};
+}
+
+async function resumeCodexWithBoundedHistory(rpc,params){
+  try{
+    const resumed=await rpc.request("thread/resume",{...params,excludeTurns:true});
+    const itemCursor=resumed?.itemsBackwardsCursor||null;
+    if(itemCursor){
+      try{return {...resumed,__trebellHistoryPage:{kind:"items",...await loadCodexItemHistoryPage(rpc,params.threadId,itemCursor)}}}catch{}
+    }
+    const turnCursor=resumed?.turnsBackwardsCursor||null;
+    if(turnCursor){
+      try{
+        const page=await rpc.request("thread/turns/list",{threadId:params.threadId,cursor:turnCursor,limit:CODEX_HISTORY_TURN_PAGE_LIMIT,sortDirection:"desc",itemsView:"full"});
+        return {...resumed,__trebellHistoryPage:{kind:"turns",...(page||{})}};
+      }catch{}
+    }
+    if(resumed?.thread?.historyMode==="paginated")return {...resumed,__trebellHistoryPage:{kind:"items",data:[],nextCursor:null,backwardsCursor:null}};
+  }catch{}
+  return rpc.request("thread/resume",{...params,excludeTurns:false}).then(result=>({...result,__trebellFullHistoryFallback:true})).catch(()=>null);
+}
 
 const TREBELL_BROWSER_TOOLS=[{
   type:"namespace",
@@ -1427,9 +1465,7 @@ export default function App(){
     else if(thread.cwd)await touchProject(thread.cwd,threadEnvironmentId);else setProjectPath(projectPath);
     if(!rpc||rpcStatus!=="connected")return;
     const resumePromise=agentRuntime==="codex"
-      ?rpc.request("thread/resume",{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null,excludeTurns:true,initialTurnsPage:{limit:40,sortDirection:"desc",itemsView:"full"}})
-        .then(result=>result?.initialTurnsPage?result:rpc.request("thread/resume",{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null,excludeTurns:false}).then(fallback=>({...fallback,__trebellFullHistoryFallback:true})))
-        .catch(()=>rpc.request("thread/resume",{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null,excludeTurns:false}).then(result=>({...result,__trebellFullHistoryFallback:true})).catch(()=>null))
+      ?resumeCodexWithBoundedHistory(rpc,{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null})
       :rpc.request("thread/resume",{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null,excludeTurns:false}).catch(()=>null);
     const [resumed,cp,goalData,attachmentData]=await Promise.all([
       resumePromise,
@@ -1440,8 +1476,10 @@ export default function App(){
     const map=Object.fromEntries((cp.checkpoints||[]).filter(x=>x.turnId).map(x=>[x.turnId,x]));setCheckpointByTurn(map);
     if(resumed?.thread){
       activeThreadRef.current=resumed.thread;pendingThreadScrollRestoreRef.current=resumed.thread.id;setActiveThread(resumed.thread);
-      if(agentRuntime==="codex"&&resumed.initialTurnsPage&&!resumed.__trebellFullHistoryFallback){
-        const page=resumed.initialTurnsPage;setMessages(historyFromTurns([...(page.data||[])].reverse(),map));setHistoryPage({threadId:resumed.thread.id,nextCursor:page.nextCursor||null,paginated:true,loading:false});
+      if(agentRuntime==="codex"&&resumed.__trebellHistoryPage&&!resumed.__trebellFullHistoryFallback){
+        const page=resumed.__trebellHistoryPage;
+        const history=page.kind==="items"?historyFromItemEntries([...(page.data||[])].reverse(),map):historyFromTurns([...(page.data||[])].reverse(),map);
+        setMessages(history);setHistoryPage({threadId:resumed.thread.id,nextCursor:page.nextCursor||null,paginated:true,itemPaging:page.kind==="items",loading:false});
       }else{setMessages(historyFromThread(resumed.thread,map));setHistoryPage({threadId:resumed.thread.id,nextCursor:null,paginated:false,loading:false})}
       setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex"){const meta=resumed.thread.providerMeta||{};applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}
     }
@@ -1455,12 +1493,16 @@ export default function App(){
     if(agentRuntime!=="codex"||!rpc||rpcStatus!=="connected"||!threadId||!cursor||historyPage.loading)return;
     const node=conversationScrollRef.current;setHistoryPage(current=>current.threadId===threadId?{...current,loading:true}:current);
     try{
-      const page=await rpc.request("thread/turns/list",{threadId,cursor,limit:40,sortDirection:"desc",itemsView:"full"});
+      const page=historyPage.itemPaging
+        ?await loadCodexItemHistoryPage(rpc,threadId,cursor)
+        :await rpc.request("thread/turns/list",{threadId,cursor,limit:CODEX_HISTORY_TURN_PAGE_LIMIT,sortDirection:"desc",itemsView:"full"});
       if(activeThreadRef.current?.id!==threadId)return;
-      const earlier=historyFromTurns([...(page?.data||[])].reverse(),checkpointByTurn);
+      const earlier=historyPage.itemPaging
+        ?historyFromItemEntries([...(page?.data||[])].reverse(),checkpointByTurn)
+        :historyFromTurns([...(page?.data||[])].reverse(),checkpointByTurn);
       if(earlier.length&&node)pendingHistoryPrependRef.current={threadId,scrollHeight:node.scrollHeight,scrollTop:node.scrollTop};
       if(earlier.length)setMessages(current=>mergeHistoryMessages(earlier,current));
-      setHistoryPage({threadId,nextCursor:page?.nextCursor||null,paginated:true,loading:false});
+      setHistoryPage({threadId,nextCursor:page?.nextCursor||null,paginated:true,itemPaging:Boolean(historyPage.itemPaging),loading:false});
     }catch(error){
       if(activeThreadRef.current?.id===threadId){setHistoryPage(current=>current.threadId===threadId?{...current,loading:false}:current);setEvents(prev=>[...prev,{id:"history-page-error-"+Date.now(),kind:"error",title:"Could not load earlier messages: "+(error.message||String(error)),status:"done",raw:{}}])}
     }
@@ -1478,9 +1520,23 @@ export default function App(){
     const threadId=activeThreadRef.current?.id;if(!threadId)return;
     const itemId=String(occurrence.itemId||"");
     if(itemId&&!messages.some(message=>String(message.id)===itemId)){
-      const page=await rpc.request("thread/turns/list",{threadId,cursor:occurrence.turnCursor,limit:1,itemsView:"full"});
+      let found=[];
+      if(historyPage.itemPaging){
+        try{
+          let cursor=null;
+          for(let pageIndex=0;pageIndex<CODEX_HISTORY_ITEM_SCAN_PAGES;pageIndex++){
+            const page=await rpc.request("thread/items/list",{threadId,turnId:occurrence.turnId,cursor,limit:CODEX_HISTORY_ITEM_PAGE_LIMIT,sortDirection:"asc"});
+            found=mergeHistoryMessages(found,historyFromItemEntries(page?.data||[],checkpointByTurn));
+            if(found.some(message=>String(message.id)===itemId)||!page?.nextCursor)break;
+            cursor=page.nextCursor;
+          }
+        }catch{}
+      }
+      if(!found.some(message=>String(message.id)===itemId)&&occurrence.turnCursor){
+        const page=await rpc.request("thread/turns/list",{threadId,cursor:occurrence.turnCursor,limit:1,itemsView:"full"});
+        found=mergeHistoryMessages(found,historyFromTurns(page?.data||[],checkpointByTurn));
+      }
       if(activeThreadRef.current?.id!==threadId||(expectedSeq!=null&&expectedSeq!==threadFindSeqRef.current))return;
-      const found=historyFromTurns(page?.data||[],checkpointByTurn);
       if(found.length)setMessages(current=>mergeHistoryMessages(found,current));
     }
     if(activeThreadRef.current?.id!==threadId||(expectedSeq!=null&&expectedSeq!==threadFindSeqRef.current))return;

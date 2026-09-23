@@ -72,7 +72,9 @@ test("Codex skills expose disabled entries, persistent toggles and runtime extra
     await expect(card).toContainText("2 runtime skill roots applied");
     const rootsCall=calls.find(call=>call.method==="skills/extraRoots/set");expect(rootsCall?.params).toEqual({extraRoots:["/tmp/trebell-skills","/opt/shared-skills"]});
     await expect(card).toContainText("extra-root");
+    const refreshed=calls.filter(call=>call.method==="skills/list").at(-1);expect(refreshed?.params?.forceReload).toBe(true);
     await page.screenshot({path:auditDir+"tools-skills-managed-1600x980.png",fullPage:true});
     await page.setViewportSize({width:1280,height:800});const overflow=await card.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(overflow.scroll).toBeLessThanOrEqual(overflow.client+1);await page.screenshot({path:auditDir+"tools-skills-managed-1280x800.png",fullPage:true});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({path:auditDir+"tools-skills-managed-light-1280x800.png",fullPage:true});
   }finally{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}
 });

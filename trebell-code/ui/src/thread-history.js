@@ -19,6 +19,21 @@ export function historyFromTurns(turns=[],checkpointByTurn={}){
   return out;
 }
 
+export function historyFromItemEntries(entries=[],checkpointByTurn={}){
+  const out=[];
+  for(const entry of entries||[]){
+    const turnId=entry?.turnId,item=entry?.item;
+    if(!turnId||!item)continue;
+    if(item.type==="userMessage"){
+      const text=messageText(item).trim();
+      if(text)out.push({id:item.id,role:"user",text,turnId,checkpointId:checkpointByTurn[turnId]?.id||null});
+    }else if(item.type==="agentMessage"&&item.text?.trim()){
+      out.push({id:item.id,role:"assistant",text:item.text,turnId});
+    }
+  }
+  return out;
+}
+
 export function mergeHistoryMessages(earlier=[],current=[]){
   const seen=new Set();const merged=[];
   for(const message of [...(earlier||[]),...(current||[])]){

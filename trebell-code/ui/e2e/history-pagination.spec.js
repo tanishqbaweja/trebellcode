@@ -22,10 +22,14 @@ function turn(index){
   ]};
 }
 
-test("Codex thread history opens from a bounded page and loads older turns on demand",async({page})=>{
+function entries(turns){
+  return turns.flatMap(value=>value.items.map(item=>({turnId:value.id,item})));
+}
+
+test("Codex thread history opens from bounded item pages and loads older items on demand",async({page})=>{
   test.setTimeout(35_000);
-  const thread={id:"history-page-fixture",name:"Paginated history fixture",preview:"Bounded Codex history",cwd:process.cwd(),createdAt:Date.now()-1000,updatedAt:Date.now(),turns:[]};
-  const legacyThread={id:"history-legacy-fixture",name:"Legacy history fixture",preview:"Fallback full history",cwd:process.cwd(),createdAt:Date.now()-2000,updatedAt:Date.now()-500,turns:[]};
+  const thread={id:"history-page-fixture",name:"Paginated history fixture",preview:"Bounded Codex history",historyMode:"paginated",cwd:process.cwd(),createdAt:Date.now()-1000,updatedAt:Date.now(),turns:[]};
+  const legacyThread={id:"history-legacy-fixture",name:"Legacy history fixture",preview:"Fallback full history",historyMode:"legacy",cwd:process.cwd(),createdAt:Date.now()-2000,updatedAt:Date.now()-500,turns:[]};
   const latest=Array.from({length:10},(_,index)=>turn(index+11)).reverse();
   const older=Array.from({length:10},(_,index)=>turn(index+1)).reverse();
   const calls=[];
@@ -40,7 +44,7 @@ test("Codex thread history opens from a bounded page and loads older turns on de
       else if(message.method==="threadSection/list")result={data:[],nextCursor:null};
       else if(message.method==="thread/resume"){
         if(message.params.threadId===legacyThread.id)result=message.params.excludeTurns===false?{thread:{...legacyThread,turns:[turn(99)]}}:{thread:legacyThread};
-        else result={thread,initialTurnsPage:{data:latest,nextCursor:"older-page",backwardsCursor:"latest-anchor"}};
+        else result={thread,itemsBackwardsCursor:"latest-items",turnsBackwardsCursor:"latest-turn"};
       }
       else if(message.method==="thread/turns/list"){
         const direct=String(message.params.cursor||"").match(/^cursor-turn-(\d+)$/);
@@ -56,7 +60,13 @@ test("Codex thread history opens from a bounded page and loads older turns on de
       else if(message.method==="thread/goal/get")result={goal:null};
       else if(message.method==="thread/attachment/list")result={data:[],nextCursor:null};
       else if(message.method==="thread/queue/list")result={data:[],nextCursor:null};
-      else if(message.method==="thread/items/list")result={data:[],nextCursor:null};
+      else if(message.method==="thread/items/list"){
+        if(message.params.turnId){
+          const direct=String(message.params.turnId).match(/^turn-(\d+)$/);result={data:direct?entries([turn(Number(direct[1]))]):[],nextCursor:null};
+        }else if(message.params.cursor==="latest-items")result={data:entries([...latest].reverse()).reverse(),nextCursor:"older-items",backwardsCursor:"latest-items"};
+        else if(message.params.cursor==="older-items")result={data:entries([...older].reverse()).reverse(),nextCursor:null,backwardsCursor:"older-items"};
+        else result={data:[],nextCursor:null};
+      }
       else if(message.method==="skills/list")result={data:[]};
       else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
       else if(message.method==="thread/unsubscribe")result={status:"unsubscribed"};
@@ -76,15 +86,20 @@ test("Codex thread history opens from a bounded page and loads older turns on de
     await page.goto("/");await page.getByRole("button",{name:/Paginated history fixture/}).click();
     await expect(page.getByText(/User Message 11 history/)).toBeVisible();await expect(page.getByText(/Assistant Message 20 history/)).toBeVisible();
     await expect(page.getByText(/User Message 1 history/)).toHaveCount(0);
+    expect(await page.locator("[data-message-id]").evaluateAll(nodes=>nodes.map(node=>node.dataset.messageId))).toEqual(
+      Array.from({length:10},(_,index)=>["user-"+(index+11),"assistant-"+(index+11)]).flat()
+    );
     const resumeCall=calls.find(call=>call.method==="thread/resume");
-    expect(resumeCall?.params?.excludeTurns).toBe(true);expect(resumeCall?.params?.initialTurnsPage).toEqual({limit:40,sortDirection:"desc",itemsView:"full"});
+    expect(resumeCall?.params?.excludeTurns).toBe(true);expect(resumeCall?.params?.initialTurnsPage).toBeUndefined();
+    const initialItems=calls.find(call=>call.method==="thread/items/list"&&call.params?.cursor==="latest-items");
+    expect(initialItems?.params).toEqual({threadId:thread.id,cursor:"latest-items",limit:100,sortDirection:"desc"});
     expect(calls.some(call=>call.method==="thread/turns/list")).toBe(false);
     await page.keyboard.press("Control+f");
     const findBar=page.getByTestId("thread-find-bar");await expect(findBar).toBeVisible();
     const findInput=page.getByTestId("thread-find-input");await findInput.fill("needle");
     await expect(findBar.locator(".thread-find-count")).toHaveText("1 / 2+");
     await expect(page.locator('[data-message-id="user-3"]')).toHaveClass(/find-active/);
-    const directTurn=calls.find(call=>call.method==="thread/turns/list"&&call.params?.cursor==="cursor-turn-3");expect(directTurn?.params?.limit).toBe(1);
+    const directTurn=calls.find(call=>call.method==="thread/items/list"&&call.params?.turnId==="turn-3");expect(directTurn?.params).toEqual({threadId:thread.id,turnId:"turn-3",cursor:null,limit:100,sortDirection:"asc"});
     await page.screenshot({path:auditDir+"chat-thread-find-1600x980.png",fullPage:true});
     await findBar.getByRole("button",{name:"Next match"}).click();await expect(findBar.locator(".thread-find-count")).toHaveText("2 / 2+");await expect(page.locator('[data-message-id="assistant-15"]')).toHaveClass(/find-active/);
     await findBar.getByRole("button",{name:"Next match"}).click();await expect(findBar.locator(".thread-find-count")).toHaveText("3 / 3");await expect(page.locator('[data-message-id="assistant-18"]')).toHaveClass(/find-active/);
@@ -99,7 +114,8 @@ test("Codex thread history opens from a bounded page and loads older turns on de
     const before=await scroller.evaluate(node=>({top:node.scrollTop,height:node.scrollHeight}));
     await page.getByRole("button",{name:"Load earlier messages"}).click();
     await expect(page.getByText(/User Message 1 history/)).toBeVisible();await expect(page.getByRole("button",{name:"Load earlier messages"})).toHaveCount(0);
-    const turnsCall=calls.find(call=>call.method==="thread/turns/list"&&call.params?.cursor==="older-page");expect(turnsCall?.params).toEqual({threadId:thread.id,cursor:"older-page",limit:40,sortDirection:"desc",itemsView:"full"});
+    expect((await page.locator("[data-message-id]").evaluateAll(nodes=>nodes.map(node=>node.dataset.messageId))).slice(0,4)).toEqual(["user-1","assistant-1","user-2","assistant-2"]);
+    const itemsCall=calls.find(call=>call.method==="thread/items/list"&&call.params?.cursor==="older-items");expect(itemsCall?.params).toEqual({threadId:thread.id,cursor:"older-items",limit:100,sortDirection:"desc"});
     const after=await scroller.evaluate(node=>({top:node.scrollTop,height:node.scrollHeight}));
     expect(after.height).toBeGreaterThan(before.height);expect(after.top).toBeGreaterThan(0);expect(Math.abs(after.top-(after.height-before.height))).toBeLessThan(80);
     await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"chat-paginated-history-loaded-1280x800.png",fullPage:true});

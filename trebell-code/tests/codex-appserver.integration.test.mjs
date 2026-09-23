@@ -147,6 +147,10 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
       ["configRequirements/read",{}],
       ["mcpServerStatus/list",{limit:20,detail:"full",threadId:null}],
       ["plugin/list",{cwds:[process.cwd()],forceRefetch:false}],
+      ["plugin/search",{searchTerm:"trebell-integration-no-match",scope:"workspace",cwds:[process.cwd()],limit:1}],
+      ["plugin/installed",{cwds:[process.cwd()],installSuggestionPluginNames:[]}],
+      ["plugin/reconcile",{reason:"trebell-integration"}],
+      ["plugin/read",{marketplacePath:join(home,"missing-marketplace"),remoteMarketplaceName:null,pluginName:"trebell-missing-plugin"}],
       ["plugin/share/list",{}],
       ["plugin/share/save",{pluginPath:join(home,"missing-plugin"),discoverability:"PRIVATE",shareTargets:[]}],
       ["plugin/share/checkout",{remotePluginId:"trebell-invalid-plugin-share"}],
@@ -299,7 +303,7 @@ test("native Codex queue persists, edits, reorders, deletes and starts follow-up
   }finally{try{ws?.close()}catch{}await gui.close();await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
 });
 
-test("native Codex history resumes with a bounded turns page and paginates older turns",{timeout:60000},async()=>{
+test("native Codex history resumes with bounded item pages and keeps turn pagination compatible",{timeout:60000},async()=>{
   const [port,appPort]=await Promise.all([freePort(),freePort()]);
   const home=await mkdtemp(join(tmpdir(),"trebell-codex-history-page-"));
   const env={...process.env,TREBELL_HOME:home};const gui=await createGuiServer({port,appPort,mock:false,env});let ws;
@@ -323,17 +327,22 @@ test("native Codex history resumes with a bounded turns page and paginates older
       }
     }
     await rpc(ws,20,"thread/unsubscribe",{threadId});await new Promise(resolve=>setTimeout(resolve,150));
-    const resumed=await rpc(ws,21,"thread/resume",{threadId,modelProvider:"freebuff",excludeTurns:true,initialTurnsPage:{limit:1,sortDirection:"desc",itemsView:"full"}});
+    const resumed=await rpc(ws,21,"thread/resume",{threadId,modelProvider:"freebuff",excludeTurns:true});
     assert.equal(resumed.thread.id,threadId);assert.equal(resumed.thread.turns.length,0,"excludeTurns should keep the resumed thread payload bounded");
-    assert.equal(resumed.initialTurnsPage?.data?.length,1);assert.ok(resumed.initialTurnsPage?.nextCursor,"a one-turn bootstrap page should expose an older-page cursor");
-    const latestId=resumed.initialTurnsPage.data[0].id;
-    const older=await rpc(ws,22,"thread/turns/list",{threadId,cursor:resumed.initialTurnsPage.nextCursor,limit:1,sortDirection:"desc",itemsView:"full"});
-    assert.equal(older.data?.length,1);assert.notEqual(older.data[0].id,latestId);assert.ok(older.nextCursor,"three persisted turns should leave another older page after the second turn");
+    assert.ok(resumed.itemsBackwardsCursor,"paginated resume should expose the newest item cursor");
+    const itemPage=await rpc(ws,25,"thread/items/list",{threadId,cursor:resumed.itemsBackwardsCursor,limit:2,sortDirection:"desc"});
+    assert.ok(itemPage.data?.length,"native item pagination should hydrate persisted history");
+    assert.ok(itemPage.data.every(entry=>entry.turnId&&entry.item?.id),"item pages should retain turn ownership");
+    assert.ok(resumed.turnsBackwardsCursor,"paginated resume should retain a turn cursor for compatibility");
+    const latest=await rpc(ws,22,"thread/turns/list",{threadId,cursor:resumed.turnsBackwardsCursor,limit:1,sortDirection:"desc",itemsView:"notLoaded"});
+    assert.equal(latest.data?.length,1);assert.equal(latest.data[0].items.length,0,"metadata-only turn pagination should not hydrate full items");
     const searched=await rpc(ws,23,"thread/searchOccurrences",{threadId,searchTerm:"history pagination turn 1",limit:10});
     assert.ok(searched.data?.length,"native occurrence search should find the persisted first user message");
     const occurrence=searched.data.find(item=>item.snippet?.toLowerCase().includes("history pagination turn 1"))||searched.data[0];
     assert.ok(occurrence.turnCursor);assert.ok(occurrence.turnId);assert.ok(occurrence.itemId);
-    const jumped=await rpc(ws,24,"thread/turns/list",{threadId,cursor:occurrence.turnCursor,limit:1,itemsView:"full"});
-    assert.equal(jumped.data?.[0]?.id,occurrence.turnId,"the occurrence turn cursor should hydrate the matching turn directly");
+    const jumpedItems=await rpc(ws,24,"thread/items/list",{threadId,turnId:occurrence.turnId,limit:100,sortDirection:"asc"});
+    assert.ok(jumpedItems.data?.some(entry=>entry.item?.id===occurrence.itemId),"the occurrence turn id should hydrate the matching item directly");
+    const jumpedTurn=await rpc(ws,26,"thread/turns/list",{threadId,cursor:occurrence.turnCursor,limit:1,itemsView:"notLoaded"});
+    assert.equal(jumpedTurn.data?.[0]?.id,occurrence.turnId,"the occurrence turn cursor should locate the matching turn without full hydration");
   }finally{try{ws?.close()}catch{}await gui.close();await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
 });

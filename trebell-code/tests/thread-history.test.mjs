@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {historyFromTurns,mergeHistoryMessages,messageText} from "../ui/src/thread-history.js";
+import {historyFromItemEntries,historyFromTurns,mergeHistoryMessages,messageText} from "../ui/src/thread-history.js";
 
 test("paginated Codex turns become chronological visible conversation messages",()=>{
   const turns=[
@@ -14,6 +14,18 @@ test("paginated Codex turns become chronological visible conversation messages",
     {id:"a2",role:"assistant",text:"done",turnId:"t2"},
   ]);
   assert.equal(messageText({content:[{input_text:"legacy"}]}),"legacy");
+});
+
+test("paginated Codex item entries retain turn ownership and checkpoint links",()=>{
+  const entries=[
+    {turnId:"t1",item:{id:"u1",type:"userMessage",text:"hello"}},
+    {turnId:"t1",item:{id:"tool",type:"commandExecution"}},
+    {turnId:"t1",item:{id:"a1",type:"agentMessage",text:"hi"}},
+  ];
+  assert.deepEqual(historyFromItemEntries(entries,{t1:{id:"cp1"}}),[
+    {id:"u1",role:"user",text:"hello",turnId:"t1",checkpointId:"cp1"},
+    {id:"a1",role:"assistant",text:"hi",turnId:"t1"},
+  ]);
 });
 
 test("prepending an overlapping history page does not duplicate messages",()=>{

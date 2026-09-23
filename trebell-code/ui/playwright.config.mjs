@@ -8,7 +8,7 @@ const hostedBaseUrl=String(process.env.TREBELL_E2E_BASE_URL||"").trim();
 const browserChannel=String(process.env.TREBELL_E2E_BROWSER_CHANNEL||"").trim();
 const localPort=Math.max(1024,Math.min(65535,Number(process.env.TREBELL_E2E_PORT)||3210));
 const localBaseUrl="http://127.0.0.1:"+localPort;
-const localTestHome=join(tmpdir(),"trebell-code-e2e-home");
+const localTestHome=join(tmpdir(),"trebell-code-e2e-home-"+localPort);
 const localTestUiDist=join(localTestHome,"ui-dist");
 if(process.platform==="win32"&&process.env.COMSPEC) process.env.COMSPEC=process.env.COMSPEC.trim();
 if(!hostedBaseUrl){
