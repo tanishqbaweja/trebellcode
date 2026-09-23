@@ -699,6 +699,8 @@ test("onboarding and license surfaces are visually intentional",async({page,requ
   await page.goto("/");
   const onboarding=page.getByTestId("onboarding");
   await expect(onboarding).toBeVisible();
+  await expect(onboarding.getByRole("button",{name:/Choose folder|Change/})).toHaveCount(0);
+  await expect(onboarding.locator(".onboarding-static-workspace")).toBeVisible();
   const dialog=onboarding.getByRole("dialog",{name:"Set up Trebell Code"});
   const onboardingBox=await box(dialog);
   expect(onboardingBox.width).toBeLessThanOrEqual(660);
