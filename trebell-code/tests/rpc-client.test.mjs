@@ -56,3 +56,19 @@ test("Codex RPC notifications support independent subscribers without replacing 
     client.close();
   }finally{globalThis.WebSocket=original}
 });
+
+test("Codex RPC notifications are also published to browser surfaces",async()=>{
+  const originalSocket=globalThis.WebSocket,originalWindow=globalThis.window;globalThis.WebSocket=MockWebSocket;
+  const events=[];
+  globalThis.window={
+    CustomEvent:class{constructor(type,options={}){this.type=type;this.detail=options.detail}},
+    dispatchEvent:event=>{events.push(event);return true},
+  };
+  try{
+    const client=new CodexRpcClient("ws://test");await client.connect();
+    client.socket.emit("message",{data:JSON.stringify({method:"turn/diff/updated",params:{threadId:"thread-1",diff:[]}})});
+    assert.equal(events.length,1);assert.equal(events[0].type,"trebell:rpc-notification");
+    assert.deepEqual(events[0].detail,{method:"turn/diff/updated",params:{threadId:"thread-1",diff:[]}});
+    client.close();
+  }finally{globalThis.WebSocket=originalSocket;if(originalWindow===undefined)delete globalThis.window;else globalThis.window=originalWindow}
+});

@@ -199,6 +199,27 @@ test("composer file mentions use fuzzy shared workspace search",async({page,requ
   }finally{await rm(dir,{recursive:true,force:true})}
 });
 
+test("workspace panel refreshes from live RPC file-change notifications",async({page,request})=>{
+  test.setTimeout(30_000);
+  const dir=await mkdtemp(join(tmpdir(),"trebell-live-workspace-"));
+  try{
+    await writeFile(join(dir,"initial.txt"),"initial\n","utf8");
+    await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff"}});
+    await request.post("/api/projects",{data:{path:dir,name:"Live Workspace",activate:true}});
+    await page.goto("/");
+    await page.getByTestId("right-panel-toggle").click();
+    const panel=page.getByTestId("right-panel");await expect(panel).toBeVisible();await expect(panel).toContainText("initial.txt");
+    await writeFile(join(dir,"agent-created.txt"),"created by agent\n","utf8");
+    await page.evaluate(()=>window.dispatchEvent(new CustomEvent("trebell:rpc-notification",{detail:{method:"item/fileChange/patchUpdated",params:{}}})));
+    await expect(panel).toContainText("agent-created.txt");
+    await page.setViewportSize({width:1280,height:800});
+    await page.screenshot({path:auditDir+"workspace-live-file-refresh-1280x800.png",fullPage:true});
+    await request.post("/api/settings",{data:{appearance:"light",appearanceMode:"light"}});
+    await page.reload();await page.getByTestId("right-panel-toggle").click();await expect(page.getByTestId("right-panel")).toContainText("agent-created.txt");
+    await page.screenshot({path:auditDir+"workspace-live-file-refresh-light-1280x800.png",fullPage:true});
+  }finally{await rm(dir,{recursive:true,force:true})}
+});
+
 test("navigation history shortcuts visibly restore prior app surfaces",async({page,request})=>{
   test.setTimeout(35_000);
   await prepare(page,request);
@@ -309,6 +330,7 @@ test("settings page visual audit",async({page,request})=>{
   await page.getByRole("button",{name:/Diagnostics/}).click();
   await expect(page.getByRole("heading",{name:"Diagnostics",level:3})).toBeVisible();
   await expect(page.getByText("Runtime log",{exact:true})).toBeVisible();
+  await expect(page.getByText("No runtime activity yet",{exact:true})).toBeVisible();
   await page.screenshot({path:auditDir+"settings-diagnostics-1600x980.png",fullPage:true});
 
   await page.getByRole("button",{name:/General/}).click();

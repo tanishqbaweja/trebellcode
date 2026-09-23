@@ -123,6 +123,11 @@ export class CodexRpcClient {
       for (const listener of [...this.notificationListeners]) {
         try { listener(message); } catch {}
       }
+      try {
+        if (typeof window !== "undefined" && typeof window.dispatchEvent === "function" && typeof window.CustomEvent === "function") {
+          window.dispatchEvent(new window.CustomEvent("trebell:rpc-notification", { detail: message }));
+        }
+      } catch {}
     }
   }
 }

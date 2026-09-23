@@ -68,7 +68,7 @@ function fileIcon(name){
   return <FileCode2 size={14}/>;
 }
 
-export default function WorkspacePanel({projectPath,environmentId=null,remote=false,defaultTab="files",allowDiff=true,reviewedFiles=[],onReviewedChange,onAttachPath,onReviewComment}){
+export default function WorkspacePanel({projectPath,environmentId=null,remote=false,defaultTab="files",allowDiff=true,activeThreadId=null,reviewedFiles=[],onReviewedChange,onAttachPath,onReviewComment}){
   const [tab,setTab]=useState(defaultTab==="diff"?"diff":"files");
   const [entries,setEntries]=useState([]);
   const [query,setQuery]=useState("");
@@ -97,6 +97,25 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   }
   useEffect(()=>{refreshTree();refreshDiff();setFile(null);setError("");},[projectPath,environmentId]);
   useEffect(()=>{setTab(defaultTab==="diff"?"diff":"files")},[defaultTab]);
+  useEffect(()=>{
+    let timer=null;
+    const changed=event=>{
+      const message=event.detail||{},params=message.params||{};
+      const fileChange=message.method==="item/fileChange/outputDelta"||message.method==="item/fileChange/patchUpdated"||(message.method==="item/completed"&&params.item?.type==="fileChange");
+      const settled=message.method==="turn/diff/updated"||message.method==="turn/completed";
+      if(!fileChange&&!settled)return;
+      if(activeThreadId&&params.threadId&&params.threadId!==activeThreadId)return;
+      if(!activeThreadId&&params.threadId)return;
+      if(timer)clearTimeout(timer);
+      timer=setTimeout(()=>{
+        refreshTree();
+        if(allowDiff)refreshDiff();
+        if(file?.path&&!edit)open(file.path);
+      },120);
+    };
+    window.addEventListener("trebell:rpc-notification",changed);
+    return()=>{if(timer)clearTimeout(timer);window.removeEventListener("trebell:rpc-notification",changed)};
+  },[activeThreadId,projectPath,environmentId,allowDiff,file?.path,edit]);
 
   useEffect(()=>{
     if(!query.trim()){setSearchResults([]);return;}
