@@ -642,6 +642,17 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .pr-composer-modes{backg
 html[data-mode="light"]:not([data-custom-theme="true"]) .pr-composer-form textarea,
 html[data-mode="light"]:not([data-custom-theme="true"]) .pr-composer-submit select{background:#fff!important;border-color:#d7dce5!important;color:#303741!important}
 
+/* License browser light-mode surfaces */
+html[data-mode="light"]:not([data-custom-theme="true"]) :where(.licenses-search,.licenses-list,.license-detail,.license-detail pre){background:#fff!important;border-color:#d9dee8!important;color:#303741!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .licenses-search input{color:#303741!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .licenses-list>button{color:#4d5868!important;border-color:#e1e5ec!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .licenses-list>button:hover{background:#f6f7fa!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .licenses-list>button.active{background:#f0eafa!important;color:#654b82!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .licenses-list strong,
+html[data-mode="light"]:not([data-custom-theme="true"]) .license-detail-head strong{color:#303741!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) :where(.licenses-list small,.licenses-list em,.license-detail-head span,.license-detail>p){color:#687181!important}
+html[data-mode="light"]:not([data-custom-theme="true"]) .license-detail-head{border-color:#e1e5ec!important}
+
 
 /* command palette */
 .command-palette-backdrop{position:fixed;inset:0;z-index:120;background:rgba(0,0,0,.42);display:flex;align-items:flex-start;justify-content:center;padding-top:min(18vh,150px);backdrop-filter:blur(2px)}

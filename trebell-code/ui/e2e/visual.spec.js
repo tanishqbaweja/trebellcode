@@ -667,6 +667,15 @@ test("onboarding and license surfaces are visually intentional",async({page,requ
   await firstLicense.click();
   await expect(page.locator(".license-detail pre")).toBeVisible();
   await page.screenshot({path:auditDir+"licenses-detail-1280x800.png",fullPage:true});
+  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+  const lightLicenseSurfaces=await page.evaluate(()=>({
+    search:getComputedStyle(document.querySelector(".licenses-search")).backgroundColor,
+    list:getComputedStyle(document.querySelector(".licenses-list")).backgroundColor,
+    detail:getComputedStyle(document.querySelector(".license-detail")).backgroundColor,
+    text:getComputedStyle(document.querySelector(".license-detail pre")).backgroundColor,
+  }));
+  for(const value of Object.values(lightLicenseSurfaces))expect(value).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
+  await page.screenshot({path:auditDir+"licenses-detail-light-1280x800.png",fullPage:true});
 });
 
 test("light mode stays visually coherent across workspace and panels",async({page,request})=>{
