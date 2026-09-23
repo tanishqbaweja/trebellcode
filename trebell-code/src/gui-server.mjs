@@ -2288,6 +2288,10 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         if(meta?.cwd)worktreeCleanup.sweep({reason:"thread-delete",path:meta.cwd}).catch(error=>cleanupLogs.push({at:Date.now(),stream:"cleanup",text:error.message+"\n"}));
       }
       if(message?.method==="thread/archived"&&params.threadId)setTimeout(()=>releaseCodexThreadServer(params.threadId).catch(()=>{}),0);
+      if(route?.requestMethod==="thread/unsubscribe"&&!message?.error&&route.requestParams?.threadId){
+        const threadId=String(route.requestParams.threadId);const meta=state.threadMeta(threadId);
+        if(!meta.active)setTimeout(()=>releaseCodexThreadServer(threadId).catch(()=>{}),0);
+      }
       if(message?.method==="turn/started")markCodexTurnActive(params.threadId,params.turn?.id||params.turnId);
       if(message?.method==="turn/completed")clearCodexRecovery(params.threadId,"completed");
       if(message?.method==="thread/tokenUsage/updated"&&params.threadId&&params.turnId){

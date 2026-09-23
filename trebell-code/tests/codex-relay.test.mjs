@@ -87,9 +87,11 @@ async function relayClient(relayHttp){
 test("Codex relay initializes and routes secondary app-server connections per thread",async()=>{
   const work=await routedUpstream("work"),personal=await routedUpstream("personal");
   const relayHttp=createServer((_req,res)=>{res.statusCode=404;res.end()});
+  const serverContexts=[];
   const relay=attachCodexRelay(relayHttp,{
     targetUrl:work.url,
     resolveTarget:message=>message?.params?.threadId==="personal-thread"?{key:"personal",url:personal.url}:{key:"work",url:work.url},
+    onServerMessage:(_message,context)=>serverContexts.push(context),
   });
   await new Promise(resolve=>relayHttp.listen(0,"127.0.0.1",resolve));
   let session;
@@ -100,6 +102,8 @@ test("Codex relay initializes and routes secondary app-server connections per th
     assert.equal((await session.request("thread/read",{threadId:"work-thread"})).name,"work");
     assert.equal((await session.request("thread/read",{threadId:"personal-thread"})).name,"personal");
     assert.equal((await session.request("turn/start",{threadId:"personal-thread"})).name,"personal");
+    const routedReply=serverContexts.find(context=>context.requestMethod==="thread/read"&&context.requestParams?.threadId==="personal-thread");
+    assert.equal(routedReply?.requestParams?.threadId,"personal-thread");
     assert.equal(work.received.filter(message=>message.method==="initialize").length,1);
     assert.equal(personal.received.filter(message=>message.method==="initialize").length,1);
     assert.equal(personal.received.filter(message=>message.method==="initialized").length,1);
@@ -133,4 +137,21 @@ test("Codex relay namespaces server request ids and returns replies to the origi
     assert.deepEqual(workReply?.result,{answers:{from:"work"}});assert.deepEqual(personalReply?.result,{answers:{from:"personal"}});
     session.client.off("message",collect);
   }finally{try{session?.client.close()}catch{}relay.close();await Promise.all([work.close(),personal.close(),new Promise(resolve=>relayHttp.close(resolve))])}
+});
+
+test("Codex relay reports the originating request method and params with upstream responses",async()=>{
+  const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});
+  upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
+  upstreamWss.on("connection",ws=>ws.on("message",data=>{const message=JSON.parse(String(data));ws.send(JSON.stringify({id:message.id,result:{ok:true}}))}));
+  await new Promise(resolve=>upstreamHttp.listen(0,"127.0.0.1",resolve));
+  const relayHttp=createServer((_req,res)=>{res.statusCode=404;res.end()});const contexts=[];
+  const relay=attachCodexRelay(relayHttp,{targetUrl:`ws://127.0.0.1:${upstreamHttp.address().port}`,onServerMessage:(_message,context)=>contexts.push(context)});
+  await new Promise(resolve=>relayHttp.listen(0,"127.0.0.1",resolve));
+  let session;
+  try{
+    session=await relayClient(relayHttp);
+    await session.request("thread/unsubscribe",{threadId:"thread-a"});
+    assert.equal(contexts.at(-1)?.requestMethod,"thread/unsubscribe");
+    assert.deepEqual(contexts.at(-1)?.requestParams,{threadId:"thread-a"});
+  }finally{try{session?.client.close()}catch{}relay.close();upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}
 });

@@ -130,9 +130,9 @@ export function attachCodexRelay(httpServer, {
             if(message.error)pending.reject(Object.assign(new Error(message.error.message||"Codex initialization failed"),{error:message.error}));else pending.resolve(message.result);
             return;
           }
-          const requestMethod=Object.prototype.hasOwnProperty.call(message,"id")&&!message.method?record.forwardedRequests.get(message.id)||null:null;
-          if(requestMethod)record.forwardedRequests.delete(message.id);
-          try{onServerMessage(message,{targetKey:record.key,targetUrl:record.url,requestMethod})}catch{}
+          const requestMeta=Object.prototype.hasOwnProperty.call(message,"id")&&!message.method?record.forwardedRequests.get(message.id)||null:null;
+          if(requestMeta)record.forwardedRequests.delete(message.id);
+          try{onServerMessage(message,{targetKey:record.key,targetUrl:record.url,requestMethod:requestMeta?.method||null,requestParams:requestMeta?.params||null})}catch{}
           if(Object.prototype.hasOwnProperty.call(message,"id")&&message.method){
             const relayId=`trebell-server-${context.nextServerRequestId++}`;
             context.serverRequestRoutes.set(relayId,{record,originalId:message.id});
@@ -175,7 +175,7 @@ export function attachCodexRelay(httpServer, {
           context.initialized=true;record.initialized=true;
           for(const other of context.upstreams.values())if(other!==record&&!other.initialized)await initializeSecondary(other);
         }
-        if(message?.method&&Object.prototype.hasOwnProperty.call(message,"id"))record.forwardedRequests.set(message.id,message.method);
+        if(message?.method&&Object.prototype.hasOwnProperty.call(message,"id"))record.forwardedRequests.set(message.id,{method:message.method,params:message.params||{}});
         record.socket.send(raw,{binary:false});
       };
 

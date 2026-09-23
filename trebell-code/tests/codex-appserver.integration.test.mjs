@@ -206,6 +206,12 @@ test("compatible Codex profiles switch an existing thread through a separate app
     assert.ok(backgroundSecondTurn.result?.turn?.id);
     const after=await rpc(ws,8,"thread/runtimeInstances/list",{threadId});assert.equal(after.currentInstanceId,"codex-personal");
     const meta=await fetch(gui.url+"/api/thread-meta?threadId="+encodeURIComponent(threadId)).then(response=>response.json());assert.equal(meta.runtimeInstanceId,"codex-personal");
+    const unsubscribed=await rpc(ws,23,"thread/unsubscribe",{threadId});
+    assert.match(String(unsubscribed.status||""),/unsubscribed|notSubscribed/i);
+    await new Promise(resolve=>setTimeout(resolve,100));
+    const resumedAfterUnsubscribe=await rpcOutcome(ws,24,"thread/resume",{threadId,modelProvider:"freebuff",excludeTurns:false});
+    assert.equal(resumedAfterUnsubscribe.ok,true,`an idle unsubscribed thread must restart its routed Codex process on demand: ${JSON.stringify(resumedAfterUnsubscribe.error||null)}`);
+    assert.equal(resumedAfterUnsubscribe.result?.thread?.id,threadId);
     const incompatible=await rpcOutcome(ws,9,"thread/runtimeInstance/set",{threadId,instanceId:"codex-isolated"});
     assert.equal(incompatible.ok,false);assert.match(incompatible.error?.message||"",/different CODEX_HOME/i);
   }finally{try{ws?.close()}catch{}await gui.close();await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
