@@ -1,8 +1,8 @@
 import { access, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, posix } from "node:path";
+import { join, posix, resolve } from "node:path";
 import spawn from "cross-spawn";
-import { trebellHome } from "./paths.mjs";
+import { codexHome, trebellHome } from "./paths.mjs";
 import { resolveCodexHomeLayout } from "./codex-home-layout.mjs";
 import { readAgentRuntimeUsage } from "./agent-usage-limits.mjs";
 
@@ -135,6 +135,35 @@ export class AgentRuntimeManager{
   activeInstance(){
     const settings=this.state?.settings()||{};const runtime=this.activeRuntime();const requested=String(settings.agentRuntimeInstanceId||`${runtime}-default`);
     return this.instances().find(item=>item.id===requested&&item.kind===runtime)||this.instances().find(item=>item.kind===runtime)||defaultInstance(runtime);
+  }
+  continuationKey(instanceOrId=this.activeInstance()){
+    const instance=typeof instanceOrId==="string"
+      ?this.instances().find(item=>item.id===instanceOrId)
+      :instanceOrId;
+    if(!instance)return null;
+    if(instance.kind==="codex"){
+      return resolveCodexHomeLayout({
+        homePath:String(instance.homePath||"").trim()||codexHome(this.env),
+        shadowHomePath:String(instance.shadowHomePath||"").trim()||null,
+        defaultHome:codexHome(this.env),
+      }).continuationKey;
+    }
+    if(instance.kind==="claude"){
+      const home=String(instance.homePath||this.env.CLAUDE_CONFIG_DIR||join(homedir(),".claude")).trim();
+      const normalized=resolve(home);
+      return "claude:home:"+(this.platform==="win32"?normalized.toLowerCase():normalized);
+    }
+    return `${instance.kind}:instance:${instance.id}`;
+  }
+  compatibleInstanceIds(instanceOrId=this.activeInstance()){
+    const instance=typeof instanceOrId==="string"
+      ?this.instances().find(item=>item.id===instanceOrId)
+      :instanceOrId;
+    if(!instance)return [];
+    const key=this.continuationKey(instance);
+    return this.instances()
+      .filter(candidate=>candidate.enabled!==false&&candidate.kind===instance.kind&&this.continuationKey(candidate)===key)
+      .map(candidate=>candidate.id);
   }
   async setActive({runtime,instanceId=null}={}){
     const kind=normalizeAgentRuntime(runtime);const instance=this.instances().find(item=>item.id===(instanceId||`${kind}-default`)&&item.kind===kind)||this.instances().find(item=>item.kind===kind);
@@ -401,6 +430,6 @@ export class AgentRuntimeManager{
       return {...safe,environmentKeys:Object.keys(environment||{})};
     });
     const definitions=this.definitions().map(def=>({...def,installable:Boolean(INSTALLABLE_PACKAGES[def.id]),packageName:INSTALLABLE_PACKAGES[def.id]||null,canAuthenticate:["claude","cursor","grok","opencode"].includes(def.id)}));
-    const active=this.activeInstance();return {selectedRuntime:this.activeRuntime(),selectedInstanceId:active.id,definitions,instances:publicInstances,statuses};
+    const active=this.activeInstance();return {selectedRuntime:this.activeRuntime(),selectedInstanceId:active.id,compatibleInstanceIds:this.compatibleInstanceIds(active),definitions,instances:publicInstances,statuses};
   }
 }

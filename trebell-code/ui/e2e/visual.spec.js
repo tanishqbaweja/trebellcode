@@ -1,6 +1,12 @@
 import { test,expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
+import { mkdtemp,rm } from "node:fs/promises";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { attachAgentRelay } from "../../src/agent-relay.mjs";
+import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
 
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));
 mkdirSync(auditDir,{recursive:true});
@@ -19,6 +25,14 @@ async function box(locator){
   const value=await locator.boundingBox();
   expect(value).not.toBeNull();
   return value;
+}
+
+async function freePort(){
+  const server=createServer();
+  await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));
+  const port=server.address().port;
+  await new Promise(resolve=>server.close(resolve));
+  return port;
 }
 
 test("chat workspace is visually bounded and panes resize",async({page,request})=>{
@@ -559,4 +573,102 @@ test("populated source control and pull request detail stay usable",async({page,
   await panel.getByRole("button",{name:/#142 Polish Trebell desktop interaction states/}).click();
   await expect(panel.getByRole("heading",{name:/#142 Polish Trebell desktop interaction states/})).toBeInViewport();
   await page.screenshot({path:auditDir+"source-control-pr-detail-1280x800.png",fullPage:true});
+});
+
+test("Claude thread can switch compatible account profiles from the model picker",async({page})=>{
+  test.setTimeout(45_000);
+  const home=await mkdtemp(join(tmpdir(),"trebell-claude-switch-"));
+  const threadStore=new AgentThreadStore({...process.env,TREBELL_HOME:home});
+  const sharedHome=join(home,"claude-shared");
+  const profiles=[
+    {id:"claude-work",kind:"claude",displayName:"Claude Work",homePath:sharedHome,enabled:true},
+    {id:"claude-router",kind:"claude",displayName:"Claude Router",homePath:sharedHome,enabled:true},
+    {id:"claude-signed-out",kind:"claude",displayName:"Claude Signed Out",homePath:sharedHome,enabled:true},
+    {id:"claude-personal",kind:"claude",displayName:"Claude Personal",homePath:join(home,"claude-personal"),enabled:true},
+  ];
+  const thread=threadStore.create({
+    runtime:"claude",
+    cwd:process.cwd(),
+    providerSessionId:"",
+    model:"sonnet",
+    name:"Claude profile switch fixture",
+    preview:"Compatible account switching",
+    providerMeta:{runtimeInstanceId:"claude-work",environmentId:null},
+  });
+  threadStore.update(thread.id,{runtimeInstanceId:"claude-work"});
+  const meta=new Map([[thread.id,{projectless:true,environmentId:null}]]);
+  const runtimeManager={
+    instances:()=>profiles.map(item=>({...item})),
+    activeRuntime:()=>"claude",
+    activeInstance:()=>profiles[0],
+    compatibleInstanceIds:id=>id==="claude-personal"?["claude-personal"]:["claude-work","claude-router","claude-signed-out"],
+    probe:async instance=>({id:instance.id,name:instance.displayName,available:true,installed:true,authenticated:instance.id!=="claude-signed-out",version:"fixture-1.0"}),
+    runtimeCwd:value=>value,
+    processSpawner:()=>null,
+    remoteIo:()=>null,
+    childEnv:()=>({...process.env,CLAUDE_CONFIG_DIR:sharedHome}),
+    executable:()=>"claude-fixture",
+  };
+  const state={
+    settings:()=>({activeEnvironmentId:null}),
+    threadMeta:id=>meta.get(id)||{},
+    updateThreadMeta(id,patch){const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next},
+    recordUsage:()=>{},
+  };
+  const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});
+  const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,version:"visual-fixture"});
+  const relayPort=await freePort();
+  await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+      mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"claude",agentRuntimeReady:true,
+      wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null,
+    })}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+      settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"claude",agentRuntimeInstanceId:"claude-work",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},
+      projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}},
+    })}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+      models:["sonnet","opus","haiku"],metadata:{provider:"claude",models:[
+        {id:"sonnet",name:"Sonnet",provider:"claude",agent:"Claude Code"},
+        {id:"opus",name:"Opus",provider:"claude",agent:"Claude Code"},
+        {id:"haiku",name:"Haiku",provider:"claude",agent:"Claude Code"},
+      ]},
+    })}));
+    await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    await expect(page.getByRole("button",{name:/Claude profile switch fixture/})).toBeVisible({timeout:10_000});
+    await page.getByRole("button",{name:/Claude profile switch fixture/}).click();
+    const picker=page.getByTestId("model-picker");
+    await expect(picker).toBeEnabled();
+    await expect(picker).toContainText("Claude Work");
+    await picker.click();
+    const profilesMenu=page.locator(".model-runtime-profiles");
+    await expect(profilesMenu).toBeVisible();
+    await expect(profilesMenu.getByRole("button",{name:/Claude Work/})).toHaveClass(/selected/);
+    await expect(profilesMenu.getByRole("button",{name:/Claude Router/})).toBeVisible();
+    const signedOut=profilesMenu.getByRole("button",{name:/Claude Signed Out/});
+    await expect(signedOut).toBeVisible();
+    await expect(signedOut).toBeDisabled();
+    await expect(signedOut).toContainText("Sign-in required");
+    await expect(profilesMenu.getByRole("button",{name:/Claude Personal/})).toHaveCount(0);
+    await page.screenshot({path:auditDir+"chat-claude-profile-picker-1600x980.png",fullPage:true});
+
+    await profilesMenu.getByRole("button",{name:/Claude Router/}).click();
+    await expect(picker).toContainText("Claude Router");
+    await picker.click();
+    await expect(profilesMenu.getByRole("button",{name:/Claude Router/})).toHaveClass(/selected/);
+    await page.screenshot({path:auditDir+"chat-claude-profile-switched-1600x980.png",fullPage:true});
+    await page.setViewportSize({width:1280,height:800});
+    await expect(page.locator(".composer-bar")).toBeVisible();
+    const compact=await page.locator(".composer-bar").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(compact.scroll).toBeLessThanOrEqual(compact.client+1);
+    await page.screenshot({path:auditDir+"chat-claude-profile-switched-1280x800.png",fullPage:true});
+  }finally{
+    await relay.close();
+    await new Promise(resolve=>relayServer.close(()=>resolve()));
+    await rm(home,{recursive:true,force:true});
+  }
 });

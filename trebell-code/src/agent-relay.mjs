@@ -206,6 +206,41 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
       return {thread:params.includeTurns===false?{...thread,turns:[]}:thread};
     }
+    if(method==="thread/runtimeInstances/list"){
+      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      if(thread.runtime!=="claude")return {supported:false,currentInstanceId:thread.runtimeInstanceId||null,items:[],reason:"Thread profile switching is currently supported only for Claude Code threads."};
+      const instances=runtimeManager.instances();
+      const savedInstanceId=thread.runtimeInstanceId||thread.providerMeta?.runtimeInstanceId||null;
+      const current=instances.find(item=>item.id===savedInstanceId&&item.kind===thread.runtime)||instances.find(item=>item.kind===thread.runtime)||null;
+      const environmentId=thread.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null;
+      const compatibleIds=new Set(runtimeManager.compatibleInstanceIds(current));
+      const compatible=instances.filter(instance=>instance.kind===thread.runtime&&compatibleIds.has(instance.id));
+      const items=await Promise.all(compatible.map(async instance=>{
+        const status=await runtimeManager.probe(instance,{environmentId}).catch(error=>({available:false,message:error.message||String(error)}));
+        return {id:instance.id,displayName:instance.displayName||instance.id,current:instance.id===current?.id,available:Boolean(status?.available),authenticated:status?.authenticated??null,version:status?.version||null,message:status?.message||null};
+      }));
+      return {supported:true,currentInstanceId:current?.id||compatible[0]?.id||null,items};
+    }
+    if(method==="thread/runtimeInstance/set"){
+      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      const instances=runtimeManager.instances();const target=instances.find(item=>item.id===params.instanceId&&item.kind===thread.runtime);
+      if(!target)throw new Error("Runtime profile not found");
+      if(thread.runtime!=="claude")throw new Error("Thread profile switching is currently supported only for Claude Code threads.");
+      if(thread.status?.type==="active")throw new Error("Stop the running turn before switching Claude profiles.");
+      const savedInstanceId=thread.runtimeInstanceId||thread.providerMeta?.runtimeInstanceId||null;
+      const current=instances.find(item=>item.id===savedInstanceId&&item.kind===thread.runtime)||instances.find(item=>item.kind===thread.runtime)||null;
+      const compatibleIds=new Set(runtimeManager.compatibleInstanceIds(current));
+      if(!compatibleIds.has(target.id))throw new Error("This Claude profile uses a different config directory, so it cannot continue this thread.");
+      if(thread.runtimeInstanceId===target.id)return {thread};
+      const environmentId=thread.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null;
+      const status=await runtimeManager.probe(target,{environmentId});if(!status.available)throw new Error(status.message||"The selected Claude profile is unavailable");
+      if(status.authenticated===false)throw new Error("Sign in to the selected Claude profile before switching this thread.");
+      const existing=sessions.get(thread.id);if(existing){await existing.close().catch(()=>{});sessions.delete(thread.id)}
+      const providerMeta={...(thread.providerMeta||{}),runtimeInstanceId:target.id};
+      const updated=threadStore.update(thread.id,{runtimeInstanceId:target.id,providerMeta});
+      emit("thread/runtimeInstance/updated",{threadId:thread.id,runtimeInstanceId:target.id,thread:updated});
+      return {thread:updated};
+    }
     if(method==="thread/start"){
       const instance=runtimeManager.activeInstance();const environmentId=state?.settings?.().activeEnvironmentId||null;const effectiveCwd=runtimeManager.runtimeCwd(params.cwd||process.cwd(),environmentId);const seed=threadStore.create({runtime,cwd:effectiveCwd,providerSessionId:"",model:params.model||null,agent:params.agent||null,providerMeta:{runtimeInstanceId:instance.id,environmentId}});
       threadStore.update(seed.id,{runtimeInstanceId:instance.id});

@@ -234,7 +234,7 @@ const SLASH_COMMANDS=[
   ["/clear","Reset the current draft/thread view"],
 ];
 
-function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,permissionMode,setPermissionMode,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,canCompact=false,onCompact,onModelPickerOpenChange}){
+function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,permissionMode,setPermissionMode,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onModelPickerOpenChange}){
   const [modelOpen,setModelOpen]=useState(false);
   const [listening,setListening]=useState(false);
   const speechSupported=typeof window!=="undefined"&&Boolean(window.SpeechRecognition||window.webkitSpeechRecognition);
@@ -295,6 +295,8 @@ function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgr
   const contextPaths=new Set((contextChips||[]).map(chip=>chip.path));
   const promptTooLong=prompt.length>MAX_COMPOSER_CHARS;
   const chosenModels=selectedModels.length?selectedModels:(model?[model]:[]);
+  const runtimeProfileItems=runtimeProfiles?.items||[];
+  const currentRuntimeProfile=runtimeProfileItems.find(item=>item.id===runtimeProfiles?.currentInstanceId)||null;
   function pickModel(event,id){
     const next=nextModelSelection(chosenModels,id,{shiftKey:event.shiftKey,allowMulti:allowMultiModel});
     onSelectedModels?.(next);if(!next.includes(model))setModel(next[0]||id);
@@ -313,7 +315,7 @@ function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgr
     </div><div className="composer-right">
       {!providerReady&&!models.length?<button className="login-btn" onClick={agentRuntime==="codex"&&provider==="freebuff"?login:onConfigureProvider}>{agentRuntime!=="codex"?"Configure "+agentRuntimeLabel:provider==="freebuff"?"Sign in to Freebuff":"Configure "+({agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||"provider")}</button>:<>
         {agentRuntime!=="codex"&&providerAgents.length>0&&<select className="agent-picker" value={providerAgent||""} onChange={e=>onProviderAgent?.(e.target.value)} title="Provider agent"><option value="">Default agent</option>{providerAgents.map(agent=>{const name=typeof agent==="string"?agent:agent.name;const mode=typeof agent==="string"?"":agent.mode;return <option key={name} value={name}>{name}{mode?` · ${mode}`:""}</option>})}</select>}
-        <div className="model-picker-wrap"><button data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onClick={()=>setModelOpen(value=>!value)} title={!providerReady?"Provider reconnecting":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||modelLabel(model,freebuff)||modelError||"No models")}<ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu">{models.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id,freebuff)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.agent||""}</small></button>})}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
+        <div className="model-picker-wrap"><button data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onClick={()=>setModelOpen(value=>!value)} title={!providerReady?"Provider reconnecting":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}><span className="model-picker-current"><strong>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||modelLabel(model,freebuff)||modelError||"No models")}</strong>{runtimeProfileItems.length>1&&currentRuntimeProfile&&<small>{currentRuntimeProfile.displayName}</small>}</span><ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu">{runtimeProfileItems.length>1&&<div className="model-runtime-profiles"><p>Claude profile</p>{runtimeProfileItems.map(item=><button key={item.id} className={item.id===runtimeProfiles.currentInstanceId?"selected":""} disabled={!item.available||item.authenticated===false||Boolean(runtimeProfileBusy)||running} onClick={()=>{onRuntimeProfile?.(item.id);setModelOpen(false)}}><span>{item.id===runtimeProfiles.currentInstanceId?<Check size={11}/>:<i/>}<strong>{item.displayName}</strong></span><small>{runtimeProfileBusy===item.id?"Switching…":item.available?(item.authenticated===false?"Sign-in required":item.version||"Ready"):item.message||"Unavailable"}</small></button>)}</div>}{models.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id,freebuff)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.agent||""}</small></button>})}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
       </>}
       <button className={"mic-btn "+(listening?"active":"")} onClick={dictate} disabled={!speechSupported} title={speechSupported?(listening?"Listening…":"Voice dictation"):"Voice dictation is unavailable on this platform"}><Mic size={15}/></button>
       <button data-testid="send" className="send-btn" onClick={onSend} disabled={!providerReady||!prompt.trim()||promptTooLong}>{running&&settings.followUpMode==="queue"?<Plus size={16}/>:<Send size={16}/>}</button>
@@ -333,6 +335,7 @@ export default function App(){
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [contextChips,setContextChips]=useState([]);
   const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [selectedModels,setSelectedModels]=useState([]); const [modelError,setModelError]=useState(""); const [modelPickerOpen,setModelPickerOpen]=useState(false);
   const [freebuff,setFreebuff]=useState({loggedIn:false}); const [skills,setSkills]=useState([]); const [providerCommands,setProviderCommands]=useState([]); const [providerAgents,setProviderAgents]=useState([]); const [providerAgent,setProviderAgent]=useState("");
+  const [threadRuntimeProfiles,setThreadRuntimeProfiles]=useState({supported:false,currentInstanceId:null,items:[]}); const [threadRuntimeProfileBusy,setThreadRuntimeProfileBusy]=useState("");
   const [settings,setSettings]=useState({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,customThemes:[],keyboardShortcuts:{},agentRuntime:"codex",modelProvider:"freebuff"});
   const [environmentThemeCatalog,setEnvironmentThemeCatalog]=useState({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]});
   const [sidebarOpen,setSidebarOpen]=useState(true);
@@ -660,6 +663,30 @@ export default function App(){
   async function loadThreads(client){
     const listed=await client.request("thread/list",threadListParams(100)).catch(()=>({data:[]})); setThreads(listed.data||[]); return listed.data||[];
   }
+  async function loadThreadRuntimeProfiles(client=rpc,threadId=activeThreadRef.current?.id){
+    if(agentRuntime!=="claude"||!client||rpcStatus!=="connected"||!threadId){
+      setThreadRuntimeProfiles({supported:false,currentInstanceId:null,items:[]});return {supported:false,currentInstanceId:null,items:[]};
+    }
+    const result=await client.request("thread/runtimeInstances/list",{threadId}).catch(error=>({supported:false,currentInstanceId:null,items:[],reason:error.message||String(error)}));
+    setThreadRuntimeProfiles(result||{supported:false,currentInstanceId:null,items:[]});return result;
+  }
+  async function switchThreadRuntimeProfile(instanceId){
+    const threadId=activeThreadRef.current?.id;if(agentRuntime!=="claude"||!rpc||rpcStatus!=="connected"||!threadId||!instanceId)return;
+    setThreadRuntimeProfileBusy(instanceId);
+    try{
+      const result=await rpc.request("thread/runtimeInstance/set",{threadId,instanceId});
+      const updated=result?.thread;
+      if(updated){
+        setActiveThread(prev=>prev?.id===updated.id?updated:prev);
+        setThreads(prev=>prev.map(thread=>thread.id===updated.id?{...thread,...updated}:thread));
+      }
+      const profiles=await loadThreadRuntimeProfiles(rpc,threadId);
+      const selected=(profiles?.items||[]).find(item=>item.id===instanceId);
+      setEvents(prev=>[...prev,{id:"runtime-profile-"+Date.now(),kind:"tool",title:`Claude profile switched to ${selected?.displayName||instanceId}`,status:"done",raw:{instanceId}}]);
+    }catch(error){
+      setEvents(prev=>[...prev,{id:"runtime-profile-error-"+Date.now(),kind:"error",title:"Could not switch Claude profile: "+(error.message||String(error)),status:"done",raw:{instanceId}}]);
+    }finally{setThreadRuntimeProfileBusy("")}
+  }
   async function searchThreadMessages(queryText){
     const needle=String(queryText||"").trim();if(needle.length<2||!rpc||rpcStatus!=="connected")return[];
     const candidates=threads.slice(0,50);const cache=threadMessageSearchCacheRef.current;let cursor=0;
@@ -738,6 +765,10 @@ export default function App(){
     connect(); return()=>{disposed=true;clearTimeout(retryTimer);client?.close()};
   },[bootstrap.wsUrl,bootstrap.mock,provider,agentRuntime,providerRevision]);
   useEffect(()=>{if(rpcStatus==="connected"&&rpc)loadSkills(rpc,projectPath)},[projectPath,rpcStatus]);
+  useEffect(()=>{
+    if(agentRuntime==="claude"&&rpcStatus==="connected"&&rpc&&activeThread?.id){loadThreadRuntimeProfiles(rpc,activeThread.id);return}
+    setThreadRuntimeProfiles({supported:false,currentInstanceId:null,items:[]});setThreadRuntimeProfileBusy("");
+  },[agentRuntime,rpc,rpcStatus,activeThread?.id]);
 
   useEffect(()=>{const timer=setInterval(async()=>{const [s,r,g]=await Promise.all([api("/api/stats").catch(()=>null),api("/api/runtime").catch(()=>null),!projectlessMode&&projectPath&&!workspaceRemote?api("/api/git/info?path="+encodeURIComponent(projectPath)).catch(()=>null):Promise.resolve(null)]);if(s)setStats(s);if(r)setRuntime(r);setGitInfo(projectlessMode?null:g)},1800);return()=>clearInterval(timer)},[projectPath,workspaceRemote,projectlessMode]);
   useEffect(()=>{if(agentRuntime!=="codex"||provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;refreshFreebuff(model);const timer=setInterval(()=>refreshFreebuff(model),15000);return()=>clearInterval(timer)},[agentRuntime,provider,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
@@ -1050,6 +1081,14 @@ export default function App(){
     else if(message.method==="thread/goal/updated"&&isCurrent)setGoal(p.goal||null);
     else if(message.method==="thread/goal/cleared"&&isCurrent)setGoal(null);
     else if(message.method==="thread/attachment/updated"&&isCurrent)loadPersistentThreadData(p.threadId).catch(()=>{});
+    else if(message.method==="thread/runtimeInstance/updated"){
+      const updated=p.thread||null;
+      setThreads(prev=>prev.map(thread=>thread.id===p.threadId?(updated?{...thread,...updated}:{...thread,runtimeInstanceId:p.runtimeInstanceId}):thread));
+      if(isCurrent){
+        setActiveThread(prev=>prev?.id===p.threadId?(updated||{...prev,runtimeInstanceId:p.runtimeInstanceId}):prev);
+        loadThreadRuntimeProfiles(rpcRef.current,p.threadId).catch(()=>{});
+      }
+    }
     else if(message.method==="thread/providerMetadata/updated"){
       setThreads(prev=>prev.map(thread=>thread.id===p.threadId?{...thread,providerMeta:{...(thread.providerMeta||{}),[p.type]:p.update}}:thread));
       const compaction=p.type==="session_info_update"?contextCompactionSignal(p.update):null;
@@ -1832,7 +1871,7 @@ export default function App(){
           </div>
 
           {currentProject?.cloneJob&&currentProject.cloneJob.status!=="completed"&&<div className={"clone-banner "+currentProject.cloneJob.status} data-testid="clone-banner"><div><strong>{currentProject.cloneJob.phase||"Cloning repository"}</strong><span>{currentProject.cloneJob.status==="failed"?(currentProject.cloneJob.error||"Clone failed"):currentProject.cloneJob.status==="cancelled"?"Clone cancelled":"You can keep writing. Send waits until the repository is ready."}</span></div>{["running","cancelling"].includes(currentProject.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(currentProject.cloneJob.progress)||0)+"%"}}/></i>}<em>{Math.round(currentProject.cloneJob.progress||0)}%</em>{currentProject.cloneJob.status==="running"&&<button onClick={()=>cloneProjectAction("cancel").catch(error=>setEvents(prev=>[...prev,{id:"clone-cancel-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(currentProject.cloneJob.status)&&<button onClick={()=>cloneProjectAction("retry").catch(error=>setEvents(prev=>[...prev,{id:"clone-retry-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))}>Retry clone</button>}</div>}
-          <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={()=>setPromptHistoryIndex(-1)} historyIndex={promptHistoryIndex} onSend={send} onBackgroundSend={sendInBackground} canBackground={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"} running={running} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onCaptureScreen={()=>captureDesktop().catch(error=>setEvents(prev=>[...prev,{id:"screen-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={changeProviderAgent} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&tokenUsage&&["codex","opencode","claude"].includes(agentRuntime))} onCompact={compactContext} onModelPickerOpenChange={setModelPickerOpen}/>
+          <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={()=>setPromptHistoryIndex(-1)} historyIndex={promptHistoryIndex} onSend={send} onBackgroundSend={sendInBackground} canBackground={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"} running={running} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={setModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={!activeThread?.id&&!running&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={pickFiles} onCaptureScreen={()=>captureDesktop().catch(error=>setEvents(prev=>[...prev,{id:"screen-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} onPaste={onPaste} onDrop={onDrop} permissionMode={permissionMode} setPermissionMode={setPermissionMode} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={changeProviderAgent} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&tokenUsage&&["codex","opencode","claude"].includes(agentRuntime))} onCompact={compactContext} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={switchThreadRuntimeProfile} onModelPickerOpenChange={setModelPickerOpen}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="layout-resizer terminal-resizer" data-testid="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" onPointerDown={event=>beginLayoutResize("terminal",event)}/>

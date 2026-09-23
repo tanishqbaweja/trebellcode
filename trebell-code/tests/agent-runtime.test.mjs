@@ -43,6 +43,29 @@ test("Claude runtime profiles validate and persist auto-compact thresholds",asyn
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
+test("runtime profile compatibility follows continuation identity instead of display names",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-runtime-compat-"));
+  try{
+    const env={...process.env,TREBELL_HOME:home,CLAUDE_CONFIG_DIR:join(home,"claude-default")};
+    const state=new TrebellStateStore(env);
+    const manager=new AgentRuntimeManager({state,env,platform:"win32"});
+    const sharedCodex=join(home,"shared-codex");
+    manager.upsertInstance({id:"codex-work",kind:"codex",displayName:"Work",homePath:sharedCodex,shadowHomePath:join(home,"codex-work-auth")});
+    manager.upsertInstance({id:"codex-personal",kind:"codex",displayName:"Personal",homePath:sharedCodex,shadowHomePath:join(home,"codex-personal-auth")});
+    manager.upsertInstance({id:"codex-isolated",kind:"codex",displayName:"Isolated",homePath:join(home,"isolated-codex")});
+    assert.deepEqual(new Set(manager.compatibleInstanceIds("codex-work")),new Set(["codex-work","codex-personal"]));
+    assert.equal(manager.continuationKey("codex-work"),manager.continuationKey("codex-personal"));
+    assert.notEqual(manager.continuationKey("codex-work"),manager.continuationKey("codex-isolated"));
+
+    const sharedClaude=join(home,"claude-shared");
+    manager.upsertInstance({id:"claude-work",kind:"claude",displayName:"Claude Work",homePath:sharedClaude});
+    manager.upsertInstance({id:"claude-personal",kind:"claude",displayName:"Claude Personal",homePath:sharedClaude});
+    manager.upsertInstance({id:"claude-isolated",kind:"claude",displayName:"Claude Isolated",homePath:join(home,"claude-isolated")});
+    assert.deepEqual(new Set(manager.compatibleInstanceIds("claude-work")),new Set(["claude-work","claude-personal"]));
+    assert.notEqual(manager.continuationKey("claude-work"),manager.continuationKey("claude-isolated"));
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 test("runtime installer uses only official allowlisted packages in the selected environment", async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-agent-install-"));
   const env={...process.env,TREBELL_HOME:home};const calls=[];
