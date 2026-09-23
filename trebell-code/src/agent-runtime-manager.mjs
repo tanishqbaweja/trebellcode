@@ -47,6 +47,43 @@ function satisfiesSimpleRange(version,range){
     return match[1]==="<"?compared<0:match[1]==="<="?compared<=0:match[1]===">"?compared>0:match[1]===">="?compared>=0:compared===0;
   });
 }
+function stripAnsi(value){return String(value||"").replace(/\x1B\[[0-?]*[ -/]*[@-~]/g,"")}
+export function parseCursorAboutResult(result={}){
+  const stdout=String(result.stdout||"").trim();
+  const combined=stripAnsi(stdout+"\n"+String(result.stderr||""));
+  if(stdout.startsWith("{")){
+    try{
+      const parsed=JSON.parse(stdout);
+      const hasEmail=Object.prototype.hasOwnProperty.call(parsed,"userEmail");
+      const email=typeof parsed.userEmail==="string"?parsed.userEmail.trim():"";
+      const lower=email.toLowerCase();
+      if(hasEmail&&parsed.userEmail==null)return {authenticated:false,email:null};
+      if(email&&(lower==="not logged in"||lower.includes("login required")||lower.includes("authentication required")))return {authenticated:false,email:null};
+      if(email)return {authenticated:true,email};
+      return {authenticated:null,email:null};
+    }catch{}
+  }
+  const emailMatch=combined.match(/^\s*User Email\s+(.+?)\s*$/im);
+  const email=emailMatch?.[1]?.trim()||"";
+  if(!email)return {authenticated:null,email:null};
+  const lower=email.toLowerCase();
+  if(lower==="not logged in"||lower.includes("login required")||lower.includes("authentication required"))return {authenticated:false,email:null};
+  return {authenticated:true,email};
+}
+export function parseGrokModelsAuth(output){
+  const value=stripAnsi(output);
+  if(/you are logged in/i.test(value))return true;
+  if(/not authenticated|not logged in/i.test(value))return false;
+  return null;
+}
+export function parseOpenCodeAuthList(output){
+  const value=stripAnsi(output);
+  const credentials=Number(value.match(/(?:^|\s)(\d+)\s+credentials?\b/i)?.[1]??NaN);
+  const environment=Number(value.match(/(?:^|\s)(\d+)\s+environment variables?\b/i)?.[1]??NaN);
+  const known=Number.isFinite(credentials)||Number.isFinite(environment);
+  const connected=(Number.isFinite(credentials)?credentials:0)+(Number.isFinite(environment)?environment:0);
+  return {connected,authenticated:known&&connected>0?true:null};
+}
 export function runtimeCompatibility(kind,version){
   const policy=RUNTIME_COMPATIBILITY[normalizeAgentRuntime(kind)];if(!policy)return null;
   const parsed=parsedSemver(version);
@@ -253,10 +290,39 @@ export class AgentRuntimeManager{
       const auth=await this.#run(instance,["auth","status"],{timeoutMs:8000,environmentId});
       try{account=JSON.parse(auth.stdout||"{}");authenticated=Boolean(account.loggedIn)}catch{authenticated=auth.ok}
       if(!authenticated)message="Claude Code is installed but not authenticated";
+    }else if(instance.kind==="cursor"){
+      let about=await this.#run(instance,["about","--format","json"],{timeoutMs:8000,environmentId});
+      const unsupported=/unknown (?:option|argument)|unexpected argument|unrecognized (?:option|argument)/i.test(String(about.stdout||"")+"\n"+String(about.stderr||""));
+      if(unsupported)about=await this.#run(instance,["about"],{timeoutMs:8000,environmentId});
+      const parsed=parseCursorAboutResult(about);
+      authenticated=parsed.authenticated;account=parsed.email?{email:parsed.email}:null;
+      if(authenticated===false)message="Cursor Agent is installed but not authenticated. Run cursor-agent login.";
+      else if(authenticated==null)message="Cursor Agent is installed, but Trebell could not verify its authentication status.";
+    }else if(instance.kind==="grok"){
+      const environment=this.childEnv(instance);
+      if(String(environment.XAI_API_KEY||"").trim()){
+        authenticated=true;account={authMethod:"api_key"};
+      }else{
+        const models=await this.#run(instance,["models"],{timeoutMs:10_000,environmentId});
+        authenticated=models.ok?parseGrokModelsAuth((models.stdout||"")+"\n"+(models.stderr||"")):null;
+        if(authenticated===false)message="Grok CLI is installed but not logged in. Run grok login.";
+        else if(authenticated==null)message="Grok CLI is installed, but Trebell could not verify its authentication status.";
+      }
+    }else if(instance.kind==="opencode"&&!instance.serverUrl){
+      const auth=await this.#run(instance,["auth","list"],{timeoutMs:10_000,environmentId});
+      if(auth.ok){
+        const parsed=parseOpenCodeAuthList((auth.stdout||"")+"\n"+(auth.stderr||""));
+        authenticated=parsed.authenticated;account={connectedProviders:parsed.connected};
+        message=authenticated===true
+          ?("OpenCode has "+parsed.connected+" connected credential source"+(parsed.connected===1?"":"s")+".")
+          :"OpenCode is available, but no upstream credentials were detected.";
+      }else{
+        authenticated=null;message="OpenCode is available, but Trebell could not verify connected provider credentials.";
+      }
     }
     const version=(versionResult.stdout||versionResult.stderr).trim().split(/\r?\n/)[0]||null;
     const compatibility=runtimeCompatibility(instance.kind,version);
-    return {id:instance.id,kind:instance.kind,name:def.name,available:authenticated,installed:true,authenticated,protocol:def.protocol,managed:Boolean(def.managed),binary:command,version,account,message,...(compatibility?{compatibility}:{})};
+    return {id:instance.id,kind:instance.kind,name:def.name,available:authenticated!==false,installed:true,authenticated,protocol:def.protocol,managed:Boolean(def.managed),binary:command,version,account,message,...(compatibility?{compatibility}:{})};
   }
   async models(instanceOrKind,{environmentId=undefined}={}){
     const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;

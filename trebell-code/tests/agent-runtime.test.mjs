@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
-import { AgentRuntimeManager, runtimeCompatibility } from "../src/agent-runtime-manager.mjs";
+import { AgentRuntimeManager, parseCursorAboutResult, parseGrokModelsAuth, parseOpenCodeAuthList, runtimeCompatibility } from "../src/agent-runtime-manager.mjs";
 import { AcpAgentSession } from "../src/acp-agent-session.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
 import { TerminalManager } from "../src/terminal-manager.mjs";
@@ -113,6 +113,41 @@ test("remote runtime usage reads the remote login but returns only normalized li
     assert.equal(limits.windows[0].usedPercent,61);
     assert.doesNotMatch(JSON.stringify(limits),/remote-private-token/);
     assert.equal(calls.some(call=>call.command==="sh"),true);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
+test("provider auth probes distinguish authenticated, unauthenticated and unknown CLI states",()=>{
+  assert.deepEqual(parseCursorAboutResult({stdout:JSON.stringify({cliVersion:"2026.03",userEmail:"dev@example.test"}),stderr:"",code:0}),{authenticated:true,email:"dev@example.test"});
+  assert.deepEqual(parseCursorAboutResult({stdout:JSON.stringify({cliVersion:"2026.03",userEmail:null}),stderr:"",code:0}),{authenticated:false,email:null});
+  assert.deepEqual(parseCursorAboutResult({stdout:"CLI Version 2026.03\nUser Email          Not logged in\n",stderr:"",code:0}),{authenticated:false,email:null});
+  assert.equal(parseGrokModelsAuth("You are logged in\n- grok-4.6 (default)"),true);
+  assert.equal(parseGrokModelsAuth("Not authenticated. Run grok login."),false);
+  assert.equal(parseGrokModelsAuth("- grok-4.6"),null);
+  assert.deepEqual(parseOpenCodeAuthList("— 0 credentials\n— 2 environment variables\n"),{connected:2,authenticated:true});
+  assert.deepEqual(parseOpenCodeAuthList("— 0 credentials\n— 0 environment variables\n"),{connected:0,authenticated:null});
+});
+
+test("remote runtime probes use provider-native auth status without treating unknown as signed out",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-runtime-auth-"));const env={...process.env,TREBELL_HOME:home};
+  try{
+    const state=new TrebellStateStore(env);state.updateSettings({activeEnvironmentId:"ssh-auth"});
+    let cursorLoggedIn=false,grokLoggedIn=false;
+    const environments={
+      get:id=>id==="ssh-auth"?{id,name:"Auth SSH",type:"ssh",cwd:"/srv/app"}:null,
+      executeArgv:async(_id,{command,args})=>{
+        if(args[0]==="--version")return {exitCode:0,stdout:"1.20.0\n",stderr:""};
+        if(command==="cursor-agent"&&args[0]==="about")return {exitCode:0,stdout:JSON.stringify({userEmail:cursorLoggedIn?"dev@example.test":null}),stderr:""};
+        if(command==="grok"&&args[0]==="models")return {exitCode:0,stdout:grokLoggedIn?"You are logged in\n- grok-4.6\n":"Not logged in\n",stderr:""};
+        if(command==="opencode"&&args[0]==="auth")return {exitCode:0,stdout:"— 0 credentials\n— 0 environment variables\n",stderr:""};
+        return {exitCode:1,stdout:"",stderr:"unexpected command"};
+      },
+    };
+    const manager=new AgentRuntimeManager({state,env,environments});
+    const cursorSignedOut=await manager.probe("cursor");assert.equal(cursorSignedOut.authenticated,false);assert.equal(cursorSignedOut.available,false);
+    cursorLoggedIn=true;const cursorReady=await manager.probe("cursor");assert.equal(cursorReady.authenticated,true);assert.equal(cursorReady.available,true);assert.equal(cursorReady.account.email,"dev@example.test");
+    const grokSignedOut=await manager.probe("grok");assert.equal(grokSignedOut.authenticated,false);assert.equal(grokSignedOut.available,false);
+    grokLoggedIn=true;assert.equal((await manager.probe("grok")).authenticated,true);
+    const openCode=await manager.probe("opencode");assert.equal(openCode.authenticated,null);assert.equal(openCode.available,true);assert.equal(openCode.account.connectedProviders,0);
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
