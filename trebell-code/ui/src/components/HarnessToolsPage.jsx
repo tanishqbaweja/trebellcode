@@ -226,18 +226,22 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const hookCount=data.hooks.reduce((n,x)=>n+(x.hooks?.length||0),0);
 
   async function reloadMcp(){
-    if(!rpc)return;setBusy("mcp");
-    try{await request("config/mcpServer/reload",undefined);await refresh()}finally{setBusy("")}
+    if(!rpc)return;setBusy("mcp");setErrors(prev=>({...prev,"config/mcpServer/reload":null}));
+    try{await request("config/mcpServer/reload",undefined);await refresh()}
+    catch(error){setErrors(prev=>({...prev,"config/mcpServer/reload":error.message||String(error)}))}
+    finally{setBusy("")}
   }
   async function loginMcp(name){
-    if(!rpc)return;setBusy("mcp:"+name);
-    try{await request("mcpServer/oauth/login",{name,threadId:activeThread?.id||null});await refresh()}finally{setBusy("")}
+    if(!rpc)return;setBusy("mcp:"+name);setErrors(prev=>({...prev,"mcpServer/oauth/login":null}));
+    try{await request("mcpServer/oauth/login",{name,threadId:activeThread?.id||null});await refresh()}
+    catch(error){setErrors(prev=>({...prev,"mcpServer/oauth/login":error.message||String(error)}))}
+    finally{setBusy("")}
   }
   async function togglePlugin(plugin){
-    if(!rpc)return;setBusy("plugin:"+plugin.id);
+    if(!rpc)return;const action=plugin.installed?"plugin/uninstall":"plugin/install";setBusy("plugin:"+plugin.id);setErrors(prev=>({...prev,[action]:null}));
     try{
       const nextInstalled=!plugin.installed;
-      if(plugin.installed)await request("plugin/uninstall",{pluginId:plugin.id});
+      if(plugin.installed)await request(action,{pluginId:plugin.id});
       else await request("plugin/install",{
         pluginName:plugin.name,
         marketplacePath:plugin.marketplace?.path||null,
@@ -247,7 +251,8 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       setPluginSearchResults(current=>current.map(result=>result.plugin?.id===plugin.id?{...result,plugin:{...result.plugin,installed:nextInstalled}}:result));
       setPluginDetail(current=>current?.summary?.id===plugin.id?{...current,summary:{...current.summary,installed:nextInstalled}}:current);
       await refresh();
-    }finally{setBusy("")}
+    }catch(error){setErrors(prev=>({...prev,[action]:error.message||String(error)}))}
+    finally{setBusy("")}
   }
   async function searchPlugins({append=false}={}){
     const searchTerm=pluginSearchTerm.trim();if(!rpc||searchTerm.length<2)return;
@@ -322,16 +327,22 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
     finally{setBusy("")}
   }
   async function addMarketplace(){
-    const source=marketplaceSource.trim();if(!source||!rpc)return;setBusy("marketplace:add");
-    try{await request("marketplace/add",{source});setMarketplaceSource("");await refresh()}finally{setBusy("")}
+    const source=marketplaceSource.trim();if(!source||!rpc)return;setBusy("marketplace:add");setErrors(prev=>({...prev,"marketplace/add":null}));
+    try{await request("marketplace/add",{source});setMarketplaceSource("");await refresh()}
+    catch(error){setErrors(prev=>({...prev,"marketplace/add":error.message||String(error)}))}
+    finally{setBusy("")}
   }
   async function removeMarketplace(name){
-    if(!rpc||!name)return;setBusy("marketplace:"+name);
-    try{await request("marketplace/remove",{marketplaceName:name});await refresh()}finally{setBusy("")}
+    if(!rpc||!name)return;setBusy("marketplace:"+name);setErrors(prev=>({...prev,"marketplace/remove":null}));
+    try{await request("marketplace/remove",{marketplaceName:name});await refresh()}
+    catch(error){setErrors(prev=>({...prev,"marketplace/remove":error.message||String(error)}))}
+    finally{setBusy("")}
   }
   async function upgradeMarketplace(name=null){
-    if(!rpc)return;setBusy("marketplace:"+(name||"all"));
-    try{await request("marketplace/upgrade",{marketplaceName:name});await refresh()}finally{setBusy("")}
+    if(!rpc)return;setBusy("marketplace:"+(name||"all"));setErrors(prev=>({...prev,"marketplace/upgrade":null}));
+    try{await request("marketplace/upgrade",{marketplaceName:name});await refresh()}
+    catch(error){setErrors(prev=>({...prev,"marketplace/upgrade":error.message||String(error)}))}
+    finally{setBusy("")}
   }
   async function loadExternalConfig(){
     const result=await request("externalAgentConfig/detect",{includeHome:true,cwds:projectPath?[projectPath]:[],maxSessionAgeDays:90,maxSessions:100});
@@ -535,7 +546,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
           {Object.entries(server.tools||{}).map(([toolName,tool])=><div className="mcp-tool" key={toolName}><div><strong>{toolName}</strong><span>{tool?.description||"MCP tool"}</span></div><input value={toolArgs[server.name+":"+toolName]||""} onChange={e=>setToolArgs(prev=>({...prev,[server.name+":"+toolName]:e.target.value}))} placeholder='JSON arguments, e.g. {"query":"..."}'/><button onClick={()=>runMcpTool(server,toolName)} disabled={!!busy||!activeThread?.id}>Run</button></div>)}
         </details>}</div>)}</div>
         {mcpResult&&<details className="capability-details" open><summary>{mcpResult.title}</summary><pre>{JSON.stringify(mcpResult.value,null,2)}</pre></details>}
-        <ErrorLine value={errors["mcpServerStatus/list"]}/>
+        <ErrorLine value={errors["mcpServerStatus/list"]}/><ErrorLine value={errors["config/mcpServer/reload"]}/><ErrorLine value={errors["mcpServer/oauth/login"]}/>
       </Section>
 
       <Section title="Skills" icon={Wrench} count={skills.length}>
@@ -556,7 +567,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
         {!pluginSearchRan&&!plugins.length&&<p>No plugin catalog is available in this runtime.</p>}
         {pluginDetail&&<div className="plugin-detail"><div className="plugin-detail-head"><div><strong>{pluginDetail.summary?.interface?.displayName||pluginDetail.summary?.name}</strong><span>{pluginDetail.marketplaceName}{pluginDetail.summary?.version?` · ${pluginDetail.summary.version}`:""}{pluginDetail.summary?.interface?.developerName?` · ${pluginDetail.summary.interface.developerName}`:""}</span></div><button onClick={()=>{setPluginDetail(null);setPluginSkillDetail(null)}}>Close</button></div>{(pluginDetail.description||pluginDetail.summary?.interface?.longDescription)&&<p>{pluginDetail.description||pluginDetail.summary.interface.longDescription}</p>}{pluginDetail.summary?.interface?.capabilities?.length>0&&<div className="capability-badges">{pluginDetail.summary.interface.capabilities.map(capability=><span className="ok" key={capability}>{capability}</span>)}</div>}<div className="plugin-detail-counts"><span>{pluginDetail.skills?.length||0} skills</span><span>{pluginDetail.hooks?.length||0} hooks</span><span>{pluginDetail.apps?.length||0} apps</span><span>{pluginDetail.mcpServers?.length||0} MCP servers</span><span>{pluginDetail.scheduledTasks?.length||0} scheduled tasks</span></div>{pluginDetail.skills?.length>0&&<div className="plugin-detail-skills">{pluginDetail.skills.map(skill=><div key={skill.name}><div><strong>{skill.interface?.displayName||skill.name}</strong><span>{skill.interface?.shortDescription||skill.shortDescription||skill.description}</span></div>{pluginDetail.summary?.remotePluginId&&pluginDetail.marketplaceName&&<button onClick={()=>readPluginSkill(skill)} disabled={!!busy}>{busy==="plugin:skill:"+skill.name?"Reading…":"Read skill"}</button>}</div>)}</div>}{pluginSkillDetail&&<details className="capability-details" open><summary>{pluginSkillDetail.name} · SKILL.md</summary><pre>{pluginSkillDetail.contents||"No skill contents were returned."}</pre></details>}</div>}
         {pluginMessage&&<p className="capability-status">{pluginMessage}</p>}
-        <ErrorLine value={errors["plugin/list"]}/><ErrorLine value={errors["plugin/search"]}/><ErrorLine value={errors["plugin/read"]}/><ErrorLine value={errors["plugin/skill/read"]}/><ErrorLine value={errors["plugin/reconcile"]}/><ErrorLine value={errors["plugin/share/save"]}/>
+        <ErrorLine value={errors["plugin/list"]}/><ErrorLine value={errors["plugin/install"]}/><ErrorLine value={errors["plugin/uninstall"]}/><ErrorLine value={errors["plugin/search"]}/><ErrorLine value={errors["plugin/read"]}/><ErrorLine value={errors["plugin/skill/read"]}/><ErrorLine value={errors["plugin/reconcile"]}/><ErrorLine value={errors["plugin/share/save"]}/>
       </Section>
 
       <Section title="Shared plugins" icon={Blocks} count={data.sharedPlugins.length}>
@@ -569,6 +580,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       <Section title="Marketplaces" icon={Blocks} count={data.marketplaces.length}>
         <div className="capability-actions marketplace-add"><input value={marketplaceSource} onChange={e=>setMarketplaceSource(e.target.value)} placeholder="Git URL or local marketplace source"/><button onClick={addMarketplace} disabled={!!busy||!marketplaceSource.trim()}>Add</button><button onClick={()=>upgradeMarketplace(null)} disabled={!!busy||!data.marketplaces.length}>Upgrade all</button></div>
         <div className="capability-list">{data.marketplaces.map(marketplace=><div key={marketplace.name}><div><strong>{marketplace.interface?.displayName||marketplace.name}</strong><span>{marketplace.path||`${(marketplace.plugins||[]).length} catalog plugins`}</span></div><div className="capability-inline-actions"><button onClick={()=>upgradeMarketplace(marketplace.name)} disabled={!!busy}>Upgrade</button>{marketplace.path&&<button onClick={()=>removeMarketplace(marketplace.name)} disabled={!!busy}>Remove</button>}</div></div>)}</div>
+        <ErrorLine value={errors["marketplace/add"]}/><ErrorLine value={errors["marketplace/remove"]}/><ErrorLine value={errors["marketplace/upgrade"]}/>
       </Section>
 
       <Section title="Apps / connectors" icon={CheckCircle2} count={data.apps.length}>
