@@ -703,7 +703,9 @@ test("failed automatic local queue starts keep the follow-up retryable",async({p
     await routeProjectlessCodexRequestFixture(page,harness,thread,"local-queue-failure-fixture");
     await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
     await page.goto("/");
-    await page.locator('.thread-main[title="Local queue failure fixture"]').click();
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Local queue failure fixture"]')});
+    await row.locator(".thread-main").click();
+    await expect(row).toHaveClass(/active/);
     const composer=page.getByTestId("composer");
     await composer.fill("Initial running turn");
     await page.getByTestId("send").click();
