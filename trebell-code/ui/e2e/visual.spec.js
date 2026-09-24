@@ -272,6 +272,29 @@ test("chat workspace is visually bounded and panes resize",async({page,request})
   await expect(shell).toBeVisible();
 });
 
+test("chat defers telemetry polling until a surface actually needs it",async({page,request})=>{
+  test.setTimeout(35_000);
+  let statsCalls=0,runtimeCalls=0;
+  await page.route(/\/api\/stats$/,route=>{statsCalls++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({cpu:"2%",memory:"100 MB",disk:"1 GB"})})});
+  await page.route(/\/api\/runtime$/,route=>{runtimeCalls++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({agentRuntime:"codex",providerReady:true})})});
+  await prepare(page,request);
+  await page.waitForTimeout(2200);
+  expect(statsCalls).toBe(0);
+  expect(runtimeCalls).toBe(0);
+  await page.getByTestId("right-panel-toggle").click();
+  const panel=page.getByTestId("right-panel");
+  await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Runtime",exact:true}).click();
+  await expect.poll(()=>statsCalls).toBeGreaterThan(0);
+  await expect.poll(()=>runtimeCalls).toBeGreaterThan(0);
+  await expect(panel.locator(".runtime-grid")).toContainText("2%");
+  await panel.getByRole("button",{name:"Close right panel",exact:true}).click();
+  await page.waitForTimeout(200);
+  const stoppedStats=statsCalls,stoppedRuntime=runtimeCalls;
+  await page.waitForTimeout(5300);
+  expect(statsCalls).toBe(stoppedStats);
+  expect(runtimeCalls).toBe(stoppedRuntime);
+});
+
 test("composer file mentions search the workspace and attach the selected file",async({page,request})=>{
   test.setTimeout(30_000);
   await prepare(page,request);
@@ -2548,6 +2571,14 @@ test("Diff review actions roll back and stay visible when persistence fails",asy
     const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await page.screenshot({path:auditDir+"workspace-diff-action-error-1280x800.png",fullPage:true});
+    await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Runtime",exact:true}).click();
+    const capabilities=panel.getByTestId("runtime-capabilities");
+    await expect(capabilities).toContainText("Runtime capability matrix");
+    await expect(capabilities.locator(".runtime-capability-grid>div").filter({hasText:"LSP"})).toContainText("available");
+    await expect(capabilities.locator(".runtime-capability-grid>div").filter({hasText:"Sandbox"})).toContainText("not exposed");
+    await expect(capabilities.locator(".runtime-capability-grid>div").filter({hasText:"Delegation"})).toContainText("not exposed");
+    await expect(panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Agents",exact:true})).toHaveCount(0);
+    await page.screenshot({path:auditDir+"runtime-capability-matrix-opencode-1280x800.png",fullPage:true});
   }finally{
     for(const ws of sockets)try{ws.terminate()}catch{}
     wss.close();await new Promise(resolve=>wsHttp.close(resolve));

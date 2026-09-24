@@ -15,6 +15,58 @@ const RUNTIMES=Object.freeze({
   antigravity:{id:"antigravity",name:"Antigravity",protocol:"acp",command:null,multipleInstances:true,managed:true},
 });
 
+const SHARED_CAPABILITIES=Object.freeze({
+  queue:true,
+  fork:false,
+  rewind:false,
+  compaction:false,
+  mcpInjection:false,
+  systemPromptInjection:false,
+  dynamicTools:false,
+  nativeLsp:false,
+  nativeSandbox:false,
+  permissionInterception:true,
+  clientFilesystem:false,
+  clientTerminal:false,
+  usageReporting:false,
+  contextReporting:false,
+  backgroundProcesses:false,
+  delegation:false,
+  harnessTools:false,
+  collaborationModes:false,
+  nativeQueue:false,
+  nativeHistoryPagination:false,
+  steering:false,
+  runtimeProfileSwitching:false,
+});
+
+const RUNTIME_CAPABILITIES=Object.freeze({
+  codex:Object.freeze({...SHARED_CAPABILITIES,
+    fork:true,rewind:true,compaction:true,systemPromptInjection:true,dynamicTools:true,nativeSandbox:true,
+    usageReporting:true,backgroundProcesses:true,delegation:true,harnessTools:true,collaborationModes:true,
+    nativeQueue:true,nativeHistoryPagination:true,steering:true,runtimeProfileSwitching:true,
+  }),
+  claude:Object.freeze({...SHARED_CAPABILITIES,
+    fork:true,rewind:true,compaction:true,usageReporting:true,
+  }),
+  opencode:Object.freeze({...SHARED_CAPABILITIES,
+    fork:true,rewind:true,compaction:true,nativeLsp:true,usageReporting:true,
+  }),
+  cursor:Object.freeze({...SHARED_CAPABILITIES,
+    fork:"runtime",clientFilesystem:true,clientTerminal:true,
+  }),
+  grok:Object.freeze({...SHARED_CAPABILITIES,
+    fork:"runtime",clientFilesystem:true,clientTerminal:true,
+  }),
+  antigravity:Object.freeze({...SHARED_CAPABILITIES,
+    fork:"runtime",clientFilesystem:true,clientTerminal:true,
+  }),
+});
+
+export function runtimeCapabilities(kind){
+  return {...(RUNTIME_CAPABILITIES[normalizeAgentRuntime(kind)]||SHARED_CAPABILITIES)};
+}
+
 const INSTALLABLE_PACKAGES=Object.freeze({
   claude:"@anthropic-ai/claude-code",
   opencode:"@opencode/cli",
@@ -122,7 +174,13 @@ function defaultInstance(kind){return {id:`${kind}-default`,kind,displayName:RUN
 
 export class AgentRuntimeManager{
   constructor({state,env=process.env,environments=null,platform=process.platform,fetchImpl=globalThis.fetch}={}){this.state=state;this.env=env;this.environments=environments;this.platform=platform;this.fetchImpl=fetchImpl}
-  definitions(){return Object.values(RUNTIMES).map(item=>({...item}))}
+  definitions(){return Object.values(RUNTIMES).map(item=>({...item,capabilities:runtimeCapabilities(item.id)}))}
+  capabilities(instanceOrKind=this.activeInstance()){
+    const kind=typeof instanceOrKind==="string"
+      ?(RUNTIMES[instanceOrKind]?instanceOrKind:this.instances().find(item=>item.id===instanceOrKind)?.kind)
+      :instanceOrKind?.kind;
+    return runtimeCapabilities(kind||this.activeRuntime());
+  }
   instances(){
     const configured=Array.isArray(this.state?.settings()?.agentRuntimeInstances)?this.state.settings().agentRuntimeInstances:[];
     const byKind=new Map(configured.map(item=>[String(item.id),{...item,kind:normalizeAgentRuntime(item.kind)}]));
@@ -430,6 +488,6 @@ export class AgentRuntimeManager{
       return {...safe,environmentKeys:Object.keys(environment||{})};
     });
     const definitions=this.definitions().map(def=>({...def,installable:Boolean(INSTALLABLE_PACKAGES[def.id]),packageName:INSTALLABLE_PACKAGES[def.id]||null,canAuthenticate:["claude","cursor","grok","opencode"].includes(def.id)}));
-    const active=this.activeInstance();return {selectedRuntime:this.activeRuntime(),selectedInstanceId:active.id,compatibleInstanceIds:this.compatibleInstanceIds(active),definitions,instances:publicInstances,statuses};
+    const active=this.activeInstance();return {selectedRuntime:this.activeRuntime(),selectedInstanceId:active.id,compatibleInstanceIds:this.compatibleInstanceIds(active),capabilities:this.capabilities(active),definitions,instances:publicInstances,statuses};
   }
 }

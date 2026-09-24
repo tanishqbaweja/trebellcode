@@ -115,6 +115,15 @@ test("Vyce accepts VYCE_API_KEY as an environment alias", () => {
   assert.equal(manager.childEnv("vyceai",{}).VYCEAI_API_KEY,"sk-vyce-alias");
 });
 
+test("provider environment aliases match Trebell root .env names", () => {
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
+  const manager=new ProviderManager({env:{TREBELL_HOME:root,JUST_WORKER_API_KEY:"jw-alias",HNSEC_API_KEY:"hc-alias"},fetchFn:async()=>new Response("{}")});
+  assert.equal(manager.key("justworker"),"jw-alias");
+  assert.equal(manager.key("hcnsec"),"hc-alias");
+  assert.equal(manager.childEnv("justworker",{}).JUSTWORKER_API_KEY,"jw-alias");
+  assert.equal(manager.childEnv("hcnsec",{}).HCNSEC_API_KEY,"hc-alias");
+});
+
 
 test("JustWorker uses the documented Anthropic-compatible messages endpoint", async () => {
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));

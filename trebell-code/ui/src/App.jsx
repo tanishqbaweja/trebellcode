@@ -58,6 +58,29 @@ function DeferredSurface({children,label="Loading…",compact=false}){
   return <Suspense fallback={<div className={"surface-loading"+(compact?" compact":"")} role="status">{label}</div>}>{children}</Suspense>;
 }
 
+function fallbackRuntimeCapabilities(runtime){
+  const base={
+    queue:true,fork:false,rewind:false,compaction:false,mcpInjection:false,systemPromptInjection:false,dynamicTools:false,nativeLsp:false,nativeSandbox:false,
+    permissionInterception:true,clientFilesystem:false,clientTerminal:false,usageReporting:false,contextReporting:false,backgroundProcesses:false,delegation:false,
+    harnessTools:false,collaborationModes:false,nativeQueue:false,nativeHistoryPagination:false,steering:false,runtimeProfileSwitching:false,
+  };
+  if(runtime==="codex")return {...base,fork:true,rewind:true,compaction:true,systemPromptInjection:true,dynamicTools:true,nativeSandbox:true,usageReporting:true,backgroundProcesses:true,delegation:true,harnessTools:true,collaborationModes:true,nativeQueue:true,nativeHistoryPagination:true,steering:true,runtimeProfileSwitching:true};
+  if(runtime==="claude")return {...base,fork:true,rewind:true,compaction:true,usageReporting:true};
+  if(runtime==="opencode")return {...base,fork:true,rewind:true,compaction:true,nativeLsp:true,usageReporting:true};
+  if(["cursor","grok","antigravity"].includes(runtime))return {...base,fork:"runtime",clientFilesystem:true,clientTerminal:true};
+  return base;
+}
+
+function capabilityStatus(value){
+  if(value==="runtime")return "runtime";
+  return value?"available":"not exposed";
+}
+
+function sameSnapshot(left,right){
+  if(left===right)return true;
+  try{return JSON.stringify(left)===JSON.stringify(right)}catch{return false}
+}
+
 const MAX_COMPOSER_ATTACHMENTS=100;
 const MAX_COMPOSER_CHARS=120_000;
 const CODEX_HISTORY_ITEM_PAGE_LIMIT=100;
@@ -303,7 +326,7 @@ const SLASH_COMMANDS=[
   ["/clear","Reset the current draft/thread view"],
 ];
 
-function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,submitting=false,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,onFileMentionSearch,onFileMentionAttach,permissionMode,setPermissionMode,collaborationModes=[],collaborationMode="default",onCollaborationMode,collaborationModeBusy=false,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,gitAvailable=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onModelPickerOpenChange}){
+function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,submitting=false,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",runtimeCapabilities={},login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,onFileMentionSearch,onFileMentionAttach,permissionMode,setPermissionMode,collaborationModes=[],collaborationMode="default",onCollaborationMode,collaborationModeBusy=false,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,gitAvailable=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onModelPickerOpenChange}){
   const [modelOpen,setModelOpen]=useState(false);
   const [listening,setListening]=useState(false);
   const [caret,setCaret]=useState(0);
@@ -409,9 +432,10 @@ function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgr
   }).filter(Boolean);
   const allSlash=[...SLASH_COMMANDS,...nativeSlash].filter(([cmd],index,array)=>array.findIndex(([candidate])=>candidate===cmd)===index);
   const slashAvailable=cmd=>{
-    if(cmd==="/compact")return threadOpen&&["codex","opencode","claude"].includes(agentRuntime);
-    if(["/ps","/stop","/feedback"].includes(cmd))return agentRuntime==="codex"&&threadOpen;
-    if(cmd==="/agents")return agentRuntime==="codex";
+    if(cmd==="/compact")return threadOpen&&Boolean(runtimeCapabilities.compaction);
+    if(["/ps","/stop"].includes(cmd))return Boolean(runtimeCapabilities.backgroundProcesses)&&threadOpen;
+    if(cmd==="/feedback")return agentRuntime==="codex"&&threadOpen;
+    if(cmd==="/agents")return Boolean(runtimeCapabilities.delegation);
     if(cmd==="/goal")return threadOpen;
     if(cmd==="/review")return threadOpen&&gitAvailable;
     if(["/diff","/git"].includes(cmd))return !projectless;
@@ -693,6 +717,9 @@ export default function App(){
   },[]);
 
   const agentRuntime=settings.agentRuntime||bootstrap.agentRuntime||"codex";
+  const runtimeCapabilities=bootstrap.agentRuntime===agentRuntime&&bootstrap.runtimeCapabilities
+    ?bootstrap.runtimeCapabilities
+    :fallbackRuntimeCapabilities(agentRuntime);
   const provider=settings.modelProvider||bootstrap.provider||"freebuff";
   useEffect(()=>{
     const next=agentRuntime+"\0"+provider;
@@ -1141,7 +1168,37 @@ export default function App(){
     setThreadRuntimeProfiles({threadId:null,supported:false,currentInstanceId:null,items:[]});setThreadRuntimeProfileBusy("");
   },[agentRuntime,rpc,rpcStatus,activeThread?.id]);
 
-  useEffect(()=>{const timer=setInterval(async()=>{const [s,r,g]=await Promise.all([api("/api/stats").catch(()=>null),api("/api/runtime").catch(()=>null),!projectlessMode&&projectPath&&!workspaceRemote?api("/api/git/info?path="+encodeURIComponent(projectPath)).catch(()=>null):Promise.resolve(null)]);if(s)setStats(s);if(r)setRuntime(r);if(projectlessMode)setGitInfo(null);else if(g)setGitInfo(g)},1800);return()=>clearInterval(timer)},[projectPath,workspaceRemote,projectlessMode]);
+  useEffect(()=>{
+    let disposed=false,busy=false;
+    const poll=async()=>{
+      if(disposed||busy||document.hidden)return;busy=true;
+      try{
+        if(projectlessMode){setGitInfo(current=>current==null?current:null);return}
+        if(!projectPath||workspaceRemote)return;
+        const next=await api("/api/git/info?path="+encodeURIComponent(projectPath)).catch(()=>null);
+        if(next&&!disposed)setGitInfo(current=>sameSnapshot(current,next)?current:next);
+      }finally{busy=false}
+    };
+    poll();const timer=setInterval(poll,3500);
+    const visible=()=>{if(!document.hidden)poll()};document.addEventListener("visibilitychange",visible);
+    return()=>{disposed=true;clearInterval(timer);document.removeEventListener("visibilitychange",visible)};
+  },[projectPath,workspaceRemote,projectlessMode]);
+  useEffect(()=>{
+    const shouldPoll=section==="settings"||(rightPanelOpen&&rightPanelTab==="runtime");
+    if(!shouldPoll)return;
+    let disposed=false,busy=false;
+    const poll=async()=>{
+      if(disposed||busy||document.hidden)return;busy=true;
+      try{
+        const [nextStats,nextRuntime]=await Promise.all([api("/api/stats").catch(()=>null),api("/api/runtime").catch(()=>null)]);
+        if(nextStats&&!disposed)setStats(current=>sameSnapshot(current,nextStats)?current:nextStats);
+        if(nextRuntime&&!disposed)setRuntime(current=>sameSnapshot(current,nextRuntime)?current:nextRuntime);
+      }finally{busy=false}
+    };
+    poll();const timer=setInterval(poll,5000);
+    const visible=()=>{if(!document.hidden)poll()};document.addEventListener("visibilitychange",visible);
+    return()=>{disposed=true;clearInterval(timer);document.removeEventListener("visibilitychange",visible)};
+  },[section,rightPanelOpen,rightPanelTab]);
   useEffect(()=>{if(agentRuntime!=="codex"||provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;refreshFreebuff(model);const timer=setInterval(()=>refreshFreebuff(model),15000);return()=>clearInterval(timer)},[agentRuntime,provider,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
   useEffect(()=>{if(agentRuntime!=="codex"||provider!=="freebuff"||!running||!(bootstrap.loggedIn||bootstrap.mock))return;const ping=()=>{const p=new URLSearchParams({timezone});if(model)p.set("model",model);fetch("/api/freebuff/heartbeat?"+p,{method:"POST"}).catch(()=>{})};ping();const timer=setInterval(ping,45000);return()=>clearInterval(timer)},[agentRuntime,provider,running,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
 
@@ -2288,12 +2345,12 @@ export default function App(){
       await compactContext();return true
     }
     if(command==="/ps"){
-      if(agentRuntime==="codex"&&activeThread?.id)openRightPanel("runtime");
-      else setEvents(prev=>[...prev,{id:"ps-unavailable-"+Date.now(),kind:"error",title:"Background process controls require an open Codex thread",status:"done",raw:{}}]);
+      if(runtimeCapabilities.backgroundProcesses&&activeThread?.id)openRightPanel("runtime");
+      else setEvents(prev=>[...prev,{id:"ps-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose background process controls`,status:"done",raw:{}}]);
       return true
     }
     if(command==="/stop"){
-      if(agentRuntime!=="codex"||!activeThread?.id||!rpc){setEvents(prev=>[...prev,{id:"stop-unavailable-"+Date.now(),kind:"error",title:"Background process controls require an open Codex thread",status:"done",raw:{}}]);return true}
+      if(!runtimeCapabilities.backgroundProcesses||!activeThread?.id||!rpc){setEvents(prev=>[...prev,{id:"stop-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose background process controls`,status:"done",raw:{}}]);return true}
       try{await rpc.request("thread/backgroundTerminals/clean",{threadId:activeThread.id});setEvents(prev=>[...prev,{id:"background-stop-"+Date.now(),kind:"tool",title:"Stopped agent background processes",status:"done",raw:{}}])}
       catch(error){setEvents(prev=>[...prev,{id:"background-stop-error-"+Date.now(),kind:"error",title:"Could not stop background processes: "+(error.message||String(error)),status:"done",raw:{}}])}
       return true
@@ -2303,7 +2360,7 @@ export default function App(){
     if(command==="/diff"){openRightPanel("diff");return true}
     if(command==="/git"){openRightPanel("source");return true}
     if(command==="/preview"){openRightPanel("preview");return true}
-    if(command==="/agents"){if(agentRuntime==="codex")openRightPanel("agents");else setEvents(prev=>[...prev,{id:"agents-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} collaboration controls are not exposed yet`,status:"done",raw:{}}]);return true}
+    if(command==="/agents"){if(runtimeCapabilities.delegation)openRightPanel("agents");else setEvents(prev=>[...prev,{id:"agents-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose delegated-agent controls`,status:"done",raw:{}}]);return true}
     if(command==="/review"){await startReview();return true}
     if(command==="/feedback"){
       if(agentRuntime!=="codex"||!activeThread?.id||!rpc){setEvents(prev=>[...prev,{id:"feedback-unavailable-"+Date.now(),kind:"error",title:"Codex feedback requires an existing Codex thread",status:"done",raw:{}}]);return true}
@@ -2321,7 +2378,7 @@ export default function App(){
     return false;
   }
   async function compactContext(){
-    if(!["codex","opencode","claude"].includes(agentRuntime)){setEvents(prev=>[...prev,{id:"compact-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose generic context compaction`,status:"done",raw:{}}]);return}
+    if(!runtimeCapabilities.compaction){setEvents(prev=>[...prev,{id:"compact-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose generic context compaction`,status:"done",raw:{}}]);return}
     if(!activeThread?.id||!rpc)return;
     try{
       await rpc.request("thread/compact/start",{threadId:activeThread.id});
@@ -2847,10 +2904,10 @@ export default function App(){
     {id:"terminal",label:"Terminal",detail:"Open the persistent PTY",shortcut:"Ctrl+Shift+T",onRun:()=>setPanel("terminal")},
     ...((currentProject?.scripts||[]).map(script=>({id:"project-action:"+script.id,label:"Run "+script.name,detail:script.command,onRun:()=>runProjectAction(script)}))),
     {id:"browser",label:"Browser",detail:window.trebellDesktop?.browser?"Open Trebell Agent Browser":"Open hosted preview and local dev-server tools",onRun:()=>openRightPanel("preview")},
-    ...(agentRuntime==="codex"?[{id:"agents",label:"Agents & collaboration",detail:"Delegated threads and collaboration mode",onRun:()=>openRightPanel("agents")}]:[]),
+    ...(runtimeCapabilities.delegation?[{id:"agents",label:"Agents & collaboration",detail:"Delegated threads and collaboration mode",onRun:()=>openRightPanel("agents")}]:[]),
     ...(activeThread?.id?[{id:"goal",label:"Thread goal",detail:goal?.objective||"Set a durable objective",onRun:()=>openRightPanel("goal")}]:[]),
     ...(activeThread?.id&&gitInfo?.isGit?[{id:"review",label:"Review changes",detail:`Ask ${agentRuntimeLabel} to review uncommitted changes`,onRun:()=>startReview()}]:[]),
-    ...(agentRuntime==="codex"?[{id:"tools",label:"Harness capabilities",detail:"Skills, MCP, plugins, apps and hooks",onRun:()=>setSection("tools")}]:[]),
+    ...(runtimeCapabilities.harnessTools?[{id:"tools",label:"Harness capabilities",detail:"Skills, MCP, plugins, apps and hooks",onRun:()=>setSection("tools")}]:[]),
     {id:"environments",label:"Environments",detail:"Local, WSL, SSH and remote access",onRun:()=>setSection("environments")},
     {id:"usage",label:"Usage",detail:"Tokens and cost across recorded turns",onRun:()=>setSection("usage")},
     {id:"licenses",label:"Open source licenses",detail:"Third-party packages and installed license notices",onRun:()=>setSection("licenses")},
@@ -2878,7 +2935,7 @@ export default function App(){
     if(rightPanelTab==="preview")return previewSurface;
     if(rightPanelTab==="source")return projectlessMode?<div className="empty-state">General chats are not attached to source control.</div>:<SourceControlPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} model={model} provider={provider} threadId={activeThread?.id||null} sourceControlSettings={currentProject?.effectiveSettings||effectiveProjectSettings} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} onLinkPrUrl={linkPullRequestUrl} onOpenLinkedThread={openLinkedThread} onSelectedPrChange={setSourceSelectedPr} onLinkedPullRequestsChanged={links=>activeThread?.id&&applyThreadPullRequestLinks(activeThread.id,links)} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
     if(rightPanelTab==="device")return <DevicePanel/>;
-    if(rightPanelTab==="agents"&&agentRuntime==="codex")return <div className="panel-page"><AgentsPage threads={threads} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onRefreshThreads={()=>rpc?loadThreads(rpc,{strict:true}):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model} telemetry={threadTelemetry}/></div>;
+    if(rightPanelTab==="agents"&&runtimeCapabilities.delegation)return <div className="panel-page"><AgentsPage threads={threads} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onRefreshThreads={()=>rpc?loadThreads(rpc,{strict:true}):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model} telemetry={threadTelemetry}/></div>;
     if(rightPanelTab==="goal")return <GoalPanel rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={setGoal}/>;
     return <div className="runtime-surface">
       <section className="runtime-summary">
@@ -2894,7 +2951,24 @@ export default function App(){
         <div><span>Disk</span><strong>{stats.disk||"—"}</strong></div>
         <div><span>Context</span><strong>{tokenLabel(tokenUsage)}</strong></div>
       </section>
-      {agentRuntime==="codex"&&activeThread?.id&&<AgentBackgroundTerminals rpc={rpc} rpcStatus={rpcStatus} threadId={activeThread.id}/>}
+      <section className="runtime-capabilities" data-testid="runtime-capabilities">
+        <div className="runtime-capabilities-head"><strong>Runtime capability matrix</strong><span>Only exposed controls should be usable.</span></div>
+        <div className="runtime-capability-grid">
+          {[
+            ["Queue",runtimeCapabilities.queue],
+            ["Fork",runtimeCapabilities.fork],
+            ["Rewind",runtimeCapabilities.rewind],
+            ["Compaction",runtimeCapabilities.compaction],
+            ["LSP",runtimeCapabilities.nativeLsp],
+            ["Sandbox",runtimeCapabilities.nativeSandbox],
+            ["Background",runtimeCapabilities.backgroundProcesses],
+            ["Delegation",runtimeCapabilities.delegation],
+            ["Harness tools",runtimeCapabilities.harnessTools],
+            ["Steering",runtimeCapabilities.steering],
+          ].map(([label,value])=><div key={label} className={value?"available":"unavailable"}><span>{label}</span><strong>{capabilityStatus(value)}</strong></div>)}
+        </div>
+      </section>
+      {runtimeCapabilities.backgroundProcesses&&activeThread?.id&&<AgentBackgroundTerminals rpc={rpc} rpcStatus={rpcStatus} threadId={activeThread.id}/>}
       {agentRuntime==="codex"&&provider==="freebuff"&&<FreebuffMini freebuff={freebuff} model={model} onOpen={()=>setSection("freebuff")}/>}
       <section className="runtime-activity"><strong>Latest activity</strong><p>{events.find(event=>event.status==="running")?.title||events.at(-1)?.title||"Waiting for a task"}</p></section>
     </div>;
@@ -2971,7 +3045,7 @@ export default function App(){
           </div>
 
           {currentProject?.cloneJob&&currentProject.cloneJob.status!=="completed"&&<div className={"clone-banner "+currentProject.cloneJob.status} data-testid="clone-banner"><div><strong>{currentProject.cloneJob.phase||"Cloning repository"}</strong><span>{currentProject.cloneJob.status==="failed"?(currentProject.cloneJob.error||"Clone failed"):currentProject.cloneJob.status==="cancelled"?"Clone cancelled":"You can keep writing. Send waits until the repository is ready."}</span>{cloneRefreshError&&<span className="clone-refresh-error" role="alert">{cloneRefreshError}</span>}</div>{["running","cancelling"].includes(currentProject.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(currentProject.cloneJob.progress)||0)+"%"}}/></i>}<em>{Math.round(currentProject.cloneJob.progress||0)}%</em>{currentProject.cloneJob.status==="running"&&<button onClick={()=>runUserAction(()=>cloneProjectAction("cancel"),"Could not cancel clone")}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(currentProject.cloneJob.status)&&<button onClick={()=>runUserAction(()=>cloneProjectAction("retry"),"Could not retry clone")}>Retry clone</button>}</div>}
-          <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={()=>setPromptHistoryIndex(-1)} historyIndex={promptHistoryIndex} onSend={send} onBackgroundSend={sendInBackground} canBackground={!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={changeComposerModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={()=>runUserAction(pickFiles,"Could not attach files")} onCaptureScreen={()=>runUserAction(captureDesktop,"Could not capture screen")} onPaste={onPaste} onDrop={onDrop} onFileMentionSearch={searchComposerFiles} onFileMentionAttach={item=>runUserAction(()=>attachComposerFileMention(item),"Could not attach file mention")} permissionMode={permissionMode} setPermissionMode={setPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={changeCollaborationMode} collaborationModeBusy={collaborationModeBusy} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={changeProviderAgent} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&["codex","opencode","claude"].includes(agentRuntime))} onCompact={compactContext} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={switchThreadRuntimeProfile} onModelPickerOpenChange={setModelPickerOpen}/>
+          <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={()=>setPromptHistoryIndex(-1)} historyIndex={promptHistoryIndex} onSend={send} onBackgroundSend={sendInBackground} canBackground={!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} runtimeCapabilities={runtimeCapabilities} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={changeComposerModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={()=>runUserAction(pickFiles,"Could not attach files")} onCaptureScreen={()=>runUserAction(captureDesktop,"Could not capture screen")} onPaste={onPaste} onDrop={onDrop} onFileMentionSearch={searchComposerFiles} onFileMentionAttach={item=>runUserAction(()=>attachComposerFileMention(item),"Could not attach file mention")} permissionMode={permissionMode} setPermissionMode={setPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={changeCollaborationMode} collaborationModeBusy={collaborationModeBusy} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={changeProviderAgent} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&runtimeCapabilities.compaction)} onCompact={compactContext} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={switchThreadRuntimeProfile} onModelPickerOpenChange={setModelPickerOpen}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="layout-resizer terminal-resizer" data-testid="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" onPointerDown={event=>beginLayoutResize("terminal",event)}/>
@@ -2982,7 +3056,7 @@ export default function App(){
 
         {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><DeferredSurface label="Loading projects…"><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onProjectUpdated={project=>{if(project?.path===projectPath&&(project?.environmentId||null)===(workspaceEnvironmentId||null))setCurrentProject(project)}} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></DeferredSurface></div>}
         {section==="freebuff"&&agentRuntime==="codex"&&provider==="freebuff"&&<div className="secondary-page"><div className="page-header"><div><h1>Freebuff</h1><p>Account, balance, model pricing and session state.</p></div></div><DeferredSurface label="Loading Freebuff…"><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model,{strict:true})}/></DeferredSurface></div>}
-        {section==="tools"&&agentRuntime==="codex"&&<div className="secondary-page full"><DeferredSurface label="Loading harness capabilities…"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} onHistoryImported={historyImported} onSkillsRefresh={refreshSkillsAfterMutation} platform={bootstrap.platform}/></DeferredSurface></div>}
+        {section==="tools"&&runtimeCapabilities.harnessTools&&<div className="secondary-page full"><DeferredSurface label="Loading harness capabilities…"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} onHistoryImported={historyImported} onSkillsRefresh={refreshSkillsAfterMutation} platform={bootstrap.platform}/></DeferredSurface></div>}
         {section==="environments"&&<div className="secondary-page full"><DeferredSurface label="Loading environments…"><EnvironmentsPage/></DeferredSurface></div>}
       {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><DeferredSurface label="Loading licenses…"><LicensesPage/></DeferredSurface></div>}
@@ -2991,7 +3065,7 @@ export default function App(){
       </main>
 
       {rightPanelOpen&&!rightPanelMaximized&&<div className="layout-resizer right-panel-resizer" data-testid="right-panel-resizer" role="separator" aria-label="Resize workspace panel" aria-orientation="vertical" onPointerDown={event=>beginLayoutResize("right",event)}/>}
-      {rightPanelOpen&&<RightPanel active={rightPanelTab} disabledTabs={projectlessMode?["diff","context","source"]:[]} hiddenTabs={agentRuntime==="codex"?[]:["agents"]} maximized={rightPanelMaximized} onToggleMaximized={()=>setRightPanelMaximized(value=>!value)} onActive={tab=>openRightPanel(tab)} onClose={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}><DeferredSurface label="Loading panel…" compact>{rightPanelContent()}</DeferredSurface></RightPanel>}
+      {rightPanelOpen&&<RightPanel active={rightPanelTab} disabledTabs={projectlessMode?["diff","context","source"]:[]} hiddenTabs={runtimeCapabilities.delegation?[]:["agents"]} maximized={rightPanelMaximized} onToggleMaximized={()=>setRightPanelMaximized(value=>!value)} onActive={tab=>openRightPanel(tab)} onClose={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}><DeferredSurface label="Loading panel…" compact>{rightPanelContent()}</DeferredSurface></RightPanel>}
       {actionError&&<div className={"app-action-error-toast"+(threadUndo?" with-thread-undo":"")+(section!=="chat"?" secondary-surface-error":"")} role="alert" aria-live="assertive" data-testid="app-action-error">{actionError}</div>}
     </div>
 

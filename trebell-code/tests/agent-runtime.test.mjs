@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
-import { AgentRuntimeManager, parseCursorAboutResult, parseGrokModelsAuth, parseOpenCodeAuthList, runtimeCompatibility } from "../src/agent-runtime-manager.mjs";
+import { AgentRuntimeManager, parseCursorAboutResult, parseGrokModelsAuth, parseOpenCodeAuthList, runtimeCapabilities, runtimeCompatibility } from "../src/agent-runtime-manager.mjs";
 import { AcpAgentSession } from "../src/acp-agent-session.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
 import { TerminalManager } from "../src/terminal-manager.mjs";
@@ -24,9 +24,30 @@ test("agent runtime registry exposes real harnesses and capability-gates configu
     assert.equal(state.settings().agentRuntimeInstanceId,fake.id);
     const models=await manager.models(fake);
     assert.deepEqual(models.models,["cursor-default"]);
+    assert.equal(manager.capabilities("codex").nativeSandbox,true);
+    assert.equal(manager.capabilities("opencode").nativeLsp,true);
+    assert.equal(manager.capabilities("claude").rewind,true);
+    assert.equal(manager.capabilities("cursor").fork,"runtime");
+    assert.equal(manager.capabilities("cursor").clientFilesystem,true);
+    assert.equal(manager.capabilities("cursor").nativeSandbox,false);
   }finally{
     await rm(home,{recursive:true,force:true});
   }
+});
+
+test("runtime capabilities describe adapter behavior without pretending unsupported features exist",()=>{
+  const codex=runtimeCapabilities("codex");
+  assert.equal(codex.dynamicTools,true);
+  assert.equal(codex.nativeQueue,true);
+  assert.equal(codex.mcpInjection,false);
+  const openCode=runtimeCapabilities("opencode");
+  assert.equal(openCode.compaction,true);
+  assert.equal(openCode.nativeLsp,true);
+  assert.equal(openCode.mcpInjection,false);
+  const acp=runtimeCapabilities("grok");
+  assert.equal(acp.queue,true,"Trebell supplies the queue for external runtimes");
+  assert.equal(acp.fork,"runtime","ACP forking must stay conditional on what the connected runtime advertises");
+  assert.equal(acp.rewind,false);
 });
 
 test("Claude runtime profiles validate and persist auto-compact thresholds",async()=>{

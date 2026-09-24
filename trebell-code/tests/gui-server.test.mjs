@@ -59,6 +59,8 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(boot.mock,true);
     assert.equal(boot.loggedIn,true);
     assert.equal(boot.version,packageVersion);
+    assert.equal(boot.runtimeCapabilities.nativeSandbox,true);
+    assert.equal(boot.runtimeCapabilities.dynamicTools,true);
 
     const models=await fetch(gui.url+"/api/models").then(r=>r.json());
     assert.ok(models.models.length>=1);
