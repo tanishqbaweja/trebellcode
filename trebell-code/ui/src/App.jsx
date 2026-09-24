@@ -2072,17 +2072,20 @@ export default function App(){
       if(checkpoint?.id&&turnId)await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}}).catch(()=>{});
       return {thread,turnId,cwd};
     }catch(error){
-      let uncertainThread=thread;
-      if(!uncertainThread?.id){
+      const mayHaveSucceeded=!error?.trebellRpcResponse;
+      let uncertainThread=thread;const verificationErrors=[];
+      if(mayHaveSucceeded&&!uncertainThread?.id){
         for(let attempt=0;attempt<3&&!uncertainThread;attempt++){
           if(attempt)await new Promise(resolve=>setTimeout(resolve,250));
-          const listed=await rpc.request("thread/list",threadListParams(100)).catch(()=>({data:[]}));
-          uncertainThread=threadForWorktree(listed.data||[],cwd);
+          try{
+            const listed=await rpc.request("thread/list",threadListParams(100));
+            uncertainThread=threadForWorktree(listed.data||[],cwd);
+          }catch(listError){verificationErrors.push(listError)}
         }
         if(uncertainThread?.id){backgroundThreadsRef.current.add(uncertainThread.id);setThreads(prev=>[uncertainThread,...prev.filter(item=>item.id!==uncertainThread.id)])}
       }
       const failure=error instanceof Error?error:new Error(String(error));
-      if(uncertainThread?.id||turnRequestStarted)failure.trebellUncertain={threadId:uncertainThread?.id||null,cwd,model:modelId,phase:turnRequestStarted?"turn":"thread"};
+      if(mayHaveSucceeded&&(uncertainThread?.id||turnRequestStarted||verificationErrors.length))failure.trebellUncertain={threadId:uncertainThread?.id||null,cwd,model:modelId,phase:turnRequestStarted?"turn":"thread",verificationError:verificationErrors.at(-1)?.message||null};
       throw failure;
     }
   }
@@ -2251,14 +2254,23 @@ export default function App(){
     const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd,model,projectless:projectlessMode};
     setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);setEvents([]);setAssistantText("");setSection("chat");
     startDetachedTurn(draft.text,draft.attachments,draft.model,{basePath:draft.projectPath,projectless:draft.projectless}).catch(async error=>{
-      const stash=await saveFailureStash(draft);
+      const guard=error?.trebellUncertain;
+      const guardedDraft=guard?{...draft,text:"[CHECK EXISTING THREAD BEFORE RETRY] "+draft.text}:draft;
+      const possibleThread=guard?.threadId?" Possible thread: "+guard.threadId+".":"";
+      const stash=await saveFailureStash(guardedDraft);
       if(stash.ok){
-        setEvents(prev=>[...prev,{id:"background-error-"+Date.now(),kind:"error",title:"Background task failed; draft was stashed: "+(error.message||String(error)),status:"done",raw:{}}]);
-        desktopNotify("Background task failed","The draft was saved to Trebell stash.");
+        const title=guard
+          ?"Background may already be running."+possibleThread+" Check for an existing thread before retrying; draft stashed with warning."
+          :"Background task failed; draft was stashed: "+(error.message||String(error));
+        setEvents(prev=>[...prev,{id:"background-error-"+Date.now(),kind:"error",title,status:"done",raw:{uncertain:guard||null,error:error?.message||String(error)}}]);
+        desktopNotify(guard?"Background task needs attention":"Background task failed",guard?"Check for an existing background thread before retrying. The draft was stashed with a warning.":"The draft was saved to Trebell stash.");
       }else{
         restoreFailedDraft(draft);
-        setEvents(prev=>[...prev,{id:"background-error-"+Date.now(),kind:"error",title:"Background task failed; stash save also failed, so the draft was restored to the composer: "+(error.message||String(error))+" · Stash error: "+stash.error,status:"done",raw:{taskError:error?.message||String(error),stashError:stash.error}}]);
-        desktopNotify("Background task failed","The draft could not be saved to Trebell stash, so it was restored to the composer.");
+        const title=guard
+          ?"Background may already be running."+possibleThread+" stash save also failed: "+stash.error+". Draft restored; check for an existing thread before retrying."
+          :"Background task failed; stash save also failed, so the draft was restored to the composer: "+(error.message||String(error))+" · Stash error: "+stash.error;
+        setEvents(prev=>[...prev,{id:"background-error-"+Date.now(),kind:"error",title,status:"done",raw:{taskError:error?.message||String(error),stashError:stash.error,uncertain:guard||null}}]);
+        desktopNotify(guard?"Background task needs attention":"Background task failed",guard?"The draft was restored. Check for an existing background thread before retrying.":"The draft could not be saved to Trebell stash, so it was restored to the composer.");
       }
     });
   }

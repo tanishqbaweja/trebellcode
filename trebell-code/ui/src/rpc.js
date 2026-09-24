@@ -109,7 +109,13 @@ export class CodexRpcClient {
       if (!pending) return;
       this.pending.delete(message.id);
       clearTimeout(pending.timer);
-      if (message.error) pending.reject(new Error(message.error.message || "RPC request failed"));
+      if (message.error) {
+        const error = new Error(message.error.message || "RPC request failed");
+        error.trebellRpcResponse = true;
+        error.rpcCode = message.error.code;
+        error.rpcData = message.error.data;
+        pending.reject(error);
+      }
       else pending.resolve(message.result);
       return;
     }
