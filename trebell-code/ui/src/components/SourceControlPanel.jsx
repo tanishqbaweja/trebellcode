@@ -98,7 +98,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       const result=await api("/api/source-control/thread-link",{method:"POST",body:{action:"sync",threadId}});
       if(result?.links)onLinkedPullRequestsChanged?.(result.links);
     }catch(error){
-      if(reportErrors)setError(error.message||String(error)||"Could not sync linked pull requests.");
+      if(reportErrors||linkedPullRequests.length)setError("Could not sync linked pull requests: "+(error.message||String(error)||"Unknown error"));
     }finally{
       if(reportErrors)setBusy("");
     }

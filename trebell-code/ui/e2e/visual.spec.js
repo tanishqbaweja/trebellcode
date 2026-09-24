@@ -1937,6 +1937,45 @@ test("project detail refresh failures preserve known Git metadata",async({page,r
   await page.screenshot({path:auditDir+"projects-detail-refresh-error-1280x800.png",fullPage:true});
 });
 
+test("project polling failures preserve active clone cards and stay visible",async({page})=>{
+  test.setTimeout(30_000);
+  const cloneJob={id:"projects-poll-clone",status:"running",phase:"Receiving objects",progress:37};
+  const project={id:"projects-poll-project",name:"Polling Clone Project",path:process.cwd(),environmentId:null,cloneJob};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+  let failProjects=false,projectReads=0;
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:project.path,platform:process.platform,version:"projects-poll-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{}})}));
+  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+  await page.route(/\/api\/projects$/,route=>{
+    projectReads++;
+    if(failProjects)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate periodic project refresh failure"})});
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})});
+  });
+  await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,root:project.path,branch:"main",branches:["main"],status:[],remotes:[],worktrees:[]})}));
+  await page.route(/\/api\/project-actions\/suggestions\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({scripts:[],t3:{present:false},packageManager:null})}));
+  await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+  await page.route(/\/api\/environments$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({profiles:[]})}));
+  await page.route(/\/api\/freebuff\/overview/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({})}));
+  await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+  await page.goto("/");
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  const card=page.locator(".project-card").filter({hasText:"Polling Clone Project"});
+  await expect(card).toBeVisible();
+  const clone=card.locator(".project-clone-status");
+  await expect(clone).toContainText("Receiving objects");
+  await expect(clone).toContainText("37%");
+  const baseline=projectReads;
+  failProjects=true;
+  await expect.poll(()=>projectReads,{timeout:5000}).toBeGreaterThan(baseline);
+  await expect(page.getByRole("alert")).toContainText("Could not refresh projects: Deliberate periodic project refresh failure");
+  await expect(clone).toContainText("Receiving objects");
+  await expect(clone).toContainText("37%");
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await page.locator(".projects-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"projects-poll-refresh-error-1280x800.png",fullPage:true});
+});
+
 test("clone progress polling failures keep the last known job visible",async({page})=>{
   test.setTimeout(30_000);
   const cloneJob={id:"clone-poll-failure",status:"running",phase:"Cloning objects",progress:42};
@@ -4199,6 +4238,55 @@ test("source control keeps the PR visible when loading full details fails",async
   await expect(prButton).toBeVisible();
   await expect(prButton).toHaveClass(/active/);
   await page.screenshot({path:auditDir+"source-control-refresh-error-1280x800.png",fullPage:true});
+});
+
+test("linked pull-request auto-sync failures preserve the last valid links",async({page})=>{
+  test.setTimeout(35_000);
+  const project={id:"linked-pr-sync-project",name:"Linked PR Sync Project",path:process.cwd(),environmentId:null};
+  const thread={id:"linked-pr-sync-thread",name:"Linked PR sync fixture",preview:"Keep persisted PR links",cwd:project.path,createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
+  const linkedPr={number:77,title:"Persisted linked PR",url:"https://github.com/example/trebellcode/pull/77",provider:"github",headRefName:"feature/linked-sync",baseRefName:"main",identity:{provider:"github",host:"github.com",repository:"example/trebellcode",number:77}};
+  let syncCalls=0;
+  const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
+    if(message.method==="thread/attachment/list"){ws.send(JSON.stringify({id:message.id,result:{data:[{attachmentType:"pull_request",identityKey:"github:77",payload:linkedPr}]}}));return true}
+    return false;
+  }});
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:project.path,platform:process.platform,version:"linked-pr-sync-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[thread.id]:{projectless:false,environmentId:null}}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+    await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})}));
+    await page.route(/\/api\/worktree\/ensure$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
+    await page.route(/\/api\/thread-meta$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
+    await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({checkpoints:[]})}));
+    await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,root:project.path,branch:"feature/linked-sync",branches:["main","feature/linked-sync"],upstream:"origin/feature/linked-sync",status:[],remotes:[{name:"origin",kind:"fetch",url:"https://github.com/example/trebellcode.git"}],worktrees:[{path:project.path,branch:"feature/linked-sync"}]})}));
+    await page.route(/\/api\/source-control\/diagnostics\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selectedProvider:"github",detectedProvider:"github",git:{version:"git version fixture"},providers:{github:{label:"GitHub",installed:true,authenticated:true}},capabilities:{github:{create:true,comment:true,review:true,merge:true}}})}));
+    await page.route(/\/api\/source-control\/prs\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:[],capabilities:{create:true,comment:true,review:true,merge:true}})}));
+    await page.route(/\/api\/source-control\/thread-link$/,route=>{
+      if(route.request().method()==="POST"){syncCalls++;return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate linked PR auto-sync failure"})})}
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({threads:[]})});
+    });
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Linked PR sync fixture"]')});
+    await row.locator(".thread-main").click();
+    await expect(row).toHaveClass(/active/);
+    await expect(page.locator(".header-pr").filter({hasText:"#77"})).toBeVisible();
+    await page.getByTestId("right-panel-toggle").click();
+    const panel=page.getByTestId("right-panel");
+    await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
+    await expect.poll(()=>syncCalls).toBeGreaterThanOrEqual(1);
+    await expect(panel.getByRole("alert")).toContainText("Could not sync linked pull requests: Deliberate linked PR auto-sync failure");
+    const linkedRow=panel.locator(".linked-pr-row").filter({hasText:"#77 Persisted linked PR"});
+    await expect(linkedRow).toBeVisible();
+    await expect(linkedRow).toContainText("example/trebellcode");
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"source-control-linked-pr-sync-error-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
 });
 
 test("source control preserves viewed files when the same PR refresh fails",async({page,request})=>{

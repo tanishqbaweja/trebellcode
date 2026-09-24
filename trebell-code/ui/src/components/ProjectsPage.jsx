@@ -43,7 +43,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     let d;
     try{d=await api("/api/projects")}
     catch(err){
-      if(reportErrors||!projects.length)setError("Could not refresh projects: "+(err.message||String(err)));
+      setError("Could not refresh projects: "+(err.message||String(err)));
       return false;
     }
     const refreshErrors=[];
@@ -68,6 +68,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     }));
     setProjects(enriched);
     if(reportErrors)setError(refreshErrors.length?"Projects refreshed with partial errors: "+refreshErrors.join(" · "):"");
+    else setError(current=>/^Could not refresh projects:/.test(current)?"":current);
     return true;
   }
   useEffect(()=>{refresh({reportErrors:true})},[]);
