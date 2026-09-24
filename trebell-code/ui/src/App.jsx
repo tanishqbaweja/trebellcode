@@ -879,9 +879,16 @@ export default function App(){
       setWorkspaceMode(initialScoped.defaultWorkspaceMode||state.settings?.defaultWorkspaceMode||"current");
       if(initialProject?.permissionMode)setPermissionMode(initialProject.permissionMode);
       if(initialProject?.workspaceMode)setWorkspaceMode(initialProject.workspaceMode);
-      if(window.trebellDesktop?.background&&state.settings?.backgroundMode!=null)window.trebellDesktop.background.set(Boolean(state.settings.backgroundMode)).catch?.(()=>{});
-      if((state.settings?.agentRuntime||boot.agentRuntime||"codex")==="codex"&&(state.settings?.modelProvider||boot.provider||"freebuff")==="freebuff"&&initialModel){const p=new URLSearchParams({timezone,model:initialModel});const fb=await api("/api/freebuff/overview?"+p).catch(()=>null);if(fb&&!cancelled)setFreebuff(fb)}
       const partialErrors=[];
+      if(window.trebellDesktop?.background&&state.settings?.backgroundMode!=null){
+        try{await window.trebellDesktop.background.set(Boolean(state.settings.backgroundMode))}
+        catch(error){partialErrors.push("desktop background mode: "+(error?.message||String(error)))}
+      }
+      if((state.settings?.agentRuntime||boot.agentRuntime||"codex")==="codex"&&(state.settings?.modelProvider||boot.provider||"freebuff")==="freebuff"&&initialModel){
+        const p=new URLSearchParams({timezone,model:initialModel});
+        try{const fb=await api("/api/freebuff/overview?"+p);if(fb&&!cancelled)setFreebuff(fb)}
+        catch(error){partialErrors.push("Freebuff account state: "+(error?.message||String(error)))}
+      }
       if(themeResult.status==="rejected")partialErrors.push("themes: "+(themeResult.reason?.message||String(themeResult.reason)));
       if(projectResult.status==="rejected")partialErrors.push("projects: "+(projectResult.reason?.message||String(projectResult.reason)));
       if(partialErrors.length)showActionError(new Error(partialErrors.join(" · ")),"Started with partial data");

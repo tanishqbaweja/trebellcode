@@ -139,6 +139,30 @@ test("startup failures never become a fake empty mock workspace",async({page})=>
   await expect(page.getByTestId("model-picker")).toBeEnabled();
 });
 
+test("startup partial failures stay visible while the workspace remains usable",async({page})=>{
+  test.setTimeout(30_000);
+  await page.addInitScript(()=>Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{background:{set:async()=>{throw new Error("Deliberate background mode apply failure")}}}}));
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",backgroundMode:true};
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"startup-partial-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{}})}));
+  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+  await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+  await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+  await page.route(/\/api\/freebuff\/overview/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate startup Freebuff account failure"})}));
+  await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+  await page.goto("/");
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await expect(page.getByTestId("model-picker")).toBeEnabled();
+  const error=page.getByTestId("app-action-error");
+  await expect(error).toContainText("Started with partial data");
+  await expect(error).toContainText("desktop background mode: Deliberate background mode apply failure");
+  await expect(error).toContainText("Freebuff account state: Deliberate startup Freebuff account failure");
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"startup-partial-data-error-1280x800.png",fullPage:true});
+});
+
 test("chat workspace is visually bounded and panes resize",async({page,request})=>{
   test.setTimeout(45_000);
   await prepare(page,request);
