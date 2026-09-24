@@ -16,7 +16,7 @@ async function freePort(){
 test("Codex follow-ups use the native persistent queue",async({page})=>{
   test.setTimeout(45_000);
   const thread={id:"codex-queue-fixture",name:"Codex queue fixture",preview:"Persistent native follow-ups",cwd:process.cwd(),createdAt:Date.now()-1000,updatedAt:Date.now(),turns:[]};
-  const calls=[];let queue=[];let nextQueueId=1;let nextTurnId=1;let slowNextQueueAdd=false;let rejectNextQueueAdd=false;let rejectNextSteer=false;
+  const calls=[];let queue=[];let nextQueueId=1;let nextTurnId=1;let slowNextQueueAdd=false;let rejectNextQueueAdd=false;let rejectQueueLists=0;let rejectNextSteer=false;
   const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const sockets=new Set();
   upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
   const notify=(ws,method,params)=>ws.readyState===ws.OPEN&&ws.send(JSON.stringify({method,params}));
@@ -34,7 +34,10 @@ test("Codex follow-ups use the native persistent queue",async({page})=>{
       else if(message.method==="thread/attachment/list")result={data:[],nextCursor:null};
       else if(message.method==="skills/list")result={data:[]};
       else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
-      else if(message.method==="thread/queue/list")result={data:queue.map(item=>({...item,input:item.input.map(input=>({...input}))})),nextCursor:null};
+      else if(message.method==="thread/queue/list"){
+        if(rejectQueueLists>0){rejectQueueLists--;ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"fixture queue refresh rejection"}}));return}
+        result={data:queue.map(item=>({...item,input:item.input.map(input=>({...input}))})),nextCursor:null};
+      }
       else if(message.method==="thread/queue/add"){
         if(rejectNextQueueAdd){rejectNextQueueAdd=false;ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"fixture queue rejection"}}));return}
         const finish=()=>{const item={id:"q"+(nextQueueId++),input:message.params.input,clientUserMessageId:message.params.clientUserMessageId};queue.push(item);respond({queuedSubmission:item});setTimeout(()=>notify(ws,"thread/queue/changed",{threadId:thread.id}),0)};
@@ -72,7 +75,10 @@ test("Codex follow-ups use the native persistent queue",async({page})=>{
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
     await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
-    await page.goto("/");await page.getByRole("button",{name:/Codex queue fixture/}).click();
+    await page.goto("/");
+    const queueRow=page.locator(".thread-row").filter({hasText:"Codex queue fixture"});
+    await queueRow.locator(".thread-main").click();
+    await expect(queueRow).toHaveClass(/active/);
     const composer=page.getByTestId("composer");await composer.fill("Initial active turn");await page.getByTestId("send").click();
     await expect.poll(()=>calls.some(call=>call.method==="turn/start")).toBe(true);
 
@@ -90,6 +96,17 @@ test("Codex follow-ups use the native persistent queue",async({page})=>{
     await expect(page.locator(".queued-message").nth(0)).toContainText("Second queued follow-up");
     await page.locator(".queued-message").nth(0).getByRole("button",{name:"Edit"}).click();await expect(composer).toHaveValue("Second queued follow-up");
     await composer.fill("Second queued follow-up edited");await page.getByTestId("send").click();await expect(page.locator(".queued-message").nth(0)).toContainText("Second queued follow-up edited");
+    await composer.fill("Keep backend queue identity fresh");await send.click();await expect(page.locator(".queued-message")).toHaveCount(3);
+    rejectNextSteer=true;rejectQueueLists=2;
+    const refreshRecovery=page.locator(".queued-message").filter({hasText:"Keep backend queue identity fresh"});
+    await refreshRecovery.getByRole("button",{name:"Send now"}).click();
+    await expect(page.getByTestId("app-action-error")).toContainText("Could not send queued follow-up: fixture steer rejection · Queue was restored, but refresh failed: fixture queue refresh rejection.");
+    await expect(refreshRecovery).toBeVisible();
+    await page.setViewportSize({width:1280,height:800});
+    await page.screenshot({path:auditDir+"chat-native-queue-refresh-error-1280x800.png",fullPage:true});
+    await refreshRecovery.getByRole("button",{name:"Send now"}).click();
+    await expect(refreshRecovery).toHaveCount(0);
+    expect(queue.some(entry=>JSON.stringify(entry.input).includes("Keep backend queue identity fresh"))).toBe(false);
     await composer.fill("Recover me if send-now restore fails");await send.click();await expect(page.locator(".queued-message")).toHaveCount(3);
     rejectNextSteer=true;rejectNextQueueAdd=true;
     await page.locator(".queued-message").nth(2).getByRole("button",{name:"Send now"}).click();

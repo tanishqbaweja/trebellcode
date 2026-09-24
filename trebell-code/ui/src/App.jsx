@@ -2255,14 +2255,18 @@ export default function App(){
           await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:originalInput});
           setQueued(prev=>prev.filter(q=>q.id!==item.id));setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.draftText||item.text,turnId:activeTurnId}]);return;
         }catch(error){
+          let restored;
           try{
-            await rpc.request("thread/queue/add",{threadId:activeThread.id,input:originalInput,clientUserMessageId:originalClientId});
-            await loadNativeQueue(rpc,activeThread.id).catch(()=>{});
+            restored=await rpc.request("thread/queue/add",{threadId:activeThread.id,input:originalInput,clientUserMessageId:originalClientId});
           }catch(restoreError){
             setQueued(prev=>prev.filter(q=>q.id!==item.id));
             restoreFailedDraft({text:item.draftText||item.text,attachments:item.attachments||[],contextChips:item.contextChips||[]});
             throw new Error((error?.message||String(error))+" · Native queue restore also failed: "+(restoreError?.message||String(restoreError))+". The queued draft was restored to the composer.");
           }
+          const restoredDraft={...queuedSubmissionDraft(restored?.queuedSubmission||{}),contextChips:[...(item.contextChips||[])],model:item.model||model};
+          setQueued(prev=>prev.map(q=>q.id===item.id?restoredDraft:q));
+          try{await loadNativeQueue(rpc,activeThread.id)}
+          catch(refreshError){throw new Error((error?.message||String(error))+" · Queue was restored, but refresh failed: "+(refreshError?.message||String(refreshError))+".")}
           throw error;
         }
       }
