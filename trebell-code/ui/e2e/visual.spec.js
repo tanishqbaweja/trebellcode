@@ -904,6 +904,44 @@ test("opening a thread surfaces persistent-state read failures without leaking t
   }finally{await harness.close()}
 });
 
+test("restart recovery never continues an unverified interrupted turn",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"restart-recovery-thread",name:"Restart recovery fixture",preview:"Safe recovery verification",cwd:process.cwd(),createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
+  const turnId="interrupted-before-restart";let continuationStarts=0;const recoveryPosts=[];
+  const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
+    if(message.method==="thread/turns/list"){
+      ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate recovery recent-turn read failure"}}));return true;
+    }
+    if(message.method==="thread/read"){
+      ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate recovery full-thread read failure"}}));return true;
+    }
+    if(message.method==="turn/start"){continuationStarts++;ws.send(JSON.stringify({id:message.id,result:{turn:{id:"should-not-start"}}}));return true}
+    return false;
+  }});
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"restart-recovery-fixture");
+    await page.route(/\/api\/recovery$/,async route=>{
+      if(route.request().method()==="POST"){
+        recoveryPosts.push(route.request().postDataJSON());
+        return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:true,items:[]})});
+      }
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:true,items:[{threadId:thread.id,turnId,startedAt:Date.now()-5000}]})});
+    });
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const error=page.getByTestId("app-action-error");
+    await expect(error).toContainText("Could not safely recover interrupted thread");
+    await expect(error).toContainText("Could not verify the interrupted turn before restart continuation");
+    await expect.poll(()=>recoveryPosts.length).toBe(1);
+    expect(recoveryPosts[0]).toMatchObject({threadId:thread.id,action:"failed"});
+    expect(continuationStarts).toBe(0);
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"restart-recovery-verification-error-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
 test("runtime server requests use the latest permission mode",async({page})=>{
   test.setTimeout(35_000);
   const thread={id:"permission-handler-thread",name:"Permission freshness fixture",preview:"Latest server request state",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
