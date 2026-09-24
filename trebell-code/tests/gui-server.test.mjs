@@ -64,6 +64,10 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
 
     const models=await fetch(gui.url+"/api/models").then(r=>r.json());
     assert.ok(models.models.length>=1);
+    const traces=await fetch(gui.url+"/api/traces?limit=20").then(r=>r.json());
+    assert.ok(Array.isArray(traces.items));
+    assert.equal(traces.journal.lastError,null);
+    assert.equal(typeof traces.journal.records,"number");
     assert.equal(models.metadata.provider,boot.provider);
     assert.ok(models.metadata.models.every(model=>model.provider===boot.provider));
     const runtimeUsage=await fetch(gui.url+"/api/agent-runtime-usage").then(r=>r.json());

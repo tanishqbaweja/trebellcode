@@ -2544,7 +2544,11 @@ test("Diff review actions roll back and stay visible when persistence fails",asy
   });
   const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
   const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"opencode",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+  let failTrace=false;
   try{
+    await page.route("**/api/traces?*",route=>failTrace
+      ?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate trace refresh failure"})})
+      :route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:[{id:"trace-fixture",at:Date.now(),runtime:"opencode",provider:"opencode-default",threadId:thread.id,turnId:"turn-fixture",category:"runtime",name:"item/completed",status:"done",data:{item:{type:"commandExecution"}}}]})}));
     await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"opencode",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[thread.id]:{projectless:false,environmentId:null,reviewedFiles:[]}}})}));
     await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
@@ -2596,6 +2600,15 @@ test("Diff review actions roll back and stay visible when persistence fails",asy
     await expect(capabilities.locator(".runtime-capability-grid>div").filter({hasText:"Sandbox"})).toContainText("not exposed");
     await expect(capabilities.locator(".runtime-capability-grid>div").filter({hasText:"Delegation"})).toContainText("not exposed");
     await expect(panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Agents",exact:true})).toHaveCount(0);
+    const trace=panel.getByTestId("runtime-trace");
+    await expect(trace).toContainText("Execution trace");
+    await expect(trace).toContainText("item/completed");
+    await expect(trace).toContainText("opencode");
+    failTrace=true;
+    await trace.getByRole("button",{name:"Refresh execution trace",exact:true}).click();
+    await expect(trace.getByRole("alert")).toContainText("Deliberate trace refresh failure");
+    await expect(trace).toContainText("Last valid trace is kept below");
+    await expect(trace).toContainText("item/completed");
     await page.screenshot({path:auditDir+"runtime-capability-matrix-opencode-1280x800.png",fullPage:true});
   }finally{
     for(const ws of sockets)try{ws.terminate()}catch{}

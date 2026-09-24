@@ -422,7 +422,7 @@ function formQuestions(params){
   }));
 }
 
-export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,state,environments=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null}={}){
+export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,state,environments=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null,journal=null}={}){
   const wss=new WebSocketServer({noServer:true});
   const sessions=new Map();
   const socketContexts=new Set();
@@ -456,7 +456,17 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     sessions.set(thread.id,runtime);return runtime;
   }
 
-  function emit(method,params){for(const context of socketContexts)if(context.ws.readyState===context.ws.OPEN)context.ws.send(JSON.stringify({method,params}))}
+  function emit(method,params){
+    const thread=params?.threadId?threadStore.get(params.threadId):null;
+    journal?.recordProtocol?.({
+      runtime:thread?.runtime||runtimeManager.activeRuntime(),
+      provider:thread?.providerMeta?.runtimeInstanceId||null,
+      environmentId:thread?.providerMeta?.environmentId??null,
+      direction:"runtime",
+      method,params,
+    });
+    for(const context of socketContexts)if(context.ws.readyState===context.ws.OPEN)context.ws.send(JSON.stringify({method,params}));
+  }
 
   function settlePrompt({thread,turn,session,promptPromise,model=null}){
     const persistUsage=result=>{
@@ -558,6 +568,14 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
   async function request(context,method,params={}){
     if(method==="initialize")return {userAgent:"trebell-agent-relay",capabilities:{experimentalApi:true}};
     const runtime=runtimeManager.activeRuntime();
+    const target=params?.threadId?threadStore.get(params.threadId):null;
+    journal?.recordProtocol?.({
+      runtime:target?.runtime||runtime,
+      provider:target?.providerMeta?.runtimeInstanceId||null,
+      environmentId:target?.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null,
+      direction:"client",
+      method,params,
+    });
     if(method==="thread/list")return paginateAgentThreads(threadStore.list(runtime),params);
     if(method==="thread/search")return searchAgentThreads(threadStore.list(runtime),params);
     if(method==="thread/read"){

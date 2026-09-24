@@ -207,7 +207,8 @@ test("agent relay broadcasts Codex-compatible archive, unarchive and delete life
     threadMeta:id=>meta.get(id)||{},
     updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next},
   };
-  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,version:"test"});
+  const traces=[];const journal={recordProtocol:event=>traces.push(event)};
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,version:"test",journal});
   const port=await listen(server);const url="ws://127.0.0.1:"+port+"/api/agent/ws";const first=await connect(url),second=await connect(url);const rpc=request(first);const notifications=[];
   second.on("message",raw=>{const message=JSON.parse(String(raw));if(message.method&&message.id==null)notifications.push(message)});
   try{
@@ -251,6 +252,9 @@ test("agent relay broadcasts Codex-compatible archive, unarchive and delete life
     assert.ok(notifications.filter(message=>message.method==="thread/queue/changed").length>=5);
     assert.deepEqual(notifications.filter(message=>message.method==="thread/attachment/updated").map(message=>message.params.operation),["created","deleted"]);
     assert.ok(notifications.every(message=>message.params?.threadId===thread.id));
+    assert.ok(traces.some(event=>event.direction==="client"&&event.method==="thread/archive"));
+    assert.ok(traces.some(event=>event.direction==="runtime"&&event.method==="thread/archived"));
+    assert.ok(traces.some(event=>event.direction==="runtime"&&event.method==="thread/deleted"));
   }finally{
     try{first.close()}catch{}try{second.close()}catch{}
     await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(home,{recursive:true,force:true});

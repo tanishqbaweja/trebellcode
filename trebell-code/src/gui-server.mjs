@@ -43,6 +43,7 @@ import { CloneJobService } from "./clone-job-service.mjs";
 import { prepareCodexHome } from "./codex-home-layout.mjs";
 import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
 import { ContextEngine } from "./context-engine.mjs";
+import { EventJournal } from "./event-journal.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
   .then(text=>String(JSON.parse(text).version||"0.0.0"))
@@ -409,6 +410,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   const bootId=randomUUID();
   const dist=String(env.TREBELL_UI_DIST||"").trim()?resolve(String(env.TREBELL_UI_DIST).trim()):resolve(packageRoot,"ui","dist");
   const state=new TrebellStateStore(env);
+  const eventJournal=new EventJournal(env);
   const remoteAuth=new RemoteAuthStore(env);
   const devices=new DeviceService({env});
   const providers=new ProviderManager({env,fetchFn:fetchImpl});
@@ -1418,6 +1420,14 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       }
       if(req.method==="DELETE")return json(res,200,{ok:true,cleared:state.clearUsage()});
     }
+    if(url.pathname==="/api/traces"&&req.method==="GET"){
+      return json(res,200,{items:eventJournal.list({
+        threadId:url.searchParams.get("threadId")||null,
+        turnId:url.searchParams.get("turnId")||null,
+        limit:Number(url.searchParams.get("limit")||200),
+        before:url.searchParams.get("before")||null,
+      }),journal:eventJournal.status()});
+    }
     if(url.pathname==="/api/device/screenshot"&&req.method==="GET"){
       try{return json(res,200,await devices.screenshot(url.searchParams.get("id")))}
       catch(error){return json(res,400,{error:error.message});}
@@ -2338,6 +2348,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     enabled:()=>mock || Boolean(appServer?.child && appServer.child.exitCode===null),
     log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"relay",text:message}),
     onClientMessage:message=>{
+      const traceParams=message?.params||{};const traceThreadId=traceParams.threadId||null;const traceMeta=traceThreadId?state.threadMeta(traceThreadId):null;
+      eventJournal.recordProtocol({runtime:"codex",provider:selectedProvider,environmentId:traceMeta?.environmentId??state.settings().activeEnvironmentId??null,direction:"client",method:message?.method||"",params:traceParams});
       if((message?.method==="thread/resume"||message?.method==="turn/start")&&message.params?.threadId&&message.params?.cwd){
         state.updateThreadMeta(message.params.threadId,{cwd:message.params.cwd,runtime:"codex",deletedAt:null});
       }
@@ -2347,6 +2359,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     },
     onServerMessage:(message,route)=>{
       const params=message?.params||{};
+      const traceThreadId=params.threadId||params.thread?.id||null;const traceMeta=traceThreadId?state.threadMeta(traceThreadId):null;
+      eventJournal.recordProtocol({runtime:"codex",provider:selectedProvider,environmentId:traceMeta?.environmentId??state.settings().activeEnvironmentId??null,direction:"runtime",method:message?.method||route?.requestMethod||"",params});
       const startedThread=message?.method==="thread/started"?params.thread:(route?.requestMethod==="thread/start"?message?.result?.thread:null);
       if(startedThread?.id){
         if(startedThread.model)codexThreadModels.set(startedThread.id,startedThread.model);
@@ -2381,6 +2395,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     version:TREBELL_VERSION,
     log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"agent-relay",text:String(message)+"\n"}),
     onThreadDeleted:thread=>thread?.cwd?worktreeCleanup.sweep({reason:"thread-delete",path:thread.cwd}):null,
+    journal:eventJournal,
   });
 
   await new Promise((resolve,reject)=>{
@@ -2447,6 +2462,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         stopCodexAppServers(),
         stopChildProcess(bridge?.child),
         providerBridge?.close(),
+        eventJournal.flush(),
       ]);
       remoteControl=null;
       await new Promise(resolve=>server.close(resolve));
