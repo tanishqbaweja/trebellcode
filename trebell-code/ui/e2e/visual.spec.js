@@ -651,6 +651,35 @@ test("project and environment configuration forms stay readable when expanded",a
   await page.screenshot({path:auditDir+"environments-ssh-form-1280x800.png",fullPage:true});
 });
 
+test("project refresh and removal failures preserve the existing project card",async({page,request})=>{
+  test.setTimeout(30_000);
+  await prepare(page,request);
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
+  const projectCard=page.locator(".project-card").first();
+  await expect(projectCard).toBeVisible();
+  const projectName=(await projectCard.locator(".project-open strong").first().textContent())?.trim()||"project";
+
+  await page.route(/\/api\/projects(?:\?.*)?$/,route=>{
+    if(route.request().method()==="GET")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate project refresh failure"})});
+    if(route.request().method()==="DELETE")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate project removal failure"})});
+    return route.continue();
+  });
+
+  await page.getByRole("button",{name:"Refresh projects",exact:true}).click();
+  const alert=page.getByRole("alert");
+  await expect(alert).toContainText("Deliberate project refresh failure");
+  await expect(projectCard.locator(".project-open strong").first()).toHaveText(projectName);
+
+  await projectCard.locator(".project-remove").click();
+  await expect(alert).toContainText("Deliberate project removal failure");
+  await expect(projectCard).toBeVisible();
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await page.locator(".projects-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"projects-action-error-1280x800.png",fullPage:true});
+});
+
 test("right panel tabs are functional and visually bounded",async({page,request})=>{
   test.setTimeout(60_000);
   await prepare(page,request);

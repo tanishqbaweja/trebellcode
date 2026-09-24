@@ -39,9 +39,17 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
   const [identityOpen,setIdentityOpen]=useState({});
   const [iconDraft,setIconDraft]=useState({});
 
-  async function refresh(){
-    const [d,environments]=await Promise.all([api("/api/projects").catch(()=>({projects:[]})),api("/api/environments").catch(()=>({profiles:[]}))]);
-    setEnvironmentData(environments);
+  async function refresh({reportErrors=false}={}){
+    let d;
+    try{d=await api("/api/projects")}
+    catch(err){
+      if(reportErrors||!projects.length)setError("Could not refresh projects: "+(err.message||String(err)));
+      return false;
+    }
+    let environments=null;
+    try{environments=await api("/api/environments")}
+    catch(err){if(reportErrors)setError("Projects loaded, but environments could not be refreshed: "+(err.message||String(err)))}
+    if(environments)setEnvironmentData(environments);
     const enriched=await Promise.all((d.projects||[]).map(async project=>{
       if(project.environment?.type&&project.environment.type!=="local")return {...project,scripts:Array.isArray(project.scripts)?project.scripts:[],git:null,remote:null,suggested:{scripts:[],t3:{present:false},packageManager:null}};
       const [git,suggested]=await Promise.all([
@@ -52,8 +60,10 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
       return {...project,scripts:Array.isArray(project.scripts)?project.scripts:[],git,remote,suggested};
     }));
     setProjects(enriched);
+    if(reportErrors&&environments)setError("");
+    return true;
   }
-  useEffect(()=>{refresh()},[]);
+  useEffect(()=>{refresh({reportErrors:true})},[]);
   useEffect(()=>{
     if(hasDesktopPicker||cloneEnvironmentId||!environmentData.profiles?.length)return;
     const first=environmentData.profiles[0];setCloneEnvironmentId(first.id);setCloneParent(first.cwd||"");
@@ -66,8 +76,9 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     try{
       const result=await api("/api/projects",{method:"POST",body:{path:project.path,environmentId:project.environmentId||null,...patch}});
       onProjectUpdated?.(result.project);
-      await refresh();
-    }catch(err){setError(err.message||String(err));throw err}
+      await refresh({reportErrors:true});
+      return result.project||project;
+    }catch(err){setError(err.message||String(err));return null}
   }
   async function openProject(project){
     if(project.managedWorktree?.cleanedAt){
@@ -76,7 +87,8 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
       catch(err){setError("Could not restore managed worktree: "+(err.message||String(err)));return}
       finally{setBusy(false)}
     }
-    onOpen(project.path,project.environmentId||null);
+    try{await Promise.resolve(onOpen(project.path,project.environmentId||null))}
+    catch(err){setError("Could not open project: "+(err.message||String(err)))}
   }
   function cleanupValue(project){return project.worktreeCleanup||null}
   async function setCleanupMode(project,mode){
@@ -91,28 +103,32 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
   }
 
   async function addLocal(){
-    const path=await window.trebellDesktop?.pickDirectory?.();
-    if(!path)return;
-    await api("/api/projects",{method:"POST",body:{path,environmentId:null,activate:true}});
-    await refresh();
-    onOpen(path,null);
+    setBusy(true);setError("");
+    try{
+      const path=await window.trebellDesktop?.pickDirectory?.();
+      if(!path)return;
+      await api("/api/projects",{method:"POST",body:{path,environmentId:null,activate:true}});
+      await refresh({reportErrors:true});
+      await Promise.resolve(onOpen(path,null));
+    }catch(err){setError("Could not add local project: "+(err.message||String(err)))}
+    finally{setBusy(false)}
   }
 
   async function clone(){
     if(!cloneUrl.trim())return;
     const environmentId=cloneEnvironmentId==="local"?null:(cloneEnvironmentId||null);
     if(!hasDesktopPicker&&!environmentId)return;
-    const profile=environmentData.profiles?.find(item=>item.id===environmentId)||null;
-    const parent=environmentId?(cloneParent.trim()||profile?.cwd||""):await window.trebellDesktop?.pickDirectory?.();
-    if(!parent)return;
-    const name=cloneUrl.replace(/\/+$/,"").split("/").pop().replace(/\.git$/,"")||"repository";
-    const sep=environmentId?"/":parent.includes("\\")?"\\":"/";
-    const destination=parent.replace(/[\\\/]$/,"")+sep+name;
     setBusy(true);setError("");
     try{
+      const profile=environmentData.profiles?.find(item=>item.id===environmentId)||null;
+      const parent=environmentId?(cloneParent.trim()||profile?.cwd||""):await window.trebellDesktop?.pickDirectory?.();
+      if(!parent)return;
+      const name=cloneUrl.replace(/\/+$/,"").split("/").pop().replace(/\.git$/,"")||"repository";
+      const sep=environmentId?"/":parent.includes("\\")?"\\":"/";
+      const destination=parent.replace(/[\\\/]$/,"")+sep+name;
       const result=await api("/api/clone-jobs",{method:"POST",body:{action:"start",url:cloneUrl.trim(),destination,environmentId}});
-      await refresh();
-      onOpen(result.project?.path||destination,environmentId);
+      await refresh({reportErrors:true});
+      await Promise.resolve(onOpen(result.project?.path||destination,environmentId));
       setCloneUrl("");
     } catch(err){setError(err.message||String(err))}
     finally { setBusy(false); }
@@ -121,6 +137,14 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     setError("");
     try{await api("/api/clone-jobs",{method:"POST",body:{action,id:project.cloneJob?.id}});await refresh()}
     catch(err){setError(err.message||String(err))}
+  }
+  async function removeProject(project){
+    setBusy(true);setError("");
+    try{
+      await api("/api/projects?id="+encodeURIComponent(project.id),{method:"DELETE"});
+      await refresh({reportErrors:true});
+    }catch(err){setError("Could not remove project: "+(err.message||String(err)))}
+    finally{setBusy(false)}
   }
 
   function editScript(project,script=null){
@@ -151,14 +175,14 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     const scripts=editor.id
       ? project.scripts.map(script=>script.id===editor.id?item:script)
       : [...project.scripts,item];
-    await saveProject(project,{scripts,preferredScriptId:project.preferredScriptId||item.id});
-    setEditor(null);
+    const saved=await saveProject(project,{scripts,preferredScriptId:project.preferredScriptId||item.id});
+    if(saved)setEditor(null);
   }
 
   async function deleteScript(project,id){
     const scripts=project.scripts.filter(script=>script.id!==id);
-    await saveProject(project,{scripts,preferredScriptId:project.preferredScriptId===id?(scripts[0]?.id||null):project.preferredScriptId});
-    if(editor?.projectId===project.id&&editor?.id===id)setEditor(null);
+    const saved=await saveProject(project,{scripts,preferredScriptId:project.preferredScriptId===id?(scripts[0]?.id||null):project.preferredScriptId});
+    if(saved&&editor?.projectId===project.id&&editor?.id===id)setEditor(null);
   }
 
   async function runScript(project,script){
@@ -206,8 +230,10 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
 
   async function importProjectImage(project,file){
     if(!file)return;if(file.size>1_400_000){setError("Project icon images must be under 1.4 MB.");return}
-    const dataUrl=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result||""));reader.onerror=()=>reject(reader.error||new Error("Could not read image"));reader.readAsDataURL(file)});
-    await saveProject(project,{icon:{kind:"image",value:dataUrl,color:autoColor(project.name)}});
+    try{
+      const dataUrl=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result||""));reader.onerror=()=>reject(reader.error||new Error("Could not read image"));reader.readAsDataURL(file)});
+      await saveProject(project,{icon:{kind:"image",value:dataUrl,color:autoColor(project.name)}});
+    }catch(err){setError("Could not import project image: "+(err.message||String(err)))}
   }
 
   const groups=useMemo(()=>{
@@ -222,15 +248,15 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
   },[projects]);
 
   return <div className="projects-page">
-    <div className="page-actions">{hasDesktopPicker&&<button onClick={addLocal}><Plus size={14}/> Add local project</button>}<button onClick={refresh}><RefreshCw size={14}/></button></div>
-    {error&&<p className="provider-status-error">{error}</p>}
+    <div className="page-actions">{hasDesktopPicker&&<button onClick={addLocal} disabled={busy}><Plus size={14}/> Add local project</button>}<button aria-label="Refresh projects" onClick={()=>refresh({reportErrors:true})} disabled={busy}><RefreshCw size={14}/></button></div>
+    {error&&<p className="provider-status-error" role="alert">{error}</p>}
     <button className="general-chat-card" onClick={()=>onGeneralChat?.()}><MessageSquareText size={22}/><span><strong>No project · General chat</strong><small>Plan, research, troubleshoot, or draft in a Trebell-managed scratch workspace.</small></span><em>Start chat</em></button>
     {(hasDesktopPicker||(environmentData.profiles||[]).length>0)&&<div className="clone-card"><GitBranch size={20}/><div><strong>Clone repository</strong><span>Starts in the background</span></div><select aria-label="Clone environment" value={cloneEnvironmentId} onChange={e=>{const id=e.target.value;setCloneEnvironmentId(id);const profile=environmentData.profiles?.find(item=>item.id===id);setCloneParent(profile?.cwd||"")}}>{hasDesktopPicker&&<option value="local">Local machine</option>}{!hasDesktopPicker&&!cloneEnvironmentId&&<option value="" disabled>Select environment</option>}{(environmentData.profiles||[]).map(profile=><option key={profile.id} value={profile.id}>{profile.name} · {profile.type.toUpperCase()}</option>)}</select><div className={"clone-inputs "+(cloneEnvironmentId==="local"?"":"remote")}><input aria-label="Clone URL" value={cloneUrl} onChange={e=>setCloneUrl(e.target.value)} placeholder="https://github.com/owner/repo.git"/>{cloneEnvironmentId!=="local"&&<input aria-label="Clone parent directory" value={cloneParent} onChange={e=>setCloneParent(e.target.value)} placeholder="/srv/projects" title="Remote parent directory"/>}</div><button onClick={clone} disabled={busy||!cloneUrl.trim()||(!hasDesktopPicker&&!cloneEnvironmentId)}>{busy?"Starting…":"Clone"}</button></div>}
     <div className="project-groups">{groups.map(group=><section className="project-group" key={group.key}>
       <div className="project-group-head"><Layers3 size={14}/><div><strong>{group.label}</strong><span>{group.environmentLabel} · {group.projects.length} checkout{group.projects.length===1?"":"s"}</span></div></div>
       <div className="project-grid">{group.projects.map(p=><div className={p.path===currentPath&&(p.environmentId||null)===(currentEnvironmentId||null)?"project-card active":"project-card"} key={p.id}>
         <button className="project-open" onClick={()=>openProject(p)}><ProjectIcon project={p}/><div><strong>{p.name}</strong><span>{p.environment?.name||"Local machine"} · {p.path}</span><small>{p.environment?.type!=="local"?"remote workspace · "+new Date(p.lastOpenedAt).toLocaleString():p.managedWorktree?.cleanedAt?"managed worktree cleaned · click to restore":(p.git?.branch||"not a Git checkout")+" · "+new Date(p.lastOpenedAt).toLocaleString()}</small></div></button>
-        <button className="project-remove" onClick={async()=>{await api("/api/projects?id="+encodeURIComponent(p.id),{method:"DELETE"});refresh()}}><Trash2 size={13}/></button>
+        <button className="project-remove" aria-label={"Remove "+p.name} onClick={()=>removeProject(p)} disabled={busy}><Trash2 size={13}/></button>
         {p.cloneJob&&p.cloneJob.status!=="completed"&&<div className={"project-clone-status "+p.cloneJob.status}><div><strong>{p.cloneJob.phase||"Cloning repository"}</strong><span>{p.cloneJob.status==="failed"?(p.cloneJob.error||"Clone failed"):p.cloneJob.status==="cancelled"?"Clone cancelled":Math.round(p.cloneJob.progress||0)+"%"}</span></div>{["running","cancelling"].includes(p.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(p.cloneJob.progress)||0)+"%"}}/></i>}<div>{p.cloneJob.status==="running"&&<button onClick={()=>cloneAction(p,"cancel")}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(p.cloneJob.status)&&<button onClick={()=>cloneAction(p,"retry")}><RefreshCw size={11}/> Retry</button>}</div></div>}
         <div className="project-overrides">
           <label>Model<select value={p.defaultModel||""} onChange={e=>saveProject(p,{defaultModel:e.target.value||null})}><option value="">Inherit client default</option>{models.map(id=><option key={id} value={id}>{id.replace(/^freebuff\//,"")}</option>)}</select></label>
@@ -239,7 +265,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
           <label>Submodules<select value={p.worktreeSubmodules||""} onChange={e=>saveProject(p,{worktreeSubmodules:e.target.value||null})}><option value="">Inherit</option><option value="recursive">Recursive</option><option value="top-level">Top level only</option><option value="none">Skip</option></select></label>
         </div>
         <div className="project-identity-toggle"><button onClick={()=>setIdentityOpen(current=>({...current,[p.id]:!current[p.id]}))}><Settings2 size={12}/> Project identity</button></div>
-        {identityOpen[p.id]&&<div className="project-identity-editor"><label>Name<input defaultValue={p.name} onBlur={e=>{const value=e.target.value.trim();if(value&&value!==p.name)saveProject(p,{name:value})}}/></label><div className="project-icon-actions"><button onClick={()=>saveProject(p,{icon:null})}>Automatic</button><button onClick={()=>setIconDraft(current=>({...current,[p.id]:{kind:"emoji",value:p.icon?.kind==="emoji"?p.icon.value:"🚀",color:p.icon?.color||autoColor(p.name)}}))}>Emoji</button><button onClick={()=>setIconDraft(current=>({...current,[p.id]:{kind:"monogram",value:p.icon?.kind==="monogram"?p.icon.value:autoMonogram(p.name),color:p.icon?.color||autoColor(p.name)}}))}>Monogram</button><label className="project-image-button"><ImagePlus size={12}/> Image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={e=>importProjectImage(p,e.target.files?.[0])}/></label></div>{iconDraft[p.id]&&<div className="project-icon-draft"><input maxLength={iconDraft[p.id].kind==="monogram"?2:16} value={iconDraft[p.id].value} onChange={e=>setIconDraft(current=>({...current,[p.id]:{...current[p.id],value:e.target.value}}))}/><input type="color" value={iconDraft[p.id].color||autoColor(p.name)} onChange={e=>setIconDraft(current=>({...current,[p.id]:{...current[p.id],color:e.target.value}}))}/><button onClick={async()=>{await saveProject(p,{icon:iconDraft[p.id]});setIconDraft(current=>({...current,[p.id]:null}))}}>Save icon</button></div>}</div>}
+        {identityOpen[p.id]&&<div className="project-identity-editor"><label>Name<input defaultValue={p.name} onBlur={e=>{const value=e.target.value.trim();if(value&&value!==p.name)saveProject(p,{name:value})}}/></label><div className="project-icon-actions"><button onClick={()=>saveProject(p,{icon:null})}>Automatic</button><button onClick={()=>setIconDraft(current=>({...current,[p.id]:{kind:"emoji",value:p.icon?.kind==="emoji"?p.icon.value:"🚀",color:p.icon?.color||autoColor(p.name)}}))}>Emoji</button><button onClick={()=>setIconDraft(current=>({...current,[p.id]:{kind:"monogram",value:p.icon?.kind==="monogram"?p.icon.value:autoMonogram(p.name),color:p.icon?.color||autoColor(p.name)}}))}>Monogram</button><label className="project-image-button"><ImagePlus size={12}/> Image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={e=>importProjectImage(p,e.target.files?.[0])}/></label></div>{iconDraft[p.id]&&<div className="project-icon-draft"><input maxLength={iconDraft[p.id].kind==="monogram"?2:16} value={iconDraft[p.id].value} onChange={e=>setIconDraft(current=>({...current,[p.id]:{...current[p.id],value:e.target.value}}))}/><input type="color" value={iconDraft[p.id].color||autoColor(p.name)} onChange={e=>setIconDraft(current=>({...current,[p.id]:{...current[p.id],color:e.target.value}}))}/><button onClick={async()=>{const saved=await saveProject(p,{icon:iconDraft[p.id]});if(saved)setIconDraft(current=>({...current,[p.id]:null}))}}>Save icon</button></div>}</div>}
         <div className="project-cleanup"><label>Automatic worktree cleanup<select value={p.worktreeCleanup?.mode||"inherit"} onChange={e=>setCleanupMode(p,e.target.value)}><option value="inherit">Inherit</option><option value="off">Off</option><option value="custom">Custom</option></select></label>{p.worktreeCleanup?.mode==="custom"&&<div className="project-cleanup-rules"><label>After inactive days<input type="number" min="1" max="3650" defaultValue={p.worktreeCleanup.rules?.worktreeAfterDays??""} placeholder="Never" onBlur={e=>setCleanupRule(p,"worktreeAfterDays",e.target.value?Number(e.target.value):null)}/></label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeOnMerge)} onChange={e=>setCleanupRule(p,"worktreeOnMerge",e.target.checked)}/> After merge</label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeOnDelete)} onChange={e=>setCleanupRule(p,"worktreeOnDelete",e.target.checked)}/> After last thread deletion</label><label><input type="checkbox" checked={Boolean(p.worktreeCleanup.rules?.worktreeUnchanged)} onChange={e=>setCleanupRule(p,"worktreeUnchanged",e.target.checked)}/> If unchanged from base</label></div>}</div>
 
         <div className="project-actions">
