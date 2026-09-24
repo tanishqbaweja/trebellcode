@@ -1443,7 +1443,16 @@ export default function App(){
     }
   }
 
-  async function updateThreadMeta(threadId,patch){const meta=await api("/api/thread-meta",{method:"POST",body:{threadId,patch}}).catch(()=>({...threadMeta[threadId],...patch}));setThreadMeta(prev=>({...prev,[threadId]:meta}));return meta}
+  async function updateThreadMeta(threadId,patch,{strict=false}={}){
+    let meta;
+    try{meta=await api("/api/thread-meta",{method:"POST",body:{threadId,patch}})}
+    catch(error){
+      if(strict)throw error;
+      meta={...threadMeta[threadId],...patch};
+    }
+    setThreadMeta(prev=>({...prev,[threadId]:meta}));
+    return meta;
+  }
   async function persistThreadWorkspaceContext(thread,cwd=thread?.cwd,extra={}){
     if(!thread?.id||!cwd)return null;
     const existing=threadMeta[thread.id]||{};
@@ -2255,7 +2264,15 @@ export default function App(){
     const result=await api("/api/source-control/thread-link",{method:"POST",body:{action:"link",threadId:activeThread.id,pr:resolved.pr,cwd:resolved.project?.path||projectPath,environmentId:resolved.project?.environmentId||workspaceEnvironmentId,source,refresh:false}});
     applyThreadPullRequestLinks(activeThread.id,result.links||[]);return result;
   }
-  async function toggleReviewed(path,value){const next=value?[...new Set([...reviewedFiles,path])]:reviewedFiles.filter(x=>x!==path);setReviewedFiles(next);if(activeThread?.id)await updateThreadMeta(activeThread.id,{reviewedFiles:next})}
+  async function toggleReviewed(path,value){
+    const previous=reviewedFiles;
+    const next=value?[...new Set([...reviewedFiles,path])]:reviewedFiles.filter(x=>x!==path);
+    setReviewedFiles(next);
+    if(activeThread?.id){
+      try{await updateThreadMeta(activeThread.id,{reviewedFiles:next},{strict:true})}
+      catch(error){setReviewedFiles(previous);throw error}
+    }
+  }
   function resolveApproval(request,decision){
     if(!rpc)return;rpc.respond(request.id,approvalResponse(request,decision));setApprovals(prev=>prev.filter(x=>x.id!==request.id));
   }

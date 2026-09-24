@@ -286,6 +286,24 @@ test("command palette keeps failed actions visible with useful feedback",async({
 
 test("terminal failures keep backend and visible session state in sync",async({page,request})=>{
   test.setTimeout(30_000);
+  await page.addInitScript(()=>{
+    const NativeWebSocket=window.WebSocket;
+    function WrappedWebSocket(url,protocols){
+      if(!String(url).includes("/api/terminal/ws"))return protocols===undefined?new NativeWebSocket(url):new NativeWebSocket(url,protocols);
+      const socket={
+        readyState:NativeWebSocket.OPEN,
+        onmessage:null,
+        onclose:null,
+        send(){},
+        close(){this.readyState=NativeWebSocket.CLOSED;this.onclose?.({})},
+      };
+      setTimeout(()=>socket.onmessage?.({data:JSON.stringify({type:"snapshot",session:{buffer:"terminal fixture output\n"}})}),20);
+      return socket;
+    }
+    for(const key of ["CONNECTING","OPEN","CLOSING","CLOSED"])WrappedWebSocket[key]=NativeWebSocket[key];
+    WrappedWebSocket.prototype=NativeWebSocket.prototype;
+    window.WebSocket=WrappedWebSocket;
+  });
   await prepare(page,request);
   await page.getByTestId("terminal-toggle").click();
   const drawer=page.getByTestId("drawer");
@@ -294,6 +312,15 @@ test("terminal failures keep backend and visible session state in sync",async({p
   await expect(newButton).toBeVisible();
   await newButton.click();
   await expect(drawer.locator(".terminal-pane")).toHaveCount(1);
+  const pane=drawer.locator(".terminal-pane").first();
+  await expect(pane.locator(".terminal-screen")).toContainText("terminal fixture output",{timeout:10_000});
+  await page.route(/\/api\/attachments\/text$/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate terminal attachment failure"})}));
+  await pane.getByRole("button",{name:"Attach recent output",exact:true}).click();
+  await expect(drawer.getByRole("alert")).toContainText("Deliberate terminal attachment failure");
+  await expect(drawer).toBeVisible();
+  await page.setViewportSize({width:1280,height:800});
+  await page.screenshot({path:auditDir+"terminal-attach-error-1280x800.png",fullPage:true});
+  await page.unroute(/\/api\/attachments\/text$/);
 
   await page.route("**/api/terminal/sessions*",route=>{
     if(route.request().method()==="DELETE")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate terminal close failure"})});
@@ -311,6 +338,7 @@ test("terminal failures keep backend and visible session state in sync",async({p
   await newButton.click();
   await expect(drawer.getByRole("alert")).toContainText("Deliberate terminal create failure");
   await expect(drawer.locator(".terminal-pane")).toHaveCount(1);
+  await page.unroute("**/api/terminal/sessions");
   await page.setViewportSize({width:1280,height:800});
   await page.screenshot({path:auditDir+"terminal-action-error-1280x800.png",fullPage:true});
 });
@@ -850,6 +878,88 @@ test("workspace file refresh and save failures stay visible without lying about 
   const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   await page.screenshot({path:auditDir+"workspace-file-action-error-1280x800.png",fullPage:true});
+});
+
+test("Diff review actions roll back and stay visible when persistence fails",async({page})=>{
+  test.setTimeout(40_000);
+  const thread={
+    id:"diff-review-thread",
+    name:"Diff review fixture",
+    preview:"Review persistence coverage",
+    cwd:process.cwd(),
+    createdAt:Date.now()/1000-20,
+    updatedAt:Date.now()/1000,
+    turns:[],
+  };
+  const project={id:"diff-review-project",name:"Diff Review Project",path:process.cwd(),environmentId:null,effectiveSettings:{},scripts:[]};
+  const wsHttp=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
+  wsHttp.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  wss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",data=>{
+      const message=JSON.parse(String(data));if(message.id==null||!message.method)return;
+      let result={};
+      if(message.method==="initialize")result={userAgent:"diff-review-fixture"};
+      else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
+      else if(message.method==="thread/resume")result={thread};
+      else if(message.method==="threadSection/list"||message.method==="skills/list"||message.method==="collaborationMode/list")result={data:[]};
+      else if(message.method==="thread/goal/get")result={goal:null};
+      else if(message.method==="thread/attachment/list"||message.method==="thread/turns/list")result={data:[],nextCursor:null};
+      else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
+      ws.send(JSON.stringify({id:message.id,result}));
+    });
+  });
+  const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"opencode",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"opencode",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[thread.id]:{projectless:false,environmentId:null,reviewedFiles:[]}}})}));
+    await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["opencode/test-model"],metadata:{provider:"opencode",models:[{id:"opencode/test-model",name:"Test model",provider:"opencode"}]}})}));
+    await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})}));
+    await page.route(/\/api\/worktree\/ensure$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
+    await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({checkpoints:[]})}));
+    await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,root:process.cwd(),branch:"main",branches:["main"],upstream:"origin/main",status:[{code:" M",path:"ui/src/App.jsx"}],remotes:[],worktrees:[]})}));
+    await page.route(/\/api\/workspace\/tree\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({entries:[]})}));
+    await page.route(/\/api\/workspace\/diff\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+      status:" M ui/src/App.jsx",
+      diff:"diff --git a/ui/src/App.jsx b/ui/src/App.jsx\n--- a/ui/src/App.jsx\n+++ b/ui/src/App.jsx\n@@ -1 +1 @@\n-old\n+new",
+    })}));
+    await page.route(/\/api\/thread-meta$/,route=>{
+      if(route.request().method()==="POST")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate reviewed metadata failure"})});
+      return route.continue();
+    });
+    await page.route(/\/api\/attachments\/text$/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate review comment attachment failure"})}));
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    await page.locator('.thread-main[title="Diff review fixture"]').click();
+    await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","Diff review fixture");
+
+    await page.getByTestId("right-panel-toggle").click();
+    const panel=page.getByTestId("right-panel");
+    await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Diff",exact:true}).click();
+    const row=panel.locator(".changed-file-row").filter({hasText:"ui/src/App.jsx"});
+    await expect(row).toBeVisible();
+    await expect(row).not.toHaveClass(/reviewed/);
+    await row.locator("button").first().click();
+    const alert=panel.getByRole("alert");
+    await expect(alert).toContainText("Could not update reviewed state: Deliberate reviewed metadata failure");
+    await expect(row).not.toHaveClass(/reviewed/);
+
+    page.once("dialog",dialog=>dialog.accept("Retry this review note"));
+    await row.locator(".review-comment").click();
+    await expect(alert).toContainText("Could not attach review comment: Deliberate review comment attachment failure");
+    await expect(panel.locator(".git-diff")).toContainText("+new");
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"workspace-diff-action-error-1280x800.png",fullPage:true});
+  }finally{
+    for(const ws of sockets)try{ws.terminate()}catch{}
+    wss.close();await new Promise(resolve=>wsHttp.close(resolve));
+  }
 });
 
 test("open externally failures stay visible beside the editor picker",async({page,request})=>{

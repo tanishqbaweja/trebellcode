@@ -14,6 +14,7 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
   const [lines,setLines]=useState({});
   const [focusTick,setFocusTick]=useState(0);
   const [error,setError]=useState("");
+  const [attachBusy,setAttachBusy]=useState("");
   const sockets=useRef(new Map());
   const outputRefs=useRef(new Map());
   const inputRefs=useRef(new Map());
@@ -107,6 +108,14 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
     setError("");socket.send(JSON.stringify({type:"input",data:line+"\r"}));setLines(previous=>({...previous,[id]:""}));
   }
   function ctrlC(id){const socket=sockets.current.get(id);if(socket?.readyState!==WebSocket.OPEN){setError("Terminal is reconnecting. Try again in a moment.");return}setError("");socket.send(JSON.stringify({type:"input",data:"\x03"}))}
+  async function attachRecent(session){
+    if(!onAttachExcerpt||attachBusy)return;
+    const text=(outputs[session.id]||"").slice(-8000);if(!text.trim())return;
+    setAttachBusy(session.id);setError("");
+    try{await Promise.resolve(onAttachExcerpt(text))}
+    catch(cause){setError(cause?.message||String(cause)||"Could not attach terminal output.")}
+    finally{setAttachBusy("")}
+  }
 
   useEffect(()=>{
     const focus=()=>setFocusTick(value=>value+1);
@@ -144,7 +153,7 @@ export default function TerminalPanel({projectPath,environmentId=null,environmen
         <div className="terminal-pane-head"><span><SquareTerminal size={11}/>{session.name||"Terminal"}</span>{paneSessions.length>1&&<button onClick={()=>close(session.id)} aria-label={"Close "+(session.name||"terminal")}><X size={10}/></button>}</div>
         <pre ref={node=>node?outputRefs.current.set(session.id,node):outputRefs.current.delete(session.id)} className="terminal-screen">{outputs[session.id]||"Terminal connected.\n"}</pre>
         <form className="terminal-command-line" onSubmit={event=>send(session.id,event)}><span>$</span><input ref={node=>node?inputRefs.current.set(session.id,node):inputRefs.current.delete(session.id)} value={lines[session.id]||""} onChange={event=>setLines(previous=>({...previous,[session.id]:event.target.value}))} placeholder={session.running?"Type a command…":"Stopped terminal history"} disabled={!session.running}/><button type="button" onClick={()=>ctrlC(session.id)} disabled={!session.running}>Ctrl+C</button><button disabled={!session.running}>Send</button></form>
-        <div className="terminal-foot"><span>{session.restored?"Restored history · ":""}{session.environmentName||environmentName} · {session.cwd||projectPath||"Home"}</span><button onClick={()=>onAttachExcerpt?.((outputs[session.id]||"").slice(-8000))}><Paperclip size={12}/> Attach recent output</button></div>
+        <div className="terminal-foot"><span>{session.restored?"Restored history · ":""}{session.environmentName||environmentName} · {session.cwd||projectPath||"Home"}</span><button onClick={()=>attachRecent(session)} disabled={attachBusy===session.id}><Paperclip size={12}/> {attachBusy===session.id?"Attaching…":"Attach recent output"}</button></div>
       </section>)}
       </div>}
     </div>

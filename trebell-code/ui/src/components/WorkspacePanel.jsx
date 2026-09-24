@@ -81,6 +81,8 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   const [error,setError]=useState("");
   const [treeError,setTreeError]=useState("");
   const [searchError,setSearchError]=useState("");
+  const [actionError,setActionError]=useState("");
+  const [actionBusy,setActionBusy]=useState("");
   function params(values={}){
     const query=new URLSearchParams(values);
     query.set("environmentId",environmentId||"");
@@ -152,6 +154,20 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
       setFile({...data,kind:previewKind(data.name)});setDraft(data.content);setEdit(false);await refreshDiff();
     }catch(err){setError(err.message||String(err)||"Could not save file.")}
   }
+  async function changeReviewed(path,value){
+    if(!onReviewedChange||actionBusy)return;
+    setActionBusy("reviewed:"+path);setActionError("");
+    try{await Promise.resolve(onReviewedChange(path,value))}
+    catch(err){setActionError("Could not update reviewed state: "+(err?.message||String(err)))}
+    finally{setActionBusy("")}
+  }
+  async function addReviewComment(path){
+    const comment=prompt("Review comment for "+path);if(!comment?.trim()||!onReviewComment||actionBusy)return;
+    setActionBusy("comment:"+path);setActionError("");
+    try{await Promise.resolve(onReviewComment(path,comment.trim()))}
+    catch(err){setActionError("Could not attach review comment: "+(err?.message||String(err)))}
+    finally{setActionBusy("")}
+  }
   const highlighted=useMemo(()=>file?.content!=null?Prism.highlight(file.content,languageFor(file.name),"javascript"):"",[file]);
   const changedPaths=useMemo(()=>String(diff.status||"").split(/\r?\n/).filter(Boolean).map(line=>line.slice(3)),[diff.status]);
   const source=query?searchResults:entries;
@@ -182,8 +198,9 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
         <div className={"file-view"+(error?" has-error":"")}>{file&&<div className="file-head"><strong>{file.name}</strong><div>{!remote&&<OpenInPicker path={file.path} compact/>}<button onClick={()=>onAttachPath?.(file.path)}><Paperclip size={13}/> Attach</button>{editable&&<button onClick={()=>{setError("");setEdit(v=>!v)}}>{edit?<X size={13}/>:<FileCode2 size={13}/>} {edit?"Cancel":"Edit"}</button>}{edit&&<button onClick={save}><Save size={13}/> Save</button>}</div></div>}{error&&file?.kind!=="unsupported"&&<div className="workspace-file-error" role="alert">{error}</div>}{preview()}</div>
       </div>
     </div>}
-    {tab==="diff"&&(changedPaths.length?<div className="changes-view">
-      <div className="changed-files">{changedPaths.map(path=><div className={reviewedFiles.includes(path)?"changed-file-row reviewed":"changed-file-row"} key={path}><button onClick={()=>onReviewedChange?.(path,!reviewedFiles.includes(path))}><span>{reviewedFiles.includes(path)?<Check size={12}/>:<FileDiff size={12}/>}</span>{path}</button><button className="review-comment" title="Add review comment as context" onClick={()=>{const comment=prompt("Review comment for "+path);if(comment?.trim())onReviewComment?.(path,comment.trim())}}>+</button></div>)}</div>
+    {tab==="diff"&&(changedPaths.length?<div className={"changes-view"+(actionError?" has-action-error":"")}>
+      {actionError&&<div className="inline-error workspace-diff-error" role="alert">{actionError}</div>}
+      <div className="changed-files">{changedPaths.map(path=><div className={reviewedFiles.includes(path)?"changed-file-row reviewed":"changed-file-row"} key={path}><button onClick={()=>changeReviewed(path,!reviewedFiles.includes(path))} disabled={actionBusy==="reviewed:"+path}><span>{reviewedFiles.includes(path)?<Check size={12}/>:<FileDiff size={12}/>}</span>{path}</button><button className="review-comment" title="Add review comment as context" onClick={()=>addReviewComment(path)} disabled={actionBusy==="comment:"+path}>+</button></div>)}</div>
       <pre className="git-diff">{diff.diff||diff.error||"No unstaged diff."}</pre>
     </div>:<div className={"changes-empty"+(diff.error?" error":"")}><FileDiff size={20}/><strong>{diff.error?"Could not load changes":"Working tree clean"}</strong><span>{diff.error||"No unstaged changes to review."}</span></div>)}
   </div>;
