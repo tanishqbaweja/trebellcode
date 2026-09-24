@@ -487,7 +487,7 @@ export default function App(){
   const [goal,setGoal]=useState(null); const [linkedPullRequests,setLinkedPullRequests]=useState([]); const [sourceSelectedPr,setSourceSelectedPr]=useState(null);
   const [worktreeSetup,setWorktreeSetup]=useState(null);
   const [threadTelemetry,setThreadTelemetry]=useState({});
-  const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false);
+  const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false); const [initialLoadError,setInitialLoadError]=useState(""); const [initialLoadRevision,setInitialLoadRevision]=useState(0);
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"}); const [paletteDataError,setPaletteDataError]=useState("");
   const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
@@ -842,7 +842,16 @@ export default function App(){
   useEffect(()=>{
     let cancelled=false;
     (async()=>{
-      const [boot,state,modelData,themeCatalog,projectData]=await Promise.all([api("/api/bootstrap").catch(()=>({mock:true,loggedIn:true,cwd:"",platform:""})),api("/api/state").catch(()=>({settings:{},projects:[],threadMeta:{}})),api("/api/models").catch(error=>({models:[],error:error.message})),api("/api/environment/themes").catch(()=>({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})),api("/api/projects").catch(()=>({projects:[]}))]);
+      let boot,state;
+      try{[boot,state]=await Promise.all([api("/api/bootstrap"),api("/api/state")])}
+      catch(error){
+        if(!cancelled){setInitialLoadError(error?.message||String(error)||"Trebell startup failed.");setInitialLoaded(true)}
+        return;
+      }
+      const [modelResult,themeResult,projectResult]=await Promise.allSettled([api("/api/models"),api("/api/environment/themes"),api("/api/projects")]);
+      const modelData=modelResult.status==="fulfilled"?modelResult.value:{models:[],error:modelResult.reason?.message||String(modelResult.reason)};
+      const themeCatalog=themeResult.status==="fulfilled"?themeResult.value:environmentThemeCatalog;
+      const projectData=projectResult.status==="fulfilled"?projectResult.value:{projects:state.projects||[]};
       if(cancelled)return; setBootstrap(boot); setSettings(prev=>({...prev,...(state.settings||{})})); setPermissionMode(state.settings?.defaultPermissionMode||"supervised"); setThreadMeta(state.threadMeta||{});
       setEnvironmentThemeCatalog(themeCatalog);
       const activeEnvironmentId=state.settings?.activeEnvironmentId||null;
@@ -866,9 +875,13 @@ export default function App(){
       if(initialProject?.workspaceMode)setWorkspaceMode(initialProject.workspaceMode);
       if(window.trebellDesktop?.background&&state.settings?.backgroundMode!=null)window.trebellDesktop.background.set(Boolean(state.settings.backgroundMode)).catch?.(()=>{});
       if((state.settings?.agentRuntime||boot.agentRuntime||"codex")==="codex"&&(state.settings?.modelProvider||boot.provider||"freebuff")==="freebuff"&&initialModel){const p=new URLSearchParams({timezone,model:initialModel});const fb=await api("/api/freebuff/overview?"+p).catch(()=>null);if(fb&&!cancelled)setFreebuff(fb)}
-      if(!cancelled)setInitialLoaded(true);
-    })().catch(()=>{if(!cancelled)setInitialLoaded(true)}); return()=>{cancelled=true};
-  },[]);
+      const partialErrors=[];
+      if(themeResult.status==="rejected")partialErrors.push("themes: "+(themeResult.reason?.message||String(themeResult.reason)));
+      if(projectResult.status==="rejected")partialErrors.push("projects: "+(projectResult.reason?.message||String(projectResult.reason)));
+      if(partialErrors.length)showActionError(new Error(partialErrors.join(" · ")),"Started with partial data");
+      if(!cancelled){setInitialLoadError("");setInitialLoaded(true)}
+    })().catch(error=>{if(!cancelled){setInitialLoadError(error?.message||String(error)||"Trebell startup failed.");setInitialLoaded(true)}}); return()=>{cancelled=true};
+  },[initialLoadRevision]);
 
   async function ensureSections(client){
     if(agentRuntime!=="codex"){
@@ -1026,7 +1039,10 @@ export default function App(){
   }
   async function recoverCodexAfterRestart(client){
     if(agentRuntime!=="codex")return;
-    const recovery=await api("/api/recovery").catch(()=>null);if(!recovery?.enabled||!recovery.items?.length)return;
+    let recovery;
+    try{recovery=await api("/api/recovery")}
+    catch(error){showActionError(error,"Could not check restart recovery");return}
+    if(!recovery?.enabled||!recovery.items?.length)return;
     for(const item of recovery.items){
       try{
         await client.request("thread/resume",{threadId:item.threadId,modelProvider:provider,excludeTurns:true});
@@ -1046,12 +1062,17 @@ export default function App(){
           throw new Error("Could not verify the interrupted turn before restart continuation"+(detail?": "+detail:"."));
         }
         if(previous&&["completed","failed","cancelled","interrupted"].includes(previous.status)){
-          await api("/api/recovery",{method:"POST",body:{threadId:item.threadId,action:"clear"}}).catch(()=>{});continue;
+          try{await api("/api/recovery",{method:"POST",body:{threadId:item.threadId,action:"clear"}})}
+          catch(error){showActionError(error,"Could not clear completed restart recovery")}
+          continue;
         }
         await client.request("turn/start",{threadId:item.threadId,input:[],turnTrigger:"trebell-restart-continuation"});
       }catch(error){
-        await api("/api/recovery",{method:"POST",body:{threadId:item.threadId,action:"failed",message:error.message||String(error)}}).catch(()=>{});
-        showActionError(error,"Could not safely recover interrupted thread");
+        let markError=null;
+        try{await api("/api/recovery",{method:"POST",body:{threadId:item.threadId,action:"failed",message:error.message||String(error)}})}
+        catch(persistError){markError=persistError}
+        if(markError)showActionError(new Error((error?.message||String(error))+" · Could not record restart recovery failure: "+(markError?.message||String(markError))),"Could not safely recover interrupted thread");
+        else showActionError(error,"Could not safely recover interrupted thread");
       }
     }
   }
@@ -2765,6 +2786,19 @@ export default function App(){
       <section className="runtime-activity"><strong>Latest activity</strong><p>{events.find(event=>event.status==="running")?.title||events.at(-1)?.title||"Waiting for a task"}</p></section>
     </div>;
   }
+
+  if(initialLoadError)return <div className="startup-failure-shell">
+    <div className="startup-failure-card" role="alert" aria-live="assertive" data-testid="startup-failure">
+      <img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/>
+      <div>
+        <span>Startup failed</span>
+        <h1>Trebell Code could not load its local state</h1>
+        <p>{initialLoadError}</p>
+        <small>The normal workspace was not opened with fake or empty data.</small>
+      </div>
+      <button type="button" onClick={()=>{setInitialLoaded(false);setInitialLoadRevision(value=>value+1)}}>Retry startup</button>
+    </div>
+  </div>;
 
   const layoutStyle={
     "--sidebar-width":layoutPrefs.sidebarWidth+"px",

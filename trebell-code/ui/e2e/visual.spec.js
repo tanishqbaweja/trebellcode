@@ -106,6 +106,39 @@ async function routeProjectlessCodexRequestFixture(page,harness,thread,version,{
   await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
 }
 
+test("startup failures never become a fake empty mock workspace",async({page})=>{
+  test.setTimeout(35_000);
+  let bootstrapCalls=0,allowStartup=false;
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  await page.route(/\/api\/bootstrap$/,route=>{
+    bootstrapCalls++;
+    if(!allowStartup)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate startup bootstrap failure"})});
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"startup-retry-fixture",activeEnvironmentId:null,activeEnvironment:null})});
+  });
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{}})}));
+  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+  await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+  await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+  await page.route(/\/api\/freebuff\/overview/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({})}));
+  await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+  await page.goto("/");
+  await page.waitForTimeout(300);
+  const startupError=page.getByTestId("startup-failure");
+  await expect(startupError).toBeVisible();
+  await expect(startupError).toContainText("Trebell Code could not load its local state");
+  await expect(startupError).toContainText("Deliberate startup bootstrap failure");
+  await expect(startupError).toContainText("normal workspace was not opened with fake or empty data");
+  await expect(page.getByTestId("composer")).toHaveCount(0);
+  await page.setViewportSize({width:1280,height:800});
+  await page.screenshot({path:auditDir+"startup-bootstrap-error-1280x800.png",fullPage:true});
+  allowStartup=true;
+  await startupError.getByRole("button",{name:"Retry startup",exact:true}).click();
+  await expect.poll(()=>bootstrapCalls).toBeGreaterThanOrEqual(2);
+  await expect(startupError).toHaveCount(0);
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await expect(page.getByTestId("model-picker")).toBeEnabled();
+});
+
 test("chat workspace is visually bounded and panes resize",async({page,request})=>{
   test.setTimeout(45_000);
   await prepare(page,request);
@@ -939,6 +972,69 @@ test("restart recovery never continues an unverified interrupted turn",async({pa
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await page.screenshot({path:auditDir+"restart-recovery-verification-error-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
+test("restart recovery catalog failures stay visible without blocking the harness",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"restart-recovery-read-thread",name:"Recovery catalog failure fixture",preview:"Recovery read error",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexRequestHarness(thread);
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"restart-recovery-read-fixture");
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate recovery catalog failure"})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const error=page.getByTestId("app-action-error");
+    await expect(error).toContainText("Could not check restart recovery: Deliberate recovery catalog failure");
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Recovery catalog failure fixture"]')});
+    await expect(row).toBeVisible();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"restart-recovery-catalog-error-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
+test("restart recovery API failures remain visible without unsafe continuation",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"restart-recovery-api-thread",name:"Recovery API failure fixture",preview:"Recovery API failure coverage",cwd:process.cwd(),createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
+  const turnId="restart-recovery-api-turn";let mode="manifest",continuationStarts=0;
+  const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
+    if(message.method==="thread/turns/list"){
+      ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate recovery turn verification failure"}}));return true;
+    }
+    if(message.method==="thread/read"){
+      ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate recovery thread verification failure"}}));return true;
+    }
+    if(message.method==="turn/start"){continuationStarts++;ws.send(JSON.stringify({id:message.id,result:{turn:{id:"unsafe-continuation"}}}));return true}
+    return false;
+  }});
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"restart-recovery-api-fixture");
+    await page.route(/\/api\/recovery$/,route=>{
+      if(route.request().method()==="POST"){
+        return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate recovery failure persistence error"})});
+      }
+      if(mode==="manifest")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate recovery manifest failure"})});
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:true,items:[{threadId:thread.id,turnId,startedAt:Date.now()-5000}]})});
+    });
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const error=page.getByTestId("app-action-error");
+    await expect(error).toContainText("Could not check restart recovery: Deliberate recovery manifest failure");
+    expect(continuationStarts).toBe(0);
+
+    mode="mark";
+    await page.reload();
+    await expect(error).toContainText("Could not safely recover interrupted thread");
+    await expect(error).toContainText("Could not verify the interrupted turn before restart continuation");
+    await expect(error).toContainText("Could not record restart recovery failure: Deliberate recovery failure persistence error");
+    expect(continuationStarts).toBe(0);
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"restart-recovery-api-error-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
