@@ -862,6 +862,11 @@ test("opening a thread surfaces persistent-state read failures without leaking t
     await expect(page.locator(".header-pr").filter({hasText:"#91"})).toHaveCount(0);
     await expect(objective).toHaveValue("");
     await page.setViewportSize({width:1280,height:800});
+    const errorBox=await error.boundingBox();
+    const panelBox=await page.getByTestId("right-panel").boundingBox();
+    expect(errorBox).toBeTruthy();expect(panelBox).toBeTruthy();
+    expect(errorBox.x+errorBox.width).toBeLessThanOrEqual(panelBox.x+1);
+    expect(errorBox.y).toBeGreaterThanOrEqual(0);
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await page.screenshot({path:auditDir+"thread-persistent-read-error-1280x800.png",fullPage:true});
@@ -2791,7 +2796,11 @@ test("failed background work restores the draft when stash saving also fails",as
     const draft="Keep this draft safe even when both background start and stash saving fail.";
     await composer.fill(draft);
     await composer.press("Control+Enter");
-    await expect(page.locator(".tool-event").filter({hasText:"stash save also failed"})).toContainText("Deliberate stash failure");
+    const failureEvent=page.locator(".tool-event").filter({hasText:"stash save also failed"});
+    await expect(failureEvent).toContainText("Deliberate stash failure");
+    await expect(failureEvent).toHaveClass(/kind-error/);
+    await expect(failureEvent).toHaveClass(/status-error/);
+    await expect(failureEvent.locator("summary em")).toHaveText("error");
     await expect(composer).toHaveValue(draft);
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".composer-wrap").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));

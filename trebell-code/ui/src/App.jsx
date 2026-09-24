@@ -221,6 +221,7 @@ function tokenLabel(tokenUsage,price=null){
 }
 
 function EventIcon({event}){
+  if(event.kind==="error")return <X size={13}/>;
   if(event.status==="done")return <Check size={13}/>;
   if(event.kind==="commandExecution")return <SquareTerminal size={13}/>;
   if(event.kind==="fileChange")return <FileDiff size={13}/>;
@@ -231,7 +232,7 @@ function EventIcon({event}){
 function ActivityTimeline({events,assistantText,onOpenPanel}){
   if(!events.length&&!assistantText)return null;
   return <div className="agent-block"><div className="agent-heading"><div className="agent-star"><Sparkles size={16}/></div><span>Trebell agent activity</span></div><div className="timeline">
-    {events.map(event=><details className={"tool-event status-"+event.status} key={event.id}><summary><span className="timeline-marker"><EventIcon event={event}/></span><strong>{event.title}</strong><em>{event.status}</em></summary>
+    {events.map(event=><details className={"tool-event status-"+(event.kind==="error"?"error":event.status)+" kind-"+(event.kind||"event")} key={event.id}><summary><span className="timeline-marker"><EventIcon event={event}/></span><strong>{event.title}</strong><em>{event.kind==="error"?"error":event.status}</em></summary>
       <div className="tool-event-body">{event.raw?.command&&<pre>{Array.isArray(event.raw.command)?event.raw.command.join(" "):event.raw.command}</pre>}{event.output&&<pre>{event.output}</pre>}{event.raw?.changes&&<button onClick={()=>onOpenPanel("workspace")}><FileDiff size={12}/> Inspect changes</button>}<pre className="tool-json">{event.kind==="reasoning"?"Reasoning activity":JSON.stringify(event.raw,null,2)}</pre></div>
     </details>)}
   </div>{assistantText&&<div className="assistant-answer">{assistantText}</div>}</div>;
@@ -2826,12 +2827,12 @@ export default function App(){
 
       {rightPanelOpen&&!rightPanelMaximized&&<div className="layout-resizer right-panel-resizer" data-testid="right-panel-resizer" role="separator" aria-label="Resize workspace panel" aria-orientation="vertical" onPointerDown={event=>beginLayoutResize("right",event)}/>}
       {rightPanelOpen&&<RightPanel active={rightPanelTab} disabledTabs={projectlessMode?["diff","source"]:[]} hiddenTabs={agentRuntime==="codex"?[]:["agents"]} maximized={rightPanelMaximized} onToggleMaximized={()=>setRightPanelMaximized(value=>!value)} onActive={tab=>openRightPanel(tab)} onClose={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}><DeferredSurface label="Loading panel…" compact>{rightPanelContent()}</DeferredSurface></RightPanel>}
+      {actionError&&<div className={"app-action-error-toast"+(threadUndo?" with-thread-undo":"")} role="alert" aria-live="assertive" data-testid="app-action-error">{actionError}</div>}
     </div>
 
     <McpElicitationModal key={elicitations[0]?.request?.id||"none"} request={elicitations[0]?.request} onResolve={resolveElicitation} onVerify={verifyMcpUser} verificationAvailable={!workspaceEnvironmentId}/>
     {!elicitations.length&&<QuestionModal request={question?.request} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={pickFiles}/>}
     <SnoozeDialog request={snoozeRequest} onSubmit={submitSnooze} onCancel={()=>setSnoozeRequest(null)}/>
-    {actionError&&<div className={"app-action-error-toast"+(threadUndo?" with-thread-undo":"")} role="alert" aria-live="assertive" data-testid="app-action-error">{actionError}</div>}
     {threadUndo&&<div className="thread-undo-toast" role="status" aria-live="polite" data-testid="thread-undo-toast"><span>{threadUndo.label}</span><button onClick={undoThreadAction}>Undo</button><em>5s</em></div>}
     <CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} actions={paletteActions} projects={paletteProjects} threads={threads} environmentNames={paletteEnvironmentNames} onOpenProject={project=>onProjectOpen(project.path,project.environmentId||null)} onOpenThread={openThread} onSearchThreadMessages={searchThreadMessages}/>
     <OnboardingModal open={initialLoaded&&settings.onboardingComplete===false} projectPath={projectPath} onPickWorkspace={window.trebellDesktop?.pickDirectory?pickWorkspace:null} providerLabel={agentRuntime==="codex"?providerLabel:agentRuntimeLabel} providerReady={providerReady} permissionMode={permissionMode} onPermissionMode={setPermissionMode} onHistoryImported={historyImported} onFinish={finishOnboarding}/>

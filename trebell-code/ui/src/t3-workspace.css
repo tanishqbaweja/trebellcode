@@ -142,7 +142,9 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .command-palette-error{b
 .tool-event summary::-webkit-details-marker{display:none}
 .tool-event summary:hover{background:#151719;color:#c8ccd1}
 .tool-event summary .timeline-marker{position:static;width:16px;height:16px;border:0;background:none;color:#666c74;box-shadow:none}
+.tool-event.status-error summary .timeline-marker,.tool-event.status-error summary em{color:#c86b78}
 .tool-event summary strong{font-size:10px;font-weight:520;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tool-event.kind-error summary strong{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;line-height:1.35;padding:5px 0}
 .tool-event summary em{font-size:8px;font-style:normal;color:#5f656c}
 .tool-event-body{margin:0 7px 6px 26px;border:1px solid #22252a;background:#0d0f11;border-radius:6px;padding:8px}
 .tool-event-body pre{margin:0 0 6px;max-height:180px;overflow:auto;font:9px/1.55 "Cascadia Mono",Consolas,monospace;color:#9298a0}
