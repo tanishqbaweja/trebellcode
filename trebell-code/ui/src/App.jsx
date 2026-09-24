@@ -2303,7 +2303,9 @@ export default function App(){
     }
   }
   function resolveApproval(request,decision){
-    if(!rpc)return;rpc.respond(request.id,approvalResponse(request,decision));setApprovals(prev=>prev.filter(x=>x.id!==request.id));
+    if(!rpc)throw new Error("Runtime is not connected.");
+    if(!rpc.respond(request.id,approvalResponse(request,decision)))throw new Error("Runtime disconnected before the approval response could be sent.");
+    setApprovals(prev=>prev.filter(x=>x.id!==request.id));return true;
   }
   async function approveGuardianDenial(review){
     if(!rpc||!review?.threadId||guardianBusy)return;
@@ -2317,12 +2319,12 @@ export default function App(){
     }finally{setGuardianBusy("")}
   }
   function dismissGuardianDenial(review){setGuardianDenials(prev=>prev.filter(item=>item.reviewId!==review.reviewId))}
-  async function answerQuestion(answers,filesByQuestion={}){if(!question)return;await validateAttachmentPaths(Object.values(filesByQuestion).flat());const result={};for(const q of question.request.params?.questions||[]){const values=[...(answers[q.id]||[])];const files=filesByQuestion[q.id]||[];if(files.length)values.push("Attached files:\n"+files.map(path=>"- "+path).join("\n"));result[q.id]={answers:values}}question.client.respond(question.request.id,{answers:result});setQuestion(null)}
-  function cancelQuestion(){if(question){question.client.respond(question.request.id,{answers:{}});setQuestion(null)}}
+  async function answerQuestion(answers,filesByQuestion={}){if(!question)return false;await validateAttachmentPaths(Object.values(filesByQuestion).flat());const result={};for(const q of question.request.params?.questions||[]){const values=[...(answers[q.id]||[])];const files=filesByQuestion[q.id]||[];if(files.length)values.push("Attached files:\n"+files.map(path=>"- "+path).join("\n"));result[q.id]={answers:values}}if(!question.client.respond(question.request.id,{answers:result}))throw new Error("Runtime disconnected before the answer could be sent.");setQuestion(null);return true}
+  async function cancelQuestion(){if(!question)return false;if(!question.client.respond(question.request.id,{answers:{}}))throw new Error("Runtime disconnected before the question could be cancelled.");setQuestion(null);return true}
   function resolveElicitation(response){
     const current=elicitations[0];if(!current)return;
-    current.client.respond(current.request.id,response);
-    setElicitations(prev=>prev.slice(1));
+    if(!current.client.respond(current.request.id,response))throw new Error("Runtime disconnected before the app response could be sent.");
+    setElicitations(prev=>prev.slice(1));return true;
   }
   async function verifyMcpUser(request){
     if(agentRuntime!=="codex"||!rpc)throw new Error("Native user verification requires the Codex runtime.");
@@ -2612,7 +2614,7 @@ export default function App(){
               <Conversation messages={messages} onEditFromHere={editFromHere} onCite={(message,text)=>runUserAction(()=>citeAssistant(message,text),"Could not cite assistant text")} allowRevert={["codex","opencode","claude"].includes(agentRuntime)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={agentRuntime==="codex"&&historyPage.threadId===activeThread?.id&&Boolean(historyPage.nextCursor)} loadingEarlier={historyPage.loading} onLoadEarlier={loadEarlierMessages} activeFindItemId={threadFind.activeItemId}/>
               <ActivityTimeline events={events} assistantText={assistantText} onOpenPanel={name=>name==="workspace"?openRightPanel("diff"):setPanel(name)}/>
               {guardianDenials.map(review=><div className="inline-approval" key={review.reviewId}><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div>)}
-              {approvals[0]&&<div className="inline-approval"><ApprovalCard request={approvals[0]} onResolve={resolveApproval}/></div>}
+              {approvals[0]&&<div className="inline-approval"><ApprovalCard request={approvals[0]} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
               {queued.map((item,index)=><div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span>{item.native?"Queued in Codex":"Queued"}{queuedEditId===item.id?" · editing":""}</span><p>{item.text}</p><div className="queued-message-actions"><button onClick={()=>runUserAction(()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={()=>editQueued(item)} disabled={queuedEditId===item.id||item.editable===false}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={index===0} onClick={()=>runUserAction(()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={index===queued.length-1} onClick={()=>runUserAction(()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button onClick={()=>runUserAction(()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>)}
               {!messages.length&&!events.length&&<div className="welcome">
                 <div className="welcome-mark"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/></div>

@@ -23,17 +23,24 @@ export default function McpElicitationModal({request,onResolve,onVerify,verifica
   const [values,setValues]=useState(()=>Object.fromEntries(fields.map(field=>[field.id,field.defaultValue])));
   const [error,setError]=useState("");
   const [verificationBusy,setVerificationBusy]=useState(false);
+  const [resolveBusy,setResolveBusy]=useState(false);
   if(!request)return null;
 
-  function resolve(response){setError("");onResolve?.(response)}
-  function submitForm(){
-    try{resolve({action:"accept",content:coerceElicitationFormContent(fields,values),_meta:null})}
+  async function resolve(response){
+    if(resolveBusy)return false;
+    setError("");setResolveBusy(true);
+    try{await onResolve?.(response);return true}
+    catch(err){setError("Could not answer app request: "+(err?.message||String(err)));return false}
+    finally{setResolveBusy(false)}
+  }
+  async function submitForm(){
+    try{await resolve({action:"accept",content:coerceElicitationFormContent(fields,values),_meta:null})}
     catch(err){setError(err?.message||String(err))}
   }
   async function verify(){
     if(!onVerify||!verificationAvailable)return;
     setError("");setVerificationBusy(true);
-    try{resolve(buildUserVerificationResponse(await onVerify(request)))}
+    try{await resolve(buildUserVerificationResponse(await onVerify(request)))}
     catch(err){setError(err?.message||String(err))}
     finally{setVerificationBusy(false)}
   }
@@ -41,7 +48,8 @@ export default function McpElicitationModal({request,onResolve,onVerify,verifica
   const message=String(params.message||"").trim();
   const title=kind==="approval"?"Approve app action":kind==="url"?"App needs browser input":kind==="verification"?"Verification required":"App needs input";
   return <div className="modal-backdrop" data-testid="mcp-elicitation"><div className="mcp-elicitation-modal">
-    <div className="modal-head"><div>{kind==="approval"?<ShieldCheck size={18}/>:<PlugZap size={18}/>}<strong>{title}</strong></div><button onClick={()=>resolve(buildMcpApprovalResponse("cancel"))} aria-label="Cancel app request"><X size={17}/></button></div>
+    <div className="modal-head"><div>{kind==="approval"?<ShieldCheck size={18}/>:<PlugZap size={18}/>}<strong>{title}</strong></div><button disabled={resolveBusy||verificationBusy} onClick={()=>resolve(buildMcpApprovalResponse("cancel"))} aria-label="Cancel app request"><X size={17}/></button></div>
+    {error&&<div className="inline-error" role="alert">{error}</div>}
 
     {kind==="approval"&&<>
       <div className="mcp-approval-hero">
@@ -52,10 +60,10 @@ export default function McpElicitationModal({request,onResolve,onVerify,verifica
       {details.displayParams.length>0&&<div className="mcp-approval-params">{details.displayParams.map(item=><div key={item.name}><span>{item.label}</span><code>{pretty(item.value)}</code></div>)}</div>}
       <div className="mcp-approval-note">Only approve if you expect this app action. “Always allow” changes future approval behavior for this tool, not Trebell’s global permission mode.</div>
       <div className="mcp-approval-actions">
-        <button onClick={()=>resolve(buildMcpApprovalResponse("cancel"))}>Cancel tool</button>
-        <button className="approve" onClick={()=>resolve(buildMcpApprovalResponse("once"))}>Allow once</button>
-        {elicitationSupportsPersist(request,"session")&&<button className="approve" onClick={()=>resolve(buildMcpApprovalResponse("session"))}>Allow session</button>}
-        {elicitationSupportsPersist(request,"always")&&<button className="approve strong" onClick={()=>resolve(buildMcpApprovalResponse("always"))}>Always allow</button>}
+        <button disabled={resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("cancel"))}>Cancel tool</button>
+        <button className="approve" disabled={resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("once"))}>Allow once</button>
+        {elicitationSupportsPersist(request,"session")&&<button className="approve" disabled={resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("session"))}>Allow session</button>}
+        {elicitationSupportsPersist(request,"always")&&<button className="approve strong" disabled={resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("always"))}>Always allow</button>}
       </div>
     </>}
 
@@ -67,15 +75,14 @@ export default function McpElicitationModal({request,onResolve,onVerify,verifica
           :field.type==="boolean"?<span className="mcp-boolean"><input type="checkbox" checked={Boolean(values[field.id])} onChange={event=>setValues(current=>({...current,[field.id]:event.target.checked}))}/> Enabled</span>
           :<input type={field.secret?"password":field.type==="number"?"number":field.format==="email"?"email":field.format==="uri"?"url":"text"} min={field.minimum} max={field.maximum} minLength={field.minLength} maxLength={field.maxLength} step={field.integer?1:undefined} value={values[field.id]??""} onChange={event=>setValues(current=>({...current,[field.id]:event.target.value}))}/>}
       </label>)}</div>:<p className="mcp-elicitation-message">This MCP server is asking permission to continue.</p>}
-      {error&&<div className="inline-error">{error}</div>}
-      <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button onClick={()=>resolve(buildMcpApprovalResponse("decline"))}>Decline</button>{fields.length>0?<button className="primary" onClick={submitForm}>Submit</button>:<button className="primary" onClick={()=>resolve(buildMcpApprovalResponse("once"))}>Allow</button>}</div>
+      <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button disabled={resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("decline"))}>Decline</button>{fields.length>0?<button className="primary" disabled={resolveBusy} onClick={submitForm}>Submit</button>:<button className="primary" disabled={resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("once"))}>Allow</button>}</div>
     </>}
 
     {kind==="url"&&<>
       {message&&<p className="mcp-elicitation-message">{message}</p>}
       <div className="mcp-url-card"><code>{params.url}</code><button onClick={()=>window.open(params.url,"_blank","noopener,noreferrer")}><ExternalLink size={12}/> Open link</button></div>
       <p className="mcp-approval-note">Trebell does not mark the request complete just because the link was opened. Confirm only after you finish the requested step in your browser.</p>
-      <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button onClick={()=>resolve(buildMcpApprovalResponse("decline"))}>Decline</button><button className="primary" onClick={()=>resolve(buildMcpApprovalResponse("once"))}>I completed it</button></div>
+      <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button disabled={resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("decline"))}>Decline</button><button className="primary" disabled={resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("once"))}>I completed it</button></div>
     </>}
 
     {kind==="verification"&&<>
@@ -83,13 +90,12 @@ export default function McpElicitationModal({request,onResolve,onVerify,verifica
       {params.description&&<p className="mcp-approval-note">{params.description}</p>}
       {!verificationAvailable&&<div className="inline-error">Device verification is unavailable for remote workspaces.</div>}
       {verificationAvailable&&!onVerify&&<div className="inline-error">This Trebell runtime cannot request a native verification proof.</div>}
-      {error&&<div className="inline-error">{error}</div>}
-      <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button disabled={verificationBusy} onClick={()=>resolve(buildMcpApprovalResponse("cancel"))}>Cancel request</button>{verificationAvailable&&onVerify&&<button className="primary" disabled={verificationBusy} onClick={verify}>{verificationBusy?"Verifying…":"Verify with device"}</button>}</div>
+      <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button disabled={verificationBusy||resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("cancel"))}>Cancel request</button>{verificationAvailable&&onVerify&&<button className="primary" disabled={verificationBusy||resolveBusy} onClick={verify}>{verificationBusy?"Verifying…":"Verify with device"}</button>}</div>
     </>}
 
     {kind==="unsupported"&&<>
       <div className="inline-error">This MCP server requested an elicitation mode this Trebell build does not understand: {String(params.mode||"unknown")}.</div>
-      <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button onClick={()=>resolve(buildMcpApprovalResponse("cancel"))}>Cancel request</button></div>
+      <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button disabled={resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("cancel"))}>Cancel request</button></div>
     </>}
   </div></div>;
 }

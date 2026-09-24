@@ -82,8 +82,9 @@ export class CodexRpcClient {
   }
 
   respond(id, result) {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
     this.socket.send(JSON.stringify({ id, result }));
+    return true;
   }
 
   reject(id, code = -32000, message = "Request declined") {

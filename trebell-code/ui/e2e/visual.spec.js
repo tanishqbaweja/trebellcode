@@ -322,7 +322,7 @@ test("oversized pasted text stays in the draft when attachment creation fails",a
   await page.screenshot({path:auditDir+"composer-pasted-text-error-1280x800.png",fullPage:true});
 });
 
-test("agent question file attachment failures stay inside the retryable modal",async({page})=>{
+test("agent question failures keep attachments and answers retryable",async({page})=>{
   test.setTimeout(35_000);
   const thread={id:"question-attachment-thread",name:"Question attachment fixture",preview:"Question attachment coverage",historyMode:"paginated",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
   let notificationSocket=null;
@@ -376,6 +376,15 @@ test("agent question file attachment failures stay inside the retryable modal",a
     const bounds=await modal.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(bounds.scroll).toBeLessThanOrEqual(bounds.client+1);
     await page.screenshot({path:auditDir+"question-attachment-error-1280x800.png",fullPage:true});
+    const answer=modal.getByPlaceholder("Custom answer…");
+    await answer.fill("Retry this answer");
+    relay.close();await page.waitForTimeout(80);
+    await modal.getByRole("button",{name:"Submit",exact:true}).click();
+    await expect(modal.getByRole("alert")).toContainText("Runtime disconnected before the answer could be sent.");
+    await expect(answer).toHaveValue("Retry this answer");
+    await expect(modal).toBeVisible();
+    await expect(modal.getByRole("button",{name:"Submit",exact:true})).toBeEnabled();
+    await page.screenshot({path:auditDir+"question-response-disconnected-1280x800.png",fullPage:true});
   }finally{
     relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();
     await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))]);

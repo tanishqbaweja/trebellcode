@@ -57,5 +57,19 @@ test("Codex MCP user verification uses the native signed-device proof flow",asyn
     expect(calls.find(call=>call.method==="userVerification/verify")?.params).toEqual({challenge:"Y2hhbGxlbmdl",title:"Confirm sensitive action",description:"Use your local device verification to continue."});
     await expect.poll(()=>responses.some(message=>message.id===71)).toBe(true);
     expect(responses.find(message=>message.id===71)?.result).toEqual({action:"accept",content:{credentialId:"cred-local",signature:"sig-local"},_meta:null});
+    notificationSocket.send(JSON.stringify({id:72,method:"mcpServer/elicitation/request",params:{threadId:thread.id,serverName:"fixture_app",mode:"form",message:"Approve the fixture write?",_meta:{codex_approval_kind:"mcp_tool_call",connector_name:"Fixture App",tool_title:"Write fixture",tool_params_display:[{name:"path",display_name:"Path",value:"fixture.txt"}]}}}));
+    const approval=page.getByTestId("mcp-elicitation");
+    await expect(approval).toBeVisible();
+    await expect(approval).toContainText("Fixture App");
+    await expect(approval).toContainText("Write fixture");
+    relay.close();await page.waitForTimeout(80);
+    const allowOnce=approval.getByRole("button",{name:"Allow once",exact:true});
+    await allowOnce.click();
+    const alert=approval.getByRole("alert");
+    await expect(alert).toContainText("Could not answer app request: Runtime disconnected before the app response could be sent.");
+    await expect(approval).toBeVisible();
+    await expect(allowOnce).toBeEnabled();
+    await expect(alert).toBeInViewport();
+    await page.screenshot({path:auditDir+"mcp-response-disconnected-1280x800.png",fullPage:true});
   }finally{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}
 });

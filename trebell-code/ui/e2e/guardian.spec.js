@@ -69,5 +69,17 @@ test("Codex auto-review denial can be explicitly overridden through the native R
     await expect(page.getByText("Auto review policy is running in degraded mode.",{exact:true})).toBeVisible();
     await page.setViewportSize({width:1280,height:800});await page.evaluate(()=>{document.documentElement.dataset.mode="light"});const bounds=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(bounds.scroll).toBeLessThanOrEqual(bounds.client+1);
     await page.screenshot({path:auditDir+"chat-auto-review-override-light-1280x800.png",fullPage:true});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    notificationSocket.send(JSON.stringify({id:"approval-disconnect",method:"item/commandExecution/requestApproval",params:{threadId:thread.id,turnId:"turn-disconnect",itemId:"cmd-disconnect",command:["echo","retry"],reason:"Keep this approval retryable"}}));
+    const retryApproval=page.locator(".approval-card").filter({hasText:"Keep this approval retryable"});
+    await expect(retryApproval).toBeVisible();
+    relay.close();await page.waitForTimeout(80);
+    await retryApproval.getByRole("button",{name:"Allow once",exact:true}).click();
+    const actionError=page.getByTestId("app-action-error");
+    await expect(actionError).toContainText("Could not answer approval request: Runtime disconnected before the approval response could be sent.");
+    await expect(actionError).toBeInViewport();
+    await expect(retryApproval).toBeVisible();
+    await expect(retryApproval.getByRole("button",{name:"Allow once",exact:true})).toBeEnabled();
+    await page.screenshot({path:auditDir+"approval-response-disconnected-1280x800.png",fullPage:true});
   }finally{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}
 });
