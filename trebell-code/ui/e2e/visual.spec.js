@@ -579,6 +579,34 @@ test("thread message search reports degraded reads and retries without caching f
   }finally{await harness.close()}
 });
 
+test("thread workspace context persistence failures warn without closing the opened thread",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"thread-meta-persistence-fixture",name:"Metadata persistence fixture",preview:"Open thread should survive metadata failure",cwd:process.cwd(),createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexRequestHarness(thread);
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"thread-meta-persistence-fixture");
+    await page.route(/\/api\/thread-meta$/,route=>{
+      if(route.request().method()==="POST")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate thread metadata persistence failure"})});
+      return route.continue();
+    });
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:285,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    const row=page.locator(".thread-row").filter({hasText:"Metadata persistence fixture"});
+    await expect(row).toBeVisible();
+    await row.locator(".thread-main").click();
+    await expect(row).toHaveClass(/active/);
+    const alert=page.getByTestId("app-action-error");
+    await expect(alert).toContainText("Could not save thread workspace context: Deliberate thread metadata persistence failure");
+    await expect(alert).toBeInViewport();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"thread-meta-persistence-error-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
 test("terminal failures keep backend and visible session state in sync",async({page,request})=>{
   test.setTimeout(30_000);
   await page.addInitScript(()=>{

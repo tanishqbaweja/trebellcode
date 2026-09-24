@@ -1503,17 +1503,23 @@ export default function App(){
     setThreadMeta(prev=>({...prev,[threadId]:meta}));
     return meta;
   }
-  async function persistThreadWorkspaceContext(thread,cwd=thread?.cwd,extra={}){
+  async function persistThreadWorkspaceContext(thread,cwd=thread?.cwd,extra={},{strict=false}={}){
     if(!thread?.id||!cwd)return null;
     const existing=threadMeta[thread.id]||{};
     const environmentId=existing.environmentId??thread.providerMeta?.environmentId??workspaceEnvironmentId??null;
     const projectless=Object.prototype.hasOwnProperty.call(extra,"projectless")?Boolean(extra.projectless):Boolean(existing.projectless);
     let info=null;
     if(!projectless){const params=new URLSearchParams({path:String(cwd)});params.set("environmentId",environmentId||"");info=await api("/api/git/info?"+params).catch(()=>null)}
-    return updateThreadMeta(thread.id,{
+    const patch={
       cwd:String(cwd),environmentId,branch:existing.branch||(info?.isGit?info.branch||null:null),
       projectless,sectionName:thread.section?.name||"Active",archived:Boolean(thread.archived),...extra,
-    });
+    };
+    if(!strict)return updateThreadMeta(thread.id,patch);
+    try{return await updateThreadMeta(thread.id,patch,{strict:true})}
+    catch(error){
+      setThreadMeta(prev=>({...prev,[thread.id]:{...(prev[thread.id]||{}),...patch}}));
+      throw error;
+    }
   }
   function clearThreadUndo(){
     if(threadUndoTimerRef.current)clearTimeout(threadUndoTimerRef.current);
@@ -1664,7 +1670,7 @@ export default function App(){
     const openedThread=resumed?.thread||thread;
     rememberConversationPosition();
     if(previousThreadId&&previousThreadId!==thread.id)releaseInactiveCodexThread(previousThreadId);
-    activeThreadRef.current=openedThread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection)setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");setAssistantText("");setWorktreeSetup(null);setActiveThread(openedThread);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless}).catch(()=>{});
+    activeThreadRef.current=openedThread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection)setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");setAssistantText("");setWorktreeSetup(null);setActiveThread(openedThread);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(openedThread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
     else if(openedThread.cwd)await touchProject(openedThread.cwd,threadEnvironmentId);else setProjectPath(projectPath);
     if(!connectedClient)return;
@@ -1914,7 +1920,7 @@ export default function App(){
     }
     const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(nativeProjectId?{projectId:nativeProjectId}:{}),approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools,developerInstructions});
     if(agentRuntime!=="codex"&&result.thread?.providerMeta){setProviderAgent(result.thread.agent||providerAgent||"");const meta=result.thread.providerMeta;applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}
-    if(result.thread?.id)await persistThreadWorkspaceContext(result.thread,cwd,{sectionName:"Active",archived:false,projectless}).catch(()=>{});
+    if(result.thread?.id)await persistThreadWorkspaceContext(result.thread,cwd,{sectionName:"Active",archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
     return result.thread;
   }
   function inputsFor(text,paths){return [{type:"text",text,textElements:[]},...(paths||[]).map(path=>{const lower=String(path).toLowerCase();if(/\.(png|jpe?g|gif|webp|bmp)$/.test(lower))return{type:"localImage",path};if(/\.(mp3|wav|m4a|ogg|flac)$/.test(lower))return{type:"localAudio",path};return{type:"mention",name:String(path).split(/[\\/]/).pop(),path}})]}
