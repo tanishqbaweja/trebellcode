@@ -77,6 +77,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   const [edit,setEdit]=useState(false);
   const [draft,setDraft]=useState("");
   const [diff,setDiff]=useState({status:"",diff:""});
+  const [diffError,setDiffError]=useState("");
   const [loading,setLoading]=useState(false);
   const [error,setError]=useState("");
   const [treeError,setTreeError]=useState("");
@@ -98,11 +99,14 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
     finally{setLoading(false)}
   }
   async function refreshDiff(){
-    if(!projectPath)return;setLoading(true);
-    const data=await api("/api/workspace/diff?"+params({path:projectPath})).catch(error=>({status:"",diff:"",error:error.message}));
-    setDiff(data);setLoading(false);
+    if(!projectPath)return;setLoading(true);setDiffError("");
+    try{
+      const data=await api("/api/workspace/diff?"+params({path:projectPath}));
+      setDiff(data);setDiffError(data.error||"");
+    }catch(error){setDiffError(error.message||String(error)||"Could not refresh workspace changes.")}
+    finally{setLoading(false)}
   }
-  useEffect(()=>{refreshTree();refreshDiff();setFile(null);setError("");},[projectPath,environmentId]);
+  useEffect(()=>{setDiff({status:"",diff:""});setDiffError("");refreshTree();refreshDiff();setFile(null);setError("");},[projectPath,environmentId]);
   useEffect(()=>{setTab(defaultTab==="diff"?"diff":"files")},[defaultTab]);
   useEffect(()=>{
     let timer=null;
@@ -170,6 +174,7 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   }
   const highlighted=useMemo(()=>file?.content!=null?Prism.highlight(file.content,languageFor(file.name),"javascript"):"",[file]);
   const changedPaths=useMemo(()=>String(diff.status||"").split(/\r?\n/).filter(Boolean).map(line=>line.slice(3)),[diff.status]);
+  const diffPanelError=[diffError,actionError].filter(Boolean).join(" · ");
   const source=query?searchResults:entries;
   const rawUrl=file&&projectPath?"/api/workspace/raw?"+params({root:projectPath,path:file.path}):"";
   const table=useMemo(()=>file?.kind==="table"?parseDelimited(file.content,extension(file.name)==="tsv"?"\t":","):[],[file]);
@@ -198,10 +203,10 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
         <div className={"file-view"+(error?" has-error":"")}>{file&&<div className="file-head"><strong>{file.name}</strong><div>{!remote&&<OpenInPicker path={file.path} compact/>}<button onClick={()=>onAttachPath?.(file.path)}><Paperclip size={13}/> Attach</button>{editable&&<button onClick={()=>{setError("");setEdit(v=>!v)}}>{edit?<X size={13}/>:<FileCode2 size={13}/>} {edit?"Cancel":"Edit"}</button>}{edit&&<button onClick={save}><Save size={13}/> Save</button>}</div></div>}{error&&file?.kind!=="unsupported"&&<div className="workspace-file-error" role="alert">{error}</div>}{preview()}</div>
       </div>
     </div>}
-    {tab==="diff"&&(changedPaths.length?<div className={"changes-view"+(actionError?" has-action-error":"")}>
-      {actionError&&<div className="inline-error workspace-diff-error" role="alert">{actionError}</div>}
+    {tab==="diff"&&(changedPaths.length?<div className={"changes-view"+(diffPanelError?" has-action-error":"")}>
+      {diffPanelError&&<div className="inline-error workspace-diff-error" role="alert">{diffPanelError}</div>}
       <div className="changed-files">{changedPaths.map(path=><div className={reviewedFiles.includes(path)?"changed-file-row reviewed":"changed-file-row"} key={path}><button onClick={()=>changeReviewed(path,!reviewedFiles.includes(path))} disabled={actionBusy==="reviewed:"+path}><span>{reviewedFiles.includes(path)?<Check size={12}/>:<FileDiff size={12}/>}</span>{path}</button><button className="review-comment" title="Add review comment as context" onClick={()=>addReviewComment(path)} disabled={actionBusy==="comment:"+path}>+</button></div>)}</div>
       <pre className="git-diff">{diff.diff||diff.error||"No unstaged diff."}</pre>
-    </div>:<div className={"changes-empty"+(diff.error?" error":"")}><FileDiff size={20}/><strong>{diff.error?"Could not load changes":"Working tree clean"}</strong><span>{diff.error||"No unstaged changes to review."}</span></div>)}
+    </div>:<div className={"changes-empty"+((diffError||diff.error)?" error":"")}><FileDiff size={20}/><strong>{(diffError||diff.error)?"Could not load changes":"Working tree clean"}</strong><span>{diffError||diff.error||"No unstaged changes to review."}</span></div>)}
   </div>;
 }

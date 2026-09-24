@@ -1212,6 +1212,35 @@ test("workspace file refresh and save failures stay visible without lying about 
   await page.screenshot({path:auditDir+"workspace-file-action-error-1280x800.png",fullPage:true});
 });
 
+test("workspace diff refresh failures preserve the last valid diff",async({page,request})=>{
+  test.setTimeout(30_000);
+  let failDiff=false;
+  await page.route(/\/api\/workspace\/diff\?/,route=>{
+    if(failDiff)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate workspace diff refresh failure"})});
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+      status:" M ui/src/App.jsx",
+      diff:"diff --git a/ui/src/App.jsx b/ui/src/App.jsx\n--- a/ui/src/App.jsx\n+++ b/ui/src/App.jsx\n@@ -1 +1 @@\n-old\n+new",
+    })});
+  });
+  await prepare(page,request);
+  await page.getByTestId("right-panel-toggle").click();
+  const panel=page.getByTestId("right-panel");
+  await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Diff",exact:true}).click();
+  await expect(panel.locator(".changed-file-row")).toContainText("ui/src/App.jsx");
+  await expect(panel.locator(".git-diff")).toContainText("+new");
+  failDiff=true;
+  await panel.getByRole("button",{name:"Refresh workspace files",exact:true}).click();
+  const alert=panel.locator(".workspace-diff-error");
+  await expect(alert).toContainText("Deliberate workspace diff refresh failure");
+  await expect(alert).toBeInViewport();
+  await expect(panel.locator(".changed-file-row")).toContainText("ui/src/App.jsx");
+  await expect(panel.locator(".git-diff")).toContainText("+new");
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"workspace-diff-refresh-error-1280x800.png",fullPage:true});
+});
+
 test("Diff review actions roll back and stay visible when persistence fails",async({page})=>{
   test.setTimeout(40_000);
   const thread={
