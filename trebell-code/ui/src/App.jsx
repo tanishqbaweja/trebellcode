@@ -869,7 +869,10 @@ export default function App(){
     if(agentRuntime!=="codex"){
       const local=Object.fromEntries(["Pinned","Snoozed","Settled"].map(name=>[name,{id:name,name}]));setSections(local);return local;
     }
-    const listed=await client.request("threadSection/list",{limit:50}).catch(()=>({data:[]})); const map=Object.fromEntries((listed.data||[]).map(s=>[s.name,s]));
+    let listed;
+    try{listed=await client.request("threadSection/list",{limit:50})}
+    catch{return sections}
+    const map=Object.fromEntries((listed.data||[]).map(s=>[s.name,s]));
     for(const name of ["Pinned","Snoozed","Settled"]){if(!map[name]){const made=await client.request("threadSection/create",{name}).catch(()=>null);if(made?.section)map[name]=made.section}}
     setSections(map); return map;
   }
@@ -887,7 +890,9 @@ export default function App(){
     if(agentRuntime!=="codex"||!client){
       setCollaborationModes([]);setCollaborationMode("default");return[];
     }
-    const result=await client.request("collaborationMode/list",{}).catch(()=>({data:[]}));
+    let result;
+    try{result=await client.request("collaborationMode/list",{})}
+    catch{return null}
     const modes=normalizeCollaborationModes(result?.data||[]);
     setCollaborationModes(modes);
     setCollaborationMode(current=>modes.some(item=>item.mode===current)?current:(modes.some(item=>item.mode==="default")?"default":modes[0]?.mode||"default"));

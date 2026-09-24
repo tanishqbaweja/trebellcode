@@ -2530,7 +2530,15 @@ test("switching Codex inference provider preserves the active chat and sidebar t
       else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
       else if(message.method==="thread/resume")result=message.params?.excludeTurns?{thread:{...thread,turns:[]},turnsBackwardsCursor:"turn-page-1"}:{thread};
       else if(message.method==="thread/turns/list")result={data:[turn],nextCursor:null};
-      else if(message.method==="threadSection/list"||message.method==="skills/list"||message.method==="collaborationMode/list")result={data:[]};
+      else if(message.method==="threadSection/list"){
+        if(provider==="agentrouter"){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate section refresh failure"}}));return}
+        result={data:["Pinned","Snoozed","Settled"].map(name=>({id:name.toLowerCase(),name}))};
+      }
+      else if(message.method==="collaborationMode/list"){
+        if(provider==="agentrouter"){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate collaboration mode refresh failure"}}));return}
+        result={data:[{name:"Default",mode:"default"},{name:"Plan",mode:"plan"}]};
+      }
+      else if(message.method==="skills/list")result={data:[]};
       else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
       ws.send(JSON.stringify({id:message.id,result}));
     });
@@ -2560,6 +2568,10 @@ test("switching Codex inference provider preserves the active chat and sidebar t
     await threadButton.click();
     await expect(page.getByText("Keep this conversation open while I change inference providers.")).toBeVisible();
     await expect(page.getByText("This message should still be here after the provider switch.")).toBeVisible();
+    const collaborationPicker=page.getByTestId("collaboration-mode-picker");
+    await expect(collaborationPicker).toBeVisible();
+    await collaborationPicker.selectOption("plan");
+    await expect(collaborationPicker).toHaveValue("plan");
     await page.keyboard.press("Control+k");
     await expect(page.getByTestId("command-palette").getByText("Copy conversation",{exact:true})).toBeVisible();
     await page.keyboard.press("Escape");
@@ -2580,12 +2592,16 @@ test("switching Codex inference provider preserves the active chat and sidebar t
     await expect(page.getByText("Keep this conversation open while I change inference providers.")).toBeVisible();
     await expect(page.getByText("This message should still be here after the provider switch.")).toBeVisible();
     await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","Provider independent thread");
+    await expect(collaborationPicker).toBeVisible();
+    await expect(collaborationPicker).toHaveValue("plan");
+    await expect(collaborationPicker.locator("option")).toHaveCount(2);
     const after=await page.locator(".thread-main").evaluateAll(nodes=>nodes.map(node=>node.getAttribute("title")||node.textContent.trim()));
     expect(after).toEqual(before);
     await expect(page.locator(".sidebar-provider")).toContainText("AgentRouter");
     const listCalls=rpcMessages.filter(message=>message.method==="thread/list");
     expect(listCalls.length).toBeGreaterThanOrEqual(2);
     for(const call of listCalls)expect(Object.prototype.hasOwnProperty.call(call.params||{},"modelProviders")).toBe(false);
+    expect(rpcMessages.filter(message=>message.method==="threadSection/create")).toHaveLength(0);
     await page.screenshot({path:auditDir+"provider-switch-threads-after-1600x980.png",fullPage:true});
   }finally{
     for(const ws of sockets)try{ws.terminate()}catch{}
