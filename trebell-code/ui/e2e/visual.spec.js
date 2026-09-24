@@ -1936,6 +1936,39 @@ test("failed worktree open stays in the current project and reports the error",a
   await page.screenshot({path:auditDir+"worktree-open-error-1280x800.png",fullPage:true});
 });
 
+test("failed PR attachment stays in source control with visible feedback",async({page,request})=>{
+  test.setTimeout(30_000);
+  const pr={number:88,title:"Attachment failure fixture",state:"OPEN",headRefName:"feature/attach-error",baseRefName:"main",provider:"github",url:"https://github.com/example/fixture/pull/88"};
+  await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    isGit:true,root:process.cwd(),branch:"feature/attach-error",branches:["main","feature/attach-error"],upstream:"origin/feature/attach-error",status:[],
+    remotes:[{name:"origin",url:"https://github.com/example/fixture.git"}],worktrees:[],
+  })}));
+  await page.route(/\/api\/source-control\/diagnostics\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    selectedProvider:"github",detectedProvider:"github",git:{version:"git version fixture"},
+    providers:{github:{label:"GitHub",installed:true,authenticated:true}},
+    capabilities:{github:{create:true,comment:true,review:true,merge:true}},
+  })}));
+  await page.route(/\/api\/source-control\/prs\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:[pr],capabilities:{create:true,comment:true,review:true,merge:true}})}));
+  await page.route(/\/api\/source-control\/pr-detail\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    provider:"github",item:{...pr,body:"Fixture PR body",identity:{provider:"github",host:"github.com",repository:"example/fixture",number:88},files:[],comments:[],reviews:[],statusCheckRollup:[]},
+  })}));
+  await page.route(/\/api\/source-control\/pr-viewed\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({store:"environment",files:[]})}));
+  await page.route(/\/api\/source-control\/thread-link\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({threads:[]})}));
+  await prepare(page,request);
+  await page.route(/\/api\/attachments\/text$/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate PR attachment failure"})}));
+  await page.getByTestId("right-panel-toggle").click();
+  const panel=page.getByTestId("right-panel");
+  await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
+  await panel.getByRole("button",{name:/#88 Attachment failure fixture/}).click();
+  await panel.getByRole("button",{name:"Attach",exact:true}).click();
+  const alert=panel.getByRole("alert");
+  await expect(alert).toContainText("Deliberate PR attachment failure");
+  await expect(alert).toBeInViewport();
+  await expect(panel.getByRole("heading",{name:/#88 Attachment failure fixture/})).toBeVisible();
+  await page.setViewportSize({width:1280,height:800});
+  await page.screenshot({path:auditDir+"source-control-attach-error-1280x800.png",fullPage:true});
+});
+
 test("Claude thread can switch compatible account profiles from the model picker",async({page})=>{
   test.setTimeout(45_000);
   const home=await mkdtemp(join(tmpdir(),"trebell-claude-switch-"));
