@@ -287,15 +287,15 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       await onProviderUpdated?.();
     }catch(error){setProviderMessage(error.message)}
   }
-  async function refresh({reportErrors=false}={}){
+  async function refresh({reportErrors=false,includeRuntime=true}={}){
     setLoading(true);if(reportErrors)setSettingsError("");
-    const results=await Promise.allSettled([
+    const checks=[
       api("/api/update/check"),
       api("/api/diagnostics?path="+encodeURIComponent(projectPath||"")),
-      loadProviders({strict:reportErrors}),
-      loadAgentRuntimes({strict:reportErrors}),
       loadStorageInfo({strict:reportErrors}),
-    ]);
+    ];
+    if(includeRuntime)checks.push(loadProviders({strict:reportErrors}),loadAgentRuntimes({strict:reportErrors}));
+    const results=await Promise.allSettled(checks);
     const failures=results.filter(item=>item.status==="rejected").map(item=>item.reason);
     if(results[0].status==="fulfilled")setUpdate(results[0].value);
     else if(!update)setUpdate({error:results[0].reason?.message||String(results[0].reason)});
@@ -380,7 +380,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       }
     }
   }
-  useEffect(()=>{refresh()},[projectPath]);
+  useEffect(()=>{refresh({includeRuntime:false})},[projectPath]);
   useEffect(()=>{loadProviders()},[selected]);
   useEffect(()=>{loadAgentRuntimes()},[selectedAgent]);
   useEffect(()=>{

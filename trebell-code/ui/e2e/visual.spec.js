@@ -295,6 +295,24 @@ test("chat defers telemetry polling until a surface actually needs it",async({pa
   expect(runtimeCalls).toBe(stoppedRuntime);
 });
 
+test("settings mount avoids duplicate provider and runtime bootstrap requests",async({page,request})=>{
+  test.setTimeout(35_000);
+  await prepare(page,request);
+  let providerCalls=0,runtimeCalls=0;
+  page.on("request",request=>{
+    const pathname=new URL(request.url()).pathname;
+    if(pathname==="/api/providers")providerCalls++;
+    if(pathname==="/api/agent-runtimes")runtimeCalls++;
+  });
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await expect(page.locator(".settings-page")).toBeVisible();
+  await expect.poll(()=>providerCalls).toBeGreaterThan(0);
+  await expect.poll(()=>runtimeCalls).toBeGreaterThan(0);
+  await page.waitForTimeout(500);
+  expect(providerCalls).toBe(1);
+  expect(runtimeCalls).toBe(1);
+});
+
 test("composer file mentions search the workspace and attach the selected file",async({page,request})=>{
   test.setTimeout(30_000);
   await prepare(page,request);
@@ -2955,6 +2973,8 @@ test("populated chat and overlays remain visually usable",async({page,request})=
   await page.getByTestId("send").click();
   await expect(page.locator(".user-bubble")).toContainText("Please inspect this sample output");
   await expect(page.locator(".assistant-message-text")).toContainText("Mock Freebuff reply:");
+  expect(await page.locator(".user-row").first().evaluate(node=>getComputedStyle(node).contentVisibility)).toBe("auto");
+  expect(await page.locator(".history-assistant").first().evaluate(node=>getComputedStyle(node).contentVisibility)).toBe("auto");
   const conversation=page.locator(".conversation-column");
   const chatMetrics=await conversation.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(chatMetrics.scroll).toBeLessThanOrEqual(chatMetrics.client+1);
