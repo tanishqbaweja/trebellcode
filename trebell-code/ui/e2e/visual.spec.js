@@ -641,6 +641,31 @@ test("desktop background mode rolls back when settings persistence fails",async(
   await page.screenshot({path:auditDir+"settings-background-error-1280x800.png",fullPage:true});
 });
 
+test("published theme refresh failures keep the last valid catalog visible",async({page,request})=>{
+  test.setTimeout(30_000);
+  let failRefresh=false;
+  const catalog={environmentKey:"local",environmentName:"Local machine",directory:"C:/Trebell/themes",themes:[{id:"fixture-published",name:"Fixture published theme",appearance:"dark",canvas:"#11131a",accent:"#8f6bd8"}]};
+  await page.route(/\/api\/environment\/themes$/,route=>failRefresh
+    ?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate published theme refresh failure"})})
+    :route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(catalog)}));
+  await prepare(page,request);
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await page.getByRole("button",{name:/Appearance/}).click();
+  const publishedTheme=page.getByRole("button",{name:"Fixture published theme",exact:true});
+  await expect(publishedTheme).toBeVisible();
+  failRefresh=true;
+  await page.setViewportSize({width:1280,height:800});
+  await page.getByRole("button",{name:"Refresh published themes",exact:true}).click();
+  const alert=page.getByRole("alert");
+  await expect(alert).toContainText("Could not refresh published themes: Deliberate published theme refresh failure");
+  await expect(alert).toBeInViewport();
+  await expect(publishedTheme).toBeVisible();
+  await expect(page.getByText("No valid published themes found.",{exact:false})).toHaveCount(0);
+  const metrics=await page.locator(".settings-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"settings-theme-refresh-error-1280x800.png",fullPage:true});
+});
+
 test("Freebuff sign-in failures surface immediately without starting a useless poll",async({page,request})=>{
   test.setTimeout(30_000);
   await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff"}});
@@ -2528,6 +2553,7 @@ test("Codex thread can switch compatible account profiles from the model picker"
   const profiles=[
     {id:"codex-work",displayName:"Codex Work",available:true,authenticated:true,version:"fixture-1.0"},
     {id:"codex-personal",displayName:"Codex Personal",available:true,authenticated:true,version:"fixture-1.0"},
+    {id:"codex-broken",displayName:"Codex Broken",available:true,authenticated:true,version:"fixture-1.0"},
     {id:"codex-signed-out",displayName:"Codex Signed Out",available:true,authenticated:false,version:"fixture-1.0"},
   ];
   const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});
@@ -2538,6 +2564,7 @@ test("Codex thread can switch compatible account profiles from the model picker"
       if(message.method==="thread/runtimeInstances/list")return {handled:true,result:{supported:true,label:"Codex profile",currentInstanceId,items:profiles}};
       if(message.method==="thread/runtimeInstance/set"){
         if(message.params?.instanceId==="codex-signed-out")throw new Error("Sign-in required");
+        if(message.params?.instanceId==="codex-broken")throw new Error("Deliberate runtime profile failure");
         currentInstanceId=message.params?.instanceId||currentInstanceId;return {handled:true,result:{threadId:thread.id,runtimeInstanceId:currentInstanceId}};
       }
       return null;
@@ -2571,6 +2598,19 @@ test("Codex thread can switch compatible account profiles from the model picker"
     await profilesMenu.getByRole("button",{name:/Codex Personal/}).click();await expect(picker).toContainText("Codex Personal");
     await picker.click();await expect(profilesMenu.getByRole("button",{name:/Codex Personal/})).toHaveClass(/selected/);
     await page.screenshot({path:auditDir+"chat-codex-profile-switched-1600x980.png",fullPage:true});
+    await profilesMenu.getByRole("button",{name:/Codex Broken/}).click();
+    const profileError=page.getByTestId("app-action-error");
+    await expect(profileError).toContainText("Could not switch Codex profile: Deliberate runtime profile failure");
+    await expect(profileError).toBeInViewport();
+    await expect(profilesMenu).toBeVisible();
+    await expect(picker).toContainText("Codex Personal");
+    await expect(profilesMenu.getByRole("button",{name:/Codex Personal/})).toHaveClass(/selected/);
+    await expect(profilesMenu.getByRole("button",{name:/Codex Broken/})).not.toHaveClass(/selected/);
+    await page.setViewportSize({width:1280,height:800});
+    const errorLayout=await page.locator(".composer-bar").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(errorLayout.scroll).toBeLessThanOrEqual(errorLayout.client+1);
+    await page.screenshot({path:auditDir+"chat-codex-profile-error-1280x800.png",fullPage:true});
+    await page.setViewportSize({width:1600,height:980});
+    await picker.click();
     await page.setViewportSize({width:1280,height:800});const compact=await page.locator(".composer-bar").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(compact.scroll).toBeLessThanOrEqual(compact.client+1);
     await page.screenshot({path:auditDir+"chat-codex-profile-switched-1280x800.png",fullPage:true});
 

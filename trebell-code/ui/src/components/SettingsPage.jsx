@@ -27,6 +27,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   const [apiKey,setApiKey]=useState("");
   const [providerMessage,setProviderMessage]=useState("");
   const [settingsError,setSettingsError]=useState("");
+  const [environmentThemeRefreshing,setEnvironmentThemeRefreshing]=useState(false);
   const [providerSwitching,setProviderSwitching]=useState(false);
   const [freebuffAuthBusy,setFreebuffAuthBusy]=useState(false);
   const [freebuffAuthError,setFreebuffAuthError]=useState(false);
@@ -182,6 +183,13 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     if(!theme?.publishedId||!environmentThemeCatalog?.environmentKey)return;
     const selections={...(settings.environmentThemeSelections||{}),[environmentThemeCatalog.environmentKey]:theme.publishedId};
     await save({environmentThemeSelections:selections});
+  }
+  async function refreshPublishedThemes(){
+    if(environmentThemeRefreshing)return;
+    setSettingsError("");setEnvironmentThemeRefreshing(true);
+    try{await onRefreshEnvironmentThemes?.({strict:true})}
+    catch(error){setSettingsError("Could not refresh published themes: "+(error?.message||String(error)))}
+    finally{setEnvironmentThemeRefreshing(false)}
   }
   async function stopFollowingEnvironmentTheme(){
     if(!environmentThemeCatalog?.environmentKey)return;
@@ -528,7 +536,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
         </div>
         {!environmentThemes?.length&&<p className="provider-note">No valid published themes found. Theme files are bounded to 32 KB each and must define a canvas color (or VS Code editor background).</p>}
         <div className="theme-actions">
-          <button onClick={()=>onRefreshEnvironmentThemes?.()}><RefreshCw size={12}/> Refresh published themes</button>
+          <button onClick={refreshPublishedThemes} disabled={environmentThemeRefreshing}><RefreshCw size={12}/> {environmentThemeRefreshing?"Refreshing…":"Refresh published themes"}</button>
           {settings.environmentThemeSelections?.[environmentThemeCatalog.environmentKey]&&<button onClick={stopFollowingEnvironmentTheme}>Use my normal theme</button>}
           {environmentThemes.find(theme=>theme.publishedId===settings.environmentThemeSelections?.[environmentThemeCatalog.environmentKey])&&<button onClick={()=>duplicateEnvironmentTheme(environmentThemes.find(theme=>theme.publishedId===settings.environmentThemeSelections?.[environmentThemeCatalog.environmentKey]))}>Duplicate as editable</button>}
         </div>
