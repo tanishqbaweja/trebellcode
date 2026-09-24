@@ -2016,6 +2016,45 @@ test("failed worktree open stays in the current project and reports the error",a
   await page.screenshot({path:auditDir+"worktree-open-error-1280x800.png",fullPage:true});
 });
 
+test("Add worktree reports native folder picker failures",async({page,request})=>{
+  test.setTimeout(30_000);
+  await page.addInitScript(()=>{
+    Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{
+      pickDirectory:async()=>{throw new Error("Deliberate worktree folder picker failure")},
+    }});
+  });
+  await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    isGit:true,root:process.cwd(),branch:"main",branches:["main"],upstream:"origin/main",status:[],
+    remotes:[{name:"origin",url:"https://github.com/example/fixture.git"}],
+    worktrees:[{path:process.cwd(),branch:"main"}],
+  })}));
+  await page.route(/\/api\/source-control\/diagnostics\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    selectedProvider:"github",detectedProvider:"github",git:{version:"git version fixture"},
+    providers:{github:{label:"GitHub",installed:true,authenticated:true}},
+    capabilities:{github:{create:true,comment:true,review:true,merge:true}},
+  })}));
+  await page.route(/\/api\/source-control\/prs\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:[],capabilities:{create:true,comment:true,review:true,merge:true}})}));
+  await prepare(page,request);
+  const crumb=page.locator(".workspace-breadcrumb .project-crumb").filter({hasNot:page.locator(".sidebar-reopen")}).first();
+  const beforeText=(await crumb.textContent())?.trim()||"";
+  await page.getByTestId("right-panel-toggle").click();
+  const panel=page.getByTestId("right-panel");
+  await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
+  const addWorktree=panel.getByRole("button",{name:"Add worktree",exact:true});
+  await expect(addWorktree).toBeVisible();
+  page.once("dialog",dialog=>dialog.accept("picker-failure"));
+  await addWorktree.click();
+  const alert=panel.getByRole("alert");
+  await expect(alert).toContainText("Deliberate worktree folder picker failure");
+  await expect(alert).toBeInViewport();
+  await expect(crumb).toHaveText(beforeText);
+  await expect(addWorktree).toBeEnabled();
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"worktree-picker-error-1280x800.png",fullPage:true});
+});
+
 test("failed PR attachment stays in source control with visible feedback",async({page,request})=>{
   test.setTimeout(30_000);
   const pr={number:88,title:"Attachment failure fixture",state:"OPEN",headRefName:"feature/attach-error",baseRefName:"main",provider:"github",url:"https://github.com/example/fixture/pull/88"};
