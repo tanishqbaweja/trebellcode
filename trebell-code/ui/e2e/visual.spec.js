@@ -1345,6 +1345,35 @@ test("usage clear failures keep recorded usage visible",async({page,request})=>{
   await page.screenshot({path:auditDir+"usage-clear-error-1280x800.png",fullPage:true});
 });
 
+test("usage environment refresh failures preserve the last valid filter catalog",async({page,request})=>{
+  test.setTimeout(30_000);
+  let failEnvironments=false;
+  await page.route(/\/api\/environments$/,route=>{
+    if(failEnvironments)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate usage environment refresh failure"})});
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+      profiles:[{id:"usage-remote-fixture",name:"Usage Remote Fixture",type:"ssh"}],
+      activeEnvironmentId:null,
+      activeEnvironment:null,
+    })});
+  });
+  await prepare(page,request);
+  await page.getByRole("button",{name:"Usage",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Usage",level:2})).toBeVisible();
+  const filter=page.locator(".usage-environment-filter");
+  await filter.locator("summary").click();
+  await expect(filter.getByText("Usage Remote Fixture",{exact:true})).toBeVisible();
+  failEnvironments=true;
+  await page.setViewportSize({width:1280,height:800});
+  await page.locator(".usage-toolbar").getByRole("button",{name:"Refresh",exact:true}).click();
+  const alert=page.getByText("Deliberate usage environment refresh failure",{exact:false});
+  await expect(alert).toBeVisible();
+  await expect(filter.getByText("Usage Remote Fixture",{exact:true})).toBeVisible();
+  await expect(page.locator(".usage-toolbar").getByRole("button",{name:"Refresh",exact:true})).toBeEnabled();
+  const metrics=await page.locator(".usage-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"usage-environment-refresh-error-1280x800.png",fullPage:true});
+});
+
 test("right panel tabs are functional and visually bounded",async({page,request})=>{
   test.setTimeout(60_000);
   await prepare(page,request);

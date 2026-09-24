@@ -22,6 +22,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
   const [codex,setCodex]=useState({account:null,rateLimits:null,usage:null,messages:null,errors:{},loading:false,notice:""});
   const [runtimeUsage,setRuntimeUsage]=useState({data:null,loading:false,error:""});
   const [environmentData,setEnvironmentData]=useState({profiles:[],activeEnvironmentId:null,activeEnvironment:null});
+  const [environmentError,setEnvironmentError]=useState("");
   const [selectedEnvironments,setSelectedEnvironments]=useState([]);
   const environmentOptions=useMemo(()=>[
     {id:"local",name:"Local / legacy",type:"local"},
@@ -67,7 +68,17 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
     try{setRuntimeUsage({data:await api("/api/agent-runtime-usage"),loading:false,error:""})}
     catch(err){setRuntimeUsage(current=>({...current,loading:false,error:err.message||String(err)}))}
   }
-  async function refresh(){await Promise.all([refreshLocal(),refreshCodex(),refreshRuntimeUsage()])}
+  async function refreshEnvironments(){
+    setEnvironmentError("");
+    try{
+      const next=await api("/api/environments");
+      setEnvironmentData(next);return next;
+    }catch(err){
+      setEnvironmentError(err?.message||String(err)||"Could not refresh environments.");
+      return null;
+    }
+  }
+  async function refresh(){await Promise.all([refreshLocal(),refreshCodex(),refreshRuntimeUsage(),refreshEnvironments()])}
   useEffect(()=>{refreshLocal()},[days,selectedEnvironments.join("|")]);
   useEffect(()=>{refreshCodex()},[rpc,rpcStatus,activeThread?.id,agentRuntime]);
   useEffect(()=>{
@@ -96,7 +107,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
     return()=>{disposed=true;if(accountTimer)clearTimeout(accountTimer);if(rateTimer)clearTimeout(rateTimer);if(usageTimer)clearTimeout(usageTimer);unsubscribe?.()};
   },[rpc,rpcStatus,activeThread?.id,agentRuntime]);
   useEffect(()=>{refreshRuntimeUsage()},[agentRuntime]);
-  useEffect(()=>{api("/api/environments").then(setEnvironmentData).catch(()=>{})},[]);
+  useEffect(()=>{refreshEnvironments()},[]);
   const computed=useMemo(()=>{
     let cost=0,known=0,estimated=0;const modelMap={};
     for(const record of data.records||[]){const item=estimateCost(record,settings);if(item){cost+=item.amount;item.estimated?estimated++:known++}const key=record.model||"Unknown model";const bucket=modelMap[key]||(modelMap[key]={tokens:0,turns:0,cost:0,costEntries:0,runtime:record.runtime});bucket.tokens+=Number(record.usage?.totalTokens||0);bucket.turns++;if(item){bucket.cost+=item.amount;bucket.costEntries++}}
@@ -129,6 +140,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
   return <div className="usage-page">
     <div className="capabilities-toolbar"><div><h2>Usage</h2><p>Per-turn token and cost history across Trebell harnesses and environments, plus live account limits when the active harness exposes them.</p></div><div className="usage-toolbar"><details className="usage-environment-filter"><summary>{environmentFilterLabel}</summary><div><button onClick={()=>setSelectedEnvironments([])} className={selectedEnvironments.length===0?"active":""}>All environments</button>{environmentOptions.map(item=><label key={item.id}><input type="checkbox" checked={selectedEnvironments.includes(item.id)} onChange={()=>toggleEnvironment(item.id)}/><span>{item.name}</span><em>{item.type}</em></label>)}</div></details><select value={days} onChange={e=>setDays(Number(e.target.value))}><option value={7}>7 days</option><option value={30}>30 days</option><option value={90}>90 days</option><option value={365}>1 year</option></select><button onClick={refresh} disabled={loading||codex.loading||runtimeUsage.loading||clearing}><RefreshCw size={13}/>{loading||codex.loading||runtimeUsage.loading?"Refreshing…":"Refresh"}</button><button onClick={clear} disabled={!data.records?.length||clearing}><Trash2 size={13}/> {clearing?"Clearing…":"Clear local history"}</button></div></div>
     {error&&<div className="inline-error" role="alert">{error}</div>}
+    {environmentError&&<div className="inline-error" role="alert">{environmentError}</div>}
     {showLiveCodex&&<section className="capability-card codex-account-usage" data-testid="codex-account-usage">
       <div className="capability-card-head"><span><Sparkles size={15}/><strong>Codex account & limits</strong></span><em>{activeEnvironmentName} · {codex.account?.account?.planType||codex.rateLimits?.rateLimits?.planType||"live"}</em></div>
       {codex.account?.account?.email&&<p className="codex-account-line">{codex.account.account.email}</p>}
