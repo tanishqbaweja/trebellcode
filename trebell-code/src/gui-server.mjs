@@ -202,6 +202,7 @@ async function startAppServer({appPort,env=process.env,mock=false,provider="free
           appPort,
           provider,
           localProviderPort:providerPort,
+          runtimeInstance,
           debug:env.TREBELL_GUI_DEBUG==="1",
         });
         return {...remote,appPort,runtimeInstanceId:runtimeInstance?.id||"codex-default"};
@@ -2279,8 +2280,6 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   async function codexThreadProfiles(threadId){
     const id=String(threadId||"").trim();if(!id)throw Object.assign(new Error("threadId is required"),{code:-32602});
     const meta=state.threadMeta(id);const environmentId=meta.environmentId??state.settings().activeEnvironmentId??null;
-    const remote=environmentId?environments.get(environmentId):null;
-    if(remote&&remote.type!=="local")return {supported:false,label:"Codex profile",currentInstanceId:meta.runtimeInstanceId||agentRuntimes.activeInstance().id,items:[],reason:"Per-thread Codex profile switching is not yet available inside WSL/SSH environments."};
     const current=codexInstance(meta.runtimeInstanceId)||codexInstance();if(!current)return {supported:false,label:"Codex profile",currentInstanceId:null,items:[],reason:"No Codex runtime profile is configured."};
     const compatibleIds=new Set(agentRuntimes.compatibleInstanceIds(current));
     const compatible=agentRuntimes.instances().filter(instance=>instance.kind==="codex"&&compatibleIds.has(instance.id));
@@ -2293,8 +2292,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   async function setCodexThreadProfile(threadId,instanceId){
     const id=String(threadId||"").trim(),targetId=String(instanceId||"").trim();if(!id||!targetId)throw Object.assign(new Error("threadId and instanceId are required"),{code:-32602});
     const meta=state.threadMeta(id);if(meta.active)throw new Error("Stop the running turn before switching Codex profiles.");
-    const environmentId=meta.environmentId??state.settings().activeEnvironmentId??null;const remote=environmentId?environments.get(environmentId):null;
-    if(remote&&remote.type!=="local")throw new Error("Per-thread Codex profile switching is not yet available inside WSL/SSH environments.");
+    const environmentId=meta.environmentId??state.settings().activeEnvironmentId??null;
     const current=codexInstance(meta.runtimeInstanceId)||codexInstance();const target=codexInstance(targetId);
     if(!target||!current)throw new Error("Codex runtime profile was not found");
     if(!agentRuntimes.compatibleInstanceIds(current).includes(target.id))throw new Error("This Codex profile uses a different CODEX_HOME, so it cannot continue this thread.");
@@ -2319,9 +2317,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     if(!instance)throw new Error("Codex runtime profile was not found");
     const remote=environmentId?environments.get(environmentId):null;
     let server;
-    if(remote&&remote.type!=="local"){
-      server=await ensureCodexAppServer(instance.id,{environmentId,ownerKey:"catalog"});
-    }else if(message?.method==="thread/start"){
+    if(message?.method==="thread/start"){
       server=await ensureCodexAppServer(instance.id,{environmentId,ownerKey:`start:${String(message.id??randomUUID())}`});
     }else if(threadId){
       const existingKey=codexThreadServerKeys.get(threadId);const existing=existingKey?codexAppServers.get(existingKey):null;
@@ -2365,7 +2361,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       if(startedThread?.id){
         if(startedThread.model)codexThreadModels.set(startedThread.id,startedThread.model);
         const routedServer=route?.targetKey?codexAppServers.get(route.targetKey):null;
-        if(routedServer&&!routedServer.environmentId)codexThreadServerKeys.set(startedThread.id,routedServer.poolKey);
+        if(routedServer)codexThreadServerKeys.set(startedThread.id,routedServer.poolKey);
         state.updateThreadMeta(startedThread.id,{cwd:startedThread.cwd||null,runtime:"codex",runtimeInstanceId:routedServer?.runtimeInstanceId||agentRuntimes.activeInstance().id,environmentId:routedServer?.environmentId??state.settings().activeEnvironmentId??null,deletedAt:null,active:false});
       }
       if(message?.method==="thread/deleted"&&params.threadId){

@@ -12,6 +12,49 @@ function shellJoin(parts){
   return parts.map(quotePosix).join(" ");
 }
 
+const REMOTE_CODEX_SHARED_DIRECTORIES=["sessions","archived_sessions","sqlite","shell_snapshots","worktrees","skills","plugins","cache","logs","mcp-oauth-locks"];
+
+function remotePathExpression(value){
+  const raw=String(value||"").trim();
+  if(raw==="~")return '"$HOME"';
+  if(raw.startsWith("~/"))return '"$HOME"/'+quotePosix(raw.slice(2));
+  return quotePosix(raw);
+}
+
+export function remoteCodexProfileSetup({profile={},runtimeInstance=null}={}){
+  const instance=runtimeInstance||{};
+  const command=String(instance.binaryPath||profile.codexPath||"codex").trim()||"codex";
+  const lines=[];
+  for(const [name,value] of Object.entries(instance.environment||{})){
+    if(!/^[A-Z_][A-Z0-9_]*$/i.test(name)||value==null)continue;
+    lines.push("export "+name+"="+quotePosix(String(value)));
+  }
+  const shared=String(instance.homePath||"").trim();
+  const shadow=String(instance.shadowHomePath||"").trim();
+  if(shadow){
+    lines.push("trebell_codex_shared="+remotePathExpression(shared||"~/.codex"));
+    lines.push("trebell_codex_effective="+remotePathExpression(shadow));
+    lines.push('mkdir -p "$trebell_codex_shared" "$trebell_codex_effective"');
+    lines.push("for trebell_codex_entry in "+REMOTE_CODEX_SHARED_DIRECTORIES.map(quotePosix).join(" ")+"; do");
+    lines.push('  mkdir -p "$trebell_codex_shared/$trebell_codex_entry"');
+    lines.push('  if [ -L "$trebell_codex_effective/$trebell_codex_entry" ]; then rm -f "$trebell_codex_effective/$trebell_codex_entry";');
+    lines.push('  elif [ -e "$trebell_codex_effective/$trebell_codex_entry" ]; then echo "Trebell cannot prepare remote Codex shadow entry $trebell_codex_entry because a non-link entry already exists." >&2; exit 74; fi');
+    lines.push('  ln -s "$trebell_codex_shared/$trebell_codex_entry" "$trebell_codex_effective/$trebell_codex_entry"');
+    lines.push("done");
+    lines.push('export CODEX_HOME="$trebell_codex_effective"');
+  }else if(shared){
+    lines.push("trebell_codex_effective="+remotePathExpression(shared));
+    lines.push('mkdir -p "$trebell_codex_effective"');
+    lines.push('export CODEX_HOME="$trebell_codex_effective"');
+  }
+  return {command,prelude:lines.join("\n"),sharedHomePath:shared||null,effectiveHomePath:shadow||shared||null};
+}
+
+export function sshRemotePorts(localAppPort){
+  const seed=Math.abs(Math.trunc(Number(localAppPort)||0))%16000;
+  return {appPort:30000+seed,providerPort:48000+seed};
+}
+
 function providerPort(provider,override=null){
   return Number.isInteger(override)?override:(provider==="freebuff"?DEFAULT_PORT:PROVIDER_COMPAT_PORT);
 }
@@ -82,19 +125,21 @@ export async function startRemoteAppServer({
   appPort,
   provider,
   localProviderPort=null,
+  runtimeInstance=null,
   debug=false,
 }={}){
   const profile=environments?.get(environmentId);
   if(!profile||profile.type==="local")return null;
   const logs=[];
   const resolvedProviderPort=providerPort(provider,localProviderPort);
+  const runtime=remoteCodexProfileSetup({profile,runtimeInstance});
 
   if(profile.type==="wsl"){
     const network=await wslNetwork(environments,environmentId);
     const proxy=await createProviderProxy(network.host,resolvedProviderPort);
     const baseUrl=`http://${network.host}:${proxy.port}/v1`;
     const listen=`ws://0.0.0.0:${appPort}`;
-    const command=remoteToolPathPrelude()+"\nexec "+shellJoin([profile.codexPath||"codex",...remoteCodexArgs({provider,baseUrl,listen})]);
+    const command=remoteToolPathPrelude()+"\n"+(runtime.prelude?runtime.prelude+"\n":"")+"exec "+shellJoin([runtime.command,...remoteCodexArgs({provider,baseUrl,listen})]);
     let child;
     try{
       child=environments.spawnSession(environmentId,{command,cwd:profile.cwd||null});
@@ -114,11 +159,12 @@ export async function startRemoteAppServer({
   }
 
   if(profile.type==="ssh"){
-    const remoteProviderPort=23335;
-    const remoteAppPort=appPort;
+    const remotePorts=sshRemotePorts(appPort);
+    const remoteProviderPort=remotePorts.providerPort;
+    const remoteAppPort=remotePorts.appPort;
     const baseUrl=`http://127.0.0.1:${remoteProviderPort}/v1`;
     const listen=`ws://127.0.0.1:${remoteAppPort}`;
-    const remoteCommand=remoteToolPathPrelude()+"\n"+(profile.cwd?"cd "+quotePosix(profile.cwd)+" && ":"")+"exec "+shellJoin([profile.codexPath||"codex",...remoteCodexArgs({provider,baseUrl,listen})]);
+    const remoteCommand=remoteToolPathPrelude()+"\n"+(runtime.prelude?runtime.prelude+"\n":"")+(profile.cwd?"cd "+quotePosix(profile.cwd)+" && ":"")+"exec "+shellJoin([runtime.command,...remoteCodexArgs({provider,baseUrl,listen})]);
     const executable=process.platform==="win32"?"ssh.exe":"ssh";
     const args=[
       "-o","BatchMode=yes",

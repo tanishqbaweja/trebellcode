@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { remoteCodexArgs } from "../src/environment-app-server.mjs";
+import { remoteCodexArgs, remoteCodexProfileSetup, sshRemotePorts } from "../src/environment-app-server.mjs";
 import { remoteToolPathPrelude } from "../src/environment-manager.mjs";
 
 test("remote harness PATH bootstrap covers Linuxbrew and common Node version managers",()=>{
@@ -39,4 +39,31 @@ test("remote Freebuff session can point at a tunneled local bridge",()=>{
   });
   assert.ok(args.includes('model_provider="freebuff"'));
   assert.ok(args.includes('model_providers.freebuff.base_url="http://127.0.0.1:23335/v1"'));
+});
+
+test("remote Codex profiles honor custom binaries, homes, overlays and environment",()=>{
+  const direct=remoteCodexProfileSetup({
+    profile:{codexPath:"codex-default"},
+    runtimeInstance:{binaryPath:"/opt/codex/bin/codex",homePath:"~/.codex-shared",environment:{TREBELL_FIXTURE:"yes"}},
+  });
+  assert.equal(direct.command,"/opt/codex/bin/codex");
+  assert.match(direct.prelude,/export TREBELL_FIXTURE='yes'/);
+  assert.match(direct.prelude,/export CODEX_HOME/);
+  assert.match(direct.prelude,/\.codex-shared/);
+
+  const overlay=remoteCodexProfileSetup({
+    profile:{},
+    runtimeInstance:{homePath:"~/.codex-shared",shadowHomePath:"~/.codex-work"},
+  });
+  assert.match(overlay.prelude,/trebell_codex_shared/);
+  assert.match(overlay.prelude,/sessions/);
+  assert.match(overlay.prelude,/ln -s/);
+  assert.match(overlay.prelude,/\.codex-work/);
+});
+
+test("SSH remote Codex servers derive distinct app and provider tunnel ports",()=>{
+  const first=sshRemotePorts(23456),second=sshRemotePorts(23457);
+  assert.notEqual(first.appPort,first.providerPort);
+  assert.notDeepEqual(first,second);
+  for(const port of [first.appPort,first.providerPort,second.appPort,second.providerPort])assert.ok(port>1024&&port<65536);
 });
