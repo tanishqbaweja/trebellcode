@@ -1038,6 +1038,39 @@ test("Agent Browser action failures stay visible instead of disappearing",async(
   await page.screenshot({path:auditDir+"agent-browser-action-error-1280x800.png",fullPage:true});
 });
 
+test("Agent Browser annotation attachment failures keep the note for retry",async({page,request})=>{
+  test.setTimeout(30_000);
+  await page.addInitScript(()=>{
+    Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{
+      browser:{
+        state:async()=>({open:true,url:"https://fixture.invalid/",title:"Fixture page",canGoBack:false,canGoForward:false,loading:false,width:1280,height:800}),
+        onState:()=>()=>{},
+        snapshot:async()=>({url:"https://fixture.invalid/",title:"Fixture page",elements:[{ref:"e1",tag:"button",text:"Save profile",href:""}]}),
+      },
+    }});
+  });
+  await prepare(page,request);
+  await page.route(/\/api\/attachments\/text$/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate browser annotation attachment failure"})}));
+  await page.locator('.sidebar .sidebar-utility[aria-label="Browser"]').click();
+  const panel=page.getByTestId("right-panel");
+  await expect(panel).toBeVisible();
+  await panel.getByRole("button",{name:"Inspect elements",exact:true}).click();
+  const element=panel.locator(".browser-elements button").filter({hasText:"Save profile"});
+  await expect(element).toBeVisible();
+  await element.click();
+  const annotation=panel.getByTestId("preview-annotation");
+  const note="Do not lose this retry note";
+  await annotation.locator("textarea").fill(note);
+  await annotation.getByRole("button",{name:"Attach annotation",exact:true}).click();
+  await expect(panel.getByRole("alert")).toContainText("Deliberate browser annotation attachment failure");
+  await expect(annotation.locator("textarea")).toHaveValue(note);
+  await expect(annotation).not.toContainText("Annotation attached");
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"agent-browser-annotation-error-1280x800.png",fullPage:true});
+});
+
 test("populated chat and overlays remain visually usable",async({page,request})=>{
   test.setTimeout(45_000);
   await prepare(page,request);
