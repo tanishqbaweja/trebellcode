@@ -59,14 +59,28 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     return save({keybindingRules:next});
   }
 
-  async function loadProviders(){
-    const info=await api("/api/providers").catch(e=>({error:e.message,providers:[]}));
-    setProviderInfo(info);
-    return info;
+  async function loadProviders({strict=false}={}){
+    try{
+      const info=await api("/api/providers");
+      setProviderInfo(info);
+      return info;
+    }catch(error){
+      if(strict)throw error;
+      const fallback=providerInfo||{error:error?.message||String(error),providers:[]};
+      if(!providerInfo)setProviderInfo(fallback);
+      return fallback;
+    }
   }
-  async function loadAgentRuntimes(){
-    const info=await api("/api/agent-runtimes").catch(e=>({error:e.message,definitions:[],instances:[],statuses:[]}));
-    setAgentInfo(info);return info;
+  async function loadAgentRuntimes({strict=false}={}){
+    try{
+      const info=await api("/api/agent-runtimes");
+      setAgentInfo(info);return info;
+    }catch(error){
+      if(strict)throw error;
+      const fallback=agentInfo||{error:error?.message||String(error),definitions:[],instances:[],statuses:[]};
+      if(!agentInfo)setAgentInfo(fallback);
+      return fallback;
+    }
   }
   async function selectAgentRuntime(kind,instanceId=null){
     setAgentMessage("Switching…");
@@ -273,23 +287,37 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       await onProviderUpdated?.();
     }catch(error){setProviderMessage(error.message)}
   }
-  async function refresh(){
-    setLoading(true);
-    const [u,d]=await Promise.all([
-      api("/api/update/check").catch(e=>({error:e.message})),
-      api("/api/diagnostics?path="+encodeURIComponent(projectPath||"")).catch(e=>({error:e.message})),
-      loadProviders(),
-      loadAgentRuntimes(),
-      loadStorageInfo(),
+  async function refresh({reportErrors=false}={}){
+    setLoading(true);if(reportErrors)setSettingsError("");
+    const results=await Promise.allSettled([
+      api("/api/update/check"),
+      api("/api/diagnostics?path="+encodeURIComponent(projectPath||"")),
+      loadProviders({strict:reportErrors}),
+      loadAgentRuntimes({strict:reportErrors}),
+      loadStorageInfo({strict:reportErrors}),
     ]);
-    setUpdate(u);setDiagnostics(d);setLoading(false);
+    const failures=results.filter(item=>item.status==="rejected").map(item=>item.reason);
+    if(results[0].status==="fulfilled")setUpdate(results[0].value);
+    else if(!update)setUpdate({error:results[0].reason?.message||String(results[0].reason)});
+    if(results[1].status==="fulfilled")setDiagnostics(results[1].value);
+    else if(!diagnostics)setDiagnostics({error:results[1].reason?.message||String(results[1].reason)});
+    if(reportErrors&&failures.length)setSettingsError("Could not refresh diagnostics: "+failures.map(error=>error?.message||String(error)).join(" · "));
+    setLoading(false);
     if(window.trebellDesktop?.updates)window.trebellDesktop.updates.get().then(setDesktopUpdate).catch(()=>{});
     if(window.trebellDesktop?.snapshots)window.trebellDesktop.snapshots.get().then(setSnapshotInfo).catch(()=>{});
     if(window.trebellDesktop?.browser?.importSources)loadBrowserImportSources().catch(()=>{});
+    return failures.length===0;
   }
-  async function loadStorageInfo(){
-    const info=await api("/api/storage-cleanup").catch(error=>({error:error.message}));
-    setStorageInfo(info);return info;
+  async function loadStorageInfo({strict=false}={}){
+    try{
+      const info=await api("/api/storage-cleanup");
+      setStorageInfo(info);return info;
+    }catch(error){
+      if(strict)throw error;
+      const fallback=storageInfo||{error:error?.message||String(error)};
+      if(!storageInfo)setStorageInfo(fallback);
+      return fallback;
+    }
   }
   async function saveStorageRetention(key,raw){
     const text=String(raw??"").trim();
@@ -507,7 +535,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
           <div className="provider-key-actions"><button className="setting-action" onClick={addCustomModel} disabled={!modelDraft.id.trim()}>Save custom model</button><button onClick={()=>setCustomModelEditorOpen(false)}>Cancel</button></div>
         </div>}
       </div>}
-      <div className="settings-card" {...targetProps("agents-runtime")} hidden={settingsSection!=="agents"}><h3>Runtime</h3><p>Harness connection: <strong>{rpcStatus}</strong><br/>Agent: <strong>{selectedAgentStatus?.name||selectedAgent}</strong><br/>Agent runtime: <strong>{runtime?.agentRuntimeStatus?.available||selectedAgent==="codex"?"ready":"not ready"}</strong>{selectedAgent==="codex"&&<><br/>Codex app-server: <strong>{runtime?.appServerReady?"ready":"not ready"}</strong><br/>Inference: <strong>{PROVIDER_LABELS[runtime?.provider||selected]||runtime?.provider||selected}</strong>{(runtime?.provider||selected)==="freebuff"&&<><br/>Freebuff bridge: <strong>{runtime?.bridgeReady?"ready":"not ready"}</strong></>}</>}</p><button onClick={refresh}><RefreshCw size={13}/> Refresh diagnostics</button></div>
+      <div className="settings-card" {...targetProps("agents-runtime")} hidden={settingsSection!=="agents"}><h3>Runtime</h3><p>Harness connection: <strong>{rpcStatus}</strong><br/>Agent: <strong>{selectedAgentStatus?.name||selectedAgent}</strong><br/>Agent runtime: <strong>{runtime?.agentRuntimeStatus?.available||selectedAgent==="codex"?"ready":"not ready"}</strong>{selectedAgent==="codex"&&<><br/>Codex app-server: <strong>{runtime?.appServerReady?"ready":"not ready"}</strong><br/>Inference: <strong>{PROVIDER_LABELS[runtime?.provider||selected]||runtime?.provider||selected}</strong>{(runtime?.provider||selected)==="freebuff"&&<><br/>Freebuff bridge: <strong>{runtime?.bridgeReady?"ready":"not ready"}</strong></>}</>}</p><button onClick={()=>refresh({reportErrors:true})} disabled={loading}><RefreshCw size={13}/> {loading?"Refreshing…":"Refresh diagnostics"}</button></div>
       <div className="settings-card" {...targetProps("general-followups")} hidden={settingsSection!=="general"}><h3>Follow-up behavior</h3>{selectedAgent==="codex"?<label>While the agent is working<select value={settings.followUpMode||"queue"} onChange={e=>save({followUpMode:e.target.value})}><option value="queue">Queue after current turn</option><option value="steer">Steer current turn immediately</option></select></label>:<p>Follow-ups are queued until the current {selectedAgentStatus?.name||selectedAgent} turn finishes. ACP does not define in-flight steering.</p>}</div>
       <div className="settings-section-slot" {...targetProps("workspace-defaults")} hidden={settingsSection!=="workspace"}><ScopedSettingsCard settings={settings} models={models} onChanged={onScopedSettingsChanged} scopeEnvironmentId={workspaceScope.environmentId} scopeProjectId={workspaceScope.projectId} onScopeChange={setWorkspaceScope} onCatalog={setWorkspaceScopeCatalog} showScopeTargets={false}/></div>
       <div className="settings-card storage-settings" {...targetProps("workspace-storage")} hidden={settingsSection!=="workspace"}>
@@ -552,7 +580,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       <div className="settings-card update-settings" hidden={settingsSection!=="general"}><h3>Updates</h3>{desktopUpdate?.supported?<><p>Current: <strong>{desktopUpdate.currentVersion||update?.current||"unknown"}</strong>{desktopUpdate.availableVersion&&<><br/>Available: <strong>{desktopUpdate.availableVersion}</strong></>}<br/>Status: <strong>{updateStatusLabel}</strong></p>{desktopUpdate.status==="downloading"&&<div className="update-progress"><span style={{width:`${Math.max(0,Math.min(100,desktopUpdate.percent||0))}%`}}/></div>}{desktopUpdate.status==="downloading"&&<p className="provider-note">{Math.round(desktopUpdate.percent||0)}% downloaded</p>}{desktopUpdate.error&&<p className="provider-status-error">{desktopUpdate.error}</p>}<div className="provider-key-actions"><button onClick={checkDesktopUpdate} disabled={["checking","downloading","installing"].includes(desktopUpdate.status)}><RefreshCw size={12}/> Check now</button>{desktopUpdate.status==="available"&&<button className="setting-action" onClick={downloadDesktopUpdate}><Download size={12}/> Download update</button>}{desktopUpdate.status==="downloaded"&&<button className="setting-action" onClick={installDesktopUpdate}>Restart & install</button>}</div>{desktopUpdate.status==="downloaded"&&!settings.continueThreadsAfterRestart&&<p className="provider-note">Restart recovery is off. Finish active work first, or enable Restart recovery before installing.</p>}</>:<>{update?.latest?<p>Current: <strong>{update.current}</strong><br/>Latest: <strong>{update.latest}</strong></p>:<p>{update?.error||"Checking releases…"}</p>}{update?.url&&<button onClick={()=>window.open(update.url,"_blank")}><Download size={13}/> Open latest release</button>}{desktopUpdate?.status==="development"&&<p className="provider-note">In-app installation is available in packaged Trebell builds.</p>}</>}</div>
       <div className="settings-card" hidden={settingsSection!=="diagnostics"}><h3>Diagnostics</h3><p>Runtime and project diagnostics are local to this machine.</p><div className="diag-badges"><span className={runtime?.agentRuntimeStatus?.available||selectedAgent==="codex"?"ok":""}><Activity size={12}/> {selectedAgentStatus?.name||selectedAgent}</span>{selectedAgent==="codex"&&<span className={diagnostics?.runtime?.providerReady?"ok":""}><ShieldCheck size={12}/> {PROVIDER_LABELS[diagnostics?.runtime?.provider||selected]||"Provider"}</span>}</div></div>
     </div>
-    <div className="diagnostics-log" hidden={settingsSection!=="diagnostics"}><div><strong>Runtime log</strong><button onClick={refresh} disabled={loading}><RefreshCw size={12}/></button></div>{diagnostics?.logs?.length?<pre>{diagnostics.logs.map(x=>"["+new Date(x.at).toLocaleTimeString()+"] "+x.stream+": "+x.text).join("")}</pre>:<div className="diagnostics-empty"><Activity size={22}/><strong>No runtime activity yet</strong><span>Provider and harness diagnostics will appear here when Trebell has something useful to report.</span></div>}</div>
+    <div className="diagnostics-log" hidden={settingsSection!=="diagnostics"}><div><strong>Runtime log</strong><button aria-label="Refresh diagnostics" onClick={()=>refresh({reportErrors:true})} disabled={loading}><RefreshCw size={12}/></button></div>{diagnostics?.logs?.length?<pre>{diagnostics.logs.map(x=>"["+new Date(x.at).toLocaleTimeString()+"] "+x.stream+": "+x.text).join("")}</pre>:<div className="diagnostics-empty"><Activity size={22}/><strong>No runtime activity yet</strong><span>Provider and harness diagnostics will appear here when Trebell has something useful to report.</span></div>}</div>
     </section>
   </div>;
 }
