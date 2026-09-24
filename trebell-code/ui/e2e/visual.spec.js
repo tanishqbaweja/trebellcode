@@ -714,6 +714,53 @@ test("project refresh and removal failures preserve the existing project card",a
   await page.screenshot({path:auditDir+"projects-action-error-1280x800.png",fullPage:true});
 });
 
+test("cross-environment project activation rolls back when project activation fails",async({page,request})=>{
+  test.setTimeout(35_000);
+  await prepare(page,request);
+  const baseBootstrap=await (await request.get("/api/bootstrap")).json();
+  const projectData=await (await request.get("/api/projects")).json();
+  const currentProject=(projectData.projects||[]).find(item=>item.path===baseBootstrap.cwd)||(projectData.projects||[])[0];
+  expect(currentProject).toBeTruthy();
+  const remoteEnvironment={id:"env-rollback-fixture",name:"Rollback SSH",type:"ssh",enabled:true};
+  const remoteProject={id:"remote-rollback-project",name:"Remote Rollback Project",path:"/srv/rollback-fixture",environmentId:remoteEnvironment.id,environment:remoteEnvironment,effectiveSettings:{},lastOpenedAt:new Date().toISOString()};
+  let activeEnvironmentId=null;
+  const activationCalls=[];
+  await page.route(/\/api\/environment\/activate$/,route=>{
+    const body=route.request().postDataJSON()||{};
+    activeEnvironmentId=body.id||null;activationCalls.push(activeEnvironmentId);
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({activeEnvironmentId,activeEnvironment:activeEnvironmentId?remoteEnvironment:null,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,error:null})});
+  });
+  await page.route(/\/api\/settings$/,route=>{
+    if(route.request().method()!=="GET")return route.continue();
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeEnvironmentId})});
+  });
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...baseBootstrap,activeEnvironmentId,activeEnvironment:activeEnvironmentId?remoteEnvironment:null})}));
+  await page.route(/\/api\/environment\/themes(?:\?|$)/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:activeEnvironmentId||"local",environmentName:activeEnvironmentId?remoteEnvironment.name:"Local machine",directory:"",themes:[]})}));
+  await page.route(/\/api\/projects$/,route=>{
+    if(route.request().method()==="POST"&&route.request().postDataJSON()?.path===remoteProject.path){
+      return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate remote project activation failure"})});
+    }
+    if(route.request().method()==="GET")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[currentProject,remoteProject]})});
+    return route.continue();
+  });
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  const currentCard=page.locator(".project-card").filter({hasText:currentProject.name}).first();
+  const remoteCard=page.locator(".project-card").filter({hasText:"Remote Rollback Project"});
+  await expect(currentCard).toHaveClass(/active/);
+  await expect(remoteCard).toBeVisible();
+  await remoteCard.locator(".project-open").click();
+  await expect(page.getByRole("alert")).toContainText("Deliberate remote project activation failure");
+  await expect.poll(()=>activationCalls).toEqual([remoteEnvironment.id,null]);
+  expect(activeEnvironmentId).toBeNull();
+  await expect(currentCard).toHaveClass(/active/);
+  await expect(remoteCard).not.toHaveClass(/active/);
+  await page.setViewportSize({width:1280,height:800});
+  const projects=page.locator(".projects-page");
+  const metrics=await projects.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"projects-environment-rollback-error-1280x800.png",fullPage:true});
+});
+
 test("environment refresh and removal failures preserve the existing environment",async({page,request})=>{
   test.setTimeout(30_000);
   await prepare(page,request);

@@ -2334,19 +2334,37 @@ export default function App(){
     const targetEnvironmentId=environmentId||null;
     const currentEnvironmentId=settings.activeEnvironmentId||null;
     const shouldStartFresh=Boolean(activeThread?.id&&String(activeThread.cwd||"")!==String(path));
-    if(targetEnvironmentId!==currentEnvironmentId){
-      const switched=await api("/api/environment/activate",{method:"POST",body:{id:targetEnvironmentId}});
-      if(switched.error)throw new Error(switched.error);
-      const [nextSettings,nextBootstrap]=await Promise.all([api("/api/settings"),api("/api/bootstrap")]);
-      setSettings(prev=>({...prev,...nextSettings}));
-      setBootstrap(nextBootstrap);
-      setProviderRevision(value=>value+1);
-      await refreshEnvironmentThemes();
+    let switchedEnvironment=false;
+    try{
+      if(targetEnvironmentId!==currentEnvironmentId){
+        const switched=await api("/api/environment/activate",{method:"POST",body:{id:targetEnvironmentId}});
+        if(switched.error)throw new Error(switched.error);
+        switchedEnvironment=true;
+        const [nextSettings,nextBootstrap]=await Promise.all([api("/api/settings"),api("/api/bootstrap")]);
+        setSettings(prev=>({...prev,...nextSettings}));
+        setBootstrap(nextBootstrap);
+        setProviderRevision(value=>value+1);
+        await refreshEnvironmentThemes();
+      }
+      await touchProject(path,targetEnvironmentId);
+      if(shouldStartFresh)await newChat();
+      setSection("chat");
+      if(targetEnvironmentId===currentEnvironmentId&&rpcStatus==="connected")loadSkills(rpc,path);
+    }catch(error){
+      if(switchedEnvironment){
+        try{
+          await api("/api/environment/activate",{method:"POST",body:{id:currentEnvironmentId}});
+          const [rollbackSettings,rollbackBootstrap]=await Promise.all([api("/api/settings"),api("/api/bootstrap")]);
+          setSettings(prev=>({...prev,...rollbackSettings}));
+          setBootstrap(rollbackBootstrap);
+          setProviderRevision(value=>value+1);
+          await refreshEnvironmentThemes();
+        }catch(rollbackError){
+          throw new Error((error?.message||String(error))+" Environment rollback failed: "+(rollbackError?.message||String(rollbackError)));
+        }
+      }
+      throw error;
     }
-    await touchProject(path,targetEnvironmentId);
-    if(shouldStartFresh)await newChat();
-    setSection("chat");
-    if(targetEnvironmentId===currentEnvironmentId&&rpcStatus==="connected")loadSkills(rpc,path);
   }
   async function onScopedSettingsChanged(){
     const [nextSettings,projectData]=await Promise.all([api("/api/settings"),api("/api/projects")]);
