@@ -459,6 +459,35 @@ test("settings page visual audit",async({page,request})=>{
   expect(compactLight.scrollWidth).toBeLessThanOrEqual(compactLight.clientWidth+1);
 });
 
+test("desktop background mode rolls back when settings persistence fails",async({page,request})=>{
+  test.setTimeout(30_000);
+  await page.addInitScript(()=>{
+    window.__backgroundCalls=[];
+    Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{
+      background:{set:async value=>{window.__backgroundCalls.push(Boolean(value));return{ok:true}}},
+    }});
+  });
+  await prepare(page,request);
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await page.getByRole("button",{name:/Desktop/}).click();
+  await expect(page.getByRole("heading",{name:"Background mode"})).toBeVisible();
+  await page.route(/\/api\/settings$/,route=>{
+    if(route.request().method()==="POST")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate background settings failure"})});
+    return route.continue();
+  });
+  const toggle=page.getByLabel("Keep Trebell running in background");
+  await expect(toggle).not.toBeChecked();
+  await toggle.click();
+  await expect(page.getByRole("alert")).toContainText("Deliberate background settings failure");
+  await expect(toggle).not.toBeChecked();
+  await expect.poll(()=>page.evaluate(()=>window.__backgroundCalls.slice(-2))).toEqual([true,false]);
+  await page.setViewportSize({width:1280,height:800});
+  const settings=page.locator(".settings-page");
+  const metrics=await settings.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"settings-background-error-1280x800.png",fullPage:true});
+});
+
 test("Freebuff sign-in failures surface immediately without starting a useless poll",async({page,request})=>{
   test.setTimeout(30_000);
   await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff"}});
