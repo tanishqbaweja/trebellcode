@@ -1370,6 +1370,67 @@ test("failed background work restores the draft when stash saving also fails",as
   }
 });
 
+test("delegated agent open failures stay visible without leaving the parent thread",async({page})=>{
+  test.setTimeout(35_000);
+  const parent={id:"agent-parent-thread",name:"Parent thread",preview:"Parent fixture",cwd:process.cwd(),createdAt:Date.now()/1000-30,updatedAt:Date.now()/1000,turns:[]};
+  const child={id:"agent-child-thread",parentThreadId:parent.id,name:"Delegated fixture",agentRole:"worker",status:{type:"idle"},cwd:"C:\\trebell-missing-worktree",createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
+  const wsHttp=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
+  wsHttp.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  wss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",data=>{
+      const message=JSON.parse(String(data));if(message.id==null||!message.method)return;
+      let result={};
+      if(message.method==="initialize")result={userAgent:"agents-open-error-fixture"};
+      else if(message.method==="thread/list")result={data:[parent,child],nextCursor:null};
+      else if(message.method==="thread/resume")result={thread:message.params?.threadId===parent.id?parent:child};
+      else if(message.method==="thread/turns/list")result={data:[],nextCursor:null};
+      else if(message.method==="threadSection/list"||message.method==="skills/list"||message.method==="collaborationMode/list")result={data:[]};
+      else if(message.method==="thread/attachment/list")result={data:[]};
+      else if(message.method==="thread/goal/get")result={goal:null};
+      else if(message.method==="thread/queue/list")result={data:[],nextCursor:null};
+      else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
+      ws.send(JSON.stringify({id:message.id,result}));
+    });
+  });
+  const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{[parent.id]:{projectless:true,environmentId:null}}})}));
+    await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+    await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+    await page.route(/\/api\/worktree\/ensure$/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate delegated worktree restore failure"})}));
+    await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({checkpoints:[]})}));
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const parentRow=page.locator('.thread-main[title="Parent thread"]');
+    await expect(parentRow).toBeVisible({timeout:10_000});
+    await parentRow.click();
+    await expect(parentRow.locator("xpath=..")).toHaveClass(/active/);
+    await page.getByTestId("right-panel-toggle").click();
+    const panel=page.getByTestId("right-panel");
+    await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Agents",exact:true}).click();
+    const delegated=panel.locator(".agent-row").filter({hasText:"Delegated fixture"});
+    await expect(delegated).toBeVisible();
+    await delegated.locator(".agent-open").click();
+    const alert=panel.getByRole("alert");
+    await expect(alert).toContainText("Deliberate delegated worktree restore failure");
+    await expect(parentRow.locator("xpath=..")).toHaveClass(/active/);
+    await expect(delegated).toBeVisible();
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"agents-open-error-1280x800.png",fullPage:true});
+  }finally{
+    for(const ws of sockets)try{ws.terminate()}catch{}
+    wss.close();await new Promise(resolve=>wsHttp.close(resolve));
+  }
+});
+
 test("populated source control and pull request detail stay usable",async({page,request})=>{
   test.setTimeout(45_000);
   const prActions=[];

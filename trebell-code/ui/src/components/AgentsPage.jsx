@@ -140,7 +140,7 @@ export default function AgentsPage({threads,onOpen,onAction,onRefreshThreads,rpc
     </div>
     <section className="collaboration-card">
       <div className="collaboration-head"><div><UsersRound size={15}/><span><strong>Collaboration mode</strong><small>Choose how Codex coordinates work for this thread.</small></span></div><button onClick={refresh} disabled={busy||rpcStatus!=="connected"}><RefreshCw size={12}/></button></div>
-      {!activeThread?.id?<p>Start or open a thread to select a collaboration mode.</p>:modes.length?<div className="collaboration-modes">{modes.map(mask=><button key={mask.name} className={selected===mask.name?"active":""} onClick={()=>applyMode(mask)} disabled={busy}><strong>{mask.name}</strong><span>{mask.mode||"default"}{mask.model?" · "+mask.model:""}{mask.reasoning_effort?" · "+mask.reasoning_effort:""}</span></button>)}</div>:<p>{error||"No collaboration presets were reported by this Codex runtime."}</p>}
+      {!activeThread?.id?<p>Start or open a thread to select a collaboration mode.</p>:modes.length?<div className="collaboration-modes">{modes.map(mask=><button key={mask.name} className={selected===mask.name?"active":""} onClick={()=>applyMode(mask)} disabled={busy}><strong>{mask.name}</strong><span>{mask.mode||"default"}{mask.model?" · "+mask.model:""}{mask.reasoning_effort?" · "+mask.reasoning_effort:""}</span></button>)}</div>:<p>No collaboration presets were reported by this Codex runtime.</p>}
     </section>
     {error&&<p className="provider-status-error" role="alert">{error}</p>}
     {currentChildren.length>0&&<section className="agent-group"><h4>Current thread <span>{currentChildren.length}</span></h4>{renderAgents(currentChildren)}</section>}
