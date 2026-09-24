@@ -679,6 +679,57 @@ test("direct fallback never drops attachments or failed text sends",async({page,
   await page.screenshot({path:auditDir+"direct-fallback-http-error-restores-draft-1280x800.png",fullPage:true});
 });
 
+test("failed automatic local queue starts keep the follow-up retryable",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"local-queue-failure-thread",name:"Local queue failure fixture",preview:"Queued retry coverage",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  let turnStarts=0;
+  const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
+    if(message.method==="thread/queue/list"){
+      ws.send(JSON.stringify({id:message.id,error:{code:-32601,message:"Method not found: thread/queue/list"}}));
+      return true;
+    }
+    if(message.method==="turn/start"){
+      turnStarts++;
+      if(turnStarts===2){
+        ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate local queued turn failure"}}));
+        return true;
+      }
+      ws.send(JSON.stringify({id:message.id,result:{turn:{id:"local-queue-turn-"+turnStarts,status:"inProgress"}}}));
+      return true;
+    }
+    return false;
+  }});
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"local-queue-failure-fixture");
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    await page.locator('.thread-main[title="Local queue failure fixture"]').click();
+    const composer=page.getByTestId("composer");
+    await composer.fill("Initial running turn");
+    await page.getByTestId("send").click();
+    await expect.poll(()=>turnStarts).toBe(1);
+    await composer.fill("Keep this queued follow-up");
+    await page.getByTestId("send").click();
+    const queued=page.locator(".queued-message").filter({hasText:"Keep this queued follow-up"});
+    await expect(queued).toBeVisible();
+    harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"local-queue-turn-1",status:"completed"}}});
+    await expect.poll(()=>turnStarts).toBe(2);
+    await expect(queued).toBeVisible();
+    await expect(queued.locator("span").first()).toContainText("Queued · retry needed");
+    await expect(page.getByText("Could not start queued follow-up: Deliberate local queued turn failure",{exact:false})).toBeVisible();
+    await page.waitForTimeout(350);
+    expect(turnStarts).toBe(2);
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"local-queue-auto-start-error-1280x800.png",fullPage:true});
+    await queued.getByRole("button",{name:"Send now",exact:true}).click();
+    await expect.poll(()=>turnStarts).toBe(3);
+    await expect(page.locator(".queued-message").filter({hasText:"Keep this queued follow-up"})).toHaveCount(0);
+    await expect(page.locator(".user-bubble").filter({hasText:"Keep this queued follow-up"})).toBeVisible();
+  }finally{await harness.close()}
+});
+
 test("terminal failures keep backend and visible session state in sync",async({page,request})=>{
   test.setTimeout(30_000);
   await page.addInitScript(()=>{

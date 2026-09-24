@@ -460,6 +460,7 @@ export default function App(){
   const [historyPage,setHistoryPage]=useState({threadId:null,nextCursor:null,paginated:false,loading:false});
   const [threadFind,setThreadFind]=useState({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});
   const [running,setRunning]=useState(false); const [submitting,setSubmitting]=useState(false); const [queued,setQueued]=useState([]); const [queueMode,setQueueMode]=useState("unknown"); const [queuedEditId,setQueuedEditId]=useState(null);
+  const localQueueStartRef=useRef(null);
   const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [threadSearchError,setThreadSearchError]=useState(""); const [section,setSection]=useState("chat");
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [contextChips,setContextChips]=useState([]);
   const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [selectedModels,setSelectedModels]=useState([]); const [modelError,setModelError]=useState(""); const [modelPickerOpen,setModelPickerOpen]=useState(false);
@@ -771,12 +772,15 @@ export default function App(){
   },[initialLoaded,section,providerReady,provider,agentRuntime,models.length]);
   async function touchProject(path,environmentId=undefined,{activate=true}={}){
     if(!path)return null;
+    const previousProjectPath=projectPath;
+    const previousEnvironmentId=currentProject?.environmentId??settings.activeEnvironmentId??null;
     const resolvedEnvironmentId=environmentId===undefined
       ?(activeThreadRef.current?.providerMeta?.environmentId??settings.activeEnvironmentId??null)
       :(environmentId||null);
     const response=await api("/api/projects",{method:"POST",body:{path,environmentId:resolvedEnvironmentId,activate}});
     const project=response?.project||null;
     if(!project)throw new Error("Project activation did not return a project.");
+    if(String(previousProjectPath||"")!==String(path||"")||String(previousEnvironmentId||"")!==String(resolvedEnvironmentId||""))setGitInfo(null);
     setProjectlessMode(false);setGeneralEnvironmentId(null);setProjectPath(path);
     setCurrentProject(project);
     if(project&&activate)setSettings(prev=>({...prev,activeProjectId:project.id}));
@@ -1052,7 +1056,7 @@ export default function App(){
     setThreadRuntimeProfiles({supported:false,currentInstanceId:null,items:[]});setThreadRuntimeProfileBusy("");
   },[agentRuntime,rpc,rpcStatus,activeThread?.id]);
 
-  useEffect(()=>{const timer=setInterval(async()=>{const [s,r,g]=await Promise.all([api("/api/stats").catch(()=>null),api("/api/runtime").catch(()=>null),!projectlessMode&&projectPath&&!workspaceRemote?api("/api/git/info?path="+encodeURIComponent(projectPath)).catch(()=>null):Promise.resolve(null)]);if(s)setStats(s);if(r)setRuntime(r);setGitInfo(projectlessMode?null:g)},1800);return()=>clearInterval(timer)},[projectPath,workspaceRemote,projectlessMode]);
+  useEffect(()=>{const timer=setInterval(async()=>{const [s,r,g]=await Promise.all([api("/api/stats").catch(()=>null),api("/api/runtime").catch(()=>null),!projectlessMode&&projectPath&&!workspaceRemote?api("/api/git/info?path="+encodeURIComponent(projectPath)).catch(()=>null):Promise.resolve(null)]);if(s)setStats(s);if(r)setRuntime(r);if(projectlessMode)setGitInfo(null);else if(g)setGitInfo(g)},1800);return()=>clearInterval(timer)},[projectPath,workspaceRemote,projectlessMode]);
   useEffect(()=>{if(agentRuntime!=="codex"||provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;refreshFreebuff(model);const timer=setInterval(()=>refreshFreebuff(model),15000);return()=>clearInterval(timer)},[agentRuntime,provider,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
   useEffect(()=>{if(agentRuntime!=="codex"||provider!=="freebuff"||!running||!(bootstrap.loggedIn||bootstrap.mock))return;const ping=()=>{const p=new URLSearchParams({timezone});if(model)p.set("model",model);fetch("/api/freebuff/heartbeat?"+p,{method:"POST"}).catch(()=>{})};ping();const timer=setInterval(ping,45000);return()=>clearInterval(timer)},[agentRuntime,provider,running,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
 
@@ -1222,7 +1226,20 @@ export default function App(){
     window.addEventListener("keydown",key);
     return()=>window.removeEventListener("keydown",key);
   },[settings,prompt,attachments,section,panel,paletteOpen,question,elicitations.length,approvals.length,snoozeRequest,threadUndo,projectPath,projectlessMode,activeThread,running,rightPanelOpen,rightPanelTab,sourceSelectedPr,linkedPullRequests,queued,sidebarOpen,displayThreads,modelPickerOpen,currentProject,agentRuntime]);
-  useEffect(()=>{if(agentRuntime==="codex"&&(queueMode==="native"||queued[0]?.native))return;if(!running&&queued.length){const next=queued[0];setQueued(prev=>prev.slice(1));startTurn(next.text,next.attachments,next.model||model).catch(error=>setEvents(prev=>[...prev,{id:"queue-error-"+Date.now(),kind:"error",title:error.message,status:"done"}]))}},[running,queued,queueMode,agentRuntime]);
+  useEffect(()=>{
+    if(agentRuntime==="codex"&&(queueMode==="native"||queued[0]?.native))return;
+    if(running||!queued.length)return;
+    const next=queued[0];if(next?.autoStartFailed||localQueueStartRef.current===next.id)return;
+    localQueueStartRef.current=next.id;
+    startTurn(next.text,next.attachments,next.model||model).then(()=>{
+      localQueueStartRef.current=null;
+      setQueued(prev=>prev.filter(item=>item.id!==next.id));
+    }).catch(error=>{
+      localQueueStartRef.current=null;
+      setQueued(prev=>prev.map(item=>item.id===next.id?{...item,autoStartFailed:true}:item));
+      setEvents(prev=>[...prev,{id:"queue-error-"+Date.now(),kind:"error",title:"Could not start queued follow-up: "+(error?.message||String(error)),status:"done"}]);
+    });
+  },[running,queued,queueMode,agentRuntime]);
   useEffect(()=>{setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null)},[agentRuntime]);
 
   function handleServerRequest(client,message){
@@ -2699,7 +2716,7 @@ export default function App(){
               <ActivityTimeline events={events} assistantText={assistantText} onOpenPanel={name=>name==="workspace"?openRightPanel("diff"):setPanel(name)}/>
               {guardianDenials.map(review=><div className="inline-approval" key={review.reviewId}><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div>)}
               {approvals[0]&&<div className="inline-approval"><ApprovalCard request={approvals[0]} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
-              {queued.map((item,index)=><div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span>{item.native?"Queued in Codex":"Queued"}{queuedEditId===item.id?" · editing":""}</span><p>{item.text}</p><div className="queued-message-actions"><button onClick={()=>runUserAction(()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={()=>editQueued(item)} disabled={queuedEditId===item.id||item.editable===false}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={index===0} onClick={()=>runUserAction(()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={index===queued.length-1} onClick={()=>runUserAction(()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button onClick={()=>runUserAction(()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>)}
+              {queued.map((item,index)=><div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span>{item.native?"Queued in Codex":item.autoStartFailed?"Queued · retry needed":"Queued"}{queuedEditId===item.id?" · editing":""}</span><p>{item.text}</p><div className="queued-message-actions"><button onClick={()=>runUserAction(()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={()=>editQueued(item)} disabled={queuedEditId===item.id||item.editable===false}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={index===0} onClick={()=>runUserAction(()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={index===queued.length-1} onClick={()=>runUserAction(()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button onClick={()=>runUserAction(()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>)}
               {!messages.length&&!events.length&&!guardianDenials.length&&!approvals.length&&!queued.length&&!worktreeSetup&&<div className="welcome">
                 <div className="welcome-mark"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/></div>
                 <h1>{projectlessMode?"What do you want to think through?":"What do you want to build?"}</h1>
