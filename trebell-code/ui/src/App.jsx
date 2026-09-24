@@ -731,10 +731,15 @@ export default function App(){
     return()=>{disposed=true;clearTimeout(timer)};
   },[threadFind.open,threadFind.query,agentRuntime,activeThread?.id,rpc,rpcStatus]);
   useEffect(()=>{setThreadTelemetry({})},[provider,agentRuntime]);
-  async function refreshFreebuff(modelOverride=model){
+  async function refreshFreebuff(modelOverride=model,{strict=false}={}){
     if(agentRuntime!=="codex"||provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;
     const params=new URLSearchParams({timezone}); if(modelOverride)params.set("model",modelOverride);
-    const data=await api("/api/freebuff/overview?"+params).catch(()=>null); if(data)setFreebuff(data);
+    try{
+      const data=await api("/api/freebuff/overview?"+params);if(data)setFreebuff(data);return data;
+    }catch(error){
+      if(strict)throw error;
+      return null;
+    }
   }
   async function refreshProviderModels({resetThread=false,provider:expectedProvider=null,agentRuntime:expectedRuntime=null}={}){
     const seq=++modelRefreshSeqRef.current;
@@ -779,7 +784,7 @@ export default function App(){
     if(scoped.defaultModel&&models.includes(scoped.defaultModel)){setModel(scoped.defaultModel);setSelectedModels([scoped.defaultModel])}
     if(scoped.defaultPermissionMode)setPermissionMode(scoped.defaultPermissionMode);
     if(scoped.defaultWorkspaceMode)setWorkspaceMode(scoped.defaultWorkspaceMode);
-    if(scoped.autoPull&&(!project?.cloneJob||project.cloneJob.status==="completed"))api("/api/git/action",{method:"POST",body:{action:"auto-pull",cwd:path,environmentId:resolvedEnvironmentId}}).catch(()=>{});
+    if(scoped.autoPull&&(!project?.cloneJob||project.cloneJob.status==="completed"))api("/api/git/action",{method:"POST",body:{action:"auto-pull",cwd:path,environmentId:resolvedEnvironmentId}}).catch(error=>showActionError(error,"Could not automatically pull project"));
     return project;
   }
   async function refreshCloneJob(id=currentProject?.cloneJob?.id){
@@ -2636,7 +2641,7 @@ export default function App(){
         </div>}
 
         {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><DeferredSurface label="Loading projects…"><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onProjectUpdated={project=>{if(project?.path===projectPath&&(project?.environmentId||null)===(workspaceEnvironmentId||null))setCurrentProject(project)}} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></DeferredSurface></div>}
-        {section==="freebuff"&&agentRuntime==="codex"&&provider==="freebuff"&&<div className="secondary-page"><div className="page-header"><div><h1>Freebuff</h1><p>Account, balance, model pricing and session state.</p></div></div><DeferredSurface label="Loading Freebuff…"><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model)}/></DeferredSurface></div>}
+        {section==="freebuff"&&agentRuntime==="codex"&&provider==="freebuff"&&<div className="secondary-page"><div className="page-header"><div><h1>Freebuff</h1><p>Account, balance, model pricing and session state.</p></div></div><DeferredSurface label="Loading Freebuff…"><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model,{strict:true})}/></DeferredSurface></div>}
         {section==="tools"&&agentRuntime==="codex"&&<div className="secondary-page full"><DeferredSurface label="Loading harness capabilities…"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} onHistoryImported={historyImported} onSkillsRefresh={()=>loadSkills(rpc,projectPath,true)} platform={bootstrap.platform}/></DeferredSurface></div>}
         {section==="environments"&&<div className="secondary-page full"><DeferredSurface label="Loading environments…"><EnvironmentsPage/></DeferredSurface></div>}
       {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}

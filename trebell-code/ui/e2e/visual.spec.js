@@ -1009,6 +1009,37 @@ test("project refresh and removal failures preserve the existing project card",a
   await page.screenshot({path:auditDir+"projects-action-error-1280x800.png",fullPage:true});
 });
 
+test("automatic pull failures stay visible without blocking project open",async({page,request})=>{
+  test.setTimeout(30_000);
+  await prepare(page,request);
+  const projectData=await (await request.get("/api/projects")).json();
+  const target=(projectData.projects||[])[0];
+  expect(target).toBeTruthy();
+  await page.route(/\/api\/projects$/,async route=>{
+    if(route.request().method()!=="POST")return route.continue();
+    const body=route.request().postDataJSON()||{};
+    if(body.path!==target.path)return route.continue();
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({project:{...target,effectiveSettings:{...(target.effectiveSettings||{}),autoPull:true}}})});
+  });
+  await page.route(/\/api\/git\/action$/,route=>{
+    const body=route.request().postDataJSON()||{};
+    if(body.action==="auto-pull")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate auto-pull failure"})});
+    return route.continue();
+  });
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  const card=page.locator(".project-card").filter({hasText:target.name}).first();
+  await expect(card).toBeVisible();
+  await card.locator(".project-open").click();
+  await expect(page.getByTestId("composer")).toBeVisible();
+  const alert=page.getByTestId("app-action-error");
+  await expect(alert).toContainText("Could not automatically pull project: Deliberate auto-pull failure");
+  await expect(alert).toBeInViewport();
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"project-auto-pull-error-1280x800.png",fullPage:true});
+});
+
 test("General chat start failures stay on Projects with visible feedback",async({page,request})=>{
   test.setTimeout(30_000);
   await prepare(page,request);
@@ -1765,6 +1796,31 @@ test("Freebuff dashboard stays visually coherent in light mode",async({page,requ
   }));
   for(const value of Object.values(surfaces))expect(value).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
   await page.screenshot({path:auditDir+"freebuff-light-1600x980.png",fullPage:true});
+});
+
+test("Freebuff manual refresh failures preserve the last valid account state",async({page,request})=>{
+  test.setTimeout(30_000);
+  await prepare(page,request);
+  await page.locator(".sidebar-provider").click();
+  await expect(page.getByRole("heading",{name:"Freebuff",level:1})).toBeVisible();
+  const hero=page.locator(".fb-hero");
+  await expect(hero).toBeVisible();
+  const balance=await hero.locator("strong").textContent();
+  const session=await page.locator(".fb-dashboard-card").filter({hasText:"Session"}).locator("strong").textContent();
+  await page.route("**/api/freebuff/overview*",route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate Freebuff refresh failure"})}));
+  await page.setViewportSize({width:1280,height:800});
+  await hero.getByRole("button",{name:"Refresh",exact:true}).click();
+  const alert=page.locator(".freebuff-page").getByRole("alert");
+  await expect(alert).toContainText("Could not refresh Freebuff: Deliberate Freebuff refresh failure");
+  await expect(alert).toBeInViewport();
+  await expect(hero.locator("strong")).toHaveText(balance||"");
+  await expect(page.locator(".fb-dashboard-card").filter({hasText:"Session"}).locator("strong")).toHaveText(session||"");
+  await expect(hero.getByRole("button",{name:"Refresh",exact:true})).toBeEnabled();
+  const alertBox=await box(alert),gridBox=await box(page.locator(".fb-dashboard-grid"));
+  expect(alertBox.y+alertBox.height).toBeLessThanOrEqual(gridBox.y-4);
+  const metrics=await page.locator(".freebuff-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"freebuff-refresh-error-1280x800.png",fullPage:true});
 });
 
 test("custom theme stays coherent across chat panel and command palette",async({page,request})=>{

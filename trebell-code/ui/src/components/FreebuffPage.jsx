@@ -1,11 +1,21 @@
-import React from "react";
+import React,{useState} from "react";
 import { Coins, Flame, Gauge, Clock3, RefreshCw, Zap } from "lucide-react";
 
 function price(freebuff,model){return freebuff?.derived?.priceByModel?.[model]||(freebuff?.derived?.selectedModel===model?freebuff?.derived?.selectedPrice:null)}
 export default function FreebuffPage({freebuff,model,modelMeta={},onRefresh}){
   const selected=price(freebuff,model);
+  const [refreshing,setRefreshing]=useState(false);
+  const [refreshError,setRefreshError]=useState("");
+  async function refresh(){
+    if(refreshing)return;
+    setRefreshing(true);setRefreshError("");
+    try{await onRefresh?.()}
+    catch(error){setRefreshError("Could not refresh Freebuff: "+(error?.message||String(error)))}
+    finally{setRefreshing(false)}
+  }
   return <div className="freebuff-page">
-    <div className="fb-hero"><div><span>Freebucks balance</span><strong>{freebuff?.derived?.balance??"—"}</strong><small>{freebuff?.user?.email||"Freebuff account"}</small></div><button onClick={onRefresh}><RefreshCw size={15}/> Refresh</button></div>
+    <div className="fb-hero"><div><span>Freebucks balance</span><strong>{freebuff?.derived?.balance??"—"}</strong><small>{freebuff?.user?.email||"Freebuff account"}</small></div><button onClick={refresh} disabled={refreshing}><RefreshCw size={15}/> {refreshing?"Refreshing…":"Refresh"}</button></div>
+    {refreshError&&<div className="inline-error" role="alert">{refreshError}</div>}
     <div className="fb-dashboard-grid">
       <div className="fb-dashboard-card"><Coins size={19}/><span>Selected model</span><strong>{model?.replace(/^freebuff\//,"")||"—"}</strong><small>{selected?.current!=null?selected.current+" Freebucks/hour":selected?.dynamic?"Dynamic price":"Price unavailable"}</small></div>
       <div className="fb-dashboard-card"><Clock3 size={19}/><span>Session</span><strong>{freebuff?.derived?.sessionStatus||"none"}</strong><small>{freebuff?.derived?.activeModel?.replace(/^freebuff\//,"")||"No active model"}</small></div>
