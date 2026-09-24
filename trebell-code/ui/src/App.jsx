@@ -1873,7 +1873,8 @@ export default function App(){
     const slug=String(modelId||"model").replace(/[^a-zA-Z0-9]+/g,"-").replace(/^-|-$/g,"").slice(-24)||"agent";const stamp=Date.now().toString(36)+Math.random().toString(36).slice(2,5);
     const branch="trebell/"+slug+"-"+stamp;const path=info.root+"-trebell-"+slug+"-"+stamp;
     const response=await api("/api/git/action",{method:"POST",body:{action:"worktree-create",cwd:info.root,branch,path,baseBranch:info.branch}});const worktree=response.result?.worktree||path;
-    await api("/api/projects",{method:"POST",body:{path:worktree}}).catch(()=>{});
+    try{await api("/api/projects",{method:"POST",body:{path:worktree}})}
+    catch(error){showActionError(error,"Could not register background worktree")}
     const setup=response.result?.setup||null;
     if(setup?.session?.id&&setup.waitForSetup){const settled=await waitForDetachedSetup(setup.session.id);if(settled.timeout)throw new Error("Background worktree setup is still running after 30 minutes.");if(settled.exitCode!==0)throw new Error(`Background worktree setup failed with exit code ${settled.exitCode??"unknown"}.`)}
     return worktree;

@@ -1490,6 +1490,33 @@ test("Agent Browser action failures stay visible instead of disappearing",async(
   await page.screenshot({path:auditDir+"agent-browser-action-error-1280x800.png",fullPage:true});
 });
 
+test("preview server refresh failures preserve the last discovered server",async({page,request})=>{
+  test.setTimeout(30_000);
+  let failDiscovery=false;
+  await page.route(/\/api\/preview\/servers$/,route=>{
+    if(failDiscovery)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate preview discovery failure"})});
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({servers:[{port:4173,url:"http://localhost:4173",contentType:"text/html",status:200}]})});
+  });
+  await prepare(page,request);
+  await page.getByTestId("right-panel-toggle").click();
+  const panel=page.getByTestId("right-panel");
+  await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Browser",exact:true}).click();
+  const discovery=panel.locator(".preview-discovery");
+  await expect(discovery.getByText(":4173",{exact:true})).toBeVisible();
+  failDiscovery=true;
+  await page.setViewportSize({width:1280,height:800});
+  await discovery.getByRole("button",{name:"Detect",exact:true}).click();
+  const alert=discovery.getByRole("alert");
+  await expect(alert).toContainText("Deliberate preview discovery failure");
+  await expect(discovery.getByText(":4173",{exact:true})).toBeVisible();
+  await expect(discovery.getByRole("button",{name:"Detect",exact:true})).toBeEnabled();
+  const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await alert.scrollIntoViewIfNeeded();
+  await expect(alert).toBeInViewport();
+  await page.screenshot({path:auditDir+"preview-server-refresh-error-1280x800.png",fullPage:true});
+});
+
 test("Agent Browser annotation attachment failures keep the note for retry",async({page,request})=>{
   test.setTimeout(30_000);
   await page.addInitScript(()=>{
@@ -2130,6 +2157,73 @@ test("failed background work restores the draft when stash saving also fails",as
     const metrics=await page.locator(".composer-wrap").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await page.screenshot({path:auditDir+"background-stash-failure-restored-1280x800.png",fullPage:true});
+  }finally{
+    for(const ws of sockets)try{ws.terminate()}catch{}
+    wss.close();await new Promise(resolve=>wsHttp.close(resolve));
+  }
+});
+
+test("background worktree registration failures warn without blocking the task",async({page})=>{
+  test.setTimeout(35_000);
+  const project={id:"background-worktree-project",name:"Background Worktree Project",path:process.cwd(),environmentId:null};
+  const worktree=process.cwd()+"-trebell-background-fixture";
+  const methods=[];
+  const wsHttp=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
+  wsHttp.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  wss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",data=>{
+      const message=JSON.parse(String(data));if(message.id==null||!message.method)return;methods.push(message.method);
+      let result={};
+      if(message.method==="initialize")result={userAgent:"background-worktree-registration-fixture"};
+      else if(message.method==="thread/list")result={data:[],nextCursor:null};
+      else if(message.method==="threadSection/list"||message.method==="skills/list"||message.method==="collaborationMode/list")result={data:[]};
+      else if(message.method==="project/list")result={data:[],nextCursor:null};
+      else if(message.method==="project/create")result={project:{id:"codex-worktree-project",name:"Background fixture",roots:[{path:worktree}]}};
+      else if(message.method==="thread/start")result={thread:{id:"background-worktree-thread",name:"Background worktree fixture",cwd:worktree,createdAt:Date.now()/1000,updatedAt:Date.now()/1000,turns:[]}};
+      else if(message.method==="turn/start")result={turn:{id:"background-worktree-turn",status:"inProgress"}};
+      else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
+      ws.send(JSON.stringify({id:message.id,result}));
+    });
+  });
+  const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:project.path,platform:process.platform,version:"background-worktree-registration-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{}})}));
+    await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+    await page.route(/\/api\/projects$/,route=>{
+      if(route.request().method()==="POST"&&(route.request().postDataJSON()||{}).path===worktree)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate background worktree registration failure"})});
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})});
+    });
+    await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,root:project.path,branch:"main",branches:["main"],upstream:"origin/main",status:[],remotes:[{name:"origin",url:"https://github.com/example/background.git"}],worktrees:[{path:project.path,branch:"main"}]})}));
+    await page.route(/\/api\/git\/action$/,route=>{
+      const body=route.request().postDataJSON()||{};
+      if(body.action==="worktree-create")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({result:{worktree,setup:null}})});
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({result:{}})});
+    });
+    await page.route(/\/api\/thread-meta$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
+    await page.route(/\/api\/checkpoints$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({id:"background-worktree-checkpoint",cwd:worktree})}));
+    await page.route(/\/api\/checkpoints\/link$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const composer=page.getByTestId("composer");await expect(composer).toBeVisible();
+    await page.locator(".workspace-mode").selectOption("worktree");
+    await composer.fill("Run this background task even if project registration fails.");
+    await composer.press("Control+Enter");
+    await expect.poll(()=>methods.includes("turn/start")).toBe(true);
+    const alert=page.getByTestId("app-action-error");
+    await expect(alert).toContainText("Could not register background worktree: Deliberate background worktree registration failure");
+    await expect(alert).toBeInViewport();
+    await expect(page.getByRole("button",{name:/Background worktree fixture/})).toBeVisible();
+    await expect(composer).toHaveValue("");
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"background-worktree-registration-error-1280x800.png",fullPage:true});
   }finally{
     for(const ws of sockets)try{ws.terminate()}catch{}
     wss.close();await new Promise(resolve=>wsHttp.close(resolve));
