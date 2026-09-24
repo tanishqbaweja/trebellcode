@@ -90,6 +90,13 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     try{await Promise.resolve(onOpen(project.path,project.environmentId||null))}
     catch(err){setError("Could not open project: "+(err.message||String(err)))}
   }
+  async function startGeneralChat(){
+    if(!onGeneralChat||busy)return;
+    setBusy(true);setError("");
+    try{await Promise.resolve(onGeneralChat())}
+    catch(err){setError("Could not start General chat: "+(err.message||String(err)))}
+    finally{setBusy(false)}
+  }
   function cleanupValue(project){return project.worktreeCleanup||null}
   async function setCleanupMode(project,mode){
     if(mode==="inherit")return saveProject(project,{worktreeCleanup:null});
@@ -250,7 +257,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
   return <div className="projects-page">
     <div className="page-actions">{hasDesktopPicker&&<button onClick={addLocal} disabled={busy}><Plus size={14}/> Add local project</button>}<button aria-label="Refresh projects" onClick={()=>refresh({reportErrors:true})} disabled={busy}><RefreshCw size={14}/></button></div>
     {error&&<p className="provider-status-error" role="alert">{error}</p>}
-    <button className="general-chat-card" onClick={()=>onGeneralChat?.()}><MessageSquareText size={22}/><span><strong>No project · General chat</strong><small>Plan, research, troubleshoot, or draft in a Trebell-managed scratch workspace.</small></span><em>Start chat</em></button>
+    <button className="general-chat-card" onClick={startGeneralChat} disabled={busy}><MessageSquareText size={22}/><span><strong>No project · General chat</strong><small>Plan, research, troubleshoot, or draft in a Trebell-managed scratch workspace.</small></span><em>{busy?"Starting…":"Start chat"}</em></button>
     {(hasDesktopPicker||(environmentData.profiles||[]).length>0)&&<div className="clone-card"><GitBranch size={20}/><div><strong>Clone repository</strong><span>Starts in the background</span></div><select aria-label="Clone environment" value={cloneEnvironmentId} onChange={e=>{const id=e.target.value;setCloneEnvironmentId(id);const profile=environmentData.profiles?.find(item=>item.id===id);setCloneParent(profile?.cwd||"")}}>{hasDesktopPicker&&<option value="local">Local machine</option>}{!hasDesktopPicker&&!cloneEnvironmentId&&<option value="" disabled>Select environment</option>}{(environmentData.profiles||[]).map(profile=><option key={profile.id} value={profile.id}>{profile.name} · {profile.type.toUpperCase()}</option>)}</select><div className={"clone-inputs "+(cloneEnvironmentId==="local"?"":"remote")}><input aria-label="Clone URL" value={cloneUrl} onChange={e=>setCloneUrl(e.target.value)} placeholder="https://github.com/owner/repo.git"/>{cloneEnvironmentId!=="local"&&<input aria-label="Clone parent directory" value={cloneParent} onChange={e=>setCloneParent(e.target.value)} placeholder="/srv/projects" title="Remote parent directory"/>}</div><button onClick={clone} disabled={busy||!cloneUrl.trim()||(!hasDesktopPicker&&!cloneEnvironmentId)}>{busy?"Starting…":"Clone"}</button></div>}
     <div className="project-groups">{groups.map(group=><section className="project-group" key={group.key}>
       <div className="project-group-head"><Layers3 size={14}/><div><strong>{group.label}</strong><span>{group.environmentLabel} · {group.projects.length} checkout{group.projects.length===1?"":"s"}</span></div></div>

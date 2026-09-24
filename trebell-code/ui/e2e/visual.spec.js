@@ -714,6 +714,25 @@ test("project refresh and removal failures preserve the existing project card",a
   await page.screenshot({path:auditDir+"projects-action-error-1280x800.png",fullPage:true});
 });
 
+test("General chat start failures stay on Projects with visible feedback",async({page,request})=>{
+  test.setTimeout(30_000);
+  await prepare(page,request);
+  await page.route(/\/api\/general-workspace$/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate General chat workspace failure"})}));
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
+  const general=page.getByRole("button",{name:/No project · General chat/});
+  await expect(general).toBeVisible();
+  await general.click();
+  await expect(page.getByRole("alert")).toContainText("Could not start General chat: Deliberate General chat workspace failure");
+  await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
+  await expect(general).toBeVisible();
+  await expect(general).toContainText("Start chat");
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await page.locator(".projects-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"general-chat-start-error-1280x800.png",fullPage:true});
+});
+
 test("cross-environment project activation rolls back when project activation fails",async({page,request})=>{
   test.setTimeout(35_000);
   await prepare(page,request);
@@ -1011,6 +1030,31 @@ test("right panel tabs are functional and visually bounded",async({page,request}
   }));
   for(const value of Object.values(agentsLight))expect(value).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
   await page.screenshot({path:auditDir+"panel-agents-light-1600x980.png",fullPage:true});
+});
+
+test("failed device typing keeps the text available for retry",async({page,request})=>{
+  test.setTimeout(30_000);
+  await page.route(/\/api\/devices$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    capabilities:{android:{available:true,sdkManagerAvailable:false,tools:[]},ios:{available:false}},
+    devices:[{id:"emulator-5554",name:"Pixel Fixture",platform:"android",state:"device",running:true}],
+    avds:[],
+  })}));
+  await page.route(/\/api\/device\/screenshot\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({width:1080,height:1920,dataUrl:null})}));
+  await page.route(/\/api\/device\/action$/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate device typing failure"})}));
+  await prepare(page,request);
+  await page.getByTestId("right-panel-toggle").click();
+  const panel=page.getByTestId("right-panel");
+  await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Device",exact:true}).click();
+  const input=panel.getByPlaceholder("Type into focused emulator control");
+  await expect(input).toBeVisible();
+  await input.fill("retry this text");
+  await panel.locator(".device-type").getByRole("button",{name:"Send",exact:true}).click();
+  await expect(panel.locator(".inline-status")).toContainText("Deliberate device typing failure");
+  await expect(input).toHaveValue("retry this text");
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"device-type-error-1280x800.png",fullPage:true});
 });
 
 test("Agent Browser action failures stay visible instead of disappearing",async({page,request})=>{

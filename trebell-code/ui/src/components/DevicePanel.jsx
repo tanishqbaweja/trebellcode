@@ -23,7 +23,15 @@ export default function DevicePanel(){
   useEffect(()=>{refresh();const timer=setInterval(refresh,5000);return()=>clearInterval(timer)},[]);
   useEffect(()=>{setShot(null);if(!selected)return;refreshShot();const timer=setInterval(refreshShot,1200);return()=>clearInterval(timer)},[selected]);
 
-  async function act(action,args={}){if(!selected)return;setBusy(action);setMessage("");try{const result=await api("/api/device/action",{method:"POST",body:{id:selected,action,args}});if(action==="foreground")setMessage(result.foreground||"Foreground app unavailable");await refreshShot()}catch(error){setMessage(error.message)}finally{setBusy("")}}
+  async function act(action,args={}){
+    if(!selected)return false;setBusy(action);setMessage("");
+    try{
+      const result=await api("/api/device/action",{method:"POST",body:{id:selected,action,args}});
+      if(action==="foreground")setMessage(result.foreground||"Foreground app unavailable");
+      await refreshShot();return true;
+    }catch(error){setMessage(error.message);return false}
+    finally{setBusy("")}
+  }
   async function startAvd(avd){setBusy("start");setMessage("");try{await api("/api/device/start",{method:"POST",body:{avd}});setMessage(`Starting ${avd}…`);setTimeout(refresh,2000)}catch(error){setMessage(error.message)}finally{setBusy("")}}
   async function checkToolUpdates({announce=true}={}){
     setToolBusy("check");if(announce)setMessage("");
@@ -69,7 +77,7 @@ export default function DevicePanel(){
         {current?.platform==="android"&&<><button onClick={()=>act("key",{key:"back"})}><Undo2 size={13}/> Back</button><button onClick={()=>act("key",{key:"home"})}><Home size={13}/> Home</button><button onClick={()=>act("key",{key:"recents"})}>Recents</button><button onClick={()=>act("rotate",{rotation:1})}><RotateCw size={13}/> Rotate</button><button onClick={()=>act("theme",{dark:true})}><Moon size={13}/></button><button onClick={()=>act("theme",{dark:false})}><Sun size={13}/></button><button onClick={()=>act("foreground")}>Foreground app</button></>}
         {current?.platform==="ios"&&<button onClick={()=>act("poweroff")}><CircleStop size={13}/> Power off</button>}
       </div>
-      {current?.platform==="android"&&<div className="device-type"><Keyboard size={13}/><input value={text} onChange={e=>setText(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&text){act("type",{text});setText("")}}} placeholder="Type into focused emulator control"/><button onClick={()=>{if(text){act("type",{text});setText("")}}}>Send</button></div>}
+      {current?.platform==="android"&&<div className="device-type"><Keyboard size={13}/><input value={text} onChange={e=>setText(e.target.value)} onKeyDown={async e=>{if(e.key==="Enter"&&text&&await act("type",{text}))setText("")}} placeholder="Type into focused emulator control"/><button onClick={async()=>{if(text&&await act("type",{text}))setText("")}}>Send</button></div>}
     </>}
     {message&&<div className="inline-status">{message}</div>}
   </div>;
