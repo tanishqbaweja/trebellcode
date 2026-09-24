@@ -607,6 +607,76 @@ test("thread workspace context persistence failures warn without closing the ope
   }finally{await harness.close()}
 });
 
+test("failed turn start restores the draft and removes the unsent user bubble",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"turn-start-failure-thread",name:"Turn start failure fixture",preview:"Send retry coverage",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
+    if(message.method==="turn/start"){
+      ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate turn start failure"}}));
+      return true;
+    }
+    return false;
+  }});
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"turn-start-failure-fixture");
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    await page.getByRole("button",{name:/Turn start failure fixture/}).click();
+    const composer=page.getByTestId("composer");
+    await composer.fill("Retry this rejected turn");
+    await page.getByTestId("send").click();
+    await expect(composer).toHaveValue("Retry this rejected turn");
+    await expect(page.locator(".user-bubble").filter({hasText:"Retry this rejected turn"})).toHaveCount(0);
+    await expect(page.getByText("Deliberate turn start failure",{exact:false})).toBeVisible();
+    await expect(page.getByTestId("send")).toBeEnabled();
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"turn-start-error-restores-draft-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
+test("direct fallback never drops attachments or failed text sends",async({page,request})=>{
+  test.setTimeout(35_000);
+  const baseBootstrap=await (await request.get("/api/bootstrap")).json();
+  let directCalls=0;
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...baseBootstrap,mock:true,appServerReady:false,wsUrl:""})}));
+  await page.route(/\/api\/chat\/direct$/,route=>{
+    directCalls++;
+    return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate direct chat failure"})});
+  });
+  await prepare(page,request);
+  const composer=page.getByTestId("composer");
+  const [chooser]=await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.getByRole("button",{name:"Attach files"}).click(),
+  ]);
+  await chooser.setFiles({name:"keep-me.txt",mimeType:"text/plain",buffer:Buffer.from("retryable direct fallback attachment\n")});
+  const shelf=page.locator(".attachment-shelf");
+  await expect(shelf).toContainText("keep-me.txt");
+  await composer.fill("Do not drop this attachment");
+  await page.getByTestId("send").click();
+  await expect(composer).toHaveValue("Do not drop this attachment");
+  await expect(shelf).toContainText("keep-me.txt");
+  expect(directCalls).toBe(0);
+  await expect(page.getByText("Direct fallback cannot send attachments or context. Reconnect the agent harness and retry.",{exact:false})).toBeVisible();
+  await page.setViewportSize({width:1280,height:800});
+  await page.screenshot({path:auditDir+"direct-fallback-attachment-preserved-1280x800.png",fullPage:true});
+
+  await shelf.locator("span button").first().click();
+  await expect(shelf.locator("span")).toHaveCount(0);
+  await composer.fill("Retry this direct HTTP failure");
+  await page.getByTestId("send").click();
+  await expect.poll(()=>directCalls).toBe(1);
+  await expect(composer).toHaveValue("Retry this direct HTTP failure");
+  await expect(page.locator(".user-bubble").filter({hasText:"Retry this direct HTTP failure"})).toHaveCount(0);
+  await expect(page.getByText("Deliberate direct chat failure",{exact:false})).toBeVisible();
+  await expect(page.getByTestId("send")).toBeEnabled();
+  const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"direct-fallback-http-error-restores-draft-1280x800.png",fullPage:true});
+});
+
 test("terminal failures keep backend and visible session state in sync",async({page,request})=>{
   test.setTimeout(30_000);
   await page.addInitScript(()=>{
