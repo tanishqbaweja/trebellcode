@@ -15,13 +15,13 @@ test("changing models during a running Codex turn updates the live turn",async({
   const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const sockets=new Set();
   upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
   upstreamWss.on("connection",ws=>{
-    sockets.add(ws);notificationSocket=ws;ws.on("close",()=>sockets.delete(ws));
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
     ws.on("message",data=>{
       const message=JSON.parse(String(data));if(message.id==null||!message.method)return;calls.push(message);let result={};
       if(message.method==="initialize")result={userAgent:"live-model-fixture"};
       else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
       else if(message.method==="threadSection/list")result={data:[],nextCursor:null};
-      else if(message.method==="thread/resume")result={thread,itemsBackwardsCursor:null,turnsBackwardsCursor:null};
+      else if(message.method==="thread/resume"){notificationSocket=ws;result={thread,itemsBackwardsCursor:null,turnsBackwardsCursor:null}}
       else if(message.method==="thread/goal/get")result={goal:null};
       else if(message.method==="thread/attachment/list"||message.method==="thread/queue/list")result={data:[],nextCursor:null};
       else if(message.method==="thread/timeline/list")result={data:[],nextCursor:null,activeRealtimeSessionAtPageStart:null};
@@ -44,6 +44,7 @@ test("changing models during a running Codex turn updates the live turn",async({
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
     await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
     await page.goto("/");await page.getByRole("button",{name:/Live model fixture/}).click();
+    await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","Live model fixture");
     await expect(page.getByTestId("model-picker")).toContainText("Model A");
     notificationSocket.send(JSON.stringify({method:"turn/started",params:{threadId:thread.id,turn:{id:"turn-live",status:"inProgress",startedAt:Date.now()/1000}}}));
     await expect(page.getByTestId("composer")).toHaveAttribute("placeholder","Steer the running agent…");
