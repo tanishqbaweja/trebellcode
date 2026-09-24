@@ -1,4 +1,4 @@
-import React,{lazy,Suspense,useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from "react";
+import React,{lazy,memo,Suspense,useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from "react";
 import {
   Check, ChevronDown, CircleStop, Code2, Cpu, FileCode2, FileDiff, FolderCode,
   GitBranch, Globe2, HardDrive, Link2, ListTodo, MemoryStick, Network, Paperclip, Plus, Send,
@@ -37,6 +37,7 @@ import { guardianActionSummary, guardianDeniedEvent } from "./guardian-review.js
 import { collaborationModePayload, normalizeCollaborationModes } from "./collaboration-mode.js";
 import { ensureCodexProject, sameWorkspacePath } from "./codex-projects.js";
 import { writeClipboardText } from "./clipboard.js";
+import { createKeyedTextFrameBuffer, createTextFrameBuffer } from "./text-frame-buffer.js";
 
 const TerminalPanel=lazy(()=>import("./components/TerminalPanel.jsx"));
 const WorkspacePanel=lazy(()=>import("./components/WorkspacePanel.jsx"));
@@ -79,6 +80,12 @@ function capabilityStatus(value){
 function sameSnapshot(left,right){
   if(left===right)return true;
   try{return JSON.stringify(left)===JSON.stringify(right)}catch{return false}
+}
+
+function useLatestCallback(callback){
+  const ref=useRef(callback);
+  useLayoutEffect(()=>{ref.current=callback});
+  return useCallback((...args)=>ref.current?.(...args),[]);
 }
 
 const MAX_COMPOSER_ATTACHMENTS=100;
@@ -208,7 +215,8 @@ function normalizeItem(item={}){
   if(type==="contextCompaction")title="Compacting context";
   if(type==="enteredReviewMode")title="Reviewing changes";
   if(type==="exitedReviewMode")title="Finished review";
-  return {id:item.id||crypto.randomUUID(),kind:type,title:String(title).split("\n")[0].slice(0,160),status:item.status==="completed"?"done":item.status||"running",raw:item,output:""};
+  const output=type==="commandExecution"?String(item.aggregatedOutput??item.output??""):"";
+  return {id:item.id||crypto.randomUUID(),kind:type,title:String(title).split("\n")[0].slice(0,160),status:item.status==="completed"?"done":item.status||"running",raw:item,output};
 }
 function presetFor(mode){
   if(mode==="full")return {sandbox:"danger-full-access",approvalPolicy:"never"};
@@ -253,14 +261,20 @@ function EventIcon({event}){
   if(event.kind==="mcpToolCall")return <Zap size={13}/>;
   return <Sparkles size={13}/>;
 }
-function ActivityTimeline({events,assistantText,onOpenPanel}){
+const ActivityTimeline=memo(function ActivityTimeline({events,assistantText,onOpenPanel}){
+  const openPanelRef=useRef(onOpenPanel);openPanelRef.current=onOpenPanel;
+  const openWorkspace=useCallback(()=>openPanelRef.current?.("workspace"),[]);
   if(!events.length&&!assistantText)return null;
   return <div className="agent-block"><div className="agent-heading"><div className="agent-star"><Sparkles size={16}/></div><span>Trebell agent activity</span></div><div className="timeline">
-    {events.map(event=><details className={"tool-event status-"+(event.kind==="error"?"error":event.status)+" kind-"+(event.kind||"event")} key={event.id}><summary><span className="timeline-marker"><EventIcon event={event}/></span><strong>{event.title}</strong><em>{event.kind==="error"?"error":event.status}</em></summary>
-      <div className="tool-event-body">{event.raw?.command&&<pre>{Array.isArray(event.raw.command)?event.raw.command.join(" "):event.raw.command}</pre>}{event.output&&<pre>{event.output}</pre>}{event.raw?.changes&&<button onClick={()=>onOpenPanel("workspace")}><FileDiff size={12}/> Inspect changes</button>}<pre className="tool-json">{event.kind==="reasoning"?"Reasoning activity":JSON.stringify(event.raw,null,2)}</pre></div>
-    </details>)}
+    {events.map(event=><ActivityEventRow key={event.id} event={event} onInspectChanges={openWorkspace}/>)}
   </div>{assistantText&&<div className="assistant-answer">{assistantText}</div>}</div>;
-}
+});
+
+const ActivityEventRow=React.memo(function ActivityEventRow({event,onInspectChanges}){
+  return <details className={"tool-event status-"+(event.kind==="error"?"error":event.status)+" kind-"+(event.kind||"event")}><summary><span className="timeline-marker"><EventIcon event={event}/></span><strong>{event.title}</strong><em>{event.kind==="error"?"error":event.status}</em></summary>
+    <div className="tool-event-body">{event.raw?.command&&<pre>{Array.isArray(event.raw.command)?event.raw.command.join(" "):event.raw.command}</pre>}{event.output&&<pre>{event.output}</pre>}{event.raw?.changes&&<button onClick={onInspectChanges}><FileDiff size={12}/> Inspect changes</button>}<pre className="tool-json">{event.kind==="reasoning"?"Reasoning activity":JSON.stringify(event.raw,null,2)}</pre></div>
+  </details>;
+});
 function ThreadFindBar({state,inputRef,onQuery,onPrevious,onNext,onClose}){
   if(!state.open)return null;
   const current=state.index>=0?state.results[state.index]:null;
@@ -274,7 +288,7 @@ function ThreadFindBar({state,inputRef,onQuery,onPrevious,onNext,onClose}){
   </div>;
 }
 
-function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId,canLoadEarlier=false,loadingEarlier=false,onLoadEarlier,activeFindItemId=null}){
+const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId,canLoadEarlier=false,loadingEarlier=false,onLoadEarlier,activeFindItemId=null}){
   const historyRef=useRef(null);
   return <div className="conversation-history" ref={historyRef}>{canLoadEarlier&&<div className="history-page-control"><button type="button" disabled={loadingEarlier} onClick={onLoadEarlier}>{loadingEarlier?"Loading earlier messages…":"Load earlier messages"}</button></div>}{messages.map(m=>{
     const activeFind=String(m.id)===String(activeFindItemId||"");
@@ -285,7 +299,7 @@ function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPa
       return <div className={"inline-visualization-card "+(visualization.mode==="wide"?"wide":"")} key={label+":"+index}><div className="inline-visualization-head"><strong>{label}</strong><span>Interactive visualization</span></div><iframe title={label} src={visualizationUrl(visualization,{projectPath,environmentId,threadId})} sandbox="allow-scripts" referrerPolicy="no-referrer"/></div>;
     })}</div></div>;
   })}<AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></div>;
-}
+});
 function ApprovalCard({request,onResolve}){
   if(!request)return null;
   const p=request.params||{};
@@ -483,6 +497,25 @@ export default function App(){
   const [threads,setThreads]=useState([]); const [sections,setSections]=useState({}); const [threadMeta,setThreadMeta]=useState({});
   const [activeThread,setActiveThread]=useState(null); const [activeTurnId,setActiveTurnId]=useState(null);
   const [messages,setMessages]=useState([]); const [events,setEvents]=useState([]); const [assistantText,setAssistantText]=useState("");
+  const assistantStreamBufferRef=useRef(null);
+  if(!assistantStreamBufferRef.current)assistantStreamBufferRef.current=createTextFrameBuffer({
+    schedule:callback=>requestAnimationFrame(callback),
+    cancel:handle=>cancelAnimationFrame(handle),
+    onFlush:value=>setAssistantText(previous=>previous+value),
+  });
+  const commandStreamBufferRef=useRef(null);
+  if(!commandStreamBufferRef.current)commandStreamBufferRef.current=createKeyedTextFrameBuffer({
+    schedule:callback=>requestAnimationFrame(callback),
+    cancel:handle=>cancelAnimationFrame(handle),
+    onFlush:entries=>setEvents(previous=>{
+      const updates=new Map(entries);let changed=false;
+      const next=previous.map(event=>{
+        const delta=updates.get(String(event.id));if(!delta)return event;
+        changed=true;return {...event,output:(event.output||"")+delta};
+      });
+      return changed?next:previous;
+    }),
+  });
   const [historyPage,setHistoryPage]=useState({threadId:null,nextCursor:null,paginated:false,loading:false});
   const [threadFind,setThreadFind]=useState({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});
   const [running,setRunning]=useState(false); const [submitting,setSubmitting]=useState(false); const [queued,setQueued]=useState([]); const [queueMode,setQueueMode]=useState("unknown"); const [queuedEditId,setQueuedEditId]=useState(null);
@@ -516,6 +549,9 @@ export default function App(){
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"}); const [paletteDataError,setPaletteDataError]=useState("");
   const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
+  function resetAssistantStream(){assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();setAssistantText("")}
+  function appendAssistantStream(value){assistantStreamBufferRef.current?.push(value)}
+  useEffect(()=>()=>{assistantStreamBufferRef.current?.dispose();commandStreamBufferRef.current?.dispose()},[]);
   const navigationKey=location=>[location.section,location.threadId||"",location.rightPanelOpen?location.rightPanelTab||"files":""].join("|");
   useEffect(()=>{
     if(!initialLoaded)return;
@@ -794,7 +830,7 @@ export default function App(){
     setModelMeta(Object.fromEntries((d?.metadata?.models||[]).map(item=>[item.id,item])));
     const next=ids.includes(model)?model:(ids[0]||"");
     setModels(ids);setModel(next);setSelectedModels(next?[next]:[]);
-    if(resetThread){activeThreadRef.current=null;setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([]);setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null)}
+    if(resetThread){activeThreadRef.current=null;setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);resetAssistantStream();setQueued([]);setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null)}
     if(targetRuntime==="codex"&&targetProvider==="freebuff"&&next){
       const params=new URLSearchParams({timezone,model:next});
       api("/api/freebuff/overview?"+params).then(data=>{if(seq===modelRefreshSeqRef.current&&data)setFreebuff(data)}).catch(error=>showActionError(error,"Models refreshed, but Freebuff account state could not refresh"));
@@ -1563,6 +1599,7 @@ export default function App(){
       if(isCurrent&&isActivityItem)setEvents(prev=>[...prev.filter(e=>e.id!==item.id),item]);
     }
     else if(message.method==="item/completed"&&p.item){
+      if(isCurrent&&p.item.type==="commandExecution")commandStreamBufferRef.current?.flushKey(p.item.id||"command");
       const item=normalizeItem({...p.item,status:"completed"});
       const completedAtMs=p.completedAtMs||Date.now();
       const isActivityItem=!["userMessage","agentMessage"].includes(p.item.type);
@@ -1572,8 +1609,8 @@ export default function App(){
           const draft=queuedSubmissionDraft({input:p.item.content||[]});const id=p.item.clientId;
           setMessages(prev=>prev.some(message=>message.id===id)?prev:[...prev,{id,role:"user",text:draft.draftText||draft.text,turnId:p.turnId||null}]);
         }
-        if(p.item.type==="agentMessage"&&p.item.text?.trim()){setMessages(prev=>prev.some(m=>m.id===p.item.id)?prev:[...prev,{id:p.item.id,role:"assistant",text:p.item.text,turnId:p.turnId||null}]);setAssistantText("")}
-        if(isActivityItem)setEvents(prev=>prev.some(e=>e.id===item.id)?prev.map(e=>e.id===item.id?{...e,...item}:e):[...prev,item]);
+        if(p.item.type==="agentMessage"&&p.item.text?.trim()){setMessages(prev=>prev.some(m=>m.id===p.item.id)?prev:[...prev,{id:p.item.id,role:"assistant",text:p.item.text,turnId:p.turnId||null}]);resetAssistantStream()}
+        if(isActivityItem)setEvents(prev=>prev.some(e=>e.id===item.id)?prev.map(e=>e.id===item.id?{...e,...item,output:item.output||e.output}:e):[...prev,item]);
       }
     }
     else if(message.method==="item/autoApprovalReview/started"){
@@ -1606,8 +1643,8 @@ export default function App(){
         desktopNotify("Auto review warning",p.message||"Codex reported an auto-review warning.");
       }
     }
-    else if(message.method==="item/agentMessage/delta"&&isCurrent)setAssistantText(prev=>prev+(p.delta||p.text||""));
-    else if(message.method==="item/commandExecution/outputDelta"&&isCurrent){const id=p.itemId||"command";setEvents(prev=>prev.map(e=>e.id===id?{...e,output:(e.output||"")+(p.delta||"")}:e))}
+    else if(message.method==="item/agentMessage/delta"&&isCurrent)appendAssistantStream(p.delta||p.text||"");
+    else if(message.method==="item/commandExecution/outputDelta"&&isCurrent)commandStreamBufferRef.current?.push(p.itemId||"command",p.delta||"");
     else if(message.method==="item/mcpToolCall/progress"){
       if(threadId)updateThreadTelemetry(threadId,current=>({currentActivity:current.currentActivity?{...current.currentActivity,title:p.message||current.currentActivity.title}:current.currentActivity,lastActivityAt:Date.now()}));
       if(isCurrent)setEvents(prev=>[...prev,{id:"mcp-"+Date.now(),kind:"mcpToolCall",title:p.message||"MCP progress",status:"running",raw:p}]);
@@ -1828,7 +1865,7 @@ export default function App(){
     if(agentRuntime!=="codex"||!threadId||running||!rpc||rpcStatus!=="connected")return;
     rpc.request("thread/unsubscribe",{threadId}).catch(()=>{});
   }
-  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");setAssistantText("");setQueued([]);setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
+  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
@@ -1864,7 +1901,7 @@ export default function App(){
     const openedThread=resumed?.thread||thread;
     rememberConversationPosition();
     if(previousThreadId&&previousThreadId!==thread.id)releaseInactiveCodexThread(previousThreadId);
-    activeThreadRef.current=openedThread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection)setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");setAssistantText("");setWorktreeSetup(null);setActiveThread(openedThread);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
+    activeThreadRef.current=openedThread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection)setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setActiveThread(openedThread);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(openedThread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
     else if(openedThread.cwd)await touchProject(openedThread.cwd,threadEnvironmentId);else setProjectPath(projectPath);
     if(!reopeningCurrentThread){setCheckpointByTurn({});setGoal(null);setLinkedPullRequests(savedMeta.linkedPullRequests||[])}
@@ -2227,7 +2264,7 @@ export default function App(){
     await validateAttachmentPaths(paths||[]);
     if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");let thread=threadOverride||activeThread;let cwd=cwdOverride||projectPath||bootstrap.cwd;
     if(!thread){if(!projectlessMode)cwd=await prepareWorktree(cwd,modelId);thread=await createThreadFor(modelId,cwd,{projectless:projectlessMode});activeThreadRef.current=thread;setActiveThread(thread);setThreads(prev=>[thread,...prev]);setProjectPath(cwd)}
-    const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7);setMessages(prev=>[...prev,{id:clientId,role:"user",text}]);setEvents([]);setAssistantText("");setRunning(true);
+    const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7);setMessages(prev=>[...prev,{id:clientId,role:"user",text}]);setEvents([]);resetAssistantStream();setRunning(true);
     try{
       let checkpoint=null;
       if(!projectlessMode){
@@ -2314,7 +2351,7 @@ export default function App(){
     if(agentRuntime==="antigravity"&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"fanout-video-"+Date.now(),kind:"error",title:"Antigravity does not accept video attachments",status:"done",raw:{}}]);return true}
     try{await validateAttachmentPaths(attachments)}catch(error){setEvents(prev=>[...prev,{id:"fanout-attachment-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return true}
     const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd};
-    setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);setEvents([]);setAssistantText("");setSection("chat");
+    setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);setEvents([]);resetAssistantStream();setSection("chat");
     const launches=fanout.map(modelId=>startDetachedTurn(draft.text,draft.attachments,modelId,{forceWorktree:true,basePath:draft.projectPath}).then(result=>({ok:true,modelId,result})).catch(error=>({ok:false,modelId,error})));
     Promise.all(launches).then(async results=>{
       const started=results.filter(item=>item.ok);const failed=results.filter(item=>!item.ok);const uncertain=failed.filter(item=>item.error?.trebellUncertain);
@@ -2449,7 +2486,7 @@ export default function App(){
     if(agentRuntime==="antigravity"&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:"Antigravity does not accept video attachments",status:"done",raw:{}}]);return}
     try{await validateAttachmentPaths(attachments)}catch(error){setEvents(prev=>[...prev,{id:"background-attachment-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
     const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd,model,projectless:projectlessMode};
-    setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);setEvents([]);setAssistantText("");setSection("chat");
+    setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);setEvents([]);resetAssistantStream();setSection("chat");
     startDetachedTurn(draft.text,draft.attachments,draft.model,{basePath:draft.projectPath,projectless:draft.projectless}).catch(async error=>{
       const guard=error?.trebellUncertain;
       const guardedDraft=guard?{...draft,text:"[CHECK EXISTING THREAD BEFORE RETRY] "+draft.text}:draft;
@@ -2891,6 +2928,17 @@ export default function App(){
   const projectLabel=projectlessMode?"No project":String(projectPath||activeThread?.cwd||bootstrap.cwd||"Workspace").split(/[\\/]/).filter(Boolean).at(-1)||"Workspace";
   const providerLabel=({freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider);
   const agentRuntimeLabel=({codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime);
+  const conversationEditFromHere=useLatestCallback(editFromHere);
+  const conversationLoadEarlier=useLatestCallback(loadEarlierMessages);
+  const conversationCite=useLatestCallback((message,text)=>runUserAction(()=>citeAssistant(message,text),"Could not cite assistant text"));
+  const activityOpenPanel=useLatestCallback(name=>name==="workspace"?openRightPanel("diff"):setPanel(name));
+  const sidebarNavigate=useLatestCallback(navigateSection);
+  const sidebarOpenThread=useLatestCallback(openThread);
+  const sidebarNewThread=useLatestCallback(newChat);
+  const sidebarThreadAction=useLatestCallback(threadAction);
+  const sidebarMoveThread=useLatestCallback(moveThreadOrder);
+  const sidebarBulkAction=useLatestCallback(bulkAction);
+  const sidebarCollapse=useLatestCallback(()=>setSidebarOpen(false));
   const completedEvents=events.filter(event=>event.status==="done").length;
   const paletteActions=[
     {id:"new",label:"New thread",detail:"Start a clean coding task",shortcut:"Ctrl+N",onRun:newChat},
@@ -2993,7 +3041,7 @@ export default function App(){
     "--terminal-height":layoutPrefs.terminalHeight+"px",
   };
   return <div className={"app-shell"+(sidebarOpen?"":" sidebar-collapsed")+(window.trebellDesktop?" desktop-shell":" hosted-shell")} style={layoutStyle}>
-    <ThreadSidebar section={section} setSection={navigateSection} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} searchError={threadSearchError} onOpen={openThread} onNew={newChat} onThreadAction={threadAction} onMove={moveThreadOrder} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={bulkAction} provider={provider} agentRuntime={agentRuntime} threadMeta={threadMeta} onCollapse={()=>setSidebarOpen(false)} rightPanelOpen={rightPanelOpen} rightPanelTab={rightPanelTab}/>
+    <ThreadSidebar section={section} setSection={sidebarNavigate} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} searchError={threadSearchError} onOpen={sidebarOpenThread} onNew={sidebarNewThread} onThreadAction={sidebarThreadAction} onMove={sidebarMoveThread} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={sidebarBulkAction} provider={provider} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities} threadMeta={threadMeta} onCollapse={sidebarCollapse} rightPanelOpen={rightPanelOpen} rightPanelTab={rightPanelTab}/>
     {sidebarOpen&&<div className="layout-resizer sidebar-resizer" data-testid="sidebar-resizer" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" onPointerDown={event=>beginLayoutResize("sidebar",event)}/>}
 
     <div className={"workspace-shell"+(rightPanelOpen?" right-open":"")+(rightPanelOpen&&rightPanelMaximized?" right-maximized":"")}>
@@ -3030,8 +3078,8 @@ export default function App(){
           <div className="conversation-scroll" ref={conversationScrollRef} onScroll={conversationScrolled}>
             <div className="conversation-column">
               <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
-              <Conversation messages={messages} onEditFromHere={editFromHere} onCite={(message,text)=>runUserAction(()=>citeAssistant(message,text),"Could not cite assistant text")} allowRevert={["codex","opencode","claude"].includes(agentRuntime)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={agentRuntime==="codex"&&historyPage.threadId===activeThread?.id&&Boolean(historyPage.nextCursor)} loadingEarlier={historyPage.loading} onLoadEarlier={loadEarlierMessages} activeFindItemId={threadFind.activeItemId}/>
-              <ActivityTimeline events={events} assistantText={assistantText} onOpenPanel={name=>name==="workspace"?openRightPanel("diff"):setPanel(name)}/>
+              <Conversation messages={messages} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={["codex","opencode","claude"].includes(agentRuntime)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={agentRuntime==="codex"&&historyPage.threadId===activeThread?.id&&Boolean(historyPage.nextCursor)} loadingEarlier={historyPage.loading} onLoadEarlier={conversationLoadEarlier} activeFindItemId={threadFind.activeItemId}/>
+              <ActivityTimeline events={events} assistantText={assistantText} onOpenPanel={activityOpenPanel}/>
               {guardianDenials.map(review=><div className="inline-approval" key={review.reviewId}><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div>)}
               {approvals[0]&&<div className="inline-approval"><ApprovalCard request={approvals[0]} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
               {queued.map((item,index)=><div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span>{item.native?"Queued in Codex":item.autoStartFailed?"Queued · retry needed":"Queued"}{queuedEditId===item.id?" · editing":""}</span><p>{item.text}</p><div className="queued-message-actions"><button onClick={()=>runUserAction(()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={()=>editQueued(item)} disabled={queuedEditId===item.id||item.editable===false}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={index===0} onClick={()=>runUserAction(()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={index===queued.length-1} onClick={()=>runUserAction(()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button onClick={()=>runUserAction(()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>)}

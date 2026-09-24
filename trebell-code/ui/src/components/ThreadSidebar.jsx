@@ -1,4 +1,4 @@
-import React,{useEffect,useRef,useState} from "react";
+import React,{memo,useEffect,useRef,useState} from "react";
 import {
   Archive, BarChart3, Bot, Clock3, Folder, Globe2, History,
   GitPullRequest, MoreHorizontal, Pin, Plus, Search, Settings, SlidersHorizontal, Wrench, Server, PanelLeftClose
@@ -64,10 +64,10 @@ function UtilityButton({Icon,label,active,onClick}){
   </button>;
 }
 
-export default function ThreadSidebar({
+const ThreadSidebar=memo(function ThreadSidebar({
   section,setSection,threads,activeThreadId,query,setQuery,onOpen,onNew,onThreadAction,onMove,
   selectedIds,setSelectedIds,onBulkAction,provider="freebuff",agentRuntime="codex",threadMeta={},onCollapse,
-  rightPanelOpen=false,rightPanelTab="files",searchError=""
+  rightPanelOpen=false,rightPanelTab="files",searchError="",runtimeCapabilities={}
 }){
   const searchRef=useRef(null);
   const [actionError,setActionError]=useState("");
@@ -133,14 +133,16 @@ export default function ThreadSidebar({
       <div className="sidebar-utilities">
         <UtilityButton Icon={Folder} label="Projects" active={section==="projects"} onClick={()=>setSection("projects")}/>
         <UtilityButton Icon={Globe2} label="Browser" active={rightPanelOpen&&rightPanelTab==="preview"} onClick={()=>setSection("preview")}/>
-        {agentRuntime==="codex"&&<UtilityButton Icon={Bot} label="Agents" active={rightPanelOpen&&rightPanelTab==="agents"} onClick={()=>setSection("agents")}/>}
+        {runtimeCapabilities.delegation&&<UtilityButton Icon={Bot} label="Agents" active={rightPanelOpen&&rightPanelTab==="agents"} onClick={()=>setSection("agents")}/>}
         <UtilityButton Icon={History} label="History" active={section==="history"} onClick={()=>setSection("history")}/>
         <UtilityButton Icon={BarChart3} label="Usage" active={section==="usage"} onClick={()=>setSection("usage")}/>
-        {agentRuntime==="codex"&&<UtilityButton Icon={Wrench} label="Tools" active={section==="tools"} onClick={()=>setSection("tools")}/>}
+        {runtimeCapabilities.harnessTools&&<UtilityButton Icon={Wrench} label="Tools" active={section==="tools"} onClick={()=>setSection("tools")}/>}
         <UtilityButton Icon={Server} label="Environments" active={section==="environments"} onClick={()=>setSection("environments")}/>
         <UtilityButton Icon={Settings} label="Settings" active={section==="settings"} onClick={()=>setSection("settings")}/>
       </div>
       <button className="sidebar-provider" onClick={()=>setSection(agentRuntime==="codex"&&provider==="freebuff"?"freebuff":"settings")} title={"Configure "+runtimeLabel}><span className="provider-dot"/><div><strong>{runtimeLabel}</strong><span>{agentRuntime==="codex"?providerLabel+" inference":"Agent harness"}</span></div><MoreHorizontal size={13}/></button>
     </div>
   </aside>;
-}
+});
+
+export default ThreadSidebar;

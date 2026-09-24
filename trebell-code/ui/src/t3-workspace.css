@@ -122,6 +122,8 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .command-palette-error{b
 .conversation-column{width:min(100%,790px);margin:0 auto}
 .history-page-control{display:flex;justify-content:center;margin:0 0 18px}.history-page-control button{height:28px;border:1px solid #30343a;background:#15171a;color:#8f969f;border-radius:7px;padding:0 11px;font-size:8px}.history-page-control button:hover:not(:disabled){background:#1e2125;color:#c1c6cc}.history-page-control button:disabled{opacity:.55;cursor:wait}
 .user-row{margin:0 0 24px;display:flex;justify-content:flex-end}
+.conversation-history>.user-row,.conversation-history>.history-assistant{content-visibility:auto;contain-intrinsic-size:auto 140px}
+.conversation-history>.history-assistant{contain-intrinsic-size:auto 190px}
 .user-bubble{min-width:0;max-width:min(82%,650px);border:1px solid #272a2e;background:#17191c;border-radius:16px;padding:11px 14px;box-shadow:none}
 .user-bubble p{font-size:13px;line-height:1.55;color:#e2e4e6;overflow-wrap:anywhere}
 .message-action{margin-top:6px;padding:0;border:0;background:none;color:#6f747c;font-size:9px}
