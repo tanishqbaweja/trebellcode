@@ -1,4 +1,4 @@
-import React,{useEffect,useState} from "react";
+import React,{useEffect,useRef,useState} from "react";
 import { Globe2, Laptop2, Plus, RefreshCw, Server, Trash2 } from "lucide-react";
 import { api } from "../api.js";
 import { writeClipboardText } from "../clipboard.js";
@@ -6,6 +6,7 @@ import { writeClipboardText } from "../clipboard.js";
 export default function EnvironmentsPage(){
   const [data,setData]=useState({profiles:[],activeEnvironmentId:null,activeEnvironment:null,capabilities:{local:{available:true},ssh:{available:false},wsl:{available:false,distros:[]}}});
   const [remote,setRemote]=useState({enabled:false,running:false,port:3211,urls:[],devices:[]});
+  const confirmedRemoteRef=useRef({enabled:false,port:3211});
   const [pairing,setPairing]=useState(null);
   const [draft,setDraft]=useState({type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"codex",themeDirectory:""});
   const [busy,setBusy]=useState("");
@@ -16,7 +17,10 @@ export default function EnvironmentsPage(){
   async function refresh({reportErrors=false}={}){
     const [environmentResult,remoteResult]=await Promise.allSettled([api("/api/environments"),api("/api/remote-access")]);
     if(environmentResult.status==="fulfilled")setData(environmentResult.value);
-    if(remoteResult.status==="fulfilled")setRemote(remoteResult.value);
+    if(remoteResult.status==="fulfilled"){
+      setRemote(remoteResult.value);
+      confirmedRemoteRef.current={enabled:Boolean(remoteResult.value?.enabled),port:Number(remoteResult.value?.port)||3211};
+    }
     const failures=[];
     if(environmentResult.status==="rejected")failures.push("environments: "+(environmentResult.reason?.message||String(environmentResult.reason)));
     if(remoteResult.status==="rejected")failures.push("remote access: "+(remoteResult.reason?.message||String(remoteResult.reason)));
@@ -72,8 +76,19 @@ export default function EnvironmentsPage(){
   }
   async function saveRemote(patch){
     setBusy("remote");setMessage("");
-    try{const r=await api("/api/remote-access",{method:"POST",body:patch});setRemote(r)}
-    catch(e){setMessage(e.message)}finally{setBusy("")}
+    const confirmed=confirmedRemoteRef.current;
+    try{
+      const r=await api("/api/remote-access",{method:"POST",body:patch});
+      setRemote(r);
+      confirmedRemoteRef.current={enabled:Boolean(r?.enabled),port:Number(r?.port)||3211};
+    }
+    catch(e){
+      const rollback={};
+      if(Object.prototype.hasOwnProperty.call(patch,"enabled"))rollback.enabled=confirmed.enabled;
+      if(Object.prototype.hasOwnProperty.call(patch,"port"))rollback.port=confirmed.port;
+      setRemote(current=>({...current,...rollback}));
+      setMessage(e.message);
+    }finally{setBusy("")}
   }
   async function createPairing(){
     setBusy("pair");setMessage("");

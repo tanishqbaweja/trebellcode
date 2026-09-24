@@ -1135,6 +1135,40 @@ test("environment refresh and removal failures preserve the existing environment
   await page.screenshot({path:auditDir+"environments-action-error-1280x800.png",fullPage:true});
 });
 
+test("remote access port rolls back when persistence fails",async({page,request})=>{
+  test.setTimeout(30_000);
+  let failSave=false;const saves=[];
+  await page.route(/\/api\/remote-access$/,route=>{
+    if(route.request().method()==="POST"){saves.push(route.request().postDataJSON()||{});if(failSave)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate remote access save failure"})})}
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:true,running:true,port:3211,urls:["http://127.0.0.1:3211"],devices:[]})});
+  });
+  await prepare(page,request);
+  await page.getByRole("button",{name:"Environments",exact:true}).click();
+  const card=page.locator(".remote-access-card");
+  await expect(card).toBeVisible();
+  const port=card.getByLabel("Port");
+  await expect(port).toHaveValue("3211");
+  await expect(card.getByLabel("Enable remote access")).toBeChecked();
+  failSave=true;
+  await port.focus();
+  await port.fill("4545");
+  await expect(port).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(port).not.toBeFocused();
+  await expect.poll(()=>saves.length).toBeGreaterThan(0);
+  expect(saves.at(-1)).toMatchObject({port:4545});
+  const status=page.getByRole("status");
+  await expect(status).toContainText("Deliberate remote access save failure");
+  await expect(port).toHaveValue("3211");
+  await expect(card.getByLabel("Enable remote access")).toBeChecked();
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await page.locator(".environments-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await status.scrollIntoViewIfNeeded();
+  await expect(status).toBeInViewport();
+  await page.screenshot({path:auditDir+"remote-access-save-error-1280x800.png",fullPage:true});
+});
+
 test("workspace file refresh and save failures stay visible without lying about state",async({page,request})=>{
   test.setTimeout(35_000);
   await prepare(page,request);
@@ -2534,6 +2568,47 @@ test("source control keeps the PR visible when loading full details fails",async
   await expect(prButton).toBeVisible();
   await expect(prButton).toHaveClass(/active/);
   await page.screenshot({path:auditDir+"source-control-refresh-error-1280x800.png",fullPage:true});
+});
+
+test("source control preserves viewed files when the same PR refresh fails",async({page,request})=>{
+  test.setTimeout(30_000);
+  let failViewed=false;
+  const listPr={number:142,title:"Viewed state fixture",state:"OPEN",headRefName:"feature/viewed",baseRefName:"main",provider:"github",url:"https://github.com/example/trebellcode/pull/142"};
+  await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    isGit:true,root:process.cwd(),branch:"feature/viewed",branches:["main","feature/viewed"],upstream:"origin/feature/viewed",
+    status:[],remotes:[{name:"origin",url:"https://github.com/example/trebellcode.git"}],worktrees:[],
+  })}));
+  await page.route(/\/api\/source-control\/diagnostics\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    selectedProvider:"github",detectedProvider:"github",git:{version:"git version fixture"},providers:{github:{label:"GitHub",installed:true,authenticated:true}},
+    capabilities:{github:{create:true,comment:true,review:true,merge:true}},
+  })}));
+  await page.route(/\/api\/source-control\/prs\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:[listPr],capabilities:{create:true,comment:true,review:true,merge:true}})}));
+  await page.route(/\/api\/source-control\/pr-detail\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    provider:"github",item:{...listPr,body:"Viewed-state fixture",identity:{provider:"github",host:"github.com",repository:"example/trebellcode",number:142},
+      files:[{path:"ui/src/App.jsx",additions:4,deletions:1,patch:"@@ -1 +1 @@\n+fixture"}],comments:[],reviews:[],statusCheckRollup:[]},
+  })}));
+  await page.route(/\/api\/source-control\/thread-link\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({threads:[]})}));
+  await page.route(/\/api\/source-control\/pr-viewed\?/,route=>{
+    if(failViewed)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate viewed-state refresh failure"})});
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({store:"environment",files:[{path:"ui/src/App.jsx",state:"viewed"}]})});
+  });
+  await prepare(page,request);
+  await page.getByTestId("right-panel-toggle").click();
+  const panel=page.getByTestId("right-panel");
+  await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
+  const prButton=panel.getByRole("button",{name:/#142 Viewed state fixture/});
+  await prButton.click();
+  await expect(panel.locator(".pr-files-head")).toContainText("1 / 1 viewed in Trebell Code");
+  await expect(panel.getByRole("button",{name:"Mark unviewed ui/src/App.jsx",exact:true})).toBeVisible();
+  failViewed=true;
+  await page.setViewportSize({width:1280,height:800});
+  await prButton.click();
+  await expect(panel.getByRole("alert")).toContainText("Deliberate viewed-state refresh failure");
+  await expect(panel.locator(".pr-files-head")).toContainText("1 / 1 viewed in Trebell Code");
+  await expect(panel.getByRole("button",{name:"Mark unviewed ui/src/App.jsx",exact:true})).toBeVisible();
+  const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"source-control-viewed-refresh-error-1280x800.png",fullPage:true});
 });
 
 test("failed linked-thread unarchive keeps the PR and archived state intact",async({page})=>{
