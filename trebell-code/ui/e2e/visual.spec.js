@@ -545,6 +545,37 @@ test("command palette keeps failed actions visible with useful feedback",async({
   await page.screenshot({path:auditDir+"header-project-action-error-1280x800.png",fullPage:true});
 });
 
+test("command palette refresh failures preserve the last valid project catalog",async({page,request})=>{
+  test.setTimeout(30_000);
+  await prepare(page,request);
+  await page.keyboard.press("Control+k");
+  const palette=page.getByTestId("command-palette");
+  await expect(palette).toBeVisible();
+  const project=palette.getByRole("button",{name:/Visual Audit Workspace/});
+  await expect(project).toBeVisible();
+  await expect(project).toContainText("Local machine");
+  await page.keyboard.press("Escape");
+  await expect(palette).toBeHidden();
+
+  await page.route("**/api/projects",route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate palette projects refresh failure"})}));
+  await page.route("**/api/environments",route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate palette environments refresh failure"})}));
+  await page.keyboard.press("Control+k");
+  await expect(palette).toBeVisible();
+  await expect(project).toBeVisible();
+  await expect(project).toContainText("Local machine");
+  const alert=palette.getByRole("alert");
+  await expect(alert).toContainText("Could not refresh command palette data");
+  await expect(alert).toContainText("Deliberate palette projects refresh failure");
+  await expect(alert).toContainText("Deliberate palette environments refresh failure");
+  await palette.getByPlaceholder("Search commands, threads, and messages…").fill("Visual Audit Workspace");
+  await expect(project).toBeVisible();
+  await expect(alert).toBeVisible();
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await palette.locator(".command-palette").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"command-palette-data-refresh-error-1280x800.png",fullPage:true});
+});
+
 test("thread message search reports degraded reads and retries without caching failure",async({page})=>{
   test.setTimeout(35_000);
   const thread={id:"thread-search-retry",name:"Hidden message thread",preview:"No title match here",cwd:process.cwd(),createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
@@ -1428,6 +1459,32 @@ test("project refresh and removal failures preserve the existing project card",a
   const metrics=await page.locator(".projects-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   await page.screenshot({path:auditDir+"projects-action-error-1280x800.png",fullPage:true});
+});
+
+test("project detail refresh failures preserve known Git metadata",async({page,request})=>{
+  test.setTimeout(30_000);
+  await prepare(page,request);
+  await page.getByRole("button",{name:"Projects",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
+  const projectCard=page.locator(".project-card").first();
+  await expect(projectCard).toBeVisible();
+  const detail=projectCard.locator(".project-open small");
+  const before=(await detail.textContent())||"";
+  const branch=before.split(" · ")[0].trim();
+  expect(branch).not.toBe("");
+  expect(branch).not.toBe("not a Git checkout");
+
+  await page.route(url=>url.pathname==="/api/git/info"&&url.searchParams.has("path"),route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate project Git detail refresh failure"})}));
+  await page.getByRole("button",{name:"Refresh projects",exact:true}).click();
+  const alert=page.getByRole("alert");
+  await expect(alert).toContainText("Projects refreshed with partial errors");
+  await expect(alert).toContainText("Deliberate project Git detail refresh failure");
+  await expect(detail).toContainText(branch);
+  await expect(detail).not.toContainText("not a Git checkout");
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await page.locator(".projects-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"projects-detail-refresh-error-1280x800.png",fullPage:true});
 });
 
 test("automatic pull failures stay visible without blocking project open",async({page,request})=>{

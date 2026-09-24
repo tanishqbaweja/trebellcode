@@ -46,21 +46,28 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
       if(reportErrors||!projects.length)setError("Could not refresh projects: "+(err.message||String(err)));
       return false;
     }
+    const refreshErrors=[];
     let environments=null;
     try{environments=await api("/api/environments")}
-    catch(err){if(reportErrors)setError("Projects loaded, but environments could not be refreshed: "+(err.message||String(err)))}
+    catch(err){if(reportErrors)refreshErrors.push("Environments: "+(err.message||String(err)))}
     if(environments)setEnvironmentData(environments);
+    const previousById=new Map(projects.map(project=>[project.id,project]));
     const enriched=await Promise.all((d.projects||[]).map(async project=>{
       if(project.environment?.type&&project.environment.type!=="local")return {...project,scripts:Array.isArray(project.scripts)?project.scripts:[],git:null,remote:null,suggested:{scripts:[],t3:{present:false},packageManager:null}};
-      const [git,suggested]=await Promise.all([
-        api("/api/git/info?path="+encodeURIComponent(project.path)).catch(()=>null),
-        api("/api/project-actions/suggestions?path="+encodeURIComponent(project.path)).catch(()=>({scripts:[],t3:{present:false},packageManager:null})),
+      const previous=previousById.get(project.id)||null;
+      const [gitResult,suggestedResult]=await Promise.allSettled([
+        api("/api/git/info?path="+encodeURIComponent(project.path)),
+        api("/api/project-actions/suggestions?path="+encodeURIComponent(project.path)),
       ]);
+      const git=gitResult.status==="fulfilled"?gitResult.value:(previous?.git??null);
+      const suggested=suggestedResult.status==="fulfilled"?suggestedResult.value:(previous?.suggested??{scripts:[],t3:{present:false},packageManager:null});
+      if(reportErrors&&gitResult.status==="rejected")refreshErrors.push((project.name||project.path)+" Git: "+(gitResult.reason?.message||String(gitResult.reason)));
+      if(reportErrors&&suggestedResult.status==="rejected")refreshErrors.push((project.name||project.path)+" actions: "+(suggestedResult.reason?.message||String(suggestedResult.reason)));
       const remote=git?.remotes?.find(r=>r.kind==="fetch")?.url||null;
-      return {...project,scripts:Array.isArray(project.scripts)?project.scripts:[],git,remote,suggested};
+      return {...project,scripts:Array.isArray(project.scripts)?project.scripts:[],git,remote:gitResult.status==="fulfilled"?remote:(previous?.remote??remote),suggested};
     }));
     setProjects(enriched);
-    if(reportErrors&&environments)setError("");
+    if(reportErrors)setError(refreshErrors.length?"Projects refreshed with partial errors: "+refreshErrors.join(" · "):"");
     return true;
   }
   useEffect(()=>{refresh({reportErrors:true})},[]);

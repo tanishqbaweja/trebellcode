@@ -488,7 +488,7 @@ export default function App(){
   const [worktreeSetup,setWorktreeSetup]=useState(null);
   const [threadTelemetry,setThreadTelemetry]=useState({});
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false);
-  const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"});
+  const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"}); const [paletteDataError,setPaletteDataError]=useState("");
   const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
   const navigationKey=location=>[location.section,location.threadId||"",location.rightPanelOpen?location.rightPanelTab||"files":""].join("|");
@@ -615,14 +615,18 @@ export default function App(){
   useEffect(()=>{activeThreadRef.current=activeThread},[activeThread]);
   useEffect(()=>{
     if(!paletteOpen)return;
-    let cancelled=false;
-    Promise.all([
-      api("/api/projects").catch(()=>({projects:[]})),
-      api("/api/environments").catch(()=>({profiles:[]})),
-    ]).then(([projectData,environmentData])=>{
+    let cancelled=false;setPaletteDataError("");
+    Promise.allSettled([
+      api("/api/projects"),
+      api("/api/environments"),
+    ]).then(([projectResult,environmentResult])=>{
       if(cancelled)return;
-      setPaletteProjects(projectData.projects||[]);
-      setPaletteEnvironmentNames(Object.fromEntries([["local","Local machine"],...(environmentData.profiles||[]).map(profile=>[profile.id,profile.name||profile.id])]));
+      const failures=[];
+      if(projectResult.status==="fulfilled")setPaletteProjects(projectResult.value.projects||[]);
+      else failures.push("projects: "+(projectResult.reason?.message||String(projectResult.reason)));
+      if(environmentResult.status==="fulfilled")setPaletteEnvironmentNames(Object.fromEntries([["local","Local machine"],...(environmentResult.value.profiles||[]).map(profile=>[profile.id,profile.name||profile.id])]));
+      else failures.push("environments: "+(environmentResult.reason?.message||String(environmentResult.reason)));
+      setPaletteDataError(failures.length?"Could not refresh command palette data · "+failures.join(" · "):"");
     });
     return()=>{cancelled=true};
   },[paletteOpen]);
@@ -1026,16 +1030,28 @@ export default function App(){
     for(const item of recovery.items){
       try{
         await client.request("thread/resume",{threadId:item.threadId,modelProvider:provider,excludeTurns:true});
-        let recent;
-        try{recent=await client.request("thread/turns/list",{threadId:item.threadId,limit:20,sortDirection:"desc",itemsView:"notLoaded"})}
-        catch{const legacy=await client.request("thread/read",{threadId:item.threadId,includeTurns:true}).catch(()=>({thread:{turns:[]}}));recent={data:legacy?.thread?.turns||[]}}
-        const previous=(recent?.data||[]).find(turn=>turn.id===item.turnId);
+        let previous=null,recentError=null,legacyError=null;
+        try{
+          const recent=await client.request("thread/turns/list",{threadId:item.threadId,limit:20,sortDirection:"desc",itemsView:"notLoaded"});
+          previous=(recent?.data||[]).find(turn=>turn.id===item.turnId)||null;
+        }catch(error){recentError=error}
+        if(!previous){
+          try{
+            const legacy=await client.request("thread/read",{threadId:item.threadId,includeTurns:true});
+            previous=(legacy?.thread?.turns||[]).find(turn=>turn.id===item.turnId)||null;
+          }catch(error){legacyError=error}
+        }
+        if(!previous){
+          const detail=[recentError&&("recent turns: "+(recentError.message||String(recentError))),legacyError&&("thread read: "+(legacyError.message||String(legacyError)))].filter(Boolean).join(" · ");
+          throw new Error("Could not verify the interrupted turn before restart continuation"+(detail?": "+detail:"."));
+        }
         if(previous&&["completed","failed","cancelled","interrupted"].includes(previous.status)){
           await api("/api/recovery",{method:"POST",body:{threadId:item.threadId,action:"clear"}}).catch(()=>{});continue;
         }
         await client.request("turn/start",{threadId:item.threadId,input:[],turnTrigger:"trebell-restart-continuation"});
       }catch(error){
         await api("/api/recovery",{method:"POST",body:{threadId:item.threadId,action:"failed",message:error.message||String(error)}}).catch(()=>{});
+        showActionError(error,"Could not safely recover interrupted thread");
       }
     }
   }
@@ -2834,7 +2850,7 @@ export default function App(){
     {!elicitations.length&&<QuestionModal request={question?.request} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={pickFiles}/>}
     <SnoozeDialog request={snoozeRequest} onSubmit={submitSnooze} onCancel={()=>setSnoozeRequest(null)}/>
     {threadUndo&&<div className="thread-undo-toast" role="status" aria-live="polite" data-testid="thread-undo-toast"><span>{threadUndo.label}</span><button onClick={undoThreadAction}>Undo</button><em>5s</em></div>}
-    <CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} actions={paletteActions} projects={paletteProjects} threads={threads} environmentNames={paletteEnvironmentNames} onOpenProject={project=>onProjectOpen(project.path,project.environmentId||null)} onOpenThread={openThread} onSearchThreadMessages={searchThreadMessages}/>
+    <CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} actions={paletteActions} projects={paletteProjects} threads={threads} environmentNames={paletteEnvironmentNames} dataError={paletteDataError} onOpenProject={project=>onProjectOpen(project.path,project.environmentId||null)} onOpenThread={openThread} onSearchThreadMessages={searchThreadMessages}/>
     <OnboardingModal open={initialLoaded&&settings.onboardingComplete===false} projectPath={projectPath} onPickWorkspace={window.trebellDesktop?.pickDirectory?pickWorkspace:null} providerLabel={agentRuntime==="codex"?providerLabel:agentRuntimeLabel} providerReady={providerReady} permissionMode={permissionMode} onPermissionMode={setPermissionMode} onHistoryImported={historyImported} onFinish={finishOnboarding}/>
   </div>;
 }

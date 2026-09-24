@@ -1,7 +1,7 @@
 import React,{useEffect,useMemo,useRef,useState} from "react";
 import { CornerDownLeft, FolderCode, MessageSquareText, Search } from "lucide-react";
 
-export default function CommandPalette({open,onClose,actions=[],projects=[],threads=[],environmentNames={},onOpenProject,onOpenThread,onSearchThreadMessages}){
+export default function CommandPalette({open,onClose,actions=[],projects=[],threads=[],environmentNames={},dataError="",onOpenProject,onOpenThread,onSearchThreadMessages}){
   const [query,setQuery]=useState("");
   const [selected,setSelected]=useState(0);
   const [messageMatches,setMessageMatches]=useState([]);
@@ -72,10 +72,11 @@ export default function CommandPalette({open,onClose,actions=[],projects=[],thre
     if(event.key==="ArrowUp"){event.preventDefault();setSelected(i=>Math.max(0,i-1));return}
     if(event.key==="Enter"){event.preventDefault();run(items[selected])}
   }
+  const visibleError=[dataError,actionError].filter(Boolean).join(" · ");
   return <div className="command-palette-backdrop" data-testid="command-palette" onMouseDown={event=>event.target===event.currentTarget&&onClose?.()}>
     <div className="command-palette" role="dialog" aria-modal="true" aria-label="Command palette">
       <div className="command-palette-search"><Search size={15}/><input ref={inputRef} value={query} onChange={event=>{setQuery(event.target.value);setSelected(0);setActionError("")}} onKeyDown={keyDown} placeholder="Search commands, threads, and messages…" disabled={Boolean(runningId)}/>{messageSearching&&<span className="command-palette-searching">Searching messages…</span>}<kbd>Esc</kbd></div>
-      {actionError&&<div className="command-palette-error" role="alert">{actionError}</div>}
+      {visibleError&&<div className="command-palette-error" role="alert">{visibleError}</div>}
       <div className="command-palette-results">
         {items.map((item,index)=><button key={item.id} className={index===selected?"selected":""} disabled={Boolean(runningId)} onMouseEnter={()=>setSelected(index)} onClick={()=>run(item)}>
           <span className="command-palette-icon">{item.kind==="thread"?<MessageSquareText size={14}/>:item.kind==="project"?<FolderCode size={14}/>:item.icon||<CornerDownLeft size={14}/>}</span>
