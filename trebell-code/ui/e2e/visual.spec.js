@@ -824,6 +824,49 @@ test("runtime server requests use the latest permission mode",async({page})=>{
   }finally{await harness.close()}
 });
 
+test("Agents refresh failures preserve the last valid thread list",async({page})=>{
+  test.setTimeout(35_000);
+  const child={id:"agents-refresh-child",parentThreadId:"agents-refresh-parent",name:"Preserved delegated agent",preview:"Agent refresh preservation",agentRole:"researcher",status:{type:"idle"},model:"freebuff/test/coding-fast",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  let failThreadList=false,threadListReads=0;
+  const harness=await startCodexRequestHarness(child,{onRequest:async(message,ws)=>{
+    if(message.method==="thread/list"){
+      threadListReads++;
+      if(failThreadList){
+        ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate agent thread refresh failure"}}));
+        return true;
+      }
+    }
+    return false;
+  }});
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,child,"agents-refresh-fixture");
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Preserved delegated agent"]')});
+    await expect(row).toBeVisible();
+    await row.locator(".thread-main").click();
+    await expect(row).toHaveClass(/active/);
+    await page.locator('.sidebar .sidebar-utility[aria-label="Agents"]').click();
+    const agents=page.locator(".agents-page");
+    await expect(agents).toBeVisible();
+    await expect(agents).toContainText("Preserved delegated agent");
+    const baseline=threadListReads;
+    failThreadList=true;
+    await agents.locator(".agent-refresh").click();
+    await expect.poll(()=>threadListReads).toBeGreaterThan(baseline);
+    const alert=agents.getByRole("alert");
+    await expect(alert).toContainText("Deliberate agent thread refresh failure");
+    await expect(agents).toContainText("Preserved delegated agent");
+    await expect(row).toBeVisible();
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.getByTestId("right-panel").locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await alert.scrollIntoViewIfNeeded();
+    await expect(alert).toBeInViewport();
+    await page.screenshot({path:auditDir+"agents-thread-refresh-error-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
 test("terminal failures keep backend and visible session state in sync",async({page,request})=>{
   test.setTimeout(30_000);
   await page.addInitScript(()=>{
@@ -3227,6 +3270,60 @@ test("failed linked-thread unarchive keeps the PR and archived state intact",asy
     for(const ws of sockets)try{ws.terminate()}catch{}
     wss.close();await new Promise(resolve=>wsHttp.close(resolve));
   }
+});
+
+test("linked-thread read failures report the runtime error instead of claiming the thread is missing",async({page})=>{
+  test.setTimeout(40_000);
+  const parent={id:"linked-read-parent",name:"Linked read parent",preview:"Parent chat",cwd:process.cwd(),createdAt:Date.now()/1000-30,updatedAt:Date.now()/1000,turns:[]};
+  const linkedId="linked-read-failure-thread";
+  const project={id:"linked-read-project",name:"Linked Read Project",path:process.cwd(),environmentId:null,effectiveSettings:{}};
+  const listPr={number:78,title:"Linked read fixture",state:"OPEN",headRefName:"feature/read-link",baseRefName:"main",provider:"github",url:"https://github.com/example/fixture/pull/78"};
+  const harness=await startCodexRequestHarness(parent,{onRequest:async(message,ws)=>{
+    if(message.method==="thread/read"&&message.params?.threadId===linkedId){
+      ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate linked thread read failure"}}));
+      return true;
+    }
+    return false;
+  }});
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version:"linked-read-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[parent.id]:{projectless:false,environmentId:null}}})}));
+    await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+    await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})}));
+    await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({checkpoints:[]})}));
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,root:process.cwd(),branch:"feature/read-link",branches:["main","feature/read-link"],upstream:"origin/feature/read-link",status:[],remotes:[{name:"origin",url:"https://github.com/example/fixture.git"}],worktrees:[]})}));
+    await page.route(/\/api\/source-control\/diagnostics\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selectedProvider:"github",detectedProvider:"github",git:{version:"git version fixture"},providers:{github:{label:"GitHub",installed:true,authenticated:true}},capabilities:{github:{create:true,comment:true,review:true,merge:true}}})}));
+    await page.route(/\/api\/source-control\/prs\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:[listPr],capabilities:{create:true,comment:true,review:true,merge:true}})}));
+    await page.route(/\/api\/source-control\/pr-detail\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({provider:"github",item:{...listPr,body:"Fixture PR",identity:{provider:"github",host:"github.com",repository:"example/fixture",number:78},files:[],comments:[],reviews:[],statusCheckRollup:[]}})}));
+    await page.route(/\/api\/source-control\/pr-viewed\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({store:"environment",files:[]})}));
+    await page.route(/\/api\/source-control\/thread-link\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({threads:[{threadId:linkedId,title:"Unread linked review thread",archived:false}]})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const parentRow=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Linked read parent"]')});
+    await parentRow.locator(".thread-main").click();
+    await expect(parentRow).toHaveClass(/active/);
+    await page.getByTestId("right-panel-toggle").click();
+    const panel=page.getByTestId("right-panel");
+    await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
+    await panel.getByRole("button",{name:/#78 Linked read fixture/}).click();
+    const linked=panel.getByRole("button",{name:"Unread linked review thread",exact:true});
+    await expect(linked).toBeVisible();
+    await linked.click();
+    const alert=panel.getByRole("alert");
+    await expect(alert).toContainText("Could not load linked thread: Deliberate linked thread read failure");
+    await expect(alert).not.toContainText("Linked thread was not found");
+    await expect(alert).toBeInViewport();
+    await expect(linked).toBeVisible();
+    await expect(parentRow).toHaveClass(/active/);
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"linked-thread-read-error-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
 });
 
 test("failed worktree open stays in the current project and reports the error",async({page,request})=>{

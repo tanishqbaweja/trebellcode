@@ -873,8 +873,15 @@ export default function App(){
     for(const name of ["Pinned","Snoozed","Settled"]){if(!map[name]){const made=await client.request("threadSection/create",{name}).catch(()=>null);if(made?.section)map[name]=made.section}}
     setSections(map); return map;
   }
-  async function loadThreads(client){
-    const listed=await client.request("thread/list",threadListParams(100)).catch(()=>({data:[]})); setThreads(listed.data||[]); return listed.data||[];
+  async function loadThreads(client,{strict=false}={}){
+    try{
+      const listed=await client.request("thread/list",threadListParams(100));
+      setThreads(listed.data||[]);
+      return listed.data||[];
+    }catch(error){
+      if(strict)throw error;
+      return null;
+    }
   }
   async function loadCollaborationModes(client=rpcRef.current){
     if(agentRuntime!=="codex"||!client){
@@ -1628,7 +1635,7 @@ export default function App(){
       return;
     }
   }
-  async function moveThreadOrder(thread,direction){const group=threads.filter(t=>(t.section?.name||"Active")===(thread.section?.name||"Active"));const index=group.findIndex(t=>t.id===thread.id);const targetIndex=index+direction;if(targetIndex<0||targetIndex>=group.length)return;const before=direction<0?group[targetIndex].id:(group[targetIndex+1]?.id||null);await rpc.request("thread/section/move",{threadId:thread.id,sectionId:thread.section?.id||null,beforeThreadId:before});await loadThreads(rpc)}
+  async function moveThreadOrder(thread,direction){const group=threads.filter(t=>(t.section?.name||"Active")===(thread.section?.name||"Active"));const index=group.findIndex(t=>t.id===thread.id);const targetIndex=index+direction;if(targetIndex<0||targetIndex>=group.length)return;const before=direction<0?group[targetIndex].id:(group[targetIndex+1]?.id||null);await rpc.request("thread/section/move",{threadId:thread.id,sectionId:thread.section?.id||null,beforeThreadId:before});await loadThreads(rpc,{strict:true})}
   async function bulkAction(action){
     const selected=[...selectedThreadIds].map(id=>threads.find(thread=>thread.id===id)).filter(Boolean);if(!selected.length)return;
     if(action==="snooze"){setSnoozeRequest({threads:selected,bulk:true});return}
@@ -1831,10 +1838,12 @@ export default function App(){
   }
   async function openLinkedThread(reference){
     if(!rpc||rpcStatus!=="connected"||!reference?.threadId)throw new Error("The agent harness is not connected.");
-    let thread=threads.find(item=>item.id===reference.threadId)||null;
+    let thread=threads.find(item=>item.id===reference.threadId)||null,readError=null;
     if(!thread){
-      const read=await rpc.request("thread/read",{threadId:reference.threadId,includeTurns:false}).catch(()=>null);
-      thread=read?.thread||null;
+      try{
+        const read=await rpc.request("thread/read",{threadId:reference.threadId,includeTurns:false});
+        thread=read?.thread||null;
+      }catch(error){readError=error}
     }
     const archived=Boolean(reference.archived||thread?.archived);
     if(archived){
@@ -1848,6 +1857,7 @@ export default function App(){
       await updateThreadMeta(reference.threadId,{archived:false});
       if(thread)thread={...thread,archived:false};
     }
+    if(!thread&&readError)throw new Error("Could not load linked thread: "+(readError?.message||String(readError)));
     if(!thread)throw new Error("Linked thread was not found.");
     setThreads(prev=>[thread,...prev.filter(item=>item.id!==thread.id)]);
     await openThread(thread);
@@ -2681,7 +2691,7 @@ export default function App(){
     if(rightPanelTab==="preview")return previewSurface;
     if(rightPanelTab==="source")return projectlessMode?<div className="empty-state">General chats are not attached to source control.</div>:<SourceControlPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} model={model} provider={provider} threadId={activeThread?.id||null} sourceControlSettings={currentProject?.effectiveSettings||effectiveProjectSettings} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} onLinkPrUrl={linkPullRequestUrl} onOpenLinkedThread={openLinkedThread} onSelectedPrChange={setSourceSelectedPr} onLinkedPullRequestsChanged={links=>activeThread?.id&&applyThreadPullRequestLinks(activeThread.id,links)} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
     if(rightPanelTab==="device")return <DevicePanel/>;
-    if(rightPanelTab==="agents"&&agentRuntime==="codex")return <div className="panel-page"><AgentsPage threads={threads} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onRefreshThreads={()=>rpc?loadThreads(rpc):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model} telemetry={threadTelemetry}/></div>;
+    if(rightPanelTab==="agents"&&agentRuntime==="codex")return <div className="panel-page"><AgentsPage threads={threads} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onRefreshThreads={()=>rpc?loadThreads(rpc,{strict:true}):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model} telemetry={threadTelemetry}/></div>;
     if(rightPanelTab==="goal")return <GoalPanel rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={setGoal}/>;
     return <div className="runtime-surface">
       <section className="runtime-summary">
