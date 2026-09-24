@@ -94,6 +94,13 @@ export default function AgentsPage({threads,onOpen,onAction,onRefreshThreads,rpc
     catch(e){setError(e.message||String(e))}
     finally{setBusy(false)}
   }
+  async function openAgent(thread){
+    if(!onOpen||busy)return;
+    setBusy(true);setError("");
+    try{await onOpen(thread)}
+    catch(e){setError(e.message||String(e))}
+    finally{setBusy(false)}
+  }
 
   function renderAgents(items){
     return <div className="agent-list">{items.map(t=>{
@@ -104,7 +111,7 @@ export default function AgentsPage({threads,onOpen,onAction,onRefreshThreads,rpc
       const usage=usageLabel(live.tokenUsage);
       const activityAge=ageLabel((live.lastActivityAt?live.lastActivityAt/1000:null)||t.updatedAt);
       return <div className="agent-row" key={t.id}>
-        <button className="agent-open" onClick={()=>onOpen(t)}>
+        <button className="agent-open" onClick={()=>openAgent(t)} disabled={busy}>
           <span className={"agent-status-dot "+status.key}/>
           <div>
             <strong>{t.name||t.agentNickname||t.preview||"Subagent"}</strong>
@@ -135,7 +142,7 @@ export default function AgentsPage({threads,onOpen,onAction,onRefreshThreads,rpc
       <div className="collaboration-head"><div><UsersRound size={15}/><span><strong>Collaboration mode</strong><small>Choose how Codex coordinates work for this thread.</small></span></div><button onClick={refresh} disabled={busy||rpcStatus!=="connected"}><RefreshCw size={12}/></button></div>
       {!activeThread?.id?<p>Start or open a thread to select a collaboration mode.</p>:modes.length?<div className="collaboration-modes">{modes.map(mask=><button key={mask.name} className={selected===mask.name?"active":""} onClick={()=>applyMode(mask)} disabled={busy}><strong>{mask.name}</strong><span>{mask.mode||"default"}{mask.model?" · "+mask.model:""}{mask.reasoning_effort?" · "+mask.reasoning_effort:""}</span></button>)}</div>:<p>{error||"No collaboration presets were reported by this Codex runtime."}</p>}
     </section>
-    {error&&<p className="provider-status-error">{error}</p>}
+    {error&&<p className="provider-status-error" role="alert">{error}</p>}
     {currentChildren.length>0&&<section className="agent-group"><h4>Current thread <span>{currentChildren.length}</span></h4>{renderAgents(currentChildren)}</section>}
     {otherChildren.length>0&&<section className="agent-group"><h4>{activeThread?.id?"Other agents":"All agents"} <span>{otherChildren.length}</span></h4>{renderAgents(otherChildren)}</section>}
     {children.length===0&&<div className="agent-empty-state"><Bot size={18}/><strong>No delegated agents yet</strong><span>When Codex delegates work, subagent threads and their live status will appear here.</span></div>}
