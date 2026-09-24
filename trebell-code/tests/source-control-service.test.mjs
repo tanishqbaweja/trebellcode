@@ -14,6 +14,7 @@ import {
   pullRequestDetail,
   editPullRequest,
   editPullRequestComment,
+  requestPullRequestReviewer,
   approvePullRequestWorkflows,
   revertPullRequest,
   mergePullRequest,
@@ -61,8 +62,99 @@ test("provider capabilities reflect known host limitations",()=>{
   assert.equal(CAPABILITIES.bitbucket.publish,true);
   assert.equal(CAPABILITIES["azure-devops"].publish,true);
   assert.equal(CAPABILITIES.gitlab.requestChanges,false);
+  assert.equal(CAPABILITIES.gitlab.reviewers,true);
+  assert.equal(CAPABILITIES.forgejo.reviewers,true);
+  assert.equal(CAPABILITIES["azure-devops"].reviewers,true);
+  assert.equal(CAPABILITIES.bitbucket.reviewers,true);
   assert.equal(CAPABILITIES.bitbucket.updateBranch,false);
   assert.equal(CAPABILITIES["azure-devops"].comment,false);
+});
+
+function sourceFixtureExecutor(remoteUrl,{extraRun=null,extraStdin=null}={}){
+  return {
+    run:async(command,args,options={})=>{
+      if(command==="git"&&args[0]==="rev-parse"&&args[1]==="--show-toplevel")return {ok:true,code:0,stdout:"/srv/app\n",stderr:""};
+      if(command==="git"&&args[0]==="branch")return {ok:true,code:0,stdout:"main\n",stderr:""};
+      if(command==="git"&&args[0]==="for-each-ref"&&args.includes("refs/heads"))return {ok:true,code:0,stdout:"main\n",stderr:""};
+      if(command==="git"&&args[0]==="for-each-ref")return {ok:true,code:0,stdout:"origin/main\n",stderr:""};
+      if(command==="git"&&args[0]==="status")return {ok:true,code:0,stdout:"## main...origin/main\n",stderr:""};
+      if(command==="git"&&args[0]==="remote")return {ok:true,code:0,stdout:"origin\t"+remoteUrl+" (fetch)\norigin\t"+remoteUrl+" (push)\n",stderr:""};
+      if(command==="git"&&args[0]==="worktree")return {ok:true,code:0,stdout:"worktree /srv/app\nHEAD abc\nbranch refs/heads/main\n",stderr:""};
+      return extraRun?extraRun(command,args,options):{ok:false,code:1,stdout:"",stderr:"unexpected command "+command+" "+args.join(" ")};
+    },
+    runStdin:async(command,args,input,options={})=>extraStdin?extraStdin(command,args,input,options):{ok:false,code:1,stdout:"",stderr:"unexpected stdin command"},
+  };
+}
+
+test("GitLab reviewer requests preserve existing reviewers and add the resolved username",async()=>{
+  const calls=[];
+  const executor=sourceFixtureExecutor("https://gitlab.com/acme/widget.git",{
+    extraRun:async(command,args)=>{
+      calls.push({command,args:[...args]});
+      if(command==="glab"&&args[0]==="api"&&String(args[1]).startsWith("users?username="))return {ok:true,code:0,stdout:JSON.stringify([{id:22,username:"alice"}]),stderr:""};
+      if(command==="glab"&&args[0]==="api"&&String(args[1]).includes("/merge_requests/7"))return {ok:true,code:0,stdout:JSON.stringify({reviewers:[{id:11,username:"bob"}]}),stderr:""};
+      return {ok:false,code:1,stdout:"",stderr:"unexpected command"};
+    },
+    extraStdin:async(command,args,input)=>{
+      calls.push({command,args:[...args],input});
+      return {ok:true,code:0,stdout:JSON.stringify({reviewers:[{id:11},{id:22}]}),stderr:""};
+    },
+  });
+  const result=await withSourceControlExecutor(executor,()=>requestPullRequestReviewer("/srv/app",7,"alice"));
+  assert.equal(result.ok,true);assert.equal(result.provider,"gitlab");
+  const update=calls.find(call=>call.input);assert.ok(update);
+  assert.deepEqual(JSON.parse(update.input).reviewer_ids,[11,22]);
+});
+
+test("Azure DevOps reviewer requests use the supported reviewer add command",async()=>{
+  const calls=[];
+  const executor=sourceFixtureExecutor("https://dev.azure.com/acme/project/_git/widget",{
+    extraRun:async(command,args)=>{
+      calls.push({command,args:[...args]});
+      if(command==="az"&&args.slice(0,4).join(" ")==="repos pr reviewer add")return {ok:true,code:0,stdout:"[]",stderr:""};
+      return {ok:false,code:1,stdout:"",stderr:"unexpected command"};
+    },
+  });
+  const result=await withSourceControlExecutor(executor,()=>requestPullRequestReviewer("/srv/app",9,"alice@example.com"));
+  assert.equal(result.ok,true);assert.equal(result.provider,"azure-devops");
+  const call=calls.find(item=>item.command==="az");assert.ok(call);
+  assert.deepEqual(call.args.slice(0,4),["repos","pr","reviewer","add"]);
+  assert.ok(call.args.includes("alice@example.com"));
+});
+
+test("Forgejo reviewer requests use the documented requested_reviewers endpoint",async()=>{
+  const requests=[];
+  const executor=sourceFixtureExecutor("https://forge.example/acme/widget.git",{
+    extraRun:async(command,args)=>{
+      if(command==="fj"&&args[0]==="version")return {ok:true,code:0,stdout:"fj 0.test",stderr:""};
+      return {ok:false,code:1,stdout:"",stderr:"unexpected command"};
+    },
+  });
+  executor.readFjKeys=async()=>({hosts:{"forge.example":{type:"Application",token:"fixture-token"}},aliases:{}});
+  executor.request=async(url,options)=>{requests.push({url:String(url),options});return {ok:true,status:200,text:"{}"}};
+  const result=await withSourceControlExecutor(executor,()=>requestPullRequestReviewer("/srv/app",4,"alice",{provider:"forgejo"}));
+  assert.equal(result.ok,true);assert.equal(result.provider,"forgejo");
+  assert.equal(requests.length,1);
+  assert.match(requests[0].url,/\/api\/v1\/repos\/acme\/widget\/pulls\/4\/requested_reviewers$/);
+  assert.equal(requests[0].options.method,"POST");
+  assert.deepEqual(JSON.parse(requests[0].options.body),{reviewers:["alice"],team_reviewers:[]});
+});
+
+test("Bitbucket reviewer requests resolve a user UUID and preserve existing reviewers",async()=>{
+  const requests=[];
+  const executor=sourceFixtureExecutor("https://bitbucket.org/acme/widget.git");
+  executor.env=async()=>({TREBELL_BITBUCKET_ACCESS_TOKEN:"fixture-token"});
+  executor.request=async(url,options={})=>{
+    const target=String(url);requests.push({url:target,options});
+    if(target.endsWith("/users/alice"))return {ok:true,status:200,text:JSON.stringify({uuid:"{alice-uuid}",nickname:"alice"})};
+    if(target.endsWith("/repositories/acme/widget/pullrequests/5")&&(!options.method||options.method==="GET"))return {ok:true,status:200,text:JSON.stringify({reviewers:[{uuid:"{bob-uuid}"}]})};
+    if(target.endsWith("/repositories/acme/widget/pullrequests/5")&&options.method==="PUT")return {ok:true,status:200,text:JSON.stringify({reviewers:[{uuid:"{bob-uuid}"},{uuid:"{alice-uuid}"}]})};
+    return {ok:false,status:404,text:"not found"};
+  };
+  const result=await withSourceControlExecutor(executor,()=>requestPullRequestReviewer("/srv/app",5,"alice"));
+  assert.equal(result.ok,true);assert.equal(result.provider,"bitbucket");
+  const update=requests.find(item=>item.options.method==="PUT");assert.ok(update);
+  assert.deepEqual(JSON.parse(update.options.body),{reviewers:[{uuid:"{bob-uuid}"},{uuid:"{alice-uuid}"}]});
 });
 
 test("publish targets enforce provider-specific repository paths",()=>{

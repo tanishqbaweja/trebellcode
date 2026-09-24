@@ -12,10 +12,10 @@ const PROVIDERS=["github","gitlab","forgejo","bitbucket","azure-devops"];
 
 const CAPABILITIES={
   github:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:true,publish:true,viewedFiles:"host",approveWorkflows:true,revert:true,stacks:true},
-  gitlab:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:false,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:false,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false,stacks:false},
-  forgejo:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:true,checkout:false,reviewers:false,publish:false,viewedFiles:"environment",approveWorkflows:false,revert:false,stacks:false},
-  bitbucket:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:false,checkout:false,reviewers:false,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false,stacks:false},
-  "azure-devops":{create:true,edit:true,comment:false,editComments:false,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:false,checkout:false,reviewers:false,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false,stacks:false},
+  gitlab:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:false,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:true,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false,stacks:false},
+  forgejo:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:true,checkout:false,reviewers:true,publish:false,viewedFiles:"environment",approveWorkflows:false,revert:false,stacks:false},
+  bitbucket:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:false,checkout:false,reviewers:true,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false,stacks:false},
+  "azure-devops":{create:true,edit:true,comment:false,editComments:false,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:false,checkout:false,reviewers:true,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false,stacks:false},
 };
 
 function currentExecutor(){return executionContext.getStore()?.executor||null}
@@ -682,6 +682,35 @@ export async function requestPullRequestReviewer(cwd,number,reviewer,{provider=n
   if(ctx.provider==="github"){
     const result=await run("gh",["pr","edit",String(number),"--add-reviewer",login],{cwd:ctx.info.root,allowFailure:true,maxBuffer:4*1024*1024});
     if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not request reviewer").trim());
+    return {ok:true,provider:ctx.provider,reviewer:login};
+  }
+  if(ctx.provider==="gitlab"){
+    const users=await glabApi(ctx,"users?username="+encodeURIComponent(login));
+    const user=(Array.isArray(users)?users:[]).find(item=>String(item.username||"").toLowerCase()===login.toLowerCase())||(Array.isArray(users)?users[0]:null);
+    if(!user?.id)throw new Error("GitLab user '"+login+"' was not found.");
+    const path="projects/"+encodeURIComponent(ctx.repository)+"/merge_requests/"+Number(number);
+    const mr=await glabApi(ctx,path);
+    const reviewerIds=[...new Set([...(mr?.reviewers||[]).map(item=>Number(item.id)).filter(Number.isFinite),Number(user.id)])];
+    await glabApi(ctx,path,{method:"PUT",body:{reviewer_ids:reviewerIds}});
+    return {ok:true,provider:ctx.provider,reviewer:login};
+  }
+  if(ctx.provider==="forgejo"){
+    const target=await forgejoContext(ctx);
+    await forgejoApi(ctx,"repos/"+target.repository+"/pulls/"+Number(number)+"/requested_reviewers",{method:"POST",body:{reviewers:[login],team_reviewers:[]}});
+    return {ok:true,provider:ctx.provider,reviewer:login};
+  }
+  if(ctx.provider==="azure-devops"){
+    const result=await run("az",["repos","pr","reviewer","add","--id",String(number),"--reviewers",login,"--detect","true","--only-show-errors","--output","json"],{cwd:ctx.info.root,allowFailure:true,timeout:60000,maxBuffer:4*1024*1024});
+    if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not request Azure DevOps reviewer").trim());
+    return {ok:true,provider:ctx.provider,reviewer:login};
+  }
+  if(ctx.provider==="bitbucket"){
+    const user=await bitbucketApi(ctx,"users/"+encodeURIComponent(login));
+    if(!user?.uuid)throw new Error("Bitbucket user '"+login+"' was not found.");
+    const path="repositories/"+ctx.repository+"/pullrequests/"+Number(number);
+    const pull=await bitbucketApi(ctx,path);
+    const reviewerUuids=[...new Set([...(pull?.reviewers||[]).map(item=>String(item.uuid||"")).filter(Boolean),String(user.uuid)])];
+    await bitbucketApi(ctx,path,{method:"PUT",body:{reviewers:reviewerUuids.map(uuid=>({uuid}))}});
     return {ok:true,provider:ctx.provider,reviewer:login};
   }
   throw new Error(`${ctx.provider} reviewer requests are not exposed by Trebell yet.`);
