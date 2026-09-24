@@ -182,6 +182,28 @@ test("composer file mentions search the workspace and attach the selected file",
   await page.screenshot({path:auditDir+"light-chat-file-mention-menu-1280x800.png",fullPage:true});
 });
 
+test("composer file mention failures stay visible and keep the mention retryable",async({page,request})=>{
+  test.setTimeout(30_000);
+  await prepare(page,request);
+  await page.route(/\/api\/attachments\/import$/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate file mention attachment failure"})}));
+  const composer=page.getByTestId("composer");
+  await composer.fill("Review @pack");
+  const menu=page.getByTestId("file-mention-menu");
+  await expect(menu).toBeVisible();
+  const packageFile=menu.getByRole("button").filter({hasText:"package.json"}).first();
+  await packageFile.click();
+  const alert=page.getByTestId("app-action-error");
+  await expect(alert).toContainText("Could not attach file mention: Deliberate file mention attachment failure");
+  await expect(alert).toBeInViewport();
+  await expect(menu).toBeVisible();
+  await expect(composer).toHaveValue("Review @pack");
+  await expect(page.getByTestId("context-chips")).toHaveCount(0);
+  await page.setViewportSize({width:1280,height:800});
+  const alertBox=await box(alert),menuBox=await box(menu);
+  expect(alertBox.y+alertBox.height).toBeLessThanOrEqual(menuBox.y-4);
+  await page.screenshot({path:auditDir+"chat-file-mention-error-1280x800.png",fullPage:true});
+});
+
 test("composer file mentions use fuzzy shared workspace search",async({page,request})=>{
   test.setTimeout(30_000);
   const dir=await mkdtemp(join(tmpdir(),"trebell-fuzzy-mention-"));
