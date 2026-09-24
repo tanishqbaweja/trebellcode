@@ -1577,6 +1577,37 @@ test("desktop background mode rolls back when settings persistence fails",async(
   await page.screenshot({path:auditDir+"settings-background-error-1280x800.png",fullPage:true});
 });
 
+test("desktop bridge read failures stay visible instead of looking like defaults",async({page,request})=>{
+  test.setTimeout(30_000);
+  await page.addInitScript(()=>{
+    Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{
+      updates:{get:async()=>{throw new Error("Deliberate desktop update read failure")},onState:()=>()=>{}},
+      browser:{importSources:async()=>{throw new Error("Deliberate browser profile scan failure")}},
+      snapshots:{
+        get:async()=>{throw new Error("Deliberate SnapShot settings read failure")},
+        pending:async()=>{throw new Error("Deliberate pending SnapShot read failure")},
+        onCaptured:()=>()=>{},
+        capture:async()=>({ok:true}),
+        configure:async value=>value,
+      },
+      background:{set:async()=>({ok:true})},
+    }});
+  });
+  await prepare(page,request);
+  await expect(page.getByTestId("app-action-error")).toContainText("Could not load pending SnapShots: Deliberate pending SnapShot read failure");
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await expect(page.locator(".settings-action-error")).toContainText("Could not load desktop update state: Deliberate desktop update read failure");
+  await page.getByRole("button",{name:/Desktop/}).click();
+  await expect(page.getByRole("heading",{name:"Browser profiles"})).toBeVisible();
+  await expect(page.getByText("Could not scan browser profiles: Deliberate browser profile scan failure",{exact:true})).toBeVisible();
+  await expect(page.getByRole("heading",{name:"SnapShots"})).toBeVisible();
+  await expect(page.getByText(/Could not load SnapShot settings: Deliberate SnapShot settings read failure/)).toBeVisible();
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await page.locator(".settings-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"settings-desktop-read-errors-1280x800.png",fullPage:true});
+});
+
 test("published theme refresh failures keep the last valid catalog visible",async({page,request})=>{
   test.setTimeout(30_000);
   let failRefresh=false;
@@ -1628,6 +1659,34 @@ test("Freebuff sign-in failures surface immediately without starting a useless p
   await page.setViewportSize({width:1280,height:800});
   await status.scrollIntoViewIfNeeded();
   await page.screenshot({path:auditDir+"freebuff-signin-error-1280x800.png",fullPage:true});
+});
+
+test("Freebuff sign-in verification failures stop the poll and stay visible",async({page,request})=>{
+  test.setTimeout(30_000);
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff"}});
+  const boot=await (await request.get("/api/bootstrap")).json();
+  let verifying=false,bootstrapCalls=0;
+  await page.route(/\/api\/bootstrap$/,route=>{
+    bootstrapCalls++;
+    if(verifying)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate Freebuff verification failure"})});
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...boot,mock:false,loggedIn:false,providerReady:false,appServerReady:false,wsUrl:null})});
+  });
+  await page.route("**/api/login/start",route=>{verifying=true;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({started:true})})});
+  await page.goto("/");
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await page.getByRole("button",{name:/Agents & models/}).click();
+  const signIn=page.getByRole("button",{name:"Sign in to Freebuff",exact:true});
+  await expect(signIn).toBeVisible();
+  const callsBefore=bootstrapCalls;
+  await signIn.click();
+  const status=page.getByTestId("provider-status");
+  await expect(status).toContainText("Could not verify Freebuff sign-in: Deliberate Freebuff verification failure",{timeout:7000});
+  await expect(status).toHaveClass(/provider-status-error/);
+  await expect(signIn).toBeEnabled();
+  expect(bootstrapCalls-callsBefore).toBeGreaterThanOrEqual(3);
+  await page.setViewportSize({width:1280,height:800});
+  await status.scrollIntoViewIfNeeded();
+  await page.screenshot({path:auditDir+"freebuff-signin-verification-error-1280x800.png",fullPage:true});
 });
 
 test("Claude runtime profile editor exposes real auto-compaction settings",async({page,request})=>{
@@ -3068,6 +3127,46 @@ test("custom theme stays coherent across chat panel and command palette",async({
   await page.keyboard.press("Escape");
   await page.setViewportSize({width:1280,height:800});
   await page.screenshot({path:auditDir+"custom-theme-chat-panel-1280x800.png",fullPage:true});
+});
+
+test("provider model refresh preserves models when provider status refresh fails",async({page})=>{
+  test.setTimeout(30_000);
+  let provider="freebuff",failBootstrap=false;
+  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
+  const modelCatalog=()=>provider==="agentrouter"
+    ?{models:["agentrouter/test/coding-fast"],metadata:{provider,models:[{id:"agentrouter/test/coding-fast",name:"Coding Fast",provider}]}}
+    :{models:["freebuff/test/coding-fast"],metadata:{provider,models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider}]}};
+  await page.route(/\/api\/bootstrap$/,route=>failBootstrap
+    ?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate provider bootstrap refresh failure"})})
+    :route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider,providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"provider-bootstrap-refresh-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:settings(),projects:[],threadMeta:{}})}));
+  await page.route(/\/api\/settings$/,route=>{
+    if(route.request().method()==="POST"){
+      const body=route.request().postDataJSON()||{};
+      if(body.modelProvider){provider=body.modelProvider;failBootstrap=true}
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())});
+    }
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())});
+  });
+  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(modelCatalog())}));
+  await page.route(/\/api\/providers$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selected:provider,providers:[{id:"freebuff",name:"Freebuff",hasKey:true},{id:"agentrouter",name:"AgentRouter",hasKey:true}],status:{id:provider,hasKey:true},ready:true})}));
+  await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+  await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+  await page.route(/\/api\/freebuff\/overview/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({})}));
+  await page.goto("/");
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await page.getByRole("button",{name:/Agents & models/}).click();
+  const selector=page.getByTestId("provider-selector");
+  await selector.selectOption("agentrouter");
+  await expect(selector).toHaveValue("agentrouter");
+  await expect(page.getByTestId("app-action-error")).toContainText("Models refreshed, but provider status could not refresh: Deliberate provider bootstrap refresh failure");
+  await expect(page.getByTestId("provider-status")).toContainText("AgentRouter");
+  await page.getByRole("button",{name:"Threads",exact:true}).click();
+  await expect(page.getByTestId("model-picker")).toContainText("Coding Fast");
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"provider-bootstrap-refresh-error-1280x800.png",fullPage:true});
 });
 
 test("switching Codex inference provider preserves the active chat and sidebar threads",async({page})=>{

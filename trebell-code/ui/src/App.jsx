@@ -654,7 +654,7 @@ export default function App(){
       factor=Math.min(2.5,Math.max(0.7,Math.round((factor+(direction<0?0.1:-0.1))*100)/100));
       window.trebellDesktop.zoom.set(factor).then(result=>{
         if(!disposed&&Number.isFinite(Number(result?.factor)))factor=Number(result.factor);
-      }).catch(()=>{});
+      }).catch(error=>showActionError(error,"Could not change desktop zoom"));
     };
     window.addEventListener("wheel",onWheel,{capture:true,passive:false});
     return()=>{disposed=true;window.removeEventListener("wheel",onWheel,{capture:true})};
@@ -686,7 +686,7 @@ export default function App(){
         setEvents(prev=>[...prev,{id:"snapshot-error-"+Date.now(),kind:"error",title:error.message||String(error),status:"done",raw:{snapshotId:id}}]);
       }finally{handling.delete(id)}
     };
-    snapshots.pending().then(items=>{for(const item of items||[])attachCapture(item.id)}).catch(()=>{});
+    snapshots.pending().then(items=>{for(const item of items||[])attachCapture(item.id)}).catch(error=>showActionError(error,"Could not load pending SnapShots"));
     const unsubscribe=snapshots.onCaptured?.(payload=>attachCapture(payload?.id));
     return()=>{disposed=true;unsubscribe?.()};
   },[]);
@@ -753,13 +753,14 @@ export default function App(){
     const targetProvider=expectedProvider||provider;
     const targetRuntime=expectedRuntime||agentRuntime;
     if(targetProvider!==provider||targetRuntime!==agentRuntime){setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("")}
-    const [boot,d]=await Promise.all([
-      api("/api/bootstrap").catch(()=>null),
+    const [bootResult,d]=await Promise.all([
+      api("/api/bootstrap").then(value=>({value,error:null}),error=>({value:null,error})),
       api("/api/models").catch(error=>({models:[],error:error.message})),
     ]);
     if(seq!==modelRefreshSeqRef.current)return d;
     if((d?.provider&&d.provider!==targetProvider)||(d?.agentRuntime&&d.agentRuntime!==targetRuntime))return d;
-    if(boot)setBootstrap(boot);
+    if(bootResult.value)setBootstrap(bootResult.value);
+    else if(bootResult.error)showActionError(bootResult.error,"Models refreshed, but provider status could not refresh");
     const ids=d?.models||[];
     setModelError(d?.error||"");
     setModelMeta(Object.fromEntries((d?.metadata?.models||[]).map(item=>[item.id,item])));
@@ -768,7 +769,7 @@ export default function App(){
     if(resetThread){activeThreadRef.current=null;setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);setAssistantText("");setQueued([]);setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null)}
     if(targetRuntime==="codex"&&targetProvider==="freebuff"&&next){
       const params=new URLSearchParams({timezone,model:next});
-      api("/api/freebuff/overview?"+params).then(data=>{if(seq===modelRefreshSeqRef.current&&data)setFreebuff(data)}).catch(()=>{});
+      api("/api/freebuff/overview?"+params).then(data=>{if(seq===modelRefreshSeqRef.current&&data)setFreebuff(data)}).catch(error=>showActionError(error,"Models refreshed, but Freebuff account state could not refresh"));
     }
     return d;
   }
@@ -2631,13 +2632,19 @@ export default function App(){
     const started=await api("/api/login/start",{method:"POST"});
     if(started?.started!==true)throw new Error("Freebuff sign-in could not be started.");
     return new Promise((resolve,reject)=>{
-      let settled=false;
+      let settled=false,verificationFailures=0;
       const finish=(error,data)=>{
         if(settled)return;settled=true;clearInterval(poll);clearTimeout(timeout);
         error?reject(error):resolve(data);
       };
       const check=async()=>{
-        const data=await api("/api/bootstrap").catch(()=>null);
+        let data;
+        try{data=await api("/api/bootstrap");verificationFailures=0}
+        catch(error){
+          verificationFailures++;
+          if(verificationFailures>=3)finish(new Error("Could not verify Freebuff sign-in: "+(error?.message||String(error))));
+          return;
+        }
         if(!data?.loggedIn)return;
         try{setBootstrap(data);await refreshProviderModels();finish(null,data)}
         catch(error){finish(error)}
@@ -2955,7 +2962,7 @@ export default function App(){
 
       {rightPanelOpen&&!rightPanelMaximized&&<div className="layout-resizer right-panel-resizer" data-testid="right-panel-resizer" role="separator" aria-label="Resize workspace panel" aria-orientation="vertical" onPointerDown={event=>beginLayoutResize("right",event)}/>}
       {rightPanelOpen&&<RightPanel active={rightPanelTab} disabledTabs={projectlessMode?["diff","source"]:[]} hiddenTabs={agentRuntime==="codex"?[]:["agents"]} maximized={rightPanelMaximized} onToggleMaximized={()=>setRightPanelMaximized(value=>!value)} onActive={tab=>openRightPanel(tab)} onClose={()=>{setRightPanelOpen(false);setRightPanelMaximized(false)}}><DeferredSurface label="Loading panel…" compact>{rightPanelContent()}</DeferredSurface></RightPanel>}
-      {actionError&&<div className={"app-action-error-toast"+(threadUndo?" with-thread-undo":"")} role="alert" aria-live="assertive" data-testid="app-action-error">{actionError}</div>}
+      {actionError&&<div className={"app-action-error-toast"+(threadUndo?" with-thread-undo":"")+(section!=="chat"?" secondary-surface-error":"")} role="alert" aria-live="assertive" data-testid="app-action-error">{actionError}</div>}
     </div>
 
     <McpElicitationModal key={elicitations[0]?.request?.id||"none"} request={elicitations[0]?.request} onResolve={resolveElicitation} onVerify={verifyMcpUser} verificationAvailable={!workspaceEnvironmentId}/>

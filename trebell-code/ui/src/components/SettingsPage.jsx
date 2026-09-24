@@ -303,9 +303,9 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     else if(!diagnostics)setDiagnostics({error:results[1].reason?.message||String(results[1].reason)});
     if(reportErrors&&failures.length)setSettingsError("Could not refresh diagnostics: "+failures.map(error=>error?.message||String(error)).join(" · "));
     setLoading(false);
-    if(window.trebellDesktop?.updates)window.trebellDesktop.updates.get().then(setDesktopUpdate).catch(()=>{});
-    if(window.trebellDesktop?.snapshots)window.trebellDesktop.snapshots.get().then(setSnapshotInfo).catch(()=>{});
-    if(window.trebellDesktop?.browser?.importSources)loadBrowserImportSources().catch(()=>{});
+    if(window.trebellDesktop?.updates)window.trebellDesktop.updates.get().then(info=>{setDesktopUpdate(info);setSettingsError(current=>/^Could not load desktop update state:/.test(current)?"":current)}).catch(error=>setSettingsError("Could not load desktop update state: "+(error?.message||String(error))));
+    if(window.trebellDesktop?.snapshots)window.trebellDesktop.snapshots.get().then(info=>{setSnapshotInfo(info);setSnapshotMessage(current=>/^Could not load SnapShot settings:/.test(current)?"":current)}).catch(error=>setSnapshotMessage("Could not load SnapShot settings: "+(error?.message||String(error))));
+    if(window.trebellDesktop?.browser?.importSources)loadBrowserImportSources();
     return failures.length===0;
   }
   async function loadStorageInfo({strict=false}={}){
@@ -336,11 +336,18 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     }catch(error){setStorageMessage("Cleanup failed: "+error.message)}
     finally{setStorageBusy(false)}
   }
-  async function loadBrowserImportSources(){
-    const info=await window.trebellDesktop?.browser?.importSources?.();if(!info)return;
-    setBrowserImport(info);const profiles=info.sources?.flatMap(source=>source.profiles||[])||[];
-    setBrowserImportProfile(current=>profiles.some(profile=>profile.id===current)?current:(profiles[0]?.id||""));
-    return info;
+  async function loadBrowserImportSources({strict=false}={}){
+    try{
+      const info=await window.trebellDesktop?.browser?.importSources?.();if(!info)return null;
+      setBrowserImport(info);const profiles=info.sources?.flatMap(source=>source.profiles||[])||[];
+      setBrowserImportProfile(current=>profiles.some(profile=>profile.id===current)?current:(profiles[0]?.id||""));
+      setBrowserImportMessage(current=>/^Could not scan browser profiles:/.test(current)?"":current);
+      return info;
+    }catch(error){
+      setBrowserImportMessage("Could not scan browser profiles: "+(error?.message||String(error)));
+      if(strict)throw error;
+      return null;
+    }
   }
   async function importBrowserProfile(){
     const source=browserImport.sources?.find(item=>item.profiles?.some(profile=>profile.id===browserImportProfile));if(!source||!browserImportProfile)return;
@@ -349,7 +356,11 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       const result=await window.trebellDesktop.browser.importProfile(source.id,browserImportProfile);
       setBrowserImportMessage(`Imported ${result.imported} cookie${result.imported===1?"":"s"}${result.skipped?` · ${result.skipped} encrypted/partitioned skipped`:""}${result.failed?` · ${result.failed} failed`:""}.`);
       await loadBrowserImportSources();
-    }catch(error){setBrowserImportMessage(error.message||String(error));await loadBrowserImportSources().catch(()=>{})}
+    }catch(error){
+      const primary=error?.message||String(error);
+      const refreshed=await loadBrowserImportSources();
+      setBrowserImportMessage(refreshed?primary:primary+" · Browser profile state could not be refreshed.");
+    }
     finally{setBrowserImportBusy(false)}
   }
   async function configureSnapshots(patch){
@@ -358,7 +369,16 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     try{
       const next=await window.trebellDesktop.snapshots.configure({...snapshotInfo,...patch});
       setSnapshotInfo(next);setSnapshotMessage(next.enabled?"SnapShots ready.":"SnapShots disabled.");
-    }catch(error){setSnapshotMessage(error.message||String(error));const current=await window.trebellDesktop.snapshots.get().catch(()=>null);if(current)setSnapshotInfo(current)}
+    }catch(error){
+      const primary=error?.message||String(error);
+      try{
+        const current=await window.trebellDesktop.snapshots.get();
+        if(current)setSnapshotInfo(current);
+        setSnapshotMessage(primary);
+      }catch(reloadError){
+        setSnapshotMessage(primary+" · Could not reload SnapShot settings: "+(reloadError?.message||String(reloadError)));
+      }
+    }
   }
   useEffect(()=>{refresh()},[projectPath]);
   useEffect(()=>{loadProviders()},[selected]);
