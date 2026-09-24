@@ -277,6 +277,11 @@ test("command palette keeps failed actions visible with useful feedback",async({
   await page.screenshot({path:auditDir+"command-palette-action-error-1280x800.png",fullPage:true});
   await page.keyboard.press("Escape");
   await expect(palette).toBeHidden();
+  const headerAction=page.locator(".workspace-header").getByRole("button",{name:"Broken action",exact:true});
+  await expect(headerAction).toBeVisible();
+  await headerAction.click();
+  await expect(page.getByTestId("app-action-error")).toContainText("Project action failed: Deliberate project action failure");
+  await page.screenshot({path:auditDir+"header-project-action-error-1280x800.png",fullPage:true});
 });
 
 test("terminal failures keep backend and visible session state in sync",async({page,request})=>{
