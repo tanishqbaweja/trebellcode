@@ -468,6 +468,7 @@ export default function App(){
   const [freebuff,setFreebuff]=useState({loggedIn:false}); const [skills,setSkills]=useState([]); const [providerCommands,setProviderCommands]=useState([]); const [providerAgents,setProviderAgents]=useState([]); const [providerAgent,setProviderAgent]=useState("");
   const [threadRuntimeProfiles,setThreadRuntimeProfiles]=useState({supported:false,currentInstanceId:null,items:[]}); const [threadRuntimeProfileBusy,setThreadRuntimeProfileBusy]=useState("");
   const submittingRef=useRef(false);
+  const notificationHandlerRef=useRef(null); const serverRequestHandlerRef=useRef(null);
   const [settings,setSettings]=useState({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,customThemes:[],keyboardShortcuts:{},agentRuntime:"codex",modelProvider:"freebuff"});
   const [environmentThemeCatalog,setEnvironmentThemeCatalog]=useState({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]});
   const [sidebarOpen,setSidebarOpen]=useState(true);
@@ -1035,11 +1036,13 @@ export default function App(){
       setProviderAgent(current=>current&&visible.some(agent=>(typeof agent==="string"?agent:agent.name)===current)?current:"");
     }
   }
+  notificationHandlerRef.current=handleNotification;
+  serverRequestHandlerRef.current=handleServerRequest;
 
   useEffect(()=>{
     if(!bootstrap.wsUrl||bootstrap.mock)return; let disposed=false,retryTimer=null,client=null;
     const connect=async(attempt=0)=>{
-      client=new CodexRpcClient(bootstrap.wsUrl,{clientVersion:bootstrap.version||"0.0.0",onStatus:setRpcStatus,onNotification:handleNotification,onServerRequest:m=>handleServerRequest(client,m)}); rpcRef.current=client;setRpc(client);
+      client=new CodexRpcClient(bootstrap.wsUrl,{clientVersion:bootstrap.version||"0.0.0",onStatus:setRpcStatus,onNotification:message=>notificationHandlerRef.current?.(message),onServerRequest:message=>serverRequestHandlerRef.current?.(client,message)}); rpcRef.current=client;setRpc(client);
       try{
         await client.connect();if(disposed)return;await recoverCodexAfterRestart(client);await ensureSections(client);
         const listed=await loadThreads(client);const activeId=activeThreadRef.current?.id;const reopen=activeId?(listed||[]).find(thread=>thread.id===activeId):null;
@@ -1643,14 +1646,19 @@ export default function App(){
   }
 
   async function loadPersistentThreadData(threadId){
-    if(!rpc||rpcStatus!=="connected"||!threadId)return {goal:null,pullRequests:[]};
-    const [goalData,attachmentData]=await Promise.all([
-      rpc.request("thread/goal/get",{threadId}).catch(()=>({goal:null})),
-      rpc.request("thread/attachment/list",{threadId,limit:100}).catch(()=>({data:[]})),
+    const client=rpcRef.current;if(!client||!threadId)return {goal:null,pullRequests:[]};
+    const [goalResult,attachmentResult]=await Promise.allSettled([
+      client.request("thread/goal/get",{threadId}),
+      client.request("thread/attachment/list",{threadId,limit:100}),
     ]);
-    const pullRequests=(attachmentData?.data||[]).filter(item=>item.attachmentType==="pull_request").map(item=>({...item.payload,__identityKey:item.identityKey}));
-    if(activeThread?.id===threadId){setGoal(goalData?.goal||null);setLinkedPullRequests(pullRequests)}
-    return {goal:goalData?.goal||null,pullRequests};
+    const goalData=goalResult.status==="fulfilled"?goalResult.value:null;
+    const attachmentData=attachmentResult.status==="fulfilled"?attachmentResult.value:null;
+    const pullRequests=attachmentData?(attachmentData?.data||[]).filter(item=>item.attachmentType==="pull_request").map(item=>({...item.payload,__identityKey:item.identityKey})):null;
+    if(activeThreadRef.current?.id===threadId){
+      if(goalResult.status==="fulfilled")setGoal(goalData?.goal||null);
+      if(attachmentResult.status==="fulfilled")setLinkedPullRequests(pullRequests||[]);
+    }
+    return {goal:goalResult.status==="fulfilled"?goalData?.goal||null:null,pullRequests};
   }
   function releaseInactiveCodexThread(threadId){
     if(agentRuntime!=="codex"||!threadId||running||!rpc||rpcStatus!=="connected")return;
@@ -1703,11 +1711,17 @@ export default function App(){
       setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex"){const meta=resumed.thread.providerMeta||{};applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}
     }
     if(agentRuntime==="codex"&&!bootstrap.mock&&resumed?.thread&&!projectless&&!threadEnvironmentId&&resumed.thread.cwd){
-      const listed=await api("/api/projects").catch(()=>({projects:[]}));
+      let listed={projects:[]};
+      try{listed=await api("/api/projects")}
+      catch(error){showActionError(error,"Could not sync Codex project identity")}
       const trebellProject=(listed.projects||[]).find(project=>!project.environmentId&&sameWorkspacePath(project.path,resumed.thread.cwd))||null;
-      const nativeProject=await ensureCodexProject(client,{trebellProject,cwd:resumed.thread.cwd}).catch(()=>null);
+      let nativeProject=null;
+      try{nativeProject=await ensureCodexProject(client,{trebellProject,cwd:resumed.thread.cwd})}
+      catch(error){showActionError(error,"Could not sync Codex project identity")}
       if(nativeProject?.id&&resumed.thread.projectId!==nativeProject.id){
-        const updated=await client.request("thread/metadata/update",{threadId:resumed.thread.id,projectId:nativeProject.id}).catch(()=>null);
+        let updated=null;
+        try{updated=await client.request("thread/metadata/update",{threadId:resumed.thread.id,projectId:nativeProject.id})}
+        catch(error){showActionError(error,"Could not sync Codex project identity")}
         if(updated?.thread){
           activeThreadRef.current=updated.thread;setActiveThread(updated.thread);
           setThreads(prev=>prev.map(item=>item.id===updated.thread.id?updated.thread:item));
@@ -1840,9 +1854,19 @@ export default function App(){
   }
   async function reloadActiveThread(){if(activeThread)await openThread(activeThread)}
   async function monitorWorktreeSetup(sessionId,{timeoutMs=30*60_000}={}){
-    const started=Date.now();
+    const started=Date.now();let consecutiveErrors=0;
     while(Date.now()-started<timeoutMs){
-      const data=await api("/api/terminal/sessions").catch(()=>({sessions:[]}));
+      let data;
+      try{data=await api("/api/terminal/sessions");consecutiveErrors=0}
+      catch(error){
+        consecutiveErrors++;
+        if(consecutiveErrors>=3){
+          const failure=new Error("Could not monitor worktree setup: "+(error?.message||String(error)));
+          setWorktreeSetup(prev=>prev?.sessionId===sessionId?{...prev,phase:"failed",detail:failure.message}:prev);
+          throw failure;
+        }
+        await new Promise(resolve=>setTimeout(resolve,700));continue;
+      }
       const session=(data.sessions||[]).find(item=>item.id===sessionId);
       if(session&&!session.running){
         const failed=session.exitCode!==0;
@@ -1855,9 +1879,16 @@ export default function App(){
     return {timeout:true,exitCode:null};
   }
   async function waitForDetachedSetup(sessionId,{timeoutMs=30*60_000}={}){
-    const started=Date.now();
+    const started=Date.now();let consecutiveErrors=0;
     while(Date.now()-started<timeoutMs){
-      const data=await api("/api/terminal/sessions").catch(()=>({sessions:[]}));const session=(data.sessions||[]).find(item=>item.id===sessionId);
+      let data;
+      try{data=await api("/api/terminal/sessions");consecutiveErrors=0}
+      catch(error){
+        consecutiveErrors++;
+        if(consecutiveErrors>=3)throw new Error("Could not monitor background worktree setup: "+(error?.message||String(error)));
+        await new Promise(resolve=>setTimeout(resolve,700));continue;
+      }
+      const session=(data.sessions||[]).find(item=>item.id===sessionId);
       if(session&&!session.running)return {exitCode:session.exitCode};
       await new Promise(resolve=>setTimeout(resolve,700));
     }
@@ -1930,10 +1961,13 @@ export default function App(){
     if(agentRuntime==="codex"&&!bootstrap.mock&&!projectless&&!workspaceEnvironmentId){
       let trebellProject=currentProject&&sameWorkspacePath(currentProject.path,cwd)?currentProject:null;
       if(!trebellProject){
-        const listed=await api("/api/projects").catch(()=>({projects:[]}));
+        let listed={projects:[]};
+        try{listed=await api("/api/projects")}
+        catch(error){showActionError(error,"Could not sync Codex project identity")}
         trebellProject=(listed.projects||[]).find(project=>!project.environmentId&&sameWorkspacePath(project.path,cwd))||null;
       }
-      nativeProjectId=(await ensureCodexProject(rpc,{trebellProject,cwd}).catch(()=>null))?.id||null;
+      try{nativeProjectId=(await ensureCodexProject(rpc,{trebellProject,cwd}))?.id||null}
+      catch(error){showActionError(error,"Could not sync Codex project identity")}
     }
     const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(nativeProjectId?{projectId:nativeProjectId}:{}),approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools,developerInstructions});
     if(agentRuntime!=="codex"&&result.thread?.providerMeta){setProviderAgent(result.thread.agent||providerAgent||"");const meta=result.thread.providerMeta;applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}

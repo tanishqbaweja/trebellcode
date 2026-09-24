@@ -732,6 +732,49 @@ test("failed automatic local queue starts keep the follow-up retryable",async({p
   }finally{await harness.close()}
 });
 
+test("background attachment refresh failures preserve linked pull requests",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"attachment-refresh-thread",name:"Attachment refresh fixture",preview:"Linked PR preservation",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  let failAttachments=false,attachmentReads=0;
+  const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
+    if(message.method==="thread/attachment/list"){
+      attachmentReads++;
+      if(failAttachments){
+        ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate attachment refresh failure"}}));
+        return true;
+      }
+      ws.send(JSON.stringify({id:message.id,result:{data:[{attachmentType:"pull_request",identityKey:"github:77",payload:{number:77,title:"Preserved linked PR",url:"https://github.com/example/trebellcode/pull/77",headRefName:"fixture/pr",baseRefName:"main"}}]}}));
+      return true;
+    }
+    if(message.method==="thread/goal/get"){
+      ws.send(JSON.stringify({id:message.id,result:{goal:{title:"Preserved goal"}}}));
+      return true;
+    }
+    return false;
+  }});
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"attachment-refresh-fixture");
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Attachment refresh fixture"]')});
+    await row.locator(".thread-main").click();
+    await expect(row).toHaveClass(/active/);
+    const linked=page.locator(".header-pr").filter({hasText:"#77"});
+    await expect(linked).toBeVisible();
+    expect(attachmentReads).toBeGreaterThanOrEqual(1);
+    failAttachments=true;
+    harness.emit({method:"thread/attachment/updated",params:{threadId:thread.id}});
+    await expect.poll(()=>attachmentReads).toBeGreaterThanOrEqual(2);
+    await expect(linked).toBeVisible();
+    await page.waitForTimeout(150);
+    await expect(linked).toBeVisible();
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".workspace-header").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"linked-pr-attachment-refresh-error-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
 test("terminal failures keep backend and visible session state in sync",async({page,request})=>{
   test.setTimeout(30_000);
   await page.addInitScript(()=>{
@@ -2575,6 +2618,61 @@ test("failed background work restores the draft when stash saving also fails",as
     for(const ws of sockets)try{ws.terminate()}catch{}
     wss.close();await new Promise(resolve=>wsHttp.close(resolve));
   }
+});
+
+test("worktree setup monitor failures stop promptly and restore the unsent draft",async({page})=>{
+  test.setTimeout(35_000);
+  const basePath=process.cwd(),worktree=basePath+"-trebell-setup-monitor-fixture";
+  const project={id:"setup-monitor-project",name:"Setup Monitor Project",path:basePath,environmentId:null,effectiveSettings:{defaultWorkspaceMode:"worktree"}};
+  const thread={id:"setup-monitor-existing-thread",name:"Setup monitor existing thread",preview:"Fixture only",cwd:basePath,createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexRequestHarness(thread);
+  let monitorReads=0;
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"worktree",activeProjectId:project.id};
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:basePath,platform:process.platform,version:"setup-monitor-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[thread.id]:{projectless:false,environmentId:null}}})}));
+    await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+    await page.route(/\/api\/projects$/,route=>{
+      if(route.request().method()==="POST"){
+        const body=route.request().postDataJSON()||{};
+        const next=body.path===worktree?{...project,id:"setup-monitor-worktree-project",name:"Setup Monitor Worktree",path:worktree,effectiveSettings:{defaultWorkspaceMode:"worktree"}}:project;
+        return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({project:next,projects:[project,next]})});
+      }
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project]})});
+    });
+    await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,root:basePath,branch:"main",branches:["main"],upstream:"origin/main",status:[],remotes:[],worktrees:[{path:basePath,branch:"main"}]})}));
+    await page.route(/\/api\/git\/action$/,route=>{
+      const body=route.request().postDataJSON()||{};
+      if(body.action==="worktree-create")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({result:{worktree,setup:{scriptName:"Fixture setup",waitForSetup:true,session:{id:"setup-monitor-session"}}}})});
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({result:{}})});
+    });
+    await page.route(/\/api\/terminal\/sessions(?:\?.*)?$/,route=>{
+      monitorReads++;
+      return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate setup monitor failure"})});
+    });
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:260})));
+    await page.goto("/");
+    const composer=page.getByTestId("composer");
+    await expect(composer).toBeVisible();
+    await page.locator(".workspace-mode").selectOption("worktree");
+    await composer.fill("Restore this draft when setup monitoring fails");
+    await page.getByTestId("send").click();
+    await expect.poll(()=>monitorReads).toBeGreaterThanOrEqual(3);
+    await expect(composer).toHaveValue("Restore this draft when setup monitoring fails");
+    const setup=page.locator(".worktree-setup-card.failed");
+    await expect(setup).toBeVisible();
+    await expect(setup).toContainText("Could not monitor worktree setup: Deliberate setup monitor failure");
+    await expect(page.locator(".user-bubble").filter({hasText:"Restore this draft when setup monitoring fails"})).toHaveCount(0);
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await setup.scrollIntoViewIfNeeded();
+    await expect(setup).toBeInViewport();
+    await page.screenshot({path:auditDir+"worktree-setup-monitor-error-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
 });
 
 test("background worktree registration failures warn without blocking the task",async({page})=>{
