@@ -1222,6 +1222,51 @@ test("populated source control and pull request detail stay usable",async({page,
   await page.screenshot({path:auditDir+"source-control-pr-detail-light-1600x980.png",fullPage:true});
 });
 
+test("source control keeps the PR visible when loading full details fails",async({page,request})=>{
+  test.setTimeout(30_000);
+  let failPrRefresh=false;
+  const listPr={number:142,title:"PR detail failure fixture",state:"OPEN",headRefName:"feature/pr-error",baseRefName:"main",provider:"github",url:"https://github.com/example/trebellcode/pull/142"};
+  await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    isGit:true,root:"H:\\Github Repositories\\Trebell\\trebell-code",branch:"feature/pr-error",branches:["main","feature/pr-error"],upstream:"origin/feature/pr-error",
+    status:[],remotes:[{name:"origin",url:"https://github.com/example/trebellcode.git"}],worktrees:[],
+  })}));
+  await page.route(/\/api\/source-control\/diagnostics\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    selectedProvider:"github",detectedProvider:"github",git:{version:"git version fixture"},providers:{github:{label:"GitHub",installed:true,authenticated:true}},
+    capabilities:{github:{create:true,comment:true,review:true,merge:true}},
+  })}));
+  await page.route(/\/api\/source-control\/prs\?/,route=>{
+    if(failPrRefresh)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate PR list refresh failure"})});
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:[listPr],capabilities:{create:true,comment:true,review:true,merge:true}})});
+  });
+  await page.route(/\/api\/source-control\/pr-detail\?/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate PR detail failure"})}));
+  await page.route(/\/api\/source-control\/pr-viewed\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({store:"environment",files:[]})}));
+
+  await prepare(page,request);
+  await page.getByTestId("right-panel-toggle").click();
+  const panel=page.getByTestId("right-panel");
+  await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
+  const prButton=panel.getByRole("button",{name:/#142 PR detail failure fixture/});
+  await expect(prButton).toBeVisible();
+  const [,detailResponse]=await Promise.all([
+    prButton.click(),
+    page.waitForResponse(response=>response.url().includes("/api/source-control/pr-detail?")),
+  ]);
+  expect(detailResponse.status()).toBe(500);
+  await expect(panel.getByRole("alert")).toContainText("Deliberate PR detail failure");
+  await expect(panel.getByRole("heading",{name:"#142 PR detail failure fixture",exact:true})).toBeVisible();
+  await expect(prButton).toHaveClass(/active/);
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"source-control-pr-detail-error-1280x800.png",fullPage:true});
+  failPrRefresh=true;
+  await panel.getByRole("button",{name:"Refresh pull requests",exact:true}).click();
+  await expect(panel.getByRole("alert")).toContainText("Deliberate PR list refresh failure");
+  await expect(prButton).toBeVisible();
+  await expect(prButton).toHaveClass(/active/);
+  await page.screenshot({path:auditDir+"source-control-refresh-error-1280x800.png",fullPage:true});
+});
+
 test("Claude thread can switch compatible account profiles from the model picker",async({page})=>{
   test.setTimeout(45_000);
   const home=await mkdtemp(join(tmpdir(),"trebell-claude-switch-"));

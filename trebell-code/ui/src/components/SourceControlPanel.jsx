@@ -23,17 +23,31 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   }
   function environmentBody(values={}){return {...values,environmentId:environmentId||null}}
 
-  async function refresh(providerOverride=sourceProvider){
+  async function refresh(providerOverride=sourceProvider,{reportErrors=false}={}){
     if(!projectPath)return;
-    const [i,d]=await Promise.all([
-      api("/api/git/info?"+query({path:projectPath})).catch(e=>({error:e.message,isGit:false})),
-      api("/api/source-control/diagnostics?"+query({path:projectPath,...(providerOverride?{provider:providerOverride}:{})})).catch(()=>null),
-    ]);
-    setInfo(i);setDiagnostics(d);
+    if(reportErrors)setError("");
+    let i;
+    try{i=await api("/api/git/info?"+query({path:projectPath}))}
+    catch(error){
+      if(reportErrors||!info)setError(error.message||String(error)||"Could not refresh repository information.");
+      return false;
+    }
+    let d=null;
+    try{d=await api("/api/source-control/diagnostics?"+query({path:projectPath,...(providerOverride?{provider:providerOverride}:{})}))}
+    catch(error){
+      if(reportErrors)setError(error.message||String(error)||"Could not refresh source-control diagnostics.");
+    }
+    setInfo(i);if(d)setDiagnostics(d);
     const chosen=providerOverride||d?.selectedProvider||(d?.detectedProvider&&d.detectedProvider!=="unknown"?d.detectedProvider:"");
     if(chosen&&!sourceProvider)setSourceProvider(chosen);
-    const p=await api("/api/source-control/prs?"+query({path:projectPath,...(chosen?{provider:chosen}:{})})).catch(e=>({items:[],error:e.message}));
-    setPrs(p.items||[]);if(p.capabilities)setCapabilities(p.capabilities);else if(chosen&&d?.capabilities?.[chosen])setCapabilities(d.capabilities[chosen]);if(p.error&&i?.remotes?.length)setError(p.error);
+    try{
+      const p=await api("/api/source-control/prs?"+query({path:projectPath,...(chosen?{provider:chosen}:{})}));
+      setPrs(p.items||[]);if(p.capabilities)setCapabilities(p.capabilities);else if(chosen&&d?.capabilities?.[chosen])setCapabilities(d.capabilities[chosen]);
+    }catch(error){
+      if(reportErrors||i?.remotes?.length)setError(error.message||String(error)||"Could not refresh pull requests.");
+      return false;
+    }
+    return true;
   }
   useEffect(()=>{setSourceProvider("");setSelectedPr(null);onSelectedPrChange?.(null);setViewed({store:null,files:[],loading:false});refresh("")},[projectPath,environmentId]);
   useEffect(()=>{setStackMergeMethod(defaultMergeMethod)},[defaultMergeMethod]);
@@ -63,25 +77,39 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     }catch(e){setError(e.message||String(e))}finally{setBusy("")}
   }
   async function openPr(pr){
-    const d=await api("/api/source-control/pr-detail?"+query({path:projectPath,number:String(pr.number),...(sourceProvider?{provider:sourceProvider}:{})})).catch(()=>null);
-    const item=d?.item||pr;setSelectedPr(item);onSelectedPrChange?.(item);setTimeout(()=>prDetailRef.current?.scrollIntoView({block:"start",behavior:"auto"}),0);await loadViewed(item,d?.provider||sourceProvider||item.provider);
+    setError("");
+    let d=null;
+    let nextError="";
+    try{d=await api("/api/source-control/pr-detail?"+query({path:projectPath,number:String(pr.number),...(sourceProvider?{provider:sourceProvider}:{})}))}
+    catch(error){nextError=error.message||String(error)||"Could not load pull request details."}
+    const item=d?.item||pr;setSelectedPr(item);onSelectedPrChange?.(item);setTimeout(()=>prDetailRef.current?.scrollIntoView({block:"start",behavior:"auto"}),0);
+    const viewedError=await loadViewed(item,d?.provider||sourceProvider||item.provider);if(viewedError)nextError=viewedError;
     if(item?.identity){
       const params=new URLSearchParams({provider:item.identity.provider||"",host:item.identity.host||"",repository:item.identity.repository||"",number:String(item.identity.number||item.number)});
-      const reverse=await api("/api/source-control/thread-link?"+params).catch(()=>({threads:[]}));setLinkedThreads(reverse.threads||[]);
+      try{const reverse=await api("/api/source-control/thread-link?"+params);setLinkedThreads(reverse.threads||[])}
+      catch(error){setLinkedThreads([]);nextError=error.message||String(error)||"Could not load linked threads."}
     }else setLinkedThreads([]);
+    setError(nextError);
   }
-  async function syncLinkedPullRequests(){
+  async function syncLinkedPullRequests(reportErrors=false){
     if(!threadId)return;
-    const result=await api("/api/source-control/thread-link",{method:"POST",body:{action:"sync",threadId}}).catch(()=>null);
-    if(result?.links)onLinkedPullRequestsChanged?.(result.links);
+    if(reportErrors){setBusy("sync-links");setError("")}
+    try{
+      const result=await api("/api/source-control/thread-link",{method:"POST",body:{action:"sync",threadId}});
+      if(result?.links)onLinkedPullRequestsChanged?.(result.links);
+    }catch(error){
+      if(reportErrors)setError(error.message||String(error)||"Could not sync linked pull requests.");
+    }finally{
+      if(reportErrors)setBusy("");
+    }
   }
-  useEffect(()=>{if(threadId&&linkedPullRequests.length)syncLinkedPullRequests()},[threadId,projectPath,environmentId]);
+  useEffect(()=>{if(threadId&&linkedPullRequests.length)syncLinkedPullRequests(false)},[threadId,projectPath,environmentId]);
   async function loadViewed(pr,providerOverride=sourceProvider){
-    if(!pr?.number){setViewed({store:null,files:[],loading:false});return}
+    if(!pr?.number){setViewed({store:null,files:[],loading:false});return ""}
     setViewed(current=>({...current,loading:true}));
     const params={path:projectPath,number:String(pr.number)};if(providerOverride)params.provider=providerOverride;
-    try{const result=await api("/api/source-control/pr-viewed?"+query(params));setViewed({store:result.store||null,files:result.files||[],loading:false})}
-    catch(error){setViewed({store:null,files:[],loading:false});setError(error.message||String(error))}
+    try{const result=await api("/api/source-control/pr-viewed?"+query(params));setViewed({store:result.store||null,files:result.files||[],loading:false});return ""}
+    catch(error){setViewed({store:null,files:[],loading:false});return error.message||String(error)||"Could not load viewed-file state."}
   }
   async function setFileViewed(file,value){
     if(!selectedPr?.number)return;setBusy("viewed:"+file.path);setError("");
@@ -148,20 +176,20 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       <div><GitBranch size={16}/><select value={info?.branch||""} onChange={e=>action("branch-switch",{name:e.target.value})}>{(info?.branches||[]).map(b=><option key={b}>{b}</option>)}</select><button onClick={()=>{const n=prompt("New branch name");if(n)action("branch-create",{name:n})}}><Plus size={13}/></button></div>
       <div><button onClick={()=>action("fetch")} disabled={!!busy}><RefreshCw size={13}/> Fetch</button><button onClick={()=>action("pull")} disabled={!!busy}><Download size={13}/> Pull</button><button onClick={()=>action("push",{setUpstream:!info?.upstream})} disabled={!!busy}><Upload size={13}/> Push</button></div>
     </div>
-    {error&&<div className="inline-error">{error}</div>}
+    {error&&<div className="inline-error" role="alert">{error}</div>}
     {branchPr&&<div className="branch-pr-badge"><GitPullRequest size={13}/><span><strong>Branch PR #{branchPr.number}</strong><small>{branchPr.title}</small></span><button onClick={()=>openPr(branchPr)}>Review</button>{threadId&&!branchPrLinked&&<button onClick={()=>onLinkPr?.(branchPr)}>Link this PR</button>}{threadId&&branchPrLinked&&<em>Linked</em>}</div>}
     <div className="sc-grid">
       <section className="sc-card"><h3>Changes <span>{info?.status?.length||0}</span></h3><div className="status-list">{(info?.status||[]).map(s=><div key={s.path}><code>{s.code}</code><span>{s.path}</span></div>)}{!info?.status?.length&&<p>Working tree clean.</p>}</div>
         <div className="commit-box"><textarea value={commitMessage} onChange={e=>setCommitMessage(e.target.value)} placeholder="Commit message"/><button onClick={generate} disabled={busy==="generate"}><WandSparkles size={13}/> Generate with {{freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider}</button><button className="primary" onClick={()=>action("commit",{message:commitMessage})} disabled={!commitMessage.trim()||!!busy}><GitCommit size={13}/> Commit</button></div>
       </section>
-      <section className="sc-card"><h3>Repository</h3><p>Root: <code>{info?.root}</code></p><p>Upstream: <code>{info?.upstream||"none"}</code></p><p>Git: {diagnostics?.git?.version||"not found"}</p><label className="source-provider-field"><span>Code host</span><select value={sourceProvider} onChange={e=>{setSourceProvider(e.target.value);setSelectedPr(null);onSelectedPrChange?.(null);setViewed({store:null,files:[],loading:false});refresh(e.target.value)}}><option value="">Auto detect</option><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="forgejo">Forgejo / Gitea</option><option value="bitbucket">Bitbucket</option><option value="azure-devops">Azure DevOps</option></select></label><p>{sourceProvider?diagnostics?.providers?.[sourceProvider]?.label||sourceProvider:"Detected: "+(diagnostics?.detectedProvider||"unknown")} · {sourceProvider?(diagnostics?.providers?.[sourceProvider]?.authenticated?"authenticated":diagnostics?.providers?.[sourceProvider]?.installed?"needs authentication":"client/credentials missing"):"choose a provider if auto-detection is ambiguous"}</p>
+      <section className="sc-card"><h3>Repository</h3><p>Root: <code>{info?.root}</code></p><p>Upstream: <code>{info?.upstream||"none"}</code></p><p>Git: {diagnostics?.git?.version||"not found"}</p><label className="source-provider-field"><span>Code host</span><select value={sourceProvider} onChange={e=>{setSourceProvider(e.target.value);setSelectedPr(null);onSelectedPrChange?.(null);setViewed({store:null,files:[],loading:false});refresh(e.target.value,{reportErrors:true})}}><option value="">Auto detect</option><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="forgejo">Forgejo / Gitea</option><option value="bitbucket">Bitbucket</option><option value="azure-devops">Azure DevOps</option></select></label><p>{sourceProvider?diagnostics?.providers?.[sourceProvider]?.label||sourceProvider:"Detected: "+(diagnostics?.detectedProvider||"unknown")} · {sourceProvider?(diagnostics?.providers?.[sourceProvider]?.authenticated?"authenticated":diagnostics?.providers?.[sourceProvider]?.installed?"needs authentication":"client/credentials missing"):"choose a provider if auto-detection is ambiguous"}</p>
         {!info?.remotes?.some(remote=>remote.name==="origin")&&sourceProvider&&diagnostics?.capabilities?.[sourceProvider]?.publish&&<button onClick={async()=>{const localName=String(info?.root||projectPath).split(/[\\/]/).filter(Boolean).pop()||"repository";const labels={gitlab:"Repository path (group/project or project)",bitbucket:"Repository path (workspace/repository)","azure-devops":"Repository path (project/repository)"};const defaults={bitbucket:`workspace/${localName}`,"azure-devops":`project/${localName}`};const name=prompt(labels[sourceProvider]||"Repository name",defaults[sourceProvider]||localName);if(!name)return;const visibility=sourceProvider==="azure-devops"?"private":confirm("Make this repository public?\n\nOK = public\nCancel = private")?"public":"private";setBusy("publish");setError("");try{const result=await api("/api/source-control/publish",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider,name,visibility})});if(result.url)window.open(result.url,"_blank");await refresh();if(!result.pushed)setError("Repository created. Make the first commit, then push it to origin.")}catch(e){setError(e.message)}finally{setBusy("")}}} disabled={!!busy||!diagnostics?.providers?.[sourceProvider]?.authenticated}><Upload size={13}/> Publish repository</button>}
         <h4>Worktrees</h4>{(info?.worktrees||[]).map(w=><div className="worktree-row" key={w.path}><span>{w.branch||"detached"}</span><code>{w.path}</code>{w.path!==info?.root&&<button onClick={()=>onProjectChange?.(w.path,environmentId||null)}>Open</button>}</div>)}
         {(remote||window.trebellDesktop?.pickDirectory)&&<button onClick={async()=>{const branch=prompt("New worktree branch");if(!branch)return;const path=remote?prompt("Remote worktree path",(String(projectPath).replace(/[\\/]?$/,"")+"-"+branch.replace(/[^a-zA-Z0-9._-]+/g,"-"))):await window.trebellDesktop.pickDirectory();if(path){await action("worktree-create",{branch,path,baseBranch:info?.branch});onProjectChange?.(path,environmentId||null)}}}><Plus size={13}/> Add worktree</button>}
       </section>
     </div>
-    {threadId&&<section className="sc-card linked-pr-panel"><div className="linked-pr-panel-head"><h3>Linked pull requests <span>{linkedPullRequests.length}</span></h3><button onClick={syncLinkedPullRequests} disabled={!!busy}><RefreshCw size={12}/> Sync</button></div>{linkedGroups.length?linkedGroups.map(group=><div className="linked-pr-group" key={group.key}>{group.stack&&<div className="linked-pr-group-title"><Layers3 size={12}/><strong>Stack #{group.stack.number}</strong><span>{group.links.length} linked layer{group.links.length===1?"":"s"}</span></div>}<div>{group.links.map(link=><div className="linked-pr-row" key={pullLinkKey(link)}><button className="linked-pr-open" onClick={()=>window.open(link.url,"_blank")}><GitPullRequest size={12}/><span><strong>#{link.number} {link.snapshot?.title||link.title||"Pull request"}</strong><small>{link.identity?.repository||""} · {link.snapshot?.state||link.state||"unknown"}</small></span></button><button className="linked-pr-unlink" onClick={()=>onLinkPr?.(link)}>Unlink</button></div>)}</div></div>):<p>No pull requests linked to this thread.</p>}</section>}
-    <section className="pr-card"><div className="pr-head"><h3>Pull requests</h3><button onClick={refresh}><RefreshCw size={13}/></button><button onClick={()=>createReview({generateText:true})} disabled={!!busy}><WandSparkles size={13}/> Generate PR</button><button onClick={()=>createReview()} disabled={!!busy}><Plus size={13}/> Create PR</button></div>
+    {threadId&&<section className="sc-card linked-pr-panel"><div className="linked-pr-panel-head"><h3>Linked pull requests <span>{linkedPullRequests.length}</span></h3><button onClick={()=>syncLinkedPullRequests(true)} disabled={!!busy}><RefreshCw size={12}/> Sync</button></div>{linkedGroups.length?linkedGroups.map(group=><div className="linked-pr-group" key={group.key}>{group.stack&&<div className="linked-pr-group-title"><Layers3 size={12}/><strong>Stack #{group.stack.number}</strong><span>{group.links.length} linked layer{group.links.length===1?"":"s"}</span></div>}<div>{group.links.map(link=><div className="linked-pr-row" key={pullLinkKey(link)}><button className="linked-pr-open" onClick={()=>window.open(link.url,"_blank")}><GitPullRequest size={12}/><span><strong>#{link.number} {link.snapshot?.title||link.title||"Pull request"}</strong><small>{link.identity?.repository||""} · {link.snapshot?.state||link.state||"unknown"}</small></span></button><button className="linked-pr-unlink" onClick={()=>onLinkPr?.(link)}>Unlink</button></div>)}</div></div>):<p>No pull requests linked to this thread.</p>}</section>}
+    <section className="pr-card"><div className="pr-head"><h3>Pull requests</h3><button aria-label="Refresh pull requests" onClick={()=>refresh(sourceProvider,{reportErrors:true})}><RefreshCw size={13}/></button><button onClick={()=>createReview({generateText:true})} disabled={!!busy}><WandSparkles size={13}/> Generate PR</button><button onClick={()=>createReview()} disabled={!!busy}><Plus size={13}/> Create PR</button></div>
       {prs.length?<div className="pr-layout"><div className="pr-list">{prs.map(pr=><button key={pr.number} onClick={()=>openPr(pr)} className={selectedPr?.number===pr.number?"active":""}><GitPullRequest size={14}/><div><strong>#{pr.number} {pr.title}</strong><span>{pr.headRefName} → {pr.baseRefName}{pr.stack?.position&&pr.stack?.size?" · stack "+pr.stack.position+"/"+pr.stack.size:""}</span></div><em>{pr.state}</em></button>)}</div>
       <div className="pr-detail" ref={prDetailRef}>{selectedPr?<>
         <h3>#{selectedPr.number} {selectedPr.title}</h3>{linkedThreads.length>0&&<div className="pr-linked-threads"><span>Linked threads</span>{linkedThreads.map(thread=><button key={thread.threadId} title={thread.threadId} onClick={()=>Promise.resolve(onOpenLinkedThread?.(thread)).catch(error=>setError(error.message||String(error)))}>{thread.title||thread.threadId.slice(0,8)}{thread.archived?" · archived":""}</button>)}</div>}<p>{selectedPr.body||"No description."}</p>
