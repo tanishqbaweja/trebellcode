@@ -95,27 +95,27 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
       call("externalAgentConfig/import/readHistories",{}),
       platform==="win32"?call("windowsSandbox/readiness",undefined):Promise.resolve(null),
     ]);
-    setData({
-      permissions:permissions?.data||[],
-      mcp:mcp?.data||[],
-      marketplaces:plugins?.marketplaces||[],
-      apps:apps?.data||[],
-      installedApps:installedApps?.apps||[],
-      hooks:hooks?.data||[],
-      features:features?.data||[],
-      sharedPlugins:sharedPlugins?.data||[],
-      loadedThreads:loadedThreads?.data||[],
-      loadedThreadsMore:Boolean(loadedThreads?.nextCursor),
-      capabilities:capabilities||null,
-      account:account||null,
-      rateLimits:rateLimits||null,
-      usage:usage||null,
-      config:config||null,
-      requirements:requirements?.requirements||null,
-      memory:memory||null,
-      diagnostics:diagnostics||null,
-      windowsSandbox:windowsSandbox||null,
-    });
+    setData(current=>({
+      ...current,
+      ...(permissions!==null?{permissions:permissions?.data||[]}:{}),
+      ...(mcp!==null?{mcp:mcp?.data||[]}:{}),
+      ...(plugins!==null?{marketplaces:plugins?.marketplaces||[]}:{}),
+      ...(apps!==null?{apps:apps?.data||[]}:{}),
+      ...(installedApps!==null?{installedApps:installedApps?.apps||[]}:{}),
+      ...(hooks!==null?{hooks:hooks?.data||[]}:{}),
+      ...(features!==null?{features:features?.data||[]}:{}),
+      ...(sharedPlugins!==null?{sharedPlugins:sharedPlugins?.data||[]}:{}),
+      ...(loadedThreads!==null?{loadedThreads:loadedThreads?.data||[],loadedThreadsMore:Boolean(loadedThreads?.nextCursor)}:{}),
+      ...(capabilities!==null?{capabilities}:{}),
+      ...(account!==null?{account}:{}),
+      ...(rateLimits!==null?{rateLimits}:{}),
+      ...(usage!==null?{usage}:{}),
+      ...(config!==null?{config}:{}),
+      ...(requirements!==null?{requirements:requirements?.requirements||null}:{}),
+      ...(memory!==null?{memory}:{}),
+      ...(diagnostics!==null?{diagnostics}:{}),
+      ...(platform==="win32"&&windowsSandbox!==null?{windowsSandbox}:{}),
+    }));
     if(importHistories)setMigrationHistory({data:importHistories.data||[],connectors:importHistories.connectors||[]});
     setLoading(false);
   }
