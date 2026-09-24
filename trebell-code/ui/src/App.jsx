@@ -479,13 +479,13 @@ export default function App(){
   const [guardianDenials,setGuardianDenials]=useState([]); const [guardianBusy,setGuardianBusy]=useState("");
   const [panel,setPanel]=useState(null); const [rightPanelOpen,setRightPanelOpen]=useState(false); const [rightPanelTab,setRightPanelTab]=useState("files"); const [rightPanelMaximized,setRightPanelMaximized]=useState(false); const [reviewedFiles,setReviewedFiles]=useState([]); const [checkpointByTurn,setCheckpointByTurn]=useState({});
   const [selectedThreadIds,setSelectedThreadIds]=useState(new Set()); const [providerRevision,setProviderRevision]=useState(0);
-  const [snoozeRequest,setSnoozeRequest]=useState(null); const [threadUndo,setThreadUndo]=useState(null);
+  const [snoozeRequest,setSnoozeRequest]=useState(null); const [threadUndo,setThreadUndo]=useState(null); const [actionError,setActionError]=useState("");
   const [goal,setGoal]=useState(null); const [linkedPullRequests,setLinkedPullRequests]=useState([]); const [sourceSelectedPr,setSourceSelectedPr]=useState(null);
   const [worktreeSetup,setWorktreeSetup]=useState(null);
   const [threadTelemetry,setThreadTelemetry]=useState({});
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false);
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"});
-  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
+  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
   const navigationKey=location=>[location.section,location.threadId||"",location.rightPanelOpen?location.rightPanelTab||"files":""].join("|");
   useEffect(()=>{
@@ -1064,13 +1064,25 @@ export default function App(){
     let cancelled=false; const timer=setTimeout(async()=>{const found=new Map(titleMatches.map(t=>[t.id,t]));const matches=await searchThreadMessages(query);for(const match of matches){const thread=match.thread||threads.find(item=>item.id===match.threadId);if(thread)found.set(thread.id,thread)}if(!cancelled)setSearchResults([...found.values()])},250);return()=>{cancelled=true;clearTimeout(timer)}
   },[query,threads,threadMeta,rpc,rpcStatus,agentRuntime]);
 
+  function showActionError(error,label="Action failed"){
+    const detail=error?.message||String(error)||"Unknown error";
+    if(actionErrorTimerRef.current)clearTimeout(actionErrorTimerRef.current);
+    setActionError(label+": "+detail);
+    actionErrorTimerRef.current=setTimeout(()=>{actionErrorTimerRef.current=null;setActionError("")},6000);
+  }
+  function runUserAction(action,label){
+    if(actionErrorTimerRef.current)clearTimeout(actionErrorTimerRef.current);
+    actionErrorTimerRef.current=null;setActionError("");
+    return Promise.resolve().then(action).catch(error=>{showActionError(error,label);return null});
+  }
+  useEffect(()=>()=>{if(actionErrorTimerRef.current)clearTimeout(actionErrorTimerRef.current)},[]);
   async function copyText(value){const text=String(value||"").trim();return text?writeClipboardText(text):false}
   async function copyActiveReference(){
-    const selectedUrl=rightPanelOpen&&rightPanelTab==="source"?sourceSelectedPr?.url:null;if(selectedUrl){await copyText(selectedUrl);return}
+    const selectedUrl=rightPanelOpen&&rightPanelTab==="source"?sourceSelectedPr?.url:null;if(selectedUrl){if(!await copyText(selectedUrl))throw new Error("Could not copy to clipboard.");return}
     const linkedUrl=linkedPullRequests.find(link=>link?.url)?.url;
-    await copyText(linkedUrl||activeThread?.id||"");
+    if(!await copyText(linkedUrl||activeThread?.id||""))throw new Error("Could not copy to clipboard.");
   }
-  async function copyActivePullRequestNumber(){if(rightPanelOpen&&rightPanelTab==="source"&&sourceSelectedPr?.number)await copyText("#"+sourceSelectedPr.number)}
+  async function copyActivePullRequestNumber(){if(rightPanelOpen&&rightPanelTab==="source"&&sourceSelectedPr?.number&&!await copyText("#"+sourceSelectedPr.number))throw new Error("Could not copy to clipboard.")}
 
   useEffect(()=>{const onHistory=event=>{const sent=messages.filter(m=>m.role==="user").map(m=>m.text);if(!sent.length)return;let next=promptHistoryIndex;if(event.detail<0)next=Math.min(sent.length-1,next+1);else next=Math.max(-1,next-1);setPromptHistoryIndex(next);setPrompt(next<0?"":sent[sent.length-1-next])};window.addEventListener("trebell:history",onHistory);return()=>window.removeEventListener("trebell:history",onHistory)},[messages,promptHistoryIndex]);
   useEffect(()=>{
@@ -1099,21 +1111,21 @@ export default function App(){
       event.preventDefault();
       if(command==="newChat")newChat();
       else if(command==="commandPalette")setPaletteOpen(value=>!value);
-      else if(command==="navigationBack")navigateHistory(-1).catch(()=>{});
-      else if(command==="navigationForward")navigateHistory(1).catch(()=>{});
+      else if(command==="navigationBack")runUserAction(()=>navigateHistory(-1),"Could not navigate back");
+      else if(command==="navigationForward")runUserAction(()=>navigateHistory(1),"Could not navigate forward");
       else if(command==="sidebarToggle")setSidebarOpen(value=>!value);
-      else if(command==="threadStop")stop().catch(()=>{});
-      else if(command==="threadSettle"&&activeThread?.id)reversibleThreadAction(activeThread,activeThread.section?.name==="Settled"?"active":"settle").catch(()=>{});
-      else if(command==="threadPin"&&activeThread?.id)reversibleThreadAction(activeThread,activeThread.section?.name==="Pinned"?"active":"pin").catch(()=>{});
+      else if(command==="threadStop")runUserAction(stop,"Could not stop turn");
+      else if(command==="threadSettle"&&activeThread?.id)runUserAction(()=>reversibleThreadAction(activeThread,activeThread.section?.name==="Settled"?"active":"settle"),"Could not update thread");
+      else if(command==="threadPin"&&activeThread?.id)runUserAction(()=>reversibleThreadAction(activeThread,activeThread.section?.name==="Pinned"?"active":"pin"),"Could not update thread");
       else if(command==="threadPrevious"||command==="threadNext"){
         const index=displayThreads.findIndex(thread=>thread.id===activeThread?.id);
         const delta=command==="threadPrevious"?-1:1;const next=displayThreads[index>=0?index+delta:-1];
-        if(next)openThread(next).catch(()=>{});
+        if(next)runUserAction(()=>openThread(next),"Could not open thread");
       }
       else if(command==="threadFind")openThreadFind();
       else if(command.startsWith("threadJump")){
         const index=Number(command.slice("threadJump".length))-1;const target=displayThreads[index];
-        if(target)openThread(target).catch(()=>{});
+        if(target)runUserAction(()=>openThread(target),"Could not open thread");
       }
       else if(command==="stash")stashPrompt();
       else if(command==="terminal")setPanel(value=>value==="terminal"?null:"terminal");
@@ -1146,8 +1158,8 @@ export default function App(){
       else if(command==="environments")setSection("environments");
       else if(command==="steerQueued"&&queued.length)sendQueuedNow(queued[0]);
       else if(command==="undoThreadAction")undoThreadAction();
-      else if(command==="copyReference")copyActiveReference().catch(()=>{});
-      else if(command==="copyPullRequestNumber")copyActivePullRequestNumber().catch(()=>{});
+      else if(command==="copyReference")runUserAction(copyActiveReference,"Copy failed");
+      else if(command==="copyPullRequestNumber")runUserAction(copyActivePullRequestNumber,"Copy failed");
       else if(command==="modelPicker")window.dispatchEvent(new CustomEvent("trebell:model-picker",{detail:{action:"toggle"}}));
       else if(command.startsWith("modelJump"))window.dispatchEvent(new CustomEvent("trebell:model-picker",{detail:{action:"jump",index:Number(command.slice("modelJump".length))-1}}));
       else if(/^script\..+\.run$/.test(command)){
@@ -2077,8 +2089,8 @@ export default function App(){
     setQueued(next);
   }
   async function stop(){
-    if(rpc&&activeThread?.id&&activeTurnId)await rpc.request("turn/interrupt",{threadId:activeThread.id,turnId:activeTurnId}).catch(()=>{});
-    if(agentRuntime==="codex"&&queueMode==="native"){setRunning(false);setActiveTurnId(null);await loadNativeQueue(rpc,activeThread?.id).catch(()=>{});return}
+    if(rpc&&activeThread?.id&&activeTurnId)await rpc.request("turn/interrupt",{threadId:activeThread.id,turnId:activeTurnId});
+    if(agentRuntime==="codex"&&queueMode==="native"){setRunning(false);setActiveTurnId(null);await loadNativeQueue(rpc,activeThread?.id);return}
     const restored=restoreQueuedDraft({prompt,attachments,contextChips,queued,maxAttachments:MAX_COMPOSER_ATTACHMENTS});
     setPrompt(restored.prompt);setAttachments(restored.attachments);setContextChips(restored.contextChips);
     setQueued([]);setRunning(false);
@@ -2258,7 +2270,7 @@ export default function App(){
   }
   async function logout(){await api("/api/logout",{method:"POST"});setBootstrap(prev=>({...prev,loggedIn:false,providerReady:false}));setModels([]);setModel("");setSelectedModels([]);setFreebuff({loggedIn:false})}
   async function renameThread(){if(!rpc||!activeThread)return;const name=prompt("Rename thread",titleOf(activeThread));if(!name?.trim())return;await rpc.request("thread/name/set",{threadId:activeThread.id,name:name.trim()});setActiveThread(prev=>({...prev,name:name.trim()}));setThreads(prev=>prev.map(t=>t.id===activeThread.id?{...t,name:name.trim()}:t))}
-  async function shareThread(){const text=messages.map(m=>(m.role==="user"?"You":"Trebell Code")+": "+m.text).join("\n\n");if(text)await writeClipboardText(text)}
+  async function shareThread(){const text=messages.map(m=>(m.role==="user"?"You":"Trebell Code")+": "+m.text).join("\n\n");if(text&&!await writeClipboardText(text))throw new Error("Could not copy conversation.")}
   async function startReview(){
     if(!rpc||!activeThread?.id)throw new Error("Start or open a thread before reviewing.");
     const result=await rpc.request("review/start",{threadId:activeThread.id,target:{type:"uncommittedChanges"}});
@@ -2473,7 +2485,7 @@ export default function App(){
               {!projectlessMode&&!workspaceRemote&&<OpenInPicker path={projectPath}/>}
               {(currentProject?.scripts||[]).length>0&&(()=>{const script=(currentProject.scripts||[]).find(item=>item.id===currentProject.preferredScriptId)||currentProject.scripts[0];return <button className="header-control" onClick={()=>runProjectAction(script).catch(error=>setEvents(prev=>[...prev,{id:"project-action-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} title={script.command}><Play size={13}/><span>{script.name}</span></button>})()}
               {activeThread?.id&&gitInfo?.isGit&&<button className="header-control" onClick={()=>startReview().catch(error=>setEvents(prev=>[...prev,{id:"review-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]))} title="Review uncommitted changes"><ShieldCheck size={14}/><span>Review</span></button>}
-              {running&&<button className="header-control stop-control" onClick={stop}><CircleStop size={14}/><span>Stop</span></button>}
+              {running&&<button className="header-control stop-control" onClick={()=>runUserAction(stop,"Could not stop turn")}><CircleStop size={14}/><span>Stop</span></button>}
               <button data-testid="terminal-toggle" className={"header-control icon-only "+(panel==="terminal"?"active":"")} onClick={()=>setPanel(panel==="terminal"?null:"terminal")} aria-label="Toggle terminal" title="Toggle terminal"><PanelBottom size={16}/></button>
               {activeThread?.id&&<button className={"header-control icon-only "+(rightPanelOpen&&rightPanelTab==="goal"?"active":"")} onClick={()=>openRightPanel("goal")} aria-label="Thread goal" title={goal?.objective||"Set thread goal"}><Target size={15}/></button>}
               <button data-testid="right-panel-toggle" className={"header-control icon-only "+(rightPanelOpen?"active":"")} onClick={()=>{if(rightPanelOpen){setRightPanelOpen(false);setRightPanelMaximized(false)}else openRightPanel("files")}} aria-label="Open files and diff" title="Toggle workspace panel"><PanelRight size={16}/></button>
@@ -2527,6 +2539,7 @@ export default function App(){
     <McpElicitationModal key={elicitations[0]?.request?.id||"none"} request={elicitations[0]?.request} onResolve={resolveElicitation} onVerify={verifyMcpUser} verificationAvailable={!workspaceEnvironmentId}/>
     {!elicitations.length&&<QuestionModal request={question?.request} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={pickFiles}/>}
     <SnoozeDialog request={snoozeRequest} onSubmit={submitSnooze} onCancel={()=>setSnoozeRequest(null)}/>
+    {actionError&&<div className={"app-action-error-toast"+(threadUndo?" with-thread-undo":"")} role="alert" aria-live="assertive" data-testid="app-action-error">{actionError}</div>}
     {threadUndo&&<div className="thread-undo-toast" role="status" aria-live="polite" data-testid="thread-undo-toast"><span>{threadUndo.label}</span><button onClick={undoThreadAction}>Undo</button><em>5s</em></div>}
     <CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} actions={paletteActions} projects={paletteProjects} threads={threads} environmentNames={paletteEnvironmentNames} onOpenProject={project=>onProjectOpen(project.path,project.environmentId||null)} onOpenThread={openThread} onSearchThreadMessages={searchThreadMessages}/>
     <OnboardingModal open={initialLoaded&&settings.onboardingComplete===false} projectPath={projectPath} onPickWorkspace={window.trebellDesktop?.pickDirectory?pickWorkspace:null} providerLabel={agentRuntime==="codex"?providerLabel:agentRuntimeLabel} providerReady={providerReady} permissionMode={permissionMode} onPermissionMode={setPermissionMode} onHistoryImported={historyImported} onFinish={finishOnboarding}/>

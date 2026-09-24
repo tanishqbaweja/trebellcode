@@ -1183,16 +1183,21 @@ test("sidebar thread action failures stay visible and keep the thread in place",
       if(message.method==="thread/section/move"){
         ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate thread pin failure"}}));return;
       }
+      if(message.method==="turn/interrupt"){
+        ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate interrupt failure"}}));return;
+      }
       let result={};
       if(message.method==="initialize")result={userAgent:"sidebar-action-fixture"};
       else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
+      else if(message.method==="thread/resume")result={thread};
+      else if(message.method==="thread/turns/list")result={data:[],nextCursor:null};
       else if(message.method==="threadSection/list"||message.method==="skills/list"||message.method==="collaborationMode/list")result={data:[]};
       else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
       ws.send(JSON.stringify({id:message.id,result}));
     });
   });
   const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",keybindingRules:[{command:"threadPin",key:"Ctrl+Alt+P",when:"threadOpen && !modalOpen"}]};
   try{
     await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}})}));
@@ -1225,6 +1230,21 @@ test("sidebar thread action failures stay visible and keep the thread in place",
     const custom=await alert.evaluate(node=>({background:getComputedStyle(node).backgroundColor,color:getComputedStyle(node).color,border:getComputedStyle(node).borderColor}));
     expect(custom.background).toBeTruthy();expect(custom.color).toBeTruthy();expect(custom.border).toBeTruthy();
     await page.screenshot({path:auditDir+"thread-sidebar-action-error-custom-1280x800.png",fullPage:true});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark";document.documentElement.dataset.customTheme="false"});
+    await row.locator("details").evaluate(node=>{node.open=false});
+    await row.locator(".thread-main").click();
+    await expect(row).toHaveClass(/active/);
+    await page.keyboard.press("Control+Alt+P");
+    const globalError=page.getByTestId("app-action-error");
+    await expect(globalError).toContainText("Could not update thread: Deliberate thread pin failure");
+    await page.screenshot({path:auditDir+"global-action-error-1280x800.png",fullPage:true});
+    for(const ws of sockets)ws.send(JSON.stringify({method:"turn/started",params:{threadId:thread.id,turn:{id:"running-turn"}}}));
+    const stopButton=page.getByRole("button",{name:"Stop",exact:true});
+    await expect(stopButton).toBeVisible();
+    await stopButton.click();
+    await expect(globalError).toContainText("Could not stop turn: Deliberate interrupt failure");
+    await expect(stopButton).toBeVisible();
+    await page.screenshot({path:auditDir+"stop-action-error-1280x800.png",fullPage:true});
   }finally{
     for(const ws of sockets)try{ws.terminate()}catch{}
     wss.close();await new Promise(resolve=>wsHttp.close(resolve));
