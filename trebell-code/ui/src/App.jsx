@@ -892,10 +892,17 @@ export default function App(){
     }
     let listed;
     try{listed=await client.request("threadSection/list",{limit:50})}
-    catch{return sections}
+    catch(error){showActionError(error,"Could not refresh thread sections");return sections}
     const map=Object.fromEntries((listed.data||[]).map(s=>[s.name,s]));
-    for(const name of ["Pinned","Snoozed","Settled"]){if(!map[name]){const made=await client.request("threadSection/create",{name}).catch(()=>null);if(made?.section)map[name]=made.section}}
-    setSections(map); return map;
+    const creationErrors=[];
+    for(const name of ["Pinned","Snoozed","Settled"]){
+      if(map[name])continue;
+      try{const made=await client.request("threadSection/create",{name});if(made?.section)map[name]=made.section}
+      catch(error){creationErrors.push(name+": "+(error?.message||String(error)))}
+    }
+    setSections(map);
+    if(creationErrors.length)showActionError(new Error(creationErrors.join(" · ")),"Some thread sections could not be prepared");
+    return map;
   }
   async function loadThreads(client,{strict=false}={}){
     try{
@@ -913,7 +920,7 @@ export default function App(){
     }
     let result;
     try{result=await client.request("collaborationMode/list",{})}
-    catch{return null}
+    catch(error){showActionError(error,"Could not refresh collaboration modes");return null}
     const modes=normalizeCollaborationModes(result?.data||[]);
     setCollaborationModes(modes);
     setCollaborationMode(current=>modes.some(item=>item.mode===current)?current:(modes.some(item=>item.mode==="default")?"default":modes[0]?.mode||"default"));
@@ -1607,7 +1614,11 @@ export default function App(){
     const environmentId=existing.environmentId??thread.providerMeta?.environmentId??workspaceEnvironmentId??null;
     const projectless=Object.prototype.hasOwnProperty.call(extra,"projectless")?Boolean(extra.projectless):Boolean(existing.projectless);
     let info=null;
-    if(!projectless){const params=new URLSearchParams({path:String(cwd)});params.set("environmentId",environmentId||"");info=await api("/api/git/info?"+params).catch(()=>null)}
+    if(!projectless){
+      const params=new URLSearchParams({path:String(cwd)});params.set("environmentId",environmentId||"");
+      try{info=await api("/api/git/info?"+params)}
+      catch(error){if(strict)throw new Error("Could not read Git metadata while saving thread context: "+(error?.message||String(error)))}
+    }
     const patch={
       cwd:String(cwd),environmentId,branch:existing.branch||(info?.isGit?info.branch||null:null),
       projectless,sectionName:thread.section?.name||"Active",archived:Boolean(thread.archived),...extra,

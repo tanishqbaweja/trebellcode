@@ -1178,6 +1178,73 @@ test("completed turns surface failed thread-list refreshes",async({page})=>{
   }finally{await harness.close()}
 });
 
+test("thread sections and collaboration refresh failures stay visible",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"capability-refresh-thread",name:"Capability refresh fixture",preview:"Section and collaboration honesty",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  let mode="sections";
+  const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
+    if(message.method==="threadSection/list"&&mode==="sections"){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate thread section list failure"}}));return true}
+    if(message.method==="threadSection/create"&&mode==="create"){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate section creation failure"}}));return true}
+    if(message.method==="collaborationMode/list"&&mode==="collaboration"){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate collaboration mode refresh failure"}}));return true}
+    return false;
+  }});
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"capability-refresh-fixture");
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const error=page.getByTestId("app-action-error");
+    await expect(error).toContainText("Could not refresh thread sections: Deliberate thread section list failure",{timeout:10_000});
+    await expect(page.getByTestId("composer")).toBeVisible();
+
+    mode="create";
+    await page.reload();
+    await expect(error).toContainText("Some thread sections could not be prepared");
+    await expect(error).toContainText("Deliberate section creation failure");
+    await expect(page.getByTestId("composer")).toBeVisible();
+
+    mode="collaboration";
+    await page.reload();
+    await expect(error).toContainText("Could not refresh collaboration modes: Deliberate collaboration mode refresh failure");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"capability-refresh-errors-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
+test("thread context Git metadata failures stay visible without blocking open",async({page})=>{
+  test.setTimeout(35_000);
+  const project={id:"thread-context-project",name:"Thread Context Project",path:process.cwd(),environmentId:null};
+  const thread={id:"thread-context-thread",name:"Thread context fixture",preview:"Git metadata honesty",cwd:project.path,createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexRequestHarness(thread);
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:project.path,platform:process.platform,version:"thread-context-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[thread.id]:{projectless:false,environmentId:null}}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+    await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})}));
+    await page.route(/\/api\/worktree\/ensure$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
+    await page.route(/\/api\/thread-meta$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
+    await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({checkpoints:[]})}));
+    await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate thread context Git metadata failure"})}));
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Thread context fixture"]')});
+    await row.locator(".thread-main").click();
+    await expect(row).toHaveClass(/active/);
+    await expect(page.getByTestId("app-action-error")).toContainText("Could not save thread workspace context: Could not read Git metadata while saving thread context: Deliberate thread context Git metadata failure",{timeout:10_000});
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await expect(page.locator(".thread-title-button")).toContainText("Thread context fixture");
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"thread-context-git-error-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
 test("runtime server requests use the latest permission mode",async({page})=>{
   test.setTimeout(35_000);
   const thread={id:"permission-handler-thread",name:"Permission freshness fixture",preview:"Latest server request state",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
