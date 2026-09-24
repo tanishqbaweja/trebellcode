@@ -574,6 +574,8 @@ test("thread message search reports degraded reads and retries without caching f
     await expect(palette.getByRole("button",{name:/Hidden message thread/})).toBeVisible();
     await expect(palette.getByRole("alert")).toContainText("Full thread search unavailable: Deliberate native thread search failure");
     await page.screenshot({path:auditDir+"command-palette-search-degraded-1280x800.png",fullPage:true});
+    await palette.getByPlaceholder("Search commands, threads, and messages…").fill("x");
+    await expect(palette.getByRole("alert")).toHaveCount(0);
   }finally{await harness.close()}
 });
 
