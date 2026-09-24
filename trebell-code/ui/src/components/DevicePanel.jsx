@@ -52,9 +52,16 @@ export default function DevicePanel(){
     setToolBusy(tool);setMessage(`Updating ${update?.label||tool}…`);
     try{
       await api("/api/device/tool-update",{method:"POST",body:{tool}});
-      setMessage(`${update?.label||tool} updated successfully.`);
+      const label=update?.label||tool;
+      setToolUpdates(current=>current?{...current,updates:(current.updates||[]).filter(item=>item.id!==tool)}:current);
+      setMessage(`${label} updated successfully.`);
       await refresh();
-      const next=await api("/api/device/tool-updates").catch(()=>null);if(next)setToolUpdates(next);
+      try{
+        const next=await api("/api/device/tool-updates");
+        setToolUpdates(next);
+      }catch(error){
+        setMessage(`${label} updated successfully, but could not refresh tool update status: ${error.message||String(error)}`);
+      }
     }catch(error){setMessage(error.message)}
     finally{setToolBusy("")}
   }

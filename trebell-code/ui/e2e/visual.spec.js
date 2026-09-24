@@ -1528,6 +1528,40 @@ test("failed device typing keeps the text available for retry",async({page,reque
   await page.screenshot({path:auditDir+"device-type-error-1280x800.png",fullPage:true});
 });
 
+test("successful device tool updates stay applied when status refresh fails",async({page,request})=>{
+  test.setTimeout(30_000);
+  let failStatus=false;
+  await page.route(/\/api\/devices$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    capabilities:{android:{available:true,sdkManagerAvailable:true,tools:[{id:"platform-tools",label:"Platform-Tools",installed:true,version:"34.0.5"}]},ios:{available:false}},
+    devices:[],avds:[],
+  })}));
+  await page.route(/\/api\/device\/tool-updates$/,route=>{
+    if(failStatus)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate device tool status refresh failure"})});
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({available:true,updates:[{id:"platform-tools",label:"Platform-Tools",availableVersion:"35.0.2"}]})});
+  });
+  await page.route(/\/api\/device\/tool-update$/,route=>{
+    failStatus=true;
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})});
+  });
+  await prepare(page,request);
+  await page.getByTestId("right-panel-toggle").click();
+  const panel=page.getByTestId("right-panel");
+  await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Device",exact:true}).click();
+  const device=panel.locator(".device-panel");
+  await expect(device).toBeVisible();
+  await device.getByRole("button",{name:"Check updates",exact:true}).click();
+  const toolRow=device.locator(".device-tool-list>div").filter({hasText:"Platform-Tools"});
+  await expect(toolRow).toContainText("35.0.2 available");
+  await toolRow.getByRole("button",{name:"Update",exact:true}).click();
+  await expect(toolRow.getByRole("button",{name:"Update",exact:true})).toHaveCount(0);
+  await expect(toolRow).toContainText("Ready");
+  await expect(device.locator(".inline-status")).toContainText("Platform-Tools updated successfully, but could not refresh tool update status: Deliberate device tool status refresh failure");
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"device-tool-update-refresh-error-1280x800.png",fullPage:true});
+});
+
 test("Agent Browser action failures stay visible instead of disappearing",async({page,request})=>{
   test.setTimeout(30_000);
   await page.addInitScript(()=>{
