@@ -765,13 +765,13 @@ export default function App(){
   },[initialLoaded,section,providerReady,provider,agentRuntime,models.length]);
   async function touchProject(path,environmentId=undefined,{activate=true}={}){
     if(!path)return null;
-    setProjectlessMode(false);setGeneralEnvironmentId(null);
     const resolvedEnvironmentId=environmentId===undefined
       ?(activeThreadRef.current?.providerMeta?.environmentId??settings.activeEnvironmentId??null)
       :(environmentId||null);
-    setProjectPath(path);
-    const response=await api("/api/projects",{method:"POST",body:{path,environmentId:resolvedEnvironmentId,activate}}).catch(()=>null);
+    const response=await api("/api/projects",{method:"POST",body:{path,environmentId:resolvedEnvironmentId,activate}});
     const project=response?.project||null;
+    if(!project)throw new Error("Project activation did not return a project.");
+    setProjectlessMode(false);setGeneralEnvironmentId(null);setProjectPath(path);
     setCurrentProject(project);
     if(project&&activate)setSettings(prev=>({...prev,activeProjectId:project.id}));
     const scoped=project?.effectiveSettings||{};
@@ -2332,6 +2332,7 @@ export default function App(){
   async function onProjectOpen(path,environmentId=null){
     const targetEnvironmentId=environmentId||null;
     const currentEnvironmentId=settings.activeEnvironmentId||null;
+    const shouldStartFresh=Boolean(activeThread?.id&&String(activeThread.cwd||"")!==String(path));
     if(targetEnvironmentId!==currentEnvironmentId){
       const switched=await api("/api/environment/activate",{method:"POST",body:{id:targetEnvironmentId}});
       if(switched.error)throw new Error(switched.error);
@@ -2342,6 +2343,7 @@ export default function App(){
       await refreshEnvironmentThemes();
     }
     await touchProject(path,targetEnvironmentId);
+    if(shouldStartFresh)await newChat();
     setSection("chat");
     if(targetEnvironmentId===currentEnvironmentId&&rpcStatus==="connected")loadSkills(rpc,path);
   }
@@ -2369,9 +2371,6 @@ export default function App(){
   async function pickWorkspace(){
     const path=await window.trebellDesktop?.pickDirectory?.();
     if(!path)return;
-    if(activeThread?.id&&String(activeThread.cwd||"")!==String(path)){
-      await newChat();
-    }
     await onProjectOpen(path);
   }
   function onSkill(skill){const prefix=agentRuntime==="codex"?"$":"/";setPrompt(prev=>(prev?prev+" ":"")+prefix+skill.name+" ")}
@@ -2522,7 +2521,7 @@ export default function App(){
           <header className="workspace-header">
             <div className="workspace-breadcrumb">
               {!sidebarOpen&&<button className="project-crumb sidebar-reopen" onClick={()=>setSidebarOpen(true)} aria-label="Open sidebar" title="Open sidebar · Ctrl+B"><PanelLeftOpen size={14}/></button>}
-              <button className={"project-crumb"+(projectlessMode?" projectless":"")} onClick={projectlessMode||!window.trebellDesktop?.pickDirectory?()=>setSection("projects"):pickWorkspace} title={projectlessMode?"No project · choose a project":window.trebellDesktop?.pickDirectory?(projectPath||"Open folder"):"Projects and workspaces"}>{projectlessMode?<Sparkles size={14}/>:<FolderCode size={14}/>}<span>{projectLabel}</span></button><button className="project-switcher" onClick={()=>setSection("projects")} title="Projects and General chat"><ChevronDown size={12}/></button>
+              <button className={"project-crumb"+(projectlessMode?" projectless":"")} onClick={projectlessMode||!window.trebellDesktop?.pickDirectory?()=>setSection("projects"):()=>runUserAction(pickWorkspace,"Could not open workspace")} title={projectlessMode?"No project · choose a project":window.trebellDesktop?.pickDirectory?(projectPath||"Open folder"):"Projects and workspaces"}>{projectlessMode?<Sparkles size={14}/>:<FolderCode size={14}/>}<span>{projectLabel}</span></button><button className="project-switcher" onClick={()=>setSection("projects")} title="Projects and General chat"><ChevronDown size={12}/></button>
               <span>/</span>
               <button className="thread-title-button" onDoubleClick={renameThread} onClick={renameThread} title="Rename thread"><strong>{activeTitle}</strong><ChevronDown size={13}/></button>
               {activeThread?.id&&linkedPullRequests.map(pr=><button className="header-pr" key={pr.url||pr.number} onClick={()=>window.open(pr.url,"_blank")}><GitBranch size={11}/>#{pr.number}</button>)}

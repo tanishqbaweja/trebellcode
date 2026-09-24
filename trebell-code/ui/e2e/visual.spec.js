@@ -809,6 +809,30 @@ test("open externally failures stay visible beside the editor picker",async({pag
   await page.screenshot({path:auditDir+"open-in-editor-error-1280x800.png",fullPage:true});
 });
 
+test("failed workspace activation leaves the current project untouched",async({page,request})=>{
+  test.setTimeout(30_000);
+  await page.addInitScript(()=>{
+    Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{
+      pickDirectory:async()=>"C:\\Rejected Workspace",
+    }});
+  });
+  await prepare(page,request);
+  const crumb=page.locator(".workspace-breadcrumb .project-crumb").filter({hasNot:page.locator(".sidebar-reopen")}).first();
+  const beforeText=(await crumb.textContent())?.trim();
+  const beforeTitle=await crumb.getAttribute("title");
+  await page.route(/\/api\/projects$/,route=>{
+    if(route.request().method()==="POST")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate project activation failure"})});
+    return route.continue();
+  });
+  await crumb.click();
+  await expect(page.getByTestId("app-action-error")).toContainText("Could not open workspace: Deliberate project activation failure");
+  await expect(crumb).toHaveText(beforeText||"");
+  await expect(crumb).toHaveAttribute("title",beforeTitle||"");
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await page.setViewportSize({width:1280,height:800});
+  await page.screenshot({path:auditDir+"workspace-activation-error-1280x800.png",fullPage:true});
+});
+
 test("usage clear failures keep recorded usage visible",async({page,request})=>{
   test.setTimeout(30_000);
   await prepare(page,request);
