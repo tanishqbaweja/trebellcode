@@ -1241,6 +1241,37 @@ test("workspace diff refresh failures preserve the last valid diff",async({page,
   await page.screenshot({path:auditDir+"workspace-diff-refresh-error-1280x800.png",fullPage:true});
 });
 
+test("workspace file open failures preserve the current valid file",async({page,request})=>{
+  test.setTimeout(30_000);
+  await page.route(/\/api\/workspace\/tree\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    entries:[
+      {name:"good.txt",path:"good.txt",relativePath:"good.txt",isFile:true,isDirectory:false,depth:0},
+      {name:"bad.txt",path:"bad.txt",relativePath:"bad.txt",isFile:true,isDirectory:false,depth:0},
+    ],
+  })}));
+  await page.route(/\/api\/workspace\/file\?/,route=>{
+    const url=new URL(route.request().url());
+    if(url.searchParams.get("path")==="bad.txt")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate workspace file open failure"})});
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({name:"good.txt",path:"good.txt",content:"keep this valid file visible"})});
+  });
+  await prepare(page,request);
+  await page.getByTestId("right-panel-toggle").click();
+  const panel=page.getByTestId("right-panel");
+  const good=panel.locator(".tree-list button").filter({hasText:"good.txt"});
+  const bad=panel.locator(".tree-list button").filter({hasText:"bad.txt"});
+  await good.click();
+  await expect(panel.locator(".file-head strong")).toHaveText("good.txt");
+  await expect(panel.locator(".syntax-view")).toContainText("keep this valid file visible");
+  await bad.click();
+  await expect(panel.locator(".workspace-file-error")).toContainText("Deliberate workspace file open failure");
+  await expect(panel.locator(".file-head strong")).toHaveText("good.txt");
+  await expect(panel.locator(".syntax-view")).toContainText("keep this valid file visible");
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"workspace-file-open-error-1280x800.png",fullPage:true});
+});
+
 test("Diff review actions roll back and stay visible when persistence fails",async({page})=>{
   test.setTimeout(40_000);
   const thread={

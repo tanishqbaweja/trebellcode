@@ -149,7 +149,10 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
     try{
       const data=await api("/api/workspace/file?"+params({root:projectPath,path}));
       setFile({...data,kind});setDraft(data.content);setEdit(false);
-    }catch(err){setFile({path,name,kind:"unsupported",content:null});setDraft("");setEdit(false);setError(err.message||String(err))}
+    }catch(err){
+      if(!file){setFile({path,name,kind:"unsupported",content:null});setDraft("");setEdit(false)}
+      setError(err.message||String(err));
+    }
   }
   async function save(){
     setError("");
