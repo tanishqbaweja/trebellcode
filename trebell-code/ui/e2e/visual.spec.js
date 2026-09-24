@@ -257,6 +257,85 @@ test("browser attach button uploads files without the desktop bridge",async({pag
   await page.screenshot({path:auditDir+"browser-file-attachment-1280x800.png",fullPage:true});
 });
 
+test("browser file attachment failures stay visible without fake attachments",async({page,request})=>{
+  test.setTimeout(30_000);
+  await prepare(page,request);
+  await page.route(/\/api\/attachments\/blob$/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate composer attachment failure"})}));
+  const [chooser]=await Promise.all([
+    page.waitForEvent("filechooser"),
+    page.getByRole("button",{name:"Attach files"}).click(),
+  ]);
+  await chooser.setFiles({name:"retry-me.txt",mimeType:"text/plain",buffer:Buffer.from("retryable attachment fixture\n")});
+  const alert=page.getByTestId("app-action-error");
+  await expect(alert).toContainText("Could not attach files: Deliberate composer attachment failure");
+  await expect(alert).toBeInViewport();
+  await expect(page.locator(".attachment-shelf span")).toHaveCount(0);
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await page.locator(".composer-wrap").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"composer-attachment-error-1280x800.png",fullPage:true});
+});
+
+test("agent question file attachment failures stay inside the retryable modal",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"question-attachment-thread",name:"Question attachment fixture",preview:"Question attachment coverage",historyMode:"paginated",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  let notificationSocket=null;
+  const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const sockets=new Set();
+  upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
+  upstreamWss.on("connection",ws=>{
+    sockets.add(ws);notificationSocket=ws;ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",data=>{
+      const message=JSON.parse(String(data));if(message.id==null||!message.method)return;
+      let result={};
+      if(message.method==="initialize")result={userAgent:"question-attachment-fixture"};
+      else if(message.method==="collaborationMode/list")result={data:[]};
+      else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
+      else if(message.method==="threadSection/list")result={data:[],nextCursor:null};
+      else if(message.method==="thread/resume")result={thread,itemsBackwardsCursor:null,turnsBackwardsCursor:null};
+      else if(message.method==="thread/goal/get")result={goal:null};
+      else if(message.method==="thread/attachment/list"||message.method==="thread/queue/list")result={data:[],nextCursor:null};
+      else if(message.method==="thread/timeline/list")result={data:[],nextCursor:null,activeRealtimeSessionAtPageStart:null};
+      else if(message.method==="skills/list")result={data:[]};
+      else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
+      else if(message.method==="thread/unsubscribe")result={status:"unsubscribed"};
+      ws.send(JSON.stringify({id:message.id,result}));
+    });
+  });
+  const upstreamPort=await freePort();await new Promise((resolve,reject)=>upstreamHttp.listen(upstreamPort,"127.0.0.1",resolve).once("error",reject));
+  const relayHttp=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachCodexRelay(relayHttp,{targetUrl:"ws://127.0.0.1:"+upstreamPort});
+  const relayPort=await freePort();await new Promise((resolve,reject)=>relayHttp.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",cwd:process.cwd(),platform:process.platform,version:"question-attachment-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+    await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.route(/\/api\/attachments\/blob$/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate question attachment failure"})}));
+    await page.goto("/");
+    await page.getByRole("button",{name:/Question attachment fixture/}).click();
+    notificationSocket.send(JSON.stringify({id:72,method:"item/tool/requestUserInput",params:{threadId:thread.id,questions:[{id:"evidence",header:"Need evidence",question:"Attach the retryable file?",options:[],allowMultiple:false}]}}));
+    const modal=page.locator(".question-modal");
+    await expect(page.getByText("Attach the retryable file?",{exact:true})).toBeVisible();
+    const [chooser]=await Promise.all([
+      page.waitForEvent("filechooser"),
+      modal.getByRole("button",{name:"Attach files"}).click(),
+    ]);
+    await chooser.setFiles({name:"retry-question.txt",mimeType:"text/plain",buffer:Buffer.from("question attachment retry fixture\n")});
+    const alert=page.getByRole("alert");
+    await expect(alert).toContainText("Could not attach files: Deliberate question attachment failure");
+    await expect(page.getByText("Attach the retryable file?",{exact:true})).toBeVisible();
+    await expect(page.locator(".question-files span")).toHaveCount(0);
+    await page.setViewportSize({width:1280,height:800});
+    const bounds=await modal.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(bounds.scroll).toBeLessThanOrEqual(bounds.client+1);
+    await page.screenshot({path:auditDir+"question-attachment-error-1280x800.png",fullPage:true});
+  }finally{
+    relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();
+    await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))]);
+  }
+});
+
 test("command palette keeps failed actions visible with useful feedback",async({page,request})=>{
   test.setTimeout(30_000);
   await prepare(page,request);

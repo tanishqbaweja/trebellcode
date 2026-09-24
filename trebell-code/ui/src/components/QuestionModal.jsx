@@ -8,11 +8,12 @@ export default function QuestionModal({request,onSubmit,onCancel,pickFiles}){
   const [filesByQuestion,setFilesByQuestion]=useState(()=>Object.fromEntries(questions.map(q=>[q.id,[]])));
   const [busy,setBusy]=useState("");
   const [submitError,setSubmitError]=useState("");
+  const [attachError,setAttachError]=useState("");
   if(!request)return null;
   const fileCount=Object.values(filesByQuestion).reduce((sum,items)=>sum+(items?.length||0),0);
   async function attach(questionId){
     if(fileCount>=100)return;
-    setBusy(questionId);
+    setBusy(questionId);setAttachError("");
     try{
       const picked=await pickFiles?.();if(!picked?.length)return;
       setFilesByQuestion(prev=>{
@@ -20,7 +21,8 @@ export default function QuestionModal({request,onSubmit,onCancel,pickFiles}){
         const next=[...new Set([...(prev[questionId]||[]),...picked.slice(0,room)])];
         return {...prev,[questionId]:next};
       });
-    }finally{setBusy("")}
+    }catch(error){setAttachError("Could not attach files: "+(error?.message||String(error)))}
+    finally{setBusy("")}
   }
   function chooseOption(q,label){
     setAnswers(prev=>{
@@ -42,7 +44,8 @@ export default function QuestionModal({request,onSubmit,onCancel,pickFiles}){
       <input placeholder="Custom answer…" value={answers[q.id]?.find(a=>!q.options?.some(o=>o.label===a))||""} onChange={e=>setCustom(q,e.target.value)}/>
       <div className="question-files">{(filesByQuestion[q.id]||[]).map(path=><span key={path}>{path.split(/[\\/]/).pop()}<button type="button" title="Remove attachment" onClick={()=>setFilesByQuestion(prev=>({...prev,[q.id]:(prev[q.id]||[]).filter(item=>item!==path)}))}><X size={10}/></button></span>)}<button type="button" onClick={()=>attach(q.id)} disabled={busy===q.id||fileCount>=100}><Paperclip size={12}/> {busy===q.id?"Choosing…":"Attach files"}</button></div>
     </div>)}
-    {submitError&&<div className="inline-error">{submitError}</div>}
+    {attachError&&<div className="inline-error" role="alert">{attachError}</div>}
+    {submitError&&<div className="inline-error" role="alert">{submitError}</div>}
     <div className="modal-actions"><span>{fileCount?`${fileCount}/100 attached`:""}</span><button onClick={onCancel}>Cancel</button><button className="primary" disabled={busy==="submit"} onClick={async()=>{setSubmitError("");setBusy("submit");try{await onSubmit(answers,filesByQuestion)}catch(error){setSubmitError(error?.message||String(error))}finally{setBusy("")}}}>{busy==="submit"?"Submitting…":"Submit"}</button></div>
   </div></div>;
 }
