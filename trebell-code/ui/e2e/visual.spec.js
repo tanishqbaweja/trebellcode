@@ -37,6 +37,56 @@ async function freePort(){
   return port;
 }
 
+async function startCodexRequestHarness(thread){
+  let notificationSocket=null,relayClosed=false;
+  const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const sockets=new Set();
+  upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
+  upstreamWss.on("connection",ws=>{
+    sockets.add(ws);notificationSocket=ws;ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",data=>{
+      const message=JSON.parse(String(data));if(message.id==null||!message.method)return;
+      let result={};
+      if(message.method==="initialize")result={userAgent:"request-response-fixture"};
+      else if(message.method==="collaborationMode/list")result={data:[]};
+      else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
+      else if(message.method==="threadSection/list")result={data:[],nextCursor:null};
+      else if(message.method==="thread/resume")result={thread,itemsBackwardsCursor:null,turnsBackwardsCursor:null};
+      else if(message.method==="thread/goal/get")result={goal:null};
+      else if(message.method==="thread/attachment/list"||message.method==="thread/queue/list")result={data:[],nextCursor:null};
+      else if(message.method==="thread/timeline/list")result={data:[],nextCursor:null,activeRealtimeSessionAtPageStart:null};
+      else if(message.method==="skills/list")result={data:[]};
+      else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
+      else if(message.method==="thread/unsubscribe")result={status:"unsubscribed"};
+      ws.send(JSON.stringify({id:message.id,result}));
+    });
+  });
+  const upstreamPort=await freePort();await new Promise((resolve,reject)=>upstreamHttp.listen(upstreamPort,"127.0.0.1",resolve).once("error",reject));
+  const relayHttp=createServer((_req,res)=>{res.writeHead(404);res.end()});
+  const relay=attachCodexRelay(relayHttp,{targetUrl:"ws://127.0.0.1:"+upstreamPort});
+  const relayPort=await freePort();await new Promise((resolve,reject)=>relayHttp.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
+  const disconnect=()=>{if(relayClosed)return;relayClosed=true;relay.close()};
+  return {
+    wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",
+    emit(message){if(!notificationSocket)throw new Error("Codex request fixture is not connected.");notificationSocket.send(JSON.stringify(message))},
+    disconnect,
+    async close(){
+      disconnect();
+      for(const socket of sockets)try{socket.terminate()}catch{}
+      upstreamWss.close();
+      await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))]);
+    },
+  };
+}
+
+async function routeProjectlessCodexRequestFixture(page,harness,thread,version){
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version,activeEnvironmentId:null,activeEnvironment:null})}));
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}})}));
+  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+  await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+  await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+  await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+}
+
 test("chat workspace is visually bounded and panes resize",async({page,request})=>{
   test.setTimeout(45_000);
   await prepare(page,request);
@@ -389,6 +439,64 @@ test("agent question failures keep attachments and answers retryable",async({pag
     relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();
     await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))]);
   }
+});
+
+test("approval responses stay visible and retryable when the runtime disconnects",async({page})=>{
+  test.setTimeout(30_000);
+  const thread={id:"approval-response-thread",name:"Approval response fixture",preview:"Approval response coverage",historyMode:"paginated",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexRequestHarness(thread);
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"approval-response-fixture");
+    await page.goto("/");
+    await page.getByRole("button",{name:/Approval response fixture/}).click();
+    harness.emit({id:73,method:"item/commandExecution/requestApproval",params:{threadId:thread.id,turnId:"turn-approval",itemId:"cmd-approval",command:["echo","approval"],reason:"Keep this approval retryable"}});
+    const approval=page.locator(".approval-card").filter({hasText:"Keep this approval retryable"});
+    await expect(approval).toBeVisible();
+    await page.setViewportSize({width:1280,height:800});
+    harness.disconnect();await page.waitForTimeout(80);
+    await approval.getByRole("button",{name:"Allow once",exact:true}).click();
+    const alert=page.getByTestId("app-action-error");
+    await expect(alert).toContainText("Could not answer approval request: Runtime disconnected before the approval response could be sent.");
+    await expect(alert).toBeInViewport();
+    await expect(approval).toBeVisible();
+    await expect(approval.getByRole("button",{name:"Allow once",exact:true})).toBeEnabled();
+    const approvalBox=await box(approval),scrollBox=await box(page.locator(".conversation-scroll"));
+    expect(approvalBox.y).toBeGreaterThanOrEqual(scrollBox.y);
+    expect(approvalBox.y+approvalBox.height).toBeLessThanOrEqual(scrollBox.y+scrollBox.height);
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"approval-response-disconnected-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
+test("MCP app responses stay visible and retryable when the runtime disconnects",async({page})=>{
+  test.setTimeout(30_000);
+  const thread={id:"mcp-response-thread",name:"MCP response fixture",preview:"MCP response coverage",historyMode:"paginated",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexRequestHarness(thread);
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"mcp-response-fixture");
+    await page.goto("/");
+    await page.getByRole("button",{name:/MCP response fixture/}).click();
+    harness.emit({id:74,method:"mcpServer/elicitation/request",params:{
+      threadId:thread.id,serverName:"fixture_app",mode:"form",message:"Approve the retryable fixture action",
+      requestedSchema:{type:"object",properties:{}},
+      _meta:{codex_approval_kind:"mcp_tool_call",connector_name:"Fixture App",tool_title:"Retryable fixture action",tool_name:"fixture_action"},
+    }});
+    const modal=page.getByTestId("mcp-elicitation");
+    await expect(modal).toBeVisible();
+    await expect(modal.getByText("Approve app action",{exact:true})).toBeVisible();
+    await page.setViewportSize({width:1280,height:800});
+    harness.disconnect();await page.waitForTimeout(80);
+    await modal.getByRole("button",{name:"Allow once",exact:true}).click();
+    const alert=modal.getByRole("alert");
+    await expect(alert).toContainText("Could not answer app request: Runtime disconnected before the app response could be sent.");
+    await expect(alert).toBeInViewport();
+    await expect(modal).toBeVisible();
+    await expect(modal.getByRole("button",{name:"Allow once",exact:true})).toBeEnabled();
+    const metrics=await modal.locator(".mcp-elicitation-modal").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"mcp-response-disconnected-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
 });
 
 test("command palette keeps failed actions visible with useful feedback",async({page,request})=>{
