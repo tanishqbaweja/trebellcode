@@ -1039,6 +1039,28 @@ test("onboarding and license surfaces are visually intentional",async({page,requ
   await page.screenshot({path:auditDir+"licenses-detail-light-1280x800.png",fullPage:true});
 });
 
+test("onboarding finish failures stay visible and keep setup open",async({page,request})=>{
+  test.setTimeout(30_000);
+  await request.post("/api/settings",{data:{onboardingComplete:false,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff"}});
+  await page.goto("/");
+  const onboarding=page.getByTestId("onboarding");
+  await expect(onboarding).toBeVisible();
+  await page.route(/\/api\/settings$/,route=>{
+    if(route.request().method()==="POST")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate onboarding finish failure"})});
+    return route.continue();
+  });
+  await onboarding.getByRole("button",{name:"Finish setup",exact:true}).click();
+  await expect(onboarding.getByRole("alert")).toContainText("Deliberate onboarding finish failure");
+  await expect(onboarding).toBeVisible();
+  await expect(onboarding.getByRole("button",{name:"Finish setup",exact:true})).toBeEnabled();
+  await page.setViewportSize({width:1280,height:800});
+  const dialog=onboarding.getByRole("dialog",{name:"Set up Trebell Code"});
+  const dimensions=await dialog.evaluate(node=>({client:node.clientHeight,scroll:node.scrollHeight,width:node.getBoundingClientRect().width}));
+  expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.client+1);
+  expect(dimensions.width).toBeLessThanOrEqual(660);
+  await page.screenshot({path:auditDir+"onboarding-finish-error-1280x800.png",fullPage:true});
+});
+
 test("light mode stays visually coherent across workspace and panels",async({page,request})=>{
   test.setTimeout(40_000);
   await prepare(page,request);
