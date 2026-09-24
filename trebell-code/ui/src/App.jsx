@@ -2039,7 +2039,14 @@ export default function App(){
           if(settled.timeout)throw new Error("Worktree setup is still running after 30 minutes. The agent was not started.");
           if(settled.exitCode!==0)throw new Error(`Worktree setup failed with exit code ${settled.exitCode??"unknown"}. Fix the setup terminal, then retry.`);
         }else{
-          completion.catch(()=>{});
+          completion.then(settled=>{
+            if(settled.timeout)throw new Error("Background worktree setup is still running after 30 minutes.");
+            if(settled.exitCode!==0)throw new Error(`Background worktree setup failed with exit code ${settled.exitCode??"unknown"}.`);
+            setWorktreeSetup(current=>current?.sessionId===setup.session.id?{...current,phase:"done",detail:"Setup completed"}:current);
+          }).catch(error=>{
+            setWorktreeSetup(current=>current?.sessionId===setup.session.id?{...current,phase:"failed",detail:error?.message||String(error)}:current);
+            showActionError(error,"Background worktree setup needs attention");
+          });
         }
       }else{
         setWorktreeSetup({phase:"done",branch,path:worktree,scriptName:null,sessionId:null,detail:"Worktree created"});

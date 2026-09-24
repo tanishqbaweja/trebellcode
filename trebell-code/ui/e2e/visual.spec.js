@@ -3581,6 +3581,66 @@ test("worktree setup monitor failures stop promptly and restore the unsent draft
   }finally{await harness.close()}
 });
 
+test("non-blocking worktree setup monitor failures stay visible after the turn starts",async({page})=>{
+  test.setTimeout(40_000);
+  const basePath=process.cwd(),worktree=basePath+"-trebell-background-setup-monitor-fixture";
+  const project={id:"background-setup-monitor-project",name:"Background Setup Monitor Project",path:basePath,environmentId:null,effectiveSettings:{defaultWorkspaceMode:"worktree"}};
+  const seedThread={id:"background-setup-seed",name:"Background setup seed",preview:"Fixture only",cwd:basePath,createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
+  const createdThread={id:"background-setup-created",name:"Background setup created",preview:"Running turn",cwd:worktree,createdAt:Date.now()/1000,updatedAt:Date.now()/1000,turns:[]};
+  let monitorReads=0,turnStarts=0;
+  const harness=await startCodexRequestHarness(seedThread,{onRequest:async(message,ws)=>{
+    if(message.method==="thread/start"){ws.send(JSON.stringify({id:message.id,result:{thread:createdThread}}));return true}
+    if(message.method==="turn/start"){turnStarts++;ws.send(JSON.stringify({id:message.id,result:{turn:{id:"background-setup-turn",status:"inProgress"}}}));return true}
+    return false;
+  }});
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"worktree",activeProjectId:project.id};
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:basePath,platform:process.platform,version:"background-setup-monitor-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[seedThread.id]:{projectless:false,environmentId:null}}})}));
+    await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+    await page.route(/\/api\/projects$/,route=>{
+      if(route.request().method()==="POST"){
+        const body=route.request().postDataJSON()||{};
+        const next=body.path===worktree?{...project,id:"background-setup-worktree-project",name:"Background Setup Worktree",path:worktree,effectiveSettings:{defaultWorkspaceMode:"worktree"}}:project;
+        return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({project:next,projects:[project,next]})});
+      }
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project]})});
+    });
+    await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,root:basePath,branch:"main",branches:["main"],upstream:"origin/main",status:[],remotes:[],worktrees:[{path:basePath,branch:"main"}]})}));
+    await page.route(/\/api\/git\/action$/,route=>{
+      const body=route.request().postDataJSON()||{};
+      if(body.action==="worktree-create")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({result:{worktree,setup:{scriptName:"Fixture setup",waitForSetup:false,session:{id:"background-setup-session"}}}})});
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({result:{}})});
+    });
+    await page.route(/\/api\/terminal\/sessions(?:\?.*)?$/,route=>{monitorReads++;return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate non-blocking setup monitor failure"})})});
+    await page.route(/\/api\/thread-meta$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
+    await page.route(/\/api\/checkpoints$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({supported:false,reason:"fixture"})}));
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:260})));
+    await page.goto("/");
+    const composer=page.getByTestId("composer");
+    await expect(composer).toBeVisible();
+    await page.locator(".workspace-mode").selectOption("worktree");
+    await composer.fill("Start the turn even if background setup monitoring later fails");
+    await page.getByTestId("send").click();
+    await expect.poll(()=>turnStarts).toBe(1);
+    await expect(page.locator(".user-bubble").filter({hasText:"Start the turn even if background setup monitoring later fails"})).toBeVisible();
+    await expect(composer).toHaveValue("");
+    await expect.poll(()=>monitorReads).toBeGreaterThanOrEqual(3);
+    const setup=page.locator(".worktree-setup-card.failed");
+    await expect(setup).toBeVisible();
+    await expect(setup).toContainText("Could not monitor worktree setup: Deliberate non-blocking setup monitor failure");
+    await expect(page.getByTestId("app-action-error")).toContainText("Background worktree setup needs attention: Could not monitor worktree setup: Deliberate non-blocking setup monitor failure");
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await setup.scrollIntoViewIfNeeded();
+    await page.screenshot({path:auditDir+"background-worktree-setup-monitor-error-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
 test("background worktree registration failures warn without blocking the task",async({page})=>{
   test.setTimeout(35_000);
   const project={id:"background-worktree-project",name:"Background Worktree Project",path:process.cwd(),environmentId:null};
