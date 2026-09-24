@@ -79,6 +79,8 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   const [diff,setDiff]=useState({status:"",diff:""});
   const [loading,setLoading]=useState(false);
   const [error,setError]=useState("");
+  const [treeError,setTreeError]=useState("");
+  const [searchError,setSearchError]=useState("");
   function params(values={}){
     const query=new URLSearchParams(values);
     query.set("environmentId",environmentId||"");
@@ -86,9 +88,12 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   }
 
   async function refreshTree(){
-    if(!projectPath)return;setLoading(true);
-    const data=await api("/api/workspace/tree?"+params({path:projectPath})).catch(()=>({entries:[]}));
-    setEntries(data.entries||[]);setLoading(false);
+    if(!projectPath)return;setLoading(true);setTreeError("");
+    try{
+      const data=await api("/api/workspace/tree?"+params({path:projectPath}));
+      setEntries(data.entries||[]);
+    }catch(err){setTreeError(err.message||String(err)||"Could not refresh workspace files.")}
+    finally{setLoading(false)}
   }
   async function refreshDiff(){
     if(!projectPath)return;setLoading(true);
@@ -118,8 +123,13 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   },[activeThreadId,projectPath,environmentId,allowDiff,file?.path,edit]);
 
   useEffect(()=>{
-    if(!query.trim()){setSearchResults([]);return;}
-    const t=setTimeout(()=>api("/api/workspace/search?"+params({path:projectPath,q:query})).then(d=>setSearchResults(d.items||[])).catch(()=>setSearchResults([])),180);
+    if(!query.trim()){setSearchResults([]);setSearchError("");return;}
+    const t=setTimeout(async()=>{
+      try{
+        const data=await api("/api/workspace/search?"+params({path:projectPath,q:query}));
+        setSearchResults(data.items||[]);setSearchError("");
+      }catch(err){setSearchResults([]);setSearchError(err.message||String(err)||"Could not search workspace files.")}
+    },180);
     return()=>clearTimeout(t);
   },[query,projectPath,environmentId]);
 
@@ -136,8 +146,11 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
     }catch(err){setFile({path,name,kind:"unsupported",content:null});setDraft("");setEdit(false);setError(err.message||String(err))}
   }
   async function save(){
-    const data=await api("/api/workspace/file",{method:"PUT",body:{root:projectPath,path:file.path,content:draft,environmentId}});
-    setFile({...data,kind:previewKind(data.name)});setDraft(data.content);setEdit(false);refreshDiff();
+    setError("");
+    try{
+      const data=await api("/api/workspace/file",{method:"PUT",body:{root:projectPath,path:file.path,content:draft,environmentId}});
+      setFile({...data,kind:previewKind(data.name)});setDraft(data.content);setEdit(false);await refreshDiff();
+    }catch(err){setError(err.message||String(err)||"Could not save file.")}
   }
   const highlighted=useMemo(()=>file?.content!=null?Prism.highlight(file.content,languageFor(file.name),"javascript"):"",[file]);
   const changedPaths=useMemo(()=>String(diff.status||"").split(/\r?\n/).filter(Boolean).map(line=>line.slice(3)),[diff.status]);
@@ -161,12 +174,12 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
 
   const editable=Boolean(file&&["text","html","markdown","table"].includes(file.kind));
   return <div className="workspace-panel">
-    <div className="panel-tabs"><button className={tab==="files"?"active":""} onClick={()=>setTab("files")}>Files</button>{allowDiff&&<button className={tab==="diff"?"active":""} onClick={()=>{setTab("diff");refreshDiff()}}>Changes {changedPaths.length?"("+changedPaths.length+")":""}</button>}<button onClick={()=>{refreshTree();if(allowDiff)refreshDiff()}}><RefreshCw size={13}/></button></div>
+    <div className="panel-tabs"><button className={tab==="files"?"active":""} onClick={()=>setTab("files")}>Files</button>{allowDiff&&<button className={tab==="diff"?"active":""} onClick={()=>{setTab("diff");refreshDiff()}}>Changes {changedPaths.length?"("+changedPaths.length+")":""}</button>}<button aria-label="Refresh workspace files" onClick={()=>{refreshTree();if(allowDiff)refreshDiff()}}><RefreshCw size={13}/></button></div>
     {tab==="files"&&<div className="workspace-files">
       <div className="workspace-search"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search files…"/></div>
       <div className="workspace-body">
-        <div className="tree-list">{loading?<p>Loading…</p>:source.map(entry=><button key={entry.path} style={{paddingLeft:8+(entry.depth||0)*14}} onClick={()=>entry.isFile&&open(entry.path)}>{entry.isDirectory?<Folder size={14}/>:fileIcon(entry.name)}<span>{entry.relativePath||entry.name}</span>{entry.isFile&&<i onClick={e=>{e.stopPropagation();onAttachPath?.(entry.path)}}><Paperclip size={11}/></i>}</button>)}</div>
-        <div className="file-view">{file&&<div className="file-head"><strong>{file.name}</strong><div>{!remote&&<OpenInPicker path={file.path} compact/>}<button onClick={()=>onAttachPath?.(file.path)}><Paperclip size={13}/> Attach</button>{editable&&<button onClick={()=>setEdit(v=>!v)}>{edit?<X size={13}/>:<FileCode2 size={13}/>} {edit?"Cancel":"Edit"}</button>}{edit&&<button onClick={save}><Save size={13}/> Save</button>}</div></div>}{preview()}</div>
+        <div className="tree-list">{(searchError||treeError)&&<p className="workspace-tree-error" role="alert">{searchError||treeError}</p>}{loading?<p>Loading…</p>:source.map(entry=><button key={entry.path} style={{paddingLeft:8+(entry.depth||0)*14}} onClick={()=>entry.isFile&&open(entry.path)}>{entry.isDirectory?<Folder size={14}/>:fileIcon(entry.name)}<span>{entry.relativePath||entry.name}</span>{entry.isFile&&<i onClick={e=>{e.stopPropagation();onAttachPath?.(entry.path)}}><Paperclip size={11}/></i>}</button>)}</div>
+        <div className={"file-view"+(error?" has-error":"")}>{file&&<div className="file-head"><strong>{file.name}</strong><div>{!remote&&<OpenInPicker path={file.path} compact/>}<button onClick={()=>onAttachPath?.(file.path)}><Paperclip size={13}/> Attach</button>{editable&&<button onClick={()=>{setError("");setEdit(v=>!v)}}>{edit?<X size={13}/>:<FileCode2 size={13}/>} {edit?"Cancel":"Edit"}</button>}{edit&&<button onClick={save}><Save size={13}/> Save</button>}</div></div>}{error&&file?.kind!=="unsupported"&&<div className="workspace-file-error" role="alert">{error}</div>}{preview()}</div>
       </div>
     </div>}
     {tab==="diff"&&(changedPaths.length?<div className="changes-view">

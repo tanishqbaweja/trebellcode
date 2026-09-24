@@ -714,6 +714,49 @@ test("environment refresh and removal failures preserve the existing environment
   await page.screenshot({path:auditDir+"environments-action-error-1280x800.png",fullPage:true});
 });
 
+test("workspace file refresh and save failures stay visible without lying about state",async({page,request})=>{
+  test.setTimeout(35_000);
+  await prepare(page,request);
+  await page.getByTestId("right-panel-toggle").click();
+  const panel=page.getByTestId("right-panel");
+  await expect(panel).toBeVisible();
+  const search=panel.getByPlaceholder("Search files…");
+  await search.fill("package.json");
+  const packageFile=panel.locator(".tree-list button").filter({hasText:"package.json"}).first();
+  await expect(packageFile).toBeVisible();
+  await packageFile.click();
+  await expect(panel.locator(".file-head strong")).toContainText("package.json");
+  await expect(panel.locator(".syntax-view")).toBeVisible();
+
+  let failTree=false;
+  await page.route(/\/api\/workspace\/tree\?/,route=>{
+    if(failTree)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate workspace tree refresh failure"})});
+    return route.continue();
+  });
+  failTree=true;
+  await panel.getByRole("button",{name:"Refresh workspace files",exact:true}).click();
+  await expect(panel.locator(".workspace-tree-error")).toContainText("Deliberate workspace tree refresh failure");
+  await expect(packageFile).toBeVisible();
+
+  await panel.getByRole("button",{name:"Edit",exact:true}).click();
+  const editor=panel.locator(".file-editor");
+  await expect(editor).toBeVisible();
+  const original=await editor.inputValue();
+  await editor.fill(original+"\n");
+  await page.route(/\/api\/workspace\/file$/,route=>{
+    if(route.request().method()==="PUT")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate workspace save failure"})});
+    return route.continue();
+  });
+  await panel.getByRole("button",{name:"Save",exact:true}).click();
+  await expect(panel.locator(".workspace-file-error")).toContainText("Deliberate workspace save failure");
+  await expect(editor).toBeVisible();
+  await expect(editor).toHaveValue(original+"\n");
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"workspace-file-action-error-1280x800.png",fullPage:true});
+});
+
 test("right panel tabs are functional and visually bounded",async({page,request})=>{
   test.setTimeout(60_000);
   await prepare(page,request);
