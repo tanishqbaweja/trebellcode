@@ -56,8 +56,8 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     setBusy(action);setError("");
     try{
       const data=await api("/api/git/action",{method:"POST",body:environmentBody({action,cwd:projectPath,...extra})});
-      setInfo(data.result?.info||data.result||info);await refresh();
-    }catch(e){setError(e.message)}finally{setBusy("")}
+      setInfo(data.result?.info||data.result||info);await refresh();return data;
+    }catch(e){setError(e.message);return null}finally{setBusy("")}
   }
   async function generate(){
     setBusy("generate");setError("");
@@ -124,6 +124,13 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       return result;
     }catch(e){setError(e.message);return null}finally{setBusy("")}
   }
+  async function openProjectPath(path){
+    if(!path||!onProjectChange)return false;
+    setBusy("open-project");setError("");
+    try{await Promise.resolve(onProjectChange(path,environmentId||null));return true}
+    catch(error){setError(error?.message||String(error)||"Could not open worktree.");return false}
+    finally{setBusy("")}
+  }
 
   function stackFor(pr){
     return Array.isArray(pr?.stack?.layers)?pr.stack.layers:[];
@@ -184,8 +191,8 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       </section>
       <section className="sc-card"><h3>Repository</h3><p>Root: <code>{info?.root}</code></p><p>Upstream: <code>{info?.upstream||"none"}</code></p><p>Git: {diagnostics?.git?.version||"not found"}</p><label className="source-provider-field"><span>Code host</span><select value={sourceProvider} onChange={e=>{setSourceProvider(e.target.value);setSelectedPr(null);onSelectedPrChange?.(null);setViewed({store:null,files:[],loading:false});refresh(e.target.value,{reportErrors:true})}}><option value="">Auto detect</option><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="forgejo">Forgejo / Gitea</option><option value="bitbucket">Bitbucket</option><option value="azure-devops">Azure DevOps</option></select></label><p>{sourceProvider?diagnostics?.providers?.[sourceProvider]?.label||sourceProvider:"Detected: "+(diagnostics?.detectedProvider||"unknown")} · {sourceProvider?(diagnostics?.providers?.[sourceProvider]?.authenticated?"authenticated":diagnostics?.providers?.[sourceProvider]?.installed?"needs authentication":"client/credentials missing"):"choose a provider if auto-detection is ambiguous"}</p>
         {!info?.remotes?.some(remote=>remote.name==="origin")&&sourceProvider&&diagnostics?.capabilities?.[sourceProvider]?.publish&&<button onClick={async()=>{const localName=String(info?.root||projectPath).split(/[\\/]/).filter(Boolean).pop()||"repository";const labels={gitlab:"Repository path (group/project or project)",bitbucket:"Repository path (workspace/repository)","azure-devops":"Repository path (project/repository)"};const defaults={bitbucket:`workspace/${localName}`,"azure-devops":`project/${localName}`};const name=prompt(labels[sourceProvider]||"Repository name",defaults[sourceProvider]||localName);if(!name)return;const visibility=sourceProvider==="azure-devops"?"private":confirm("Make this repository public?\n\nOK = public\nCancel = private")?"public":"private";setBusy("publish");setError("");try{const result=await api("/api/source-control/publish",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider,name,visibility})});if(result.url)window.open(result.url,"_blank");await refresh();if(!result.pushed)setError("Repository created. Make the first commit, then push it to origin.")}catch(e){setError(e.message)}finally{setBusy("")}}} disabled={!!busy||!diagnostics?.providers?.[sourceProvider]?.authenticated}><Upload size={13}/> Publish repository</button>}
-        <h4>Worktrees</h4>{(info?.worktrees||[]).map(w=><div className="worktree-row" key={w.path}><span>{w.branch||"detached"}</span><code>{w.path}</code>{w.path!==info?.root&&<button onClick={()=>onProjectChange?.(w.path,environmentId||null)}>Open</button>}</div>)}
-        {(remote||window.trebellDesktop?.pickDirectory)&&<button onClick={async()=>{const branch=prompt("New worktree branch");if(!branch)return;const path=remote?prompt("Remote worktree path",(String(projectPath).replace(/[\\/]?$/,"")+"-"+branch.replace(/[^a-zA-Z0-9._-]+/g,"-"))):await window.trebellDesktop.pickDirectory();if(path){await action("worktree-create",{branch,path,baseBranch:info?.branch});onProjectChange?.(path,environmentId||null)}}}><Plus size={13}/> Add worktree</button>}
+        <h4>Worktrees</h4>{(info?.worktrees||[]).map(w=><div className="worktree-row" key={w.path}><span>{w.branch||"detached"}</span><code>{w.path}</code>{w.path!==info?.root&&<button onClick={()=>openProjectPath(w.path)} disabled={busy==="open-project"}>Open</button>}</div>)}
+        {(remote||window.trebellDesktop?.pickDirectory)&&<button onClick={async()=>{const branch=prompt("New worktree branch");if(!branch)return;const path=remote?prompt("Remote worktree path",(String(projectPath).replace(/[\\/]?$/,"")+"-"+branch.replace(/[^a-zA-Z0-9._-]+/g,"-"))):await window.trebellDesktop.pickDirectory();if(path){const created=await action("worktree-create",{branch,path,baseBranch:info?.branch});if(created)await openProjectPath(path)}}}><Plus size={13}/> Add worktree</button>}
       </section>
     </div>
     {threadId&&<section className="sc-card linked-pr-panel"><div className="linked-pr-panel-head"><h3>Linked pull requests <span>{linkedPullRequests.length}</span></h3><button onClick={()=>syncLinkedPullRequests(true)} disabled={!!busy}><RefreshCw size={12}/> Sync</button></div>{linkedGroups.length?linkedGroups.map(group=><div className="linked-pr-group" key={group.key}>{group.stack&&<div className="linked-pr-group-title"><Layers3 size={12}/><strong>Stack #{group.stack.number}</strong><span>{group.links.length} linked layer{group.links.length===1?"":"s"}</span></div>}<div>{group.links.map(link=><div className="linked-pr-row" key={pullLinkKey(link)}><button className="linked-pr-open" onClick={()=>window.open(link.url,"_blank")}><GitPullRequest size={12}/><span><strong>#{link.number} {link.snapshot?.title||link.title||"Pull request"}</strong><small>{link.identity?.repository||""} · {link.snapshot?.state||link.state||"unknown"}</small></span></button><button className="linked-pr-unlink" onClick={()=>onLinkPr?.(link)}>Unlink</button></div>)}</div></div>):<p>No pull requests linked to this thread.</p>}</section>}

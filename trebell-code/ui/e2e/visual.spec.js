@@ -1899,6 +1899,43 @@ test("failed linked-thread unarchive keeps the PR and archived state intact",asy
   }
 });
 
+test("failed worktree open stays in the current project and reports the error",async({page,request})=>{
+  test.setTimeout(30_000);
+  const root=process.cwd(),other=root+"-review-fixture";
+  await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    isGit:true,root,branch:"main",branches:["main","review/fixture"],upstream:"origin/main",status:[],
+    remotes:[{name:"origin",url:"https://github.com/example/fixture.git"}],
+    worktrees:[{path:root,branch:"main"},{path:other,branch:"review/fixture"}],
+  })}));
+  await page.route(/\/api\/source-control\/diagnostics\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    selectedProvider:"github",detectedProvider:"github",git:{version:"git version fixture"},
+    providers:{github:{label:"GitHub",installed:true,authenticated:true}},
+    capabilities:{github:{create:true,comment:true,review:true,merge:true}},
+  })}));
+  await page.route(/\/api\/source-control\/prs\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:[],capabilities:{create:true,comment:true,review:true,merge:true}})}));
+  await prepare(page,request);
+  const crumb=page.locator(".workspace-breadcrumb .project-crumb").filter({hasNot:page.locator(".sidebar-reopen")}).first();
+  const beforeText=(await crumb.textContent())?.trim()||"";
+  await page.route(/\/api\/projects$/,route=>{
+    if(route.request().method()==="POST")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate worktree activation failure"})});
+    return route.continue();
+  });
+  await page.getByTestId("right-panel-toggle").click();
+  const panel=page.getByTestId("right-panel");
+  await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
+  const row=panel.locator(".worktree-row").filter({hasText:"review/fixture"});
+  await expect(row).toBeVisible();
+  await row.getByRole("button",{name:"Open",exact:true}).click();
+  const alert=panel.getByRole("alert");
+  await expect(alert).toContainText("Deliberate worktree activation failure");
+  await expect(alert).toBeInViewport();
+  await expect(crumb).toHaveText(beforeText);
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"worktree-open-error-1280x800.png",fullPage:true});
+});
+
 test("Claude thread can switch compatible account profiles from the model picker",async({page})=>{
   test.setTimeout(45_000);
   const home=await mkdtemp(join(tmpdir(),"trebell-claude-switch-"));
