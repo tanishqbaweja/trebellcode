@@ -427,7 +427,7 @@ function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgr
     onSelectedModels?.(next);if(!next.includes(model))setModel(next[0]||id);
     if(!event.shiftKey||!allowMultiModel)setModelOpen(false);
   }
-  return <div className="composer-wrap" onDragOver={e=>e.preventDefault()} onDrop={onDrop}>
+  return <div className={"composer-wrap"+(prompt.length>=32768?" long-draft":"")} onDragOver={e=>e.preventDefault()} onDrop={onDrop}>
     {slashOpen&&slashItems.length>0&&<div className="slash-menu">{slashItems.map(([cmd,desc])=><button key={cmd} onMouseDown={e=>{e.preventDefault();setPrompt(cmd+" ")}}><strong>{cmd}</strong><span>{desc}</span></button>)}</div>}
     {activeMention&&mentionItems.length>0&&<div className="file-mention-menu" data-testid="file-mention-menu">{mentionItems.map((item,index)=><button key={item.path||item.relativePath||index} className={index===mentionIndex?"active":""} disabled={mentionBusy} onMouseDown={event=>{event.preventDefault();chooseMention(item)}}><FileCode2 size={13}/><span><strong>{item.name||String(item.path||"").split(/[\\/]/).pop()}</strong><small>{item.relativePath||item.path}</small></span></button>)}</div>}
     {(contextChips||[]).length>0&&<div className="context-chip-row" data-testid="context-chips">{contextChips.map(chip=><span className={"context-chip kind-"+(chip.kind||"context")} data-testid="context-chip" key={chip.id||chip.path} title={chip.path}><Link2 size={11}/><strong>{chip.label||"Context"}</strong>{chip.detail&&<small>{chip.detail}</small>}<button onClick={()=>onRemoveContext(chip.path)} title="Remove context"><X size={10}/></button></span>)}</div>}
@@ -2234,7 +2234,17 @@ export default function App(){
   async function onPaste(e){
     const files=[...(e.clipboardData?.files||[])];if(files.length){e.preventDefault();try{await uploadBrowserFiles(files)}catch(error){showActionError(error,"Could not attach pasted files")}return}
     const text=e.clipboardData?.getData("text/plain")||"";const start=Number(e.currentTarget?.selectionStart)||0,end=Number(e.currentTarget?.selectionEnd)||start;const nextLength=prompt.length-(end-start)+text.length;
-    if(text.length>=32768||nextLength>MAX_COMPOSER_CHARS){e.preventDefault();const d=await api("/api/attachments/text",{method:"POST",body:{name:"pasted-context.txt",text}});const prepared=await prepareAttachmentPaths([d.path]);await addFiles(prepared)}
+    if(text.length>=32768||nextLength>MAX_COMPOSER_CHARS){
+      e.preventDefault();
+      try{
+        const d=await api("/api/attachments/text",{method:"POST",body:{name:"pasted-context.txt",text}});
+        const prepared=await prepareAttachmentPaths([d.path]);await addFiles(prepared);
+      }catch(error){
+        setPrompt(current=>current===prompt?prompt.slice(0,start)+text+prompt.slice(end):current+"\n"+text);
+        setPromptHistoryIndex(-1);
+        showActionError(error,"Could not attach pasted text; kept it in the draft");
+      }
+    }
   }
   async function onDrop(e){e.preventDefault();const files=[...(e.dataTransfer?.files||[])];try{await uploadBrowserFiles(files)}catch(error){showActionError(error,"Could not attach dropped files")}}
   async function attachExcerpt(text){if(!text.trim())return;await addContextAttachment({name:"terminal-context.txt",text,kind:"terminal",label:"Terminal excerpt",detail:text.split(/\r?\n/).length+" lines"});setPanel(null)}

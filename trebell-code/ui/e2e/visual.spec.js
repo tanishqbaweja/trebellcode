@@ -298,6 +298,30 @@ test("browser file attachment failures stay visible without fake attachments",as
   await page.screenshot({path:auditDir+"composer-attachment-error-1280x800.png",fullPage:true});
 });
 
+test("oversized pasted text stays in the draft when attachment creation fails",async({page,request})=>{
+  test.setTimeout(30_000);
+  await prepare(page,request);
+  await page.route(/\/api\/attachments\/text$/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate pasted text attachment failure"})}));
+  const composer=page.getByTestId("composer");
+  const prefix="Keep this draft: ",pasted="P".repeat(33_000);
+  await composer.fill(prefix);
+  await composer.evaluate((node,text)=>{
+    const data=new DataTransfer();data.setData("text/plain",text);
+    node.dispatchEvent(new ClipboardEvent("paste",{bubbles:true,cancelable:true,clipboardData:data}));
+  },pasted);
+  const alert=page.getByTestId("app-action-error");
+  await expect(alert).toContainText("Could not attach pasted text; kept it in the draft: Deliberate pasted text attachment failure");
+  await expect(composer).toHaveValue(prefix+pasted);
+  await expect(page.locator(".attachment-shelf span")).toHaveCount(0);
+  await page.setViewportSize({width:1280,height:800});
+  await expect(alert).toBeInViewport();
+  const metrics=await page.locator(".composer-wrap").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  const alertBox=await box(alert),composerBox=await box(page.locator(".composer-wrap"));
+  expect(alertBox.y+alertBox.height).toBeLessThanOrEqual(composerBox.y-4);
+  await page.screenshot({path:auditDir+"composer-pasted-text-error-1280x800.png",fullPage:true});
+});
+
 test("agent question file attachment failures stay inside the retryable modal",async({page})=>{
   test.setTimeout(35_000);
   const thread={id:"question-attachment-thread",name:"Question attachment fixture",preview:"Question attachment coverage",historyMode:"paginated",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
