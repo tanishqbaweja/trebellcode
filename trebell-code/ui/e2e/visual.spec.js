@@ -720,6 +720,69 @@ test("failed turn start restores the draft and removes the unsent user bubble",a
   }finally{await harness.close()}
 });
 
+test("checkpoint failures warn without blocking successful turns",async({page})=>{
+  test.setTimeout(40_000);
+  const project={id:"checkpoint-warning-project",name:"Checkpoint Warning Project",path:process.cwd(),environmentId:null};
+  const thread={id:"checkpoint-warning-thread",name:"Checkpoint warning fixture",preview:"Checkpoint degradation coverage",cwd:project.path,createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
+  let phase="create",turnCounter=0,linkCalls=0;
+  const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
+    if(message.method==="turn/start"){
+      turnCounter++;
+      ws.send(JSON.stringify({id:message.id,result:{turn:{id:"checkpoint-turn-"+turnCounter,status:"inProgress"}}}));return true;
+    }
+    return false;
+  }});
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:project.path,platform:process.platform,version:"checkpoint-warning-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[thread.id]:{projectless:false,environmentId:null}}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+    await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})}));
+    await page.route(/\/api\/worktree\/ensure$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
+    await page.route(/\/api\/thread-meta$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
+    await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,root:project.path,branch:"main",branches:["main"],upstream:"origin/main",status:[],remotes:[],worktrees:[{path:project.path,branch:"main"}]})}));
+    await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>{
+      if(route.request().method()==="GET")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({checkpoints:[]})});
+      if(phase==="create")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate checkpoint create failure"})});
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({supported:true,id:"checkpoint-link-fixture",threadId:thread.id,root:project.path,commit:"fixture-commit",ref:"refs/trebell/checkpoints/checkpoint-link-fixture"})});
+    });
+    await page.route(/\/api\/checkpoints\/link$/,route=>{
+      linkCalls++;
+      return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate checkpoint link failure"})});
+    });
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Checkpoint warning fixture"]')});
+    await row.locator(".thread-main").click();
+    await expect(row).toHaveClass(/active/);
+    const composer=page.getByTestId("composer");
+
+    await composer.fill("Continue even when checkpoint creation fails");
+    await page.getByTestId("send").click();
+    const createWarning=page.locator(".tool-event.kind-error").filter({hasText:"Could not create file checkpoint"});
+    await expect(createWarning).toContainText("Deliberate checkpoint create failure");
+    await expect(page.locator(".user-bubble").filter({hasText:"Continue even when checkpoint creation fails"})).toBeVisible();
+    expect(turnCounter).toBe(1);
+    harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"checkpoint-turn-1",status:"completed"}}});
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);
+
+    phase="link";
+    await composer.fill("Continue even when checkpoint linking fails");
+    await expect(page.getByTestId("send")).toBeEnabled();
+    await page.getByTestId("send").click();
+    const linkWarning=page.locator(".tool-event.kind-error").filter({hasText:"could not be linked to this turn"});
+    await expect(linkWarning).toContainText("Deliberate checkpoint link failure");
+    await expect(page.locator(".user-bubble").filter({hasText:"Continue even when checkpoint linking fails"})).toBeVisible();
+    expect(turnCounter).toBe(2);expect(linkCalls).toBe(1);
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"checkpoint-degradation-warning-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
 test("direct fallback never drops attachments or failed text sends",async({page,request})=>{
   test.setTimeout(35_000);
   const baseBootstrap=await (await request.get("/api/bootstrap")).json();
