@@ -1742,13 +1742,14 @@ export default function App(){
     }
     const archived=Boolean(reference.archived||thread?.archived);
     if(archived){
-      const restored=await rpc.request("thread/unarchive",{threadId:reference.threadId}).catch(()=>null);
-      await updateThreadMeta(reference.threadId,{archived:false});
+      const restored=await rpc.request("thread/unarchive",{threadId:reference.threadId});
+      if(!restored?.thread&&!thread)throw new Error("The agent runtime did not return the restored thread.");
       thread=restored?.thread||thread;
       if(!thread){
         const read=await rpc.request("thread/read",{threadId:reference.threadId,includeTurns:false});
         thread=read?.thread||null;
       }
+      await updateThreadMeta(reference.threadId,{archived:false});
       if(thread)thread={...thread,archived:false};
     }
     if(!thread)throw new Error("Linked thread was not found.");

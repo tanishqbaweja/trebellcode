@@ -1826,6 +1826,79 @@ test("source control keeps the PR visible when loading full details fails",async
   await page.screenshot({path:auditDir+"source-control-refresh-error-1280x800.png",fullPage:true});
 });
 
+test("failed linked-thread unarchive keeps the PR and archived state intact",async({page})=>{
+  test.setTimeout(40_000);
+  const parent={
+    id:"source-parent-thread",name:"Source parent fixture",preview:"Parent chat",cwd:process.cwd(),
+    createdAt:Date.now()/1000-30,updatedAt:Date.now()/1000,turns:[],
+  };
+  const archivedId="archived-linked-thread";
+  const project={id:"source-fixture-project",name:"Source Fixture",path:process.cwd(),environmentId:null,effectiveSettings:{}};
+  const listPr={number:77,title:"Archived thread fixture",state:"OPEN",headRefName:"feature/archive-link",baseRefName:"main",provider:"github",url:"https://github.com/example/fixture/pull/77"};
+  const wsHttp=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
+  wsHttp.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  wss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",data=>{
+      const message=JSON.parse(String(data));if(message.id==null||!message.method)return;
+      if(message.method==="thread/unarchive"&&message.params?.threadId===archivedId){
+        ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate linked thread unarchive failure"}}));return;
+      }
+      let result={};
+      if(message.method==="initialize")result={userAgent:"linked-thread-fixture"};
+      else if(message.method==="thread/list")result={data:[parent],nextCursor:null};
+      else if(message.method==="thread/resume")result={thread:parent};
+      else if(message.method==="thread/read"&&message.params?.threadId===archivedId)result={thread:{id:archivedId,name:"Archived review thread",cwd:process.cwd(),archived:true,turns:[]}};
+      else if(message.method==="threadSection/list"||message.method==="skills/list")result={data:[]};
+      else if(message.method==="collaborationMode/list")result={data:[{name:"Default",mode:"default"}]};
+      else if(message.method==="thread/goal/get")result={goal:null};
+      else if(message.method==="thread/attachment/list")result={data:[]};
+      else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
+      ws.send(JSON.stringify({id:message.id,result}));
+    });
+  });
+  const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[parent.id]:{projectless:false,environmentId:null}}})}));
+    await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+    await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})}));
+    await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({checkpoints:[]})}));
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,root:process.cwd(),branch:"feature/archive-link",branches:["main","feature/archive-link"],upstream:"origin/feature/archive-link",status:[],remotes:[{name:"origin",url:"https://github.com/example/fixture.git"}],worktrees:[]})}));
+    await page.route(/\/api\/source-control\/diagnostics\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selectedProvider:"github",detectedProvider:"github",git:{version:"git version fixture"},providers:{github:{label:"GitHub",installed:true,authenticated:true}},capabilities:{github:{create:true,comment:true,review:true,merge:true}}})}));
+    await page.route(/\/api\/source-control\/prs\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:[listPr],capabilities:{create:true,comment:true,review:true,merge:true}})}));
+    await page.route(/\/api\/source-control\/pr-detail\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({provider:"github",item:{...listPr,body:"Fixture PR",identity:{provider:"github",host:"github.com",repository:"example/fixture",number:77},files:[],comments:[],reviews:[],statusCheckRollup:[]}})}));
+    await page.route(/\/api\/source-control\/pr-viewed\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({store:"environment",files:[]})}));
+    await page.route(/\/api\/source-control\/thread-link\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({threads:[{threadId:archivedId,title:"Archived review thread",archived:true}]})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    await page.locator('.thread-main[title="Source parent fixture"]').click();
+    await page.getByTestId("right-panel-toggle").click();
+    const panel=page.getByTestId("right-panel");
+    await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
+    await panel.getByRole("button",{name:/#77 Archived thread fixture/}).click();
+    const linked=panel.getByRole("button",{name:/Archived review thread · archived/});
+    await expect(linked).toBeVisible();
+    await linked.click();
+    const alert=panel.getByRole("alert");
+    await expect(alert).toContainText("Deliberate linked thread unarchive failure");
+    await expect(alert).toBeInViewport();
+    await expect(linked).toContainText("archived");
+    await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","Source parent fixture");
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"linked-thread-unarchive-error-1280x800.png",fullPage:true});
+  }finally{
+    for(const ws of sockets)try{ws.terminate()}catch{}
+    wss.close();await new Promise(resolve=>wsHttp.close(resolve));
+  }
+});
+
 test("Claude thread can switch compatible account profiles from the model picker",async({page})=>{
   test.setTimeout(45_000);
   const home=await mkdtemp(join(tmpdir(),"trebell-claude-switch-"));
