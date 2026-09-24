@@ -1857,6 +1857,33 @@ test("clone progress polling failures keep the last known job visible",async({pa
   await page.screenshot({path:auditDir+"clone-progress-refresh-error-1280x800.png",fullPage:true});
 });
 
+test("clone completion surfaces failed Git metadata refreshes",async({page})=>{
+  test.setTimeout(30_000);
+  const runningJob={id:"clone-complete-git-failure",status:"running",phase:"Cloning objects",progress:88};
+  const completedJob={...runningJob,status:"completed",phase:"Clone complete",progress:100};
+  const project={id:"clone-complete-project",name:"Clone Complete Project",path:process.cwd(),environmentId:null,cloneJob:runningJob};
+  const completedProject={...project,cloneJob:completedJob};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:project.path,platform:process.platform,version:"clone-complete-git-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{}})}));
+  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+  await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})}));
+  await page.route(/\/api\/clone-jobs\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({job:completedJob,project:completedProject})}));
+  await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate post-clone Git metadata failure"})}));
+  await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+  await page.route(/\/api\/freebuff\/overview/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({})}));
+  await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+  await page.goto("/");
+  await expect(page.getByTestId("clone-banner")).toBeVisible();
+  await expect(page.getByTestId("clone-banner")).toHaveCount(0,{timeout:5000});
+  await expect(page.getByTestId("app-action-error")).toContainText("Clone completed, but Git metadata could not refresh: Deliberate post-clone Git metadata failure");
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"clone-complete-git-refresh-error-1280x800.png",fullPage:true});
+});
+
 test("successful history imports surface a failed thread-list refresh",async({page})=>{
   test.setTimeout(35_000);
   const thread={id:"history-refresh-thread",name:"History refresh fixture",preview:"Import refresh honesty",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
@@ -2824,6 +2851,36 @@ test("onboarding finish failures stay visible and keep setup open",async({page,r
   expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.client+1);
   expect(dimensions.width).toBeLessThanOrEqual(660);
   await page.screenshot({path:auditDir+"onboarding-finish-error-1280x800.png",fullPage:true});
+});
+
+test("onboarding completion surfaces a failed thread-list refresh",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"onboarding-refresh-thread",name:"Onboarding refresh fixture",preview:"Onboarding partial success",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  let failThreadList=false;
+  const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
+    if(message.method==="thread/list"&&failThreadList){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate onboarding thread refresh failure"}}));return true}
+    return false;
+  }});
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"onboarding-refresh-fixture",{settingsPatch:{onboardingComplete:false}});
+    await page.route(/\/api\/settings$/,route=>{
+      if(route.request().method()==="POST")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"})});
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({onboardingComplete:false,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"})});
+    });
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const onboarding=page.getByTestId("onboarding");
+    await expect(onboarding).toBeVisible();
+    failThreadList=true;
+    await onboarding.getByRole("button",{name:"Finish setup",exact:true}).click();
+    await expect(onboarding).toBeHidden();
+    await expect(page.getByTestId("app-action-error")).toContainText("Onboarding finished, but the thread list could not refresh: Deliberate onboarding thread refresh failure");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"onboarding-thread-refresh-error-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
 });
 
 test("light mode stays visually coherent across workspace and panels",async({page,request})=>{
@@ -4306,7 +4363,10 @@ test("Codex thread can switch compatible account profiles from the model picker"
       if(message.method==="initialize")result={userAgent:"codex-profile-fixture"};
       else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
       else if(message.method==="threadSection/list")result={data:[],nextCursor:null};
-      else if(message.method==="skills/list")result={data:[]};
+      else if(message.method==="skills/list"){
+        if(failSkillsRefresh){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate profile skills refresh failure"}}));return}
+        result={data:[]};
+      }
       else if(message.method==="thread/resume"||message.method==="thread/read")result={thread};
       else if(message.method==="thread/items/list")result={data:[],nextCursor:null};
       else if(message.method==="memory/status")result={v2ConsolidatedThreads:23,v2Ready:true};
@@ -4319,7 +4379,7 @@ test("Codex thread can switch compatible account profiles from the model picker"
     });
   });
   const upstreamPort=await freePort();await new Promise((resolve,reject)=>upstreamHttp.listen(upstreamPort,"127.0.0.1",resolve).once("error",reject));
-  let currentInstanceId="codex-work",failProfileRefresh=false;
+  let currentInstanceId="codex-work",failProfileRefresh=false,failSkillsRefresh=false;
   const profiles=[
     {id:"codex-work",displayName:"Codex Work",available:true,authenticated:true,version:"fixture-1.0"},
     {id:"codex-personal",displayName:"Codex Personal",available:true,authenticated:true,version:"fixture-1.0"},
@@ -4371,11 +4431,20 @@ test("Codex thread can switch compatible account profiles from the model picker"
     await profilesMenu.getByRole("button",{name:/Codex Personal/}).click();await expect(picker).toContainText("Codex Personal");
     await picker.click();await expect(profilesMenu.getByRole("button",{name:/Codex Personal/})).toHaveClass(/selected/);
     await page.screenshot({path:auditDir+"chat-codex-profile-switched-1600x980.png",fullPage:true});
+    failSkillsRefresh=true;
+    await profilesMenu.getByRole("button",{name:/Codex Work/}).click();
+    const profileError=page.getByTestId("app-action-error");
+    await expect(profileError).toContainText("Profile switched, but skills could not refresh: Deliberate profile skills refresh failure");
+    await expect(picker).toContainText("Codex Work");
+    failSkillsRefresh=false;
+    await picker.click();
+    await profilesMenu.getByRole("button",{name:/Codex Personal/}).click();
+    await expect(picker).toContainText("Codex Personal");
+    await picker.click();
     await page.setViewportSize({width:1280,height:800});
     const compact=await page.locator(".composer-bar").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(compact.scroll).toBeLessThanOrEqual(compact.client+1);
     await page.screenshot({path:auditDir+"chat-codex-profile-switched-1280x800.png",fullPage:true});
     await profilesMenu.getByRole("button",{name:/Codex Broken/}).click();
-    const profileError=page.getByTestId("app-action-error");
     await expect(profileError).toContainText("Could not switch Codex profile: Deliberate runtime profile failure");
     await expect(profileError).toBeInViewport();
     await expect(profilesMenu).toBeVisible();

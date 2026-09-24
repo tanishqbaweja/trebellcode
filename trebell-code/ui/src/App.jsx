@@ -803,7 +803,9 @@ export default function App(){
     setCloneRefreshError("");
     if(result.project?.id===currentProject?.id||result.project?.path===projectPath)setCurrentProject(result.project);
     if(result.job?.status==="completed"&&result.project?.path){
-      api("/api/git/info?path="+encodeURIComponent(result.project.path)+"&environmentId="+encodeURIComponent(result.project.environmentId||"")).then(setGitInfo).catch(()=>{});
+      api("/api/git/info?path="+encodeURIComponent(result.project.path)+"&environmentId="+encodeURIComponent(result.project.environmentId||""))
+        .then(setGitInfo)
+        .catch(error=>showActionError(error,"Clone completed, but Git metadata could not refresh"));
     }
     return result;
   }
@@ -972,7 +974,10 @@ export default function App(){
         setThreads(prev=>prev.map(thread=>thread.id===updated.id?{...thread,...updated}:thread));
       }
       const profiles=await loadThreadRuntimeProfiles(rpc,threadId);
-      if(agentRuntime==="codex")await loadSkills(rpc,projectPath,true).catch(()=>{});
+      if(agentRuntime==="codex"){
+        try{await loadSkills(rpc,projectPath,true,{strict:true})}
+        catch(error){showActionError(error,"Profile switched, but skills could not refresh")}
+      }
       const selected=(profiles?.items||[]).find(item=>item.id===instanceId);
       const label=agentRuntime==="codex"?"Codex":"Claude";
       setEvents(prev=>[...prev,{id:"runtime-profile-"+Date.now(),kind:"tool",title:`${label} profile switched to ${selected?.displayName||instanceId}`,status:"done",raw:{instanceId}}]);
@@ -2703,7 +2708,10 @@ export default function App(){
   async function finishOnboarding({openSettings=false}={}){
     const next=await api("/api/settings",{method:"POST",body:{onboardingComplete:true,defaultPermissionMode:permissionMode}});
     setSettings(prev=>({...prev,...next}));
-    if(rpc&&rpcStatus==="connected")await loadThreads(rpc).catch(()=>{});
+    if(rpc&&rpcStatus==="connected"){
+      try{await loadThreads(rpc,{strict:true})}
+      catch(error){showActionError(error,"Onboarding finished, but the thread list could not refresh")}
+    }
     if(openSettings)setSection("settings");
   }
   async function historyImported(){
