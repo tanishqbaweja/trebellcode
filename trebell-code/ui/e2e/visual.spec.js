@@ -786,6 +786,29 @@ test("workspace file refresh and save failures stay visible without lying about 
   await page.screenshot({path:auditDir+"workspace-file-action-error-1280x800.png",fullPage:true});
 });
 
+test("open externally failures stay visible beside the editor picker",async({page,request})=>{
+  test.setTimeout(30_000);
+  await page.addInitScript(()=>{
+    Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{
+      openIn:{
+        list:async()=>({editors:[{id:"vscode",label:"Visual Studio Code"}]}),
+        open:async()=>{throw new Error("Deliberate external editor launch failure")},
+      },
+    }});
+  });
+  await prepare(page,request);
+  const picker=page.locator(".workspace-header .open-in-wrap");
+  await expect(picker).toBeVisible();
+  await picker.getByRole("button",{name:"Open",exact:true}).click();
+  await expect(picker.getByRole("alert")).toContainText("Deliberate external editor launch failure");
+  await expect(picker.getByLabel("Choose external editor")).toHaveValue("vscode");
+  await page.setViewportSize({width:1280,height:800});
+  const header=page.locator(".workspace-header");
+  const metrics=await header.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"open-in-editor-error-1280x800.png",fullPage:true});
+});
+
 test("usage clear failures keep recorded usage visible",async({page,request})=>{
   test.setTimeout(30_000);
   await prepare(page,request);
