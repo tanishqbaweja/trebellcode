@@ -1113,6 +1113,66 @@ test("switching Codex inference provider preserves the active chat and sidebar t
   }
 });
 
+test("sidebar thread action failures stay visible and keep the thread in place",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"sidebar-action-thread",name:"Sidebar failure fixture",preview:"Thread action error coverage",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const wsHttp=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
+  wsHttp.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  wss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",data=>{
+      const message=JSON.parse(String(data));if(message.id==null||!message.method)return;
+      if(message.method==="thread/section/move"){
+        ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate thread pin failure"}}));return;
+      }
+      let result={};
+      if(message.method==="initialize")result={userAgent:"sidebar-action-fixture"};
+      else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
+      else if(message.method==="threadSection/list"||message.method==="skills/list"||message.method==="collaborationMode/list")result={data:[]};
+      else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
+      ws.send(JSON.stringify({id:message.id,result}));
+    });
+  });
+  const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}})}));
+    await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+    await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Sidebar failure fixture"]')});
+    await expect(row).toBeVisible({timeout:10_000});
+    await row.hover();
+    await row.locator("summary").click();
+    await row.getByRole("button",{name:"Pin",exact:true}).click();
+    const alert=page.locator(".sidebar-action-error");
+    await expect(alert).toHaveRole("alert");
+    await expect(alert).toContainText("Deliberate thread pin failure");
+    await expect(row).toBeVisible();
+    await expect(page.locator(".thread-sections section").filter({hasText:"General"}).locator('.thread-main[title="Sidebar failure fixture"]')).toBeVisible();
+    await page.setViewportSize({width:1280,height:800});
+    const sidebar=page.locator(".sidebar");const metrics=await sidebar.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"thread-sidebar-action-error-1280x800.png",fullPage:true});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    const light=await alert.evaluate(node=>({background:getComputedStyle(node).backgroundColor,color:getComputedStyle(node).color}));
+    expect(light.background).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
+    await page.screenshot({path:auditDir+"thread-sidebar-action-error-light-1280x800.png",fullPage:true});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark";document.documentElement.dataset.customTheme="true"});
+    const custom=await alert.evaluate(node=>({background:getComputedStyle(node).backgroundColor,color:getComputedStyle(node).color,border:getComputedStyle(node).borderColor}));
+    expect(custom.background).toBeTruthy();expect(custom.color).toBeTruthy();expect(custom.border).toBeTruthy();
+    await page.screenshot({path:auditDir+"thread-sidebar-action-error-custom-1280x800.png",fullPage:true});
+  }finally{
+    for(const ws of sockets)try{ws.terminate()}catch{}
+    wss.close();await new Promise(resolve=>wsHttp.close(resolve));
+  }
+});
+
 test("populated source control and pull request detail stay usable",async({page,request})=>{
   test.setTimeout(45_000);
   const prActions=[];

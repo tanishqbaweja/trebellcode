@@ -1,4 +1,4 @@
-import React,{useEffect,useRef} from "react";
+import React,{useEffect,useRef,useState} from "react";
 import {
   Archive, BarChart3, Bot, Clock3, Folder, Globe2, History,
   GitPullRequest, MoreHorizontal, Pin, Plus, Search, Settings, SlidersHorizontal, Wrench, Server, PanelLeftClose
@@ -17,7 +17,7 @@ function relativeTime(epoch){
   return Math.floor(d/86400)+"d";
 }
 
-function ThreadRow({thread,meta,active,selected,bulk,onOpen,onSelect,onAction,onMove,agentRuntime="codex"}){
+function ThreadRow({thread,meta,active,selected,bulk,onOpen,onSelect,onAction,onMove,runAction,agentRuntime="codex"}){
   const section=thread.section?.name||"Active";
   const linked=Array.isArray(meta?.linkedPullRequests)
     ?meta.linkedPullRequests
@@ -26,10 +26,13 @@ function ThreadRow({thread,meta,active,selected,bulk,onOpen,onSelect,onAction,on
   const review=linked[0]||detected;const reviewNumber=review?.identity?.number||review?.number;
   const reviewLabel=linked.length>1?"#"+reviewNumber+" +"+(linked.length-1):reviewNumber?"#"+reviewNumber:null;
   const references=threadReferenceValues(thread,meta);
-  const copy=value=>writeClipboardText(value);
+  const copy=async value=>{
+    const copied=await writeClipboardText(value);
+    if(!copied)throw new Error("Could not copy to clipboard.");
+  };
   return <div className={active?"thread-row active":"thread-row"}>
     {bulk&&<input className="thread-select" type="checkbox" checked={selected} onChange={()=>onSelect(thread.id)}/>}
-    <button className="thread-main" onClick={()=>onOpen(thread)} title={titleOf(thread)}>
+    <button className="thread-main" onClick={()=>runAction(()=>onOpen(thread))} title={titleOf(thread)}>
       <span className={"thread-status-dot "+(section==="Pinned"?"pinned":section==="Snoozed"?"snoozed":section==="Settled"?"settled":"")}/>
       <div>
         <strong className="thread-title-line"><span className="thread-title-text">{titleOf(thread)}</span>{reviewLabel&&<em className={linked.length?"thread-pr-chip linked":"thread-pr-chip detected"} title={linked.length?"Linked pull request":"Detected from saved branch"}><GitPullRequest size={9}/>{reviewLabel}</em>}</strong>
@@ -39,17 +42,17 @@ function ThreadRow({thread,meta,active,selected,bulk,onOpen,onSelect,onAction,on
     <details className="thread-menu">
       <summary title="Thread actions"><MoreHorizontal size={13}/></summary>
       <div className="thread-menu-popover">
-        <button onClick={()=>onAction(thread,section==="Pinned"?"active":"pin")}>{section==="Pinned"?"Unpin":"Pin"}</button>
-        <button onClick={()=>onAction(thread,section==="Snoozed"?"active":"snooze")}>{section==="Snoozed"?"Wake thread":"Snooze…"}</button>
-        <button onClick={()=>onAction(thread,section==="Settled"?"active":"settle")}>{section==="Settled"?"Un-settle":"Settle"}</button>
-        {(agentRuntime==="codex"||agentRuntime==="opencode"||thread.providerMeta?.initialize?.agentCapabilities?.sessionCapabilities?.fork!=null)&&<button onClick={()=>onAction(thread,"fork")}>Fork thread</button>}
-        <button onClick={()=>onMove(thread,-1)}>Move up</button>
-        <button onClick={()=>onMove(thread,1)}>Move down</button>
-        <button onClick={()=>copy(references.threadId)}>Copy thread ID</button>
-        {references.branch&&<button onClick={()=>copy(references.branch)}>Copy branch</button>}
-        {references.path&&!meta?.projectless&&<button onClick={()=>copy(references.path)}>Copy path</button>}
-        <button onClick={()=>onAction(thread,"archive")}>Archive</button>
-        <button className="danger" onClick={()=>onAction(thread,"delete")}>Delete</button>
+        <button onClick={()=>runAction(()=>onAction(thread,section==="Pinned"?"active":"pin"))}>{section==="Pinned"?"Unpin":"Pin"}</button>
+        <button onClick={()=>runAction(()=>onAction(thread,section==="Snoozed"?"active":"snooze"))}>{section==="Snoozed"?"Wake thread":"Snooze…"}</button>
+        <button onClick={()=>runAction(()=>onAction(thread,section==="Settled"?"active":"settle"))}>{section==="Settled"?"Un-settle":"Settle"}</button>
+        {(agentRuntime==="codex"||agentRuntime==="opencode"||thread.providerMeta?.initialize?.agentCapabilities?.sessionCapabilities?.fork!=null)&&<button onClick={()=>runAction(()=>onAction(thread,"fork"))}>Fork thread</button>}
+        <button onClick={()=>runAction(()=>onMove(thread,-1))}>Move up</button>
+        <button onClick={()=>runAction(()=>onMove(thread,1))}>Move down</button>
+        <button onClick={()=>runAction(()=>copy(references.threadId))}>Copy thread ID</button>
+        {references.branch&&<button onClick={()=>runAction(()=>copy(references.branch))}>Copy branch</button>}
+        {references.path&&!meta?.projectless&&<button onClick={()=>runAction(()=>copy(references.path))}>Copy path</button>}
+        <button onClick={()=>runAction(()=>onAction(thread,"archive"))}>Archive</button>
+        <button className="danger" onClick={()=>runAction(()=>onAction(thread,"delete"))}>Delete</button>
       </div>
     </details>
   </div>;
@@ -67,6 +70,11 @@ export default function ThreadSidebar({
   rightPanelOpen=false,rightPanelTab="files"
 }){
   const searchRef=useRef(null);
+  const [actionError,setActionError]=useState("");
+  function runAction(action){
+    setActionError("");
+    return Promise.resolve().then(action).catch(error=>setActionError(error?.message||String(error)||"Action failed."));
+  }
   useEffect(()=>{
     const focus=()=>{searchRef.current?.focus();searchRef.current?.select?.()};
     window.addEventListener("trebell:sidebar-search",focus);
@@ -89,7 +97,7 @@ export default function ThreadSidebar({
       <button className="sidebar-brand" onClick={()=>setSection("chat")} aria-label="Threads">
         <img className="brand-mark" src="/trebell-code-icon.svg" alt="" aria-hidden="true"/><strong>Trebell <em>Code</em></strong>
       </button>
-      <div className="sidebar-title-actions"><button className="sidebar-new-thread" onClick={onCollapse} aria-label="Collapse sidebar" title="Collapse sidebar · Ctrl+B"><PanelLeftClose size={15}/></button><button className="sidebar-new-thread" onClick={onNew} aria-label="New thread" title="New thread"><Plus size={16}/></button></div>
+      <div className="sidebar-title-actions"><button className="sidebar-new-thread" onClick={onCollapse} aria-label="Collapse sidebar" title="Collapse sidebar · Ctrl+B"><PanelLeftClose size={15}/></button><button className="sidebar-new-thread" onClick={()=>runAction(onNew)} aria-label="New thread" title="New thread"><Plus size={16}/></button></div>
     </div>
 
     <div className="sidebar-thread-tools">
@@ -103,18 +111,19 @@ export default function ThreadSidebar({
       </button>
     </div>
 
+    {actionError&&<div className="sidebar-action-error" role="alert">{actionError}</div>}
     {bulk&&<div className="bulk-bar">
       <span>{selectedIds.size} selected</span>
-      <button onClick={()=>onBulkAction("pin")}>Pin</button>
-      <button onClick={()=>onBulkAction("snooze")}>Snooze</button>
-      <button onClick={()=>onBulkAction("settle")}>Settle</button>
-      <button onClick={()=>onBulkAction("archive")}>Archive</button>
+      <button onClick={()=>runAction(()=>onBulkAction("pin"))}>Pin</button>
+      <button onClick={()=>runAction(()=>onBulkAction("snooze"))}>Snooze</button>
+      <button onClick={()=>runAction(()=>onBulkAction("settle"))}>Settle</button>
+      <button onClick={()=>runAction(()=>onBulkAction("archive"))}>Archive</button>
     </div>}
 
     <div className="thread-sections">
       {Object.entries(groups).map(([name,items])=>items.length>0&&<section key={name}>
         <h4>{name}<span>{items.length}</span></h4>
-        {items.map(t=><ThreadRow key={t.id} thread={t} meta={threadMeta[t.id]||null} active={t.id===activeThreadId} bulk={bulk} selected={selectedIds.has(t.id)} onOpen={onOpen} onSelect={toggle} onAction={onThreadAction} onMove={onMove} agentRuntime={agentRuntime}/>)}
+        {items.map(t=><ThreadRow key={t.id} thread={t} meta={threadMeta[t.id]||null} active={t.id===activeThreadId} bulk={bulk} selected={selectedIds.has(t.id)} onOpen={onOpen} onSelect={toggle} onAction={onThreadAction} onMove={onMove} runAction={runAction} agentRuntime={agentRuntime}/>)}
       </section>)}
       {!threads.length&&<div className="sidebar-empty">No threads yet.<br/>Start a task to create one.</div>}
     </div>

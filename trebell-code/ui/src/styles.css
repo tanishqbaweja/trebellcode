@@ -205,6 +205,9 @@ html[data-custom-theme="true"] .terminal-view{background:color-mix(in srgb,var(-
 html[data-custom-theme="true"] ::selection{background:var(--theme-terminal-selection)}
 
 .thread-sections{min-height:0;overflow:auto;display:grid;gap:11px;padding:0 2px 12px;scrollbar-width:thin;scrollbar-color:#303545 transparent}
+.sidebar-action-error{margin:0 4px 8px;border:1px solid #643d48;background:#1b1015;color:#d39aa5;border-radius:7px;padding:7px 8px;font-size:8px;line-height:1.35;overflow-wrap:anywhere}
+html[data-mode="light"] .sidebar-action-error{background:#fff4f5;border-color:#e2b8bf;color:#914b58}
+html[data-custom-theme="true"] .sidebar-action-error{background:color-mix(in srgb,var(--panel) 86%,#7a2638)!important;border-color:color-mix(in srgb,var(--line) 60%,#b55367)!important;color:color-mix(in srgb,var(--theme-foreground) 78%,#f0a0ad)!important}
 .thread-sections section h4{height:23px;margin:0;padding:0 9px;display:flex;align-items:center;justify-content:space-between;font-size:9px;text-transform:uppercase;letter-spacing:.09em;color:#666d7e;font-weight:650}
 .thread-sections section h4 span{font-size:8px;color:#4f5667}
 .thread-row{min-height:47px;border-radius:10px;display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:4px;padding:3px 4px;border:1px solid transparent}
