@@ -38,13 +38,20 @@ async function freePort(){
 }
 
 async function startCodexRequestHarness(thread,{onRequest}={}){
-  let notificationSocket=null,relayClosed=false;
+  let notificationSocket=null,relayClosed=false,nextServerRequestId=5000;
+  const pendingServerResponses=new Map();
   const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const sockets=new Set();
   upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
   upstreamWss.on("connection",ws=>{
     sockets.add(ws);notificationSocket=ws;ws.on("close",()=>sockets.delete(ws));
     ws.on("message",async data=>{
-      const message=JSON.parse(String(data));if(message.id==null||!message.method)return;
+      const message=JSON.parse(String(data));
+      if(message.id!=null&&!message.method){
+        const pending=pendingServerResponses.get(String(message.id));
+        if(pending){pendingServerResponses.delete(String(message.id));clearTimeout(pending.timer);pending.resolve(message)}
+        return;
+      }
+      if(message.id==null||!message.method)return;
       if(await onRequest?.(message,ws))return;
       let result={};
       if(message.method==="initialize")result={userAgent:"request-response-fixture"};
@@ -69,9 +76,20 @@ async function startCodexRequestHarness(thread,{onRequest}={}){
   return {
     wsUrl:"ws://127.0.0.1:"+relayPort+"/api/codex/ws",
     emit(message){if(!notificationSocket)throw new Error("Codex request fixture is not connected.");notificationSocket.send(JSON.stringify(message))},
+    request(method,params={}){
+      if(!notificationSocket)throw new Error("Codex request fixture is not connected.");
+      const id=nextServerRequestId++;
+      return new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>{pendingServerResponses.delete(String(id));reject(new Error("Timed out waiting for renderer response to "+method))},5000);
+        pendingServerResponses.set(String(id),{resolve,reject,timer});
+        notificationSocket.send(JSON.stringify({id,method,params}));
+      });
+    },
     disconnect,
     async close(){
       disconnect();
+      for(const pending of pendingServerResponses.values()){clearTimeout(pending.timer);pending.reject(new Error("Codex request fixture closed"))}
+      pendingServerResponses.clear();
       for(const socket of sockets)try{socket.terminate()}catch{}
       upstreamWss.close();
       await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))]);
@@ -772,6 +790,37 @@ test("background attachment refresh failures preserve linked pull requests",asyn
     const metrics=await page.locator(".workspace-header").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await page.screenshot({path:auditDir+"linked-pr-attachment-refresh-error-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
+test("runtime server requests use the latest permission mode",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"permission-handler-thread",name:"Permission freshness fixture",preview:"Latest server request state",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexRequestHarness(thread);
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"permission-handler-fixture");
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Permission freshness fixture"]')});
+    await row.locator(".thread-main").click();
+    await expect(row).toHaveClass(/active/);
+    const permissions=page.locator(".permission-picker");
+    await permissions.selectOption("edits");
+    await expect(permissions).toHaveValue("edits");
+    const accepted=await harness.request("item/fileChange/requestApproval",{threadId:thread.id,reason:"Fixture auto-accepted edit"});
+    expect(accepted.result?.decision).toBe("accept");
+    await expect(page.locator(".inline-approval")).toHaveCount(0);
+
+    await permissions.selectOption("supervised");
+    await expect(permissions).toHaveValue("supervised");
+    harness.emit({id:5001,method:"item/fileChange/requestApproval",params:{threadId:thread.id,reason:"Fixture supervised edit"}});
+    const approval=page.locator(".inline-approval");
+    await expect(approval).toBeVisible();
+    await expect(approval).toContainText("Fixture supervised edit");
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"server-request-latest-permission-mode-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
