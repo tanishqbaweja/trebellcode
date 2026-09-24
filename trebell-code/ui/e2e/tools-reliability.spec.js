@@ -17,7 +17,7 @@ async function freePort(){
 
 test("Tools refresh preserves the last valid plugin catalog when one RPC fails",async({page})=>{
   test.setTimeout(35_000);
-  let failPlugins=false,failPluginInstall=false,failMcpReload=false;
+  let failPlugins=false,failPluginInstall=false,failMcpReload=false,failSkills=false;
   const thread={id:"tools-reliability-thread",name:"Tools reliability fixture",preview:"Tools refresh coverage",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
   const http=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
   http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
@@ -34,6 +34,9 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
       if(message.method==="config/mcpServer/reload"&&failMcpReload){
         ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate MCP reload failure"}}));return;
       }
+      if(message.method==="skills/list"&&failSkills){
+        ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate skills refresh failure"}}));return;
+      }
       let result={};
       if(message.method==="initialize")result={userAgent:"tools-reliability-fixture"};
       else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
@@ -43,7 +46,8 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
       else if(message.method==="thread/attachment/list"||message.method==="thread/queue/list")result={data:[],nextCursor:null};
       else if(message.method==="thread/timeline/list")result={data:[],nextCursor:null,activeRealtimeSessionAtPageStart:null};
       else if(message.method==="thread/runtimeInstances/list")result={supported:false,currentInstanceId:null,items:[]};
-      else if(message.method==="skills/list")result={data:[]};
+      else if(message.method==="skills/list")result={data:[{cwd:process.cwd(),skills:[{name:"fixture-skill",path:"C:\\fixture\\SKILL.md",enabled:true,description:"Preserved skill fixture"}]}]};
+      else if(message.method==="skills/config/write")result={effectiveEnabled:false};
       else if(message.method==="permissionProfile/list"||message.method==="app/list"||message.method==="hooks/list"||message.method==="experimentalFeature/list"||message.method==="plugin/share/list")result={data:[]};
       else if(message.method==="mcpServerStatus/list")result={data:[{name:"fixture-mcp",runtimeStatus:"connected",authStatus:"loggedIn",tools:{},resources:[]}]};
       else if(message.method==="plugin/list")result={marketplaces:[{name:"Fixture Marketplace",plugins:[{id:"known-good-plugin",name:"known-good-plugin",version:"1.0.0",installed:false,availability:"available",interface:{displayName:"Known Good Plugin",shortDescription:"Preserved plugin fixture"}}]}]};
@@ -109,6 +113,19 @@ test("Tools refresh preserves the last valid plugin catalog when one RPC fails",
     await mcpError.scrollIntoViewIfNeeded();
     await expect(mcpError).toBeInViewport();
     await page.screenshot({path:auditDir+"tools-action-errors-1280x800.png",fullPage:true});
+
+    failSkills=true;
+    const skills=page.locator(".capability-card").filter({hasText:"Skills"}).first();
+    const skillToggle=skills.getByRole("button",{name:"On",exact:true});
+    await expect(skills).toContainText("fixture-skill");
+    await skillToggle.click();
+    const skillsError=skills.getByText("Deliberate skills refresh failure",{exact:false});
+    await expect(skillsError).toBeVisible();
+    await expect(skills).toContainText("fixture-skill");
+    await expect(skills.getByRole("button",{name:"Off",exact:true})).toBeEnabled();
+    await skillsError.scrollIntoViewIfNeeded();
+    await expect(skillsError).toBeInViewport();
+    await page.screenshot({path:auditDir+"tools-skills-refresh-error-1280x800.png",fullPage:true});
   }finally{
     for(const socket of sockets)try{socket.terminate()}catch{}
     wss.close();await new Promise(resolve=>http.close(resolve));

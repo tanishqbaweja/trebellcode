@@ -968,13 +968,19 @@ export default function App(){
     if(cache.size>100){const keep=new Set(threads.slice(0,100).map(thread=>thread.id));for(const id of cache.keys())if(!keep.has(id))cache.delete(id)}
     return results;
   }
-  async function loadSkills(client,path=projectPath,forceReload=false){
+  async function loadSkills(client,path=projectPath,forceReload=false,{strict=false}={}){
     if(agentRuntime!=="codex")return;
     if(!path)return;
     const threadId=activeThreadRef.current?.id||null;
     const params={cwds:[path],forceReload:Boolean(forceReload),...(threadId?{_trebellThreadId:threadId}:{})};
-    const result=await client.request("skills/list",params).catch(()=>({data:[]}));
-    setSkills((result.data||[]).flatMap(x=>x.skills||[]));
+    try{
+      const result=await client.request("skills/list",params);
+      const next=(result.data||[]).flatMap(x=>x.skills||[]);
+      setSkills(next);return next;
+    }catch(error){
+      if(strict)throw error;
+      return null;
+    }
   }
   async function recoverCodexAfterRestart(client){
     if(agentRuntime!=="codex")return;
@@ -2642,7 +2648,7 @@ export default function App(){
 
         {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><DeferredSurface label="Loading projects…"><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onProjectUpdated={project=>{if(project?.path===projectPath&&(project?.environmentId||null)===(workspaceEnvironmentId||null))setCurrentProject(project)}} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></DeferredSurface></div>}
         {section==="freebuff"&&agentRuntime==="codex"&&provider==="freebuff"&&<div className="secondary-page"><div className="page-header"><div><h1>Freebuff</h1><p>Account, balance, model pricing and session state.</p></div></div><DeferredSurface label="Loading Freebuff…"><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model,{strict:true})}/></DeferredSurface></div>}
-        {section==="tools"&&agentRuntime==="codex"&&<div className="secondary-page full"><DeferredSurface label="Loading harness capabilities…"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} onHistoryImported={historyImported} onSkillsRefresh={()=>loadSkills(rpc,projectPath,true)} platform={bootstrap.platform}/></DeferredSurface></div>}
+        {section==="tools"&&agentRuntime==="codex"&&<div className="secondary-page full"><DeferredSurface label="Loading harness capabilities…"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} onHistoryImported={historyImported} onSkillsRefresh={()=>loadSkills(rpc,projectPath,true,{strict:true})} platform={bootstrap.platform}/></DeferredSurface></div>}
         {section==="environments"&&<div className="secondary-page full"><DeferredSurface label="Loading environments…"><EnvironmentsPage/></DeferredSurface></div>}
       {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><DeferredSurface label="Loading licenses…"><LicensesPage/></DeferredSurface></div>}

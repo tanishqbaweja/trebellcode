@@ -46,6 +46,7 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [sandboxWarning,setSandboxWarning]=useState("");
   const [skillRootsText,setSkillRootsText]=useState("");
   const [skillMessage,setSkillMessage]=useState("");
+  const [skillOverrides,setSkillOverrides]=useState({});
   const [pluginSearchTerm,setPluginSearchTerm]=useState("");
   const [pluginSearchScope,setPluginSearchScope]=useState("global");
   const [pluginSearchResults,setPluginSearchResults]=useState([]);
@@ -59,6 +60,17 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [hookRuns,setHookRuns]=useState([]);
   const [authRecovery,setAuthRecovery]=useState(null);
   const [modelNotices,setModelNotices]=useState([]);
+  useEffect(()=>{
+    setSkillOverrides(current=>{
+      const entries=Object.entries(current);if(!entries.length)return current;
+      const next={...current};let changed=false;
+      for(const [path,enabled] of entries){
+        const skill=skills.find(item=>item.path===path);
+        if(skill&&(skill.enabled!==false)===Boolean(enabled)){delete next[path];changed=true}
+      }
+      return changed?next:current;
+    });
+  },[skills]);
 
   function routedParams(params){
     const threadId=activeThread?.id;
@@ -434,22 +446,24 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   }
   async function toggleSkill(skill){
     if(!rpc||!skill?.path)return;
-    const next=skill.enabled===false;setBusy("skill:"+skill.path);setSkillMessage("");setErrors(prev=>({...prev,"skills/config/write":null}));
+    const next=skill.enabled===false;setBusy("skill:"+skill.path);setSkillMessage("");setErrors(prev=>({...prev,"skills/config/write":null,"skills/list":null}));
     try{
       const result=await request("skills/config/write",{path:skill.path,name:null,enabled:next});
-      setSkillMessage(`${skill.name||"Skill"} is now ${result?.effectiveEnabled===false?"disabled":"enabled"}. This setting is saved in Codex config.`);
-      await onSkillsRefresh?.();
+      const effectiveEnabled=result?.effectiveEnabled!==false;
+      setSkillOverrides(current=>({...current,[skill.path]:effectiveEnabled}));
+      setSkillMessage(`${skill.name||"Skill"} is now ${effectiveEnabled?"enabled":"disabled"}. This setting is saved in Codex config.`);
+      try{await onSkillsRefresh?.()}catch(error){setErrors(prev=>({...prev,"skills/list":error.message||String(error)}))}
     }catch(error){setErrors(prev=>({...prev,"skills/config/write":error.message||String(error)}))}
     finally{setBusy("")}
   }
   async function applySkillRoots(){
     if(!rpc)return;
     const extraRoots=[...new Set(skillRootsText.split(/\r?\n/).map(value=>value.trim()).filter(Boolean))];
-    setBusy("skill-roots");setSkillMessage("");setErrors(prev=>({...prev,"skills/extraRoots/set":null}));
+    setBusy("skill-roots");setSkillMessage("");setErrors(prev=>({...prev,"skills/extraRoots/set":null,"skills/list":null}));
     try{
       await request("skills/extraRoots/set",{extraRoots});
       setSkillMessage(extraRoots.length?`${extraRoots.length} runtime skill root${extraRoots.length===1?"":"s"} applied. They reset when this Codex app-server restarts.`:"Runtime-only extra skill roots cleared.");
-      await onSkillsRefresh?.();
+      try{await onSkillsRefresh?.()}catch(error){setErrors(prev=>({...prev,"skills/list":error.message||String(error)}))}
     }catch(error){setErrors(prev=>({...prev,"skills/extraRoots/set":error.message||String(error)}))}
     finally{setBusy("")}
   }
@@ -551,11 +565,11 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
 
       <Section title="Skills" icon={Wrench} count={skills.length}>
         <p>Enable or disable discovered skills with Codex's native config API. Disabled skills stay visible so they can be turned back on.</p>
-        <div className="capability-list skill-list">{skills.map(s=><div key={s.path||s.name}><div><strong>{s.interface?.displayName||s.name}</strong><span>{s.interface?.shortDescription||s.shortDescription||s.description||s.path}{s.scope?` · ${s.scope}`:""}</span></div><button className={s.enabled!==false?"active":""} onClick={()=>toggleSkill(s)} disabled={!!busy||!s.path}>{busy==="skill:"+s.path?"Saving…":s.enabled===false?"Off":"On"}</button></div>)}</div>
+        <div className="capability-list skill-list">{skills.map(s=>{const enabled=Object.prototype.hasOwnProperty.call(skillOverrides,s.path)?Boolean(skillOverrides[s.path]):s.enabled!==false;return <div key={s.path||s.name}><div><strong>{s.interface?.displayName||s.name}</strong><span>{s.interface?.shortDescription||s.shortDescription||s.description||s.path}{s.scope?` · ${s.scope}`:""}</span></div><button className={enabled?"active":""} onClick={()=>toggleSkill({...s,enabled})} disabled={!!busy||!s.path}>{busy==="skill:"+s.path?"Saving…":enabled?"On":"Off"}</button></div>})}</div>
         {!skills.length&&<p>No skills were discovered for this workspace.</p>}
         <div className="skill-roots-editor"><label><strong>Runtime-only extra roots</strong><span>One absolute skill-directory path per line. Applying replaces this Codex process's extra roots; restarting the app-server clears them.</span></label><textarea value={skillRootsText} onChange={e=>setSkillRootsText(e.target.value)} placeholder={platform==="win32"?"C:\\Users\\me\\skills\nD:\\shared-skills":"/home/me/skills\n/opt/shared-skills"}/><div className="capability-actions"><button onClick={applySkillRoots} disabled={!!busy}>{busy==="skill-roots"?"Applying…":"Apply runtime roots"}</button>{skillRootsText&&<button onClick={()=>setSkillRootsText("")} disabled={!!busy}>Clear draft</button>}</div></div>
         {skillMessage&&<p className="capability-status">{skillMessage}</p>}
-        <ErrorLine value={errors["skills/config/write"]}/><ErrorLine value={errors["skills/extraRoots/set"]}/>
+        <ErrorLine value={errors["skills/list"]}/><ErrorLine value={errors["skills/config/write"]}/><ErrorLine value={errors["skills/extraRoots/set"]}/>
       </Section>
 
       <Section title="Plugins" icon={Blocks} count={plugins.length}>
