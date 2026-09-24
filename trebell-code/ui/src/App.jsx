@@ -1848,7 +1848,11 @@ export default function App(){
             return [...restored.filter(event=>!liveIds.has(String(event.id))),...current];
           });
         })
-        .catch(()=>{});
+        .catch(error=>{
+          const detail=error?.message||String(error);
+          if(error?.rpcCode===-32601||/method not found|unknown method|unsupported|experimental method/i.test(detail))return;
+          showActionError(error,"Could not restore latest activity timeline");
+        });
     }
     if(agentRuntime==="codex")await loadNativeQueue(client,thread.id).catch(error=>setEvents(prev=>[...prev,{id:"queue-load-error-"+Date.now(),kind:"error",title:"Could not load queued follow-ups: "+(error.message||String(error)),status:"done",raw:{}}]));else{setQueueMode("local");setQueued([])}
     const meta=threadMeta[thread.id]||{};setReviewedFiles(meta.reviewedFiles||[]);
