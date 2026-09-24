@@ -8,6 +8,7 @@ import {
   detectSourceControlProvider,
   parsePublishTarget,
   parseRemoteUrl,
+  publishRepository,
   repositoryHasCommits,
   resolveFjAccount,
   listPullRequests,
@@ -65,6 +66,7 @@ test("provider capabilities reflect known host limitations",()=>{
   assert.equal(CAPABILITIES.gitlab.requestChanges,false);
   assert.equal(CAPABILITIES.gitlab.reviewers,true);
   assert.equal(CAPABILITIES.forgejo.reviewers,true);
+  assert.equal(CAPABILITIES.forgejo.publish,true);
   assert.equal(CAPABILITIES["azure-devops"].reviewers,true);
   assert.equal(CAPABILITIES.bitbucket.reviewers,true);
   assert.equal(CAPABILITIES.bitbucket.updateBranch,false);
@@ -214,10 +216,48 @@ test("Bitbucket reviewer requests resolve a user UUID and preserve existing revi
 test("publish targets enforce provider-specific repository paths",()=>{
   assert.deepEqual(parsePublishTarget("github","acme/widget"),{provider:"github",name:"acme/widget",path:"acme/widget"});
   assert.deepEqual(parsePublishTarget("gitlab","group/subgroup/widget"),{provider:"gitlab",name:"widget",namespace:"group/subgroup",path:"group/subgroup/widget"});
+  assert.deepEqual(parsePublishTarget("forgejo","acme/widget"),{provider:"forgejo",name:"widget",owner:"acme",path:"acme/widget"});
+  assert.deepEqual(parsePublishTarget("forgejo","widget"),{provider:"forgejo",name:"widget",owner:null,path:"widget"});
   assert.deepEqual(parsePublishTarget("bitbucket","workspace/widget"),{provider:"bitbucket",workspace:"workspace",name:"widget",path:"workspace/widget"});
   assert.deepEqual(parsePublishTarget("azure-devops","Project One/widget"),{provider:"azure-devops",project:"Project One",name:"widget",path:"Project One/widget"});
   assert.throws(()=>parsePublishTarget("bitbucket","widget"),/workspace\/repository/i);
   assert.throws(()=>parsePublishTarget("azure-devops","widget"),/project\/repository/i);
+  assert.throws(()=>parsePublishTarget("forgejo","too/many/parts"),/owner\/repository/i);
+});
+
+test("Forgejo publishing reuses the configured account and pushes to the created organization repository",async()=>{
+  const requests=[];let origin="";
+  const executor={
+    run:async(command,args)=>{
+      if(command==="git"&&args[0]==="rev-parse"&&args[1]==="--show-toplevel")return {ok:true,code:0,stdout:"/srv/app\n",stderr:""};
+      if(command==="git"&&args[0]==="branch")return {ok:true,code:0,stdout:"main\n",stderr:""};
+      if(command==="git"&&args[0]==="for-each-ref"&&String(args.at(-1)).startsWith("refs/heads/main"))return {ok:true,code:0,stdout:origin?"origin/main\n":"",stderr:""};
+      if(command==="git"&&args[0]==="for-each-ref")return {ok:true,code:0,stdout:"main\n",stderr:""};
+      if(command==="git"&&args[0]==="status")return {ok:true,code:0,stdout:origin?"## main...origin/main\n":"## main\n",stderr:""};
+      if(command==="git"&&args[0]==="remote"&&args[1]==="-v")return {ok:true,code:0,stdout:origin?"origin\t"+origin+" (fetch)\norigin\t"+origin+" (push)\n":"",stderr:""};
+      if(command==="git"&&args[0]==="worktree")return {ok:true,code:0,stdout:"worktree /srv/app\nHEAD abc\nbranch refs/heads/main\n",stderr:""};
+      if(command==="git"&&args[0]==="rev-parse"&&args[1]==="--verify")return {ok:true,code:0,stdout:"abc\n",stderr:""};
+      if(command==="git"&&args[0]==="remote"&&args[1]==="add"){origin=args[3];return {ok:true,code:0,stdout:"",stderr:""}}
+      if(command==="git"&&args[0]==="push")return {ok:true,code:0,stdout:"pushed",stderr:""};
+      if(command==="tea"&&args.slice(0,2).join(" ")==="login list")return {ok:false,code:1,stdout:"",stderr:"tea unavailable"};
+      if(command==="fj"&&args[0]==="version")return {ok:true,code:0,stdout:"fj test",stderr:""};
+      return {ok:false,code:1,stdout:"",stderr:"unexpected command "+command+" "+args.join(" ")};
+    },
+    readFjKeys:async()=>({hosts:{"forge.example":{type:"Application",token:"fixture-token"}},aliases:{}}),
+    request:async(url,options={})=>{
+      const target=String(url);requests.push({url:target,options});
+      if(target.endsWith("/api/v1/user"))return {ok:true,status:200,text:JSON.stringify({login:"trebell"})};
+      if(target.endsWith("/api/v1/orgs/acme/repos"))return {ok:true,status:201,text:JSON.stringify({name:"widget",clone_url:"https://forge.example/acme/widget.git",html_url:"https://forge.example/acme/widget"})};
+      return {ok:false,status:404,text:"not found"};
+    },
+  };
+  const result=await withSourceControlExecutor(executor,()=>publishRepository("/srv/app",{provider:"forgejo",name:"acme/widget",visibility:"private"}));
+  assert.equal(result.ok,true);assert.equal(result.provider,"forgejo");assert.equal(result.pushed,true);
+  assert.equal(result.url,"https://forge.example/acme/widget");
+  assert.equal(origin,"https://forge.example/acme/widget.git");
+  const create=requests.find(item=>item.url.endsWith("/orgs/acme/repos"));assert.ok(create);
+  assert.equal(create.options.method,"POST");
+  assert.deepEqual(JSON.parse(create.options.body),{name:"widget",private:true,auto_init:false});
 });
 
 test("repository commit detection distinguishes an unborn branch from the first commit",{timeout:20000},async()=>{

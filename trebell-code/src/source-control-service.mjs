@@ -13,7 +13,7 @@ const PROVIDERS=["github","gitlab","forgejo","bitbucket","azure-devops"];
 const CAPABILITIES={
   github:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:true,publish:true,viewedFiles:"host",approveWorkflows:true,revert:true,stacks:true},
   gitlab:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:false,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:true,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false,stacks:false},
-  forgejo:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:true,checkout:false,reviewers:true,publish:false,viewedFiles:"environment",approveWorkflows:false,revert:false,stacks:false},
+  forgejo:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:true,checkout:false,reviewers:true,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false,stacks:false},
   bitbucket:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:false,checkout:false,reviewers:true,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false,stacks:false},
   "azure-devops":{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:false,checkout:false,reviewers:true,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false,stacks:false},
 };
@@ -398,6 +398,10 @@ export function parsePublishTarget(provider,value){
   if(id==="gitlab"){
     const parts=raw.split("/").filter(Boolean);return {provider:id,name:parts.at(-1),namespace:parts.length>1?parts.slice(0,-1).join("/"):null,path:raw};
   }
+  if(id==="forgejo"){
+    const parts=raw.split("/").filter(Boolean);if(parts.length>2)throw new Error("Forgejo/Gitea repository path must be repository or owner/repository.");
+    return {provider:id,name:parts.at(-1),owner:parts.length===2?parts[0]:null,path:raw};
+  }
   return {provider:id,name:raw,path:raw};
 }
 
@@ -468,7 +472,7 @@ async function forgejoContext(ctx){
     const keys=await readFjKeys();
     const account=resolveFjAccount(ctx,keys);
     const parts=ctx.repository.split("/").filter(Boolean);
-    if(account&&parts.length===2){
+    if(account&&(parts.length===2||ctx.allowRepositoryless)){
       return {command:"fj",token:account.token,repository:parts.join("/"),baseUrl:account.baseUrl};
     }
   }
@@ -483,6 +487,7 @@ async function forgejoContext(ctx){
   const loginRemote=parseRemoteUrl(login.url); let repository=ctx.repository;
   if(loginRemote?.path&&repository.startsWith(loginRemote.path+"/"))repository=repository.slice(loginRemote.path.length+1);
   if(repository.split("/").length>2)repository=repository.split("/").slice(-2).join("/");
+  if(!repository&&ctx.allowRepositoryless)return {command:"tea",login,repository:"",baseUrl:String(login.url).replace(/\/+$/,"")};
   if(repository.split("/").length!==2)throw new Error("Could not resolve Forgejo/Gitea owner/repository from the Git remote.");
   return {command:"tea",login,repository,baseUrl:String(login.url).replace(/\/+$/,"")};
 }
@@ -501,13 +506,34 @@ async function forgejoApi(ctx,path,{method="GET",body}={}){
     return {target,data:text?parseJson(text,text):null};
   }
 
-  const args=["api","--include","--login",target.login.name,"--repo",target.repository,"--method",method];
+  const args=["api","--include","--login",target.login.name];
+  if(target.repository)args.push("--repo",target.repository);
+  args.push("--method",method);
   if(body!==undefined)args.push("--data","@-");
   args.push(`${target.baseUrl}/api/v1/${path}`);
   const result=await runStdin("tea",args,body===undefined?"":JSON.stringify(body),{cwd:ctx.info.root,allowFailure:true});
   const status=Number((result.stderr.match(/^HTTP\/\S+ (\d{3})/m)||[])[1]||0);
   if(!result.ok||!status||status>=400)throw new Error((result.stderr||result.stdout||`Forgejo HTTP ${status||"error"}`).trim());
   return {target,data:parseJson(result.stdout,result.stdout)};
+}
+
+async function forgejoPublishContext(cwd){
+  const listed=await run("tea",["login","list","--output","json"],{cwd,allowFailure:true,maxBuffer:2*1024*1024});
+  if(listed.ok){
+    const logins=parseJson(listed.stdout,[])||[];
+    const login=logins.find(item=>item.default===true||String(item.default).toLowerCase()==="true")||(logins.length===1?logins[0]:null);
+    if(login?.url){
+      const remote=parseRemoteUrl(login.url);
+      if(remote)return {info:{root:cwd},remote,remoteUrl:String(login.url),repository:"",allowRepositoryless:true};
+    }
+  }
+  const keys=await readFjKeys();const hosts=Object.keys(keys.hosts||{});
+  if(hosts.length===1){
+    const host=String(hosts[0]),hostname=host.split(":")[0].toLowerCase();
+    return {info:{root:cwd},remote:{host:host.toLowerCase(),hostname},remoteUrl:"https://"+host+"/",repository:"",allowRepositoryless:true};
+  }
+  if(hosts.length>1)throw new Error("Multiple Forgejo/Gitea accounts are configured. Set a default tea login before publishing.");
+  throw new Error("Forgejo/Gitea publishing needs an authenticated fj account or a default tea login.");
 }
 
 async function bitbucketAuthHeaders(){
@@ -814,6 +840,20 @@ export async function publishRepository(cwd,{provider="github",name=null,visibil
     await run("git",["remote","add","origin",remote],{cwd:info.root});
     if(hasCommits)await run("git",["push","-u","origin",branch],{cwd:info.root,timeout:180000});
     return {ok:true,provider,url:project.web_url||null,pushed:hasCommits,info:await serviceGitInfo(info.root)};
+  }
+  if(provider==="forgejo"){
+    const publishCtx=await forgejoPublishContext(info.root);
+    const me=(await forgejoApi(publishCtx,"user")).data||{};
+    const owner=String(target.owner||"").trim();
+    const endpoint=owner&&owner.toLowerCase()!==String(me.login||me.username||"").toLowerCase()
+      ?"orgs/"+encodeURIComponent(owner)+"/repos"
+      :"user/repos";
+    const created=(await forgejoApi(publishCtx,endpoint,{method:"POST",body:{name:repoName,private:privacy!=="public",auto_init:false}})).data||{};
+    const remote=created.clone_url||created.ssh_url;
+    if(!remote)throw new Error("Forgejo/Gitea created the repository but did not return a clone URL.");
+    await run("git",["remote","add","origin",remote],{cwd:info.root});
+    if(hasCommits)await run("git",["push","-u","origin",branch],{cwd:info.root,timeout:180000});
+    return {ok:true,provider,url:created.html_url||created.web_url||null,pushed:hasCommits,info:await serviceGitInfo(info.root)};
   }
   if(provider==="bitbucket"){
     const project=await bitbucketApi(null,`repositories/${encodeURIComponent(target.workspace)}/${encodeURIComponent(repoName)}`,{method:"POST",body:{scm:"git",name:repoName,is_private:privacy!=="public"}});

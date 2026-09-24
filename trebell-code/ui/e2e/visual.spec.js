@@ -4341,6 +4341,37 @@ test("populated source control and pull request detail stay usable",async({page,
   await page.screenshot({path:auditDir+"source-control-pr-detail-light-1600x980.png",fullPage:true});
 });
 
+test("Forgejo repository publishing is exposed with a clear owner path prompt",async({page,request})=>{
+  test.setTimeout(30_000);
+  await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    isGit:true,root:"H:\\Github Repositories\\Trebell\\trebell-code",branch:"main",branches:["main"],upstream:null,status:[],remotes:[],worktrees:[],
+  })}));
+  await page.route(/\/api\/source-control\/diagnostics\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    selectedProvider:"forgejo",detectedProvider:"unknown",git:{version:"git version 2.51.0.windows.1"},
+    providers:{forgejo:{label:"Forgejo / Gitea",installed:true,authenticated:true}},
+    capabilities:{forgejo:{create:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,updateBranch:true,edit:true,checkout:false,reviewers:true,publish:true}},
+  })}));
+  await page.route(/\/api\/source-control\/prs\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    items:[],provider:"forgejo",capabilities:{create:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,updateBranch:true,edit:true,checkout:false,reviewers:true,publish:true},
+  })}));
+  await prepare(page,request);
+  await page.getByTestId("right-panel-toggle").click();
+  const panel=page.getByTestId("right-panel");
+  await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
+  await expect(panel.locator(".source-provider-field select")).toHaveValue("forgejo");
+  const publish=panel.getByRole("button",{name:"Publish repository",exact:true});
+  await expect(publish).toBeVisible();
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"source-control-forgejo-publish-1280x800.png",fullPage:true});
+  page.once("dialog",async dialog=>{
+    expect(dialog.message()).toContain("owner/repository or repository");
+    await dialog.dismiss();
+  });
+  await publish.click();
+});
+
 test("source control keeps the PR visible when loading full details fails",async({page,request})=>{
   test.setTimeout(30_000);
   let failPrRefresh=false;
