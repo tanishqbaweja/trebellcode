@@ -1,8 +1,8 @@
 import { execFile, spawn } from "node:child_process";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { promisify } from "node:util";
-import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join as pathJoin } from "node:path";
 import { gitInfo as localGitInfo } from "./git-service.mjs";
 
@@ -15,7 +15,7 @@ const CAPABILITIES={
   gitlab:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:false,merge:true,autoMerge:true,updateBranch:true,checkout:true,reviewers:true,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false,stacks:false},
   forgejo:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:true,checkout:false,reviewers:true,publish:false,viewedFiles:"environment",approveWorkflows:false,revert:false,stacks:false},
   bitbucket:{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,autoMerge:false,updateBranch:false,checkout:false,reviewers:true,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false,stacks:false},
-  "azure-devops":{create:true,edit:true,comment:false,editComments:false,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:false,checkout:false,reviewers:true,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false,stacks:false},
+  "azure-devops":{create:true,edit:true,comment:true,editComments:true,review:true,requestChanges:true,merge:true,autoMerge:true,updateBranch:false,checkout:false,reviewers:true,publish:true,viewedFiles:"environment",approveWorkflows:false,revert:false,stacks:false},
 };
 
 function currentExecutor(){return executionContext.getStore()?.executor||null}
@@ -112,6 +112,16 @@ async function serviceRequest(url,options={}){
   const response=await fetch(url,options);
   const text=await response.text();
   return {ok:response.ok,status:response.status,text};
+}
+
+async function withServiceTempJson(value,callback){
+  const content=JSON.stringify(value??{});
+  const executor=currentExecutor();
+  if(executor?.withTempJsonFile)return executor.withTempJsonFile(content,callback);
+  const directory=await mkdtemp(pathJoin(tmpdir(),"trebell-azdo-"));
+  const path=pathJoin(directory,"request.json");
+  try{await writeFile(path,content,{encoding:"utf8",mode:0o600});return await callback(path)}
+  finally{await rm(directory,{recursive:true,force:true}).catch(()=>{})}
 }
 
 export async function sourceControlGitInfo(cwd){
@@ -351,7 +361,7 @@ export async function sourceControlRepositoryIdentity(cwd,{provider=null}={}){
 
 function parseJson(raw,fallback=null){try{return JSON.parse(String(raw||"").trim()||"null")}catch{return fallback}}
 function stateOf(value,merged=false){const v=String(value||"").toLowerCase();if(merged||v==="merged"||v==="completed")return "MERGED";if(["closed","declined","superseded","abandoned"].includes(v))return "CLOSED";return "OPEN"}
-function actor(raw){if(!raw)return null;return {login:raw.login||raw.username||raw.nickname||raw.display_name||raw.displayName||raw.name||raw.uniqueName||"unknown",name:raw.name||raw.display_name||raw.displayName||null}}
+function actor(raw){if(!raw)return null;return {login:raw.login||raw.username||raw.nickname||raw.emailAddress||raw.uniqueName||raw.display_name||raw.displayName||raw.name||"unknown",name:raw.name||raw.display_name||raw.displayName||null}}
 async function sourceControlViewer(ctx){
   try{
     if(ctx.provider==="github"){
@@ -361,6 +371,10 @@ async function sourceControlViewer(ctx){
     if(ctx.provider==="gitlab")return actor(await glabApi(ctx,"user"))?.login||null;
     if(ctx.provider==="forgejo")return actor((await forgejoApi(ctx,"user")).data)?.login||null;
     if(ctx.provider==="bitbucket")return actor(await bitbucketApi(ctx,"user"))?.login||null;
+    if(ctx.provider==="azure-devops"){
+      const profile=await azureDevOpsInvoke(ctx,{area:"profile",resource:"profiles",route:{id:"me"}});
+      return profile?.emailAddress||profile?.displayName||profile?.id||null;
+    }
   }catch{}
   return null;
 }
@@ -523,6 +537,55 @@ async function glabApi(ctx,path,{method="GET",body}={}){
   if(!r.ok)throw new Error((r.stderr||r.stdout||"GitLab API request failed").trim());return parseJson(r.stdout,r.stdout);
 }
 
+async function azureCliRequest(ctx,args,body=undefined){
+  const execute=async extra=>{
+    const result=await run("az",[...args,...extra],{cwd:ctx.info.root,allowFailure:true,timeout:60000,maxBuffer:8*1024*1024});
+    if(!result.ok)throw new Error((result.stderr||result.stdout||"Azure DevOps request failed").trim());
+    return parseJson(result.stdout,{});
+  };
+  if(body===undefined)return execute([]);
+  return withServiceTempJson(body,path=>execute(["--in-file",path,"--encoding","utf-8"]));
+}
+
+async function azureDevOpsInvoke(ctx,{area="git",resource,route={},method="GET",body,apiVersion="7.1"}={}){
+  if(!resource)throw new Error("Azure DevOps resource is required");
+  const args=["devops","invoke","--area",area,"--resource",resource,"--detect","true","--http-method",method,"--api-version",apiVersion,"--only-show-errors","--output","json"];
+  const routes=Object.entries(route).filter(([,value])=>value!==undefined&&value!==null&&String(value)!=="").map(([key,value])=>key+"="+String(value));
+  if(routes.length)args.push("--route-parameters",...routes);
+  return azureCliRequest(ctx,args,body);
+}
+
+function azurePullRequestRoute(ctx,raw,number){
+  const parts=String(ctx.repository||"").split("/").filter(Boolean);
+  const repositoryId=raw?.repository?.id||parts.at(-1);
+  if(!repositoryId)throw new Error("Could not determine the Azure DevOps repository ID");
+  return {
+    project:raw?.repository?.project?.id||raw?.repository?.project?.name||parts[0]||null,
+    repositoryId,
+    pullRequestId:Number(raw?.pullRequestId??raw?.id??number),
+  };
+}
+
+async function azurePullRequestRaw(ctx,number){
+  const result=await run("az",["repos","pr","show","--detect","true","--id",String(number),"--only-show-errors","--output","json"],{cwd:ctx.info.root,allowFailure:true,timeout:60000,maxBuffer:8*1024*1024});
+  if(!result.ok)throw new Error((result.stderr||result.stdout||"Could not read Azure DevOps pull request").trim());
+  return parseJson(result.stdout,{});
+}
+
+function azureThreadComments(raw){
+  const threads=Array.isArray(raw)?raw:Array.isArray(raw?.value)?raw.value:[];
+  const comments=[];
+  for(const thread of threads){
+    for(const comment of thread?.comments||[]){
+      const type=String(comment?.commentType??"").toLowerCase();
+      if(comment?.isDeleted||type==="system"||Number(comment?.commentType)===3)continue;
+      if(type&&type!=="text"&&Number(comment?.commentType)!==1)continue;
+      comments.push({id:String(thread.id)+":"+String(comment.id),threadId:Number(thread.id),nativeId:Number(comment.id),body:comment.content||"",author:actor(comment.author)});
+    }
+  }
+  return comments;
+}
+
 const GITHUB_API_VERSION="2026-03-10";
 async function githubApi(ctx,path,{method="GET",body,allowFailure=false}={}){
   const args=["api","--method",method,String(path),"--header","Accept: application/vnd.github+json","--header","X-GitHub-Api-Version: "+GITHUB_API_VERSION];
@@ -659,7 +722,20 @@ export async function editPullRequestComment(cwd,number,commentId,body,{provider
   if(ctx.provider==="gitlab"){await glabApi(ctx,`projects/${encodeURIComponent(ctx.repository)}/merge_requests/${Number(number)}/notes/${encodeURIComponent(id)}`,{method:"PUT",body:{body:text}});return {ok:true,provider:ctx.provider}}
   if(ctx.provider==="forgejo"){const target=await forgejoContext(ctx);await forgejoApi(ctx,`repos/${target.repository}/issues/comments/${encodeURIComponent(id)}`,{method:"PATCH",body:{body:text}});return {ok:true,provider:ctx.provider}}
   if(ctx.provider==="bitbucket"){await bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests/${Number(number)}/comments/${encodeURIComponent(id)}`,{method:"PUT",body:{content:{raw:text}}});return {ok:true,provider:ctx.provider}}
-  throw new Error("Azure DevOps comment editing is not exposed by this integration.");
+  if(ctx.provider==="azure-devops"){
+    const raw=await azurePullRequestRaw(ctx,number);const route=azurePullRequestRoute(ctx,raw,number);
+    let [threadId,nativeId]=id.includes(":")?id.split(":",2):["",id];
+    if(!threadId){
+      const threads=await azureDevOpsInvoke(ctx,{resource:"pullRequestThreads",route});
+      const list=Array.isArray(threads)?threads:Array.isArray(threads?.value)?threads.value:[];
+      const found=list.find(thread=>(thread.comments||[]).some(comment=>String(comment.id)===String(nativeId)));
+      threadId=found?.id==null?"":String(found.id);
+    }
+    if(!threadId||!nativeId)throw new Error("Could not locate the Azure DevOps comment thread");
+    await azureDevOpsInvoke(ctx,{resource:"pullRequestThreadComments",route:{...route,threadId,commentId:nativeId},method:"PATCH",body:{content:text}});
+    return {ok:true,provider:ctx.provider};
+  }
+  throw new Error(`${ctx.provider} comment editing is not supported.`);
 }
 
 export async function checkoutPullRequest(cwd,number,{provider=null}={}){
@@ -788,7 +864,15 @@ export async function pullRequestDetail(cwd,number,{provider=null}={}){
     const [comments,diffstat]=await Promise.all([bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests/${Number(number)}/comments?pagelen=100`).catch(()=>({values:[]})),bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests/${Number(number)}/diffstat?pagelen=100`).catch(()=>({values:[]}))]);
     item.comments=(comments.values||[]).map(x=>({id:x.id,body:x.content?.raw||"",author:actor(x.user)}));item.files=(diffstat.values||[]).map(file=>({path:file.new?.path||file.old?.path||"",oldPath:file.old?.path||null,status:file.status||null,additions:Number(file.lines_added||0),deletions:Number(file.lines_removed||0),patch:null}));
   }
-  else {const r=await run("az",["repos","pr","show","--detect","true","--id",String(number),"--only-show-errors","--output","json"],{cwd:ctx.info.root,allowFailure:true,timeout:60000});if(!r.ok)return {ok:false,provider:ctx.provider,capabilities:ctx.capabilities,error:(r.stderr||r.stdout).trim(),item:null};item=normalizeAzure(parseJson(r.stdout,{}));item.files=[]}
+  else {
+    try{
+      const raw=await azurePullRequestRaw(ctx,number);item=normalizeAzure(raw);item.files=[];
+      const threads=await azureDevOpsInvoke(ctx,{resource:"pullRequestThreads",route:azurePullRequestRoute(ctx,raw,number)});
+      item.comments=azureThreadComments(threads);
+    }catch(error){
+      return {ok:false,provider:ctx.provider,capabilities:ctx.capabilities,error:error.message||String(error),item:null};
+    }
+  }
   if(item)item.identity=identityForContext(ctx,item.number||number);
   if(ctx.capabilities.editComments&&item?.comments?.length)markEditableComments(item,await sourceControlViewer(ctx));
   return {ok:true,provider:ctx.provider,capabilities:ctx.capabilities,item};
@@ -881,7 +965,17 @@ export async function commentOnPullRequest(cwd,number,body,{provider=null}={}){
   if(ctx.provider==="gitlab"){await glabApi(ctx,`projects/${encodeURIComponent(ctx.repository)}/merge_requests/${Number(number)}/notes`,{method:"POST",body:{body}});return {ok:true,provider:ctx.provider}}
   if(ctx.provider==="forgejo"){const t=await forgejoContext(ctx);await forgejoApi(ctx,`repos/${t.repository}/issues/${Number(number)}/comments`,{method:"POST",body:{body}});return {ok:true,provider:ctx.provider}}
   if(ctx.provider==="bitbucket"){await bitbucketApi(ctx,`repositories/${ctx.repository}/pullrequests/${Number(number)}/comments`,{method:"POST",body:{content:{raw:body}}});return {ok:true,provider:ctx.provider}}
-  throw new Error("Azure DevOps PR comments are not exposed by the installed CLI path yet.");
+  if(ctx.provider==="azure-devops"){
+    const raw=await azurePullRequestRaw(ctx,number);
+    await azureDevOpsInvoke(ctx,{
+      resource:"pullRequestThreads",
+      route:azurePullRequestRoute(ctx,raw,number),
+      method:"POST",
+      body:{comments:[{parentCommentId:0,content:String(body||""),commentType:1}],status:1},
+    });
+    return {ok:true,provider:ctx.provider};
+  }
+  throw new Error(`${ctx.provider} pull-request comments are not supported.`);
 }
 
 export async function reviewPullRequest(cwd,number,{provider=null,event="COMMENT",body=""}={}){

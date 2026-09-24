@@ -14,6 +14,7 @@ import {
   pullRequestDetail,
   editPullRequest,
   editPullRequestComment,
+  commentOnPullRequest,
   requestPullRequestReviewer,
   approvePullRequestWorkflows,
   revertPullRequest,
@@ -67,11 +68,12 @@ test("provider capabilities reflect known host limitations",()=>{
   assert.equal(CAPABILITIES["azure-devops"].reviewers,true);
   assert.equal(CAPABILITIES.bitbucket.reviewers,true);
   assert.equal(CAPABILITIES.bitbucket.updateBranch,false);
-  assert.equal(CAPABILITIES["azure-devops"].comment,false);
+  assert.equal(CAPABILITIES["azure-devops"].comment,true);
+  assert.equal(CAPABILITIES["azure-devops"].editComments,true);
 });
 
-function sourceFixtureExecutor(remoteUrl,{extraRun=null,extraStdin=null}={}){
-  return {
+function sourceFixtureExecutor(remoteUrl,{extraRun=null,extraStdin=null,onTempJson=null}={}){
+  const executor={
     run:async(command,args,options={})=>{
       if(command==="git"&&args[0]==="rev-parse"&&args[1]==="--show-toplevel")return {ok:true,code:0,stdout:"/srv/app\n",stderr:""};
       if(command==="git"&&args[0]==="branch")return {ok:true,code:0,stdout:"main\n",stderr:""};
@@ -84,6 +86,11 @@ function sourceFixtureExecutor(remoteUrl,{extraRun=null,extraStdin=null}={}){
     },
     runStdin:async(command,args,input,options={})=>extraStdin?extraStdin(command,args,input,options):{ok:false,code:1,stdout:"",stderr:"unexpected stdin command"},
   };
+  executor.withTempJsonFile=async(content,callback)=>{
+    onTempJson?.(content);
+    return callback("/tmp/trebell-azure-request.json");
+  };
+  return executor;
 }
 
 test("GitLab reviewer requests preserve existing reviewers and add the resolved username",async()=>{
@@ -120,6 +127,53 @@ test("Azure DevOps reviewer requests use the supported reviewer add command",asy
   const call=calls.find(item=>item.command==="az");assert.ok(call);
   assert.deepEqual(call.args.slice(0,4),["repos","pr","reviewer","add"]);
   assert.ok(call.args.includes("alice@example.com"));
+});
+
+test("Azure DevOps pull request detail loads editable user comments through thread APIs",async()=>{
+  const calls=[];
+  const raw={pullRequestId:9,title:"Azure PR",description:"Body",status:"active",sourceRefName:"refs/heads/feature",targetRefName:"refs/heads/main",repository:{id:"repo-guid",project:{id:"project-guid"},webUrl:"https://dev.azure.com/acme/project/_git/widget"},createdBy:{uniqueName:"author@example.com"}};
+  const executor=sourceFixtureExecutor("https://dev.azure.com/acme/project/_git/widget",{
+    extraRun:async(command,args)=>{
+      calls.push({command,args:[...args]});
+      if(command==="az"&&args.slice(0,3).join(" ")==="repos pr show")return {ok:true,code:0,stdout:JSON.stringify(raw),stderr:""};
+      if(command==="az"&&args.includes("pullRequestThreads"))return {ok:true,code:0,stdout:JSON.stringify({value:[{id:12,comments:[
+        {id:3,content:"Keep this comment",commentType:1,isDeleted:false,author:{uniqueName:"me@example.com",displayName:"Me"}},
+        {id:4,content:"System note",commentType:3,isDeleted:false,author:{displayName:"Azure DevOps"}},
+      ]}]}),stderr:""};
+      if(command==="az"&&args.includes("profiles"))return {ok:true,code:0,stdout:JSON.stringify({id:"me-guid",emailAddress:"me@example.com",displayName:"Me"}),stderr:""};
+      return {ok:false,code:1,stdout:"",stderr:"unexpected az command"};
+    },
+  });
+  const result=await withSourceControlExecutor(executor,()=>pullRequestDetail("/srv/app",9));
+  assert.equal(result.ok,true);assert.equal(result.provider,"azure-devops");
+  assert.equal(result.capabilities.comment,true);assert.equal(result.capabilities.editComments,true);
+  assert.deepEqual(result.item.comments,[{id:"12:3",threadId:12,nativeId:3,body:"Keep this comment",author:{login:"me@example.com",name:"Me"},canEdit:true}]);
+  const threadCall=calls.find(call=>call.args.includes("pullRequestThreads"));assert.ok(threadCall);
+  assert.ok(threadCall.args.includes("project=project-guid"));
+  assert.ok(threadCall.args.includes("repositoryId=repo-guid"));
+  assert.ok(threadCall.args.includes("pullRequestId=9"));
+});
+
+test("Azure DevOps comments create threads and edit the exact thread comment",async()=>{
+  const calls=[],payloads=[];
+  const raw={pullRequestId:9,repository:{id:"repo-guid",project:{id:"project-guid"}}};
+  const executor=sourceFixtureExecutor("https://dev.azure.com/acme/project/_git/widget",{
+    onTempJson:content=>payloads.push(JSON.parse(content)),
+    extraRun:async(command,args)=>{
+      calls.push({command,args:[...args]});
+      if(command==="az"&&args.slice(0,3).join(" ")==="repos pr show")return {ok:true,code:0,stdout:JSON.stringify(raw),stderr:""};
+      if(command==="az"&&args.includes("pullRequestThreads")&&args.includes("POST"))return {ok:true,code:0,stdout:JSON.stringify({id:21}),stderr:""};
+      if(command==="az"&&args.includes("pullRequestThreadComments")&&args.includes("PATCH"))return {ok:true,code:0,stdout:JSON.stringify({id:5,content:"Edited"}),stderr:""};
+      return {ok:false,code:1,stdout:"",stderr:"unexpected az command"};
+    },
+  });
+  const created=await withSourceControlExecutor(executor,()=>commentOnPullRequest("/srv/app",9,"New comment"));
+  const edited=await withSourceControlExecutor(executor,()=>editPullRequestComment("/srv/app",9,"21:5","Edited"));
+  assert.equal(created.ok,true);assert.equal(edited.ok,true);
+  assert.deepEqual(payloads[0],{comments:[{parentCommentId:0,content:"New comment",commentType:1}],status:1});
+  assert.deepEqual(payloads[1],{content:"Edited"});
+  const editCall=calls.find(call=>call.args.includes("pullRequestThreadComments"));assert.ok(editCall);
+  assert.ok(editCall.args.includes("threadId=21"));assert.ok(editCall.args.includes("commentId=5"));
 });
 
 test("Forgejo reviewer requests use the documented requested_reviewers endpoint",async()=>{

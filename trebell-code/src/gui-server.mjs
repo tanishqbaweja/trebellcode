@@ -525,6 +525,15 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     return {
       run:async(command,args,{cwd,timeout,maxBuffer}={})=>normalized(await environments.executeArgv(environmentId,{command,args,cwd,timeoutMs:timeout,maxOutput:maxBuffer})),
       runStdin:async(command,args,input,{cwd,timeout,maxBuffer}={})=>normalized(await environments.executeArgvInput(environmentId,{command,args,input,cwd,timeoutMs:timeout,maxOutput:maxBuffer})),
+      withTempJsonFile:async(content,callback)=>{
+        const allocated=await environments.executeArgv(environmentId,{command:"mktemp",args:["/tmp/trebell-azdo-XXXXXX.json"],cwd:"",timeoutMs:8000,maxOutput:64*1024});
+        if(allocated.exitCode!==0)throw new Error(allocated.stderr||"Could not allocate remote Azure DevOps request file");
+        const path=String(allocated.stdout||"").trim();if(!path)throw new Error("Remote Azure DevOps request file path was empty");
+        const created=await environments.executeArgvInput(environmentId,{command:"tee",args:[path],input:String(content??""),cwd:"",timeoutMs:12000,maxOutput:64*1024});
+        if(created.exitCode!==0){await environments.executeArgv(environmentId,{command:"rm",args:["-f",path],cwd:"",timeoutMs:8000,maxOutput:64*1024}).catch(()=>{});throw new Error(created.stderr||"Could not create remote Azure DevOps request file")}
+        try{return await callback(path)}
+        finally{await environments.executeArgv(environmentId,{command:"rm",args:["-f",path],cwd:"",timeoutMs:8000,maxOutput:64*1024}).catch(()=>{})}
+      },
       readFile:async(path)=>{
         const result=await environments.executeArgv(environmentId,{command:"cat",args:[String(path)],cwd:"",timeoutMs:12000,maxOutput:4*1024*1024});
         if(result.exitCode!==0)throw new Error(result.stderr||"Could not read remote file");
