@@ -16,7 +16,7 @@ async function freePort(){
 test("Codex follow-ups use the native persistent queue",async({page})=>{
   test.setTimeout(45_000);
   const thread={id:"codex-queue-fixture",name:"Codex queue fixture",preview:"Persistent native follow-ups",cwd:process.cwd(),createdAt:Date.now()-1000,updatedAt:Date.now(),turns:[]};
-  const calls=[];let queue=[];let nextQueueId=1;let nextTurnId=1;let slowNextQueueAdd=false;let rejectNextQueueAdd=false;
+  const calls=[];let queue=[];let nextQueueId=1;let nextTurnId=1;let slowNextQueueAdd=false;let rejectNextQueueAdd=false;let rejectNextSteer=false;
   const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const sockets=new Set();
   upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
   const notify=(ws,method,params)=>ws.readyState===ws.OPEN&&ws.send(JSON.stringify({method,params}));
@@ -53,7 +53,10 @@ test("Codex follow-ups use the native persistent queue",async({page})=>{
         respond(result);setTimeout(()=>{notify(ws,"thread/queue/changed",{threadId:thread.id});notify(ws,"turn/started",{threadId:thread.id,turn})},0);return;
       }else if(message.method==="turn/start"){
         const turn={id:"turn-"+(nextTurnId++),status:"inProgress",items:[]};result={turn};respond(result);setTimeout(()=>notify(ws,"turn/started",{threadId:thread.id,turn}),0);return;
-      }else if(message.method==="turn/steer")result={turnId:message.params.expectedTurnId};
+      }else if(message.method==="turn/steer"){
+        if(rejectNextSteer){rejectNextSteer=false;ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"fixture steer rejection"}}));return}
+        result={turnId:message.params.expectedTurnId};
+      }
       else if(message.method==="turn/interrupt")result={};
       else if(message.method==="thread/unsubscribe")result={status:"unsubscribed"};
       respond(result);
@@ -87,6 +90,16 @@ test("Codex follow-ups use the native persistent queue",async({page})=>{
     await expect(page.locator(".queued-message").nth(0)).toContainText("Second queued follow-up");
     await page.locator(".queued-message").nth(0).getByRole("button",{name:"Edit"}).click();await expect(composer).toHaveValue("Second queued follow-up");
     await composer.fill("Second queued follow-up edited");await page.getByTestId("send").click();await expect(page.locator(".queued-message").nth(0)).toContainText("Second queued follow-up edited");
+    await composer.fill("Recover me if send-now restore fails");await send.click();await expect(page.locator(".queued-message")).toHaveCount(3);
+    rejectNextSteer=true;rejectNextQueueAdd=true;
+    await page.locator(".queued-message").nth(2).getByRole("button",{name:"Send now"}).click();
+    await expect(page.getByTestId("app-action-error")).toContainText("Could not send queued follow-up: fixture steer rejection · Native queue restore also failed: fixture queue rejection. The queued draft was restored to the composer.");
+    await expect(composer).toHaveValue("Recover me if send-now restore fails");
+    await expect(page.locator(".queued-message")).toHaveCount(2);
+    await expect(page.locator(".queued-message").filter({hasText:"Recover me if send-now restore fails"})).toHaveCount(0);
+    await page.setViewportSize({width:1280,height:800});
+    await page.screenshot({path:auditDir+"chat-native-queue-restore-error-1280x800.png",fullPage:true});
+    await composer.fill("");
     await page.screenshot({path:auditDir+"chat-native-queue-1600x980.png",fullPage:true});
     await page.setViewportSize({width:1280,height:800});
     const queueCardOverflow=await page.locator(".queued-message").nth(0).evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(queueCardOverflow.scroll).toBeLessThanOrEqual(queueCardOverflow.client+1);

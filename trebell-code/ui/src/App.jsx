@@ -2150,14 +2150,29 @@ export default function App(){
           await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:originalInput});
           setQueued(prev=>prev.filter(q=>q.id!==item.id));setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.draftText||item.text,turnId:activeTurnId}]);return;
         }catch(error){
-          await rpc.request("thread/queue/add",{threadId:activeThread.id,input:originalInput,clientUserMessageId:originalClientId}).catch(()=>{});await loadNativeQueue(rpc,activeThread.id).catch(()=>{});throw error;
+          try{
+            await rpc.request("thread/queue/add",{threadId:activeThread.id,input:originalInput,clientUserMessageId:originalClientId});
+            await loadNativeQueue(rpc,activeThread.id).catch(()=>{});
+          }catch(restoreError){
+            setQueued(prev=>prev.filter(q=>q.id!==item.id));
+            restoreFailedDraft({text:item.draftText||item.text,attachments:item.attachments||[],contextChips:item.contextChips||[]});
+            throw new Error((error?.message||String(error))+" · Native queue restore also failed: "+(restoreError?.message||String(restoreError))+". The queued draft was restored to the composer.");
+          }
+          throw error;
         }
       }
       const result=await rpc.request("thread/queue/start",{threadId:activeThread.id,queuedSubmissionId:item.id});const turnId=result?.turn?.id||null;
       setRunning(Boolean(turnId));setActiveTurnId(turnId);setQueued(prev=>prev.filter(q=>q.id!==item.id));
       if(turnId)setMessages(prev=>[...prev,{id:item.clientUserMessageId||("queue-start-"+item.id),role:"user",text:item.draftText||item.text,turnId}]);return;
     }
-    await validateAttachmentPaths(item.attachments||[]);setQueued(prev=>prev.filter(q=>q.id!==item.id));if(agentRuntime==="codex"&&running&&rpc&&activeThread&&activeTurnId){await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments)});setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,turnId:activeTurnId}])}else if(running)setQueued(prev=>[item,...prev]);else await startTurn(item.text,item.attachments,item.model||model)
+    await validateAttachmentPaths(item.attachments||[]);
+    if(agentRuntime==="codex"&&running&&rpc&&activeThread&&activeTurnId){
+      await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments)});
+      setQueued(prev=>prev.filter(q=>q.id!==item.id));setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,turnId:activeTurnId}]);return;
+    }
+    if(running)return;
+    await startTurn(item.text,item.attachments,item.model||model);
+    setQueued(prev=>prev.filter(q=>q.id!==item.id));
   }
   async function editQueued(item){
     if(item?.native){if(!item.editable){setEvents(prev=>[...prev,{id:"queue-edit-unavailable-"+Date.now(),kind:"error",title:"This queued follow-up contains input Trebell cannot safely edit yet.",status:"done",raw:{}}]);return}setQueuedEditId(item.id)}else setQueued(prev=>prev.filter(entry=>entry.id!==item.id));
