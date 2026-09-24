@@ -1191,7 +1191,7 @@ export default function App(){
         const index=Number(command.slice("threadJump".length))-1;const target=displayThreads[index];
         if(target)runUserAction(()=>openThread(target),"Could not open thread");
       }
-      else if(command==="stash")stashPrompt();
+      else if(command==="stash")runUserAction(stashPrompt,"Could not stash or restore draft");
       else if(command==="terminal")setPanel(value=>value==="terminal"?null:"terminal");
       else if(command==="terminalFocus"){setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-focus")),0)}
       else if(command==="composerFocus"){document.querySelector('[data-testid="composer"]')?.focus()}
@@ -2316,7 +2316,9 @@ export default function App(){
   }
   async function stashPrompt(){
     if(prompt.trim()||attachments.length){await api("/api/stashes",{method:"POST",body:{text:prompt,attachments,contextChips,projectPath}});setPrompt("");setAttachments([]);setContextChips([]);return}
-    const d=await api("/api/stashes").catch(()=>({stashes:[]}));const stash=d.stashes?.[0];if(stash){setPrompt(stash.text||"");setAttachments(stash.attachments||[]);setContextChips(stash.contextChips||[]);await api("/api/stashes?id="+encodeURIComponent(stash.id),{method:"DELETE"})}
+    const d=await api("/api/stashes");const stash=d.stashes?.[0];if(!stash)return;
+    await api("/api/stashes?id="+encodeURIComponent(stash.id),{method:"DELETE"});
+    setPrompt(stash.text||"");setAttachments(stash.attachments||[]);setContextChips(stash.contextChips||[]);
   }
   async function addFiles(paths){setAttachments(prev=>[...new Set([...prev,...paths])].slice(0,MAX_COMPOSER_ATTACHMENTS))}
   async function addContextPath(path,{kind="context",label="Context",detail=""}={}){

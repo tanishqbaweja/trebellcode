@@ -2712,6 +2712,70 @@ test("failed background work restores the draft when stash saving also fails",as
   }
 });
 
+test("stash shortcut keeps save and restore failures retryable",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"stash-shortcut-thread",name:"Stash shortcut fixture",preview:"Retryable stash failures",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexRequestHarness(thread);
+  let phase="save-fail",deleteAttempts=0;
+  const stored={id:"stash-retry-1",text:"Restore this stashed draft after retry",attachments:[],contextChips:[]};
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"stash-shortcut-fixture");
+    await page.route(/\/api\/stashes(?:\?.*)?$/,route=>{
+      const method=route.request().method();
+      if(method==="POST"){
+        if(phase==="save-fail")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate stash save failure"})});
+        return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({stash:stored})});
+      }
+      if(method==="GET"){
+        if(phase==="load-fail")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate stash list failure"})});
+        return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({stashes:[stored]})});
+      }
+      if(method==="DELETE"){
+        deleteAttempts++;
+        if(phase==="delete-fail")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate stash delete failure"})});
+        return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})});
+      }
+      return route.fulfill({status:405,contentType:"application/json",body:JSON.stringify({error:"Unexpected stash request"})});
+    });
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Stash shortcut fixture"]')});
+    await row.locator(".thread-main").click();
+    await expect(row).toHaveClass(/active/);
+    const composer=page.getByTestId("composer");
+    const globalError=page.getByTestId("app-action-error");
+
+    const draft="Keep this draft when stash saving fails";
+    await composer.fill(draft);
+    await composer.press("Control+S");
+    await expect(globalError).toContainText("Could not stash or restore draft: Deliberate stash save failure");
+    await expect(composer).toHaveValue(draft);
+    await page.setViewportSize({width:1280,height:800});
+    await page.screenshot({path:auditDir+"stash-save-error-1280x800.png",fullPage:true});
+
+    await composer.fill("");
+    phase="load-fail";
+    await composer.press("Control+S");
+    await expect(globalError).toContainText("Could not stash or restore draft: Deliberate stash list failure");
+    await expect(composer).toHaveValue("");
+
+    phase="delete-fail";
+    await composer.press("Control+S");
+    await expect.poll(()=>deleteAttempts).toBe(1);
+    await expect(globalError).toContainText("Could not stash or restore draft: Deliberate stash delete failure");
+    await expect(composer).toHaveValue("");
+    const metrics=await page.locator(".composer-wrap").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"stash-restore-error-1280x800.png",fullPage:true});
+
+    phase="success";
+    await composer.press("Control+S");
+    await expect.poll(()=>deleteAttempts).toBe(2);
+    await expect(composer).toHaveValue(stored.text);
+    await expect(globalError).toHaveCount(0);
+  }finally{await harness.close()}
+});
+
 test("worktree setup monitor failures stop promptly and restore the unsent draft",async({page})=>{
   test.setTimeout(35_000);
   const basePath=process.cwd(),worktree=basePath+"-trebell-setup-monitor-fixture";
