@@ -402,6 +402,7 @@ html[data-custom-theme="true"] .settings-action-error{background:color-mix(in sr
 
 .composer-status.error{color:#e78888}
 .clone-banner{margin:0 14px 7px;border:1px solid #3a3150;background:#15111d;border-radius:9px;padding:7px 8px;display:grid;grid-template-columns:minmax(0,1fr) minmax(90px,180px) 38px auto;gap:8px;align-items:center}.clone-banner>div{display:grid;gap:2px;min-width:0}.clone-banner strong{font-size:8px;color:#c6b5d8}.clone-banner span{font-size:7px;color:#7f778a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.clone-banner i{height:6px;background:#201a2a;border-radius:999px;overflow:hidden}.clone-banner i b{display:block;height:100%;background:#8b62bb;border-radius:999px}.clone-banner em{font-size:7px;color:#8d8399;font-style:normal;text-align:right}.clone-banner button{height:25px;border:1px solid #4a3b5c;background:#1a1422;color:#bda9d0;border-radius:6px;padding:0 7px;font-size:7px;display:flex;align-items:center;gap:4px}.clone-banner.failed{border-color:#5f3945;background:#1a1014}.clone-banner.failed strong,.clone-banner.cancelled strong{color:#d89aa6}.clone-banner.failed i,.clone-banner.cancelled i{display:none}
+.clone-banner .clone-refresh-error{color:#d98694;white-space:normal;overflow:visible;text-overflow:clip}
 .provider-status-error{color:#e78888!important}
 
 /* Coherent light shell. Legacy light-mode rules predate the T3 workspace and

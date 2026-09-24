@@ -478,7 +478,7 @@ export default function App(){
     catch{return {...DEFAULT_LAYOUT}}
   });
   const [permissionMode,setPermissionMode]=useState("supervised"); const [workspaceMode,setWorkspaceMode]=useState("current");
-  const [projectPath,setProjectPath]=useState(""); const [currentProject,setCurrentProject]=useState(null); const [projectlessMode,setProjectlessMode]=useState(false); const [generalEnvironmentId,setGeneralEnvironmentId]=useState(null); const [gitInfo,setGitInfo]=useState(null); const [stats,setStats]=useState({}); const [runtime,setRuntime]=useState({});
+  const [projectPath,setProjectPath]=useState(""); const [currentProject,setCurrentProject]=useState(null); const [projectlessMode,setProjectlessMode]=useState(false); const [generalEnvironmentId,setGeneralEnvironmentId]=useState(null); const [gitInfo,setGitInfo]=useState(null); const [cloneRefreshError,setCloneRefreshError]=useState(""); const [stats,setStats]=useState({}); const [runtime,setRuntime]=useState({});
   const [approvals,setApprovals]=useState([]); const [question,setQuestion]=useState(null); const [elicitations,setElicitations]=useState([]); const [tokenUsage,setTokenUsage]=useState(null);
   const [guardianDenials,setGuardianDenials]=useState([]); const [guardianBusy,setGuardianBusy]=useState("");
   const [panel,setPanel]=useState(null); const [rightPanelOpen,setRightPanelOpen]=useState(false); const [rightPanelTab,setRightPanelTab]=useState("files"); const [rightPanelMaximized,setRightPanelMaximized]=useState(false); const [reviewedFiles,setReviewedFiles]=useState([]); const [checkpointByTurn,setCheckpointByTurn]=useState({});
@@ -800,6 +800,7 @@ export default function App(){
   async function refreshCloneJob(id=currentProject?.cloneJob?.id){
     if(!id)return null;
     const result=await api("/api/clone-jobs?id="+encodeURIComponent(id));
+    setCloneRefreshError("");
     if(result.project?.id===currentProject?.id||result.project?.path===projectPath)setCurrentProject(result.project);
     if(result.job?.status==="completed"&&result.project?.path){
       api("/api/git/info?path="+encodeURIComponent(result.project.path)+"&environmentId="+encodeURIComponent(result.project.environmentId||"")).then(setGitInfo).catch(()=>{});
@@ -809,6 +810,7 @@ export default function App(){
   async function cloneProjectAction(action){
     const id=currentProject?.cloneJob?.id;if(!id)return null;
     const result=await api("/api/clone-jobs",{method:"POST",body:{action,id}});
+    setCloneRefreshError("");
     if(result.project)setCurrentProject(result.project);
     return result;
   }
@@ -825,7 +827,8 @@ export default function App(){
   }
   useEffect(()=>{
     const job=currentProject?.cloneJob;if(!job||!["running","cancelling"].includes(job.status))return;
-    const timer=setInterval(()=>refreshCloneJob(job.id).catch(()=>{}),750);
+    setCloneRefreshError("");
+    const timer=setInterval(()=>refreshCloneJob(job.id).catch(error=>setCloneRefreshError("Could not refresh clone progress: "+(error?.message||String(error)))),750);
     return()=>clearInterval(timer);
   },[currentProject?.cloneJob?.id,currentProject?.cloneJob?.status,projectPath]);
   async function refreshEnvironmentThemes({strict=false}={}){
@@ -2871,7 +2874,7 @@ export default function App(){
             </div>
           </div>
 
-          {currentProject?.cloneJob&&currentProject.cloneJob.status!=="completed"&&<div className={"clone-banner "+currentProject.cloneJob.status} data-testid="clone-banner"><div><strong>{currentProject.cloneJob.phase||"Cloning repository"}</strong><span>{currentProject.cloneJob.status==="failed"?(currentProject.cloneJob.error||"Clone failed"):currentProject.cloneJob.status==="cancelled"?"Clone cancelled":"You can keep writing. Send waits until the repository is ready."}</span></div>{["running","cancelling"].includes(currentProject.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(currentProject.cloneJob.progress)||0)+"%"}}/></i>}<em>{Math.round(currentProject.cloneJob.progress||0)}%</em>{currentProject.cloneJob.status==="running"&&<button onClick={()=>runUserAction(()=>cloneProjectAction("cancel"),"Could not cancel clone")}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(currentProject.cloneJob.status)&&<button onClick={()=>runUserAction(()=>cloneProjectAction("retry"),"Could not retry clone")}>Retry clone</button>}</div>}
+          {currentProject?.cloneJob&&currentProject.cloneJob.status!=="completed"&&<div className={"clone-banner "+currentProject.cloneJob.status} data-testid="clone-banner"><div><strong>{currentProject.cloneJob.phase||"Cloning repository"}</strong><span>{currentProject.cloneJob.status==="failed"?(currentProject.cloneJob.error||"Clone failed"):currentProject.cloneJob.status==="cancelled"?"Clone cancelled":"You can keep writing. Send waits until the repository is ready."}</span>{cloneRefreshError&&<span className="clone-refresh-error" role="alert">{cloneRefreshError}</span>}</div>{["running","cancelling"].includes(currentProject.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(currentProject.cloneJob.progress)||0)+"%"}}/></i>}<em>{Math.round(currentProject.cloneJob.progress||0)}%</em>{currentProject.cloneJob.status==="running"&&<button onClick={()=>runUserAction(()=>cloneProjectAction("cancel"),"Could not cancel clone")}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(currentProject.cloneJob.status)&&<button onClick={()=>runUserAction(()=>cloneProjectAction("retry"),"Could not retry clone")}>Retry clone</button>}</div>}
           <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={()=>setPromptHistoryIndex(-1)} historyIndex={promptHistoryIndex} onSend={send} onBackgroundSend={sendInBackground} canBackground={!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={changeComposerModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={()=>runUserAction(pickFiles,"Could not attach files")} onCaptureScreen={()=>runUserAction(captureDesktop,"Could not capture screen")} onPaste={onPaste} onDrop={onDrop} onFileMentionSearch={searchComposerFiles} onFileMentionAttach={item=>runUserAction(()=>attachComposerFileMention(item),"Could not attach file mention")} permissionMode={permissionMode} setPermissionMode={setPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={changeCollaborationMode} collaborationModeBusy={collaborationModeBusy} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={changeProviderAgent} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&["codex","opencode","claude"].includes(agentRuntime))} onCompact={compactContext} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={switchThreadRuntimeProfile} onModelPickerOpenChange={setModelPickerOpen}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">

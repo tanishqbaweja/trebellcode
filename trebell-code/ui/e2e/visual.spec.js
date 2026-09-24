@@ -1684,6 +1684,35 @@ test("project detail refresh failures preserve known Git metadata",async({page,r
   await page.screenshot({path:auditDir+"projects-detail-refresh-error-1280x800.png",fullPage:true});
 });
 
+test("clone progress polling failures keep the last known job visible",async({page})=>{
+  test.setTimeout(30_000);
+  const cloneJob={id:"clone-poll-failure",status:"running",phase:"Cloning objects",progress:42};
+  const project={id:"clone-poll-project",name:"Clone Poll Project",path:process.cwd(),environmentId:null,cloneJob};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:project.path,platform:process.platform,version:"clone-poll-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{}})}));
+  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+  await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})}));
+  await page.route(/\/api\/clone-jobs\?/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate clone progress refresh failure"})}));
+  await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:false,status:[],remotes:[],worktrees:[]})}));
+  await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+  await page.route(/\/api\/freebuff\/overview/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({})}));
+  await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+  await page.goto("/");
+  const banner=page.getByTestId("clone-banner");
+  await expect(banner).toBeVisible();
+  await expect(banner).toContainText("Cloning objects");
+  await expect(banner).toContainText("42%");
+  const alert=banner.getByRole("alert");
+  await expect(alert).toContainText("Could not refresh clone progress: Deliberate clone progress refresh failure",{timeout:5000});
+  await expect(banner).toContainText("42%");
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await banner.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"clone-progress-refresh-error-1280x800.png",fullPage:true});
+});
+
 test("successful history imports surface a failed thread-list refresh",async({page})=>{
   test.setTimeout(35_000);
   const thread={id:"history-refresh-thread",name:"History refresh fixture",preview:"Import refresh honesty",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
