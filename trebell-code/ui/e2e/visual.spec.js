@@ -2611,6 +2611,53 @@ test("source control preserves viewed files when the same PR refresh fails",asyn
   await page.screenshot({path:auditDir+"source-control-viewed-refresh-error-1280x800.png",fullPage:true});
 });
 
+test("source control does not leak viewed markers between pull requests",async({page,request})=>{
+  test.setTimeout(30_000);
+  const prs=[
+    {number:142,title:"First viewed fixture",state:"OPEN",headRefName:"feature/first-viewed",baseRefName:"main",provider:"github",url:"https://github.com/example/trebellcode/pull/142"},
+    {number:143,title:"Second viewed fixture",state:"OPEN",headRefName:"feature/second-viewed",baseRefName:"main",provider:"github",url:"https://github.com/example/trebellcode/pull/143"},
+  ];
+  await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    isGit:true,root:process.cwd(),branch:"feature/first-viewed",branches:["main","feature/first-viewed","feature/second-viewed"],upstream:"origin/feature/first-viewed",
+    status:[],remotes:[{name:"origin",url:"https://github.com/example/trebellcode.git"}],worktrees:[],
+  })}));
+  await page.route(/\/api\/source-control\/diagnostics\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    selectedProvider:"github",detectedProvider:"github",git:{version:"git version fixture"},providers:{github:{label:"GitHub",installed:true,authenticated:true}},
+    capabilities:{github:{create:true,comment:true,review:true,merge:true}},
+  })}));
+  await page.route(/\/api\/source-control\/prs\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:prs,capabilities:{create:true,comment:true,review:true,merge:true}})}));
+  await page.route(/\/api\/source-control\/pr-detail\?/,route=>{
+    const number=Number(new URL(route.request().url()).searchParams.get("number"));
+    const pr=prs.find(item=>item.number===number)||prs[0];
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+      provider:"github",item:{...pr,body:"Viewed-state fixture",identity:{provider:"github",host:"github.com",repository:"example/trebellcode",number:pr.number},
+        files:[{path:"ui/src/App.jsx",additions:4,deletions:1,patch:"@@ -1 +1 @@\n+fixture"}],comments:[],reviews:[],statusCheckRollup:[]},
+    })});
+  });
+  await page.route(/\/api\/source-control\/thread-link\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({threads:[]})}));
+  await page.route(/\/api\/source-control\/pr-viewed\?/,async route=>{
+    const number=Number(new URL(route.request().url()).searchParams.get("number"));
+    if(number===143)await new Promise(resolve=>setTimeout(resolve,250));
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+      store:"environment",files:number===142?[{path:"ui/src/App.jsx",state:"viewed"}]:[],
+    })});
+  });
+  await prepare(page,request);
+  await page.getByTestId("right-panel-toggle").click();
+  const panel=page.getByTestId("right-panel");
+  await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Git",exact:true}).click();
+  await panel.getByRole("button",{name:/#142 First viewed fixture/}).click();
+  await expect(panel.locator(".pr-files-head")).toContainText("1 / 1 viewed in Trebell Code");
+  await expect(panel.getByRole("button",{name:"Mark unviewed ui/src/App.jsx",exact:true})).toBeVisible();
+  await panel.getByRole("button",{name:/#143 Second viewed fixture/}).click();
+  await expect(panel.locator(".pr-files-head")).toContainText("0 / 1 viewed");
+  await expect(panel.getByRole("button",{name:"Mark viewed ui/src/App.jsx",exact:true})).toBeVisible();
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"source-control-viewed-pr-isolation-1280x800.png",fullPage:true});
+});
+
 test("failed linked-thread unarchive keeps the PR and archived state intact",async({page})=>{
   test.setTimeout(40_000);
   const parent={
