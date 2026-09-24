@@ -1682,22 +1682,27 @@ export default function App(){
   }
   async function openThread(thread,{client=rpc,preserveSection=false}={}){
     const previousThreadId=activeThreadRef.current?.id;
+    const reopeningCurrentThread=previousThreadId===thread.id;
     const threadEnvironmentId=thread.providerMeta?.environmentId||null;
     const savedMeta=threadMeta[thread.id]||{};const projectless=Boolean(savedMeta.projectless);
     if(thread.cwd&&!threadEnvironmentId&&!projectless)await api("/api/worktree/ensure",{method:"POST",body:{path:thread.cwd,environmentId:null}}).catch(error=>{throw new Error("Could not restore this managed worktree: "+error.message)});
     const connectedClient=Boolean(client&&!(client===rpc&&rpcStatus!=="connected"));
-    let resumed=null,cp={checkpoints:[]},goalData={goal:null},attachmentData={data:[]};
+    let resumed=null,cp=null,goalData=null,attachmentData=null;
+    const persistentReadErrors=[];
     if(connectedClient){
       const resumePromise=agentRuntime==="codex"
         ?resumeCodexWithBoundedHistory(client,{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null})
         :client.request("thread/resume",{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null,excludeTurns:false});
-      [resumed,cp,goalData,attachmentData]=await Promise.all([
-        resumePromise,
-        api("/api/checkpoints?threadId="+encodeURIComponent(thread.id)).catch(()=>({checkpoints:[]})),
-        client.request("thread/goal/get",{threadId:thread.id}).catch(()=>({goal:null})),
-        client.request("thread/attachment/list",{threadId:thread.id,limit:100}).catch(()=>({data:[]})),
-      ]);
+      const checkpointPromise=api("/api/checkpoints?threadId="+encodeURIComponent(thread.id)).then(value=>({value,error:null}),error=>({value:null,error}));
+      const goalPromise=client.request("thread/goal/get",{threadId:thread.id}).then(value=>({value,error:null}),error=>({value:null,error}));
+      const attachmentPromise=client.request("thread/attachment/list",{threadId:thread.id,limit:100}).then(value=>({value,error:null}),error=>({value:null,error}));
+      resumed=await resumePromise;
       if(!resumed?.thread)throw new Error("The agent runtime did not return the requested thread.");
+      const [checkpointResult,goalResult,attachmentResult]=await Promise.all([checkpointPromise,goalPromise,attachmentPromise]);
+      cp=checkpointResult.value;goalData=goalResult.value;attachmentData=attachmentResult.value;
+      if(checkpointResult.error)persistentReadErrors.push("checkpoints: "+(checkpointResult.error.message||String(checkpointResult.error)));
+      if(goalResult.error)persistentReadErrors.push("goal: "+(goalResult.error.message||String(goalResult.error)));
+      if(attachmentResult.error)persistentReadErrors.push("linked attachments: "+(attachmentResult.error.message||String(attachmentResult.error)));
     }
     const openedThread=resumed?.thread||thread;
     rememberConversationPosition();
@@ -1705,8 +1710,10 @@ export default function App(){
     activeThreadRef.current=openedThread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection)setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");setAssistantText("");setWorktreeSetup(null);setActiveThread(openedThread);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(openedThread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
     else if(openedThread.cwd)await touchProject(openedThread.cwd,threadEnvironmentId);else setProjectPath(projectPath);
+    if(!reopeningCurrentThread){setCheckpointByTurn({});setGoal(null);setLinkedPullRequests(savedMeta.linkedPullRequests||[])}
     if(!connectedClient)return;
-    const map=Object.fromEntries((cp.checkpoints||[]).filter(x=>x.turnId).map(x=>[x.turnId,x]));setCheckpointByTurn(map);
+    const map=cp?Object.fromEntries((cp.checkpoints||[]).filter(x=>x.turnId).map(x=>[x.turnId,x])):(reopeningCurrentThread?checkpointByTurn:{});
+    if(cp)setCheckpointByTurn(map);
     if(resumed?.thread){
       activeThreadRef.current=resumed.thread;pendingThreadScrollRestoreRef.current=resumed.thread.id;setActiveThread(resumed.thread);
       if(agentRuntime==="codex"&&resumed.collaborationMode?.mode&&collaborationModes.some(item=>item.mode===resumed.collaborationMode.mode))setCollaborationMode(resumed.collaborationMode.mode);
@@ -1753,9 +1760,13 @@ export default function App(){
         .catch(()=>{});
     }
     if(agentRuntime==="codex")await loadNativeQueue(client,thread.id).catch(error=>setEvents(prev=>[...prev,{id:"queue-load-error-"+Date.now(),kind:"error",title:"Could not load queued follow-ups: "+(error.message||String(error)),status:"done",raw:{}}]));else{setQueueMode("local");setQueued([])}
-    const meta=threadMeta[thread.id]||{};setReviewedFiles(meta.reviewedFiles||[]);setGoal(goalData?.goal||null);
-    const persisted=(attachmentData?.data||[]).filter(item=>item.attachmentType==="pull_request").map(item=>({...item.payload,__identityKey:item.identityKey}));
-    setLinkedPullRequests(persisted.length?persisted:(meta.linkedPullRequests||[]));
+    const meta=threadMeta[thread.id]||{};setReviewedFiles(meta.reviewedFiles||[]);
+    if(goalData)setGoal(goalData?.goal||null);
+    if(attachmentData){
+      const persisted=(attachmentData?.data||[]).filter(item=>item.attachmentType==="pull_request").map(item=>({...item.payload,__identityKey:item.identityKey}));
+      setLinkedPullRequests(persisted.length?persisted:(meta.linkedPullRequests||[]));
+    }
+    if(persistentReadErrors.length)showActionError(new Error(persistentReadErrors.join(" · ")),"Opened thread, but some saved state could not be loaded");
   }
   async function loadEarlierMessages(){
     const threadId=activeThreadRef.current?.id;const cursor=historyPage.threadId===threadId?historyPage.nextCursor:null;

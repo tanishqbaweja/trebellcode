@@ -97,9 +97,9 @@ async function startCodexRequestHarness(thread,{onRequest}={}){
   };
 }
 
-async function routeProjectlessCodexRequestFixture(page,harness,thread,version){
+async function routeProjectlessCodexRequestFixture(page,harness,thread,version,{threadMeta={}}={}){
   await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version,activeEnvironmentId:null,activeEnvironment:null})}));
-  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}})}));
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null},...threadMeta}})}));
   await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
   await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
   await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
@@ -790,6 +790,81 @@ test("background attachment refresh failures preserve linked pull requests",asyn
     const metrics=await page.locator(".workspace-header").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await page.screenshot({path:auditDir+"linked-pr-attachment-refresh-error-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
+test("opening a thread surfaces persistent-state read failures without leaking the previous thread",async({page})=>{
+  test.setTimeout(35_000);
+  const first={id:"persistent-open-a",name:"Persistent state A",preview:"Known good linked state",cwd:process.cwd(),createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000-10,turns:[]};
+  const second={id:"persistent-open-b",name:"Persistent state B",preview:"Read failure target",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  let failFirstPersistentReads=false;
+  const harness=await startCodexRequestHarness(first,{onRequest:async(message,ws)=>{
+    if(message.method==="thread/list"){
+      ws.send(JSON.stringify({id:message.id,result:{data:[first,second],nextCursor:null}}));return true;
+    }
+    if(message.method==="thread/resume"){
+      const target=message.params?.threadId===second.id?second:first;
+      ws.send(JSON.stringify({id:message.id,result:{thread:target,itemsBackwardsCursor:null,turnsBackwardsCursor:null}}));return true;
+    }
+    if(message.method==="thread/goal/get"){
+      if(message.params?.threadId===second.id||failFirstPersistentReads){
+        const label=message.params?.threadId===second.id?"second":"first";
+        ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:`Deliberate ${label} persistent goal read failure`}}));return true;
+      }
+      ws.send(JSON.stringify({id:message.id,result:{goal:{threadId:first.id,objective:"Do not leak this goal",status:"active"}}}));return true;
+    }
+    if(message.method==="thread/attachment/list"){
+      if(message.params?.threadId===second.id||failFirstPersistentReads){
+        const label=message.params?.threadId===second.id?"second":"first";
+        ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:`Deliberate ${label} persistent attachment read failure`}}));return true;
+      }
+      ws.send(JSON.stringify({id:message.id,result:{data:[{attachmentType:"pull_request",identityKey:"github:91",payload:{number:91,title:"Do not leak this PR",url:"https://github.com/example/trebellcode/pull/91",headRefName:"fixture/a",baseRefName:"main"}}]}}));return true;
+    }
+    return false;
+  }});
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,first,"persistent-open-fixture",{threadMeta:{[second.id]:{projectless:true,environmentId:null}}});
+    await page.route(/\/api\/checkpoints\?threadId=/,route=>{
+      const threadId=new URL(route.request().url()).searchParams.get("threadId");
+      if(threadId===second.id||failFirstPersistentReads){
+        const label=threadId===second.id?"second":"first";
+        return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:`Deliberate ${label} checkpoint read failure`})});
+      }
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({checkpoints:[]})});
+    });
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const firstRow=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Persistent state A"]')});
+    const secondRow=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Persistent state B"]')});
+    await firstRow.locator(".thread-main").click();
+    await expect(firstRow).toHaveClass(/active/);
+    await expect(page.locator(".header-pr").filter({hasText:"#91"})).toBeVisible();
+    await page.locator(".workspace-header").getByRole("button",{name:"Thread goal",exact:true}).click();
+    const objective=page.locator(".goal-panel textarea");
+    await expect(objective).toHaveValue("Do not leak this goal");
+
+    failFirstPersistentReads=true;
+    await firstRow.locator(".thread-main").click();
+    const error=page.getByTestId("app-action-error");
+    await expect(error).toContainText("Opened thread, but some saved state could not be loaded");
+    await expect(error).toContainText("checkpoints: Deliberate first checkpoint read failure");
+    await expect(error).toContainText("goal: Deliberate first persistent goal read failure");
+    await expect(error).toContainText("linked attachments: Deliberate first persistent attachment read failure");
+    await expect(page.locator(".header-pr").filter({hasText:"#91"})).toBeVisible();
+    await expect(objective).toHaveValue("Do not leak this goal");
+
+    await secondRow.locator(".thread-main").click();
+    await expect(secondRow).toHaveClass(/active/);
+    await expect(error).toContainText("Opened thread, but some saved state could not be loaded");
+    await expect(error).toContainText("checkpoints: Deliberate second checkpoint read failure");
+    await expect(error).toContainText("goal: Deliberate second persistent goal read failure");
+    await expect(error).toContainText("linked attachments: Deliberate second persistent attachment read failure");
+    await expect(page.locator(".header-pr").filter({hasText:"#91"})).toHaveCount(0);
+    await expect(objective).toHaveValue("");
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"thread-persistent-read-error-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
