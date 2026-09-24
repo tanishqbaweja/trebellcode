@@ -680,6 +680,35 @@ test("project refresh and removal failures preserve the existing project card",a
   await page.screenshot({path:auditDir+"projects-action-error-1280x800.png",fullPage:true});
 });
 
+test("environment refresh and removal failures preserve the existing environment",async({page,request})=>{
+  test.setTimeout(30_000);
+  await prepare(page,request);
+  await request.post("/api/environments",{data:{id:"failure-ssh",name:"Failure SSH",type:"ssh",host:"failure.example.invalid",user:"dev",cwd:"/srv/failure",port:22}});
+  await page.getByRole("button",{name:"Environments",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Environments & remote access",level:2})).toBeVisible();
+  const environmentRow=page.locator(".environment-list>div").filter({hasText:"Failure SSH"});
+  await expect(environmentRow).toBeVisible();
+
+  await page.route(/\/api\/environments(?:\?.*)?$/,route=>{
+    if(route.request().method()==="GET")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate environment refresh failure"})});
+    if(route.request().method()==="DELETE")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate environment removal failure"})});
+    return route.continue();
+  });
+
+  await page.locator(".capabilities-toolbar").getByRole("button",{name:"Refresh",exact:true}).click();
+  const status=page.getByRole("status");
+  await expect(status).toContainText("Deliberate environment refresh failure");
+  await expect(environmentRow).toBeVisible();
+
+  await environmentRow.getByRole("button",{name:"Remove Failure SSH",exact:true}).click();
+  await expect(status).toContainText("Deliberate environment removal failure");
+  await expect(environmentRow).toBeVisible();
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await page.locator(".environments-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"environments-action-error-1280x800.png",fullPage:true});
+});
+
 test("right panel tabs are functional and visually bounded",async({page,request})=>{
   test.setTimeout(60_000);
   await prepare(page,request);

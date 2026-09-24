@@ -13,11 +13,17 @@ export default function EnvironmentsPage(){
   const localPlatform=data.capabilities?.local?.platform||"local";
   const localPlatformLabel={win32:"Windows",linux:"Linux",darwin:"macOS"}[localPlatform]||"Local";
 
-  async function refresh(){
-    const [e,r]=await Promise.all([api("/api/environments"),api("/api/remote-access")]);
-    setData(e);setRemote(r);
+  async function refresh({reportErrors=false}={}){
+    const [environmentResult,remoteResult]=await Promise.allSettled([api("/api/environments"),api("/api/remote-access")]);
+    if(environmentResult.status==="fulfilled")setData(environmentResult.value);
+    if(remoteResult.status==="fulfilled")setRemote(remoteResult.value);
+    const failures=[];
+    if(environmentResult.status==="rejected")failures.push("environments: "+(environmentResult.reason?.message||String(environmentResult.reason)));
+    if(remoteResult.status==="rejected")failures.push("remote access: "+(remoteResult.reason?.message||String(remoteResult.reason)));
+    if(reportErrors)setMessage(failures.length?"Could not refresh "+failures.join(" · "):"");
+    return failures.length===0;
   }
-  useEffect(()=>{refresh().catch(e=>setMessage(e.message))},[]);
+  useEffect(()=>{refresh({reportErrors:true})},[]);
 
   async function add(){
     setBusy("add");setMessage("");
@@ -28,7 +34,15 @@ export default function EnvironmentsPage(){
       await refresh();
     }catch(e){setMessage(e.message)}finally{setBusy("")}
   }
-  async function remove(id){await api("/api/environments?id="+encodeURIComponent(id),{method:"DELETE"});await refresh()}
+  async function remove(id){
+    setBusy("remove:"+id);setMessage("");
+    try{
+      await api("/api/environments?id="+encodeURIComponent(id),{method:"DELETE"});
+      await refresh();
+      setMessage("Environment removed.");
+    }catch(e){setMessage("Could not remove environment: "+(e.message||String(e)))}
+    finally{setBusy("")}
+  }
   async function setEnabled(id,enabled){
     setBusy("enabled:"+id);setMessage("");
     try{
@@ -73,14 +87,14 @@ export default function EnvironmentsPage(){
   }
 
   return <div className="environments-page">
-    <div className="capabilities-toolbar"><div><h2>Environments & remote access</h2><p>Run the active coding-agent runtime on this {localPlatformLabel} host, inside WSL when available, or on an SSH machine. LAN remote control pairs another device with a one-time link and gives it a revocable session.</p></div><button onClick={refresh}><RefreshCw size={13}/> Refresh</button></div>
-    {message&&<div className="inline-status">{message}</div>}
+    <div className="capabilities-toolbar"><div><h2>Environments & remote access</h2><p>Run the active coding-agent runtime on this {localPlatformLabel} host, inside WSL when available, or on an SSH machine. LAN remote control pairs another device with a one-time link and gives it a revocable session.</p></div><button onClick={()=>refresh({reportErrors:true})} disabled={!!busy}><RefreshCw size={13}/> Refresh</button></div>
+    {message&&<div className="inline-status" role="status" aria-live="polite">{message}</div>}
     <div className="environment-grid">
       <section className="capability-card">
         <div className="capability-card-head"><span><Laptop2 size={15}/><strong>Configured environments</strong></span><em>{data.profiles.length}</em></div>
         <div className="environment-list">
           <div><div><strong>Local machine</strong><span>{localPlatformLabel.toUpperCase()} · {window.trebellDesktop?"Trebell desktop host":"Trebell host"}</span></div><div>{!data.activeEnvironmentId?<em className="ok">active</em>:<button onClick={()=>activate(null)} disabled={!!busy}>Use for agent</button>}</div></div>
-          {data.profiles.map(profile=>{const enabled=profile.enabled!==false;return <div key={profile.id}><div><strong>{profile.name}</strong><span>{profile.type.toUpperCase()} · {profile.cwd||profile.host||profile.distro||"default"}{profile.themeDirectory?" · themes "+profile.themeDirectory:""}{enabled?"":" · switched off"}</span></div><div>{data.activeEnvironmentId===profile.id?<em className="ok">agent active</em>:<button onClick={()=>activate(profile.id)} disabled={!!busy||!enabled}>Use for agent</button>}<button onClick={()=>probe(profile.id)} disabled={!!busy||!enabled}>Test</button><button onClick={()=>setEnabled(profile.id,!enabled)} disabled={!!busy}>{enabled?"Switch off":"Switch on"}</button><button className="danger" onClick={()=>remove(profile.id)} disabled={data.activeEnvironmentId===profile.id}><Trash2 size={12}/></button></div></div>})}</div>
+          {data.profiles.map(profile=>{const enabled=profile.enabled!==false;return <div key={profile.id}><div><strong>{profile.name}</strong><span>{profile.type.toUpperCase()} · {profile.cwd||profile.host||profile.distro||"default"}{profile.themeDirectory?" · themes "+profile.themeDirectory:""}{enabled?"":" · switched off"}</span></div><div>{data.activeEnvironmentId===profile.id?<em className="ok">agent active</em>:<button onClick={()=>activate(profile.id)} disabled={!!busy||!enabled}>Use for agent</button>}<button onClick={()=>probe(profile.id)} disabled={!!busy||!enabled}>Test</button><button onClick={()=>setEnabled(profile.id,!enabled)} disabled={!!busy}>{enabled?"Switch off":"Switch on"}</button><button className="danger" aria-label={"Remove "+profile.name} onClick={()=>remove(profile.id)} disabled={!!busy||data.activeEnvironmentId===profile.id}><Trash2 size={12}/></button></div></div>})}</div>
         {!data.profiles.length&&<p>No saved remote environments. The local {localPlatformLabel} agent is active by default.</p>}
       </section>
       <section className="capability-card environment-create">
