@@ -1144,6 +1144,40 @@ test("automatic source-control sync failures stay visible while retrying",async(
   }finally{await harness.close()}
 });
 
+test("completed turns surface failed thread-list refreshes",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"completion-refresh-thread",name:"Completion refresh fixture",preview:"Completion refresh honesty",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  let failThreadList=false,threadListReads=0;
+  const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
+    if(message.method==="thread/list"){
+      threadListReads++;
+      if(failThreadList){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate completion thread refresh failure"}}));return true}
+    }
+    return false;
+  }});
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"completion-refresh-fixture");
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Completion refresh fixture"]')});
+    await row.locator(".thread-main").click();
+    await expect(row).toHaveClass(/active/);
+    const baseline=threadListReads;
+    failThreadList=true;
+    harness.emit({method:"turn/started",params:{threadId:thread.id,turn:{id:"completion-refresh-turn",startedAt:Date.now()/1000}}});
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeVisible();
+    harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"completion-refresh-turn",status:"completed",completedAt:Date.now()/1000}}});
+    await expect.poll(()=>threadListReads).toBeGreaterThan(baseline);
+    await expect(page.getByTestId("app-action-error")).toContainText("Turn completed, but the thread list could not refresh: Deliberate completion thread refresh failure");
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);
+    await expect(row).toBeVisible();
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"turn-completion-thread-refresh-error-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
 test("runtime server requests use the latest permission mode",async({page})=>{
   test.setTimeout(35_000);
   const thread={id:"permission-handler-thread",name:"Permission freshness fixture",preview:"Latest server request state",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
