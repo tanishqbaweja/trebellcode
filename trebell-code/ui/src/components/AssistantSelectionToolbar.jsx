@@ -12,6 +12,7 @@ function citationSource(node,container){
 
 export default function AssistantSelectionToolbar({containerRef,onCite}){
   const [selection,setSelection]=useState(null);
+  const [busy,setBusy]=useState(false);
 
   useEffect(()=>{
     const container=containerRef.current;
@@ -60,15 +61,19 @@ export default function AssistantSelectionToolbar({containerRef,onCite}){
     className="assistant-selection-cite"
     data-testid="assistant-selection-cite"
     style={{left:selection.x,top:selection.y}}
-    disabled={tooLong}
-    aria-label={tooLong?"Selection is too long to cite":"Cite selected assistant text"}
+    disabled={tooLong||busy}
+    aria-label={tooLong?"Selection is too long to cite":busy?"Citing selected assistant text":"Cite selected assistant text"}
     title={tooLong?`Select ${MAX_ASSISTANT_CITATION_CHARS.toLocaleString()} characters or fewer`:"Cite selected assistant text"}
     onPointerDown={event=>event.preventDefault()}
-    onClick={()=>{
-      if(tooLong)return;
-      onCite?.(selection);
-      window.getSelection()?.removeAllRanges();
-      setSelection(null);
+    onClick={async()=>{
+      if(tooLong||busy)return;
+      setBusy(true);
+      try{
+        const cited=await onCite?.(selection);
+        if(cited!==true)return;
+        window.getSelection()?.removeAllRanges();
+        setSelection(null);
+      }finally{setBusy(false)}
     }}
-  ><Quote size={13}/>{tooLong?"Shorten selection":"Cite"}</button>;
+  ><Quote size={13}/>{tooLong?"Shorten selection":busy?"Citing…":"Cite"}</button>;
 }

@@ -259,7 +259,7 @@ function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPa
       const label=String(visualization.path||visualization.file||"Visualization").split(/[\\/]/).pop();
       return <div className={"inline-visualization-card "+(visualization.mode==="wide"?"wide":"")} key={label+":"+index}><div className="inline-visualization-head"><strong>{label}</strong><span>Interactive visualization</span></div><iframe title={label} src={visualizationUrl(visualization,{projectPath,environmentId,threadId})} sandbox="allow-scripts" referrerPolicy="no-referrer"/></div>;
     })}</div></div>;
-  })}<AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));if(message)onCite?.(message,text)}}/></div>;
+  })}<AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></div>;
 }
 function ApprovalCard({request,onResolve}){
   if(!request)return null;
@@ -2255,6 +2255,7 @@ export default function App(){
     const text=[selected?"Assistant response excerpt":"Assistant response citation","Thread: "+threadLabel,message?.id?"Message: "+message.id:null,"",source].filter(value=>value!=null).join("\n");
     await addContextAttachment({name:"assistant-citation.txt",text,kind:"citation",label:selected?"Assistant excerpt":"Assistant citation",detail:selected?`${selected.length.toLocaleString()} chars · ${threadLabel}`:threadLabel});
     setPrompt(prev=>(prev?prev+" ":"")+(selected?"Use the cited assistant excerpt as context. ":"Use the attached assistant citation as context. "));
+    return true;
   }
   async function attachReviewComment(path,comment){
     const text=["Code review comment","File: "+path,"",comment].join("\n");
@@ -2600,7 +2601,7 @@ export default function App(){
           <div className="conversation-scroll" ref={conversationScrollRef} onScroll={conversationScrolled}>
             <div className="conversation-column">
               <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
-              <Conversation messages={messages} onEditFromHere={editFromHere} onCite={citeAssistant} allowRevert={["codex","opencode","claude"].includes(agentRuntime)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={agentRuntime==="codex"&&historyPage.threadId===activeThread?.id&&Boolean(historyPage.nextCursor)} loadingEarlier={historyPage.loading} onLoadEarlier={loadEarlierMessages} activeFindItemId={threadFind.activeItemId}/>
+              <Conversation messages={messages} onEditFromHere={editFromHere} onCite={(message,text)=>runUserAction(()=>citeAssistant(message,text),"Could not cite assistant text")} allowRevert={["codex","opencode","claude"].includes(agentRuntime)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={agentRuntime==="codex"&&historyPage.threadId===activeThread?.id&&Boolean(historyPage.nextCursor)} loadingEarlier={historyPage.loading} onLoadEarlier={loadEarlierMessages} activeFindItemId={threadFind.activeItemId}/>
               <ActivityTimeline events={events} assistantText={assistantText} onOpenPanel={name=>name==="workspace"?openRightPanel("diff"):setPanel(name)}/>
               {guardianDenials.map(review=><div className="inline-approval" key={review.reviewId}><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div>)}
               {approvals[0]&&<div className="inline-approval"><ApprovalCard request={approvals[0]} onResolve={resolveApproval}/></div>}

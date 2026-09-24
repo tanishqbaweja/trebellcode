@@ -1373,6 +1373,7 @@ test("populated chat and overlays remain visually usable",async({page,request})=
   await page.screenshot({path:auditDir+"chat-populated-1600x980.png",fullPage:true});
 
   const assistantText=page.locator(".assistant-message-text").last();
+  await page.setViewportSize({width:1280,height:800});
   await assistantText.evaluate(node=>{
     const selection=window.getSelection();
     selection.removeAllRanges();
@@ -1416,6 +1417,35 @@ test("populated chat and overlays remain visually usable",async({page,request})=
   expect((await box(page.locator(".permission-picker").first())).width).toBeGreaterThanOrEqual(100);
   expect((await box(page.locator(".workspace-mode"))).width).toBeGreaterThanOrEqual(125);
   await page.screenshot({path:auditDir+"chat-populated-1280x800.png",fullPage:true});
+});
+
+test("failed assistant citations keep the selected excerpt available for retry",async({page,request})=>{
+  test.setTimeout(35_000);
+  await prepare(page,request);
+  const composer=page.getByTestId("composer");
+  await composer.fill("Create a citation failure fixture.");
+  await page.getByTestId("send").click();
+  const assistantText=page.locator(".assistant-message-text").last();
+  await expect(assistantText).toContainText("Mock Freebuff reply:");
+  await composer.fill("Keep this draft");
+  await page.route(/\/api\/attachments\/text$/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate assistant citation failure"})}));
+  await assistantText.evaluate(node=>{
+    const selection=window.getSelection();selection.removeAllRanges();
+    const range=document.createRange();range.selectNodeContents(node);selection.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  const cite=page.getByTestId("assistant-selection-cite");
+  await expect(cite).toBeVisible();
+  await cite.click();
+  const alert=page.getByTestId("app-action-error");
+  await expect(alert).toContainText("Could not cite assistant text: Deliberate assistant citation failure");
+  await expect(cite).toBeVisible();
+  await expect(cite).toHaveText("Cite");
+  await expect(page.getByTestId("context-chips")).toHaveCount(0);
+  await expect(composer).toHaveValue("Keep this draft");
+  await expect(alert).toBeInViewport();
+  await expect(cite).toBeInViewport();
+  await page.screenshot({path:auditDir+"assistant-citation-error-1280x800.png",fullPage:true});
 });
 
 test("onboarding and license surfaces are visually intentional",async({page,request})=>{
