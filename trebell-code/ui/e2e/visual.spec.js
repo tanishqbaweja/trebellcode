@@ -1586,6 +1586,68 @@ test("delegated agent open failures stay visible without leaving the parent thre
   }
 });
 
+test("non-Codex agent picker rolls back when the runtime rejects the change",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={
+    id:"provider-agent-thread",
+    name:"Provider agent fixture",
+    preview:"Agent picker rollback coverage",
+    agent:"alpha",
+    cwd:process.cwd(),
+    createdAt:Date.now()/1000-20,
+    updatedAt:Date.now()/1000,
+    turns:[],
+    providerMeta:{session_info_update:{agents:[{name:"alpha",mode:"default"},{name:"beta",mode:"specialist"}]}},
+  };
+  const wsHttp=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
+  wsHttp.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  wss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",data=>{
+      const message=JSON.parse(String(data));if(message.id==null||!message.method)return;
+      if(message.method==="thread/settings/update"){
+        ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate provider agent change failure"}}));return;
+      }
+      let result={};
+      if(message.method==="initialize")result={userAgent:"provider-agent-fixture"};
+      else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
+      else if(message.method==="thread/resume")result={thread};
+      else if(message.method==="threadSection/list"||message.method==="skills/list"||message.method==="collaborationMode/list")result={data:[]};
+      else if(message.method==="thread/goal/get")result={goal:null};
+      else if(message.method==="thread/attachment/list")result={data:[]};
+      else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
+      ws.send(JSON.stringify({id:message.id,result}));
+    });
+  });
+  const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"opencode",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"opencode",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}})}));
+    await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["opencode/test-model"],metadata:{provider:"opencode",models:[{id:"opencode/test-model",name:"Test model",provider:"opencode"}]}})}));
+    await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+    await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({checkpoints:[]})}));
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    await page.locator('.thread-main[title="Provider agent fixture"]').click();
+    const picker=page.locator(".agent-picker");
+    await expect(picker).toBeVisible({timeout:10_000});
+    await expect(picker).toHaveValue("alpha");
+    await picker.selectOption("beta");
+    await expect(page.getByTestId("app-action-error")).toContainText("Could not change provider agent: Deliberate provider agent change failure");
+    await expect(picker).toHaveValue("alpha");
+    await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","Provider agent fixture");
+    await page.setViewportSize({width:1280,height:800});
+    await page.screenshot({path:auditDir+"provider-agent-change-error-1280x800.png",fullPage:true});
+  }finally{
+    for(const ws of sockets)try{ws.terminate()}catch{}
+    wss.close();await new Promise(resolve=>wsHttp.close(resolve));
+  }
+});
+
 test("populated source control and pull request detail stay usable",async({page,request})=>{
   test.setTimeout(45_000);
   const prActions=[];

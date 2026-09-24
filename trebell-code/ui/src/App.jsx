@@ -2376,10 +2376,17 @@ export default function App(){
   }
   function onSkill(skill){const prefix=agentRuntime==="codex"?"$":"/";setPrompt(prev=>(prev?prev+" ":"")+prefix+skill.name+" ")}
   async function changeProviderAgent(name){
-    setProviderAgent(name||"");
+    const previous=providerAgent;const next=name||"";setProviderAgent(next);
     if(agentRuntime==="codex"||!activeThread?.id||!rpc||rpcStatus!=="connected")return;
-    const result=await rpc.request("thread/settings/update",{threadId:activeThread.id,settings:{agent:name||null}}).catch(()=>null);
-    if(result?.thread){setActiveThread(result.thread);setThreads(prev=>prev.map(thread=>thread.id===result.thread.id?result.thread:thread))}
+    try{
+      const result=await rpc.request("thread/settings/update",{threadId:activeThread.id,settings:{agent:next||null}});
+      if(!result?.thread)throw new Error("The active agent runtime did not confirm the agent change.");
+      setProviderAgent(result.thread.agent||next);
+      setActiveThread(result.thread);setThreads(prev=>prev.map(thread=>thread.id===result.thread.id?result.thread:thread));
+    }catch(error){
+      setProviderAgent(previous);
+      showActionError(error,"Could not change provider agent");
+    }
   }
   async function changeComposerModel(nextModel){
     const previous=model;
