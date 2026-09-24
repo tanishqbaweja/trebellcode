@@ -26,11 +26,15 @@ export default function CommandPalette({open,onClose,actions=[],projects=[],thre
   useEffect(()=>{
     if(!open)return;
     const raw=query.trim();const q=raw.startsWith(">")?raw.slice(1).trim():raw;
-    if(raw.startsWith(">")||q.length<2||!messageSearchRef.current){setMessageMatches(current=>current.length?[]:current);setMessageSearching(false);return}
-    let cancelled=false;setMessageSearching(true);
+    if(raw.startsWith(">")||q.length<2||!messageSearchRef.current){setMessageMatches(current=>current.length?[]:current);setMessageSearching(false);setActionError("");return}
+    let cancelled=false;setMessageSearching(true);setActionError("");
     const timer=setTimeout(async()=>{
-      const matches=await messageSearchRef.current(q).catch(()=>[]);
-      if(!cancelled){setMessageMatches(matches||[]);setMessageSearching(false)}
+      let result;
+      try{result=await messageSearchRef.current(q)}
+      catch(error){result={matches:[],warning:error?.message||String(error)||"Could not search thread messages."}}
+      const matches=Array.isArray(result)?result:(result?.matches||[]);
+      const warning=Array.isArray(result)?"":(result?.warning||"");
+      if(!cancelled){setMessageMatches(matches);setMessageSearching(false);setActionError(warning)}
     },180);
     return()=>{cancelled=true;clearTimeout(timer)}
   },[open,query]);

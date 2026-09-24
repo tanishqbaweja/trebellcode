@@ -37,14 +37,15 @@ async function freePort(){
   return port;
 }
 
-async function startCodexRequestHarness(thread){
+async function startCodexRequestHarness(thread,{onRequest}={}){
   let notificationSocket=null,relayClosed=false;
   const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const sockets=new Set();
   upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
   upstreamWss.on("connection",ws=>{
     sockets.add(ws);notificationSocket=ws;ws.on("close",()=>sockets.delete(ws));
-    ws.on("message",data=>{
+    ws.on("message",async data=>{
       const message=JSON.parse(String(data));if(message.id==null||!message.method)return;
+      if(await onRequest?.(message,ws))return;
       let result={};
       if(message.method==="initialize")result={userAgent:"request-response-fixture"};
       else if(message.method==="collaborationMode/list")result={data:[]};
@@ -524,6 +525,56 @@ test("command palette keeps failed actions visible with useful feedback",async({
   await headerAction.click();
   await expect(page.getByTestId("app-action-error")).toContainText("Project action failed: Deliberate project action failure");
   await page.screenshot({path:auditDir+"header-project-action-error-1280x800.png",fullPage:true});
+});
+
+test("thread message search reports degraded reads and retries without caching failure",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"thread-search-retry",name:"Hidden message thread",preview:"No title match here",cwd:process.cwd(),createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
+  let itemReads=0;
+  const harness=await startCodexRequestHarness(thread,{onRequest:(message,ws)=>{
+    if(message.method==="thread/search"){
+      ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate native thread search failure"}}));return true;
+    }
+    if(message.method==="thread/items/list"){
+      itemReads++;
+      if(itemReads===1)ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate thread item read failure"}}));
+      else ws.send(JSON.stringify({id:message.id,result:{data:[{type:"userMessage",text:"The retryable needle lives in this message."}],nextCursor:null}}));
+      return true;
+    }
+    return false;
+  }});
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"thread-search-retry-fixture");
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:285,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    const search=page.locator(".sidebar .search-box input");
+    await search.fill("needle");
+    const searchError=page.locator(".sidebar .sidebar-action-error");
+    await expect(searchError).toContainText("Full thread search unavailable: Deliberate native thread search failure");
+    await expect(searchError).toContainText("1 loaded thread could not be searched: Deliberate thread item read failure");
+    await expect(page.locator(".sidebar-empty")).toContainText("No matching threads.");
+    expect(itemReads).toBe(1);
+    await page.setViewportSize({width:1280,height:800});
+    await page.screenshot({path:auditDir+"thread-search-degraded-error-1280x800.png",fullPage:true});
+
+    await search.fill("");
+    await expect(page.locator(".sidebar-action-error")).toHaveCount(0);
+    await search.fill("needle");
+    await expect.poll(()=>itemReads).toBe(2);
+    await expect(page.locator(".thread-row .thread-main").filter({hasText:"Hidden message thread"})).toBeVisible();
+    await expect(searchError).toContainText("Full thread search unavailable: Deliberate native thread search failure");
+    await expect(searchError).not.toContainText("thread item read failure");
+    await page.screenshot({path:auditDir+"thread-search-retry-success-1280x800.png",fullPage:true});
+
+    await page.keyboard.press("Control+k");
+    const palette=page.getByTestId("command-palette");
+    await expect(palette).toBeVisible();
+    await palette.getByPlaceholder("Search commands, threads, and messages…").fill("needle");
+    await expect(palette.getByRole("button",{name:/Hidden message thread/})).toBeVisible();
+    await expect(palette.getByRole("alert")).toContainText("Full thread search unavailable: Deliberate native thread search failure");
+    await page.screenshot({path:auditDir+"command-palette-search-degraded-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
 });
 
 test("terminal failures keep backend and visible session state in sync",async({page,request})=>{

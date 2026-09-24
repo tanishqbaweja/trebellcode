@@ -460,7 +460,7 @@ export default function App(){
   const [historyPage,setHistoryPage]=useState({threadId:null,nextCursor:null,paginated:false,loading:false});
   const [threadFind,setThreadFind]=useState({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});
   const [running,setRunning]=useState(false); const [submitting,setSubmitting]=useState(false); const [queued,setQueued]=useState([]); const [queueMode,setQueueMode]=useState("unknown"); const [queuedEditId,setQueuedEditId]=useState(null);
-  const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [section,setSection]=useState("chat");
+  const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [threadSearchError,setThreadSearchError]=useState(""); const [section,setSection]=useState("chat");
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [contextChips,setContextChips]=useState([]);
   const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [selectedModels,setSelectedModels]=useState([]); const [modelError,setModelError]=useState(""); const [modelPickerOpen,setModelPickerOpen]=useState(false);
   const [collaborationModes,setCollaborationModes]=useState([]); const [collaborationMode,setCollaborationMode]=useState("default"); const [collaborationModeBusy,setCollaborationModeBusy]=useState(false);
@@ -932,41 +932,48 @@ export default function App(){
     }finally{setThreadRuntimeProfileBusy("")}
   }
   async function searchThreadMessages(queryText){
-    const needle=String(queryText||"").trim();if(needle.length<2||!rpc||rpcStatus!=="connected")return[];
+    const needle=String(queryText||"").trim();if(needle.length<2||!rpc||rpcStatus!=="connected")return{matches:[],warning:""};
     const candidates=threads.slice(0,50);const cache=threadMessageSearchCacheRef.current;let cursor=0;
-    const results=[];const matched=new Set();
+    const results=[];const matched=new Set();let nativeError=null;const readErrors=[];
     for(const thread of candidates){
       const excerpt=matchingPullRequestExcerpt(threadMeta[thread.id]||{},needle);
       if(excerpt){results.push({threadId:thread.id,excerpt:"PR · "+excerpt,thread});matched.add(thread.id)}
     }
     if(agentRuntime==="codex"){
-      const response=await rpc.request("thread/search",{searchTerm:needle,limit:50,sortKey:"recency_at",sortDirection:"desc",archived:false}).catch(()=>null);
-      if(response?.data){
-        const native=nativeThreadSearchMatches(response);
-        const merged=new Map(results.map(item=>[item.threadId,item]));
-        for(const item of native)if(!merged.has(item.threadId))merged.set(item.threadId,item);
-        if(native.length)setThreads(prev=>{
-          const known=new Set(prev.map(thread=>thread.id));
-          const extra=native.map(item=>item.thread).filter(thread=>thread?.id&&!known.has(thread.id));
-          return extra.length?[...prev,...extra]:prev;
-        });
-        return [...merged.values()];
-      }
+      try{
+        const response=await rpc.request("thread/search",{searchTerm:needle,limit:50,sortKey:"recency_at",sortDirection:"desc",archived:false});
+        if(response?.data){
+          const native=nativeThreadSearchMatches(response);
+          const merged=new Map(results.map(item=>[item.threadId,item]));
+          for(const item of native)if(!merged.has(item.threadId))merged.set(item.threadId,item);
+          if(native.length)setThreads(prev=>{
+            const known=new Set(prev.map(thread=>thread.id));
+            const extra=native.map(item=>item.thread).filter(thread=>thread?.id&&!known.has(thread.id));
+            return extra.length?[...prev,...extra]:prev;
+          });
+          return{matches:[...merged.values()],warning:""};
+        }
+      }catch(error){nativeError=error}
     }
     const searchable=candidates.filter(thread=>!matched.has(thread.id));
     const workers=Array.from({length:Math.min(8,searchable.length)},async()=>{
       while(cursor<searchable.length){
         const thread=searchable[cursor++];const version=Number(thread.updatedAt||0);let cached=cache.get(thread.id);
         if(!cached||cached.updatedAt!==version){
-          const response=await rpc.request("thread/items/list",{threadId:thread.id,limit:150,sortDirection:"desc"}).catch(()=>({data:[]}));
-          cached={updatedAt:version,items:response.data||[]};cache.set(thread.id,cached);
+          try{
+            const response=await rpc.request("thread/items/list",{threadId:thread.id,limit:150,sortDirection:"desc"});
+            cached={updatedAt:version,items:response.data||[]};cache.set(thread.id,cached);
+          }catch(error){readErrors.push(error);continue}
         }
         const excerpt=matchingMessageExcerpt(cached.items,needle);if(excerpt)results.push({threadId:thread.id,excerpt,thread});
       }
     });
     await Promise.all(workers);
     if(cache.size>100){const keep=new Set(threads.slice(0,100).map(thread=>thread.id));for(const id of cache.keys())if(!keep.has(id))cache.delete(id)}
-    return results;
+    const warnings=[];
+    if(nativeError)warnings.push("Full thread search unavailable: "+(nativeError?.message||String(nativeError))+". Searching loaded threads only.");
+    if(readErrors.length)warnings.push(`${readErrors.length} loaded thread${readErrors.length===1?"":"s"} could not be searched: ${readErrors[0]?.message||String(readErrors[0])}.`);
+    return{matches:results,warning:warnings.join(" ")};
   }
   async function loadSkills(client,path=projectPath,forceReload=false,{strict=false}={}){
     if(agentRuntime!=="codex")return;
@@ -1092,9 +1099,19 @@ export default function App(){
   },[]);
 
   useEffect(()=>{
-    if(!query.trim()){setSearchResults(null);return} const q=query.toLowerCase(); const titleMatches=threads.filter(t=>titleOf(t).toLowerCase().includes(q)||(t.cwd||"").toLowerCase().includes(q)||Boolean(matchingPullRequestExcerpt(threadMeta[t.id]||{},q)));
+    if(!query.trim()){setSearchResults(null);setThreadSearchError("");return} const q=query.toLowerCase(); const titleMatches=threads.filter(t=>titleOf(t).toLowerCase().includes(q)||(t.cwd||"").toLowerCase().includes(q)||Boolean(matchingPullRequestExcerpt(threadMeta[t.id]||{},q)));
+    setThreadSearchError("");
     if(!rpc||rpcStatus!=="connected"||query.length<2){setSearchResults(titleMatches);return}
-    let cancelled=false; const timer=setTimeout(async()=>{const found=new Map(titleMatches.map(t=>[t.id,t]));const matches=await searchThreadMessages(query);for(const match of matches){const thread=match.thread||threads.find(item=>item.id===match.threadId);if(thread)found.set(thread.id,thread)}if(!cancelled)setSearchResults([...found.values()])},250);return()=>{cancelled=true;clearTimeout(timer)}
+    let cancelled=false; const timer=setTimeout(async()=>{
+      const found=new Map(titleMatches.map(t=>[t.id,t]));
+      try{
+        const outcome=await searchThreadMessages(query);
+        for(const match of outcome.matches||[]){const thread=match.thread||threads.find(item=>item.id===match.threadId);if(thread)found.set(thread.id,thread)}
+        if(!cancelled){setSearchResults([...found.values()]);setThreadSearchError(outcome.warning||"")}
+      }catch(error){
+        if(!cancelled){setSearchResults([...found.values()]);setThreadSearchError("Could not search thread messages: "+(error?.message||String(error)))}
+      }
+    },250);return()=>{cancelled=true;clearTimeout(timer)}
   },[query,threads,threadMeta,rpc,rpcStatus,agentRuntime]);
 
   function showActionError(error,label="Action failed"){
@@ -2614,7 +2631,7 @@ export default function App(){
     "--terminal-height":layoutPrefs.terminalHeight+"px",
   };
   return <div className={"app-shell"+(sidebarOpen?"":" sidebar-collapsed")+(window.trebellDesktop?" desktop-shell":" hosted-shell")} style={layoutStyle}>
-    <ThreadSidebar section={section} setSection={navigateSection} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} onOpen={openThread} onNew={newChat} onThreadAction={threadAction} onMove={moveThreadOrder} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={bulkAction} provider={provider} agentRuntime={agentRuntime} threadMeta={threadMeta} onCollapse={()=>setSidebarOpen(false)} rightPanelOpen={rightPanelOpen} rightPanelTab={rightPanelTab}/>
+    <ThreadSidebar section={section} setSection={navigateSection} threads={displayThreads} activeThreadId={activeThread?.id} query={query} setQuery={setQuery} searchError={threadSearchError} onOpen={openThread} onNew={newChat} onThreadAction={threadAction} onMove={moveThreadOrder} selectedIds={selectedThreadIds} setSelectedIds={setSelectedThreadIds} onBulkAction={bulkAction} provider={provider} agentRuntime={agentRuntime} threadMeta={threadMeta} onCollapse={()=>setSidebarOpen(false)} rightPanelOpen={rightPanelOpen} rightPanelTab={rightPanelTab}/>
     {sidebarOpen&&<div className="layout-resizer sidebar-resizer" data-testid="sidebar-resizer" role="separator" aria-label="Resize sidebar" aria-orientation="vertical" onPointerDown={event=>beginLayoutResize("sidebar",event)}/>}
 
     <div className={"workspace-shell"+(rightPanelOpen?" right-open":"")+(rightPanelOpen&&rightPanelMaximized?" right-maximized":"")}>

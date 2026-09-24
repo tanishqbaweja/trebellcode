@@ -67,7 +67,7 @@ function UtilityButton({Icon,label,active,onClick}){
 export default function ThreadSidebar({
   section,setSection,threads,activeThreadId,query,setQuery,onOpen,onNew,onThreadAction,onMove,
   selectedIds,setSelectedIds,onBulkAction,provider="freebuff",agentRuntime="codex",threadMeta={},onCollapse,
-  rightPanelOpen=false,rightPanelTab="files"
+  rightPanelOpen=false,rightPanelTab="files",searchError=""
 }){
   const searchRef=useRef(null);
   const [actionError,setActionError]=useState("");
@@ -111,6 +111,7 @@ export default function ThreadSidebar({
       </button>
     </div>
 
+    {searchError&&<div className="sidebar-action-error" role="alert">{searchError}</div>}
     {actionError&&<div className="sidebar-action-error" role="alert">{actionError}</div>}
     {bulk&&<div className="bulk-bar">
       <span>{selectedIds.size} selected</span>
@@ -125,7 +126,7 @@ export default function ThreadSidebar({
         <h4>{name}<span>{items.length}</span></h4>
         {items.map(t=><ThreadRow key={t.id} thread={t} meta={threadMeta[t.id]||null} active={t.id===activeThreadId} bulk={bulk} selected={selectedIds.has(t.id)} onOpen={onOpen} onSelect={toggle} onAction={onThreadAction} onMove={onMove} runAction={runAction} agentRuntime={agentRuntime}/>)}
       </section>)}
-      {!threads.length&&<div className="sidebar-empty">No threads yet.<br/>Start a task to create one.</div>}
+      {!threads.length&&<div className="sidebar-empty">{query?"No matching threads.":<>No threads yet.<br/>Start a task to create one.</>}</div>}
     </div>
 
     <div className="sidebar-footer">
