@@ -807,6 +807,88 @@ test("checkpoint failures warn without blocking successful turns",async({page})=
   }finally{await harness.close()}
 });
 
+test("Trebell repository context is injected and inspectable",async({page})=>{
+  test.setTimeout(40_000);
+  const project={id:"context-engine-project",name:"Context Engine Project",path:process.cwd(),environmentId:null};
+  const thread={id:"context-engine-thread",name:"Context engine fixture",preview:"Repository context coverage",cwd:project.path,createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
+  const injection="Trebell repository context\nTask: Fix refresh token session bug\n\n### src/auth/session.js\nWhy selected: defines task-related symbol: RefreshSession\nKey symbols: class RefreshSession (L8)";
+  const packet={
+    id:"ctx-visual-fixture",root:project.path,task:"Fix refresh token session bug",generatedAt:Date.now(),tokenEstimate:428,maxTokens:7000,injection,
+    items:[
+      {path:"src/auth/session.js",score:82.2,centrality:.19,reasons:["defines task-related symbol: RefreshSession","structurally central in repository graph"],symbols:[{name:"RefreshSession",kind:"class",line:8}],tokenEstimate:190},
+      {path:"src/auth/token.js",score:56.1,centrality:.14,reasons:["path matches task: token","contains task terms: refresh, token"],symbols:[{name:"rotateRefreshToken",kind:"function",line:12}],tokenEstimate:142},
+      {path:"tests/auth-refresh.test.js",score:31.4,centrality:.08,reasons:["path matches task: refresh","test file"],symbols:[{name:"refreshesExpiredSession",kind:"function",line:6}],tokenEstimate:96},
+    ],
+    stats:{filesIndexed:138,reparsed:3,reused:135,skipped:2,graphEdges:412,durationMs:24},
+  };
+  const turnContexts=[];
+  let failContext=false;
+  let meta={projectless:false,environmentId:null};
+  const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
+    if(message.method==="turn/start"){
+      turnContexts.push(message.params.additionalContext||null);
+      ws.send(JSON.stringify({id:message.id,result:{turn:{id:"context-engine-turn-"+turnContexts.length,status:"inProgress"}}}));return true;
+    }
+    return false;
+  }});
+  try{
+    const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:project.path,platform:process.platform,version:"context-engine-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[thread.id]:meta}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+    await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})}));
+    await page.route(/\/api\/worktree\/ensure$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})}));
+    await page.route(/\/api\/thread-meta$/,async route=>{
+      if(route.request().method()==="POST"){const body=route.request().postDataJSON();meta={...meta,...(body.patch||{})};return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(meta)})}
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(meta)});
+    });
+    await page.route(/\/api\/context\/packet$/,route=>failContext
+      ?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate context refresh failure"})})
+      :route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(packet)}));
+    await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,root:project.path,branch:"main",branches:["main"],upstream:"origin/main",status:[],remotes:[],worktrees:[{path:project.path,branch:"main"}]})}));
+    await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(route.request().method()==="GET"?{checkpoints:[]}:{supported:false})}));
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:520,terminalHeight:330})));
+    await page.goto("/");
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Context engine fixture"]')});
+    await row.locator(".thread-main").click();
+    await expect(row).toHaveClass(/active/);
+    const composer=page.getByTestId("composer");
+    await composer.fill("Fix refresh token session bug");
+    await page.getByTestId("send").click();
+    await expect.poll(()=>turnContexts.length).toBe(1);
+    expect(turnContexts[0]["trebell.repo_context"]).toEqual({kind:"application",value:injection});
+    await expect(page.locator(".tool-event").filter({hasText:"Trebell context"})).toContainText("3 files");
+    await page.getByTestId("right-panel-toggle").click();
+    const panel=page.getByTestId("right-panel");
+    await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Context",exact:true}).click();
+    const inspector=panel.locator(".context-inspector");
+    await expect(inspector).toContainText("3 selected files");
+    await expect(inspector).toContainText("Codex additional context");
+    await expect(inspector).toContainText("src/auth/session.js");
+    await expect(inspector).toContainText("defines task-related symbol: RefreshSession");
+    await expect(inspector).toContainText("138");
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"context-inspector-1280x800.png",fullPage:true});
+
+    harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"context-engine-turn-1",status:"completed"}}});
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);
+    failContext=true;
+    await composer.fill("Continue even if repository context refresh fails");
+    await page.getByTestId("send").click();
+    await expect.poll(()=>turnContexts.length).toBe(2);
+    expect(turnContexts[1]).toBeNull();
+    await expect(page.locator(".tool-event.kind-error").filter({hasText:"Trebell repository context unavailable"})).toContainText("Deliberate context refresh failure");
+    await expect(inspector.getByRole("alert")).toContainText("Latest context refresh failed");
+    await expect(inspector.getByRole("alert")).toContainText("The last successful packet is shown below");
+    await expect(inspector).toContainText("src/auth/session.js");
+    await page.screenshot({path:auditDir+"context-inspector-refresh-error-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
 test("direct fallback never drops attachments or failed text sends",async({page,request})=>{
   test.setTimeout(35_000);
   const baseBootstrap=await (await request.get("/api/bootstrap")).json();

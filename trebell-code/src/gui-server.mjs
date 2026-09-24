@@ -42,6 +42,7 @@ import { sweepAutoPullProjects } from "./auto-pull-service.mjs";
 import { CloneJobService } from "./clone-job-service.mjs";
 import { prepareCodexHome } from "./codex-home-layout.mjs";
 import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
+import { ContextEngine } from "./context-engine.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
   .then(text=>String(JSON.parse(text).version||"0.0.0"))
@@ -470,6 +471,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   let bridge=null;
   let loginPromise=null;
   const checkpoints=new CheckpointService({state,env});
+  const contextEngine=new ContextEngine();
   const terminals=mock ? null : new TerminalManager({env});
   function terminalOptions({environmentId=null,cwd=null,name=null,cols=120,rows=32,terminalEnv=null}={}){
     const spec=environments.terminalSpec(environmentId,{cwd});
@@ -2058,6 +2060,24 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return json(res,200,await environmentWorkspaceSearch(url.searchParams.get("path")||process.cwd(),url.searchParams.get("q")||"",{environments,environmentId}));
       }
       catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/context/packet"&&req.method==="POST"){
+      try{
+        const body=await readJsonBody(req);
+        const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")
+          ?requestedEnvironmentId(body.environmentId,{fallback:false})
+          :requestedEnvironmentId(null);
+        if(remoteEnvironmentProfile(environmentId))return json(res,400,{error:"Trebell repository context indexing is currently available for local workspaces only."});
+        const root=environmentPath(body.path||process.cwd(),environmentId);
+        const packet=await contextEngine.buildPacket({
+          root,
+          task:body.task||"",
+          focusPaths:Array.isArray(body.focusPaths)?body.focusPaths:[],
+          maxTokens:body.maxTokens,
+          maxFiles:body.maxFiles,
+        });
+        return json(res,200,packet);
+      }catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/attachments/text" && req.method==="POST"){
       try{

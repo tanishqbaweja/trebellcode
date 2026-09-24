@@ -134,6 +134,18 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.ok(suggested.scripts.some(script=>script.source==="package.json"));
     const configProject=join(home,"t3-project");await import("node:fs/promises").then(fs=>fs.mkdir(configProject,{recursive:true}));
     await writeFile(join(configProject,"t3.json"),JSON.stringify({defaultThreadEnvMode:"worktree",worktreeSubmodules:"top-level",scripts:[]}));
+    await mkdir(join(configProject,"src"),{recursive:true});
+    await writeFile(join(configProject,"AGENTS.md"),"Prefer deterministic repository context.\n");
+    await writeFile(join(configProject,"src","session.js"),"export class RefreshSession { refresh(token) { return token; } }\n");
+    const contextPacketResponse=await fetch(gui.url+"/api/context/packet",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({path:configProject,task:"Fix refresh session",maxTokens:1200,maxFiles:6,environmentId:null})});
+    assert.equal(contextPacketResponse.status,200);
+    const contextPacket=await contextPacketResponse.json();
+    assert.ok(contextPacket.items.some(item=>item.path==="src/session.js"));
+    assert.match(contextPacket.injection,/Prefer deterministic repository context/);
+    assert.ok(contextPacket.tokenEstimate<=1200);
+    const remoteContextResponse=await fetch(gui.url+"/api/context/packet",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({path:"/srv/app",task:"remote task",environmentId:"ssh-test"})});
+    assert.equal(remoteContextResponse.status,400);
+    assert.match((await remoteContextResponse.json()).error,/local workspaces only/i);
     const t3Suggested=await fetch(gui.url+"/api/project-actions/suggestions?path="+encodeURIComponent(configProject)).then(r=>r.json());
     assert.equal(t3Suggested.t3.defaultThreadEnvMode,"worktree");assert.equal(t3Suggested.t3.worktreeSubmodules,"top-level");
     const visualizationDir=join(configProject,"artifacts");await mkdir(visualizationDir,{recursive:true});

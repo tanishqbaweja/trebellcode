@@ -6,7 +6,17 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { WebSocket } from "ws";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
-import { agentThreadResumePayload,agentToolLifecycle,attachAgentRelay,materializeAgentFork,paginateAgentAttachments,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
+import { agentThreadResumePayload,agentToolLifecycle,attachAgentRelay,contextualAgentPrompt,materializeAgentFork,paginateAgentAttachments,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
+
+test("external runtimes receive Trebell application context before the visible user prompt",async()=>{
+  const prompt=await contextualAgentPrompt([{type:"text",text:"Fix the refresh bug"}],{
+    "trebell.repo_context":{kind:"application",value:"src/auth/session.js is relevant because it defines RefreshSession."},
+  });
+  assert.equal(prompt.length,2);
+  assert.match(prompt[0].text,/Trebell supplied the following bounded repository context/);
+  assert.match(prompt[0].text,/src\/auth\/session\.js/);
+  assert.equal(prompt[1].text,"Fix the refresh bug");
+});
 
 test("rejected Claude rewind restores the original provider session and removed turns",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-claude-rewind-"));
