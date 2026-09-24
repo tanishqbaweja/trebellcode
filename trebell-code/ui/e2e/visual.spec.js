@@ -757,6 +757,44 @@ test("workspace file refresh and save failures stay visible without lying about 
   await page.screenshot({path:auditDir+"workspace-file-action-error-1280x800.png",fullPage:true});
 });
 
+test("usage clear failures keep recorded usage visible",async({page,request})=>{
+  test.setTimeout(30_000);
+  await prepare(page,request);
+  const record={
+    id:"usage-failure-record",
+    at:new Date().toISOString(),
+    environmentId:null,
+    runtime:"codex",
+    provider:"freebuff",
+    model:"freebuff/test/coding-fast",
+    usage:{inputTokens:1200,outputTokens:300,cachedInputTokens:200,reasoningOutputTokens:50,totalTokens:1500},
+    cost:{currency:"USD",amount:0.0123},
+  };
+  await page.route(/\/api\/usage(?:\?|$)/,route=>{
+    if(route.request().method()==="DELETE")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate usage clear failure"})});
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+      records:[record],
+      total:{inputTokens:1200,outputTokens:300,cachedInputTokens:200,reasoningOutputTokens:50,totalTokens:1500},
+      models:{"freebuff/test/coding-fast":{totalTokens:1500,turns:1}},
+      runtimes:{codex:{totalTokens:1500,turns:1}},
+      daily:{[record.at.slice(0,10)]:{tokens:1500,turns:1}},
+    })});
+  });
+  await page.getByRole("button",{name:"Usage",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Usage",level:2})).toBeVisible();
+  const recent=page.locator(".usage-recent");
+  await expect(recent).toContainText("freebuff/test/coding-fast");
+  await expect(page.getByRole("button",{name:"Clear local history",exact:true})).toBeEnabled();
+  page.once("dialog",dialog=>dialog.accept());
+  await page.getByRole("button",{name:"Clear local history",exact:true}).click();
+  await expect(page.getByRole("alert")).toContainText("Deliberate usage clear failure");
+  await expect(recent).toContainText("freebuff/test/coding-fast");
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await page.locator(".usage-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"usage-clear-error-1280x800.png",fullPage:true});
+});
+
 test("right panel tabs are functional and visually bounded",async({page,request})=>{
   test.setTimeout(60_000);
   await prepare(page,request);

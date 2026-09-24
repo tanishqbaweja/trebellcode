@@ -18,6 +18,7 @@ function withoutKey(object,key){return Object.fromEntries(Object.entries(object|
 
 export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected",activeThread=null,agentRuntime="codex"}){
   const [days,setDays]=useState(30);const [data,setData]=useState({records:[],total:{},models:{},runtimes:{},daily:{}});const [loading,setLoading]=useState(false);const [error,setError]=useState("");
+  const [clearing,setClearing]=useState(false);
   const [codex,setCodex]=useState({account:null,rateLimits:null,usage:null,messages:null,errors:{},loading:false,notice:""});
   const [runtimeUsage,setRuntimeUsage]=useState({data:null,loading:false,error:""});
   const [environmentData,setEnvironmentData]=useState({profiles:[],activeEnvironmentId:null,activeEnvironment:null});
@@ -97,7 +98,13 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
     return {cost,known,estimated,models:Object.entries(modelMap).sort((a,b)=>b[1].tokens-a[1].tokens)};
   },[data,settings]);
   const daily=Object.entries(data.daily||{}).sort((a,b)=>a[0].localeCompare(b[0]));const maxDaily=Math.max(1,...daily.map(([,value])=>Number(value.tokens||0)));
-  async function clear(){if(!confirm("Clear Trebell's locally recorded usage history? Provider account usage is not affected."))return;await api("/api/usage",{method:"DELETE"});await refresh()}
+  async function clear(){
+    if(!confirm("Clear Trebell's locally recorded usage history? Provider account usage is not affected."))return;
+    setClearing(true);setError("");
+    try{await api("/api/usage",{method:"DELETE"});await refresh()}
+    catch(err){setError(err?.message||String(err)||"Could not clear local usage history.")}
+    finally{setClearing(false)}
+  }
   async function resetCodexLimit(creditId=null){
     if(!rpc||!confirm("Use one earned Codex reset credit now? This can reset an eligible rate-limit window."))return;
     setCodex(current=>({...current,loading:true,notice:""}));
@@ -115,8 +122,8 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
   const showLiveCodex=agentRuntime==="codex"&&rpcStatus==="connected"&&(selectedEnvironments.length===0||selectedEnvironments.includes(activeEnvironmentKey));
   const showLiveRuntime=["opencode","cursor","grok"].includes(agentRuntime)&&(selectedEnvironments.length===0||selectedEnvironments.includes(activeEnvironmentKey));
   return <div className="usage-page">
-    <div className="capabilities-toolbar"><div><h2>Usage</h2><p>Per-turn token and cost history across Trebell harnesses and environments, plus live account limits when the active harness exposes them.</p></div><div className="usage-toolbar"><details className="usage-environment-filter"><summary>{environmentFilterLabel}</summary><div><button onClick={()=>setSelectedEnvironments([])} className={selectedEnvironments.length===0?"active":""}>All environments</button>{environmentOptions.map(item=><label key={item.id}><input type="checkbox" checked={selectedEnvironments.includes(item.id)} onChange={()=>toggleEnvironment(item.id)}/><span>{item.name}</span><em>{item.type}</em></label>)}</div></details><select value={days} onChange={e=>setDays(Number(e.target.value))}><option value={7}>7 days</option><option value={30}>30 days</option><option value={90}>90 days</option><option value={365}>1 year</option></select><button onClick={refresh} disabled={loading||codex.loading||runtimeUsage.loading}><RefreshCw size={13}/>{loading||codex.loading||runtimeUsage.loading?"Refreshing…":"Refresh"}</button><button onClick={clear} disabled={!data.records?.length}><Trash2 size={13}/> Clear local history</button></div></div>
-    {error&&<div className="inline-error">{error}</div>}
+    <div className="capabilities-toolbar"><div><h2>Usage</h2><p>Per-turn token and cost history across Trebell harnesses and environments, plus live account limits when the active harness exposes them.</p></div><div className="usage-toolbar"><details className="usage-environment-filter"><summary>{environmentFilterLabel}</summary><div><button onClick={()=>setSelectedEnvironments([])} className={selectedEnvironments.length===0?"active":""}>All environments</button>{environmentOptions.map(item=><label key={item.id}><input type="checkbox" checked={selectedEnvironments.includes(item.id)} onChange={()=>toggleEnvironment(item.id)}/><span>{item.name}</span><em>{item.type}</em></label>)}</div></details><select value={days} onChange={e=>setDays(Number(e.target.value))}><option value={7}>7 days</option><option value={30}>30 days</option><option value={90}>90 days</option><option value={365}>1 year</option></select><button onClick={refresh} disabled={loading||codex.loading||runtimeUsage.loading||clearing}><RefreshCw size={13}/>{loading||codex.loading||runtimeUsage.loading?"Refreshing…":"Refresh"}</button><button onClick={clear} disabled={!data.records?.length||clearing}><Trash2 size={13}/> {clearing?"Clearing…":"Clear local history"}</button></div></div>
+    {error&&<div className="inline-error" role="alert">{error}</div>}
     {showLiveCodex&&<section className="capability-card codex-account-usage" data-testid="codex-account-usage">
       <div className="capability-card-head"><span><Sparkles size={15}/><strong>Codex account & limits</strong></span><em>{activeEnvironmentName} · {codex.account?.account?.planType||codex.rateLimits?.rateLimits?.planType||"live"}</em></div>
       {codex.account?.account?.email&&<p className="codex-account-line">{codex.account.account.email}</p>}
