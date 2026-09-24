@@ -880,7 +880,7 @@ test("failed automatic local queue starts keep the follow-up retryable",async({p
 test("background attachment refresh failures preserve linked pull requests",async({page})=>{
   test.setTimeout(35_000);
   const thread={id:"attachment-refresh-thread",name:"Attachment refresh fixture",preview:"Linked PR preservation",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
-  let failAttachments=false,attachmentReads=0;
+  let failAttachments=false,attachmentReads=0,failSkills=false,skillReads=0;
   const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
     if(message.method==="thread/attachment/list"){
       attachmentReads++;
@@ -895,6 +895,14 @@ test("background attachment refresh failures preserve linked pull requests",asyn
       ws.send(JSON.stringify({id:message.id,result:{goal:{title:"Preserved goal"}}}));
       return true;
     }
+    if(message.method==="skills/list"){
+      skillReads++;
+      if(failSkills){
+        ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate skills refresh failure"}}));
+        return true;
+      }
+      ws.send(JSON.stringify({id:message.id,result:{data:[]}}));return true;
+    }
     return false;
   }});
   try{
@@ -907,10 +915,15 @@ test("background attachment refresh failures preserve linked pull requests",asyn
     const linked=page.locator(".header-pr").filter({hasText:"#77"});
     await expect(linked).toBeVisible();
     expect(attachmentReads).toBeGreaterThanOrEqual(1);
+    const previousSkillReads=skillReads;failSkills=true;
+    harness.emit({method:"skills/changed",params:{}});
+    await expect.poll(()=>skillReads).toBeGreaterThan(previousSkillReads);
+    await expect(page.getByTestId("app-action-error")).toContainText("Could not refresh skills: Deliberate skills refresh failure");
     failAttachments=true;
     harness.emit({method:"thread/attachment/updated",params:{threadId:thread.id}});
     await expect.poll(()=>attachmentReads).toBeGreaterThanOrEqual(2);
     await expect(linked).toBeVisible();
+    await expect(page.locator(".tool-event.kind-error").filter({hasText:"Could not refresh saved thread data"})).toContainText("linked attachments: Deliberate attachment refresh failure");
     await page.waitForTimeout(150);
     await expect(linked).toBeVisible();
     await page.setViewportSize({width:1280,height:800});
@@ -4205,7 +4218,7 @@ test("Codex thread can switch compatible account profiles from the model picker"
     });
   });
   const upstreamPort=await freePort();await new Promise((resolve,reject)=>upstreamHttp.listen(upstreamPort,"127.0.0.1",resolve).once("error",reject));
-  let currentInstanceId="codex-work";
+  let currentInstanceId="codex-work",failProfileRefresh=false;
   const profiles=[
     {id:"codex-work",displayName:"Codex Work",available:true,authenticated:true,version:"fixture-1.0"},
     {id:"codex-personal",displayName:"Codex Personal",available:true,authenticated:true,version:"fixture-1.0"},
@@ -4217,7 +4230,10 @@ test("Codex thread can switch compatible account profiles from the model picker"
     targetUrl:`ws://127.0.0.1:${upstreamPort}`,
     onClientMessage:message=>clientMessages.push(message),
     handleRequest:async message=>{
-      if(message.method==="thread/runtimeInstances/list")return {handled:true,result:{supported:true,label:"Codex profile",currentInstanceId,items:profiles}};
+      if(message.method==="thread/runtimeInstances/list"){
+        if(failProfileRefresh)throw new Error("Deliberate runtime profile refresh failure");
+        return {handled:true,result:{supported:true,label:"Codex profile",currentInstanceId,items:profiles}};
+      }
       if(message.method==="thread/runtimeInstance/set"){
         if(message.params?.instanceId==="codex-signed-out")throw new Error("Sign-in required");
         if(message.params?.instanceId==="codex-broken")throw new Error("Deliberate runtime profile failure");
@@ -4269,6 +4285,14 @@ test("Codex thread can switch compatible account profiles from the model picker"
     const errorBox=await box(profileError),menuBox=await box(page.locator(".model-picker-menu"));
     expect(errorBox.y+errorBox.height).toBeLessThanOrEqual(menuBox.y-4);
     await page.screenshot({path:auditDir+"chat-codex-profile-error-1280x800.png",fullPage:true});
+    failProfileRefresh=true;
+    for(const ws of upstreamSockets)ws.send(JSON.stringify({method:"thread/runtimeInstance/updated",params:{threadId:thread.id,runtimeInstanceId:currentInstanceId}}));
+    await expect(profileError).toContainText("Could not refresh runtime profiles: Deliberate runtime profile refresh failure");
+    await expect(picker).toContainText("Codex Personal");
+    await expect(profilesMenu).toBeVisible();
+    await expect(profilesMenu.getByRole("button",{name:/Codex Personal/})).toHaveClass(/selected/);
+    await page.screenshot({path:auditDir+"chat-codex-profile-refresh-error-1280x800.png",fullPage:true});
+    failProfileRefresh=false;
     await page.setViewportSize({width:1600,height:980});
     await picker.click();
 

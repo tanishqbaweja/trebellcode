@@ -467,7 +467,7 @@ export default function App(){
   const [models,setModels]=useState([]); const [modelMeta,setModelMeta]=useState({}); const [model,setModel]=useState(""); const [selectedModels,setSelectedModels]=useState([]); const [modelError,setModelError]=useState(""); const [modelPickerOpen,setModelPickerOpen]=useState(false);
   const [collaborationModes,setCollaborationModes]=useState([]); const [collaborationMode,setCollaborationMode]=useState("default"); const [collaborationModeBusy,setCollaborationModeBusy]=useState(false);
   const [freebuff,setFreebuff]=useState({loggedIn:false}); const [skills,setSkills]=useState([]); const [providerCommands,setProviderCommands]=useState([]); const [providerAgents,setProviderAgents]=useState([]); const [providerAgent,setProviderAgent]=useState("");
-  const [threadRuntimeProfiles,setThreadRuntimeProfiles]=useState({supported:false,currentInstanceId:null,items:[]}); const [threadRuntimeProfileBusy,setThreadRuntimeProfileBusy]=useState("");
+  const [threadRuntimeProfiles,setThreadRuntimeProfiles]=useState({threadId:null,supported:false,currentInstanceId:null,items:[]}); const [threadRuntimeProfileBusy,setThreadRuntimeProfileBusy]=useState("");
   const submittingRef=useRef(false);
   const notificationHandlerRef=useRef(null); const serverRequestHandlerRef=useRef(null);
   const [settings,setSettings]=useState({followUpMode:"queue",defaultPermissionMode:"supervised",appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,customThemes:[],keyboardShortcuts:{},agentRuntime:"codex",modelProvider:"freebuff"});
@@ -936,10 +936,18 @@ export default function App(){
   }
   async function loadThreadRuntimeProfiles(client=rpc,threadId=activeThreadRef.current?.id){
     if(!["codex","claude"].includes(agentRuntime)||!client||rpcStatus!=="connected"||!threadId){
-      setThreadRuntimeProfiles({supported:false,currentInstanceId:null,items:[]});return {supported:false,currentInstanceId:null,items:[]};
+      setThreadRuntimeProfiles({threadId:null,supported:false,currentInstanceId:null,items:[]});return {threadId:null,supported:false,currentInstanceId:null,items:[]};
     }
-    const result=await client.request("thread/runtimeInstances/list",{threadId}).catch(error=>({supported:false,currentInstanceId:null,items:[],reason:error.message||String(error)}));
-    setThreadRuntimeProfiles(result||{supported:false,currentInstanceId:null,items:[]});return result;
+    try{
+      const result=await client.request("thread/runtimeInstances/list",{threadId});
+      const next={...(result||{supported:false,currentInstanceId:null,items:[]}),threadId};
+      setThreadRuntimeProfiles(next);return next;
+    }catch(error){
+      const detail=error?.message||String(error);
+      setThreadRuntimeProfiles(current=>current.threadId===threadId?current:{threadId,supported:false,currentInstanceId:null,items:[],reason:detail});
+      showActionError(error,"Could not refresh runtime profiles");
+      return null;
+    }
   }
   async function switchThreadRuntimeProfile(instanceId){
     const threadId=activeThreadRef.current?.id;if(!["codex","claude"].includes(agentRuntime)||!rpc||rpcStatus!=="connected"||!threadId||!instanceId)return false;
@@ -1109,7 +1117,7 @@ export default function App(){
   useEffect(()=>{if(rpcStatus==="connected"&&rpc)loadSkills(rpc,projectPath)},[projectPath,rpcStatus]);
   useEffect(()=>{
     if(["codex","claude"].includes(agentRuntime)&&rpcStatus==="connected"&&rpc&&activeThread?.id){loadThreadRuntimeProfiles(rpc,activeThread.id);return}
-    setThreadRuntimeProfiles({supported:false,currentInstanceId:null,items:[]});setThreadRuntimeProfileBusy("");
+    setThreadRuntimeProfiles({threadId:null,supported:false,currentInstanceId:null,items:[]});setThreadRuntimeProfileBusy("");
   },[agentRuntime,rpc,rpcStatus,activeThread?.id]);
 
   useEffect(()=>{const timer=setInterval(async()=>{const [s,r,g]=await Promise.all([api("/api/stats").catch(()=>null),api("/api/runtime").catch(()=>null),!projectlessMode&&projectPath&&!workspaceRemote?api("/api/git/info?path="+encodeURIComponent(projectPath)).catch(()=>null):Promise.resolve(null)]);if(s)setStats(s);if(r)setRuntime(r);if(projectlessMode)setGitInfo(null);else if(g)setGitInfo(g)},1800);return()=>clearInterval(timer)},[projectPath,workspaceRemote,projectlessMode]);
@@ -1534,7 +1542,7 @@ export default function App(){
     else if(message.method==="thread/goal/updated"&&isCurrent)setGoal(p.goal||null);
     else if(message.method==="thread/goal/cleared"&&isCurrent)setGoal(null);
     else if(message.method==="thread/queue/changed"&&isCurrent)loadNativeQueue(rpcRef.current,p.threadId).catch(error=>setEvents(prev=>[...prev,{id:"queue-refresh-error-"+Date.now(),kind:"error",title:"Could not refresh queued follow-ups: "+(error.message||String(error)),status:"done",raw:{}}]));
-    else if(message.method==="skills/changed")loadSkills(rpcRef.current,projectPath,true).catch(()=>{});
+    else if(message.method==="skills/changed")loadSkills(rpcRef.current,projectPath,true,{strict:true}).catch(error=>showActionError(error,"Could not refresh skills"));
     else if(message.method==="windowsSandbox/setupCompleted"){
       window.dispatchEvent(new CustomEvent("trebell:windows-sandbox-setup",{detail:p}));
       desktopNotify(p.success?"Windows sandbox ready":"Windows sandbox setup failed",p.success?`${p.mode==="elevated"?"Elevated":"Unelevated"} Codex sandbox setup completed.`:(p.error||"Codex could not complete Windows sandbox setup."));
@@ -1544,13 +1552,13 @@ export default function App(){
       const count=(p.samplePaths||[]).length+(Number(p.extraCount)||0);const detail=p.failedScan?"Codex could not fully scan Windows writable paths.":`${count} Windows path${count===1?"":"s"} may not be protectable by the sandbox.`;
       setEvents(prev=>[...prev,{id:"windows-sandbox-warning-"+Date.now(),kind:"error",title:detail,status:"done",raw:p}]);desktopNotify("Windows sandbox warning",detail);
     }
-    else if(message.method==="thread/attachment/updated"&&isCurrent)loadPersistentThreadData(p.threadId).catch(()=>{});
+    else if(message.method==="thread/attachment/updated"&&isCurrent)loadPersistentThreadData(p.threadId);
     else if(message.method==="thread/runtimeInstance/updated"){
       const updated=p.thread||null;
       setThreads(prev=>prev.map(thread=>thread.id===p.threadId?(updated?{...thread,...updated}:{...thread,runtimeInstanceId:p.runtimeInstanceId}):thread));
       if(isCurrent){
         setActiveThread(prev=>prev?.id===p.threadId?(updated||{...prev,runtimeInstanceId:p.runtimeInstanceId}):prev);
-        loadThreadRuntimeProfiles(rpcRef.current,p.threadId).catch(()=>{});
+        loadThreadRuntimeProfiles(rpcRef.current,p.threadId);
       }
     }
     else if(message.method==="thread/providerMetadata/updated"){
@@ -1727,6 +1735,10 @@ export default function App(){
     if(activeThreadRef.current?.id===threadId){
       if(goalResult.status==="fulfilled")setGoal(goalData?.goal||null);
       if(attachmentResult.status==="fulfilled")setLinkedPullRequests(pullRequests||[]);
+      const errors=[];
+      if(goalResult.status==="rejected")errors.push("goal: "+(goalResult.reason?.message||String(goalResult.reason)));
+      if(attachmentResult.status==="rejected")errors.push("linked attachments: "+(attachmentResult.reason?.message||String(attachmentResult.reason)));
+      if(errors.length)setEvents(prev=>[...prev,{id:"persistent-refresh-error-"+Date.now(),kind:"error",title:"Could not refresh saved thread data: "+errors.join(" · "),status:"error",raw:{errors}}]);
     }
     return {goal:goalResult.status==="fulfilled"?goalData?.goal||null:null,pullRequests};
   }
