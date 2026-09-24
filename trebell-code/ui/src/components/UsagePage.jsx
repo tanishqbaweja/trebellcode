@@ -44,9 +44,14 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
       ["messages",()=>rpc.request("account/workspaceMessages/read",{})],
     ];
     const results=await Promise.all(requests.map(async([key,run])=>{try{return [key,await run(),null]}catch(err){return [key,null,err?.message||String(err)]}}));
-    const next={account:null,rateLimits:null,usage:null,messages:null,errors:{},loading:false,notice:""};
-    for(const [key,value,failure] of results){next[key]=value;if(failure)next.errors[key]=failure}
-    setCodex(next);
+    setCodex(current=>{
+      const next={...current,errors:{},loading:false,notice:""};
+      for(const [key,value,failure] of results){
+        if(failure)next.errors[key]=failure;
+        else next[key]=value;
+      }
+      return next;
+    });
   }
   async function refreshLocal(){
     setLoading(true);setError("");
@@ -60,7 +65,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
     if(!["opencode","cursor","grok"].includes(agentRuntime)){setRuntimeUsage({data:null,loading:false,error:""});return}
     setRuntimeUsage(current=>({...current,loading:true,error:""}));
     try{setRuntimeUsage({data:await api("/api/agent-runtime-usage"),loading:false,error:""})}
-    catch(err){setRuntimeUsage({data:null,loading:false,error:err.message||String(err)})}
+    catch(err){setRuntimeUsage(current=>({...current,loading:false,error:err.message||String(err)}))}
   }
   async function refresh(){await Promise.all([refreshLocal(),refreshCodex(),refreshRuntimeUsage()])}
   useEffect(()=>{refreshLocal()},[days,selectedEnvironments.join("|")]);

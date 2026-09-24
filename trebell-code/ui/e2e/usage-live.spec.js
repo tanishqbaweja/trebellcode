@@ -10,7 +10,7 @@ async function freePort(){const server=createServer();await new Promise((resolve
 
 test("Usage page refreshes native Codex account and quota updates live",async({page})=>{
   test.setTimeout(30_000);
-  const calls=[];let account={type:"chatgpt",email:"before@example.com",planType:"plus"},usedPercent=20,lifetimeTokens=12345,notificationSocket=null;
+  const calls=[];let account={type:"chatgpt",email:"before@example.com",planType:"plus"},usedPercent=20,lifetimeTokens=12345,notificationSocket=null,failRateLimits=false;
   const upstreamHttp=createServer();const upstreamWss=new WebSocketServer({noServer:true});const sockets=new Set();
   upstreamHttp.on("upgrade",(req,socket,head)=>upstreamWss.handleUpgrade(req,socket,head,ws=>upstreamWss.emit("connection",ws,req)));
   upstreamWss.on("connection",ws=>{
@@ -22,7 +22,10 @@ test("Usage page refreshes native Codex account and quota updates live",async({p
       else if(message.method==="threadSection/list")result={data:[],nextCursor:null};
       else if(message.method==="skills/list")result={data:[]};
       else if(message.method==="account/read")result={account,requiresOpenaiAuth:false};
-      else if(message.method==="account/rateLimits/read")result={rateLimits:{limitId:"main",limitName:"Coding quota",primary:{usedPercent,resetsAt:Math.floor(Date.now()/1000)+3600}}};
+      else if(message.method==="account/rateLimits/read"){
+        if(failRateLimits){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate rate-limit refresh failure"}}));return}
+        result={rateLimits:{limitId:"main",limitName:"Coding quota",primary:{usedPercent,resetsAt:Math.floor(Date.now()/1000)+3600}}};
+      }
       else if(message.method==="account/usage/read")result={summary:{lifetimeTokens,currentStreakDays:2,peakDailyTokens:5000,longestRunningTurnSec:90},threadUsage:null};
       else if(message.method==="account/workspaceMessages/read")result={featureEnabled:false,messages:[]};
       else if(message.method==="experimentalFeature/list"||message.method==="permissionProfile/list"||message.method==="mcpServerStatus/list"||message.method==="app/list"||message.method==="hooks/list"||message.method==="plugin/share/list")result={data:[]};
@@ -71,6 +74,14 @@ test("Usage page refreshes native Codex account and quota updates live",async({p
     notificationSocket.send(JSON.stringify({method:"account/rateLimits/updated",params:{rateLimits:{primary:{usedPercent:65}}}}));
     await new Promise(resolve=>setTimeout(resolve,350));
     expect(calls.filter(call=>call.method==="account/usage/read").length).toBe(usageReadsAfterTokenUpdate);
+    failRateLimits=true;
+    await page.locator(".usage-toolbar").getByRole("button",{name:"Refresh",exact:true}).click();
+    await expect(card).toContainText("35% left");
+    const unavailable=card.getByText("Unavailable Codex account data",{exact:true});
+    await expect(unavailable).toBeVisible();
+    await unavailable.click();
+    await expect(card).toContainText("rateLimits: Deliberate rate-limit refresh failure");
+    await expect(page.locator(".usage-toolbar").getByRole("button",{name:"Refresh",exact:true})).toBeEnabled();
     await page.setViewportSize({width:1280,height:800});await card.scrollIntoViewIfNeeded();await page.screenshot({path:auditDir+"usage-live-codex-1280x800.png",fullPage:false});
     await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({path:auditDir+"usage-live-codex-light-1280x800.png",fullPage:false});
   }finally{
