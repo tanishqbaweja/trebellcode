@@ -1525,6 +1525,50 @@ test("project detail refresh failures preserve known Git metadata",async({page,r
   await page.screenshot({path:auditDir+"projects-detail-refresh-error-1280x800.png",fullPage:true});
 });
 
+test("successful history imports surface a failed thread-list refresh",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"history-refresh-thread",name:"History refresh fixture",preview:"Import refresh honesty",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  let failThreadRefresh=false,imported=false;
+  const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
+    if(message.method==="thread/list"&&failThreadRefresh){
+      ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate imported thread refresh failure"}}));return true;
+    }
+    return false;
+  }});
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"history-refresh-fixture");
+    await page.route(/\/api\/history-import$/,route=>{
+      if(route.request().method()==="POST"){
+        imported=true;failThreadRefresh=true;
+        return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,results:[{id:"history-refresh-1",source:"claude",status:"imported",threadId:"imported-history-thread"}]})});
+      }
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({codexImportAvailable:true,sessions:[{id:"history-refresh-1",source:"claude",providerSessionId:"claude-history-refresh-1",cwd:process.cwd(),title:"Imported history fixture",preview:"Imported history fixture",alreadyImported:imported}]})});
+    });
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    await page.getByRole("button",{name:"Tools",exact:true}).click();
+    await expect(page.getByRole("heading",{name:"Harness capabilities",level:2})).toBeVisible();
+    const card=page.locator(".capability-card").filter({hasText:"Conversation history"});
+    await expect(card).toBeVisible();
+    await card.getByRole("button",{name:"Scan history",exact:true}).click();
+    await expect(card).toContainText("Imported history fixture");
+    await page.setViewportSize({width:1280,height:800});
+    await card.getByRole("button",{name:"Import",exact:true}).click();
+    await expect(card).toContainText("imported");
+    const alert=card.getByRole("alert");
+    await expect(alert).toContainText("Conversation import succeeded, but Trebell could not refresh the thread list");
+    await expect(alert).toContainText("Deliberate imported thread refresh failure");
+    await expect(alert).toBeInViewport();
+    const alertBox=await alert.boundingBox();
+    expect(alertBox).toBeTruthy();
+    expect(alertBox.y).toBeGreaterThanOrEqual(0);
+    expect(alertBox.y+alertBox.height).toBeLessThanOrEqual(800);
+    const metrics=await page.locator(".secondary-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"history-import-thread-refresh-error-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
 test("automatic pull failures stay visible without blocking project open",async({page,request})=>{
   test.setTimeout(30_000);
   await prepare(page,request);

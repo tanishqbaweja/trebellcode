@@ -2629,7 +2629,9 @@ export default function App(){
     if(openSettings)setSection("settings");
   }
   async function historyImported(){
-    if(rpc&&rpcStatus==="connected")await loadThreads(rpc).catch(()=>{});
+    if(!rpc||rpcStatus!=="connected")return;
+    try{await loadThreads(rpc,{strict:true})}
+    catch(error){throw new Error("Conversation import succeeded, but Trebell could not refresh the thread list: "+(error?.message||String(error))+". Imported chats may appear after reconnecting or refreshing.")}
   }
   async function pickWorkspace(){
     const path=await window.trebellDesktop?.pickDirectory?.();

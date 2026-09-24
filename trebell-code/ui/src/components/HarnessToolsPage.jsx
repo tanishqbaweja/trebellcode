@@ -1,4 +1,4 @@
-import React,{useEffect,useMemo,useState} from "react";
+import React,{useEffect,useMemo,useRef,useState} from "react";
 import { Blocks, Brain, CheckCircle2, FlaskConical, PlugZap, RefreshCw, ShieldCheck, Sparkles, Wrench } from "lucide-react";
 import { api } from "../api.js";
 import { allowedWindowsSetupModes, windowsSandboxStatus, worldWritableWarningText } from "../windows-sandbox.js";
@@ -36,9 +36,15 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
   const [migrationImportId,setMigrationImportId]=useState(null);
   const [historyImport,setHistoryImport]=useState(null);
   const [historyMessage,setHistoryMessage]=useState("");
+  const historyMessageRef=useRef(null);
   const [mcpResult,setMcpResult]=useState(null);
   const [appDetail,setAppDetail]=useState(null);
   const [toolArgs,setToolArgs]=useState({});
+  useEffect(()=>{
+    if(!historyMessage||!/failed|could not|error/i.test(historyMessage))return;
+    const frame=requestAnimationFrame(()=>historyMessageRef.current?.scrollIntoView({block:"center"}));
+    return()=>cancelAnimationFrame(frame);
+  },[historyMessage]);
   const [memoryMessage,setMemoryMessage]=useState("");
   const [memoryResetArmed,setMemoryResetArmed]=useState(false);
   const [sandboxPending,setSandboxPending]=useState("");
@@ -610,9 +616,9 @@ export default function HarnessToolsPage({rpc,rpcStatus,projectPath,activeThread
           <button onClick={scanHistory} disabled={!!busy}>{busy==="history:scan"?"Scanning…":"Scan history"}</button>
           {(historyImport?.sessions||[]).some(item=>!item.alreadyImported&&(item.source!=="codex"||historyImport.codexImportAvailable))&&<button onClick={()=>importHistory((historyImport.sessions||[]).filter(item=>!item.alreadyImported&&(item.source!=="codex"||historyImport.codexImportAvailable)).map(item=>item.id))} disabled={!!busy}>{busy==="history:import"?"Importing…":"Import available"}</button>}
         </div>
+        {historyMessage&&<p ref={historyMessageRef} className={/failed|could not|error/i.test(historyMessage)?"provider-status-error":"capability-status"} role={/failed|could not|error/i.test(historyMessage)?"alert":undefined}>{historyMessage}</p>}
         <div className="capability-list history-import-list">{(historyImport?.sessions||[]).slice(0,30).map(item=><div key={item.id}><div><strong>{item.title||"Untitled conversation"}</strong><span>{item.source==="codex"?"Codex":"Claude"} · {item.cwd}</span></div><div className="capability-inline-actions"><em className={item.alreadyImported?"ok":""}>{item.alreadyImported?"imported":item.source==="codex"&&!historyImport.codexImportAvailable?"needs local Codex":"available"}</em>{!item.alreadyImported&&(item.source!=="codex"||historyImport.codexImportAvailable)&&<button onClick={()=>importHistory([item.id])} disabled={!!busy}>Import</button>}</div></div>)}</div>
         {historyImport&&!(historyImport.sessions||[]).length&&<p>No recent local agent history was found.</p>}
-        {historyMessage&&<p className="capability-status">{historyMessage}</p>}
       </Section>
 
       <Section title="Import agent configuration" icon={RefreshCw} count={migrations?.items?.length||0}>
