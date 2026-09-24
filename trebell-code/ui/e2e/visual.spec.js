@@ -621,7 +621,9 @@ test("failed turn start restores the draft and removes the unsent user bubble",a
     await routeProjectlessCodexRequestFixture(page,harness,thread,"turn-start-failure-fixture");
     await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
     await page.goto("/");
-    await page.getByRole("button",{name:/Turn start failure fixture/}).click();
+    const row=page.locator(".thread-row").filter({hasText:"Turn start failure fixture"});
+    await row.locator(".thread-main").click();
+    await expect(row).toHaveClass(/active/);
     const composer=page.getByTestId("composer");
     await composer.fill("Retry this rejected turn");
     await page.getByTestId("send").click();
@@ -1189,6 +1191,57 @@ test("automatic pull failures stay visible without blocking project open",async(
   const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   await page.screenshot({path:auditDir+"project-auto-pull-error-1280x800.png",fullPage:true});
+});
+
+test("background Git polling failures preserve the last valid repository state",async({page,request})=>{
+  test.setTimeout(30_000);
+  let failGitInfo=false;
+  await page.route(/\/api\/git\/info\?/,route=>{
+    if(failGitInfo)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate Git polling failure"})});
+    return route.continue();
+  });
+  await prepare(page,request);
+  const branch=page.locator(".workspace-header .branch-control");
+  await expect(branch).toBeVisible({timeout:10_000});
+  const branchText=(await branch.textContent())?.trim()||"";
+  expect(branchText.length).toBeGreaterThan(0);
+  failGitInfo=true;
+  await page.waitForTimeout(2200);
+  await expect(branch).toBeVisible();
+  await expect(branch).toContainText(branchText);
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"git-polling-failure-preserves-state-1280x800.png",fullPage:true});
+});
+
+test("switching workspaces clears Git state from the previous project",async({page,request})=>{
+  test.setTimeout(35_000);
+  const targetPath=await mkdtemp(join(tmpdir(),"trebell-non-git-state-"));
+  let targetProject=null;
+  const baseBootstrap=await (await request.get("/api/bootstrap")).json();
+  try{
+    await prepare(page,request);
+    const branch=page.locator(".workspace-header .branch-control");
+    await expect(branch).toBeVisible({timeout:10_000});
+    const created=await request.post("/api/projects",{data:{path:targetPath,name:"Non Git State Fixture"}});
+    targetProject=(await created.json()).project;
+    expect(targetProject?.id).toBeTruthy();
+    await page.getByRole("button",{name:"Projects",exact:true}).click();
+    const card=page.locator(".project-card").filter({hasText:"Non Git State Fixture"}).first();
+    await expect(card).toBeVisible();
+    await card.locator(".project-open").click();
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await expect(page.locator(".workspace-header .branch-control")).toHaveCount(0);
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"project-switch-clears-old-git-state-1280x800.png",fullPage:true});
+  }finally{
+    await request.post("/api/projects",{data:{path:baseBootstrap.cwd,activate:true}}).catch(()=>{});
+    if(targetProject?.id)await request.delete("/api/projects?id="+encodeURIComponent(targetProject.id)).catch(()=>{});
+    await rm(targetPath,{recursive:true,force:true}).catch(()=>{});
+  }
 });
 
 test("General chat start failures stay on Projects with visible feedback",async({page,request})=>{
