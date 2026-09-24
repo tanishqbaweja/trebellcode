@@ -2598,6 +2598,9 @@ test("Codex thread can switch compatible account profiles from the model picker"
     await profilesMenu.getByRole("button",{name:/Codex Personal/}).click();await expect(picker).toContainText("Codex Personal");
     await picker.click();await expect(profilesMenu.getByRole("button",{name:/Codex Personal/})).toHaveClass(/selected/);
     await page.screenshot({path:auditDir+"chat-codex-profile-switched-1600x980.png",fullPage:true});
+    await page.setViewportSize({width:1280,height:800});
+    const compact=await page.locator(".composer-bar").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(compact.scroll).toBeLessThanOrEqual(compact.client+1);
+    await page.screenshot({path:auditDir+"chat-codex-profile-switched-1280x800.png",fullPage:true});
     await profilesMenu.getByRole("button",{name:/Codex Broken/}).click();
     const profileError=page.getByTestId("app-action-error");
     await expect(profileError).toContainText("Could not switch Codex profile: Deliberate runtime profile failure");
@@ -2606,13 +2609,12 @@ test("Codex thread can switch compatible account profiles from the model picker"
     await expect(picker).toContainText("Codex Personal");
     await expect(profilesMenu.getByRole("button",{name:/Codex Personal/})).toHaveClass(/selected/);
     await expect(profilesMenu.getByRole("button",{name:/Codex Broken/})).not.toHaveClass(/selected/);
-    await page.setViewportSize({width:1280,height:800});
     const errorLayout=await page.locator(".composer-bar").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(errorLayout.scroll).toBeLessThanOrEqual(errorLayout.client+1);
+    const errorBox=await box(profileError),menuBox=await box(page.locator(".model-picker-menu"));
+    expect(errorBox.y+errorBox.height).toBeLessThanOrEqual(menuBox.y-4);
     await page.screenshot({path:auditDir+"chat-codex-profile-error-1280x800.png",fullPage:true});
     await page.setViewportSize({width:1600,height:980});
     await picker.click();
-    await page.setViewportSize({width:1280,height:800});const compact=await page.locator(".composer-bar").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(compact.scroll).toBeLessThanOrEqual(compact.client+1);
-    await page.screenshot({path:auditDir+"chat-codex-profile-switched-1280x800.png",fullPage:true});
 
     await page.setViewportSize({width:1600,height:980});
     await page.getByRole("button",{name:"Tools",exact:true}).click();
