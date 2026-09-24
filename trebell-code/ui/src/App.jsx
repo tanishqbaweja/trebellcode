@@ -95,7 +95,7 @@ async function resumeCodexWithBoundedHistory(rpc,params){
     }
     if(resumed?.thread?.historyMode==="paginated")return {...resumed,__trebellHistoryPage:{kind:"items",data:[],nextCursor:null,backwardsCursor:null}};
   }catch{}
-  return rpc.request("thread/resume",{...params,excludeTurns:false}).then(result=>({...result,__trebellFullHistoryFallback:true})).catch(()=>null);
+  return rpc.request("thread/resume",{...params,excludeTurns:false}).then(result=>({...result,__trebellFullHistoryFallback:true}));
 }
 
 const TREBELL_BROWSER_TOOLS=[{
@@ -1584,24 +1584,31 @@ export default function App(){
     return scratch;
   }
   async function openThread(thread,{client=rpc,preserveSection=false}={}){
-    rememberConversationPosition();
-    const previousThreadId=activeThreadRef.current?.id;if(previousThreadId&&previousThreadId!==thread.id)releaseInactiveCodexThread(previousThreadId);
+    const previousThreadId=activeThreadRef.current?.id;
     const threadEnvironmentId=thread.providerMeta?.environmentId||null;
     const savedMeta=threadMeta[thread.id]||{};const projectless=Boolean(savedMeta.projectless);
     if(thread.cwd&&!threadEnvironmentId&&!projectless)await api("/api/worktree/ensure",{method:"POST",body:{path:thread.cwd,environmentId:null}}).catch(error=>{throw new Error("Could not restore this managed worktree: "+error.message)});
-    activeThreadRef.current=thread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection)setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");setAssistantText("");setWorktreeSetup(null);setActiveThread(thread);persistThreadWorkspaceContext(thread,thread.cwd,{archived:false,projectless}).catch(()=>{});
-    if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(thread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
-    else if(thread.cwd)await touchProject(thread.cwd,threadEnvironmentId);else setProjectPath(projectPath);
-    if(!client||(client===rpc&&rpcStatus!=="connected"))return;
-    const resumePromise=agentRuntime==="codex"
-      ?resumeCodexWithBoundedHistory(client,{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null})
-      :client.request("thread/resume",{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null,excludeTurns:false}).catch(()=>null);
-    const [resumed,cp,goalData,attachmentData]=await Promise.all([
-      resumePromise,
-      api("/api/checkpoints?threadId="+encodeURIComponent(thread.id)).catch(()=>({checkpoints:[]})),
-      client.request("thread/goal/get",{threadId:thread.id}).catch(()=>({goal:null})),
-      client.request("thread/attachment/list",{threadId:thread.id,limit:100}).catch(()=>({data:[]})),
-    ]);
+    const connectedClient=Boolean(client&&!(client===rpc&&rpcStatus!=="connected"));
+    let resumed=null,cp={checkpoints:[]},goalData={goal:null},attachmentData={data:[]};
+    if(connectedClient){
+      const resumePromise=agentRuntime==="codex"
+        ?resumeCodexWithBoundedHistory(client,{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null})
+        :client.request("thread/resume",{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null,excludeTurns:false});
+      [resumed,cp,goalData,attachmentData]=await Promise.all([
+        resumePromise,
+        api("/api/checkpoints?threadId="+encodeURIComponent(thread.id)).catch(()=>({checkpoints:[]})),
+        client.request("thread/goal/get",{threadId:thread.id}).catch(()=>({goal:null})),
+        client.request("thread/attachment/list",{threadId:thread.id,limit:100}).catch(()=>({data:[]})),
+      ]);
+      if(!resumed?.thread)throw new Error("The agent runtime did not return the requested thread.");
+    }
+    const openedThread=resumed?.thread||thread;
+    rememberConversationPosition();
+    if(previousThreadId&&previousThreadId!==thread.id)releaseInactiveCodexThread(previousThreadId);
+    activeThreadRef.current=openedThread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection)setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");setAssistantText("");setWorktreeSetup(null);setActiveThread(openedThread);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless}).catch(()=>{});
+    if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(openedThread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
+    else if(openedThread.cwd)await touchProject(openedThread.cwd,threadEnvironmentId);else setProjectPath(projectPath);
+    if(!connectedClient)return;
     const map=Object.fromEntries((cp.checkpoints||[]).filter(x=>x.turnId).map(x=>[x.turnId,x]));setCheckpointByTurn(map);
     if(resumed?.thread){
       activeThreadRef.current=resumed.thread;pendingThreadScrollRestoreRef.current=resumed.thread.id;setActiveThread(resumed.thread);
@@ -1929,6 +1936,27 @@ export default function App(){
       throw failure;
     }
   }
+  function restoreFailedDraft(draft){
+    setPrompt(current=>{
+      const next=String(draft?.text||"");if(!next)return current;
+      if(!String(current||"").trim())return next;
+      if(String(current).includes(next))return current;
+      return next+"\n\n--- recovered failed background draft ---\n"+current;
+    });
+    setAttachments(current=>[...new Set([...(draft?.attachments||[]),...(current||[])])]);
+    setContextChips(current=>{
+      const merged=[];const seen=new Set();
+      for(const item of [...(draft?.contextChips||[]),...(current||[])]){
+        const key=typeof item==="string"?item:JSON.stringify(item);
+        if(seen.has(key))continue;seen.add(key);merged.push(item);
+      }
+      return merged;
+    });
+  }
+  async function saveFailureStash(draft){
+    try{await api("/api/stashes",{method:"POST",body:draft});return{ok:true,error:""}}
+    catch(error){return{ok:false,error:error?.message||String(error)||"Unknown stash error"}}
+  }
   async function sendModelFanout(text){
     const fanout=[...new Set(selectedModels.filter(id=>models.includes(id)))];if(activeThread?.id||running||fanout.length<2)return false;
     const workspaceError=fanoutWorkspaceError(gitInfo);if(workspaceError){setEvents(prev=>[...prev,{id:"fanout-workspace-"+Date.now(),kind:"error",title:workspaceError,status:"done",raw:{}}]);return true}
@@ -1942,14 +1970,20 @@ export default function App(){
       const started=results.filter(item=>item.ok);const failed=results.filter(item=>!item.ok);const uncertain=failed.filter(item=>item.error?.trebellUncertain);
       const summary=[];
       if(started.length)summary.push({id:"fanout-started-"+Date.now(),kind:"tool",title:`Started ${started.length}/${fanout.length} model${started.length===1?"":"s"} in isolated worktrees`,status:"done",raw:{models:started.map(item=>item.modelId),threads:started.map(item=>item.result?.thread?.id).filter(Boolean)}});
+      let stashSaved=0;const stashErrors=[];
       for(const item of failed){
         const guard=item.error?.trebellUncertain;const prefix=guard?`[CHECK EXISTING THREAD BEFORE RETRY · ${item.modelId}] `:`[${item.modelId}] `;
-        await api("/api/stashes",{method:"POST",body:{...draft,text:prefix+draft.text}}).catch(()=>{});
+        const stash=await saveFailureStash({...draft,text:prefix+draft.text});
+        if(stash.ok)stashSaved++;else stashErrors.push(`${item.modelId}: ${stash.error}`);
       }
+      if(stashErrors.length)restoreFailedDraft(draft);
       if(failed.length){
         const detail=failed.map(item=>{const guard=item.error?.trebellUncertain;return `${item.modelId}: ${item.error?.message||item.error}${guard?.threadId?` · possible thread ${guard.threadId}`:guard?" · request may already have started":""}`}).join(" · ");
-        summary.push({id:"fanout-error-"+Date.now(),kind:"error",title:uncertain.length?`${failed.length} model run${failed.length===1?" needs":"s need"} attention; ${uncertain.length} may already have started`:`${failed.length}/${fanout.length} model runs failed and were stashed`,status:"done",raw:{detail}});
-        desktopNotify("Multi-model run needs attention",uncertain.length?`${uncertain.length} request${uncertain.length===1?" may":"s may"} already have started. Check Threads before retrying.`:`${failed.length} draft${failed.length===1?" was":"s were"} stashed for retry.`);
+        const stashNote=stashErrors.length
+          ?`${stashSaved}/${failed.length} failed draft${failed.length===1?"":"s"} stashed; ${stashErrors.length} restored to the composer because saving failed`
+          :`${stashSaved} failed draft${stashSaved===1?" was":"s were"} stashed for retry`;
+        summary.push({id:"fanout-error-"+Date.now(),kind:"error",title:uncertain.length?`${failed.length} model run${failed.length===1?" needs":"s need"} attention; ${uncertain.length} may already have started · ${stashNote}`:`${failed.length}/${fanout.length} model runs failed · ${stashNote}`,status:"done",raw:{detail,stashErrors}});
+        desktopNotify("Multi-model run needs attention",uncertain.length?`${uncertain.length} request${uncertain.length===1?" may":"s may"} already have started. ${stashNote}.`:`${stashNote}.`);
       }else desktopNotify("Multi-model run started",`${started.length} background threads are running in isolated worktrees.`);
       if(summary.length)setEvents(prev=>[...prev,...summary]);
     });
@@ -2052,9 +2086,15 @@ export default function App(){
     const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd,model,projectless:projectlessMode};
     setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);setEvents([]);setAssistantText("");setSection("chat");
     startDetachedTurn(draft.text,draft.attachments,draft.model,{basePath:draft.projectPath,projectless:draft.projectless}).catch(async error=>{
-      await api("/api/stashes",{method:"POST",body:draft}).catch(()=>{});
-      setEvents(prev=>[...prev,{id:"background-error-"+Date.now(),kind:"error",title:"Background task failed; draft was stashed: "+(error.message||String(error)),status:"done",raw:{}}]);
-      desktopNotify("Background task failed","The draft was saved to Trebell stash.");
+      const stash=await saveFailureStash(draft);
+      if(stash.ok){
+        setEvents(prev=>[...prev,{id:"background-error-"+Date.now(),kind:"error",title:"Background task failed; draft was stashed: "+(error.message||String(error)),status:"done",raw:{}}]);
+        desktopNotify("Background task failed","The draft was saved to Trebell stash.");
+      }else{
+        restoreFailedDraft(draft);
+        setEvents(prev=>[...prev,{id:"background-error-"+Date.now(),kind:"error",title:"Background task failed; stash save also failed, so the draft was restored to the composer: "+(error.message||String(error))+" · Stash error: "+stash.error,status:"done",raw:{taskError:error?.message||String(error),stashError:stash.error}}]);
+        desktopNotify("Background task failed","The draft could not be saved to Trebell stash, so it was restored to the composer.");
+      }
     });
   }
   async function sendQueuedNow(item){

@@ -1256,6 +1256,120 @@ test("sidebar thread action failures stay visible and keep the thread in place",
   }
 });
 
+test("delegated agent open failures stay visible in the Agents panel",async({page})=>{
+  test.setTimeout(35_000);
+  const parent={id:"agent-parent-thread",name:"Agent parent fixture",preview:"Parent thread",cwd:process.cwd(),createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
+  const child={id:"agent-child-thread",parentThreadId:parent.id,name:"Failing delegated agent",agentRole:"researcher",status:{type:"idle"},model:"freebuff/test/coding-fast",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const wsHttp=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
+  wsHttp.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  wss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",data=>{
+      const message=JSON.parse(String(data));if(message.id==null||!message.method)return;
+      if(message.method==="thread/resume"&&message.params?.threadId===child.id){
+        ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate delegated agent open failure"}}));return;
+      }
+      let result={};
+      if(message.method==="initialize")result={userAgent:"agent-open-fixture"};
+      else if(message.method==="thread/list")result={data:[parent,child],nextCursor:null};
+      else if(message.method==="thread/resume")result={thread:parent};
+      else if(message.method==="thread/turns/list")result={data:[],nextCursor:null};
+      else if(message.method==="threadSection/list"||message.method==="skills/list")result={data:[]};
+      else if(message.method==="collaborationMode/list")result={data:[{name:"Default",mode:"default"}]};
+      else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
+      ws.send(JSON.stringify({id:message.id,result}));
+    });
+  });
+  const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{[parent.id]:{projectless:true,environmentId:null},[child.id]:{projectless:true,environmentId:null}}})}));
+    await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+    await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    await page.locator('.thread-main[title="Agent parent fixture"]').click();
+    await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","Agent parent fixture");
+    await page.locator('.sidebar .sidebar-utility[aria-label="Agents"]').click();
+    const panel=page.getByTestId("right-panel");
+    const agentButton=panel.locator(".agent-open").filter({hasText:"Failing delegated agent"});
+    await expect(agentButton).toBeVisible();
+    await agentButton.click();
+    await expect(panel.getByRole("alert")).toContainText("Deliberate delegated agent open failure");
+    await expect(agentButton).toBeVisible();
+    await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","Agent parent fixture");
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"agents-open-error-1280x800.png",fullPage:true});
+  }finally{
+    for(const ws of sockets)try{ws.terminate()}catch{}
+    wss.close();await new Promise(resolve=>wsHttp.close(resolve));
+  }
+});
+
+test("failed background work restores the draft when stash saving also fails",async({page})=>{
+  test.setTimeout(35_000);
+  const wsHttp=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
+  wsHttp.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  wss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",data=>{
+      const message=JSON.parse(String(data));if(message.id==null||!message.method)return;
+      if(message.method==="turn/start"){
+        ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate background turn failure"}}));return;
+      }
+      let result={};
+      if(message.method==="initialize")result={userAgent:"background-stash-fixture"};
+      else if(message.method==="thread/list")result={data:[],nextCursor:null};
+      else if(message.method==="thread/start")result={thread:{id:"background-stash-thread",name:"Background stash fixture",cwd:process.cwd(),createdAt:Date.now()/1000,updatedAt:Date.now()/1000,turns:[]}};
+      else if(message.method==="threadSection/list"||message.method==="skills/list"||message.method==="collaborationMode/list")result={data:[]};
+      else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
+      ws.send(JSON.stringify({id:message.id,result}));
+    });
+  });
+  const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{}})}));
+    await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
+    await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+    await page.route(/\/api\/general-workspace$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({path:process.cwd(),environmentId:null})}));
+    await page.route(/\/api\/stashes$/,route=>{
+      if(route.request().method()==="POST")return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate stash failure"})});
+      return route.continue();
+    });
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    await page.getByRole("button",{name:"Projects",exact:true}).click();
+    const general=page.locator(".general-chat-card");
+    await expect(general).toBeVisible();
+    await general.click();
+    const composer=page.getByTestId("composer");
+    await expect(composer).toBeVisible();
+    const draft="Keep this draft safe even when both background start and stash saving fail.";
+    await composer.fill(draft);
+    await composer.press("Control+Enter");
+    await expect(page.locator(".tool-event").filter({hasText:"stash save also failed"})).toContainText("Deliberate stash failure");
+    await expect(composer).toHaveValue(draft);
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".composer-wrap").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"background-stash-failure-restored-1280x800.png",fullPage:true});
+  }finally{
+    for(const ws of sockets)try{ws.terminate()}catch{}
+    wss.close();await new Promise(resolve=>wsHttp.close(resolve));
+  }
+});
+
 test("populated source control and pull request detail stay usable",async({page,request})=>{
   test.setTimeout(45_000);
   const prActions=[];
