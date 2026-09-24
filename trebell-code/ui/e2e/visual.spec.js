@@ -97,9 +97,9 @@ async function startCodexRequestHarness(thread,{onRequest}={}){
   };
 }
 
-async function routeProjectlessCodexRequestFixture(page,harness,thread,version,{threadMeta={}}={}){
+async function routeProjectlessCodexRequestFixture(page,harness,thread,version,{threadMeta={},settingsPatch={}}={}){
   await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:process.cwd(),platform:process.platform,version,activeEnvironmentId:null,activeEnvironment:null})}));
-  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null},...threadMeta}})}));
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",...settingsPatch},projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null},...threadMeta}})}));
   await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
   await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
   await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
@@ -1098,6 +1098,36 @@ test("restart recovery API failures remain visible without unsafe continuation",
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await page.screenshot({path:auditDir+"restart-recovery-api-error-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
+test("automatic source-control sync failures stay visible while retrying",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"source-sync-error-thread",name:"Source sync failure fixture",preview:"Automatic sync honesty",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexRequestHarness(thread);
+  let mode="settlements";
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"source-sync-error-fixture",{settingsPatch:{autoSettleMergedThreads:true}});
+    await page.route(/\/api\/source-control\/settlements$/,route=>mode==="settlements"
+      ?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate settlement sync failure"})})
+      :route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:[]})}));
+    await page.route(/\/api\/source-control\/branch-reviews$/,route=>mode==="branchReviews"
+      ?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate branch review sync failure"})})
+      :route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:[]})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const error=page.getByTestId("app-action-error");
+    await expect(error).toContainText("Could not check merged-thread settlements: Deliberate settlement sync failure",{timeout:10_000});
+    await expect(page.getByTestId("composer")).toBeVisible();
+
+    mode="branchReviews";
+    await page.reload();
+    await expect(error).toContainText("Could not refresh branch review state: Deliberate branch review sync failure",{timeout:10_000});
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"source-control-background-sync-error-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 

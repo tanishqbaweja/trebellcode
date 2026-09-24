@@ -489,7 +489,7 @@ export default function App(){
   const [threadTelemetry,setThreadTelemetry]=useState({});
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false); const [initialLoadError,setInitialLoadError]=useState(""); const [initialLoadRevision,setInitialLoadRevision]=useState(0);
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"}); const [paletteDataError,setPaletteDataError]=useState("");
-  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
+  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
   const navigationKey=location=>[location.section,location.threadId||"",location.rightPanelOpen?location.rightPanelTab||"files":""].join("|");
   useEffect(()=>{
@@ -1123,13 +1123,20 @@ export default function App(){
     const applyPending=async()=>{
       if(disposed||busy)return;busy=true;
       try{
-        const pending=await api("/api/source-control/settlements").catch(()=>null);
+        const pending=await api("/api/source-control/settlements");
         for(const item of pending?.items||[]){
           if(disposed)break;
           const thread=threads.find(candidate=>candidate.id===item.threadId);
           if(!thread||thread.archived||thread.status?.type==="active")continue;
           if(thread.section?.name!=="Settled")await moveThread(thread,"settle");
           await updateThreadMeta(thread.id,{autoSettlePending:null,autoSettleAppliedSignature:item.signature,autoSettledAt:Date.now()});
+        }
+        backgroundSyncErrorRef.current.settlements="";
+      }catch(error){
+        const detail=error?.message||String(error);
+        if(backgroundSyncErrorRef.current.settlements!==detail){
+          backgroundSyncErrorRef.current.settlements=detail;
+          showActionError(error,"Could not check merged-thread settlements");
         }
       }finally{busy=false}
     };
@@ -1139,20 +1146,30 @@ export default function App(){
   useEffect(()=>{
     let disposed=false;
     const refreshBranchReviews=async()=>{
-      const data=await api("/api/source-control/branch-reviews").catch(()=>null);if(disposed||!data?.items)return;
-      setThreadMeta(previous=>{
-        let changed=false;const next={...previous};
-        for(const item of data.items){
-          const current=previous[item.threadId]||{};
-          const review=item.review||null;
-          const sameReview=JSON.stringify(current.branchPullRequest||null)===JSON.stringify(review);
-          const sameSync=Number(current.lastBranchPullRequestSyncAt||0)===Number(item.lastSyncedAt||0);
-          const sameError=(current.branchPullRequestSyncError||null)===(item.error||null);
-          if(sameReview&&sameSync&&sameError)continue;
-          changed=true;next[item.threadId]={...current,branch:item.branch||current.branch||null,branchPullRequest:review,lastBranchPullRequestSyncAt:item.lastSyncedAt||null,branchPullRequestSyncError:item.error||null};
+      try{
+        const data=await api("/api/source-control/branch-reviews");if(disposed||!data?.items)return;
+        setThreadMeta(previous=>{
+          let changed=false;const next={...previous};
+          for(const item of data.items){
+            const current=previous[item.threadId]||{};
+            const review=item.review||null;
+            const sameReview=JSON.stringify(current.branchPullRequest||null)===JSON.stringify(review);
+            const sameSync=Number(current.lastBranchPullRequestSyncAt||0)===Number(item.lastSyncedAt||0);
+            const sameError=(current.branchPullRequestSyncError||null)===(item.error||null);
+            if(sameReview&&sameSync&&sameError)continue;
+            changed=true;next[item.threadId]={...current,branch:item.branch||current.branch||null,branchPullRequest:review,lastBranchPullRequestSyncAt:item.lastSyncedAt||null,branchPullRequestSyncError:item.error||null};
+          }
+          return changed?next:previous;
+        });
+        backgroundSyncErrorRef.current.branchReviews="";
+      }catch(error){
+        if(disposed)return;
+        const detail=error?.message||String(error);
+        if(backgroundSyncErrorRef.current.branchReviews!==detail){
+          backgroundSyncErrorRef.current.branchReviews=detail;
+          showActionError(error,"Could not refresh branch review state");
         }
-        return changed?next:previous;
-      });
+      }
     };
     refreshBranchReviews();const timer=setInterval(refreshBranchReviews,30_000);
     return()=>{disposed=true;clearInterval(timer)};
