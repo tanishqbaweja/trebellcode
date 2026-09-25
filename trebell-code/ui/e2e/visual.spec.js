@@ -1822,7 +1822,11 @@ test("settings page visual audit",async({page,request})=>{
   await expect(page.getByRole("button",{name:/General/})).toHaveAttribute("aria-current","page");
   await expect(page.getByRole("heading",{name:"Follow-up behavior"})).toBeVisible();
   await expect(page.getByRole("heading",{name:"Context management"})).toBeVisible();
-  await expect(page.getByLabel("Compact long threads automatically")).toBeChecked();
+  const autoCompactToggle=page.getByLabel("Compact long threads automatically");
+  await expect(autoCompactToggle).toBeChecked();
+  const autoCompactBox=await autoCompactToggle.boundingBox();
+  expect(autoCompactBox.width).toBeLessThanOrEqual(16);
+  expect(autoCompactBox.height).toBeLessThanOrEqual(16);
   await expect(page.getByLabel("Compact when context reaches")).toHaveValue("85");
   await expect(page.getByRole("heading",{name:"Agent harness"})).toBeHidden();
   await expect(page.getByRole("heading",{name:"Browser profiles"})).toBeHidden();

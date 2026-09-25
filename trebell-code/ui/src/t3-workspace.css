@@ -363,6 +363,9 @@ html[data-custom-theme="true"] .settings-action-error{background:color-mix(in sr
 .about-brand{display:flex;align-items:center;gap:11px}.about-brand img{width:44px;height:44px;display:block;object-fit:contain;filter:drop-shadow(0 0 11px rgba(132,104,255,.16))}
 .about-brand h3{margin:0}.about-brand p{margin:3px 0 0}.about-version{font-size:9px;color:#777d85;white-space:nowrap}
 .settings-card input,.settings-card select{border-color:#2a2d31;background:#0d0f11;border-radius:7px}
+.settings-card .check-row{display:grid!important;grid-template-columns:16px minmax(0,1fr)!important;align-items:start;gap:8px;margin-top:10px;color:#8d949d}
+.settings-card .check-row input[type="checkbox"]{width:14px!important;height:14px!important;margin:1px 0 0;padding:0;accent-color:#9160d7}
+.settings-card .check-row>span{min-width:0;display:grid;gap:2px}.settings-card .check-row strong{font-size:8.5px;color:#c6cbd1;font-weight:560}.settings-card .check-row small{font-size:7.5px;line-height:1.4;color:#6f7680}
 .diagnostics-log{border-color:#25282c;background:#0d0f11}
 @media(max-width:1050px){
   .settings-page.redesigned-settings{grid-template-columns:1fr;gap:10px}
