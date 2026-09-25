@@ -264,10 +264,16 @@ test("agent relay broadcasts Codex-compatible archive, unarchive and delete life
     threadStore.finishTurn(thread.id,activeTurn.id);queue=await rpc("thread/queue/list",{threadId:thread.id,limit:10});assert.equal(queue.data.length,2,"failed queue start must not consume the draft");
     const deleted=await rpc("thread/queue/delete",{threadId:thread.id,queuedSubmissionId:q1.queuedSubmission.id});assert.equal(deleted.deleted,true);
     assert.equal((await rpc("thread/queue/list",{threadId:thread.id,limit:10})).data.length,1);
-    const goalSet=await rpc("thread/goal/set",{threadId:thread.id,objective:"Ship the fixture safely",completionConditions:["Lifecycle tests pass"],constraints:["Keep compatibility"],tokenBudget:5000,timeBudgetMinutes:30,unexpected:"ignored"});
-    assert.equal(goalSet.goal.objective,"Ship the fixture safely");assert.equal(goalSet.goal.tokenBudget,5000);assert.equal(goalSet.goal.tokensUsed,0);assert.equal(goalSet.goal.tokenBudgetRemaining,5000);assert.equal(Object.prototype.hasOwnProperty.call(goalSet.goal,"unexpected"),false);
+    const goalSet=await rpc("thread/goal/set",{threadId:thread.id,objective:"Ship the fixture safely",completionConditions:["Lifecycle tests pass"],constraints:["Keep compatibility"],tokenBudget:5000,timeBudgetMinutes:30,toolCallBudget:1,unexpected:"ignored"});
+    assert.equal(goalSet.goal.objective,"Ship the fixture safely");assert.equal(goalSet.goal.tokenBudget,5000);assert.equal(goalSet.goal.tokensUsed,0);assert.equal(goalSet.goal.toolCallBudget,1);assert.equal(goalSet.goal.toolCallsUsed,0);assert.equal(goalSet.goal.tokenBudgetRemaining,5000);assert.equal(Object.prototype.hasOwnProperty.call(goalSet.goal,"unexpected"),false);
     const goalRead=await rpc("thread/goal/get",{threadId:thread.id});assert.equal(goalRead.goal.objective,"Ship the fixture safely");assert.deepEqual(goalRead.goal.completionConditions,["Lifecycle tests pass"]);
     await assert.rejects(rpc("thread/goal/set",{threadId:thread.id,tokenBudget:-1}),/positive whole number/i);
+    const toolTurn=threadStore.addTurn(thread.id,{inputText:"use one tool"});
+    threadStore.addItem(thread.id,toolTurn.id,{id:"tool-budget-command",type:"commandExecution",status:"completed",command:["node","fixture.mjs"]});
+    threadStore.finishTurn(thread.id,toolTurn.id);
+    const toolLimited=await rpc("thread/goal/get",{threadId:thread.id});assert.equal(toolLimited.goal.toolCallsUsed,1);assert.equal(toolLimited.goal.toolCallBudgetRemaining,0);assert.equal(toolLimited.goal.budgetExhausted,true);
+    await assert.rejects(rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"blocked by tool budget"}]}),/tool-call budget exhausted/i);
+    const raisedTools=await rpc("thread/goal/set",{threadId:thread.id,toolCallBudget:2});assert.equal(raisedTools.goal.budgetExhausted,false);
     threadTokens=5000;
     await assert.rejects(rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"blocked direct work"}]}),/Goal budget exhausted/i);
     const queuedBeforeBudgetBlock=await rpc("thread/queue/list",{threadId:thread.id,limit:10});

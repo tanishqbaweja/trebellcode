@@ -1,24 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { enrichGoal, goalBudgetGate, normalizeGoal } from "../src/goal-state.mjs";
+import { enrichGoal, goalBudgetGate, isToolCallItem, normalizeGoal } from "../src/goal-state.mjs";
 
 test("durable goals normalize bounded structured fields and status transitions",()=>{
-  const goal=normalizeGoal({threadId:"thread-1",now:1000,patch:{objective:" Ship reliable auth ",status:"active",completionConditions:["Tests pass","Login works"],constraints:"No schema change\nKeep compatibility",validationExpectations:["Run auth tests"],tokenBudget:12000,timeBudgetMinutes:90,turnBudget:8,costBudgetUsd:12.5,unexpected:"ignored"}});
+  const goal=normalizeGoal({threadId:"thread-1",now:1000,patch:{objective:" Ship reliable auth ",status:"active",completionConditions:["Tests pass","Login works"],constraints:"No schema change\nKeep compatibility",validationExpectations:["Run auth tests"],tokenBudget:12000,timeBudgetMinutes:90,turnBudget:8,toolCallBudget:20,childAgentBudget:3,costBudgetUsd:12.5,unexpected:"ignored"}});
   assert.equal(goal.threadId,"thread-1");assert.equal(goal.objective,"Ship reliable auth");assert.equal(goal.status,"active");assert.equal(goal.createdAt,1000);assert.equal(goal.updatedAt,1000);
-  assert.deepEqual(goal.constraints,["No schema change","Keep compatibility"]);assert.equal(goal.tokenBudget,12000);assert.equal(goal.timeBudgetMinutes,90);assert.equal(goal.turnBudget,8);assert.equal(goal.costBudgetUsd,12.5);assert.equal(Object.prototype.hasOwnProperty.call(goal,"unexpected"),false);
+  assert.deepEqual(goal.constraints,["No schema change","Keep compatibility"]);assert.equal(goal.tokenBudget,12000);assert.equal(goal.timeBudgetMinutes,90);assert.equal(goal.turnBudget,8);assert.equal(goal.toolCallBudget,20);assert.equal(goal.childAgentBudget,3);assert.equal(goal.costBudgetUsd,12.5);assert.equal(Object.prototype.hasOwnProperty.call(goal,"unexpected"),false);
   const complete=normalizeGoal({threadId:"thread-1",previous:goal,now:2000,patch:{status:"complete"}});
   assert.equal(complete.completedAt,2000);assert.equal(complete.objective,goal.objective);
 });
 
 test("goal metrics reconstruct token and agent-work time from persisted evidence",()=>{
-  const goal={threadId:"thread-1",objective:"Finish",status:"active",createdAt:10_000,tokenBudget:1000,timeBudgetMinutes:2,turnBudget:2,costBudgetUsd:2};
-  const enriched=enrichGoal(goal,{usage:{totalTokens:1200,costUsd:2.5,costKnown:2,records:2},now:25_000,turns:[
+  const goal={threadId:"thread-1",objective:"Finish",status:"active",createdAt:10_000,tokenBudget:1000,timeBudgetMinutes:2,turnBudget:2,toolCallBudget:2,childAgentBudget:2,costBudgetUsd:2};
+  const enriched=enrichGoal(goal,{usage:{totalTokens:1200,costUsd:2.5,costKnown:2,records:2},childAgentsUsed:2,childAgentTelemetryComplete:true,now:25_000,turns:[
     {startedAt:5,durationMs:99_000,status:"completed"},
-    {startedAt:11,durationMs:30_000,status:"completed"},
-    {startedAt:20,durationMs:null,status:"inProgress"},
+    {id:"turn-1",startedAt:11,durationMs:30_000,status:"completed",items:[{id:"cmd-1",type:"commandExecution"},{id:"assistant-1",type:"agentMessage"}]},
+    {id:"turn-2",startedAt:20,durationMs:null,status:"inProgress",items:[{id:"edit-1",type:"fileChange"}]},
   ]});
   assert.equal(enriched.tokensUsed,1200);assert.equal(enriched.timeUsedSeconds,35);assert.equal(enriched.tokenBudgetRemaining,0);assert.equal(enriched.budgetExceeded,true);
-  assert.equal(enriched.turnsUsed,2);assert.equal(enriched.turnBudgetRemaining,0);assert.equal(enriched.costUsedUsd,2.5);assert.equal(enriched.costTelemetryComplete,true);assert.equal(enriched.costBudgetRemainingUsd,0);assert.equal(enriched.budgetExhausted,true);
+  assert.equal(enriched.turnsUsed,2);assert.equal(enriched.turnBudgetRemaining,0);assert.equal(enriched.toolCallsUsed,2);assert.equal(enriched.toolCallBudgetRemaining,0);assert.equal(enriched.childAgentsUsed,2);assert.equal(enriched.childAgentBudgetRemaining,0);assert.equal(enriched.costUsedUsd,2.5);assert.equal(enriched.costTelemetryComplete,true);assert.equal(enriched.costBudgetRemainingUsd,0);assert.equal(enriched.budgetExhausted,true);
 });
 
 test("goal budgets reject invalid values instead of silently inventing state",()=>{
@@ -41,4 +41,17 @@ test("goal budget gate blocks only new work after an active budget is exhausted"
   assert.equal(costed.allowed,false);assert.equal(costed.costExhausted,true);assert.match(costed.reason,/cost budget exhausted/i);
   const unknownCost=goalBudgetGate({status:"active",costBudgetUsd:1,costUsedUsd:5,costTelemetryComplete:false});
   assert.equal(unknownCost.allowed,true);assert.equal(unknownCost.costExhausted,false);
+  const tooled=goalBudgetGate({status:"active",toolCallBudget:4,toolCallsUsed:4,toolCallTelemetryComplete:true});
+  assert.equal(tooled.allowed,false);assert.equal(tooled.toolCallExhausted,true);assert.match(tooled.reason,/tool-call budget exhausted/i);
+  const unknownTools=goalBudgetGate({status:"active",toolCallBudget:1,toolCallsUsed:9,toolCallTelemetryComplete:false});
+  assert.equal(unknownTools.allowed,true);assert.equal(unknownTools.toolCallExhausted,false);
+  const children=goalBudgetGate({status:"active",childAgentBudget:2,childAgentsUsed:2,childAgentTelemetryComplete:true});
+  assert.equal(children.allowed,false);assert.equal(children.childAgentExhausted,true);assert.match(children.reason,/child-agent budget exhausted/i);
+  const unknownChildren=goalBudgetGate({status:"active",childAgentBudget:1,childAgentsUsed:9,childAgentTelemetryComplete:false});
+  assert.equal(unknownChildren.allowed,true);assert.equal(unknownChildren.childAgentExhausted,false);
+});
+
+test("tool budget evidence counts real tool items but ignores chat and reasoning rows",()=>{
+  for(const type of ["commandExecution","fileChange","dynamicToolCall","mcpToolCall","collabAgentToolCall","webSearch"])assert.equal(isToolCallItem({type}),true,type);
+  for(const type of ["userMessage","agentMessage","reasoning","plan"])assert.equal(isToolCallItem({type}),false,type);
 });

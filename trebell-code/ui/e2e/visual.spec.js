@@ -1694,17 +1694,19 @@ test("goal budget panel exposes durable guardrails, exhaustion, and a clear reco
   let goal={
     threadId:thread.id,objective:"Ship the durable goal controller",status:"active",
     completionConditions:["Targeted tests pass"],constraints:["Preserve provider-independent thread state"],validationExpectations:["Inspect the goal panel screenshots"],
-    tokenBudget:12_000,timeBudgetMinutes:90,turnBudget:5,costBudgetUsd:5,createdAt:Date.now()-300_000,updatedAt:Date.now(),
-    tokensUsed:12_000,timeUsedSeconds:3_000,turnsUsed:2,costUsedUsd:1.5,costTelemetryComplete:false,tokenBudgetRemaining:0,timeBudgetRemainingMinutes:40,turnBudgetRemaining:3,costBudgetRemainingUsd:3.5,budgetExceeded:false,budgetExhausted:true,
+    tokenBudget:12_000,timeBudgetMinutes:90,turnBudget:5,toolCallBudget:10,childAgentBudget:3,costBudgetUsd:5,createdAt:Date.now()-300_000,updatedAt:Date.now(),
+    tokensUsed:12_000,timeUsedSeconds:3_000,turnsUsed:2,toolCallsUsed:4,toolCallTelemetryComplete:true,childAgentsUsed:1,childAgentTelemetryComplete:true,costUsedUsd:1.5,costTelemetryComplete:false,tokenBudgetRemaining:0,timeBudgetRemainingMinutes:40,turnBudgetRemaining:3,toolCallBudgetRemaining:6,childAgentBudgetRemaining:2,costBudgetRemainingUsd:3.5,budgetExceeded:false,budgetExhausted:true,
   };
   const recalc=patch=>{
     goal={...goal,...patch,threadId:thread.id,updatedAt:Date.now()};
     goal.tokenBudgetRemaining=goal.tokenBudget==null?null:Math.max(0,Number(goal.tokenBudget)-Number(goal.tokensUsed||0));
     goal.timeBudgetRemainingMinutes=goal.timeBudgetMinutes==null?null:Math.max(0,Number(goal.timeBudgetMinutes)-Number(goal.timeUsedSeconds||0)/60);
     goal.turnBudgetRemaining=goal.turnBudget==null?null:Math.max(0,Number(goal.turnBudget)-Number(goal.turnsUsed||0));
+    goal.toolCallBudgetRemaining=goal.toolCallBudget==null?null:Math.max(0,Number(goal.toolCallBudget)-Number(goal.toolCallsUsed||0));
+    goal.childAgentBudgetRemaining=goal.childAgentBudget==null||goal.childAgentsUsed==null?null:Math.max(0,Number(goal.childAgentBudget)-Number(goal.childAgentsUsed||0));
     goal.costBudgetRemainingUsd=goal.costBudgetUsd==null||goal.costUsedUsd==null?null:Math.max(0,Number(goal.costBudgetUsd)-Number(goal.costUsedUsd||0));
-    goal.budgetExceeded=Boolean((goal.tokenBudget!=null&&goal.tokensUsed>goal.tokenBudget)||(goal.timeBudgetMinutes!=null&&goal.timeUsedSeconds>goal.timeBudgetMinutes*60)||(goal.turnBudget!=null&&goal.turnsUsed>goal.turnBudget)||(goal.costBudgetUsd!=null&&goal.costTelemetryComplete&&goal.costUsedUsd>goal.costBudgetUsd));
-    goal.budgetExhausted=Boolean((goal.tokenBudget!=null&&goal.tokensUsed>=goal.tokenBudget)||(goal.timeBudgetMinutes!=null&&goal.timeUsedSeconds>=goal.timeBudgetMinutes*60)||(goal.turnBudget!=null&&goal.turnsUsed>=goal.turnBudget)||(goal.costBudgetUsd!=null&&goal.costTelemetryComplete&&goal.costUsedUsd>=goal.costBudgetUsd));
+    goal.budgetExceeded=Boolean((goal.tokenBudget!=null&&goal.tokensUsed>goal.tokenBudget)||(goal.timeBudgetMinutes!=null&&goal.timeUsedSeconds>goal.timeBudgetMinutes*60)||(goal.turnBudget!=null&&goal.turnsUsed>goal.turnBudget)||(goal.toolCallBudget!=null&&goal.toolCallTelemetryComplete&&goal.toolCallsUsed>goal.toolCallBudget)||(goal.childAgentBudget!=null&&goal.childAgentTelemetryComplete&&goal.childAgentsUsed>goal.childAgentBudget)||(goal.costBudgetUsd!=null&&goal.costTelemetryComplete&&goal.costUsedUsd>goal.costBudgetUsd));
+    goal.budgetExhausted=Boolean((goal.tokenBudget!=null&&goal.tokensUsed>=goal.tokenBudget)||(goal.timeBudgetMinutes!=null&&goal.timeUsedSeconds>=goal.timeBudgetMinutes*60)||(goal.turnBudget!=null&&goal.turnsUsed>=goal.turnBudget)||(goal.toolCallBudget!=null&&goal.toolCallTelemetryComplete&&goal.toolCallsUsed>=goal.toolCallBudget)||(goal.childAgentBudget!=null&&goal.childAgentTelemetryComplete&&goal.childAgentsUsed>=goal.childAgentBudget)||(goal.costBudgetUsd!=null&&goal.costTelemetryComplete&&goal.costUsedUsd>=goal.costBudgetUsd));
     return goal;
   };
   const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
@@ -1728,22 +1730,37 @@ test("goal budget panel exposes durable guardrails, exhaustion, and a clear reco
     await expect(panel.getByText("50m / 1h 30m")).toBeVisible();
     await expect(panel.getByText("40m remaining")).toBeVisible();
     await expect(panel.getByLabel("Turn budget")).toHaveValue("5");
+    await expect(panel.getByLabel("Tool-call budget")).toHaveValue("10");
+    await expect(panel.getByLabel("Child-agent budget")).toHaveValue("3");
     await expect(panel.getByLabel("Cost budget")).toHaveValue("5");
     await expect(panel.getByText("2 / 5")).toBeVisible();
     await expect(panel.getByText("3 remaining",{exact:true})).toBeVisible();
+    await expect(panel.getByText("4 / 10")).toBeVisible();
+    await expect(panel.getByText("6 remaining",{exact:true})).toBeVisible();
+    await expect(panel.getByText("1 / 3")).toBeVisible();
+    await expect(panel.getByText("2 remaining",{exact:true})).toBeVisible();
     await expect(panel.getByText("$1.50 / $5.00")).toBeVisible();
     await expect(panel.getByText("Cost telemetry incomplete · not enforced")).toBeVisible();
     await expect(panel.getByText("3 saved guidance items")).toBeVisible();
+    await expect(panel.getByText("4 configured limits")).toBeVisible();
     const metrics=await panel.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await page.setViewportSize({width:1280,height:800});
     await page.screenshot({path:auditDir+"goal-budget-exhausted-dark-1280x800.png",fullPage:true});
 
-    await panel.locator(".goal-details>summary").click();
+    await panel.locator(".goal-budget-details>summary").click();
+    await expect(panel.getByLabel("Turn budget")).toBeVisible();
+    await expect(panel.getByLabel("Tool-call budget")).toBeVisible();
+    await expect(panel.getByLabel("Child-agent budget")).toBeVisible();
+    await expect(panel.getByLabel("Cost budget")).toBeVisible();
+    await page.screenshot({path:auditDir+"goal-budget-advanced-dark-1280x800.png",fullPage:true});
+    await panel.locator(".goal-budget-details>summary").click();
+
+    await panel.locator(".goal-details:not(.goal-budget-details)>summary").click();
     await expect(panel.getByLabel("Completion conditions",{exact:true})).toHaveValue("Targeted tests pass");
     await expect(panel.getByLabel("Constraints",{exact:true})).toHaveValue("Preserve provider-independent thread state");
     const validationField=panel.getByLabel("Validation expectations",{exact:true});await expect(validationField).toHaveValue("Inspect the goal panel screenshots");
     const expandedMetrics=await panel.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(expandedMetrics.scroll).toBeLessThanOrEqual(expandedMetrics.client+1);
-    const detailMetrics=await panel.locator(".goal-details").evaluate(node=>({client:node.clientHeight,scroll:node.scrollHeight}));expect(detailMetrics.scroll).toBeLessThanOrEqual(detailMetrics.client+1);
+    const detailMetrics=await panel.locator(".goal-details:not(.goal-budget-details)").evaluate(node=>({client:node.clientHeight,scroll:node.scrollHeight}));expect(detailMetrics.scroll).toBeLessThanOrEqual(detailMetrics.client+1);
     await validationField.scrollIntoViewIfNeeded();
     await page.screenshot({path:auditDir+"goal-budget-guardrails-dark-1280x800.png",fullPage:true});
 

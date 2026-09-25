@@ -67,5 +67,6 @@ test("event journal filters trace evidence by runtime, category, turn and time w
     assert.deepEqual(journal.list({turnId:"turn-b"}).map(item=>item.id),["new-codex"]);
     assert.deepEqual(journal.list({after:1_500,before:3_000}).map(item=>item.id),["new-codex"]);
     assert.deepEqual(journal.list({threadId:"thread-a",runtime:"codex",category:"checkpoint",after:500,before:1_500}).map(item=>item.id),["old-codex"]);
+    await journal.flush();
   }finally{await rm(home,{recursive:true,force:true})}
 });
