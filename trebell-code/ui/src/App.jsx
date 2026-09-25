@@ -3428,7 +3428,7 @@ export default function App(){
             ["Rewind",runtimeCapabilities.rewind],
             ["Compaction",runtimeCapabilities.compaction],
             ["MCP injection",runtimeCapabilities.mcpInjection],
-            ["LSP",runtimeCapabilities.nativeLsp],
+            ["Language intelligence",runtimeCapabilities.languageIntelligence],
             ["Sandbox",runtimeCapabilities.nativeSandbox],
             ["Detached tasks",runtimeCapabilities.detachedTasks],
             ["Multi-model fan-out",runtimeCapabilities.multiModelFanout],

@@ -34,6 +34,7 @@ test("agent runtime registry exposes real harnesses and capability-gates configu
     assert.equal(manager.capabilities("native").dynamicTools,true);
     assert.equal(manager.capabilities("native").nativeSandbox,false);
     assert.equal(manager.capabilities("native").mcpInjection,true);
+    assert.equal(manager.capabilities("native").languageIntelligence,true);
     assert.equal(manager.capabilities("native").delegation,true);
     assert.equal(manager.capabilities("opencode").nativeLsp,true);
     assert.equal(manager.capabilities("opencode").detachedTasks,true);
@@ -62,11 +63,12 @@ test("runtime capabilities describe adapter behavior without pretending unsuppor
   assert.equal(codex.nativeQueue,true);
   assert.equal(codex.mcpInjection,false);
   const native=runtimeCapabilities("native");
-  assert.equal(native.dynamicTools,true);assert.equal(native.contextReporting,true);assert.equal(native.nativeQueue,true);assert.equal(native.nativeHistoryPagination,true);assert.equal(native.threadSearch,true);assert.equal(native.fork,true);assert.equal(native.rewind,true);
+  assert.equal(native.dynamicTools,true);assert.equal(native.contextReporting,true);assert.equal(native.nativeQueue,true);assert.equal(native.nativeHistoryPagination,true);assert.equal(native.threadSearch,true);assert.equal(native.languageIntelligence,true);assert.equal(native.nativeLsp,false);assert.equal(native.fork,true);assert.equal(native.rewind,true);
   assert.equal(native.mcpInjection,true);assert.equal(native.systemPromptInjection,true);assert.equal(native.compaction,true);assert.equal(native.delegation,true);assert.equal(native.steering,true);assert.equal(native.backgroundProcesses,true);
   const openCode=runtimeCapabilities("opencode");
   assert.equal(openCode.compaction,true);
   assert.equal(openCode.nativeLsp,true);
+  assert.equal(openCode.languageIntelligence,true);
   assert.equal(openCode.mcpInjection,false);
   assert.equal(openCode.detachedTasks,true);
   assert.equal(openCode.multiModelFanout,true);

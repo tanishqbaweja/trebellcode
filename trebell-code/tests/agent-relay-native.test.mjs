@@ -70,6 +70,31 @@ test("Trebell Native relay executes repository tools and switches inference prov
   }
 });
 
+test("Trebell Native exposes Trebell semantic language intelligence directly to the model loop",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-language-relay-")),home=join(root,"home"),repo=join(root,"repo");
+  await mkdir(join(repo,"src"),{recursive:true});await mkdir(join(repo,"node_modules","typescript","lib"),{recursive:true});
+  await writeFile(join(repo,"src","typed.ts"),"export const typed: string = 'ok';\n","utf8");await writeFile(join(repo,"tsconfig.json"),"{}\n","utf8");
+  await writeFile(join(repo,"node_modules","typescript","lib","typescript.js"),`const fs=require("fs"),path=require("path");let base=process.cwd();
+const fileName=()=>path.join(base,"src","typed.ts"),file=()=>({fileName:fileName(),getPositionOfLineAndCharacter:(_line,column)=>column,getLineAndCharacterOfPosition:position=>({line:0,character:position})});
+module.exports={version:"fixture-ts-native",sys:{fileExists:fs.existsSync,readFile:p=>fs.readFileSync(p,"utf8"),readDirectory:()=>[],directoryExists:fs.existsSync,getDirectories:()=>[],useCaseSensitiveFileNames:true,newLine:"\\n"},ScriptSnapshot:{fromString:text=>({text})},findConfigFile:root=>{base=root;return path.join(root,"tsconfig.json")},readConfigFile:()=>({config:{}}),parseJsonConfigFileContent:(_config,_sys,nextBase)=>{base=nextBase;return{fileNames:[fileName()],options:{},errors:[],projectReferences:[]}},getDefaultLibFilePath:()=>"",createDocumentRegistry:()=>({}),createLanguageService:()=>{const source=file(),program={getSourceFile:value=>path.resolve(value)===path.resolve(source.fileName)?source:undefined};return{getProgram:()=>program,getDefinitionAtPosition:()=>[{fileName:source.fileName,textSpan:{start:13,length:5},name:"typed",kind:"const",containerName:""}]}}};\n`,"utf8");
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let calls=0;
+  const nativeProviderTurn=async request=>{
+    calls++;const repoTools=(request.tools||[]).find(item=>item.name==="trebell_repo");assert.ok(repoTools);assert.ok(repoTools.tools.some(tool=>tool.name==="language_symbol"));assert.ok(repoTools.tools.some(tool=>tool.name==="code_actions"));assert.ok(repoTools.tools.some(tool=>tool.name==="rename_preview"));
+    if(calls===1)return{id:"language-call",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"language-1",namespace:"trebell_repo",name:"language_symbol",arguments:JSON.stringify({path:"src/typed.ts",line:1,column:14,operation:"definition"})}],finishReason:"tool_calls",usage:{}};
+    const observation=request.messages.at(-1);assert.equal(observation.role,"tool");assert.match(observation.content,/\"supported\":true/);assert.match(observation.content,/\"semantic\":true/);assert.match(observation.content,/\"name\":\"typed\"/);
+    return{id:"language-done",provider:request.provider,model:request.model,text:"Semantic definition resolved.",toolCalls:[],finishReason:"stop",usage:{}};
+  };
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
+  try{
+    const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"read-only",dynamicTools:[]})).thread;
+    const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"read-only",input:[{type:"text",text:"Resolve the semantic definition of typed"}]})).turn;
+    await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);assert.equal(calls,2);
+    const persisted=threadStore.get(thread.id);assert.ok(persisted.turns[0].items.some(item=>item.type==="dynamicToolCall"&&item.namespace==="trebell_repo"&&item.tool==="language_symbol"));
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
 test("Trebell Native exposes configured MCP tools directly to the model loop",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-mcp-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({

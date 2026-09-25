@@ -7,6 +7,7 @@ const BASE_RUNTIME_CAPABILITIES=Object.freeze({
   systemPromptInjection:false,
   dynamicTools:false,
   nativeLsp:false,
+  languageIntelligence:false,
   nativeSandbox:false,
   permissionInterception:true,
   clientFilesystem:false,
@@ -28,15 +29,15 @@ const BASE_RUNTIME_CAPABILITIES=Object.freeze({
 
 const RUNTIME_CAPABILITY_OVERRIDES=Object.freeze({
   native:Object.freeze({
-    fork:true,rewind:true,compaction:true,mcpInjection:true,systemPromptInjection:true,dynamicTools:true,usageReporting:true,contextReporting:true,detachedTasks:true,multiModelFanout:true,backgroundProcesses:true,nativeQueue:true,nativeHistoryPagination:true,steering:true,delegation:true,
+    fork:true,rewind:true,compaction:true,mcpInjection:true,systemPromptInjection:true,dynamicTools:true,languageIntelligence:true,usageReporting:true,contextReporting:true,detachedTasks:true,multiModelFanout:true,backgroundProcesses:true,nativeQueue:true,nativeHistoryPagination:true,steering:true,delegation:true,
   }),
   codex:Object.freeze({
-    fork:true,rewind:true,compaction:true,systemPromptInjection:true,dynamicTools:true,nativeSandbox:true,
+    fork:true,rewind:true,compaction:true,systemPromptInjection:true,dynamicTools:true,languageIntelligence:true,nativeSandbox:true,
     usageReporting:true,detachedTasks:true,multiModelFanout:true,backgroundProcesses:true,delegation:true,harnessTools:true,collaborationModes:true,
     nativeQueue:true,nativeHistoryPagination:true,steering:true,runtimeProfileSwitching:true,
   }),
-  claude:Object.freeze({fork:true,rewind:true,compaction:true,mcpInjection:true,usageReporting:true,runtimeProfileSwitching:true,detachedTasks:true,multiModelFanout:true,delegation:true}),
-  opencode:Object.freeze({fork:true,rewind:true,compaction:true,nativeLsp:true,usageReporting:true,detachedTasks:true,multiModelFanout:true,delegation:true}),
+  claude:Object.freeze({fork:true,rewind:true,compaction:true,mcpInjection:true,languageIntelligence:true,usageReporting:true,runtimeProfileSwitching:true,detachedTasks:true,multiModelFanout:true,delegation:true}),
+  opencode:Object.freeze({fork:true,rewind:true,compaction:true,nativeLsp:true,languageIntelligence:true,usageReporting:true,detachedTasks:true,multiModelFanout:true,delegation:true}),
   cursor:Object.freeze({fork:"runtime",mcpInjection:true,clientFilesystem:true,clientTerminal:true,detachedTasks:true,multiModelFanout:true,delegation:true}),
   grok:Object.freeze({fork:"runtime",mcpInjection:true,clientFilesystem:true,clientTerminal:true,detachedTasks:true,multiModelFanout:true,delegation:true}),
   antigravity:Object.freeze({fork:"runtime",mcpInjection:true,clientFilesystem:true,clientTerminal:true,detachedTasks:true,multiModelFanout:true,delegation:true}),
