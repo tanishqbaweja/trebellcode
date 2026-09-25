@@ -1,9 +1,13 @@
 import { test,expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
+import { mkdtemp,rm } from "node:fs/promises";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { createRemoteControlServer } from "../../src/remote-control.mjs";
+import { RemoteAuthStore } from "../../src/remote-auth-store.mjs";
 
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));mkdirSync(auditDir,{recursive:true});
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
@@ -72,5 +76,39 @@ test("Trebell Remote pages bounded item history instead of hydrating full Codex 
     await remote.close();
     for(const socket of sockets)try{socket.terminate()}catch{}
     upstreamWss.close();await new Promise(resolve=>upstreamHttp.close(resolve));
+  }
+});
+
+test("Trebell Remote disables controls outside a paired device scope",async({page})=>{
+  test.setTimeout(30_000);
+  const home=await mkdtemp(join(tmpdir(),"trebell-remote-mobile-scope-"));
+  const store=new RemoteAuthStore({...process.env,TREBELL_HOME:home});
+  const environments={discover:async()=>({profiles:[{id:"read-env",name:"Read environment",type:"ssh"}]}),probe:async()=>({ok:true}),execute:async()=>({stdout:"should not run",stderr:""})};
+  const remote=await createRemoteControlServer({
+    port:0,token:"remote-admin-token",version:"remote-scope-e2e",authStore:store,environments,enabled:()=>false,host:"127.0.0.1",
+    getStatus:async()=>({agentRuntime:"codex",provider:"freebuff",providerReady:true,model:"freebuff/test/coding-fast",cwd:"C:\\fixture\\repo"}),
+  });
+  try{
+    const pairing=remote.createPairing({scopes:["status","threads:read","environments:read"]});
+    await page.setViewportSize({width:390,height:844});
+    await page.goto("http://127.0.0.1:"+remote.port+"/#pair="+encodeURIComponent(pairing.token));
+    await expect(page.locator("#scopeStatus")).toContainText("threads:read");
+    await expect(page.locator("#scopeStatus")).toContainText("environments:read");
+    await expect(page.locator("#refreshThreads")).toBeEnabled();
+    await expect(page.locator("#newThread")).toBeDisabled();
+    await expect(page.locator("#prompt")).toBeDisabled();
+    await expect(page.locator("#send")).toBeDisabled();
+    await expect(page.locator("#stop")).toBeDisabled();
+    await expect(page.locator("#environment")).toBeEnabled();
+    await expect(page.locator("#probe")).toBeEnabled();
+    await expect(page.locator("#command")).toBeDisabled();
+    await expect(page.locator("#runCommand")).toBeDisabled();
+    await expect(page.locator("#send")).toHaveAttribute("title",/thread write/i);
+    await expect(page.locator("#runCommand")).toHaveAttribute("title",/environment execute/i);
+    const bounds=await page.locator("main").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(bounds.scroll).toBeLessThanOrEqual(bounds.client+1);
+    await page.screenshot({path:auditDir+"remote-read-only-scope-390x844.png",fullPage:true});
+  }finally{
+    await remote.close();
+    await rm(home,{recursive:true,force:true});
   }
 });
