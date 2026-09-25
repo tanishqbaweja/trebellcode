@@ -3,24 +3,26 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { trebellHome } from "./paths.mjs";
 import { boundDiagnosticText, boundDiagnosticValue } from "./diagnostic-bounds.mjs";
+import { redactSecretText, redactSecretValue } from "./secret-redactor.mjs";
 
 function clone(value){return JSON.parse(JSON.stringify(value))}
-function persistedItem(item){
+function persistedItem(item,environment){
   const next={...item};
-  if(Object.prototype.hasOwnProperty.call(next,"aggregatedOutput")&&next.aggregatedOutput!=null)next.aggregatedOutput=boundDiagnosticText(next.aggregatedOutput,256*1024);
-  if(Object.prototype.hasOwnProperty.call(next,"rawInput"))next.rawInput=boundDiagnosticValue(next.rawInput,{maxChars:128*1024,maxFields:768,maxDepth:12});
+  if(Object.prototype.hasOwnProperty.call(next,"aggregatedOutput")&&next.aggregatedOutput!=null)next.aggregatedOutput=boundDiagnosticText(redactSecretText(next.aggregatedOutput,{environment}),256*1024);
+  if(Object.prototype.hasOwnProperty.call(next,"rawInput"))next.rawInput=boundDiagnosticValue(redactSecretValue(next.rawInput,{environment,maxDepth:12,maxArray:200,maxFields:768}),{maxChars:128*1024,maxFields:768,maxDepth:12});
   if(Object.prototype.hasOwnProperty.call(next,"rawOutput")){
     next.rawOutput=typeof next.rawOutput==="string"
-      ?boundDiagnosticText(next.rawOutput,256*1024)
-      :boundDiagnosticValue(next.rawOutput,{maxChars:256*1024,maxFields:1024,maxDepth:12});
+      ?boundDiagnosticText(redactSecretText(next.rawOutput,{environment}),256*1024)
+      :boundDiagnosticValue(redactSecretValue(next.rawOutput,{environment,maxDepth:12,maxArray:200,maxFields:1024}),{maxChars:256*1024,maxFields:1024,maxDepth:12});
   }
-  if(Object.prototype.hasOwnProperty.call(next,"arguments"))next.arguments=boundDiagnosticValue(next.arguments,{maxChars:128*1024,maxFields:768,maxDepth:12});
-  if(Object.prototype.hasOwnProperty.call(next,"contentItems"))next.contentItems=boundDiagnosticValue(next.contentItems,{maxChars:128*1024,maxFields:768,maxDepth:12});
+  if(Object.prototype.hasOwnProperty.call(next,"arguments"))next.arguments=boundDiagnosticValue(redactSecretValue(next.arguments,{environment,maxDepth:12,maxArray:200,maxFields:768}),{maxChars:128*1024,maxFields:768,maxDepth:12});
+  if(Object.prototype.hasOwnProperty.call(next,"contentItems"))next.contentItems=boundDiagnosticValue(redactSecretValue(next.contentItems,{environment,maxDepth:12,maxArray:200,maxFields:768}),{maxChars:128*1024,maxFields:768,maxDepth:12});
   return next;
 }
 
 export class AgentThreadStore{
   constructor(env=process.env){
+    this.env=env;
     this.path=join(trebellHome(env),"agent-threads.json");
     mkdirSync(dirname(this.path),{recursive:true});
     this.data=this.#load();
@@ -33,7 +35,8 @@ export class AgentThreadStore{
   }
   #save(){
     const tmp=this.path+".tmp";
-    writeFileSync(tmp,JSON.stringify(this.data,null,2),{encoding:"utf8",mode:0o600});
+    const safe=redactSecretValue(this.data,{environment:this.env,maxDepth:20,maxArray:10000,maxFields:5000});
+    writeFileSync(tmp,JSON.stringify(safe,null,2),{encoding:"utf8",mode:0o600});
     renameSync(tmp,this.path);
   }
   reconcileRestart({continueAfterRestart=false}={}){
@@ -92,7 +95,7 @@ export class AgentThreadStore{
   addTurn(threadId,{id=randomUUID(),inputText="",items=[],status="inProgress",startedAt=Math.floor(Date.now()/1000)}={}){
     const thread=this.data.threads.find(item=>item.id===threadId);if(!thread)return null;
     const turn={id,status,startedAt,completedAt:null,durationMs:null,error:null,items:[
-      ...(inputText?[{type:"userMessage",id:`user-${id}`,clientId:null,content:[{type:"text",text:inputText}]}]:[]),
+      ...(inputText?[{type:"userMessage",id:`user-${id}`,clientId:null,content:[{type:"text",text:redactSecretText(inputText,{environment:this.env})}]}]:[]),
       ...items,
     ]};
     thread.turns.push(turn);thread.status={type:"active",activeFlags:[]};thread.updatedAt=Math.floor(Date.now()/1000);this.#save();return clone(turn);
@@ -110,7 +113,7 @@ export class AgentThreadStore{
   addItem(threadId,turnId,item){
     const thread=this.data.threads.find(entry=>entry.id===threadId);const turn=thread?.turns?.find(entry=>entry.id===turnId);if(!turn)return null;
     const index=turn.items.findIndex(entry=>entry.id===item.id);
-    const stored=persistedItem(index>=0?{...turn.items[index],...item}:item);
+    const stored=persistedItem(index>=0?{...turn.items[index],...item}:item,this.env);
     if(index>=0)turn.items[index]=stored;else turn.items.push(stored);
     thread.updatedAt=Math.floor(Date.now()/1000);this.#save();return clone(stored);
   }

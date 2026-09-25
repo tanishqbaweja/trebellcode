@@ -51,3 +51,20 @@ test("agent thread persistence bounds raw tool diagnostics but preserves convers
     assert.ok((await stat(join(home,"agent-threads.json"))).size<900_000);
   }finally{await rm(home,{recursive:true,force:true})}
 });
+
+test("agent thread persistence redacts credentials from stored messages and tool diagnostics",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-thread-redaction-")),credential=["opaque","runtime","credential"].join("-");
+  const env={...process.env,TREBELL_HOME:home,CUSTOM_RUNTIME_TOKEN:credential};
+  try{
+    const store=new AgentThreadStore(env),thread=store.create({runtime:"claude",cwd:home,providerSessionId:"provider-2"});
+    const turn=store.addTurn(thread.id,{inputText:`use ${credential} for this request`});
+    const tool=store.addItem(thread.id,turn.id,{type:"commandExecution",id:"tool-secret",aggregatedOutput:`stdout=${credential}`,rawInput:{authorization:`Bearer ${credential}`},rawOutput:{nested:{token:credential},text:`echo ${credential}`}});
+    assert.doesNotMatch(JSON.stringify(tool),new RegExp(credential));
+    assert.match(JSON.stringify(tool),/\[redacted\]/);
+    const savedText=await readFile(join(home,"agent-threads.json"),"utf8");
+    assert.doesNotMatch(savedText,new RegExp(credential));
+    const saved=JSON.parse(savedText),savedTurn=saved.threads[0].turns[0];
+    assert.match(savedTurn.items.find(item=>item.id===`user-${turn.id}`).content[0].text,/\[redacted\]/);
+    assert.match(JSON.stringify(savedTurn.items.find(item=>item.id==="tool-secret")),/\[redacted\]/);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
