@@ -23,11 +23,12 @@ test("ACP stderr tail stays bounded and redacts secrets before surfacing",()=>{
     "Visit http://localhost:5733/pair#token=ABCDEF",
     "openai=sk-proj-abcdefghijklmnopqrstuvwxyz012345",
     "x-api-key: private-api-key",
-  ].join("\n"),{...process.env,HOME:home,USERPROFILE:home});
+    "custom=totally-opaque-runtime-secret",
+  ].join("\n"),{...process.env,HOME:home,USERPROFILE:home,CUSTOM_RUNTIME_TOKEN:"totally-opaque-runtime-secret"});
   assert.match(value,/~\/\.cursor\/cli\.json/);
   assert.match(value,/Bearer \[redacted\]/);
   assert.match(value,/\[pairing-url\]/);
-  assert.doesNotMatch(value,/secret-token-value|ABCDEF|sk-proj-|private-api-key/);
+  assert.doesNotMatch(value,/secret-token-value|ABCDEF|sk-proj-|private-api-key|totally-opaque-runtime-secret/);
 });
 
 test("ACP startup failures include the useful stderr instead of a generic closed-session error",async()=>{

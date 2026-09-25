@@ -4,39 +4,12 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { trebellHome } from "./paths.mjs";
 import { boundDiagnosticValue } from "./diagnostic-bounds.mjs";
-import { sanitizeAcpStderrExcerpt } from "./acp-client.mjs";
+import { redactSecretValue } from "./secret-redactor.mjs";
 
 const DEFAULT_MAX_RECORDS=5000;
 const DEFAULT_MAX_BYTES=8*1024*1024;
 const NOISY_METHOD=/(?:^initialize$|\/delta$|\/progress$|tokenUsage\/updated$|reasoning\/activity$|\/list$|\/read$|\/get$|\/search$|capabilities\/read$)/i;
-const SENSITIVE_KEYS=new Set([
-  "authorization","apikey","xapikey","cookie","password","secret","accesstoken","refreshtoken","authtoken",
-  "bearertoken","credential","credentials","proof","challenge",
-]);
-
 function clone(value){return JSON.parse(JSON.stringify(value))}
-function normalizedKey(value){return String(value||"").replace(/[^a-z0-9]/gi,"").toLowerCase()}
-function cleanText(value,environment){
-  return sanitizeAcpStderrExcerpt(value,environment)
-    .replace(/(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|password|secret)\b\s*(?:=|:)\s*)[^\s,;]+/gi,"$1[redacted]")
-    .replace(/(--(?:api-key|token|password|secret)\s+)[^\s]+/gi,"$1[redacted]");
-}
-function cleanValue(value,environment,depth=0){
-  if(depth>10)return "[bounded]";
-  if(typeof value==="string")return cleanText(value,environment);
-  if(value==null||typeof value==="number"||typeof value==="boolean")return value;
-  if(Array.isArray(value))return value.slice(0,100).map((item,index,array)=>{
-    if(index>0&&/^(?:--api-key|--token|--password|--secret)$/i.test(String(array[index-1]||"")))return "[redacted]";
-    return cleanValue(item,environment,depth+1);
-  });
-  if(typeof value!=="object")return String(value);
-  const out={};
-  for(const [key,item] of Object.entries(value).slice(0,200)){
-    if(SENSITIVE_KEYS.has(normalizedKey(key))){out[key]="[redacted]";continue}
-    out[key]=cleanValue(item,environment,depth+1);
-  }
-  return out;
-}
 
 function compactProtocolData(method,params={}){
   const turn=params.turn||null,item=params.item||null,thread=params.thread||null;
@@ -75,7 +48,7 @@ export class EventJournal{
   }
 
   record(entry={}){
-    const cleaned=boundDiagnosticValue(cleanValue(entry.data??{},this.env),{maxChars:16*1024,maxFields:300,maxDepth:10});
+    const cleaned=boundDiagnosticValue(redactSecretValue(entry.data??{},{environment:this.env,maxDepth:10,maxArray:100,maxFields:200}),{maxChars:16*1024,maxFields:300,maxDepth:10});
     const record={
       id:String(entry.id||randomUUID()),at:Number(entry.at)||Date.now(),
       runtime:entry.runtime?String(entry.runtime):null,provider:entry.provider?String(entry.provider):null,
