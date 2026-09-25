@@ -1070,6 +1070,22 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
       {path:"src/auth/session.js",name:"RefreshSession",kind:"class",line:8,signature:"export class RefreshSession",parser:"babel",score:100},
       {path:"tests/auth-refresh.test.js",name:"refreshesExpiredSession",kind:"function",line:6,signature:"export function refreshesExpiredSession()",parser:"babel",score:45},
     ]})}));
+    await page.route(/\/api\/context\/files\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({query:"session",filesDiscovered:164,indexedFiles:138,data:[
+      {path:"src/auth/session.js",score:95,indexedSource:true,extension:".js"},
+      {path:"tests/auth-refresh.test.js",score:61,indexedSource:true,extension:".js"},
+    ]})}));
+    await page.route(/\/api\/context\/search\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({query:"rotateRefreshToken",source:"git-grep",data:[
+      {path:"src/auth/session.js",line:10,text:"return rotateRefreshToken(token);"},
+      {path:"src/auth/token.js",line:12,text:"export function rotateRefreshToken(token) {"},
+    ]})}));
+    await page.route(/\/api\/context\/map\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({query:"",indexedFiles:138,graphEdges:412,data:[
+      {path:"src/auth/session.js",score:82.2,centrality:.19,incoming:2,outgoing:1,definitions:[{name:"RefreshSession",kind:"class",line:8}]},
+      {path:"src/auth/token.js",score:56.1,centrality:.14,incoming:1,outgoing:0,definitions:[{name:"rotateRefreshToken",kind:"function",line:12}]},
+    ]})}));
+    await page.route(/\/api\/context\/commands\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({manifests:["package.json"],declared:[
+      {path:"package.json",name:"test",command:"npm run test",kind:"test",confidence:"declared",manager:"npm",script:"node --test"},
+      {path:"package.json",name:"build",command:"npm run ui:build",kind:"build",confidence:"declared",manager:"npm",script:"vite build"},
+    ],conventional:[{path:"Cargo.toml",name:"check",command:"cargo check",kind:"typecheck",confidence:"convention",reason:"Cargo.toml detected"}]})}));
     await page.route(/\/api\/context\/relations\?/,route=>{
       const file=new URL(route.request().url()).searchParams.get("file")||"";
       const body=file==="src/auth/session.js"
@@ -1114,6 +1130,24 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     await expect(relations).toContainText("2 importers");
     await expect(relations).toContainText("tests/auth-refresh.test.js");
     await expect(relations).toContainText("src/auth/token.js");
+    await explorer.getByRole("button",{name:"Files",exact:true}).click();
+    await explorer.getByLabel("Search repository files").fill("session");
+    await explorer.getByRole("button",{name:"Search",exact:true}).click();
+    await expect(explorer.getByRole("button",{name:/src\/auth\/session\.js/}).first()).toContainText("indexed source");
+    await explorer.getByRole("button",{name:"Code",exact:true}).click();
+    await explorer.getByLabel("Search repository code").fill("rotateRefreshToken");
+    await explorer.getByRole("button",{name:"Search",exact:true}).click();
+    await expect(explorer.getByRole("button",{name:/src\/auth\/session\.js:10/}).first()).toContainText("return rotateRefreshToken(token);");
+    await explorer.getByRole("button",{name:"Architecture",exact:true}).click();
+    const architecture=explorer.getByTestId("context-architecture-view");
+    await expect(architecture).toContainText("138 indexed · 412 relations");
+    await expect(architecture).toContainText("2 incoming · 1 outgoing");
+    await explorer.getByRole("button",{name:"Commands",exact:true}).click();
+    const commands=explorer.getByTestId("context-command-view");
+    await expect(commands).toContainText("npm run test");
+    await expect(commands).toContainText("npm run ui:build");
+    await expect(commands).toContainText("cargo check");
+    await expect(commands).toContainText("declared in package.json");
     const statTops=await inspector.locator(".context-inspector-stats>div").evaluateAll(nodes=>nodes.map(node=>Math.round(node.getBoundingClientRect().top)));
     expect(new Set(statTops).size).toBe(1);
     await page.setViewportSize({width:1280,height:800});
