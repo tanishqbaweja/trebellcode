@@ -530,6 +530,28 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
   const remoteGit=await engine.gitContext({root,io});assert.equal(remoteGit.isGit,true);assert.ok(remoteGit.changed.includes("src/auth/session.js"));
 });
 
+test("remote context cancellation stops later read batches",async()=>{
+  const root="/srv/remote-cancel",controller=new AbortController(),paths=Array.from({length:33},(_,index)=>`src/file-${index}.js`);let batches=0;
+  const ok=stdout=>({exitCode:0,stdout,stderr:"",timedOut:false});
+  const environments={
+    async executeArgv(){return ok("")},
+    async executeArgvInput(_id,{input=""}){
+      batches++;
+      await new Promise(resolve=>setTimeout(resolve,25));
+      const requested=String(input).split("\0").filter(Boolean).map(path=>path.replace(/^\.\//,""));
+      return ok(requested.map(path=>[
+        Buffer.from(path,"utf8").toString("base64"),
+        Buffer.from(`export const value = ${JSON.stringify(path)};\n`,"utf8").toString("base64"),
+      ].join("\t")).join("\n")+"\n");
+    },
+  };
+  const io=createRemoteContextIo({environments,environmentId:"ssh-cancel",root});
+  const pending=io.readMany(paths,256_000,{signal:controller.signal});
+  setTimeout(()=>controller.abort(),5);
+  await assert.rejects(pending,error=>error?.name==="AbortError");
+  assert.equal(batches,1,"cancellation should prevent the second and third remote read batches from launching");
+});
+
 test("context excerpts fall back to the full file when a relevant symbol is beyond the cached sample",async()=>{
   const root="/srv/large",padding="// padding\n".repeat(7000),content=padding+"export function distantTarget() { return 42; }\n";
   let fullReads=0;
