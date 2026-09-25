@@ -13,6 +13,24 @@ function unique(values,limit=30){
 function queuedText(item){
   return (item?.input||[]).filter(part=>part?.type==="text").map(part=>text(part.text,800)).filter(Boolean).join("\n").slice(0,800);
 }
+function verificationSummary(value){
+  if(value==null)return "";
+  if(typeof value==="string"||typeof value==="number"||typeof value==="boolean")return text(value,2000);
+  if(typeof value!=="object")return "";
+  const required=Math.max(0,Number(value.required)||0),passed=Math.max(0,Number(value.passed)||0),failed=Math.max(0,Number(value.failed)||0),blocked=Math.max(0,Number(value.blocked)||0),missing=Math.max(0,Number(value.missing)||0);
+  const parts=[`${passed}/${required} required checks passed`];
+  if(failed)parts.push(`${failed} failed`);
+  if(blocked)parts.push(`${blocked} blocked`);
+  if(missing)parts.push(`${missing} missing`);
+  return parts.join(" · ");
+}
+function verificationIssues(value){
+  return (Array.isArray(value)?value:[]).map(item=>{
+    if(typeof item==="string")return text(item,1000);
+    const id=text(item?.id,200),reason=text(item?.reason,800);
+    return [id,reason].filter(Boolean).join(" · ");
+  }).filter(Boolean).slice(0,20);
+}
 
 export function normalizeContinuityNotes(previous=null,patch={},now=Date.now()){
   const prior=previous&&typeof previous==="object"?previous:{},next={updatedAt:now};
@@ -53,7 +71,10 @@ export function continuitySnapshot({
     workspace,
     verification:latestVerification?{
       status:text(latestVerification.status,120)||null,risk:text(latestVerification.risk,120)||null,
-      verified:Boolean(latestVerification.assessment?.verified),summary:text(latestVerification.assessment?.summary,2000)||null,
+      verified:Boolean(latestVerification.assessment?.verified),summary:verificationSummary(latestVerification.assessment?.summary)||null,
+      missing:verificationIssues(latestVerification.assessment?.missing),
+      failures:verificationIssues(latestVerification.assessment?.failures),
+      blocked:verificationIssues(latestVerification.assessment?.blocked),
       updatedAt:Number(latestVerification.updatedAt)||null,
     }:null,
     completedTurnIds:completedTurns,
@@ -84,6 +105,9 @@ export function continuityContextValue(snapshot){
     "This is durable working state reconstructed from Trebell metadata, explicit notes, verification, checkpoints, queue state, and bounded failure traces. The user's current message has priority over stale continuity.",
     snapshot.workspace?.cwd&&("Workspace: "+snapshot.workspace.cwd+(snapshot.workspace.branch?" · branch "+snapshot.workspace.branch:"")),
     snapshot.verification&&("Latest verification: "+[snapshot.verification.status,snapshot.verification.risk,snapshot.verification.summary].filter(Boolean).join(" · ")),
+    snapshot.verification&&listBlock("Verification still required",snapshot.verification.missing),
+    snapshot.verification&&listBlock("Verification failures",snapshot.verification.failures),
+    snapshot.verification&&listBlock("Verification blockers",snapshot.verification.blocked),
     listBlock("Completed work",snapshot.completedWork),
     listBlock("Unresolved failures",snapshot.unresolvedFailures),
     listBlock("Recent failure evidence",snapshot.recentFailures),

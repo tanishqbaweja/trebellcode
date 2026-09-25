@@ -28,3 +28,18 @@ test("derived-only continuity does not invent an explicit-note update timestamp"
   const snapshot=continuitySnapshot({threadId:"thread-1",thread:{id:"thread-1",turns:[{id:"done",status:"completed"}]},meta:{}});
   assert.equal(snapshot.notes.updatedAt,0);assert.equal(snapshot.meaningful,true);assert.deepEqual(snapshot.completedTurnIds,["done"]);
 });
+
+test("continuity formats structured verification summaries and preserves missing or failed evidence for the same-agent loop",()=>{
+  const snapshot=continuitySnapshot({
+    threadId:"thread-verify",
+    verificationRecords:[{
+      status:"incomplete",risk:"medium",updatedAt:3000,
+      assessment:{verified:false,summary:{required:4,passed:1,failed:1,blocked:0,missing:2},missing:[{id:"visual",reason:"No screenshot yet."},{id:"browser_runtime",reason:"Console not checked."}],failures:[{id:"tests",reason:"Command exited with code 1."}]},
+    }],
+  });
+  assert.equal(snapshot.verification.summary,"1/4 required checks passed · 1 failed · 2 missing");
+  assert.deepEqual(snapshot.verification.missing,["visual · No screenshot yet.","browser_runtime · Console not checked."]);
+  assert.deepEqual(snapshot.verification.failures,["tests · Command exited with code 1."]);
+  const value=continuityContextValue(snapshot);
+  assert.doesNotMatch(value,/\[object Object\]/);assert.match(value,/Verification still required/);assert.match(value,/visual · No screenshot yet/);assert.match(value,/Verification failures/);assert.match(value,/tests · Command exited with code 1/);
+});

@@ -151,6 +151,27 @@ test("checkpoint objects and refs request fsync before state publication",async(
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
+test("checkpoint change inspection compares against the captured tree without blaming pre-existing untracked files",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-checkpoint-diff-"));
+  const home=join(root,"home"),repo=join(root,"repo");
+  try{
+    await mkdir(repo,{recursive:true});await git(repo,["init"]);await git(repo,["config","user.email","trebell@example.test"]);await git(repo,["config","user.name","Trebell Test"]);
+    await writeFile(join(repo,"tracked.txt"),"base\n");await git(repo,["add","tracked.txt"]);await git(repo,["commit","-m","Base"]);
+    await writeFile(join(repo,"preexisting.txt"),"already here\n");
+    const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env),service=new CheckpointService({state,env});
+    const checkpoint=await service.create({cwd:repo,threadId:"thread-diff",label:"Before turn"});
+    const checkpointPaths=(await git(repo,["ls-tree","-r","--name-only",checkpoint.commit])).stdout.split(/\r?\n/).filter(Boolean);
+    assert.ok(checkpointPaths.includes("preexisting.txt"),"checkpoint must capture pre-existing untracked files before diffing the turn");
+    await writeFile(join(repo,"tracked.txt"),"changed\n");
+    await writeFile(join(repo,"new-after-turn.txt"),"new\n");
+    const changed=await service.changedPaths(checkpoint.id,{threadId:"thread-diff"});
+    assert.deepEqual(changed.paths,["new-after-turn.txt","tracked.txt"]);
+    await assert.rejects(()=>service.changedPaths(checkpoint.id,{threadId:"wrong-thread"}),/thread that created/i);
+    await writeFile(join(repo,"tracked.txt"),"base\n");await rm(join(repo,"new-after-turn.txt"));
+    assert.deepEqual((await service.changedPaths(checkpoint.id,{threadId:"thread-diff"})).paths,[]);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
 test("file rewind restores only an isolated managed worktree and refuses sibling ownership",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-checkpoint-isolation-"));
   const home=join(root,"home"),repo=join(root,"repo"),worktree=join(root,"worktree");

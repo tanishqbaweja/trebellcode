@@ -80,6 +80,36 @@ export class CheckpointService{
   }
   list(threadId=null){return this.state.checkpoints(threadId);}
   link(id,patch){return this.state.updateCheckpoint(id,patch);}
+  async changedPaths(id,{threadId=null}={}){
+    const cp=this.state.checkpoints().find(item=>item.id===id);
+    if(!cp)throw new Error("Checkpoint not found");
+    if(threadId&&cp.threadId!==threadId)throw new Error("Checkpoint change inspection is allowed only from the thread that created this checkpoint.");
+    const info=await this.gitInfoFn(cp.root);
+    if(!info.isGit)throw new Error("Checkpoint repository is unavailable");
+    const tmpDir=join(trebellHome(this.env),"checkpoints");
+    await mkdir(tmpDir,{recursive:true});
+    const indexPath=join(tmpDir,`compare-index-${randomUUID()}`);
+    const childEnv={...process.env,GIT_INDEX_FILE:indexPath};
+    try{
+      await this.#captureGit(info.root,["read-tree",cp.commit],{env:childEnv});
+      await this.gitFn(info.root,["update-index","--refresh"],{env:childEnv,allowFailure:true});
+      const [modified,untracked,checkpointTree]=await Promise.all([
+        this.#captureGit(info.root,["diff-files","--name-only","-z","--"],{env:childEnv}),
+        this.#captureGit(info.root,["ls-files","--others","--exclude-standard","-z","--"],{env:childEnv}),
+        this.#captureGit(info.root,["ls-tree","-r","--name-only","-z",cp.commit],{env:childEnv}),
+      ]);
+      const normalizePaths=value=>String(value||"").split("\0").map(item=>item.replace(/\\/g,"/").trim()).filter(Boolean);
+      const trackedAtCheckpoint=new Set(normalizePaths(checkpointTree.stdout));
+      const paths=[...new Set([
+        ...normalizePaths(modified.stdout),
+        ...normalizePaths(untracked.stdout).filter(path=>!trackedAtCheckpoint.has(path)),
+      ])].sort((a,b)=>a.localeCompare(b));
+      return {checkpoint:cp,root:info.root,paths};
+    }finally{
+      await rm(indexPath,{force:true}).catch(()=>{});
+      await rm(indexPath+".lock",{force:true}).catch(()=>{});
+    }
+  }
   async #assertRestoreIsolation(cp,threadId){
     if(!threadId||cp.threadId!==threadId)throw new Error("Checkpoint file restore is allowed only from the thread that created this checkpoint.");
     const root=await realpath(cp.root).catch(()=>null);
