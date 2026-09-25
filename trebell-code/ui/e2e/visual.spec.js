@@ -1979,6 +1979,9 @@ test("settings page visual audit",async({page,request})=>{
   await expect(page.getByRole("heading",{name:"Agent harness"})).toBeHidden();
   await expect(page.getByRole("heading",{name:"Browser profiles"})).toBeHidden();
   await expect(page.getByRole("heading",{name:"SnapShots"})).toBeHidden();
+  await expect(page.locator(".browser-profile-settings")).toHaveCount(0);
+  await expect(page.locator(".snapshot-settings")).toHaveCount(0);
+  await expect(page.locator(".keybinding-row")).toHaveCount(0);
   await page.screenshot({path:auditDir+"settings-general-1600x980.png",fullPage:true});
 
   const settingsSearch=page.getByLabel("Search settings");
@@ -2027,10 +2030,13 @@ test("settings page visual audit",async({page,request})=>{
   await expect(page.getByRole("heading",{name:"Background mode"})).toBeVisible();
   await expect(page.getByRole("heading",{name:"Browser profiles"})).toBeVisible();
   await expect(page.getByRole("heading",{name:"SnapShots"})).toBeVisible();
+  await expect(page.locator(".browser-profile-settings")).toHaveCount(1);
+  await expect(page.locator(".snapshot-settings")).toHaveCount(1);
   await page.screenshot({path:auditDir+"settings-desktop-1600x980.png",fullPage:true});
 
   await page.getByRole("button",{name:/Shortcuts/}).click();
   await expect(page.getByRole("heading",{name:"Keyboard shortcuts"})).toBeVisible();
+  await expect(page.locator(".keybinding-row")).not.toHaveCount(0);
   await page.screenshot({path:auditDir+"settings-shortcuts-1600x980.png",fullPage:true});
 
   await page.getByRole("button",{name:/Diagnostics/}).click();
