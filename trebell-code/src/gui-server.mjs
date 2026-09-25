@@ -2116,6 +2116,12 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return json(res,200,contextEngine.assessVerification({plan:body.plan,evidence:Array.isArray(body.evidence)?body.evidence:[]}));
       }catch(error){return json(res,400,{error:error.message});}
     }
+    if(url.pathname==="/api/context/verification/next"&&req.method==="POST"){
+      try{
+        const body=await readJsonBody(req,2*1024*1024);
+        return json(res,200,contextEngine.nextVerificationAction({plan:body.plan,evidence:Array.isArray(body.evidence)?body.evidence:[]}));
+      }catch(error){return json(res,400,{error:error.message});}
+    }
     if(url.pathname==="/api/verification-records"){
       if(req.method==="GET"){
         const options={limit:Number(url.searchParams.get("limit")||100)};
@@ -2128,7 +2134,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         try{
           const body=await readJsonBody(req,2*1024*1024),evidence=Array.isArray(body.evidence)?body.evidence:[],assessment=contextEngine.assessVerification({plan:body.plan,evidence});
           const environmentId=!body.environmentId||body.environmentId==="local"?null:String(body.environmentId);
-          return json(res,200,{record:state.recordVerification({id:body.id,environmentId,projectPath:body.projectPath||body.path||null,threadId:body.threadId||null,turnId:body.turnId||null,plan:body.plan,evidence,assessment})});
+          const record=state.recordVerification({id:body.id,environmentId,projectPath:body.projectPath||body.path||null,threadId:body.threadId||null,turnId:body.turnId||null,plan:body.plan,evidence,assessment});
+          return json(res,200,{record,nextAction:contextEngine.nextVerificationAction({plan:record.plan,evidence:record.evidence})});
         }catch(error){return json(res,400,{error:error.message});}
       }
     }

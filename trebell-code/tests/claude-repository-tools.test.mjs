@@ -11,6 +11,7 @@ test("Claude repository tool handlers reuse the shared Context Engine",async()=>
     ,async projectCommands(args){calls.push(["commands",args]);return {declared:[{command:"npm run test"}]}}
     ,async verificationPlan(args){calls.push(["verify",args]);return {risk:"medium",steps:[{id:"targeted_tests"}]}}
     ,assessVerification(args){calls.push(["assess",args]);return {status:"verified",verified:true}}
+    ,nextVerificationAction(args){calls.push(["next",args]);return {action:"complete",reviewRecommended:false}}
     ,async fileRelations(args){calls.push(["relations",args]);return {path:args.path}}
     ,async relatedTests(args){calls.push(["tests",args]);return {data:[{path:"tests/context-engine.test.mjs"}]}}
     ,async callHierarchy(args){calls.push(["calls",args]);return {name:args.name,callers:[{path:"src/server.mjs"}]}}
@@ -33,6 +34,7 @@ test("Claude repository tool handlers reuse the shared Context Engine",async()=>
   assert.deepEqual(await handlers.projectCommands({limit:5}),{declared:[{command:"npm run test"}]});
   assert.deepEqual(await handlers.verificationPlan({paths:["src/context-engine.mjs"],riskHints:["medium"],capabilities:{diagnostics:true}}),{risk:"medium",steps:[{id:"targeted_tests"}]});
   assert.deepEqual(await handlers.verificationAssess({plan:{steps:[{id:"tests",kind:"tests"}]},evidence:[{stepId:"tests",exitCode:0}]}),{status:"verified",verified:true});
+  assert.deepEqual(await handlers.verificationNext({plan:{steps:[{id:"tests",kind:"tests"}]},evidence:[{stepId:"tests",exitCode:0}]}),{action:"complete",reviewRecommended:false});
   assert.deepEqual(await handlers.fileRelations({path:"src/context-engine.mjs"}),{path:"src/context-engine.mjs"});
   assert.deepEqual(await handlers.relatedTests({path:"src/context-engine.mjs",name:null,limit:4}),{data:[{path:"tests/context-engine.test.mjs"}]});
   assert.deepEqual(await handlers.callHierarchy({name:"ContextEngine",path:"src/context-engine.mjs",limit:5}),{name:"ContextEngine",callers:[{path:"src/server.mjs"}]});
@@ -54,6 +56,7 @@ test("Claude repository tool handlers reuse the shared Context Engine",async()=>
     ["commands",{root:"/srv/app",io,limit:5}],
     ["verify",{root:"/srv/app",io,paths:["src/context-engine.mjs"],riskHints:["medium"],capabilities:{diagnostics:true}}],
     ["assess",{plan:{steps:[{id:"tests",kind:"tests"}]},evidence:[{stepId:"tests",exitCode:0}]}],
+    ["next",{plan:{steps:[{id:"tests",kind:"tests"}]},evidence:[{stepId:"tests",exitCode:0}]}],
     ["relations",{root:"/srv/app",io,path:"src/context-engine.mjs"}],
     ["tests",{root:"/srv/app",io,path:"src/context-engine.mjs",name:null,limit:4}],
     ["calls",{root:"/srv/app",io,name:"ContextEngine",path:"src/context-engine.mjs",limit:5}],
@@ -72,7 +75,7 @@ test("Claude repository tool handlers reuse the shared Context Engine",async()=>
 });
 
 test("Claude repository MCP is an SDK-hosted server instead of a spawned duplicate index",()=>{
-  const contextEngine={searchSymbols:async()=>({data:[]}),searchFiles:async()=>({data:[]}),repositoryMap:async()=>({data:[]}),projectCommands:async()=>({declared:[]}),verificationPlan:async()=>({steps:[]}),assessVerification:()=>({status:"incomplete"}),fileRelations:async()=>({}),relatedTests:async()=>({data:[]}),callHierarchy:async()=>({callers:[],callees:[]}),diagnostics:async()=>({diagnostics:[]}),languageSymbol:async()=>({data:[]}),codeActions:async()=>({actions:[]}),organizeImports:async()=>({changes:[]}),renamePreview:async()=>({locations:[]}),symbolReferences:async()=>({data:[]}),searchCode:async()=>({data:[]}),readSourceRange:async()=>({}),gitContext:async()=>({}),gitHistory:async()=>({data:[]}),gitBlame:async()=>({data:[]})};
+  const contextEngine={searchSymbols:async()=>({data:[]}),searchFiles:async()=>({data:[]}),repositoryMap:async()=>({data:[]}),projectCommands:async()=>({declared:[]}),verificationPlan:async()=>({steps:[]}),assessVerification:()=>({status:"incomplete"}),nextVerificationAction:()=>({action:"verify"}),fileRelations:async()=>({}),relatedTests:async()=>({data:[]}),callHierarchy:async()=>({callers:[],callees:[]}),diagnostics:async()=>({diagnostics:[]}),languageSymbol:async()=>({data:[]}),codeActions:async()=>({actions:[]}),organizeImports:async()=>({changes:[]}),renamePreview:async()=>({locations:[]}),symbolReferences:async()=>({data:[]}),searchCode:async()=>({data:[]}),readSourceRange:async()=>({}),gitContext:async()=>({}),gitHistory:async()=>({data:[]}),gitBlame:async()=>({data:[]})};
   const server=createClaudeRepositoryMcp({contextEngine,root:"/repo",version:"fixture"});
   assert.equal(server.type,"sdk");
   assert.equal(server.name,"trebell_repository");

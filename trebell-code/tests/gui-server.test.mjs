@@ -182,10 +182,15 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(assessmentResponse.status,200);
     const assessmentResult=await assessmentResponse.json();
     assert.equal(assessmentResult.status,"verified");assert.equal(assessmentResult.verified,true);assert.equal(assessmentResult.summary.passed,1);
+    const verificationNextResponse=await fetch(gui.url+"/api/context/verification/next",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({plan:{risk:"medium",steps:[{id:"diagnostics",kind:"diagnostics",cost:"low",required:true},{id:"tests",kind:"tests",cost:"medium",required:true}]},evidence:[{stepId:"diagnostics",errorCount:0}]})});
+    assert.equal(verificationNextResponse.status,200);
+    const verificationNext=await verificationNextResponse.json();
+    assert.equal(verificationNext.action,"verify");assert.equal(verificationNext.nextStep.id,"tests");
     const persistedVerificationResponse=await fetch(gui.url+"/api/verification-records",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({projectPath:configProject,threadId:"thread-verification",turnId:"turn-verification",plan:{risk:"medium",steps:[{id:"tests",kind:"tests",required:true}]},evidence:[{stepId:"tests",exitCode:0}]})});
     assert.equal(persistedVerificationResponse.status,200);
-    const persistedVerification=(await persistedVerificationResponse.json()).record;
+    const persistedPayload=await persistedVerificationResponse.json(),persistedVerification=persistedPayload.record;
     assert.equal(persistedVerification.status,"verified");assert.equal(persistedVerification.assessment.verified,true);assert.equal(persistedVerification.threadId,"thread-verification");
+    assert.equal(persistedPayload.nextAction.action,"complete");
     const verificationHistoryResponse=await fetch(gui.url+"/api/verification-records?"+new URLSearchParams({threadId:"thread-verification",projectPath:configProject}));
     assert.equal(verificationHistoryResponse.status,200);
     const verificationHistory=(await verificationHistoryResponse.json()).records;

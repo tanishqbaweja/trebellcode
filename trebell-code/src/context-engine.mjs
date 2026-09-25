@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { parse as parseJavaScriptAst } from "@babel/parser";
 import { planVerification } from "./verification-planner.mjs";
 import { assessVerification } from "./verification-assessor.mjs";
+import { nextVerificationAction } from "./verification-loop.mjs";
 
 const execFileAsync=promisify(execFile);
 const SKIP=new Set([".git","node_modules","target","dist","build",".next",".cache","desktop-dist","coverage","vendor"]);
@@ -997,6 +998,10 @@ export class ContextEngine{
 
   assessVerification({plan,evidence=[]}={}){
     return assessVerification({plan,evidence});
+  }
+
+  nextVerificationAction({plan,evidence=[]}={}){
+    return nextVerificationAction({plan,evidence});
   }
 
   async relatedTests({root,path=null,name=null,limit=80,io=null}={}){
