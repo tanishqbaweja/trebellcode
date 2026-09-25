@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { trebellHome } from "./paths.mjs";
 import { boundDiagnosticValue } from "./diagnostic-bounds.mjs";
 import { redactSecretValue } from "./secret-redactor.mjs";
+import { SqliteEventStore } from "./sqlite-event-store.mjs";
 
 const DEFAULT_MAX_RECORDS=5000;
 const DEFAULT_MAX_BYTES=8*1024*1024;
@@ -35,19 +36,29 @@ function compactProtocolData(method,params={}){
 }
 
 export class EventJournal{
-  constructor(env=process.env,{maxRecords=DEFAULT_MAX_RECORDS,maxBytes=DEFAULT_MAX_BYTES}={}){
+  constructor(env=process.env,{maxRecords=DEFAULT_MAX_RECORDS,maxBytes=DEFAULT_MAX_BYTES,preferSqlite=true}={}){
     this.env=env;this.maxRecords=Math.max(100,Math.trunc(Number(maxRecords)||DEFAULT_MAX_RECORDS));
     this.maxBytes=Math.max(256*1024,Math.trunc(Number(maxBytes)||DEFAULT_MAX_BYTES));
     this.path=join(trebellHome(env),"events.jsonl");mkdirSync(dirname(this.path),{recursive:true});
-    this.recent=[];this.bytes=0;this.writeQueue=Promise.resolve();this.lastError=null;
+    this.databasePath=join(trebellHome(env),"trebell.sqlite");this.recent=[];this.bytes=0;this.writeQueue=Promise.resolve();this.lastError=null;this.exportError=null;this.sqlite=null;
+    const legacy=[];
     try{
       if(existsSync(this.path)){
         this.bytes=statSync(this.path).size;
         const text=readFileSync(this.path,"utf8");
         const lines=text.split(/\r?\n/).filter(Boolean).slice(-this.maxRecords);
-        this.recent=lines.map(line=>{try{return JSON.parse(line)}catch{return null}}).filter(Boolean);
+        legacy.push(...lines.map(line=>{try{return JSON.parse(line)}catch{return null}}).filter(Boolean));
       }
-    }catch{this.recent=[];this.bytes=0}
+    }catch{this.bytes=0}
+    try{
+      if(!preferSqlite)throw new Error("SQLite event storage disabled");
+      this.sqlite=new SqliteEventStore(env,{maxRecords:this.maxRecords,maxBytes:this.maxBytes});
+      if(legacy.length)this.sqlite.import(legacy);
+      this.recent=this.sqlite.recent(this.maxRecords);
+    }catch(error){
+      this.sqlite=null;this.recent=legacy;
+      if(preferSqlite)this.lastError={at:Date.now(),message:String(error?.message||error||"SQLite event storage unavailable").slice(0,2000)};
+    }
   }
 
   record(entry={}){
@@ -60,14 +71,17 @@ export class EventJournal{
       category:String(entry.category||"runtime").slice(0,80),name:String(entry.name||"event").slice(0,200),
       status:entry.status?String(entry.status).slice(0,80):null,data:cleaned,
     };
+    const existingIndex=this.recent.findIndex(item=>item.id===record.id);if(existingIndex>=0)this.recent.splice(existingIndex,1);
     this.recent.push(record);if(this.recent.length>this.maxRecords)this.recent.splice(0,this.recent.length-this.maxRecords);
+    if(this.sqlite)try{this.sqlite.insert(record);this.lastError=null}catch(error){this.lastError={at:Date.now(),message:String(error?.message||error||"SQLite event write failed").slice(0,2000)}}
     const line=JSON.stringify(record)+"\n";this.bytes+=Buffer.byteLength(line);
     this.writeQueue=this.writeQueue.then(async()=>{
       await appendFile(this.path,line,{encoding:"utf8",mode:0o600});
       if(this.bytes>this.maxBytes)await this.#compact();
-      this.lastError=null;
+      this.exportError=null;
     }).catch(error=>{
-      this.lastError={at:Date.now(),message:String(error?.message||error||"Event journal write failed").slice(0,2000)};
+      this.exportError={at:Date.now(),message:String(error?.message||error||"Event journal export mirror write failed").slice(0,2000)};
+      if(!this.sqlite)this.lastError=clone(this.exportError);
     });
     return clone(record);
   }
@@ -81,6 +95,7 @@ export class EventJournal{
   }
 
   list({threadId=null,turnId=null,runtime=null,category=null,limit=200,before=null,after=null}={}){
+    if(this.sqlite)try{return clone(this.sqlite.list({threadId,turnId,runtime,category,limit,before,after}))}catch(error){this.lastError={at:Date.now(),message:String(error?.message||error||"SQLite event query failed").slice(0,2000)}}
     const max=Math.max(1,Math.min(1000,Math.trunc(Number(limit)||200)));
     const beforeValue=before==null?Infinity:Number(before),afterValue=after==null?-Infinity:Number(after);
     const beforeCutoff=Number.isFinite(beforeValue)?beforeValue:Infinity,afterCutoff=Number.isFinite(afterValue)?afterValue:-Infinity;
@@ -97,7 +112,8 @@ export class EventJournal{
   }
 
   status(){
-    return {path:this.path,records:this.recent.length,bytes:this.bytes,lastError:this.lastError?clone(this.lastError):null};
+    let sqliteStats=null;if(this.sqlite)try{sqliteStats=this.sqlite.stats()}catch{}
+    return {path:this.path,databasePath:this.sqlite?this.databasePath:null,backend:this.sqlite?"sqlite":"jsonl",records:sqliteStats?.records??this.recent.length,bytes:sqliteStats?.logicalBytes??this.bytes,fileBytes:sqliteStats?.fileBytes??this.bytes,exportBytes:this.bytes,lastError:this.lastError?clone(this.lastError):null,exportError:this.exportError?clone(this.exportError):null};
   }
 
   async #compact(){
@@ -107,4 +123,5 @@ export class EventJournal{
   }
 
   async flush(){await this.writeQueue}
+  async close(){await this.flush();if(this.sqlite){this.sqlite.close();this.sqlite=null}}
 }

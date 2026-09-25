@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { trebellHome } from "./paths.mjs";
 import { normalizeMcpServers } from "./mcp-registry.mjs";
 import { withoutSecretEnvironment } from "./secret-redactor.mjs";
+import { normalizeRecipes } from "./recipes.mjs";
 
 const DEFAULT_STATE = Object.freeze({
   version: 2,
@@ -366,6 +367,8 @@ export class TrebellStateStore {
     }else if(!Array.isArray(project.scripts)) project.scripts=[];
     if("preferredScriptId" in patch) project.preferredScriptId=patch.preferredScriptId?String(patch.preferredScriptId):null;
     if(project.preferredScriptId&&!project.scripts.some(script=>script.id===project.preferredScriptId))project.preferredScriptId=null;
+    if(Array.isArray(patch.recipes))project.recipes=normalizeRecipes(patch.recipes).map(recipe=>({...recipe,id:recipe.id||randomUUID()}));
+    else if(!Array.isArray(project.recipes))project.recipes=[];
     this.#save();
     return clone(project);
   }

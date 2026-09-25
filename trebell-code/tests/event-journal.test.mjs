@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventJournal } from "../src/event-journal.mjs";
@@ -25,6 +25,8 @@ test("event journal persists bounded lifecycle metadata while redacting secrets"
     const disk=await readFile(join(home,"events.jsonl"),"utf8");
     assert.doesNotMatch(disk,/super-secret|another-secret|plain-secret-value|do not persist token stream/);
     assert.match(disk,/turn\/completed/);
+    assert.equal(journal.status().backend,"sqlite");assert.ok(journal.status().databasePath?.endsWith("trebell.sqlite"));
+    await journal.close();
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
@@ -38,6 +40,7 @@ test("event journal keeps its in-memory trace ring bounded",async()=>{
     assert.equal(items.length,100);
     assert.equal(items[0].name,"event-139");
     assert.equal(items.at(-1).name,"event-40");
+    await journal.close();
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
@@ -52,6 +55,7 @@ test("event journal keeps compact tool completion and surfaced error evidence",a
     assert.equal(items.length,2);
     assert.equal(items[0].name,"error");assert.equal(items[0].data.message,"Provider command failed visibly");
     assert.equal(items[1].name,"item/completed");assert.equal(items[1].data.item.exitCode,0);assert.equal(items[1].data.item.durationMs,123);assert.equal(items[1].data.item.success,true);assert.equal(items[1].data.checkpointId,"checkpoint-2");
+    await journal.close();
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
@@ -68,5 +72,46 @@ test("event journal filters trace evidence by runtime, category, turn and time w
     assert.deepEqual(journal.list({after:1_500,before:3_000}).map(item=>item.id),["new-codex"]);
     assert.deepEqual(journal.list({threadId:"thread-a",runtime:"codex",category:"checkpoint",after:500,before:1_500}).map(item=>item.id),["old-codex"]);
     await journal.flush();
+    await journal.close();
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
+test("event journal migrates legacy JSONL into indexed SQLite once",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-events-migrate-"));
+  try{
+    await writeFile(join(home,"events.jsonl"),[
+      JSON.stringify({id:"legacy-1",at:100,runtime:"codex",provider:null,environmentId:null,threadId:"thread-legacy",turnId:"turn-1",category:"runtime",name:"turn/started",status:null,data:{safe:true}}),
+      JSON.stringify({id:"legacy-2",at:200,runtime:"codex",provider:null,environmentId:null,threadId:"thread-legacy",turnId:"turn-1",category:"runtime",name:"turn/completed",status:"completed",data:{safe:true}}),
+      "",
+    ].join("\n"));
+    const first=new EventJournal({TREBELL_HOME:home},{maxRecords:100,maxBytes:256*1024});
+    assert.equal(first.status().backend,"sqlite");assert.deepEqual(first.list({threadId:"thread-legacy"}).map(item=>item.id),["legacy-2","legacy-1"]);await first.close();
+    const second=new EventJournal({TREBELL_HOME:home},{maxRecords:100,maxBytes:256*1024});
+    assert.deepEqual(second.list({threadId:"thread-legacy"}).map(item=>item.id),["legacy-2","legacy-1"]);assert.equal(second.status().records,2);await second.close();
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
+test("event journal retains the bounded JSONL fallback when SQLite is unavailable",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-events-fallback-"));
+  try{
+    const first=new EventJournal({TREBELL_HOME:home},{maxRecords:100,maxBytes:256*1024,preferSqlite:false});
+    first.record({id:"fallback-1",at:100,threadId:"thread-fallback",category:"runtime",name:"turn/started",data:{safe:true}});
+    await first.close();assert.equal(first.status().backend,"jsonl");
+    const second=new EventJournal({TREBELL_HOME:home},{maxRecords:100,maxBytes:256*1024,preferSqlite:false});
+    assert.deepEqual(second.list({threadId:"thread-fallback"}).map(item=>item.id),["fallback-1"]);assert.equal(second.status().databasePath,null);
+    await second.close();
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
+test("event journal reconciles newer JSONL fallback events into an existing SQLite database",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-events-reconcile-"));
+  try{
+    const sqliteFirst=new EventJournal({TREBELL_HOME:home},{maxRecords:100,maxBytes:256*1024});
+    sqliteFirst.record({id:"sqlite-first",at:100,threadId:"thread-reconcile",category:"runtime",name:"turn/started"});await sqliteFirst.close();
+    const fallback=new EventJournal({TREBELL_HOME:home},{maxRecords:100,maxBytes:256*1024,preferSqlite:false});
+    fallback.record({id:"fallback-newer",at:200,threadId:"thread-reconcile",category:"runtime",name:"turn/completed"});await fallback.close();
+    const reconciled=new EventJournal({TREBELL_HOME:home},{maxRecords:100,maxBytes:256*1024});
+    assert.deepEqual(reconciled.list({threadId:"thread-reconcile"}).map(item=>item.id),["fallback-newer","sqlite-first"]);
+    assert.equal(reconciled.status().records,2);await reconciled.close();
   }finally{await rm(home,{recursive:true,force:true})}
 });
