@@ -143,6 +143,29 @@ test("Trebell Native enforces the remaining goal tool budget inside an active tu
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
 });
 
+test("Trebell Native applies permission-profile changes to an already cached session",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-permission-refresh-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let call=0;
+  const nativeProviderTurn=async request=>{
+    call++;
+    if(call===1)return{id:"permission-write-1",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"permission-tool-1",namespace:"trebell_workspace",name:"write_file",arguments:JSON.stringify({path:"allowed.txt",content:"allowed"})}],finishReason:"tool_calls",usage:{}};
+    if(call===2){assert.match(request.messages.at(-1).content,/\"written\":true/);return{id:"permission-done-1",provider:request.provider,model:request.model,text:"First write completed.",toolCalls:[],finishReason:"stop",usage:{}}}
+    if(call===3)return{id:"permission-write-2",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"permission-tool-2",namespace:"trebell_workspace",name:"write_file",arguments:JSON.stringify({path:"blocked.txt",content:"blocked"})}],finishReason:"tool_calls",usage:{}};
+    assert.equal(call,4);assert.match(request.messages.at(-1).content,/read-only|rejected|blocked|not permitted/i);return{id:"permission-done-2",provider:request.provider,model:request.model,text:"Read-only mode blocked the write.",toolCalls:[],finishReason:"stop",usage:{}};
+  };
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
+  try{
+    const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;
+    const first=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",input:[{type:"text",text:"Write the allowed file"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===first.id);
+    assert.equal(await (await import("node:fs/promises")).readFile(join(repo,"allowed.txt"),"utf8"),"allowed");
+    const second=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"read-only",input:[{type:"text",text:"Try the blocked write"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===second.id);
+    await assert.rejects((await import("node:fs/promises")).readFile(join(repo,"blocked.txt"),"utf8"),error=>error?.code==="ENOENT");
+    const persisted=threadStore.get(thread.id);assert.equal(persisted.providerMeta.permissionProfile,"read-only");const blocked=persisted.turns[1].items.find(item=>item.type==="dynamicToolCall"&&item.tool==="write_file");assert.equal(blocked.success,false);
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
 test("Trebell Native relay can edit workspace files and run bounded terminal commands through the same agent loop",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-coding-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   await writeFile(join(repo,"app.js"),"export const answer = 1;\n","utf8");

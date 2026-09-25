@@ -92,6 +92,7 @@ export class NativeAgentSession{
   }
   setProvider(provider){this.provider=provider?String(provider):null}
   async setModel(model){this.model=String(model||"")||null;return {model:this.model}}
+  setPermissionMode(mode){this.permissionMode=String(mode||"supervised")||"supervised";return {permissionMode:this.permissionMode}}
   steer(prompt){
     if(this.closed)throw new Error("Native session is closed");
     if(!this.turnActive||!this.controller)throw new Error("Trebell Native has no active turn to steer.");

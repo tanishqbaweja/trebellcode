@@ -616,7 +616,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         contextEngine,root:runtimeCwd,repository:!projectless,io:repoIo,knowledgeService:repositoryKnowledge,environmentId,mcpBroker,
         projectAvailable:!projectless,
         policyContext:()=>({
-          permissionProfile:effectivePermissionMode,runtime:"native",workspace:runtimeCwd,projectAvailable:!projectless,
+          permissionProfile:normalizePermissionMode((threadStore.get(thread.id)||thread)?.providerMeta?.permissionProfile||effectivePermissionMode),runtime:"native",workspace:runtimeCwd,projectAvailable:!projectless,
           desktopAvailable:namespaceNames.has("trebell_browser")||namespaceNames.has("trebell_computer"),deviceAccess:namespaceNames.has("trebell_device"),delegationAvailable:namespaceNames.has("trebell_delegate"),
           environmentType:environmentProfile?.type||"local",environmentIsolated:false,provenance:"model",
         }),
@@ -1138,6 +1138,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       if(Object.keys(permissionPatch).length||Object.keys(providerPatch).length)thread=threadStore.update(thread.id,{providerMeta:{...(thread.providerMeta||{}),...permissionPatch,...providerPatch}});
       const session=await ensureSession(thread,context,{model:params.model||thread.model});
       if(runtime==="native"&&params.modelProvider&&typeof session.setProvider==="function")session.setProvider(params.modelProvider);
+      if(runtime==="native"&&typeof session.setPermissionMode==="function")session.setPermissionMode((threadStore.get(thread.id)||thread)?.providerMeta?.permissionProfile||"supervised");
       if(params.model&&params.model!==thread.model){await session.setModel(params.model).catch(()=>{});threadStore.update(thread.id,{model:params.model})}
       const turn=threadStore.addTurn(thread.id,{inputText:textOfInput(params.input),status:"inProgress"});session.__assistant="";
       session.__usage=null;
