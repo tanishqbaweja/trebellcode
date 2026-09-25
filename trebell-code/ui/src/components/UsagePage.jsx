@@ -2,15 +2,9 @@ import React,{useEffect,useMemo,useState} from "react";
 import { CircleAlert, RefreshCw, RotateCcw, Sparkles, Trash2 } from "lucide-react";
 import { api } from "../api.js";
 import { codexRateLimitEntries,formatRateReset,microsToCurrency,rateLimitReachedLabel,rateLimitRemainingPercent } from "../usage-account.js";
+import { estimateUsageCost } from "../usage-pricing.js";
 
 function formatTokens(value){const n=Number(value||0);if(n>=1_000_000)return (n/1_000_000).toFixed(n>=10_000_000?1:2)+"M";if(n>=1_000)return (n/1_000).toFixed(n>=100_000?0:1)+"K";return n.toLocaleString()}
-function estimateCost(record,settings){
-  if(record.cost?.currency==="USD"&&Number.isFinite(Number(record.cost.amount)))return {amount:Number(record.cost.amount),estimated:false};
-  const price=(settings.customModels||[]).find(item=>item.id===record.model&&item.runtime===record.runtime&&(record.runtime!=="codex"||item.provider===record.provider));if(!price)return null;
-  const usage=record.usage||{};const rate=key=>price[key]==null?0:Number(price[key])||0;
-  const amount=(Number(usage.inputTokens||0)*rate("inputPrice")+Number(usage.outputTokens||0)*rate("outputPrice")+Number(usage.cachedInputTokens||0)*rate("cacheReadPrice")+Number(usage.cacheWriteInputTokens||0)*rate("cacheWritePrice"))/1_000_000;
-  return {amount,estimated:true};
-}
 function runtimeLabel(value){return ({native:"Trebell Native",codex:"Codex",claude:"Claude Code",opencode:"OpenCode",cursor:"Cursor",grok:"Grok Build",antigravity:"Antigravity"}[value]||value||"Unknown")}
 function money(value){return Number.isFinite(value)?`$${value.toFixed(value<1?4:2)}`:"—"}
 function duration(value){const seconds=Number(value);if(!Number.isFinite(seconds)||seconds<0)return "—";if(seconds<60)return Math.round(seconds)+"s";const mins=Math.round(seconds/60);return mins<60?mins+"m":Math.floor(mins/60)+"h "+(mins%60)+"m"}
@@ -110,7 +104,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
   useEffect(()=>{refreshEnvironments()},[]);
   const computed=useMemo(()=>{
     let cost=0,known=0,estimated=0;const modelMap={};
-    for(const record of data.records||[]){const item=estimateCost(record,settings);if(item){cost+=item.amount;item.estimated?estimated++:known++}const key=record.model||"Unknown model";const bucket=modelMap[key]||(modelMap[key]={tokens:0,turns:0,cost:0,costEntries:0,runtime:record.runtime});bucket.tokens+=Number(record.usage?.totalTokens||0);bucket.turns++;if(item){bucket.cost+=item.amount;bucket.costEntries++}}
+    for(const record of data.records||[]){const item=estimateUsageCost(record,settings);if(item){cost+=item.amount;item.estimated?estimated++:known++}const key=record.model||"Unknown model";const bucket=modelMap[key]||(modelMap[key]={tokens:0,turns:0,cost:0,costEntries:0,runtime:record.runtime});bucket.tokens+=Number(record.usage?.totalTokens||0);bucket.turns++;if(item){bucket.cost+=item.amount;bucket.costEntries++}}
     return {cost,known,estimated,models:Object.entries(modelMap).sort((a,b)=>b[1].tokens-a[1].tokens)};
   },[data,settings]);
   const daily=Object.entries(data.daily||{}).sort((a,b)=>a[0].localeCompare(b[0]));const maxDaily=Math.max(1,...daily.map(([,value])=>Number(value.tokens||0)));
@@ -182,6 +176,6 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
       <section className="capability-card"><div className="capability-card-head"><span><strong>Daily tokens</strong></span><em>{days}d</em></div><div className="usage-bars">{daily.length?daily.map(([day,value])=><div key={day}><span>{new Date(day+"T00:00:00").toLocaleDateString(undefined,{month:"short",day:"numeric"})}</span><i><b style={{width:`${Math.max(2,Number(value.tokens||0)/maxDaily*100)}%`}}/></i><strong>{formatTokens(value.tokens)}</strong></div>):<p>No recorded usage in this period.</p>}</div></section>
       <section className="capability-card"><div className="capability-card-head"><span><strong>Models</strong></span><em>{computed.models.length}</em></div><div className="usage-models">{computed.models.length?computed.models.map(([name,value])=><div key={name}><span><strong>{name}</strong><small>{runtimeLabel(value.runtime)} · {value.turns} turn{value.turns===1?"":"s"}</small></span><b>{formatTokens(value.tokens)}</b><em>{value.costEntries?`$${value.cost.toFixed(value.cost<1?4:2)}`:"—"}</em></div>):<p>No model usage recorded yet.</p>}</div></section>
     </div>
-    <section className="capability-card usage-recent"><div className="capability-card-head"><span><strong>Recent turns</strong></span><em>{Math.min(100,(data.records||[]).length)}</em></div><div className="usage-table"><div className="usage-table-head"><span>When</span><span>Environment</span><span>Harness</span><span>Model</span><span>Tokens</span><span>Cost</span></div>{(data.records||[]).slice(0,100).map(record=>{const cost=estimateCost(record,settings);const environmentKey=record.environmentId||"local";return <div key={record.id}><span>{new Date(record.at).toLocaleString()}</span><span title={environmentNames[environmentKey]||environmentKey}>{environmentNames[environmentKey]||environmentKey}</span><span>{runtimeLabel(record.runtime)}</span><span title={record.model||""}>{record.model||"Unknown"}</span><span>{formatTokens(record.usage?.totalTokens)}</span><span>{cost?`${cost.estimated?"≈":""}$${cost.amount.toFixed(cost.amount<1?4:2)}`:"—"}</span></div>})}</div></section>
+    <section className="capability-card usage-recent"><div className="capability-card-head"><span><strong>Recent turns</strong></span><em>{Math.min(100,(data.records||[]).length)}</em></div><div className="usage-table"><div className="usage-table-head"><span>When</span><span>Environment</span><span>Harness</span><span>Model</span><span>Tokens</span><span>Cost</span></div>{(data.records||[]).slice(0,100).map(record=>{const cost=estimateUsageCost(record,settings);const environmentKey=record.environmentId||"local";return <div key={record.id}><span>{new Date(record.at).toLocaleString()}</span><span title={environmentNames[environmentKey]||environmentKey}>{environmentNames[environmentKey]||environmentKey}</span><span>{runtimeLabel(record.runtime)}</span><span title={record.model||""}>{record.model||"Unknown"}</span><span>{formatTokens(record.usage?.totalTokens)}</span><span>{cost?`${cost.estimated?"≈":""}$${cost.amount.toFixed(cost.amount<1?4:2)}`:"—"}</span></div>})}</div></section>
   </div>;
 }
