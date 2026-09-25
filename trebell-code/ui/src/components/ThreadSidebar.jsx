@@ -27,6 +27,7 @@ function threadCanFork(thread,runtimeCapabilities={}){
 }
 
 const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,onOpen,onSelect,onAction,onMove,runAction,agentRuntime="codex",runtimeCapabilities={}}){
+  const menuRef=useRef(null);
   const section=thread.section?.name||"Active";
   const rowRuntime=threadCatalogRuntime(thread,meta,agentRuntime),foreignRuntime=rowRuntime!==agentRuntime;
   const rowRuntimeLabel=({native:"Native",codex:"Codex",claude:"Claude",cursor:"Cursor",grok:"Grok",opencode:"OpenCode",antigravity:"Antigravity"}[rowRuntime]||rowRuntime);
@@ -41,6 +42,7 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,onOpen
     const copied=await writeClipboardText(value);
     if(!copied)throw new Error("Could not copy to clipboard.");
   };
+  const runMenuAction=callback=>{if(menuRef.current)menuRef.current.open=false;return runAction(callback)};
   return <div className={active?"thread-row active":"thread-row"} data-thread-id={thread.id}>
     {bulk&&<input className="thread-select" type="checkbox" checked={selected} disabled={foreignRuntime} title={foreignRuntime?"Open this thread before applying bulk actions":undefined} onChange={()=>onSelect(thread.id)}/>}
     <button className="thread-main" onClick={()=>runAction(()=>onOpen(thread))} title={titleOf(thread)}>
@@ -50,21 +52,21 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,onOpen
         <span>{section==="Snoozed"&&meta?.snoozedUntil?"Wakes "+formatSnoozeUntil(meta.snoozedUntil):meta?.projectless?"No project · "+relativeTime(thread.updatedAt):(thread.model?.replace(/^freebuff\//,"")||({native:"Native",codex:"Codex",claude:"Claude",cursor:"Cursor",grok:"Grok",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime))+" · "+relativeTime(thread.updatedAt)}</span>
       </div>
     </button>
-    <details className="thread-menu">
+    <details ref={menuRef} className="thread-menu">
       <summary title="Thread actions"><MoreHorizontal size={13}/></summary>
       <div className="thread-menu-popover">
-        {foreignRuntime?<button onClick={()=>runAction(()=>onOpen(thread))}>Open in {rowRuntimeLabel}</button>:<>
-          <button onClick={()=>runAction(()=>onAction(thread,section==="Pinned"?"active":"pin"))}>{section==="Pinned"?"Unpin":"Pin"}</button>
-          <button onClick={()=>runAction(()=>onAction(thread,section==="Snoozed"?"active":"snooze"))}>{section==="Snoozed"?"Wake thread":"Snooze…"}</button>
-          <button onClick={()=>runAction(()=>onAction(thread,section==="Settled"?"active":"settle"))}>{section==="Settled"?"Un-settle":"Settle"}</button>
-          {threadCanFork(thread,runtimeCapabilities)&&<button onClick={()=>runAction(()=>onAction(thread,"fork"))}>Fork thread</button>}
-          <button onClick={()=>runAction(()=>onMove(thread,-1))}>Move up</button>
-          <button onClick={()=>runAction(()=>onMove(thread,1))}>Move down</button>
+        {foreignRuntime?<button onClick={()=>runMenuAction(()=>onOpen(thread))}>Open in {rowRuntimeLabel}</button>:<>
+          <button onClick={()=>runMenuAction(()=>onAction(thread,section==="Pinned"?"active":"pin"))}>{section==="Pinned"?"Unpin":"Pin"}</button>
+          <button onClick={()=>runMenuAction(()=>onAction(thread,section==="Snoozed"?"active":"snooze"))}>{section==="Snoozed"?"Wake thread":"Snooze…"}</button>
+          <button onClick={()=>runMenuAction(()=>onAction(thread,section==="Settled"?"active":"settle"))}>{section==="Settled"?"Un-settle":"Settle"}</button>
+          {threadCanFork(thread,runtimeCapabilities)&&<button onClick={()=>runMenuAction(()=>onAction(thread,"fork"))}>Fork thread</button>}
+          <button onClick={()=>runMenuAction(()=>onMove(thread,-1))}>Move up</button>
+          <button onClick={()=>runMenuAction(()=>onMove(thread,1))}>Move down</button>
         </>}
-        <button onClick={()=>runAction(()=>copy(references.threadId))}>Copy thread ID</button>
-        {references.branch&&<button onClick={()=>runAction(()=>copy(references.branch))}>Copy branch</button>}
-        {references.path&&!meta?.projectless&&<button onClick={()=>runAction(()=>copy(references.path))}>Copy path</button>}
-        {!foreignRuntime&&<><button onClick={()=>runAction(()=>onAction(thread,"archive"))}>Archive</button><button className="danger" onClick={()=>runAction(()=>onAction(thread,"delete"))}>Delete</button></>}
+        <button onClick={()=>runMenuAction(()=>copy(references.threadId))}>Copy thread ID</button>
+        {references.branch&&<button onClick={()=>runMenuAction(()=>copy(references.branch))}>Copy branch</button>}
+        {references.path&&!meta?.projectless&&<button onClick={()=>runMenuAction(()=>copy(references.path))}>Copy path</button>}
+        {!foreignRuntime&&<><button onClick={()=>runMenuAction(()=>onAction(thread,"archive"))}>Archive</button><button className="danger" onClick={()=>runMenuAction(()=>onAction(thread,"delete"))}>Delete</button></>}
       </div>
     </details>
   </div>;
