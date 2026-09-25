@@ -1472,7 +1472,7 @@ export default function App(){
   useEffect(()=>{
     const visible=section==="chat"||section==="freebuff"||(rightPanelOpen&&rightPanelTab==="runtime");
     if(!visible||agentRuntime!=="codex"||provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;
-    refreshFreebuff(model);const timer=setInterval(()=>refreshFreebuff(model),15000);return()=>clearInterval(timer);
+    const poll=startVisibilityPoll(()=>refreshFreebuff(model),{intervalMs:15000});return()=>poll.dispose();
   },[section,rightPanelOpen,rightPanelTab,agentRuntime,provider,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
   useEffect(()=>{if(agentRuntime!=="codex"||provider!=="freebuff"||!running||!(bootstrap.loggedIn||bootstrap.mock))return;const ping=()=>{const p=new URLSearchParams({timezone});if(model)p.set("model",model);fetch("/api/freebuff/heartbeat?"+p,{method:"POST"}).catch(()=>{})};ping();const timer=setInterval(ping,45000);return()=>clearInterval(timer)},[agentRuntime,provider,running,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
 
