@@ -112,6 +112,9 @@ export class AcpAgentSession{
       return result||{action:"cancel"};
     }
     if(method==="terminal/create"){
+      const options=[{kind:"allow_once",optionId:"allow",name:"Allow"},{kind:"reject_once",optionId:"reject",name:"Reject"}];
+      const selected=acpPermissionChoice(options,this.permissionMode,"execute")||decisionChoice(options,await this.onPermission?.({method,params:{...params,toolCall:{title:String(params.command||"Run command"),toolCallId:params.toolCallId||null,rawInput:{command:params.command,args:params.args,cwd:params.cwd||this.cwd},kind:"execute"}},options}));
+      if(selected!=="allow")throw Object.assign(new Error("Terminal command was denied"),{code:-32000});
       if(this.remoteIo){
         const id=`remote-terminal-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
         const child=this.remoteIo.spawn({command:String(params.command||""),args:Array.isArray(params.args)?params.args:[],cwd:params.cwd||this.cwd});
