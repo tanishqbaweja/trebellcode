@@ -116,6 +116,13 @@ test("context engine exposes deterministic symbol and file relationship queries"
     assert.equal(symbols.data[0].kind,"class");
     assert.equal(symbols.data[0].parser,"babel");
 
+    const files=await engine.searchFiles({root,query:"session"});
+    assert.ok(files.data.some(item=>item.path==="src/auth/session.js"&&item.indexedSource===true));
+    const repoMap=await engine.repositoryMap({root,query:"refresh session",limit:8});
+    assert.ok(repoMap.graphEdges>=3);
+    assert.ok(repoMap.data.some(item=>item.path==="src/auth/session.js"&&item.definitions.some(definition=>definition.name==="RefreshSession")));
+    assert.ok(repoMap.data.some(item=>item.path==="src/auth/token.js"));
+
     const relations=await engine.fileRelations({root,path:"src/auth/session.js"});
     assert.ok(relations.imports.some(item=>item.specifier==="./token.js"&&item.target==="src/auth/token.js"));
     assert.ok(relations.importers.some(item=>item.path==="src/server.js"));
@@ -127,6 +134,11 @@ test("context engine exposes deterministic symbol and file relationship queries"
     assert.ok(references.data.some(item=>item.path==="src/auth/session.js"&&item.definition===true&&item.precision==="ast"));
     assert.ok(references.data.some(item=>item.path==="src/server.js"&&item.line===2&&item.definition===false&&item.precision==="ast"));
     assert.ok(references.data.some(item=>item.path==="tests/auth-refresh.test.js"&&item.precision==="ast"));
+    const relatedByPath=await engine.relatedTests({root,path:"src/auth/session.js"});
+    assert.deepEqual(relatedByPath.data.map(item=>item.path),["tests/auth-refresh.test.js"]);
+    const relatedBySymbol=await engine.relatedTests({root,name:"RefreshSession"});
+    assert.deepEqual(relatedBySymbol.data.map(item=>item.path),["tests/auth-refresh.test.js"]);
+    await assert.rejects(()=>engine.relatedTests({root}),/path or symbol name/i);
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
@@ -326,6 +338,12 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
   assert.equal(contentCalls,afterFirstContent,"clean remote packets should reuse indexed source samples instead of rereading candidate files");
   const remoteSearch=await engine.searchCode({root,io,query:"rotateRefreshToken",limit:10});
   assert.equal(remoteSearch.source,"git-grep");assert.ok(remoteSearch.data.some(item=>item.path==="src/auth/session.js"));
+  const remoteFiles=await engine.searchFiles({root,io,query:"session"});
+  assert.ok(remoteFiles.data.some(item=>item.path==="src/auth/session.js"));
+  const remoteMap=await engine.repositoryMap({root,io,query:"refresh session",limit:8});
+  assert.ok(remoteMap.graphEdges>=3);assert.ok(remoteMap.data.some(item=>item.path==="src/auth/session.js"));
+  const remoteTests=await engine.relatedTests({root,io,path:"src/auth/session.js"});
+  assert.deepEqual(remoteTests.data.map(item=>item.path),["tests/auth-refresh.test.js"]);
   const remoteSource=await engine.readSourceRange({root,io,path:"src/auth/session.js",startLine:1,endLine:2});
   assert.match(remoteSource.content,/rotateRefreshToken/);assert.equal(remoteSource.endLine,2);
   const remoteReferences=await engine.symbolReferences({root,io,name:"RefreshSession",limit:10});

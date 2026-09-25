@@ -443,6 +443,18 @@ function relevanceFor(entry,terms,changed,focusSet){
   return {score,reasons,symbolMatches};
 }
 
+function repositoryGraph(files,{terms=[],changed=new Set(),focusSet=new Set()}={}){
+  const available=new Set(files.map(entry=>entry.relativePath)),definitionIndex=new Map(),edges=new Map(),relevance=new Map(),personalization=new Map();
+  for(const entry of files)for(const definition of entry.parsed.definitions||[]){let owners=definitionIndex.get(definition.name);if(!owners){owners=[];definitionIndex.set(definition.name,owners)}owners.push(entry.relativePath)}
+  for(const entry of files){
+    const rank=relevanceFor(entry,terms,changed,focusSet);relevance.set(entry.relativePath,rank);personalization.set(entry.relativePath,1+rank.score);
+    for(const spec of entry.parsed.imports||[]){const target=resolveImport(entry.relativePath,spec,available);if(target)addEdge(edges,entry.relativePath,target,4)}
+    for(const [name,count] of entry.parsed.references||[]){const owners=definitionIndex.get(name);if(!owners||owners.length>4)continue;for(const owner of owners)addEdge(edges,entry.relativePath,owner,Math.min(4,Math.sqrt(count)))}
+  }
+  const centrality=pageRank(files.map(entry=>entry.relativePath),edges,personalization),edgeCount=[...edges.values()].reduce((sum,row)=>sum+row.size,0);
+  return {available,definitionIndex,edges,relevance,centrality,edgeCount};
+}
+
 function relevantExcerpt(content,entry,terms,maxChars=2600){
   const lines=String(content||"").split(/\r?\n/),anchors=[];
   for(const definition of entry.parsed.definitions){if(terms.some(term=>definition.name.toLowerCase().includes(term)))anchors.push(definition.line-1)}
@@ -586,15 +598,8 @@ export class ContextEngine{
     };
     const budget=budgetPlan.maxTokens,fileLimit=budgetPlan.maxFiles;
     const git=await contextIo.gitState();
-    const index=await this.#index(root,contextIo,git);const terms=taskTerms(task),files=[...index.files.values()],available=new Set(index.files.keys());
-    const definitionIndex=new Map();for(const entry of files)for(const definition of entry.parsed.definitions){let owners=definitionIndex.get(definition.name);if(!owners){owners=[];definitionIndex.set(definition.name,owners)}owners.push(entry.relativePath)}
-    const edges=new Map(),relevance=new Map(),personalization=new Map(),focusSet=new Set((focusPaths||[]).map(path=>contextIo.relativeFocus(path)).filter(Boolean));
-    for(const entry of files){
-      const rank=relevanceFor(entry,terms,git.changed,focusSet);relevance.set(entry.relativePath,rank);personalization.set(entry.relativePath,1+rank.score);
-      for(const spec of entry.parsed.imports){const target=resolveImport(entry.relativePath,spec,available);if(target)addEdge(edges,entry.relativePath,target,4)}
-      for(const [name,count] of entry.parsed.references){const owners=definitionIndex.get(name);if(!owners||owners.length>4)continue;for(const owner of owners)addEdge(edges,entry.relativePath,owner,Math.min(4,Math.sqrt(count)))}
-    }
-    const centrality=pageRank(files.map(entry=>entry.relativePath),edges,personalization);
+    const index=await this.#index(root,contextIo,git);const terms=taskTerms(task),files=[...index.files.values()],focusSet=new Set((focusPaths||[]).map(path=>contextIo.relativeFocus(path)).filter(Boolean));
+    const {edges,relevance,centrality,edgeCount}=repositoryGraph(files,{terms,changed:git.changed,focusSet});
     const ranked=files.map(entry=>{
       const rel=relevance.get(entry.relativePath),central=centrality.get(entry.relativePath)||0;
       const combined=rel.score+central*250;return {entry,rel,central,combined};
@@ -635,7 +640,7 @@ export class ContextEngine{
       id:`ctx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`,
       root:index.root,task:String(task||""),generatedAt:Date.now(),tokenEstimate:tokenEstimate(injection),maxTokens:budget,
       items:selected,injection,budget:budgetPlan,
-      stats:{filesIndexed:files.length,reparsed:index.reparsed,reused:index.reused,skipped:index.skipped,inspected:index.inspected,graphEdges:[...edges.values()].reduce((sum,row)=>sum+row.size,0),durationMs:index.durationMs,remote:Boolean(io),revisionChanged:index.revisionChanged,revisionUnknown:index.revisionUnknown,revisionDiffUsed:index.revisionDiffUsed},
+      stats:{filesIndexed:files.length,reparsed:index.reparsed,reused:index.reused,skipped:index.skipped,inspected:index.inspected,graphEdges:edgeCount,durationMs:index.durationMs,remote:Boolean(io),revisionChanged:index.revisionChanged,revisionUnknown:index.revisionUnknown,revisionDiffUsed:index.revisionDiffUsed},
     };
   }
 
@@ -650,6 +655,53 @@ export class ContextEngine{
       }
     }
     return {query:String(query),data:matches.sort((a,b)=>b.score-a.score||a.name.localeCompare(b.name)||a.path.localeCompare(b.path)).slice(0,capped),indexedFiles:index.files.size};
+  }
+
+  async searchFiles({root,query="",limit=80,io=null}={}){
+    const raw=String(query||"").trim(),needle=raw.toLowerCase();if(!needle)throw new Error("File search requires a query");
+    if(raw.length>500)throw new Error("File search query is too long");
+    const {index}=await this.#indexed(root,io),capped=Math.max(1,Math.min(200,Number(limit)||80)),matches=[];
+    for(const path of index.paths){
+      const lower=path.toLowerCase(),base=basename(lower);let score=0;
+      if(lower===needle)score=120;else if(base===needle)score=110;else if(base.startsWith(needle))score=95;else if(lower.startsWith(needle))score=85;else if(base.includes(needle))score=75;else if(lower.includes(needle))score=60;else continue;
+      matches.push({path,score,indexedSource:index.files.has(path),extension:extname(path).toLowerCase()||null});
+    }
+    return {query:raw,data:matches.sort((a,b)=>b.score-a.score||a.path.localeCompare(b.path)).slice(0,capped),filesDiscovered:index.paths.length,indexedFiles:index.files.size};
+  }
+
+  async repositoryMap({root,query="",limit=60,io=null}={}){
+    if(String(query||"").length>1000)throw new Error("Repository map query is too long");
+    const {git,index}=await this.#indexed(root,io),files=[...index.files.values()],terms=taskTerms(query),capped=Math.max(1,Math.min(120,Number(limit)||60));
+    const {available,edges,relevance,centrality,edgeCount}=repositoryGraph(files,{terms,changed:git.changed||new Set(),focusSet:new Set()}),incoming=new Map();
+    for(const [from,row] of edges)for(const to of row.keys()){let sources=incoming.get(to);if(!sources){sources=new Set();incoming.set(to,sources)}sources.add(from)}
+    const data=files.map(entry=>{
+      const rel=relevance.get(entry.relativePath)||{score:0,reasons:[]},central=centrality.get(entry.relativePath)||0,imports=(entry.parsed.imports||[]).map(specifier=>({specifier,target:resolveImport(entry.relativePath,specifier,available)})).filter(item=>item.target).slice(0,20);
+      return {path:entry.relativePath,score:Number((rel.score+central*250).toFixed(3)),centrality:Number(central.toFixed(6)),reasons:rel.reasons,parser:entry.parsed.parser||"regex",definitions:(entry.parsed.definitions||[]).slice(0,16),imports,incoming:(incoming.get(entry.relativePath)||new Set()).size,outgoing:(edges.get(entry.relativePath)||new Map()).size,test:/(^|\/)(test|tests|__tests__|spec)(\/|$)|\.(test|spec)\./i.test(entry.relativePath)};
+    }).sort((a,b)=>b.score-a.score||b.centrality-a.centrality||a.path.localeCompare(b.path)).slice(0,capped);
+    return {query:String(query||""),data,indexedFiles:index.files.size,graphEdges:edgeCount,changed:[...(git.changed||[])].slice(0,200)};
+  }
+
+  async relatedTests({root,path=null,name=null,limit=80,io=null}={}){
+    if(!String(path||"").trim()&&!String(name||"").trim())throw new Error("Related tests require a path or symbol name");
+    if(String(name||"").length>256)throw new Error("Related test symbol name is too long");
+    const {contextIo,index}=await this.#indexed(root,io),available=new Set(index.files.keys()),targets=[];
+    if(String(path||"").trim()){
+      const requested=contextIo.relativeFocus(path)||slash(String(path||"").replace(/^\.\//,""));if(!index.files.has(requested))throw new Error(`Context file is not indexed: ${path}`);targets.push(requested);
+    }
+    if(String(name||"").trim())for(const entry of index.files.values())if((entry.parsed.definitions||[]).some(item=>item.name===String(name).trim()))targets.push(entry.relativePath);
+    const uniqueTargets=[...new Set(targets)].slice(0,40);if(!uniqueTargets.length)return {path:path==null?null:String(path),name:name==null?null:String(name),targets:[],data:[],indexedFiles:index.files.size};
+    const targetNames=new Map(uniqueTargets.map(target=>[target,new Set((index.files.get(target)?.parsed.definitions||[]).map(item=>item.name))])),testLike=value=>/(^|\/)(test|tests|__tests__|spec)(\/|$)|\.(test|spec)\./i.test(value),tests=new Map();
+    for(const candidate of index.files.values()){
+      if(!testLike(candidate.relativePath))continue;
+      const reasons=[];
+      for(const target of uniqueTargets){
+        if((candidate.parsed.imports||[]).some(specifier=>resolveImport(candidate.relativePath,specifier,available)===target))reasons.push(`imports ${target}`);
+        const names=targetNames.get(target);if(names?.size)for(const referenced of candidate.parsed.references?.keys?.()||[])if(names.has(referenced)){reasons.push(`references ${referenced}`);break}
+      }
+      if(reasons.length)tests.set(candidate.relativePath,[...new Set(reasons)]);
+    }
+    const capped=Math.max(1,Math.min(200,Number(limit)||80)),data=[...tests].map(([testPath,reasons])=>({path:testPath,reasons})).sort((a,b)=>a.path.localeCompare(b.path)).slice(0,capped);
+    return {path:path==null?null:String(path),name:name==null?null:String(name),targets:uniqueTargets,data,indexedFiles:index.files.size,truncated:tests.size>capped};
   }
 
   async fileRelations({root,path,io=null}={}){
