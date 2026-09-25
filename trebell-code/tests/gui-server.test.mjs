@@ -173,6 +173,11 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(relatedTestsResponse.status,200);
     const relatedTests=await relatedTestsResponse.json();
     assert.deepEqual(relatedTests.data.map(item=>item.path),["tests/session.test.js"]);
+    const callsResponse=await fetch(gui.url+"/api/context/calls?"+new URLSearchParams({path:configProject,name:"RefreshSession",limit:"10"}));
+    assert.equal(callsResponse.status,200);
+    const callsResult=await callsResponse.json();
+    assert.equal(callsResult.semantic,false);
+    assert.ok(callsResult.callers.some(item=>item.path==="tests/session.test.js"&&item.caller==="testSession"&&item.kind==="construct"));
     const referencesResponse=await fetch(gui.url+"/api/context/references?"+new URLSearchParams({path:configProject,name:"RefreshSession",limit:"10"}));
     assert.equal(referencesResponse.status,200);
     const referencesResult=await referencesResponse.json();

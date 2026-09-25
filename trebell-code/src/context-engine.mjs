@@ -141,6 +141,38 @@ function javascriptIdentifierLines(content,relativePath,name){
   visit(ast.program);return [...lines].sort((a,b)=>a-b);
 }
 
+function javascriptCallSites(content,relativePath){
+  const extension=extname(relativePath).toLowerCase(),plugins=["decorators-legacy"],calls=[];
+  if(extension===".jsx"||extension===".tsx")plugins.push("jsx");
+  if(extension===".ts"||extension===".tsx")plugins.push("typescript");
+  const ast=parseJavaScriptAst(String(content||""),{sourceType:"unambiguous",errorRecovery:true,plugins});
+  const keyName=node=>node?.type==="Identifier"?node.name:node?.type==="StringLiteral"?node.value:null;
+  const calleeName=node=>{
+    if(node?.type==="Identifier")return node.name;
+    if(node?.type==="MemberExpression"&&!node.computed)return keyName(node.property);
+    if(node?.type==="OptionalMemberExpression"&&!node.computed)return keyName(node.property);
+    return null;
+  };
+  const visit=(node,scope=null,className=null)=>{
+    if(!node||typeof node!=="object")return;
+    let nextScope=scope,nextClass=className;
+    if(node.type==="ClassDeclaration"&&node.id){nextClass=node.id.name;nextScope=node.id.name}
+    else if(node.type==="FunctionDeclaration"&&node.id)nextScope=node.id.name;
+    else if(["ClassMethod","ClassPrivateMethod"].includes(node.type)){const method=keyName(node.key);if(method)nextScope=nextClass?nextClass+"."+method:method}
+    else if(node.type==="ObjectMethod"){const method=keyName(node.key);if(method)nextScope=method}
+    else if(node.type==="VariableDeclarator"&&["ArrowFunctionExpression","FunctionExpression"].includes(node.init?.type)){const names=bindingNames(node.id);if(names.length)nextScope=names[0]}
+    if(node.type==="CallExpression"||node.type==="OptionalCallExpression"||node.type==="NewExpression"){
+      const callee=calleeName(node.callee),line=Number(node?.loc?.start?.line)||0;if(callee&&line>0)calls.push({caller:nextScope||scope||null,callee,line,kind:node.type==="NewExpression"?"construct":"call"});
+    }
+    for(const [key,value] of Object.entries(node)){
+      if(["loc","start","end","extra","errors","comments","tokens"].includes(key)||!value)continue;
+      if(Array.isArray(value)){for(const child of value)if(child&&typeof child==="object"&&typeof child.type==="string")visit(child,nextScope,nextClass)}
+      else if(typeof value==="object"&&typeof value.type==="string")visit(value,nextScope,nextClass);
+    }
+  };
+  visit(ast.program);return calls.slice(0,4000);
+}
+
 function textualIdentifierLines(content,name){
   const escaped=String(name||"").replace(/[|\\{}()[\]^$+*?.-]/g,"\\$&"),pattern=new RegExp("(^|[^A-Za-z0-9_$])"+escaped+"(?=$|[^A-Za-z0-9_$])");
   const lines=String(content||"").split(/\r?\n/),matches=[];
@@ -702,6 +734,28 @@ export class ContextEngine{
     }
     const capped=Math.max(1,Math.min(200,Number(limit)||80)),data=[...tests].map(([testPath,reasons])=>({path:testPath,reasons})).sort((a,b)=>a.path.localeCompare(b.path)).slice(0,capped);
     return {path:path==null?null:String(path),name:name==null?null:String(name),targets:uniqueTargets,data,indexedFiles:index.files.size,truncated:tests.size>capped};
+  }
+
+  async callHierarchy({root,name="",path=null,limit=120,io=null}={}){
+    const symbol=String(name||"").trim();if(!symbol)throw new Error("Call hierarchy requires a symbol name");
+    if(symbol.length>256)throw new Error("Call hierarchy symbol name is too long");
+    const {contextIo,index}=await this.#indexed(root,io),capped=Math.max(1,Math.min(200,Number(limit)||120));let requested=null;
+    if(path!=null&&String(path).trim()){
+      requested=contextIo.relativeFocus(path)||slash(String(path||"").replace(/^\.\//,""));if(!index.files.has(requested))throw new Error(`Context file is not indexed: ${path}`);
+    }
+    const definitions=[];
+    for(const entry of index.files.values())for(const definition of entry.parsed.definitions||[])if(definition.name===symbol&&(!requested||entry.relativePath===requested))definitions.push({path:entry.relativePath,...definition,parser:entry.parsed.parser||"regex"});
+    const candidates=[...index.files.values()].filter(entry=>BABEL_SOURCE_EXTENSIONS.has(extname(entry.relativePath).toLowerCase())&&((entry.parsed.references||new Map()).has(symbol)||(entry.parsed.definitions||[]).some(item=>item.name===symbol))).slice(0,240);
+    const contents=await contextIo.readMany(candidates.map(entry=>entry.relativePath)),callers=[],callees=[];
+    for(const entry of candidates){
+      const content=contents.get(entry.relativePath);if(typeof content!=="string")continue;let sites=[];try{sites=javascriptCallSites(content,entry.relativePath)}catch{continue}
+      const lines=content.split(/\r?\n/);
+      for(const site of sites){
+        if(site.callee===symbol&&callers.length<capped)callers.push({path:entry.relativePath,line:site.line,caller:site.caller,kind:site.kind,text:String(lines[site.line-1]||"").slice(0,600),precision:"ast-lexical"});
+        if(site.caller===symbol&&callees.length<capped)callees.push({path:entry.relativePath,line:site.line,callee:site.callee,kind:site.kind,text:String(lines[site.line-1]||"").slice(0,600),precision:"ast-lexical"});
+      }
+    }
+    return {name:symbol,path:requested,definitions:definitions.slice(0,80),callers,callees,indexedFiles:index.files.size,supportedFiles:candidates.length,truncated:callers.length>=capped||callees.length>=capped,precision:"ast-lexical",semantic:false};
   }
 
   async fileRelations({root,path,io=null}={}){

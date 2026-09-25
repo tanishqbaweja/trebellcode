@@ -138,6 +138,12 @@ test("context engine exposes deterministic symbol and file relationship queries"
     assert.deepEqual(relatedByPath.data.map(item=>item.path),["tests/auth-refresh.test.js"]);
     const relatedBySymbol=await engine.relatedTests({root,name:"RefreshSession"});
     assert.deepEqual(relatedBySymbol.data.map(item=>item.path),["tests/auth-refresh.test.js"]);
+    const classCalls=await engine.callHierarchy({root,name:"RefreshSession"});
+    assert.equal(classCalls.semantic,false);assert.equal(classCalls.precision,"ast-lexical");
+    assert.ok(classCalls.callers.some(item=>item.path==="src/server.js"&&item.caller==="startServer"&&item.kind==="construct"));
+    assert.ok(classCalls.callers.some(item=>item.path==="tests/auth-refresh.test.js"&&item.caller==="testRefresh"));
+    const serverCalls=await engine.callHierarchy({root,name:"startServer"});
+    assert.ok(serverCalls.callees.some(item=>item.callee==="RefreshSession"&&item.kind==="construct"));
     await assert.rejects(()=>engine.relatedTests({root}),/path or symbol name/i);
   }finally{await rm(root,{recursive:true,force:true})}
 });
@@ -344,6 +350,8 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
   assert.ok(remoteMap.graphEdges>=3);assert.ok(remoteMap.data.some(item=>item.path==="src/auth/session.js"));
   const remoteTests=await engine.relatedTests({root,io,path:"src/auth/session.js"});
   assert.deepEqual(remoteTests.data.map(item=>item.path),["tests/auth-refresh.test.js"]);
+  const remoteCalls=await engine.callHierarchy({root,io,name:"RefreshSession"});
+  assert.ok(remoteCalls.callers.some(item=>item.path==="src/server.js"&&item.caller==="startServer"));
   const remoteSource=await engine.readSourceRange({root,io,path:"src/auth/session.js",startLine:1,endLine:2});
   assert.match(remoteSource.content,/rotateRefreshToken/);assert.equal(remoteSource.endLine,2);
   const remoteReferences=await engine.symbolReferences({root,io,name:"RefreshSession",limit:10});
