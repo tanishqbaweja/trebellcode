@@ -4,6 +4,7 @@ import { extname } from "node:path";
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import { createOpencodeClient as createOpencodeV2Client } from "@opencode-ai/sdk/v2";
 import spawn from "cross-spawn";
+import { normalizePermissionKind, permissionDisposition } from "./permission-policy.mjs";
 
 const MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".pdf":"application/pdf",".mp3":"audio/mpeg",".wav":"audio/wav",".m4a":"audio/mp4",".md":"text/markdown",".json":"application/json",".txt":"text/plain"};
 
@@ -43,6 +44,10 @@ function toProviderModel(value,map){
 }
 
 function permissionResponse(decision){return decision==="acceptForSession"?"always":decision==="accept"?"once":"reject"}
+
+export function openCodePermissionDisposition(mode,type){
+  return permissionDisposition(mode,normalizePermissionKind(type),{readOnlyAllowsRead:false});
+}
 
 function toolTitle(tool,stateTitle){
   const id=String(tool||"").toLowerCase();
@@ -159,7 +164,9 @@ export class OpenCodeAgentSession{
     }else if(event.type==="todo.updated")this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"plan",entries:(p.todos||[]).map(todo=>({content:todo.content,status:todo.status,priority:todo.priority}))}});
     else if(event.type==="permission.updated"&&p.sessionID===this.sessionId){
       const options=[{optionId:"once",name:"Allow once",kind:"allow_once"},{optionId:"always",name:"Always allow",kind:"allow_always"},{optionId:"reject",name:"Reject",kind:"reject_once"}];
-      let decision="accept";if(this.permissionMode==="full"||this.permissionMode==="auto")decision="acceptForSession";else if(this.permissionMode==="read-only")decision="decline";else if(this.onPermission)decision=(await this.onPermission({method:"permission",params:{toolCall:{title:p.title,toolCallId:p.callID||p.id,rawInput:p.metadata},options}}))||"decline";
+      const disposition=openCodePermissionDisposition(this.permissionMode,p.type);let decision="decline";
+      if(disposition==="allow")decision=this.permissionMode==="full"||this.permissionMode==="auto"?"acceptForSession":"accept";
+      else if(disposition==="ask"&&this.onPermission)decision=(await this.onPermission({method:"permission",params:{toolCall:{title:p.title,toolCallId:p.callID||p.id,rawInput:p.metadata,kind:normalizePermissionKind(p.type)},permissionType:p.type,options}}))||"decline";
       await this.client.postSessionIdPermissionsPermissionId({path:{id:this.sessionId,permissionID:p.id},query:{directory:this.cwd},body:{response:permissionResponse(decision)}}).catch(()=>{});
     }else if(event.type==="session.error"&&(!p.sessionID||p.sessionID===this.sessionId))this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message:p.error?.data?.message||p.error?.name||"OpenCode session error"}});
     else if(event.type==="session.diff"&&p.sessionID===this.sessionId)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"diff",diff:p.diff||[]}});
