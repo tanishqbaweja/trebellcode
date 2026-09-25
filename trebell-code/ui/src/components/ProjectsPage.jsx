@@ -1,6 +1,7 @@
-import React,{useEffect,useMemo,useState} from "react";
+import React,{useEffect,useMemo,useRef,useState} from "react";
 import { Check, Download, ExternalLink, FolderCode, GitBranch, ImagePlus, Layers3, MessageSquareText, Pencil, Play, Plus, RefreshCw, Settings2, SquareTerminal, Trash2, X } from "lucide-react";
 import { api } from "../api.js";
+import { baseProjectRecord, enrichProjectRecords, summarizeProjectRefreshErrors } from "../project-enrichment.js";
 
 function blankScript(){
   return {id:null,name:"",command:"",previewUrl:"",autoOpenPreview:false,runOnWorktreeCreate:false,waitForSetup:false};
@@ -38,8 +39,16 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
   const [suggestionsOpen,setSuggestionsOpen]=useState({});
   const [identityOpen,setIdentityOpen]=useState({});
   const [iconDraft,setIconDraft]=useState({});
+  const projectsRef=useRef([]);
+  const refreshInFlightRef=useRef(null);
+  const refreshPendingRef=useRef(false);
+  const refreshPendingErrorsRef=useRef(false);
 
-  async function refresh({reportErrors=false}={}){
+  function commitProjects(next){
+    projectsRef.current=next;setProjects(next);
+  }
+  async function performRefresh({reportErrors=false}={}){
+    const environmentPromise=api("/api/environments").then(value=>({value,error:null}),error=>({value:null,error}));
     let d;
     try{d=await api("/api/projects")}
     catch(err){
@@ -47,29 +56,48 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
       return false;
     }
     const refreshErrors=[];
-    let environments=null;
-    try{environments=await api("/api/environments")}
-    catch(err){if(reportErrors)refreshErrors.push("Environments: "+(err.message||String(err)))}
-    if(environments)setEnvironmentData(environments);
-    const previousById=new Map(projects.map(project=>[project.id,project]));
-    const enriched=await Promise.all((d.projects||[]).map(async project=>{
-      if(project.environment?.type&&project.environment.type!=="local")return {...project,scripts:Array.isArray(project.scripts)?project.scripts:[],git:null,remote:null,suggested:{scripts:[],t3:{present:false},packageManager:null}};
-      const previous=previousById.get(project.id)||null;
-      const [gitResult,suggestedResult]=await Promise.allSettled([
-        api("/api/git/info?path="+encodeURIComponent(project.path)),
-        api("/api/project-actions/suggestions?path="+encodeURIComponent(project.path)),
-      ]);
-      const git=gitResult.status==="fulfilled"?gitResult.value:(previous?.git??null);
-      const suggested=suggestedResult.status==="fulfilled"?suggestedResult.value:(previous?.suggested??{scripts:[],t3:{present:false},packageManager:null});
-      if(reportErrors&&gitResult.status==="rejected")refreshErrors.push((project.name||project.path)+" Git: "+(gitResult.reason?.message||String(gitResult.reason)));
-      if(reportErrors&&suggestedResult.status==="rejected")refreshErrors.push((project.name||project.path)+" actions: "+(suggestedResult.reason?.message||String(suggestedResult.reason)));
-      const remote=git?.remotes?.find(r=>r.kind==="fetch")?.url||null;
-      return {...project,scripts:Array.isArray(project.scripts)?project.scripts:[],git,remote:gitResult.status==="fulfilled"?remote:(previous?.remote??remote),suggested};
-    }));
-    setProjects(enriched);
-    if(reportErrors)setError(refreshErrors.length?"Projects refreshed with partial errors: "+refreshErrors.join(" · "):"");
+    const previousById=new Map(projectsRef.current.map(project=>[project.id,project]));
+    const base=(d.projects||[]).map(project=>baseProjectRecord(project,previousById.get(project.id)||null));
+    commitProjects(base);
+    const enrichmentPromise=enrichProjectRecords(base,{
+      concurrency:6,
+      fetchGit:project=>api("/api/git/info?path="+encodeURIComponent(project.path)),
+      fetchSuggestions:project=>api("/api/project-actions/suggestions?path="+encodeURIComponent(project.path)),
+      onError:(project,kind,error)=>{
+        if(!reportErrors)return;
+        const label=project.name||project.path,detail=error?.message||String(error);
+        refreshErrors.push(label+" "+(kind==="git"?"Git":"actions")+": "+detail);
+      },
+    });
+    const [enriched,environmentResult]=await Promise.all([enrichmentPromise,environmentPromise]);
+    if(environmentResult.value)setEnvironmentData(environmentResult.value);
+    else if(reportErrors)refreshErrors.push("Environments: "+(environmentResult.error?.message||String(environmentResult.error)));
+    commitProjects(enriched);
+    if(reportErrors){
+      const summary=summarizeProjectRefreshErrors(refreshErrors);
+      setError(summary?"Projects refreshed with partial errors: "+summary:"");
+    }
     else setError(current=>/^Could not refresh projects:/.test(current)?"":current);
     return true;
+  }
+  function refresh({reportErrors=false}={}){
+    const inFlight=refreshInFlightRef.current;
+    if(inFlight){
+      refreshPendingRef.current=true;
+      refreshPendingErrorsRef.current=refreshPendingErrorsRef.current||reportErrors;
+      return inFlight;
+    }
+    const run=performRefresh({reportErrors});
+    refreshInFlightRef.current=run;
+    void run.finally(()=>{
+      if(refreshInFlightRef.current!==run)return;
+      refreshInFlightRef.current=null;
+      if(!refreshPendingRef.current)return;
+      const trailingReportErrors=refreshPendingErrorsRef.current;
+      refreshPendingRef.current=false;refreshPendingErrorsRef.current=false;
+      queueMicrotask(()=>{void refresh({reportErrors:trailingReportErrors}).catch(error=>setError("Could not refresh projects: "+(error?.message||String(error))))});
+    }).catch(()=>{});
+    return run;
   }
   useEffect(()=>{refresh({reportErrors:true})},[]);
   useEffect(()=>{
