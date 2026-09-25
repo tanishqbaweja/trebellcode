@@ -43,6 +43,7 @@ import { repositoryFocusPaths } from "./context-focus.js";
 import { hydratePersistedQueue, persistedQueueItems } from "./persistent-queue.js";
 import { contextTaskAnchor, contextTaskText } from "./context-task.js";
 import { requestTurnVerificationPlan, verificationPlanEvent } from "./turn-verification.js";
+import { catalogMetaPatch, mergeThreadCatalog, sameCatalogSnapshot, threadCatalogRuntime, threadsFromCatalogMeta } from "./thread-catalog.js";
 
 const TerminalPanel=lazy(()=>import("./components/TerminalPanel.jsx"));
 const WorkspacePanel=lazy(()=>import("./components/WorkspacePanel.jsx"));
@@ -626,7 +627,7 @@ export default function App(){
   const [threadTelemetry,setThreadTelemetry]=useState({});const threadTelemetryRef=useRef({});
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false); const [initialLoadError,setInitialLoadError]=useState(""); const [initialLoadRevision,setInitialLoadRevision]=useState(0);
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"}); const [paletteDataError,setPaletteDataError]=useState("");
-  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
+  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const pendingRuntimeThreadRef=useRef(null); const catalogPersistRef=useRef(new Map()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
   const autoSettleCandidates=useMemo(()=>hasAutoSettleCandidates(threads,threadMeta),[threads,threadMeta]);
   function resetAssistantStream(){assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();diffEventBufferRef.current?.reset();assistantTextRef.current="";commandOutputRef.current.clear();mcpProgressRef.current.clear();activityTimelineRef.current?.resetStreams()}
@@ -1025,7 +1026,7 @@ export default function App(){
       const modelData=modelResult.status==="fulfilled"?modelResult.value:{models:[],error:modelResult.reason?.message||String(modelResult.reason)};
       const themeCatalog=themeResult.status==="fulfilled"?themeResult.value:environmentThemeCatalog;
       const projectData=projectResult.status==="fulfilled"?projectResult.value:{projects:state.projects||[]};
-      if(cancelled)return; setBootstrap(boot); setSettings(prev=>({...prev,...(state.settings||{})})); setPermissionMode(state.settings?.defaultPermissionMode||"supervised"); setThreadMeta(state.threadMeta||{});
+      if(cancelled)return; setBootstrap(boot); setSettings(prev=>({...prev,...(state.settings||{})})); setPermissionMode(state.settings?.defaultPermissionMode||"supervised"); setThreadMeta(state.threadMeta||{});setThreads(threadsFromCatalogMeta(state.threadMeta||{}));
       setEnvironmentThemeCatalog(themeCatalog);
       const activeEnvironmentId=state.settings?.activeEnvironmentId||null;
       const projectsForEnvironment=(projectData.projects||state.projects||[]).filter(project=>(project.environmentId||null)===activeEnvironmentId);
@@ -1081,11 +1082,42 @@ export default function App(){
     if(creationErrors.length)showActionError(new Error(creationErrors.join(" · ")),"Some thread sections could not be prepared");
     return map;
   }
+  function rememberThreadCatalog(items,runtimeOwner=agentRuntime,providerOwner=provider){
+    const updates=[];
+    for(const thread of items||[]){
+      if(!thread?.id)continue;
+      const patch=catalogMetaPatch(thread,{runtime:runtimeOwner,provider:providerOwner,runtimeInstanceId:thread.runtimeInstanceId||thread.providerMeta?.runtimeInstanceId||null});
+      if(!patch.threadSnapshot)continue;
+      const current=threadMeta[thread.id]||{};
+      const unchanged=sameCatalogSnapshot(current.threadSnapshot,patch.threadSnapshot)&&current.runtime===patch.runtime&&current.provider===patch.provider&&(current.runtimeInstanceId||null)===(patch.runtimeInstanceId||null);
+      if(unchanged)continue;
+      const fingerprint=JSON.stringify(patch);
+      if(catalogPersistRef.current.get(thread.id)===fingerprint)continue;
+      catalogPersistRef.current.set(thread.id,fingerprint);updates.push({threadId:String(thread.id),patch,fingerprint});
+    }
+    if(!updates.length)return;
+    setThreadMeta(previous=>{
+      const next={...previous};
+      for(const update of updates)next[update.threadId]={...(next[update.threadId]||{}),...update.patch};
+      return next;
+    });
+    void (async()=>{
+      for(const update of updates){
+        try{
+          const saved=await api("/api/thread-meta",{method:"POST",body:{threadId:update.threadId,patch:update.patch}});
+          setThreadMeta(previous=>({...previous,[update.threadId]:{...(previous[update.threadId]||{}),...saved}}));
+        }catch{
+          if(catalogPersistRef.current.get(update.threadId)===update.fingerprint)catalogPersistRef.current.delete(update.threadId);
+        }
+      }
+    })();
+  }
   async function loadThreads(client,{strict=false}={}){
     try{
       const listed=await client.request("thread/list",threadListParams(100));
-      setThreads(listed.data||[]);
-      return listed.data||[];
+      const incoming=listed.data||[];rememberThreadCatalog(incoming);
+      setThreads(previous=>mergeThreadCatalog(previous,incoming,{runtime:agentRuntime,provider,threadMeta}));
+      return mergeThreadCatalog([],incoming,{runtime:agentRuntime,provider});
     }catch(error){
       if(strict)throw error;
       return null;
@@ -1095,30 +1127,33 @@ export default function App(){
     if(section!=="history")return;
     let cancelled=false;
     if(!rpc||rpcStatus!=="connected"){
-      setThreadHistory({runtime:agentRuntime,items:threads,nextCursor:null,loading:false,error:""});
+      setThreadHistory({runtime:"all",items:threads,nextCursor:null,loading:false,error:""});
       return;
     }
-    setThreadHistory(current=>current.runtime===agentRuntime?{...current,loading:true,error:""}:{runtime:agentRuntime,items:[],nextCursor:null,loading:true,error:""});
+    setThreadHistory(current=>({runtime:"all",items:mergeThreadCatalog(current.items?.length?current.items:threads,[],{threadMeta}),nextCursor:current.nextCursor||null,loading:true,error:""}));
     rpc.request("thread/list",threadListParams(100)).then(result=>{
       if(cancelled)return;
-      setThreadHistory({runtime:agentRuntime,items:result?.data||[],nextCursor:result?.nextCursor||null,loading:false,error:""});
+      const incoming=result?.data||[];rememberThreadCatalog(incoming);
+      setThreads(previous=>mergeThreadCatalog(previous,incoming,{runtime:agentRuntime,provider,threadMeta}));
+      setThreadHistory(current=>({...current,runtime:"all",items:mergeThreadCatalog(current.items,incoming,{runtime:agentRuntime,provider,threadMeta}),nextCursor:result?.nextCursor||null,loading:false,error:""}));
     }).catch(error=>{
       if(cancelled)return;
-      setThreadHistory(current=>current.runtime===agentRuntime?{...current,loading:false,error:error?.message||String(error)}:{runtime:agentRuntime,items:[],nextCursor:null,loading:false,error:error?.message||String(error)});
+      setThreadHistory(current=>({...current,runtime:"all",items:current.items?.length?current.items:threads,loading:false,error:error?.message||String(error)}));
     });
     return()=>{cancelled=true};
-  },[section,rpc,rpcStatus,agentRuntime]);
+  },[section,rpc,rpcStatus,agentRuntime,provider]);
+  useEffect(()=>{
+    if(section!=="history")return;
+    setThreadHistory(current=>({...current,runtime:"all",items:mergeThreadCatalog(current.items,threads,{threadMeta})}));
+  },[section,threads,threadMeta]);
   async function loadOlderThreadHistory(){
     const cursor=threadHistory.nextCursor;if(!cursor||threadHistory.loading||!rpc||rpcStatus!=="connected")return;
     setThreadHistory(current=>({...current,loading:true,error:""}));
     try{
       const result=await rpc.request("thread/list",{...threadListParams(100),cursor});
-      setThreadHistory(current=>{
-        if(current.runtime!==agentRuntime)return current;
-        const seen=new Set(current.items.map(item=>item.id));
-        const additions=(result?.data||[]).filter(item=>item?.id&&!seen.has(item.id));
-        return {...current,items:[...current.items,...additions],nextCursor:result?.nextCursor||null,loading:false,error:""};
-      });
+      const incoming=result?.data||[];rememberThreadCatalog(incoming);
+      setThreads(previous=>mergeThreadCatalog(previous,incoming,{runtime:agentRuntime,provider,threadMeta}));
+      setThreadHistory(current=>({...current,runtime:"all",items:mergeThreadCatalog(current.items,incoming,{runtime:agentRuntime,provider,threadMeta}),nextCursor:result?.nextCursor||null,loading:false,error:""}));
     }catch(error){
       setThreadHistory(current=>({...current,loading:false,error:error?.message||String(error)}));
     }
@@ -1325,8 +1360,17 @@ export default function App(){
       client=new CodexRpcClient(bootstrap.wsUrl,{clientVersion:bootstrap.version||"0.0.0",onStatus:setRpcStatus,onNotification:message=>notificationHandlerRef.current?.(message),onServerRequest:message=>serverRequestHandlerRef.current?.(client,message)}); rpcRef.current=client;setRpc(client);
       try{
         await client.connect();if(disposed)return;await recoverCodexAfterRestart(client);await ensureSections(client);
-        const listed=await loadThreads(client);const activeId=activeThreadRef.current?.id;const reopen=activeId?(listed||[]).find(thread=>thread.id===activeId):null;
-        if(reopen)await openThread(reopen,{client,preserveSection:true});
+        const listed=await loadThreads(client);
+        const pending=pendingRuntimeThreadRef.current;
+        if(pending&&pending.targetRuntime===agentRuntime){
+          pendingRuntimeThreadRef.current=null;
+          const reopen=(listed||[]).find(thread=>thread.id===pending.thread.id)||pending.thread;
+          await openThread(reopen,{client,preserveSection:pending.preserveSection});
+        }else{
+          const activeId=activeThreadRef.current?.id,cataloged=activeId?threads.find(thread=>thread.id===activeId)||activeThreadRef.current:null;
+          const reopen=activeId?((listed||[]).find(thread=>thread.id===activeId)||cataloged):null;
+          if(reopen&&threadCatalogRuntime(reopen,threadMeta[reopen.id]||{},agentRuntime)===agentRuntime)await openThread(reopen,{client,preserveSection:true});
+        }
         await Promise.all([loadSkills(client,projectPath),loadCollaborationModes(client)]);
       }
       catch(error){client.close();if(disposed)return;if(attempt<120){setRpcStatus("connecting");retryTimer=setTimeout(()=>connect(attempt+1),500)}else setRpcStatus("error")}
@@ -1981,9 +2025,14 @@ export default function App(){
       try{info=await api("/api/git/info?"+params)}
       catch(error){if(strict)throw new Error("Could not read Git metadata while saving thread context: "+(error?.message||String(error)))}
     }
+    const catalog=catalogMetaPatch(thread,{
+      runtime:threadCatalogRuntime(thread,existing,agentRuntime),
+      provider:existing.provider||provider,
+      runtimeInstanceId:existing.runtimeInstanceId||thread.runtimeInstanceId||thread.providerMeta?.runtimeInstanceId||null,
+    });
     const patch={
       cwd:String(cwd),environmentId,branch:existing.branch||(info?.isGit?info.branch||null:null),
-      projectless,sectionName:thread.section?.name||"Active",archived:Boolean(thread.archived),...extra,
+      projectless,sectionName:thread.section?.name||"Active",archived:Boolean(thread.archived),...catalog,...extra,
     };
     if(!strict)return updateThreadMeta(thread.id,patch);
     try{return await updateThreadMeta(thread.id,patch,{strict:true})}
@@ -2121,7 +2170,24 @@ export default function App(){
   }
   function releaseInactiveCodexThread(threadId){
     if(agentRuntime!=="codex"||!threadId||running||!rpc||rpcStatus!=="connected")return;
+    const previous=threads.find(thread=>thread.id===threadId)||activeThreadRef.current;
+    if(previous&&threadCatalogRuntime(previous,threadMeta[threadId]||{},agentRuntime)!=="codex")return;
     rpc.request("thread/unsubscribe",{threadId}).catch(()=>{});
+  }
+  async function switchRuntimeForThread(thread,{preserveSection=false}={}){
+    const meta=threadMeta[thread.id]||{},targetRuntime=threadCatalogRuntime(thread,meta,agentRuntime);
+    if(!targetRuntime||targetRuntime===agentRuntime)return false;
+    if(running)throw new Error("Stop the running turn before switching agent runtimes.");
+    setSelectedThreadIds(new Set());
+    pendingRuntimeThreadRef.current={thread,preserveSection,targetRuntime};
+    try{
+      const selected=await api("/api/agent-runtimes",{method:"POST",body:{action:"select",runtime:targetRuntime,instanceId:meta.runtimeInstanceId||null}});
+      const nextSettings=await api("/api/settings");setSettings(nextSettings);
+      await refreshProviderModels({resetThread:false,provider:nextSettings.modelProvider||provider,agentRuntime:selected.selectedRuntime||targetRuntime});
+      return true;
+    }catch(error){
+      pendingRuntimeThreadRef.current=null;throw error;
+    }
   }
   async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(runtimeCapabilities.nativeQueue&&projectlessMode?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
   async function newGeneralChat(){
@@ -2133,6 +2199,7 @@ export default function App(){
     return scratch;
   }
   async function openThread(thread,{client=rpc,preserveSection=false}={}){
+    if(await switchRuntimeForThread(thread,{preserveSection}))return thread;
     const previousThreadId=activeThreadRef.current?.id;
     const reopeningCurrentThread=previousThreadId===thread.id;
     const threadEnvironmentId=thread.providerMeta?.environmentId||null;
@@ -3455,7 +3522,7 @@ export default function App(){
       {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><DeferredSurface label="Loading licenses…"><LicensesPage/></DeferredSurface></div>}
       {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>{window.trebellDesktop?"Agent harnesses, model providers, permissions and desktop behavior.":"Agent harnesses, model providers, permissions and workspace behavior."}</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage settings={settings} onSettings={setSettings} onProviderChanging={nextProvider=>{modelRefreshSeqRef.current++;modelCatalogScopeRef.current=agentRuntime+"\0"+nextProvider;setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("")}} onProviderUpdated={(options={})=>{setProviderRevision(v=>v+1);return refreshProviderModels({...options,resetThread:options.resetThread??false})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={session=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></DeferredSurface></div>}
-        {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Unarchived {agentRuntimeLabel} threads are loaded 100 at a time so old work stays reachable without slowing the sidebar.</p></div></div><div className="history-page">
+        {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Saved Trebell threads stay visible across agent runtimes. The active {agentRuntimeLabel} history is paged in 100 at a time.</p></div></div><div className="history-page">
           {threadHistory.error&&<div className="history-load-error provider-status-error" role="alert">Could not load thread history: {threadHistory.error}</div>}
           {threadHistory.items.length?threadHistory.items.map(t=><button className="history-thread-row" key={t.id} onClick={()=>runUserAction(()=>openThread(t),"Could not open thread")}><FileCode2 size={15}/><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><time>{new Date(t.updatedAt*1000).toLocaleString()}</time></button>):<div className="history-empty"><History size={22}/><strong>{threadHistory.loading?"Loading thread history…":"No thread history yet"}</strong><span>{threadHistory.loading?"Fetching the newest threads from the active agent runtime.":"Start a task or General chat and it will appear here."}</span>{!threadHistory.loading&&<button onClick={()=>runUserAction(newChat,"Could not start a new thread")}>Start a new task</button>}</div>}
           {threadHistory.items.length>0&&threadHistory.nextCursor&&<div className="history-page-control history-load-more"><button type="button" disabled={threadHistory.loading} onClick={()=>loadOlderThreadHistory()}>{threadHistory.loading?"Loading older threads…":"Load older threads"}</button></div>}

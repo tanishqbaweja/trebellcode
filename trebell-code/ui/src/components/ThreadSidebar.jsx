@@ -7,6 +7,7 @@ import { formatSnoozeUntil } from "../thread-snooze.js";
 import { threadReferenceValues } from "../thread-references.js";
 import { writeClipboardText } from "../clipboard.js";
 import { groupSidebarThreads, THREAD_GROUP_NAMES } from "../thread-sidebar-groups.js";
+import { threadCatalogRuntime } from "../thread-catalog.js";
 
 function titleOf(thread){return thread.name||thread.preview||"Untitled task"}
 function relativeTime(epoch){
@@ -26,6 +27,8 @@ function threadCanFork(thread,runtimeCapabilities={}){
 
 const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,onOpen,onSelect,onAction,onMove,runAction,agentRuntime="codex",runtimeCapabilities={}}){
   const section=thread.section?.name||"Active";
+  const rowRuntime=threadCatalogRuntime(thread,meta,agentRuntime),foreignRuntime=rowRuntime!==agentRuntime;
+  const rowRuntimeLabel=({codex:"Codex",claude:"Claude",cursor:"Cursor",grok:"Grok",opencode:"OpenCode",antigravity:"Antigravity"}[rowRuntime]||rowRuntime);
   const linked=Array.isArray(meta?.linkedPullRequests)
     ?meta.linkedPullRequests
     :(meta?.attachments||[]).filter(item=>item?.attachmentType==="pull_request").map(item=>item.payload||{}).filter(Boolean);
@@ -38,28 +41,29 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,onOpen
     if(!copied)throw new Error("Could not copy to clipboard.");
   };
   return <div className={active?"thread-row active":"thread-row"}>
-    {bulk&&<input className="thread-select" type="checkbox" checked={selected} onChange={()=>onSelect(thread.id)}/>}
+    {bulk&&<input className="thread-select" type="checkbox" checked={selected} disabled={foreignRuntime} title={foreignRuntime?"Open this thread before applying bulk actions":undefined} onChange={()=>onSelect(thread.id)}/>}
     <button className="thread-main" onClick={()=>runAction(()=>onOpen(thread))} title={titleOf(thread)}>
       <span className={"thread-status-dot "+(section==="Pinned"?"pinned":section==="Snoozed"?"snoozed":section==="Settled"?"settled":"")}/>
       <div>
-        <strong className="thread-title-line"><span className="thread-title-text">{titleOf(thread)}</span>{reviewLabel&&<em className={linked.length?"thread-pr-chip linked":"thread-pr-chip detected"} title={linked.length?"Linked pull request":"Detected from saved branch"}><GitPullRequest size={9}/>{reviewLabel}</em>}</strong>
+        <strong className="thread-title-line"><span className="thread-title-text">{titleOf(thread)}</span>{foreignRuntime&&<em className="thread-runtime-chip" title={"Owned by "+rowRuntimeLabel}>{rowRuntimeLabel}</em>}{reviewLabel&&<em className={linked.length?"thread-pr-chip linked":"thread-pr-chip detected"} title={linked.length?"Linked pull request":"Detected from saved branch"}><GitPullRequest size={9}/>{reviewLabel}</em>}</strong>
         <span>{section==="Snoozed"&&meta?.snoozedUntil?"Wakes "+formatSnoozeUntil(meta.snoozedUntil):meta?.projectless?"No project · "+relativeTime(thread.updatedAt):(thread.model?.replace(/^freebuff\//,"")||({codex:"Codex",claude:"Claude",cursor:"Cursor",grok:"Grok",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime))+" · "+relativeTime(thread.updatedAt)}</span>
       </div>
     </button>
     <details className="thread-menu">
       <summary title="Thread actions"><MoreHorizontal size={13}/></summary>
       <div className="thread-menu-popover">
-        <button onClick={()=>runAction(()=>onAction(thread,section==="Pinned"?"active":"pin"))}>{section==="Pinned"?"Unpin":"Pin"}</button>
-        <button onClick={()=>runAction(()=>onAction(thread,section==="Snoozed"?"active":"snooze"))}>{section==="Snoozed"?"Wake thread":"Snooze…"}</button>
-        <button onClick={()=>runAction(()=>onAction(thread,section==="Settled"?"active":"settle"))}>{section==="Settled"?"Un-settle":"Settle"}</button>
-        {threadCanFork(thread,runtimeCapabilities)&&<button onClick={()=>runAction(()=>onAction(thread,"fork"))}>Fork thread</button>}
-        <button onClick={()=>runAction(()=>onMove(thread,-1))}>Move up</button>
-        <button onClick={()=>runAction(()=>onMove(thread,1))}>Move down</button>
+        {foreignRuntime?<button onClick={()=>runAction(()=>onOpen(thread))}>Open in {rowRuntimeLabel}</button>:<>
+          <button onClick={()=>runAction(()=>onAction(thread,section==="Pinned"?"active":"pin"))}>{section==="Pinned"?"Unpin":"Pin"}</button>
+          <button onClick={()=>runAction(()=>onAction(thread,section==="Snoozed"?"active":"snooze"))}>{section==="Snoozed"?"Wake thread":"Snooze…"}</button>
+          <button onClick={()=>runAction(()=>onAction(thread,section==="Settled"?"active":"settle"))}>{section==="Settled"?"Un-settle":"Settle"}</button>
+          {threadCanFork(thread,runtimeCapabilities)&&<button onClick={()=>runAction(()=>onAction(thread,"fork"))}>Fork thread</button>}
+          <button onClick={()=>runAction(()=>onMove(thread,-1))}>Move up</button>
+          <button onClick={()=>runAction(()=>onMove(thread,1))}>Move down</button>
+        </>}
         <button onClick={()=>runAction(()=>copy(references.threadId))}>Copy thread ID</button>
         {references.branch&&<button onClick={()=>runAction(()=>copy(references.branch))}>Copy branch</button>}
         {references.path&&!meta?.projectless&&<button onClick={()=>runAction(()=>copy(references.path))}>Copy path</button>}
-        <button onClick={()=>runAction(()=>onAction(thread,"archive"))}>Archive</button>
-        <button className="danger" onClick={()=>runAction(()=>onAction(thread,"delete"))}>Delete</button>
+        {!foreignRuntime&&<><button onClick={()=>runAction(()=>onAction(thread,"archive"))}>Archive</button><button className="danger" onClick={()=>runAction(()=>onAction(thread,"delete"))}>Delete</button></>}
       </div>
     </details>
   </div>;
@@ -107,7 +111,7 @@ const ThreadSidebar=memo(function ThreadSidebar({
         <input ref={searchRef} value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search"/>
         {query&&<button onClick={()=>setQuery("")} aria-label="Clear search">×</button>}
       </div>
-      <button className="sidebar-bulk-toggle" onClick={()=>setSelectedIds(bulk?new Set():new Set(threads.slice(0,1).map(t=>t.id)))} title="Thread actions" aria-label="Thread actions">
+      <button className="sidebar-bulk-toggle" onClick={()=>setSelectedIds(bulk?new Set():new Set(threads.filter(thread=>threadCatalogRuntime(thread,threadMeta[thread.id]||{},agentRuntime)===agentRuntime).slice(0,1).map(t=>t.id)))} title="Thread actions" aria-label="Thread actions">
         {bulk?<SlidersHorizontal size={14}/>:<MoreHorizontal size={15}/>}
       </button>
     </div>
