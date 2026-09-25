@@ -4,11 +4,22 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
-import { createGuiServer, offlineE2eFetch } from "../src/gui-server.mjs";
+import { EventEmitter } from "node:events";
+import { createGuiServer, offlineE2eFetch, requestAbortController } from "../src/gui-server.mjs";
 import { git } from "../src/git-service.mjs";
 
 const packageVersion=JSON.parse(await readFile(new URL("../package.json",import.meta.url),"utf8")).version;
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
+
+test("request cancellation follows client disconnects but ignores a completed response",()=>{
+  const request=new EventEmitter(),response=new EventEmitter();response.writableEnded=false;
+  const cancelled=requestAbortController(request,response);request.emit("aborted");
+  assert.equal(cancelled.signal.aborted,true);assert.equal(cancelled.signal.reason?.name,"AbortError");cancelled.dispose();
+
+  const completedRequest=new EventEmitter(),completedResponse=new EventEmitter();completedResponse.writableEnded=true;
+  const completed=requestAbortController(completedRequest,completedResponse);completedResponse.emit("close");
+  assert.equal(completed.signal.aborted,false);completed.dispose();
+});
 
 test("offline browser E2E fetch allows loopback only",async()=>{
   const requested=[];

@@ -135,6 +135,20 @@ async function readJsonBody(req,maxBytes=2*1024*1024){
   try{return JSON.parse(body)}catch{throw new Error("invalid_json")}
 }
 
+export function requestAbortController(req,res){
+  const controller=new AbortController();
+  const abort=()=>{
+    if(controller.signal.aborted)return;
+    const error=new Error("Client disconnected before the request completed.");error.name="AbortError";controller.abort(error);
+  };
+  const onRequestAborted=()=>abort(),onResponseClosed=()=>{if(!res?.writableEnded)abort()};
+  req?.once?.("aborted",onRequestAborted);res?.once?.("close",onResponseClosed);
+  return {
+    controller,signal:controller.signal,
+    dispose(){req?.off?.("aborted",onRequestAborted);res?.off?.("close",onResponseClosed)},
+  };
+}
+
 function parseArgs(argv){
   const out={port:Number(process.env.PORT||process.env.TREBELL_GUI_PORT||3210),appPort:Number(process.env.TREBELL_APP_SERVER_PORT||23456),host:process.env.TREBELL_GUI_HOST||"127.0.0.1",open:false,mock:process.env.TREBELL_GUI_MOCK==="1"};
   for(let i=0;i<argv.length;i++){
@@ -2589,6 +2603,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       }catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/context/packet"&&req.method==="POST"){
+      const cancellation=requestAbortController(req,res);
       try{
         const body=await readJsonBody(req);
         const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")
@@ -2605,9 +2620,13 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           tokensUsed:body.tokensUsed,
           contextWindow:body.contextWindow,
           io:remote?createRemoteContextIo({environments,environmentId,root}):null,
+          signal:cancellation.signal,
         });
         return json(res,200,packet);
-      }catch(error){return json(res,400,{error:error.message});}
+      }catch(error){
+        if(cancellation.signal.aborted||error?.name==="AbortError")return;
+        return json(res,400,{error:error.message});
+      }finally{cancellation.dispose()}
     }
     if(url.pathname==="/api/attachments/text" && req.method==="POST"){
       try{
