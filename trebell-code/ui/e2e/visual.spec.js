@@ -1697,6 +1697,19 @@ test("goal budget panel exposes durable guardrails, exhaustion, and a clear reco
     tokenBudget:12_000,timeBudgetMinutes:90,turnBudget:5,toolCallBudget:10,childAgentBudget:3,costBudgetUsd:5,createdAt:Date.now()-300_000,updatedAt:Date.now(),
     tokensUsed:12_000,timeUsedSeconds:3_000,turnsUsed:2,toolCallsUsed:4,toolCallTelemetryComplete:true,childAgentsUsed:1,childAgentTelemetryComplete:true,costUsedUsd:1.5,costTelemetryComplete:false,tokenBudgetRemaining:0,timeBudgetRemainingMinutes:40,turnBudgetRemaining:3,toolCallBudgetRemaining:6,childAgentBudgetRemaining:2,costBudgetRemainingUsd:3.5,budgetExceeded:false,budgetExhausted:true,
   };
+  let continuity={
+    threadId:thread.id,
+    notes:{completedWork:["Implemented durable goal RPCs"],unresolvedFailures:["One provider smoke test is still pending"],importantDecisions:["Keep continuity provider-neutral"],artifactsCreated:["Goal budget regression suite"],pendingNextActions:["Run release smoke test"],updatedAt:Date.now()},
+    workspace:{cwd:process.cwd(),branch:"feature/durable-goals",environmentId:null,runtime:"codex",runtimeInstanceId:"codex-default"},
+    verification:{status:"verified",risk:"medium",verified:true,summary:"Targeted goal-panel browser flow passed",updatedAt:Date.now()},
+    completedTurnIds:["turn-1","turn-2"],unresolvedFailures:["One provider smoke test is still pending"],recentFailures:["Earlier provider disconnect"],artifactsCreated:["Goal budget regression suite"],pendingNextActions:["Run release smoke test"],completedWork:["Implemented durable goal RPCs"],importantDecisions:["Keep continuity provider-neutral"],meaningful:true,updatedAt:Date.now(),
+  };
+  const recalcContinuity=patch=>{
+    const notes={...continuity.notes};
+    for(const key of ["completedWork","unresolvedFailures","importantDecisions","artifactsCreated","pendingNextActions"])if(Object.prototype.hasOwnProperty.call(patch,key))notes[key]=patch[key];
+    continuity={...continuity,notes,completedWork:[...notes.completedWork],importantDecisions:[...notes.importantDecisions],unresolvedFailures:[...notes.unresolvedFailures],artifactsCreated:[...notes.artifactsCreated],pendingNextActions:[...notes.pendingNextActions],meaningful:true,updatedAt:Date.now()};
+    return continuity;
+  };
   const recalc=patch=>{
     goal={...goal,...patch,threadId:thread.id,updatedAt:Date.now()};
     goal.tokenBudgetRemaining=goal.tokenBudget==null?null:Math.max(0,Number(goal.tokenBudget)-Number(goal.tokensUsed||0));
@@ -1713,6 +1726,9 @@ test("goal budget panel exposes durable guardrails, exhaustion, and a clear reco
     if(message.method==="thread/goal/get"){ws.send(JSON.stringify({id:message.id,result:{goal}}));return true}
     if(message.method==="thread/goal/set"){ws.send(JSON.stringify({id:message.id,result:{goal:recalc(message.params||{})}}));return true}
     if(message.method==="thread/goal/clear"){goal=null;ws.send(JSON.stringify({id:message.id,result:{ok:true}}));return true}
+    if(message.method==="thread/continuity/get"){ws.send(JSON.stringify({id:message.id,result:{continuity}}));return true}
+    if(message.method==="thread/continuity/set"){ws.send(JSON.stringify({id:message.id,result:{continuity:recalcContinuity(message.params||{})}}));return true}
+    if(message.method==="thread/continuity/clear"){continuity=recalcContinuity({completedWork:[],unresolvedFailures:[],importantDecisions:[],artifactsCreated:[],pendingNextActions:[]});ws.send(JSON.stringify({id:message.id,result:{ok:true,continuity}}));return true}
     return false;
   }});
   try{
@@ -1743,6 +1759,7 @@ test("goal budget panel exposes durable guardrails, exhaustion, and a clear reco
     await expect(panel.getByText("Cost telemetry incomplete · not enforced")).toBeVisible();
     await expect(panel.getByText("3 saved guidance items")).toBeVisible();
     await expect(panel.getByText("4 configured limits")).toBeVisible();
+    await expect(panel.getByText("5 explicit notes · durable state available")).toBeVisible();
     const metrics=await panel.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await page.setViewportSize({width:1280,height:800});
     await page.screenshot({path:auditDir+"goal-budget-exhausted-dark-1280x800.png",fullPage:true});
@@ -1755,12 +1772,12 @@ test("goal budget panel exposes durable guardrails, exhaustion, and a clear reco
     await page.screenshot({path:auditDir+"goal-budget-advanced-dark-1280x800.png",fullPage:true});
     await panel.locator(".goal-budget-details>summary").click();
 
-    await panel.locator(".goal-details:not(.goal-budget-details)>summary").click();
+    await panel.locator(".goal-details:not(.goal-budget-details):not(.goal-continuity-details)>summary").click();
     await expect(panel.getByLabel("Completion conditions",{exact:true})).toHaveValue("Targeted tests pass");
     await expect(panel.getByLabel("Constraints",{exact:true})).toHaveValue("Preserve provider-independent thread state");
     const validationField=panel.getByLabel("Validation expectations",{exact:true});await expect(validationField).toHaveValue("Inspect the goal panel screenshots");
     const expandedMetrics=await panel.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(expandedMetrics.scroll).toBeLessThanOrEqual(expandedMetrics.client+1);
-    const detailMetrics=await panel.locator(".goal-details:not(.goal-budget-details)").evaluate(node=>({client:node.clientHeight,scroll:node.scrollHeight}));expect(detailMetrics.scroll).toBeLessThanOrEqual(detailMetrics.client+1);
+    const detailMetrics=await panel.locator(".goal-details:not(.goal-budget-details):not(.goal-continuity-details)").evaluate(node=>({client:node.clientHeight,scroll:node.scrollHeight}));expect(detailMetrics.scroll).toBeLessThanOrEqual(detailMetrics.client+1);
     await validationField.scrollIntoViewIfNeeded();
     await page.screenshot({path:auditDir+"goal-budget-guardrails-dark-1280x800.png",fullPage:true});
 
@@ -1768,6 +1785,25 @@ test("goal budget panel exposes durable guardrails, exhaustion, and a clear reco
     await expect.poll(()=>panel.getByLabel("Objective",{exact:true}).evaluate(node=>getComputedStyle(node).backgroundColor)).toBe("rgb(255, 255, 255)");
     await page.screenshot({path:auditDir+"goal-budget-guardrails-light-1280x800.png",fullPage:true});
     await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    await panel.locator(".goal-details:not(.goal-budget-details):not(.goal-continuity-details)>summary").click();
+
+    await panel.locator(".goal-continuity-details>summary").click();
+    await expect(panel.getByTestId("continuity-derived")).toContainText("feature/durable-goals");
+    await expect(panel.getByTestId("continuity-derived")).toContainText("verified · medium");
+    await expect(panel.getByLabel("Completed work",{exact:true})).toHaveValue("Implemented durable goal RPCs");
+    await expect(panel.getByLabel("Important decisions",{exact:true})).toHaveValue("Keep continuity provider-neutral");
+    await expect(panel.getByLabel("Pending next actions",{exact:true})).toHaveValue("Run release smoke test");
+    await panel.locator(".goal-continuity-details>summary").scrollIntoViewIfNeeded();
+    await page.screenshot({path:auditDir+"goal-continuity-top-dark-1280x800.png",fullPage:true});
+    await panel.getByLabel("Pending next actions",{exact:true}).fill("Run release smoke test\nPublish release notes");
+    await panel.getByRole("button",{name:"Save continuity",exact:true}).click();
+    await expect(panel.getByText("6 explicit notes · durable state available")).toBeVisible();
+    await expect(panel.getByLabel("Pending next actions",{exact:true})).toHaveValue("Run release smoke test\nPublish release notes");
+    const continuityMetrics=await panel.locator(".goal-continuity-details").evaluate(node=>({client:node.clientHeight,scroll:node.scrollHeight,width:node.clientWidth,scrollWidth:node.scrollWidth}));
+    expect(continuityMetrics.scroll).toBeLessThanOrEqual(continuityMetrics.client+1);expect(continuityMetrics.scrollWidth).toBeLessThanOrEqual(continuityMetrics.width+1);
+    await panel.getByLabel("Pending next actions",{exact:true}).scrollIntoViewIfNeeded();
+    await page.screenshot({path:auditDir+"goal-continuity-bottom-dark-1280x800.png",fullPage:true});
+    await panel.locator(".goal-continuity-details>summary").click();
 
     await panel.getByRole("spinbutton",{name:/Token budget/}).fill("15000");
     await panel.getByRole("button",{name:"Update goal",exact:true}).click();

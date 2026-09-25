@@ -596,7 +596,7 @@ export default function App(){
   const [panel,setPanel]=useState(null); const [rightPanelOpen,setRightPanelOpen]=useState(false); const [rightPanelTab,setRightPanelTab]=useState("files"); const [rightPanelMaximized,setRightPanelMaximized]=useState(false); const [reviewedFiles,setReviewedFiles]=useState([]); const [checkpointByTurn,setCheckpointByTurn]=useState({});
   const [selectedThreadIds,setSelectedThreadIds]=useState(new Set()); const [providerRevision,setProviderRevision]=useState(0);
   const [snoozeRequest,setSnoozeRequest]=useState(null); const [threadUndo,setThreadUndo]=useState(null); const [actionError,setActionError]=useState("");
-  const [goal,setGoal]=useState(null); const [linkedPullRequests,setLinkedPullRequests]=useState([]); const [sourceSelectedPr,setSourceSelectedPr]=useState(null);
+  const [goal,setGoal]=useState(null); const [continuity,setContinuity]=useState(null); const [linkedPullRequests,setLinkedPullRequests]=useState([]); const [sourceSelectedPr,setSourceSelectedPr]=useState(null);
   const [worktreeSetup,setWorktreeSetup]=useState(null);
   const [threadTelemetry,setThreadTelemetry]=useState({});const threadTelemetryRef=useRef({});
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false); const [initialLoadError,setInitialLoadError]=useState(""); const [initialLoadRevision,setInitialLoadRevision]=useState(0);
@@ -1831,6 +1831,7 @@ export default function App(){
     }
     else if(message.method==="thread/goal/updated"&&isCurrent)setGoal(p.goal||null);
     else if(message.method==="thread/goal/cleared"&&isCurrent)setGoal(null);
+    else if(message.method==="thread/continuity/updated"&&isCurrent)setContinuity(p.continuity||null);
     else if(message.method==="thread/elicitation/completed"&&isCurrent){
       setEvents(prev=>[...prev,{id:"elicitation-complete-"+(p.elicitationId||Date.now()),kind:"tool",title:"External interaction completed",status:"done",raw:p}]);
     }
@@ -2032,29 +2033,33 @@ export default function App(){
   }
 
   async function loadPersistentThreadData(threadId){
-    const client=rpcRef.current;if(!client||!threadId)return {goal:null,pullRequests:[]};
-    const [goalResult,attachmentResult]=await Promise.allSettled([
+    const client=rpcRef.current;if(!client||!threadId)return {goal:null,continuity:null,pullRequests:[]};
+    const [goalResult,continuityResult,attachmentResult]=await Promise.allSettled([
       client.request("thread/goal/get",{threadId}),
+      client.request("thread/continuity/get",{threadId}),
       client.request("thread/attachment/list",{threadId,limit:100}),
     ]);
     const goalData=goalResult.status==="fulfilled"?goalResult.value:null;
+    const continuityData=continuityResult.status==="fulfilled"?continuityResult.value:null;
     const attachmentData=attachmentResult.status==="fulfilled"?attachmentResult.value:null;
     const pullRequests=attachmentData?(attachmentData?.data||[]).filter(item=>item.attachmentType==="pull_request").map(item=>({...item.payload,__identityKey:item.identityKey})):null;
     if(activeThreadRef.current?.id===threadId){
       if(goalResult.status==="fulfilled")setGoal(goalData?.goal||null);
+      if(continuityResult.status==="fulfilled")setContinuity(continuityData?.continuity||null);
       if(attachmentResult.status==="fulfilled")setLinkedPullRequests(pullRequests||[]);
       const errors=[];
       if(goalResult.status==="rejected")errors.push("goal: "+(goalResult.reason?.message||String(goalResult.reason)));
+      if(continuityResult.status==="rejected")errors.push("continuity: "+(continuityResult.reason?.message||String(continuityResult.reason)));
       if(attachmentResult.status==="rejected")errors.push("linked attachments: "+(attachmentResult.reason?.message||String(attachmentResult.reason)));
       if(errors.length)setEvents(prev=>[...prev,{id:"persistent-refresh-error-"+Date.now(),kind:"error",title:"Could not refresh saved thread data: "+errors.join(" · "),status:"error",raw:{errors}}]);
     }
-    return {goal:goalResult.status==="fulfilled"?goalData?.goal||null:null,pullRequests};
+    return {goal:goalResult.status==="fulfilled"?goalData?.goal||null:null,continuity:continuityResult.status==="fulfilled"?continuityData?.continuity||null:null,pullRequests};
   }
   function releaseInactiveCodexThread(threadId){
     if(agentRuntime!=="codex"||!threadId||running||!rpc||rpcStatus!=="connected")return;
     rpc.request("thread/unsubscribe",{threadId}).catch(()=>{});
   }
-  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(runtimeCapabilities.nativeQueue&&projectlessMode?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
+  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(runtimeCapabilities.nativeQueue&&projectlessMode?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
@@ -2072,19 +2077,21 @@ export default function App(){
     const restoredLocalQueue=useNativeQueue?[]:hydratePersistedQueue(savedMeta.trebellQueue||[]);
     if(thread.cwd&&!threadEnvironmentId&&!projectless)await api("/api/worktree/ensure",{method:"POST",body:{path:thread.cwd,environmentId:null}}).catch(error=>{throw new Error("Could not restore this managed worktree: "+error.message)});
     const connectedClient=Boolean(client&&!(client===rpc&&rpcStatus!=="connected"));
-    let resumed=null,cp=null,goalData=null,attachmentData=null;
+    let resumed=null,cp=null,goalData=null,continuityData=null,attachmentData=null;
     const persistentReadErrors=[];
     if(connectedClient){
       const resumePromise=resumeWithBoundedHistory(client,{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null});
       const checkpointPromise=api("/api/checkpoints?threadId="+encodeURIComponent(thread.id)).then(value=>({value,error:null}),error=>({value:null,error}));
       const goalPromise=client.request("thread/goal/get",{threadId:thread.id}).then(value=>({value,error:null}),error=>({value:null,error}));
+      const continuityPromise=client.request("thread/continuity/get",{threadId:thread.id}).then(value=>({value,error:null}),error=>({value:null,error}));
       const attachmentPromise=client.request("thread/attachment/list",{threadId:thread.id,limit:100}).then(value=>({value,error:null}),error=>({value:null,error}));
       resumed=await resumePromise;
       if(!resumed?.thread)throw new Error("The agent runtime did not return the requested thread.");
-      const [checkpointResult,goalResult,attachmentResult]=await Promise.all([checkpointPromise,goalPromise,attachmentPromise]);
-      cp=checkpointResult.value;goalData=goalResult.value;attachmentData=attachmentResult.value;
+      const [checkpointResult,goalResult,continuityResult,attachmentResult]=await Promise.all([checkpointPromise,goalPromise,continuityPromise,attachmentPromise]);
+      cp=checkpointResult.value;goalData=goalResult.value;continuityData=continuityResult.value;attachmentData=attachmentResult.value;
       if(checkpointResult.error)persistentReadErrors.push("checkpoints: "+(checkpointResult.error.message||String(checkpointResult.error)));
       if(goalResult.error)persistentReadErrors.push("goal: "+(goalResult.error.message||String(goalResult.error)));
+      if(continuityResult.error)persistentReadErrors.push("continuity: "+(continuityResult.error.message||String(continuityResult.error)));
       if(attachmentResult.error)persistentReadErrors.push("linked attachments: "+(attachmentResult.error.message||String(attachmentResult.error)));
     }
     const openedThread=resumed?.thread||thread;
@@ -2095,7 +2102,7 @@ export default function App(){
     if(!useNativeQueue&&(savedMeta.trebellQueue||[]).some(item=>item?.dispatchingAt))updateThreadMeta(openedThread.id,{trebellQueue:persistedQueueItems(restoredLocalQueue)},{strict:true}).catch(error=>showActionError(error,"Recovered an uncertain queued follow-up, but could not save its retry state"));
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(openedThread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
     else if(openedThread.cwd)await touchProject(openedThread.cwd,threadEnvironmentId);else setProjectPath(projectPath);
-    if(!reopeningCurrentThread){setCheckpointByTurn({});setGoal(null);setLinkedPullRequests(savedMeta.linkedPullRequests||[])}
+    if(!reopeningCurrentThread){setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests(savedMeta.linkedPullRequests||[])}
     if(!connectedClient)return;
     const map=cp?Object.fromEntries((cp.checkpoints||[]).filter(x=>x.turnId).map(x=>[x.turnId,x])):(reopeningCurrentThread?checkpointByTurn:{});
     if(cp)setCheckpointByTurn(map);
@@ -2151,6 +2158,7 @@ export default function App(){
     if(useNativeQueue)await loadNativeQueue(client,thread.id).catch(error=>setEvents(prev=>[...prev,{id:"queue-load-error-"+Date.now(),kind:"error",title:"Could not load queued follow-ups: "+(error.message||String(error)),status:"done",raw:{}}]));
     const meta=threadMeta[thread.id]||{};setReviewedFiles(meta.reviewedFiles||[]);
     if(goalData)setGoal(goalData?.goal||null);
+    if(continuityData)setContinuity(continuityData?.continuity||null);
     if(attachmentData){
       const persisted=(attachmentData?.data||[]).filter(item=>item.attachmentType==="pull_request").map(item=>({...item.payload,__identityKey:item.identityKey}));
       setLinkedPullRequests(persisted.length?persisted:(meta.linkedPullRequests||[]));
@@ -3236,7 +3244,7 @@ export default function App(){
     if(rightPanelTab==="source")return projectlessMode?<div className="empty-state">General chats are not attached to source control.</div>:<SourceControlPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} model={model} provider={provider} threadId={activeThread?.id||null} sourceControlSettings={currentProject?.effectiveSettings||effectiveProjectSettings} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} onLinkPrUrl={linkPullRequestUrl} onOpenLinkedThread={openLinkedThread} onSelectedPrChange={setSourceSelectedPr} onLinkedPullRequestsChanged={links=>activeThread?.id&&applyThreadPullRequestLinks(activeThread.id,links)} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
     if(rightPanelTab==="device")return <DevicePanel/>;
     if(rightPanelTab==="agents"&&runtimeCapabilities.delegation)return <div className="panel-page"><AgentsPage threads={threads} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onRefreshThreads={()=>rpc?loadThreads(rpc,{strict:true}):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model} telemetry={threadTelemetry}/></div>;
-    if(rightPanelTab==="goal")return <GoalPanel rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={setGoal}/>;
+    if(rightPanelTab==="goal")return <GoalPanel rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={setGoal} continuity={continuity} onContinuity={setContinuity}/>;
     return <div className="runtime-surface">
       <section className="runtime-summary">
         <div><span className={"runtime-dot "+(rpcStatus==="connected"?"online":"")}/><div><strong>{running?"Agent working":agentRuntimeLabel+" harness"}</strong><span>{rpcStatus==="connected"?"Connected locally":rpcStatus}</span></div></div>

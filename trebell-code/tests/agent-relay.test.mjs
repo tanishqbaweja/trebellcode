@@ -267,6 +267,9 @@ test("agent relay broadcasts Codex-compatible archive, unarchive and delete life
     const goalSet=await rpc("thread/goal/set",{threadId:thread.id,objective:"Ship the fixture safely",completionConditions:["Lifecycle tests pass"],constraints:["Keep compatibility"],tokenBudget:5000,timeBudgetMinutes:30,toolCallBudget:1,unexpected:"ignored"});
     assert.equal(goalSet.goal.objective,"Ship the fixture safely");assert.equal(goalSet.goal.tokenBudget,5000);assert.equal(goalSet.goal.tokensUsed,0);assert.equal(goalSet.goal.toolCallBudget,1);assert.equal(goalSet.goal.toolCallsUsed,0);assert.equal(goalSet.goal.tokenBudgetRemaining,5000);assert.equal(Object.prototype.hasOwnProperty.call(goalSet.goal,"unexpected"),false);
     const goalRead=await rpc("thread/goal/get",{threadId:thread.id});assert.equal(goalRead.goal.objective,"Ship the fixture safely");assert.deepEqual(goalRead.goal.completionConditions,["Lifecycle tests pass"]);
+    const continuitySet=await rpc("thread/continuity/set",{threadId:thread.id,completedWork:["Implemented the fixture"],importantDecisions:["Keep compatibility"],pendingNextActions:["Run the final smoke test"]});
+    assert.ok(continuitySet.continuity.meaningful);assert.ok(continuitySet.continuity.completedWork.includes("Implemented the fixture"));assert.ok(continuitySet.continuity.importantDecisions.includes("Keep compatibility"));
+    const continuityRead=await rpc("thread/continuity/get",{threadId:thread.id});assert.ok(continuityRead.continuity.pendingNextActions.includes("Run the final smoke test"));
     await assert.rejects(rpc("thread/goal/set",{threadId:thread.id,tokenBudget:-1}),/positive whole number/i);
     const toolTurn=threadStore.addTurn(thread.id,{inputText:"use one tool"});
     threadStore.addItem(thread.id,toolTurn.id,{id:"tool-budget-command",type:"commandExecution",status:"completed",command:["node","fixture.mjs"]});
@@ -284,6 +287,7 @@ test("agent relay broadcasts Codex-compatible archive, unarchive and delete life
     const raisedGoal=await rpc("thread/goal/set",{threadId:thread.id,tokenBudget:6000});assert.equal(raisedGoal.goal.budgetExhausted,false);
     await assert.rejects(rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"allowed past budget gate"}]}),/fixture runtime unavailable/i);
     await rpc("thread/goal/clear",{threadId:thread.id});
+    const clearedContinuity=await rpc("thread/continuity/clear",{threadId:thread.id});assert.equal(clearedContinuity.ok,true);assert.equal(clearedContinuity.continuity.completedWork.length,0);
     await assert.rejects(rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"allowed after clear"}]}),/fixture runtime unavailable/i);
     await rpc("thread/archive",{threadId:thread.id});
     await rpc("thread/unarchive",{threadId:thread.id});
@@ -294,6 +298,7 @@ test("agent relay broadcasts Codex-compatible archive, unarchive and delete life
     assert.deepEqual(lifecycle.map(message=>message.method),["thread/archived","thread/unarchived","thread/deleted"]);
     assert.ok(notifications.filter(message=>message.method==="thread/queue/changed").length>=5);
     assert.ok(notifications.some(message=>message.method==="thread/goal/updated"&&message.params.goal?.objective==="Ship the fixture safely"));
+    assert.ok(notifications.some(message=>message.method==="thread/continuity/updated"&&message.params.continuity?.importantDecisions?.includes("Keep compatibility")));
     assert.deepEqual(notifications.filter(message=>message.method==="thread/attachment/updated").map(message=>message.params.operation),["created","deleted"]);
     assert.ok(notifications.every(message=>message.params?.threadId===thread.id));
     assert.ok(traces.some(event=>event.direction==="client"&&event.method==="thread/archive"));

@@ -21,14 +21,20 @@ test("Codex relay owns durable goal RPCs and blocks exhausted direct or queued w
     assert.equal(set.goal.objective,"Finish the Codex fixture");assert.equal(set.goal.timeBudgetMinutes,1);assert.equal(set.goal.turnBudget,2);assert.equal(set.goal.toolCallBudget,2);assert.equal(set.goal.childAgentBudget,1);assert.equal(set.goal.toolCallsUsed,0);assert.equal(set.goal.toolCallTelemetryComplete,true);assert.equal(set.goal.childAgentsUsed,0);assert.equal(set.goal.childAgentTelemetryComplete,true);assert.equal(set.goal.costBudgetUsd,10);assert.equal(set.goal.timeUsedSeconds,0);assert.equal(Object.prototype.hasOwnProperty.call(set.goal,"unexpected"),false);
     for(let attempt=0;attempt<50&&!observerMessages.some(message=>message.method==="thread/goal/updated"&&message.params?.goal?.objective==="Finish the Codex fixture");attempt++)await new Promise(resolve=>setTimeout(resolve,10));
     assert.ok(observerMessages.some(message=>message.method==="thread/goal/updated"&&message.params?.threadId===threadId&&message.params?.goal?.objective==="Finish the Codex fixture"));
+    const continuitySet=await rpc("thread/continuity/set",{threadId,completedWork:["Added durable goal RPCs"],unresolvedFailures:["Need final browser check"],importantDecisions:["Keep provider-neutral state"],pendingNextActions:["Run smoke tests"]});
+    assert.ok(continuitySet.continuity.completedWork.includes("Added durable goal RPCs"));assert.ok(continuitySet.continuity.unresolvedFailures.includes("Need final browser check"));
+    for(let attempt=0;attempt<50&&!observerMessages.some(message=>message.method==="thread/continuity/updated"&&message.params?.continuity?.importantDecisions?.includes("Keep provider-neutral state"));attempt++)await new Promise(resolve=>setTimeout(resolve,10));
+    assert.ok(observerMessages.some(message=>message.method==="thread/continuity/updated"&&message.params?.threadId===threadId&&message.params?.continuity?.pendingNextActions?.includes("Run smoke tests")));
     const startedAt=Date.now()-61_000;
     await fetch(gui.url+"/api/thread-meta",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId,patch:{goal:{...set.goal,createdAt:startedAt-1_000},codexToolCallCount:2,codexChildAgentCount:1,active:true,restartRecovery:{runtime:"codex",bootId:"fixture-boot",threadId,turnId:"turn-1",status:"active",startedAt}}})});
     const recovery=await fetch(gui.url+"/api/recovery",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId,action:"completed"})});assert.equal(recovery.status,200);
     const exhausted=(await rpc("thread/goal/get",{threadId})).goal;assert.ok(exhausted.timeUsedSeconds>=60);assert.equal(exhausted.turnsUsed,1);assert.equal(exhausted.turnBudgetRemaining,1);assert.equal(exhausted.toolCallsUsed,2);assert.equal(exhausted.toolCallBudgetRemaining,0);assert.equal(exhausted.childAgentsUsed,1);assert.equal(exhausted.childAgentBudgetRemaining,0);assert.equal(exhausted.costUsedUsd,null);assert.equal(exhausted.costTelemetryComplete,false);assert.equal(exhausted.budgetExhausted,true);assert.equal(exhausted.timeBudgetRemainingMinutes,0);
+    const continuityAfterTurn=(await rpc("thread/continuity/get",{threadId})).continuity;assert.deepEqual(continuityAfterTurn.completedTurnIds,["turn-1"]);assert.equal(continuityAfterTurn.workspace.runtime,"codex");
     await assert.rejects(rpc("turn/start",{threadId,turnTrigger:"trebell-restart-continuation",input:[{type:"text",text:"continue interrupted work"}]}),error=>error.code!==-32001&&!/Goal budget exhausted/i.test(error.message));
     const continuationTraces=await fetch(gui.url+"/api/traces?threadId="+encodeURIComponent(threadId)+"&limit=20").then(response=>response.json());
     const continuedStart=continuationTraces.items.find(item=>item.category==="client"&&item.name==="turn/start");
     assert.ok(continuedStart?.data?.additionalContextKeys?.includes("trebell.goal"),"restart continuation must receive the durable goal as application context");
+    assert.ok(continuedStart?.data?.additionalContextKeys?.includes("trebell.continuity"),"restart continuation must receive durable continuity state");
     await assert.rejects(rpc("turn/start",{threadId,input:[{type:"text",text:"must not reach Codex"}]}),error=>error.code===-32001&&/Goal budget exhausted/i.test(error.message));
     await assert.rejects(rpc("thread/queue/start",{threadId,queuedSubmissionId:"queued-1"}),error=>error.code===-32001&&/Goal budget exhausted/i.test(error.message));
     const traces=await fetch(gui.url+"/api/traces?threadId="+encodeURIComponent(threadId)+"&limit=20").then(response=>response.json());
@@ -44,9 +50,11 @@ test("Codex relay owns durable goal RPCs and blocks exhausted direct or queued w
     const pausedTraces=await fetch(gui.url+"/api/traces?threadId="+encodeURIComponent(threadId)+"&limit=20").then(response=>response.json());
     const pausedStart=pausedTraces.items.find(item=>item.category==="client"&&item.name==="turn/start");
     assert.equal(pausedStart?.data?.additionalContextKeys?.includes("trebell.goal")||false,false,"paused goals must not steer new work");
+    assert.equal(pausedStart?.data?.additionalContextKeys?.includes("trebell.continuity")||false,true,"continuity remains available even when the goal is paused");
     assert.equal((await rpc("thread/goal/clear",{threadId})).ok,true);assert.equal((await rpc("thread/goal/get",{threadId})).goal,null);
     for(let attempt=0;attempt<50&&!observerMessages.some(message=>message.method==="thread/goal/updated"&&message.params?.goal===null);attempt++)await new Promise(resolve=>setTimeout(resolve,10));
     assert.ok(observerMessages.some(message=>message.method==="thread/goal/updated"&&message.params?.threadId===threadId&&message.params?.goal===null));
+    const continuityClear=await rpc("thread/continuity/clear",{threadId});assert.equal(continuityClear.ok,true);assert.equal(continuityClear.continuity.completedWork.length,0);
   }finally{
     try{ws?.close()}catch{}try{observer?.close()}catch{}await gui.close();await rm(home,{recursive:true,force:true});
   }

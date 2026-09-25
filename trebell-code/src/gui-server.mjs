@@ -48,6 +48,7 @@ import { ContextEngine, createRemoteContextIo } from "./context-engine.mjs";
 import { EventJournal } from "./event-journal.mjs";
 import { enrichGoal, goalAdditionalContext, goalBudgetGate, normalizeGoal } from "./goal-state.mjs";
 import { recordCodexBudgetEvidence, recordCodexChildAgentEvidence } from "./codex-budget-evidence.mjs";
+import { continuityAdditionalContext, continuitySnapshot, normalizeContinuityNotes } from "./continuity-state.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
   .then(text=>String(JSON.parse(text).version||"0.0.0"))
@@ -932,6 +933,15 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       childAgentsUsed,childAgentTelemetryComplete:Boolean(baselines?.childAgentTelemetryComplete),
     });
   }
+  function durableCodexContinuity(threadId){
+    const meta=state.threadMeta(threadId);
+    return continuitySnapshot({
+      threadId,thread:{id:threadId,cwd:meta?.cwd||null,runtime:"codex",runtimeInstanceId:meta?.runtimeInstanceId||null,turns:codexGoalTurns(meta)},meta,goal:durableCodexGoal(threadId),
+      verificationRecords:state.verificationRecords({threadId,limit:10}),
+      checkpoints:state.checkpoints(threadId),
+      traces:eventJournal.list({threadId,limit:80}),
+    });
+  }
   function assertCodexGoalBudget(threadId){
     const goal=durableCodexGoal(threadId),gate=goalBudgetGate(goal);if(gate.allowed)return goal;
     const meta=state.threadMeta(threadId);
@@ -941,7 +951,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   function withCodexGoalContext(message){
     if(message?.method!=="turn/start")return message;
     const params=message.params||{},threadId=params.threadId?String(params.threadId):"";if(!threadId)return message;
-    const additionalContext=goalAdditionalContext(params.additionalContext,durableCodexGoal(threadId));
+    const goalContext=goalAdditionalContext(params.additionalContext,durableCodexGoal(threadId));
+    const additionalContext=continuityAdditionalContext(goalContext,durableCodexContinuity(threadId));
     if(additionalContext===params.additionalContext)return message;
     return {...message,params:{...params,additionalContext}};
   }
@@ -2616,6 +2627,18 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       if(message.method==="thread/goal/clear"){
         if(!threadId)throw Object.assign(new Error("threadId is required"),{code:-32602});
         state.updateThreadMeta(threadId,{goal:null,goalBudgetBaselines:undefined});relay.broadcast("thread/goal/updated",{threadId,goal:null});return {handled:true,result:{ok:true}};
+      }
+      if(message.method==="thread/continuity/get")return {handled:true,result:{continuity:threadId?durableCodexContinuity(threadId):null}};
+      if(message.method==="thread/continuity/set"){
+        if(!threadId)throw Object.assign(new Error("threadId is required"),{code:-32602});
+        const meta=state.threadMeta(threadId),continuityNotes=normalizeContinuityNotes(meta?.continuityNotes||null,params);
+        state.updateThreadMeta(threadId,{continuityNotes});const continuity=durableCodexContinuity(threadId);
+        relay.broadcast("thread/continuity/updated",{threadId,continuity});return {handled:true,result:{continuity}};
+      }
+      if(message.method==="thread/continuity/clear"){
+        if(!threadId)throw Object.assign(new Error("threadId is required"),{code:-32602});
+        state.updateThreadMeta(threadId,{continuityNotes:undefined});const continuity=durableCodexContinuity(threadId);
+        relay.broadcast("thread/continuity/updated",{threadId,continuity});return {handled:true,result:{ok:true,continuity}};
       }
       if(((message.method==="turn/start"&&params.turnTrigger!=="trebell-restart-continuation")||message.method==="thread/queue/start")&&threadId)assertCodexGoalBudget(threadId);
       if(message.method==="thread/runtimeInstances/list")return {handled:true,result:await codexThreadProfiles(message.params?.threadId)};
