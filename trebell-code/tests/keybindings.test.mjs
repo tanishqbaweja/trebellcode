@@ -99,11 +99,11 @@ test("thread navigation and terminal-local new use context-specific defaults",()
   assert.equal(resolveKeybinding(event("n",{ctrlKey:true}),{}, {projectOpen:true,terminalFocus:false,modalOpen:false}),"newChat");
 });
 
-test("find in thread uses Mod+F only for an open Codex chat",()=>{
-  const context={threadOpen:true,chatFocus:true,codexRuntime:true,terminalFocus:false,modalOpen:false};
+test("find in thread uses Mod+F for runtimes that expose thread search",()=>{
+  const context={threadOpen:true,chatFocus:true,threadSearch:true,terminalFocus:false,modalOpen:false};
   assert.equal(resolveKeybinding(event("f",{ctrlKey:true}),{},context),"threadFind");
   assert.equal(resolveKeybinding(event("f",{metaKey:true}),{},context),"threadFind");
-  assert.equal(resolveKeybinding(event("f",{ctrlKey:true}),{}, {...context,codexRuntime:false}),null);
+  assert.equal(resolveKeybinding(event("f",{ctrlKey:true}),{}, {...context,threadSearch:false}),null);
   assert.equal(resolveKeybinding(event("f",{ctrlKey:true}),{}, {...context,terminalFocus:true}),null);
 });
 

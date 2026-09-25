@@ -860,7 +860,7 @@ export default function App(){
   useEffect(()=>{
     if(!threadFind.open)return;
     const term=threadFind.query.trim();
-    if(term.length<2||agentRuntime!=="codex"||!activeThread?.id||!rpc||rpcStatus!=="connected"){
+    if(term.length<2||!runtimeCapabilities.threadSearch||!activeThread?.id||!rpc||rpcStatus!=="connected"){
       threadFindSeqRef.current++;
       setThreadFind(current=>({...current,results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null}));
       return;
@@ -880,7 +880,7 @@ export default function App(){
       }
     },160);
     return()=>{disposed=true;clearTimeout(timer)};
-  },[threadFind.open,threadFind.query,agentRuntime,activeThread?.id,rpc,rpcStatus]);
+  },[threadFind.open,threadFind.query,runtimeCapabilities.threadSearch,activeThread?.id,rpc,rpcStatus]);
   useEffect(()=>{threadTelemetryRef.current={};setThreadTelemetry({})},[provider,agentRuntime]);
   async function refreshFreebuff(modelOverride=model,{strict=false}={}){
     if(agentRuntime!=="codex"||provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;
@@ -1524,6 +1524,7 @@ export default function App(){
       const context={
         chatFocus:section==="chat"||section==="new",
         codexRuntime:agentRuntime==="codex",
+        threadSearch:Boolean(runtimeCapabilities.threadSearch),
         terminalFocus:Boolean(panel==="terminal"&&active?.closest?.(".terminal-drawer")),
         terminalOpen:panel==="terminal",
         previewFocus:Boolean(rightPanelOpen&&rightPanelTab==="preview"),
@@ -2299,7 +2300,7 @@ export default function App(){
     }
   }
   function openThreadFind(){
-    if(agentRuntime!=="codex"||!activeThreadRef.current?.id)return;
+    if(!runtimeCapabilities.threadSearch||!activeThreadRef.current?.id)return;
     setThreadFind(current=>({...current,open:true,error:""}));
   }
   function closeThreadFind(){
@@ -2307,7 +2308,7 @@ export default function App(){
     setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});
   }
   async function focusThreadFindOccurrence(occurrence,expectedSeq=null){
-    if(!occurrence||agentRuntime!=="codex"||!rpc||rpcStatus!=="connected")return;
+    if(!occurrence||!runtimeCapabilities.threadSearch||!rpc||rpcStatus!=="connected")return;
     const threadId=activeThreadRef.current?.id;if(!threadId)return;
     const itemId=String(occurrence.itemId||"");
     if(itemId&&!messages.some(message=>String(message.id)===itemId)){

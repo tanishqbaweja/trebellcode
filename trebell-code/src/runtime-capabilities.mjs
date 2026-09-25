@@ -21,6 +21,7 @@ const BASE_RUNTIME_CAPABILITIES=Object.freeze({
   collaborationModes:false,
   nativeQueue:false,
   nativeHistoryPagination:false,
+  threadSearch:true,
   steering:false,
   runtimeProfileSwitching:false,
 });
