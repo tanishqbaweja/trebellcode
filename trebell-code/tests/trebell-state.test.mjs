@@ -41,6 +41,19 @@ test("pull request auto-settle is opt-in and persists",async()=>{
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
+test("automatic context compaction defaults on and persists user preferences",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-state-auto-compact-"));const env={...process.env,TREBELL_HOME:home};
+  try{
+    const state=new TrebellStateStore(env);
+    assert.equal(state.settings().autoCompactContext,true);
+    assert.equal(state.settings().autoCompactThresholdPercent,85);
+    state.updateSettings({autoCompactContext:false,autoCompactThresholdPercent:90});
+    const again=new TrebellStateStore(env);
+    assert.equal(again.settings().autoCompactContext,false);
+    assert.equal(again.settings().autoCompactThresholdPercent,90);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 
 test("project actions persist, sanitize, inherit preference, and allow clearing overrides", async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-state-actions-"));

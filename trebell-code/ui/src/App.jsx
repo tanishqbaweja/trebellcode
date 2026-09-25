@@ -38,6 +38,7 @@ import { collaborationModePayload, normalizeCollaborationModes } from "./collabo
 import { ensureCodexProject, sameWorkspacePath } from "./codex-projects.js";
 import { writeClipboardText } from "./clipboard.js";
 import { createKeyedTextFrameBuffer, createTextFrameBuffer } from "./text-frame-buffer.js";
+import { autoCompactionDecision } from "./auto-compaction.js";
 
 const TerminalPanel=lazy(()=>import("./components/TerminalPanel.jsx"));
 const WorkspacePanel=lazy(()=>import("./components/WorkspacePanel.jsx"));
@@ -548,11 +549,11 @@ export default function App(){
   const [threadTelemetry,setThreadTelemetry]=useState({});
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false); const [initialLoadError,setInitialLoadError]=useState(""); const [initialLoadRevision,setInitialLoadRevision]=useState(0);
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"}); const [paletteDataError,setPaletteDataError]=useState("");
-  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
+  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
   function resetAssistantStream(){assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();setAssistantText("")}
   function appendAssistantStream(value){assistantStreamBufferRef.current?.push(value)}
-  useEffect(()=>()=>{assistantStreamBufferRef.current?.dispose();commandStreamBufferRef.current?.dispose()},[]);
+  useEffect(()=>()=>{assistantStreamBufferRef.current?.dispose();commandStreamBufferRef.current?.dispose();for(const waiter of compactionWaitersRef.current.values()){clearTimeout(waiter.timer);waiter.reject?.(new Error("Trebell closed while context compaction was pending"))}compactionWaitersRef.current.clear()},[]);
   const navigationKey=location=>[location.section,location.threadId||"",location.rightPanelOpen?location.rightPanelTab||"files":""].join("|");
   useEffect(()=>{
     if(!initialLoaded)return;
@@ -700,6 +701,23 @@ export default function App(){
       const next=typeof patch==="function"?patch(current):patch;
       return {...prev,[threadId]:{...current,...next}};
     });
+  }
+  function settleCompactionWaiter(threadId,error=null,result={ok:true}){
+    const id=String(threadId||"");const waiter=compactionWaitersRef.current.get(id);if(!waiter)return false;
+    compactionWaitersRef.current.delete(id);clearTimeout(waiter.timer);
+    if(error)waiter.reject(error);else waiter.resolve(result);
+    return true;
+  }
+  function requestThreadCompaction(threadId,{timeoutMs=45_000}={}){
+    const id=String(threadId||"").trim(),client=rpcRef.current;
+    if(!id||!client)return Promise.reject(new Error("Agent harness is not connected"));
+    const existing=compactionWaitersRef.current.get(id);if(existing)return existing.promise;
+    let resolvePromise,rejectPromise;
+    const promise=new Promise((resolve,reject)=>{resolvePromise=resolve;rejectPromise=reject});
+    const timer=setTimeout(()=>settleCompactionWaiter(id,new Error("Context compaction timed out")),Math.max(5000,Number(timeoutMs)||45_000));
+    compactionWaitersRef.current.set(id,{promise,resolve:resolvePromise,reject:rejectPromise,timer});
+    client.request("thread/compact/start",{threadId:id}).catch(error=>settleCompactionWaiter(id,error));
+    return promise;
   }
   function notificationIsActive(threadId){return !threadId||threadId===activeThreadRef.current?.id}
 
@@ -1688,8 +1706,10 @@ export default function App(){
         if(compaction.phase==="running"){
           updateThreadTelemetry(threadId,{currentActivity:{id,kind:"contextCompaction",title:compaction.title,startedAtMs:at},lastActivityAt:at});
         }else if(compaction.phase==="done"){
+          settleCompactionWaiter(threadId,null,{ok:true,source:"providerMetadata"});
           updateThreadTelemetry(threadId,{currentActivity:null,lastActivity:{id,kind:"contextCompaction",title:compaction.title,completedAtMs:at},lastActivityAt:at,lastError:null});
         }else{
+          settleCompactionWaiter(threadId,new Error(compaction.detail||compaction.title));
           updateThreadTelemetry(threadId,{currentActivity:null,lastActivity:{id,kind:"contextCompaction",title:compaction.title,completedAtMs:at},lastError:compaction.detail||compaction.title,lastActivityAt:at});
         }
         if(isCurrent)setEvents(prev=>{
@@ -1701,10 +1721,12 @@ export default function App(){
     }
     else if(message.method==="thread/compacted"){
       const at=Date.now(),id="context-compact-"+threadId;
+      settleCompactionWaiter(threadId,null,{ok:true,source:"thread/compacted"});
       updateThreadTelemetry(threadId,{currentActivity:null,lastActivity:{id,kind:"contextCompaction",title:"Context compacted",completedAtMs:at},lastActivityAt:at,lastError:null});
       if(isCurrent)setEvents(prev=>{const event={id,kind:"contextCompaction",title:"Context compacted",status:"done",raw:p};return prev.some(item=>item.id===id)?prev.map(item=>item.id===id?{...item,...event}:item):[...prev,event]});
     }
     else if(message.method==="error"){
+      if(threadId&&compactionWaitersRef.current.has(String(threadId)))settleCompactionWaiter(threadId,new Error(p.message||"Context compaction failed"));
       updateThreadTelemetry(threadId,{currentActivity:null,lastError:p.message||"Agent error",lastActivityAt:Date.now()});
       if(isCurrent){setEvents(prev=>[...prev,{id:"error-"+Date.now(),kind:"error",title:p.message||"Agent error",status:"done",raw:p}]);setRunning(false);desktopNotify("Trebell Code error",p.message||"The agent stopped with an error.")}
     }
@@ -2245,9 +2267,23 @@ export default function App(){
     const detail=error?.message||String(error)||"Unknown checkpoint error";
     setEvents(prev=>[...prev,{id:"checkpoint-error-"+Date.now()+"-"+Math.random().toString(36).slice(2,6),kind:"error",title:message+": "+detail,status:"error",raw:{...raw,error:detail}}]);
   }
-  async function prepareTurnContext(thread,cwd,text,paths,{projectless=projectlessMode,background=false}={}){
-    if(projectless||bootstrap.mock||!thread?.id||!cwd)return null;
+  async function maybeAutoCompactBeforeTurn(thread){
+    if(!thread?.id||!runtimeCapabilities.compaction||rpcStatus!=="connected")return {attempted:false,compacted:false,decision:null,error:null};
     const usage=threadTelemetry[thread.id]?.tokenUsage||(activeThread?.id===thread.id?tokenUsage:null);
+    const decision=autoCompactionDecision(usage,{enabled:settings.autoCompactContext===true,thresholdPercent:settings.autoCompactThresholdPercent??85});
+    if(!decision.shouldCompact)return {attempted:false,compacted:false,decision,error:null};
+    try{
+      await requestThreadCompaction(thread.id);
+      updateThreadTelemetry(thread.id,{tokenUsage:null,lastActivityAt:Date.now()});
+      if(activeThreadRef.current?.id===thread.id)setTokenUsage(null);
+      return {attempted:true,compacted:true,decision,error:null};
+    }catch(error){
+      return {attempted:true,compacted:false,decision,error};
+    }
+  }
+  async function prepareTurnContext(thread,cwd,text,paths,{projectless=projectlessMode,background=false,ignoreUsage=false}={}){
+    if(projectless||bootstrap.mock||!thread?.id||!cwd)return null;
+    const usage=ignoreUsage?null:(threadTelemetry[thread.id]?.tokenUsage||(activeThread?.id===thread.id?tokenUsage:null));
     try{
       const packet=await api("/api/context/packet",{method:"POST",body:{
         path:cwd,task:text,focusPaths:paths||[],environmentId:workspaceEnvironmentId||null,
@@ -2276,8 +2312,9 @@ export default function App(){
     if(!projectlessMode&&!threadOverride&&(cwdOverride||projectPath)===projectPath)await waitForActiveClone();
     await validateAttachmentPaths(paths||[]);
     if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");let thread=threadOverride||activeThread;let cwd=cwdOverride||projectPath||bootstrap.cwd;
+    const autoCompaction=thread?await maybeAutoCompactBeforeTurn(thread):{attempted:false,compacted:false,decision:null,error:null};
     if(!thread){if(!projectlessMode)cwd=await prepareWorktree(cwd,modelId);thread=await createThreadFor(modelId,cwd,{projectless:projectlessMode});activeThreadRef.current=thread;setActiveThread(thread);setThreads(prev=>[thread,...prev]);setProjectPath(cwd)}
-    const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7);setMessages(prev=>[...prev,{id:clientId,role:"user",text}]);setEvents([]);resetAssistantStream();setRunning(true);
+    const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7);setMessages(prev=>[...prev,{id:clientId,role:"user",text}]);setEvents(autoCompaction.attempted?[{id:"auto-compact-"+thread.id,kind:autoCompaction.error?"error":"contextCompaction",title:autoCompaction.error?"Automatic context compaction failed; continuing: "+(autoCompaction.error.message||String(autoCompaction.error)):"Context compacted automatically before this turn",status:"done",raw:autoCompaction.decision||{}}]:[]);resetAssistantStream();setRunning(true);
     try{
       let checkpoint=null;
       if(!projectlessMode){
@@ -2288,7 +2325,7 @@ export default function App(){
       const sandboxPolicy=p.sandbox==="danger-full-access"?{type:"dangerFullAccess"}:p.sandbox==="read-only"?{type:"readOnly",networkAccess:false}:{type:"workspaceWrite",writableRoots:[cwd],networkAccess:true,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
       const custom=(settings.customModels||[]).find(item=>item.id===modelId&&item.runtime===agentRuntime&&(agentRuntime!=="codex"||item.provider===provider));
       const collaboration=selectedCollaborationMode(modelId);
-      const contextPacket=await prepareTurnContext(thread,cwd,text,paths,{projectless:projectlessMode});
+      const contextPacket=await prepareTurnContext(thread,cwd,text,paths,{projectless:projectlessMode,ignoreUsage:autoCompaction.compacted});
       const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(agentRuntime==="codex"&&custom?.effort?{effort:custom.effort}:{}),...(agentRuntime==="codex"&&custom?.serviceTier?{serviceTierForTurn:custom.serviceTier}:{}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths),...(contextPacket?.injection?{additionalContext:{"trebell.repo_context":{kind:"application",value:contextPacket.injection}}}:{})});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);
       setMessages(prev=>prev.map(m=>m.id===clientId?{...m,turnId,checkpointId:checkpoint?.id||null}:m));if(checkpoint?.id&&turnId){try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}});setCheckpointByTurn(prev=>({...prev,[turnId]:{...checkpoint,turnId}}))}catch(error){reportCheckpointIssue("File checkpoint was created but could not be linked to this turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}}setAttachments([]);setContextChips([]);return{thread,turnId};
     }catch(error){
@@ -2430,10 +2467,10 @@ export default function App(){
   async function compactContext(){
     if(!runtimeCapabilities.compaction){setEvents(prev=>[...prev,{id:"compact-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not expose generic context compaction`,status:"done",raw:{}}]);return}
     if(!activeThread?.id||!rpc)return;
+    const id="context-compact-"+activeThread.id;
+    setEvents(prev=>{const event={id,kind:"contextCompaction",title:"Compacting context",status:"running",raw:{}};return prev.some(item=>item.id===id)?prev.map(item=>item.id===id?{...item,...event}:item):[...prev,event]});
     try{
-      await rpc.request("thread/compact/start",{threadId:activeThread.id});
-      const id="context-compact-"+activeThread.id;
-      setEvents(prev=>{const event={id,kind:"contextCompaction",title:"Compacting context",status:"running",raw:{}};return prev.some(item=>item.id===id)?prev.map(item=>item.id===id?{...item,...event}:item):[...prev,event]});
+      await requestThreadCompaction(activeThread.id);
     }catch(error){
       setEvents(prev=>[...prev,{id:"compact-error-"+Date.now(),kind:"error",title:"Context compaction failed: "+(error.message||String(error)),status:"done",raw:{}}]);
     }

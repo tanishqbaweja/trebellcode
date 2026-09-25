@@ -996,6 +996,58 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
   }finally{await harness.close()}
 });
 
+test("automatic context compaction completes before the next turn starts",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"auto-compact-thread",name:"Auto compact fixture",preview:"Long-thread compaction coverage",historyMode:"paginated",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const order=[],turns=[];let compactionCount=0;
+  const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
+    if(message.method==="thread/compact/start"){
+      compactionCount++;order.push("compact-request-"+compactionCount);
+      if(compactionCount===2){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate automatic compaction failure"}}));return true}
+      ws.send(JSON.stringify({id:message.id,result:{ok:true}}));
+      setTimeout(()=>{order.push("compact-complete-1");ws.send(JSON.stringify({method:"thread/compacted",params:{threadId:thread.id}}))},80);
+      return true;
+    }
+    if(message.method==="turn/start"){
+      order.push("turn-start-"+(turns.length+1));turns.push(message.params);
+      ws.send(JSON.stringify({id:message.id,result:{turn:{id:"auto-compact-turn-"+turns.length,status:"inProgress"}}}));return true;
+    }
+    return false;
+  }});
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"auto-compact-fixture",{settingsPatch:{autoCompactContext:true,autoCompactThresholdPercent:85}});
+    await page.goto("/");
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Auto compact fixture"]')});
+    await row.locator(".thread-main").click();
+    await expect(row).toHaveClass(/active/);
+    harness.emit({method:"thread/tokenUsage/updated",params:{threadId:thread.id,tokenUsage:{modelContextWindow:100000,last:{inputTokens:86000},total:{totalTokens:110000}}}});
+    await expect(page.getByText(/Context 86%/)).toBeVisible();
+    const composer=page.getByTestId("composer");
+    await composer.fill("Continue after compacting this long conversation");
+    await page.getByTestId("send").click();
+    await expect.poll(()=>turns.length).toBe(1);
+    expect(order).toEqual(["compact-request-1","compact-complete-1","turn-start-1"]);
+    await expect(page.locator(".user-bubble").filter({hasText:"Continue after compacting this long conversation"})).toBeVisible();
+    await expect(page.locator(".tool-event").filter({hasText:"Context compacted automatically before this turn"})).toBeVisible();
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"automatic-context-compaction-1280x800.png",fullPage:true});
+
+    harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"auto-compact-turn-1",status:"completed"}}});
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);
+    harness.emit({method:"thread/tokenUsage/updated",params:{threadId:thread.id,tokenUsage:{modelContextWindow:100000,last:{inputTokens:90000},total:{totalTokens:122000}}}});
+    await expect(page.getByText(/Context 90%/)).toBeVisible();
+    await composer.fill("Still send this even if automatic compaction fails");
+    await page.getByTestId("send").click();
+    await expect.poll(()=>turns.length).toBe(2);
+    expect(order.slice(-2)).toEqual(["compact-request-2","turn-start-2"]);
+    await expect(page.locator(".user-bubble").filter({hasText:"Still send this even if automatic compaction fails"})).toBeVisible();
+    await expect(page.locator(".tool-event.kind-error").filter({hasText:"Automatic context compaction failed; continuing"})).toContainText("Deliberate automatic compaction failure");
+    await page.screenshot({path:auditDir+"automatic-context-compaction-fallback-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
 test("direct fallback never drops attachments or failed text sends",async({page,request})=>{
   test.setTimeout(35_000);
   const baseBootstrap=await (await request.get("/api/bootstrap")).json();
@@ -1682,6 +1734,9 @@ test("settings page visual audit",async({page,request})=>{
   expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth+1);
   await expect(page.getByRole("button",{name:/General/})).toHaveAttribute("aria-current","page");
   await expect(page.getByRole("heading",{name:"Follow-up behavior"})).toBeVisible();
+  await expect(page.getByRole("heading",{name:"Context management"})).toBeVisible();
+  await expect(page.getByLabel("Compact long threads automatically")).toBeChecked();
+  await expect(page.getByLabel("Compact when context reaches")).toHaveValue("85");
   await expect(page.getByRole("heading",{name:"Agent harness"})).toBeHidden();
   await expect(page.getByRole("heading",{name:"Browser profiles"})).toBeHidden();
   await expect(page.getByRole("heading",{name:"SnapShots"})).toBeHidden();

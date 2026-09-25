@@ -9,6 +9,8 @@ const DEFAULT_STATE = Object.freeze({
   threadMeta: {},
   settings: {
     followUpMode: "queue",
+    autoCompactContext: true,
+    autoCompactThresholdPercent: 85,
     defaultModel: null,
     defaultPermissionMode: "supervised",
     defaultWorkspaceMode: "current",

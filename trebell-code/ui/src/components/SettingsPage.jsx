@@ -576,6 +576,16 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       </div>}
       {settingsSection==="agents"&&<div className="settings-card" {...targetProps("agents-runtime")}><h3>Runtime</h3><p>Harness connection: <strong>{rpcStatus}</strong><br/>Agent: <strong>{selectedAgentStatus?.name||selectedAgent}</strong><br/>Agent runtime: <strong>{runtime?.agentRuntimeStatus?.available||selectedAgent==="codex"?"ready":"not ready"}</strong>{selectedAgent==="codex"&&<><br/>Codex app-server: <strong>{runtime?.appServerReady?"ready":"not ready"}</strong><br/>Inference: <strong>{PROVIDER_LABELS[runtime?.provider||selected]||runtime?.provider||selected}</strong>{(runtime?.provider||selected)==="freebuff"&&<><br/>Freebuff bridge: <strong>{runtime?.bridgeReady?"ready":"not ready"}</strong></>}</>}</p><button onClick={()=>refresh({reportErrors:true})} disabled={loading}><RefreshCw size={13}/> {loading?"Refreshing…":"Refresh diagnostics"}</button></div>}
       {settingsSection==="general"&&<div className="settings-card" {...targetProps("general-followups")}><h3>Follow-up behavior</h3>{selectedAgent==="codex"?<label>While the agent is working<select value={settings.followUpMode||"queue"} onChange={e=>save({followUpMode:e.target.value})}><option value="queue">Queue after current turn</option><option value="steer">Steer current turn immediately</option></select></label>:<p>Follow-ups are queued until the current {selectedAgentStatus?.name||selectedAgent} turn finishes. ACP does not define in-flight steering.</p>}</div>}
+      {settingsSection==="general"&&<div className="settings-card" {...targetProps("general-context-management")}>
+        <h3>Context management</h3>
+        <p>When the selected harness supports compaction, Trebell can compact an existing thread just before sending the next message. It waits for compaction to finish before the new turn starts.</p>
+        <label className="check-row"><input type="checkbox" checked={settings.autoCompactContext===true} onChange={e=>save({autoCompactContext:e.target.checked})}/><span><strong>Compact long threads automatically</strong><small>Prevents a nearly-full context window from crowding out the next response.</small></span></label>
+        <label>Compact when context reaches
+          <select value={String(settings.autoCompactThresholdPercent??85)} disabled={settings.autoCompactContext!==true} onChange={e=>save({autoCompactThresholdPercent:Number(e.target.value)})}>
+            <option value="80">80%</option><option value="85">85%</option><option value="90">90%</option><option value="95">95%</option>
+          </select>
+        </label>
+      </div>}
       {settingsSection==="workspace"&&<div className="settings-section-slot" {...targetProps("workspace-defaults")}><ScopedSettingsCard settings={settings} models={models} onChanged={onScopedSettingsChanged} scopeEnvironmentId={workspaceScope.environmentId} scopeProjectId={workspaceScope.projectId} onScopeChange={setWorkspaceScope} onCatalog={setWorkspaceScopeCatalog} showScopeTargets={false}/></div>}
       {settingsSection==="workspace"&&<div className="settings-card storage-settings" {...targetProps("workspace-storage")}>
         <h3>Storage cleanup</h3>
