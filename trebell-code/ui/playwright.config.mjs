@@ -15,8 +15,9 @@ process.env.TREBELL_E2E_OFFLINE=allowExternalNetwork?"0":"1";
 const localBaseUrl="http://127.0.0.1:"+localPort;
 const localTestHome=e2eHome();
 const localTestUiDist=join(localTestHome,"ui-dist");
+const workerProcess=process.env.TEST_WORKER_INDEX!=null;
 if(process.platform==="win32"&&process.env.COMSPEC) process.env.COMSPEC=process.env.COMSPEC.trim();
-if(!hostedBaseUrl){
+if(!hostedBaseUrl&&!workerProcess){
   rmSync(localTestHome,{recursive:true,force:true});
   mkdirSync(localTestHome,{recursive:true});
   cpSync(fileURLToPath(new URL("./dist/",import.meta.url)),localTestUiDist,{recursive:true});

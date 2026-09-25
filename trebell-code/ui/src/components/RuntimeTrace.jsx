@@ -1,6 +1,7 @@
 import React,{useCallback,useEffect,useState} from "react";
 import { RefreshCw } from "lucide-react";
 import { api } from "../api.js";
+import { mergeTraceFilterOptions, traceQuery } from "../runtime-trace-filters.js";
 
 function timeLabel(value){
   const date=new Date(Number(value)||Date.now());
@@ -11,30 +12,27 @@ export default function RuntimeTrace({threadId=null}){
   const [items,setItems]=useState([]);
   const [error,setError]=useState("");
   const [loading,setLoading]=useState(false);
+  const [turnFilter,setTurnFilter]=useState("");
   const [runtimeFilter,setRuntimeFilter]=useState("");
   const [categoryFilter,setCategoryFilter]=useState("");
   const [timeWindow,setTimeWindow]=useState("all");
-  const [runtimeOptions,setRuntimeOptions]=useState([]);
+  const [filterOptions,setFilterOptions]=useState({runtimes:[],categories:[],turns:[]});
   const load=useCallback(async({silent=false}={})=>{
     if(!silent)setLoading(true);
     try{
-      const params=new URLSearchParams({limit:"40"});if(threadId)params.set("threadId",threadId);
-      if(runtimeFilter)params.set("runtime",runtimeFilter);
-      if(categoryFilter)params.set("category",categoryFilter);
-      const windowMs=timeWindow==="15m"?15*60_000:timeWindow==="1h"?60*60_000:timeWindow==="24h"?24*60*60_000:0;
-      if(windowMs)params.set("after",String(Date.now()-windowMs));
+      const params=traceQuery({threadId,turnId:turnFilter,runtime:runtimeFilter,category:categoryFilter,timeWindow,limit:40});
       const result=await api("/api/traces?"+params.toString());
       const next=Array.isArray(result.items)?result.items:[];setItems(next);
-      setRuntimeOptions(previous=>Array.from(new Set([...previous,...next.map(item=>item.runtime).filter(Boolean)])).sort());
+      setFilterOptions(previous=>mergeTraceFilterOptions(previous,next));
       setError(result.journal?.lastError?.message||"");
       return true;
     }catch(loadError){
       setError(loadError?.message||String(loadError)||"Could not refresh runtime trace.");
       return false;
     }finally{if(!silent)setLoading(false)}
-  },[threadId,runtimeFilter,categoryFilter,timeWindow]);
+  },[threadId,turnFilter,runtimeFilter,categoryFilter,timeWindow]);
 
-  useEffect(()=>{setRuntimeFilter("");setCategoryFilter("");setTimeWindow("all");setRuntimeOptions([])},[threadId]);
+  useEffect(()=>{setTurnFilter("");setRuntimeFilter("");setCategoryFilter("");setTimeWindow("all");setFilterOptions({runtimes:[],categories:[],turns:[]})},[threadId]);
 
   useEffect(()=>{
     let disposed=false,busy=false;
@@ -51,12 +49,15 @@ export default function RuntimeTrace({threadId=null}){
       <button type="button" onClick={()=>load()} disabled={loading} aria-label="Refresh execution trace" title="Refresh execution trace"><RefreshCw size={11}/></button>
     </div>
     <div className="runtime-trace-filters">
+      <select aria-label="Trace turn" value={turnFilter} onChange={event=>setTurnFilter(event.target.value)}>
+        <option value="">All turns</option>{filterOptions.turns.map(turn=><option key={turn.id} value={turn.id}>{turn.label}</option>)}
+      </select>
       <select aria-label="Trace runtime" value={runtimeFilter} onChange={event=>setRuntimeFilter(event.target.value)}>
-        <option value="">All runtimes</option>{runtimeOptions.map(runtime=><option key={runtime} value={runtime}>{runtime}</option>)}
+        <option value="">All runtimes</option>{filterOptions.runtimes.map(runtime=><option key={runtime} value={runtime}>{runtime}</option>)}
       </select>
       <select aria-label="Trace category" value={categoryFilter} onChange={event=>setCategoryFilter(event.target.value)}>
         <option value="">All categories</option>
-        {["runtime","client","policy","checkpoint","source-control","verification","budget"].map(category=><option key={category} value={category}>{category}</option>)}
+        {filterOptions.categories.map(category=><option key={category} value={category}>{category}</option>)}
       </select>
       <select aria-label="Trace time window" value={timeWindow} onChange={event=>setTimeWindow(event.target.value)}>
         <option value="all">All time</option><option value="15m">Last 15m</option><option value="1h">Last hour</option><option value="24h">Last 24h</option>
