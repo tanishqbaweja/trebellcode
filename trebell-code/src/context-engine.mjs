@@ -128,10 +128,16 @@ try{
 function tokenEstimate(value){return Math.ceil(String(value||"").length/4)}
 function slash(value){return String(value||"").split(sep).join("/")}
 function boundedNumber(value,fallback,min,max){const number=Number(value);return Number.isFinite(number)?Math.max(min,Math.min(max,number)):fallback}
-async function mapLimit(items,limit,worker){
+function contextAbortError(signal){
+  const reason=signal?.reason;if(reason?.name==="AbortError")return reason;
+  const error=new Error(reason instanceof Error?(reason.message||"Context operation was cancelled."):String(reason||"Context operation was cancelled."));error.name="AbortError";return error;
+}
+function throwIfContextAborted(signal){if(signal?.aborted)throw contextAbortError(signal)}
+async function mapLimit(items,limit,worker,{signal=null}={}){
+  throwIfContextAborted(signal);
   const values=Array.from(items||[]),results=new Array(values.length),size=Math.max(1,Math.min(values.length||1,Number(limit)||1));let cursor=0;
   await Promise.all(Array.from({length:size},async()=>{
-    for(;;){const index=cursor++;if(index>=values.length)return;results[index]=await worker(values[index],index)}
+    for(;;){throwIfContextAborted(signal);const index=cursor++;if(index>=values.length)return;results[index]=await worker(values[index],index);throwIfContextAborted(signal)}
   }));
   return results;
 }
@@ -357,11 +363,13 @@ function parseSource(content,relativePath){
   return {definitions,references,imports:importSpecifiers(content,extension),parser:"regex"};
 }
 
-async function fallbackFiles(root){
+async function fallbackFiles(root,{signal=null}={}){
   const files=[];
   async function walk(dir){
+    throwIfContextAborted(signal);
     let entries=[];try{entries=await readdir(dir,{withFileTypes:true})}catch{return}
     for(const entry of entries){
+      throwIfContextAborted(signal);
       if(SKIP.has(entry.name))continue;
       const full=join(dir,entry.name);if(entry.isDirectory())await walk(full);else if(entry.isFile())files.push(slash(relative(root,full)));
       if(files.length>=20_000)return;
@@ -370,23 +378,27 @@ async function fallbackFiles(root){
   await walk(root);return files;
 }
 
-async function discoverFiles(root){
+async function discoverFiles(root,{signal=null}={}){
+  throwIfContextAborted(signal);
   try{
-    const {stdout}=await execFileAsync("git",["-C",root,"ls-files","-co","--exclude-standard","-z"],{windowsHide:true,maxBuffer:32*1024*1024,timeout:15_000});
+    const {stdout}=await execFileAsync("git",["-C",root,"ls-files","-co","--exclude-standard","-z"],{windowsHide:true,maxBuffer:32*1024*1024,timeout:15_000,...(signal?{signal}:{})});
+    throwIfContextAborted(signal);
     return String(stdout||"").split("\0").filter(Boolean).map(slash).filter(indexablePath);
-  }catch{return fallbackFiles(root)}
+  }catch(error){if(signal?.aborted||error?.name==="AbortError")throw contextAbortError(signal);return fallbackFiles(root,{signal})}
 }
 
-async function gitState(root){
+async function gitState(root,{signal=null}={}){
+  throwIfContextAborted(signal);
   try{
     const [{stdout:status},{stdout:diff},headResult]=await Promise.all([
-      execFileAsync("git",["-C",root,"status","--short"],{windowsHide:true,maxBuffer:1024*1024,timeout:12_000}),
-      execFileAsync("git",["-C",root,"diff","--no-ext-diff","--no-color","--unified=1"],{windowsHide:true,maxBuffer:2*1024*1024,timeout:15_000}),
-      execFileAsync("git",["-C",root,"rev-parse","HEAD"],{windowsHide:true,maxBuffer:64*1024,timeout:8_000}).catch(()=>({stdout:""})),
+      execFileAsync("git",["-C",root,"status","--short"],{windowsHide:true,maxBuffer:1024*1024,timeout:12_000,...(signal?{signal}:{})}),
+      execFileAsync("git",["-C",root,"diff","--no-ext-diff","--no-color","--unified=1"],{windowsHide:true,maxBuffer:2*1024*1024,timeout:15_000,...(signal?{signal}:{})}),
+      execFileAsync("git",["-C",root,"rev-parse","HEAD"],{windowsHide:true,maxBuffer:64*1024,timeout:8_000,...(signal?{signal}:{})}).catch(error=>{if(signal?.aborted||error?.name==="AbortError")throw error;return {stdout:""}}),
     ]);
+    throwIfContextAborted(signal);
     const changed=new Set(String(status||"").split(/\r?\n/).filter(Boolean).map(line=>slash(line.slice(3).replace(/^.* -> /,""))));
     return {isGit:true,head:String(headResult?.stdout||"").trim()||null,changed,status:String(status||"").slice(0,12_000),diff:String(diff||"").slice(0,16_000)};
-  }catch{return {isGit:false,head:null,changed:new Set(),status:"",diff:""}}
+  }catch(error){if(signal?.aborted||error?.name==="AbortError")throw contextAbortError(signal);return {isGit:false,head:null,changed:new Set(),status:"",diff:""}}
 }
 
 async function localMatchingFiles(root,{query,regex=false,caseSensitive=false,limit=120}={}){
@@ -527,20 +539,23 @@ async function localTypeScriptRename(root,{path,line=1,column=1,newName="",limit
   }
 }
 
-async function localMetadata(root,paths){
+async function localMetadata(root,paths,{signal=null}={}){
   const pairs=await mapLimit(paths,64,async relativePath=>{
+    throwIfContextAborted(signal);
     try{
       const info=await stat(resolve(root,relativePath));
       return info.isFile()?[relativePath,{size:info.size,version:String(info.mtimeMs)}]:null;
-    }catch{return null}
-  });
+    }catch(error){if(signal?.aborted||error?.name==="AbortError")throw contextAbortError(signal);return null}
+  },{signal});
   return new Map(pairs.filter(Boolean));
 }
 
-async function localReadMany(root,paths){
+async function localReadMany(root,paths,{signal=null}={}){
   const pairs=await mapLimit(paths,32,async relativePath=>{
-    try{return [relativePath,await readFile(resolve(root,relativePath),"utf8")]}catch{return null}
-  });
+    throwIfContextAborted(signal);
+    try{return [relativePath,await readFile(resolve(root,relativePath),{encoding:"utf8",...(signal?{signal}:{})})]}
+    catch(error){if(signal?.aborted||error?.name==="AbortError")throw contextAbortError(signal);return null}
+  },{signal});
   return new Map(pairs.filter(Boolean));
 }
 
@@ -549,10 +564,10 @@ function localContextIo(root){
   return {
     cacheKey:"local:"+absolute,
     root:absolute,
-    discoverFiles:()=>discoverFiles(absolute),
-    metadata:paths=>localMetadata(absolute,paths),
-    readMany:paths=>localReadMany(absolute,paths),
-    readText:path=>readFile(resolve(absolute,path),"utf8"),
+    discoverFiles:options=>discoverFiles(absolute,options),
+    metadata:(paths,options)=>localMetadata(absolute,paths,options),
+    readMany:(paths,_maxBytes,options)=>localReadMany(absolute,paths,options),
+    readText:(path,options)=>readFile(resolve(absolute,path),{encoding:"utf8",...(options?.signal?{signal:options.signal}:{})}),
     searchPaths:options=>localMatchingFiles(absolute,options),
     gitHistory:options=>localGitHistory(absolute,options),
     gitBlame:options=>localGitBlame(absolute,options),
@@ -563,10 +578,12 @@ function localContextIo(root){
     typeScriptCodeActions:options=>localTypeScriptCodeActions(absolute,options),
     typeScriptOrganizeImports:options=>localTypeScriptOrganizeImports(absolute,options),
     typeScriptRename:options=>localTypeScriptRename(absolute,options),
-    gitState:()=>gitState(absolute),
-    changedSince:async(fromHead,toHead)=>{
+    gitState:options=>gitState(absolute,options),
+    changedSince:async(fromHead,toHead,{signal=null}={})=>{
+      throwIfContextAborted(signal);
       if(!fromHead||!toHead||fromHead===toHead)return new Set();
-      const {stdout}=await execFileAsync("git",["-C",absolute,"diff","--name-only","-z",fromHead,toHead,"--"],{windowsHide:true,maxBuffer:16*1024*1024,timeout:20_000});
+      const {stdout}=await execFileAsync("git",["-C",absolute,"diff","--name-only","-z",fromHead,toHead,"--"],{windowsHide:true,maxBuffer:16*1024*1024,timeout:20_000,...(signal?{signal}:{})});
+      throwIfContextAborted(signal);
       return new Set(String(stdout||"").split("\0").filter(Boolean).map(slash));
     },
     relativeFocus:path=>slash(relative(absolute,resolve(absolute,path))).replace(/^\.\//,""),
@@ -581,18 +598,23 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
   const absolute=posix.normalize(String(root||"/"));
   const run=options=>environments.executeArgv(environmentId,options);
   const runInput=options=>environments.executeArgvInput(environmentId,options);
-  const discoverFiles=async()=>{
+  const discoverFiles=async({signal=null}={})=>{
+    throwIfContextAborted(signal);
     const git=await run({command:"git",args:["-C",absolute,"ls-files","-co","--exclude-standard","-z"],cwd:"",timeoutMs:20_000,maxOutput:16*1024*1024});
+    throwIfContextAborted(signal);
     if(git.exitCode===0)return String(git.stdout||"").split("\0").filter(Boolean).map(path=>path.replace(/\\/g,"/")).filter(indexablePath);
     const args=[".","(","-name",".git","-o","-name","node_modules","-o","-name","target","-o","-name","dist","-o","-name","build","-o","-name",".next","-o","-name",".cache","-o","-name","desktop-dist","-o","-name","coverage","-o","-name","vendor",")","-prune","-o","-type","f","-print0"];
     const found=await run({command:"find",args,cwd:absolute,timeoutMs:25_000,maxOutput:16*1024*1024});
+    throwIfContextAborted(signal);
     if(found.exitCode!==0)throw new Error(found.stderr||"Could not list remote workspace for context indexing");
     return String(found.stdout||"").split("\0").filter(Boolean).map(path=>path.replace(/^\.\//,"")).filter(indexablePath);
   };
-  const metadata=async paths=>{
+  const metadata=async(paths,{signal=null}={})=>{
+    throwIfContextAborted(signal);
     if(!paths.length)return new Map();
     const script="while IFS= read -r -d '' f; do [ -f \"$f\" ] || continue; if m=$(stat -c '%s\\t%y' \"$f\" 2>/dev/null); then :; else m=$(stat -f '%z\\t%m' \"$f\" 2>/dev/null) || continue; fi; printf '%s\\t' \"$m\"; printf '%s' \"${f#./}\" | base64 | tr -d '\\r\\n'; printf '\\n'; done";
     const result=await runInput({command:"bash",args:["-lc",script],input:remoteInput(paths),cwd:absolute,timeoutMs:30_000,maxOutput:8*1024*1024});
+    throwIfContextAborted(signal);
     if(result.exitCode!==0)throw new Error(result.stderr||"Could not inspect remote workspace files");
     const entries=[];
     for(const line of String(result.stdout||"").split(/\r?\n/)){
@@ -603,12 +625,15 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     }
     return new Map(entries);
   };
-  const readMany=async paths=>{
+  const readMany=async(paths,_maxBytes,{signal=null}={})=>{
+    throwIfContextAborted(signal);
     const output=new Map();
     const script="while IFS= read -r -d '' f; do [ -f \"$f\" ] || continue; printf '%s\\t' \"$(printf '%s' \"${f#./}\" | base64 | tr -d '\\r\\n')\"; base64 < \"$f\" | tr -d '\\r\\n'; printf '\\n'; done";
     for(let offset=0;offset<paths.length;offset+=16){
+      throwIfContextAborted(signal);
       const batch=paths.slice(offset,offset+16);
       const result=await runInput({command:"bash",args:["-lc",script],input:remoteInput(batch),cwd:absolute,timeoutMs:45_000,maxOutput:12*1024*1024});
+      throwIfContextAborted(signal);
       if(result.exitCode!==0)throw new Error(result.stderr||"Could not read remote workspace files");
       for(const line of String(result.stdout||"").split(/\r?\n/)){
         if(!line)continue;const tab=line.indexOf("\t");if(tab<1)continue;
@@ -617,12 +642,14 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     }
     return output;
   };
-  const remoteGitState=async()=>{
+  const remoteGitState=async({signal=null}={})=>{
+    throwIfContextAborted(signal);
     const [status,diff,head]=await Promise.all([
       run({command:"git",args:["-C",absolute,"status","--short"],cwd:"",timeoutMs:15_000,maxOutput:1024*1024}),
       run({command:"git",args:["-C",absolute,"diff","--no-ext-diff","--no-color","--unified=1"],cwd:"",timeoutMs:20_000,maxOutput:2*1024*1024}),
       run({command:"git",args:["-C",absolute,"rev-parse","HEAD"],cwd:"",timeoutMs:10_000,maxOutput:64*1024}),
     ]);
+    throwIfContextAborted(signal);
     if(status.exitCode!==0)return {isGit:false,head:null,changed:new Set(),status:"",diff:""};
     const changed=new Set(String(status.stdout||"").split(/\r?\n/).filter(Boolean).map(line=>line.slice(3).replace(/^.* -> /,"").replace(/\\/g,"/")));
     return {isGit:true,head:head.exitCode===0?String(head.stdout||"").trim()||null:null,changed,status:String(status.stdout||"").slice(0,12_000),diff:diff.exitCode===0?String(diff.stdout||"").slice(0,16_000):""};
@@ -704,17 +731,21 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     typeScriptCodeActions,
     typeScriptOrganizeImports,
     typeScriptRename,
-    readText:async relativePath=>{
+    readText:async(relativePath,{signal=null}={})=>{
+      throwIfContextAborted(signal);
       const target=posix.join(absolute,String(relativePath||"").replace(/^\.\//,""));
       if(target!==absolute&&!target.startsWith(absolute.endsWith("/")?absolute:absolute+"/"))throw new Error("Context file is outside the remote workspace");
       const result=await run({command:"head",args:["-c","65536",target],cwd:"",timeoutMs:15_000,maxOutput:128*1024});
+      throwIfContextAborted(signal);
       if(result.exitCode!==0)throw new Error(result.stderr||"Could not read remote context file");
       return String(result.stdout||"");
     },
     gitState:remoteGitState,
-    changedSince:async(fromHead,toHead)=>{
+    changedSince:async(fromHead,toHead,{signal=null}={})=>{
+      throwIfContextAborted(signal);
       if(!fromHead||!toHead||fromHead===toHead)return new Set();
       const result=await run({command:"git",args:["-C",absolute,"diff","--name-only","-z",String(fromHead),String(toHead),"--"],cwd:"",timeoutMs:25_000,maxOutput:16*1024*1024});
+      throwIfContextAborted(signal);
       if(result.exitCode!==0)throw new Error(result.stderr||"Could not compare remote Git revisions for context indexing");
       return new Set(String(result.stdout||"").split("\0").filter(Boolean).map(path=>path.replace(/\\/g,"/")));
     },
@@ -810,15 +841,17 @@ function publicItem(entry,score,centrality,reasons,tokenCost){
   return {path:entry.relativePath,score:Number(score.toFixed(3)),centrality:Number(centrality.toFixed(6)),reasons,symbols:entry.parsed.definitions.slice(0,16),parser:entry.parsed.parser||"regex",tokenEstimate:tokenCost};
 }
 
-async function boundedInstructionBlock(contextIo,paths,maxTokens){
+async function boundedInstructionBlock(contextIo,paths,maxTokens,{signal=null}={}){
+  throwIfContextAborted(signal);
   const unique=[...new Set(paths||[])];if(!unique.length||maxTokens<=0)return "";
   const depth=path=>slash(dirname(path)).split("/").filter(part=>part&&part!==".").length;
   const ordered=unique.sort((a,b)=>depth(a)-depth(b)||a.localeCompare(b));
   const prefix="Repository instructions (scoped; nested files override broader guidance):\n";
   const maxChars=Math.max(256,Math.floor(maxTokens)*4),chunks=[];let remaining=Math.max(0,maxChars-prefix.length);
   for(let index=0;index<ordered.length&&remaining>80;index++){
+    throwIfContextAborted(signal);
     const path=ordered[index],left=ordered.length-index,header=`### ${path}\n`,marker="\n[truncated by Trebell context budget]";
-    let content="";try{content=String(await contextIo.readText(path)||"").trim()}catch{continue}
+    let content="";try{content=String(await contextIo.readText(path,{signal})||"").trim()}catch(error){if(signal?.aborted||error?.name==="AbortError")throw contextAbortError(signal);continue}
     if(!content)continue;
     const share=Math.max(96,Math.floor(remaining/left)),contentLimit=Math.max(32,share-header.length-(content.length>share?marker.length:0));
     let clipped=content.slice(0,contentLimit);if(clipped.length<content.length)clipped=clipped.trimEnd()+marker;
@@ -874,15 +907,19 @@ export function planContextBudget({task="",focusPaths=[],tokensUsed=null,context
 export class ContextEngine{
   constructor({maxFileBytes=256_000}={}){this.maxFileBytes=maxFileBytes;this.roots=new Map();this.gitStates=new Map()}
 
-  async #indexed(root,io=null){
+  async #indexed(root,io=null,signal=null){
     if(!root)throw new Error("Context Engine requires a workspace path");
-    const contextIo=io||localContextIo(root),git=await contextIo.gitState(),index=await this.#index(root,contextIo,git);
+    throwIfContextAborted(signal);
+    const contextIo=io||localContextIo(root),git=await contextIo.gitState({signal});throwIfContextAborted(signal);
+    const index=await this.#index(root,contextIo,git,signal);
     return {contextIo,git,index};
   }
 
-  async #index(root,contextIo,git){
+  async #index(root,contextIo,git,signal=null){
+    throwIfContextAborted(signal);
     const started=Date.now(),io=contextIo||localContextIo(root),absolute=io.root,cacheKey=io.cacheKey||absolute;
-    const paths=(await io.discoverFiles()).slice(0,20_000),previous=this.roots.get(cacheKey)||new Map(),previousGit=this.gitStates.get(cacheKey)||null,next=new Map();let reparsed=0,reused=0,skipped=0;
+    const paths=(await io.discoverFiles({signal})).slice(0,20_000);throwIfContextAborted(signal);
+    const previous=this.roots.get(cacheKey)||new Map(),previousGit=this.gitStates.get(cacheKey)||null,next=new Map();let reparsed=0,reused=0,skipped=0;
     const sourcePaths=paths.filter(relativePath=>SOURCE_EXTENSIONS.has(extname(relativePath).toLowerCase()));
     const currentHead=String(git?.head||"").trim()||null,previousHead=String(previousGit?.head||"").trim()||null;
     const revisionChanged=Boolean(previous.size&&git?.isGit&&currentHead&&previousHead&&currentHead!==previousHead);
@@ -890,15 +927,17 @@ export class ContextEngine{
     const dirtyPaths=new Set([...(git?.changed||[]),...(previousGit?.changed||[])]);
     let revisionPaths=null;
     if(revisionChanged&&typeof io.changedSince==="function"){
-      try{revisionPaths=await io.changedSince(previousHead,currentHead)}catch{}
+      try{revisionPaths=await io.changedSince(previousHead,currentHead,{signal})}catch(error){if(signal?.aborted||error?.name==="AbortError")throw contextAbortError(signal)}
     }
+    throwIfContextAborted(signal);
     const inspect=(!previous.size||!git?.isGit||revisionUnknown||(revisionChanged&&!revisionPaths))
       ?sourcePaths
       :sourcePaths.filter(relativePath=>!previous.has(relativePath)||previous.get(relativePath)?.parserVersion!==parserVersion(relativePath)||dirtyPaths.has(relativePath)||(revisionChanged&&revisionPaths.has(relativePath)));
     const inspectSet=new Set(inspect);
-    const metadata=await io.metadata(inspect);
+    const metadata=await io.metadata(inspect,{signal});throwIfContextAborted(signal);
     const toRead=[];
     for(const relativePath of sourcePaths){
+      throwIfContextAborted(signal);
       const cached=previous.get(relativePath);
       if(cached&&!inspectSet.has(relativePath)){next.set(relativePath,cached);reused++;continue}
       const info=metadata.get(relativePath);
@@ -907,18 +946,21 @@ export class ContextEngine{
       if(cached&&cached.parserVersion===parser&&cached.size===info.size&&cached.version===info.version){next.set(relativePath,cached);reused++;continue}
       toRead.push(relativePath);
     }
-    const contents=await io.readMany(toRead,this.maxFileBytes);
+    const contents=await io.readMany(toRead,this.maxFileBytes,{signal});throwIfContextAborted(signal);
     for(const relativePath of toRead){
+      throwIfContextAborted(signal);
       const info=metadata.get(relativePath),content=contents.get(relativePath);
       if(!info||typeof content!=="string"||content.includes("\0")){skipped++;continue}
       next.set(relativePath,{relativePath,size:info.size,version:info.version,parserVersion:parserVersion(relativePath),sample:content.slice(0,64_000),parsed:parseSource(content,relativePath)});reparsed++;
     }
+    throwIfContextAborted(signal);
     this.roots.set(cacheKey,next);this.gitStates.set(cacheKey,{head:currentHead,changed:new Set(git?.changed||[])});
     return {root:absolute,files:next,paths,reparsed,reused,skipped,inspected:inspect.length,durationMs:Date.now()-started,cacheKey,revisionChanged,revisionUnknown,revisionDiffUsed:Boolean(revisionChanged&&revisionPaths)};
   }
 
-  async buildPacket({root,task="",focusPaths=[],maxTokens=null,maxFiles=null,tokensUsed=null,contextWindow=null,io=null}={}){
+  async buildPacket({root,task="",focusPaths=[],maxTokens=null,maxFiles=null,tokensUsed=null,contextWindow=null,io=null,signal=null}={}){
     if(!root)throw new Error("Context Engine requires a workspace path");
+    throwIfContextAborted(signal);
     const contextIo=io||localContextIo(root);
     const budgetPlan=planContextBudget({task,focusPaths,tokensUsed,contextWindow,maxTokens,maxFiles});
     if(budgetPlan.skip)return {
@@ -928,8 +970,8 @@ export class ContextEngine{
       stats:{filesIndexed:0,reparsed:0,reused:0,skipped:0,inspected:0,graphEdges:0,durationMs:0,remote:Boolean(io),skippedByPressure:true},
     };
     const budget=budgetPlan.maxTokens,fileLimit=budgetPlan.maxFiles;
-    const git=await contextIo.gitState();
-    const index=await this.#index(root,contextIo,git);const terms=taskTerms(task),files=[...index.files.values()],focusSet=new Set((focusPaths||[]).map(path=>contextIo.relativeFocus(path)).filter(Boolean));
+    const git=await contextIo.gitState({signal});throwIfContextAborted(signal);
+    const index=await this.#index(root,contextIo,git,signal);throwIfContextAborted(signal);const terms=taskTerms(task),files=[...index.files.values()],focusSet=new Set((focusPaths||[]).map(path=>contextIo.relativeFocus(path)).filter(Boolean));
     const {edges,relevance,centrality,edgeCount}=repositoryGraph(files,{terms,changed:git.changed,focusSet});
     const ranked=files.map(entry=>{
       const rel=relevance.get(entry.relativePath),central=centrality.get(entry.relativePath)||0;
@@ -946,18 +988,19 @@ export class ContextEngine{
     const sections=[];let used=tokenEstimate(header)+20;
     if(instructionPaths.length){
       const instructionBudget=Math.max(160,Math.min(Math.floor(budget*.35),budget-used-80));
-      const block=await boundedInstructionBlock(contextIo,instructionPaths,instructionBudget),cost=tokenEstimate(block);
+      const block=await boundedInstructionBlock(contextIo,instructionPaths,instructionBudget,{signal}),cost=tokenEstimate(block);
       if(block&&cost>0&&used+cost<=budget){sections.push(block.trim());used+=cost}
     }
     if(git.status){const block=`Current Git status:\n${git.status.trim()}${git.diff?`\n\nCurrent diff excerpt:\n${git.diff.trim()}`:""}`;const clipped=block.slice(0,12_000),cost=tokenEstimate(clipped);if(used+cost<budget*.55){sections.push(clipped);used+=cost}}
 
     const selected=[];
     for(const candidate of ranked){
+      throwIfContextAborted(signal);
       if(selected.length>=fileLimit)break;
       const {entry,rel,central,combined}=candidate;if(combined<=0&&selected.length>=Math.min(6,fileLimit))break;
       let excerpt=relevantExcerpt(entry.sample,entry,terms);
       if(excerptNeedsFullSource(entry,terms)){
-        try{excerpt=relevantExcerpt(await contextIo.readText(entry.relativePath),entry,terms)}catch{}
+        try{excerpt=relevantExcerpt(await contextIo.readText(entry.relativePath,{signal}),entry,terms)}catch(error){if(signal?.aborted||error?.name==="AbortError")throw contextAbortError(signal)}
       }
       const symbols=entry.parsed.definitions.slice(0,20).map(item=>`${item.kind} ${item.name} (L${item.line})`).join(", ");
       const reasons=[...rel.reasons];if(central>1/Math.max(1,files.length)*1.35)reasons.push("structurally central in repository graph");
@@ -967,6 +1010,7 @@ export class ContextEngine{
     }
 
     const injection=[header,...sections].join("\n\n").trim();
+    throwIfContextAborted(signal);
     return {
       id:`ctx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`,
       root:index.root,task:String(task||""),generatedAt:Date.now(),tokenEstimate:tokenEstimate(injection),maxTokens:budget,

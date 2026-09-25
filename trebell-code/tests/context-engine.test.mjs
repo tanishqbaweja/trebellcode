@@ -72,6 +72,46 @@ test("exhausted context budget skips repository I/O entirely",async()=>{
   assert.equal(packet.stats.skippedByPressure,true);assert.equal(touched,false);
 });
 
+test("pre-cancelled context builds stop before repository I/O",async()=>{
+  const engine=new ContextEngine(),controller=new AbortController();let touched=false;controller.abort();
+  const io={
+    root:"/srv/app",cacheKey:"fixture:/srv/app",
+    discoverFiles:async()=>{touched=true;return []},metadata:async()=>{touched=true;return new Map()},readMany:async()=>{touched=true;return new Map()},readText:async()=>{touched=true;return ""},
+    gitState:async()=>{touched=true;return {isGit:false,head:null,changed:new Set(),status:"",diff:""}},relativeFocus:path=>path,
+  };
+  await assert.rejects(engine.buildPacket({root:"/srv/app",io,task:"Inspect auth",signal:controller.signal}),error=>error?.name==="AbortError");
+  assert.equal(touched,false);
+});
+
+test("cancelled indexing never publishes a partial cache",async()=>{
+  const engine=new ContextEngine(),controller=new AbortController(),paths=["src/a.js","src/b.js"];let readCalls=0;
+  const contents=new Map([
+    ["src/a.js","export function alpha(){ return 1; }\n"],
+    ["src/b.js","import { alpha } from './a.js'; export function beta(){ return alpha(); }\n"],
+  ]);
+  const io={
+    root:"/srv/app",cacheKey:"fixture:/cancelled-index",
+    discoverFiles:async()=>paths,
+    metadata:async requested=>new Map(requested.map(path=>[path,{size:contents.get(path).length,version:"v1"}])),
+    readMany:async(requested,_maxBytes,{signal}={})=>{
+      readCalls++;
+      if(signal)await new Promise((resolve,reject)=>{
+        const timer=setTimeout(resolve,100);
+        signal.addEventListener("abort",()=>{clearTimeout(timer);const error=new Error("cancelled");error.name="AbortError";reject(error)},{once:true});
+      });
+      return new Map(requested.map(path=>[path,contents.get(path)]));
+    },
+    readText:async path=>contents.get(path)||"",
+    gitState:async()=>({isGit:false,head:null,changed:new Set(),status:"",diff:""}),
+    relativeFocus:path=>path,
+  };
+  const pending=engine.buildPacket({root:"/srv/app",io,task:"Inspect alpha and beta",signal:controller.signal});
+  setTimeout(()=>controller.abort(),10);
+  await assert.rejects(pending,error=>error?.name==="AbortError");
+  const retry=await engine.buildPacket({root:"/srv/app",io,task:"Inspect alpha and beta"});
+  assert.equal(retry.stats.filesIndexed,2);assert.equal(retry.stats.reparsed,2);assert.equal(retry.stats.reused,0);assert.equal(readCalls,2);
+});
+
 const execFileAsync=promisify(execFile);
 
 async function fixture(){
