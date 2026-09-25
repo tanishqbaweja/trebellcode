@@ -226,10 +226,14 @@ test("context engine exposes honest bounded JavaScript TypeScript and Python syn
     assert.equal(valid.supported,true);assert.deepEqual(valid.diagnostics,[]);
     const pythonValid=await engine.diagnostics({root,path:"src/tool.py",semantic:true});
     if(pythonValid.supported){
-      assert.equal(pythonValid.engine,"python-ast");assert.equal(pythonValid.semantic,false);assert.equal(pythonValid.semanticRequested,true);assert.deepEqual(pythonValid.diagnostics,[]);assert.match(pythonValid.semanticInfo.reason,/not configured/i);
+      assert.equal(pythonValid.engine,"python-ast");assert.equal(pythonValid.semantic,false);assert.equal(pythonValid.semanticRequested,true);assert.deepEqual(pythonValid.diagnostics,[]);assert.match(pythonValid.semanticInfo.reason,/Pyright/i);
       const pythonBroken=await engine.diagnostics({root,path:"src/broken.py"});
       assert.equal(pythonBroken.supported,true);assert.equal(pythonBroken.engine,"python-ast");assert.equal(pythonBroken.diagnostics[0].code,"PY_SYNTAX");assert.equal(pythonBroken.diagnostics[0].severity,"error");assert.ok(pythonBroken.diagnostics[0].line>=1);
     }else assert.match(pythonValid.reason,/python interpreter/i);
+    await mkdir(join(root,"node_modules","pyright"),{recursive:true});
+    await writeFile(join(root,"node_modules","pyright","index.js"),`const target=process.argv.at(-1);process.stdout.write(JSON.stringify({version:"fixture-pyright",generalDiagnostics:[{file:target,severity:"error",message:"Fixture Python type mismatch",rule:"reportAssignmentType",range:{start:{line:0,character:4},end:{line:0,character:8}}}],summary:{filesAnalyzed:1,errorCount:1,warningCount:0,informationCount:0}}));\n`,"utf8");
+    const pyright=await engine.diagnostics({root,path:"src/tool.py",semantic:true});
+    assert.equal(pyright.semantic,true);assert.equal(pyright.semanticEngine,"pyright");assert.equal(pyright.semanticInfo.version,"fixture-pyright");assert.equal(pyright.semanticDiagnostics[0].code,"reportAssignmentType");assert.equal(pyright.semanticDiagnostics[0].line,1);assert.match(pyright.semanticDiagnostics[0].message,/type mismatch/i);
     await mkdir(join(root,"node_modules","typescript","lib"),{recursive:true});
     await writeFile(join(root,"tsconfig.json"),"{}\n","utf8");
     await writeFile(join(root,"node_modules","typescript","lib","typescript.js"),`const fs=require("fs"),path=require("path");
@@ -395,6 +399,7 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
       if(command==="git"&&args.includes("rev-parse"))return ok("remote-head-1\n");
       if(command==="python3"||command==="python")return ok(JSON.stringify({available:true,version:"3.fixture",diagnostics:[{severity:"error",code:"PY_SYNTAX",message:"invalid syntax",line:1,column:10,endLine:1,endColumn:11}]}));
       if(command==="node"&&args[0]==="-e"){
+        if(String(args[1]||"").includes("node_modules\",\"pyright"))return ok(JSON.stringify({available:true,configured:true,version:"remote-pyright",diagnostics:[{path:"src/tool.py",severity:"error",code:"reportArgumentType",message:"Remote Pyright fixture",line:1,column:1,endLine:1,endColumn:4}],projectDiagnosticCount:1,truncated:false,summary:{filesAnalyzed:1,errorCount:1}}));
         if(String(args[1]||"").includes("getCodeFixesAtPosition"))return ok(JSON.stringify({available:true,configured:true,version:"remote-ts",included:true,diagnostics:[{code:"TS9000",severity:"error",line:2,column:1,length:14,message:"Remote semantic fixture"}],actions:[{fixName:"remoteFix",description:"Fix remote fixture",requiresCommand:false,commands:[],changes:[{file:"src/auth/session.js",isNewFile:false,textChanges:[{path:"src/auth/session.js",line:2,column:1,length:14,newText:"export class FixedSession",newTextTruncated:false}]}]}],truncated:false,requestedCodes:[9000]}));
         if(String(args[1]||"").includes("organizeImports"))return ok(JSON.stringify({available:true,configured:true,version:"remote-ts",included:true,operation:"organize_imports",changes:[{file:"src/auth/session.js",textChanges:[{path:"src/auth/session.js",line:1,column:1,length:0,newText:"import { helper } from './helper.js';\n"}]}],editCount:1,truncated:false}));
         if(String(args[1]||"").includes("findRenameLocations"))return ok(JSON.stringify({available:true,configured:true,version:"remote-ts",included:true,canRename:true,newName:String(args[6]||""),displayName:"RefreshSession",fullDisplayName:"RefreshSession",kind:"class",kindModifiers:"export",trigger:{line:2,column:14,length:14},locations:[{path:"src/auth/session.js",line:2,column:14,length:14,prefixText:"",suffixText:"",newText:String(args[6]||"")},{path:"src/server.js",line:1,column:10,length:14,prefixText:"",suffixText:"",newText:String(args[6]||"")}],truncated:false}));
@@ -455,8 +460,8 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
   assert.ok(remoteCalls.callers.some(item=>item.path==="src/server.js"&&item.caller==="startServer"));
   const remoteDiagnostics=await engine.diagnostics({root,io,path:"src/auth/session.js"});
   assert.equal(remoteDiagnostics.supported,true);assert.deepEqual(remoteDiagnostics.diagnostics,[]);
-  const remotePythonDiagnostics=await engine.diagnostics({root,io,path:"src/tool.py"});
-  assert.equal(remotePythonDiagnostics.supported,true);assert.equal(remotePythonDiagnostics.engine,"python-ast");assert.equal(remotePythonDiagnostics.diagnostics[0].code,"PY_SYNTAX");assert.equal(remotePythonDiagnostics.version,"3.fixture");
+  const remotePythonDiagnostics=await engine.diagnostics({root,io,path:"src/tool.py",semantic:true});
+  assert.equal(remotePythonDiagnostics.supported,true);assert.equal(remotePythonDiagnostics.engine,"python-ast");assert.equal(remotePythonDiagnostics.diagnostics[0].code,"PY_SYNTAX");assert.equal(remotePythonDiagnostics.semantic,true);assert.equal(remotePythonDiagnostics.semanticEngine,"pyright");assert.equal(remotePythonDiagnostics.semanticInfo.version,"remote-pyright");assert.equal(remotePythonDiagnostics.semanticDiagnostics[0].code,"reportArgumentType");
   const remoteSemantic=await engine.diagnostics({root,io,path:"src/auth/session.js",semantic:true});
   assert.equal(remoteSemantic.semantic,true);assert.equal(remoteSemantic.semanticInfo.version,"remote-ts");assert.equal(remoteSemantic.semanticDiagnostics[0].code,"TS9000");
   const remoteDefinition=await engine.languageSymbol({root,io,path:"src/auth/session.js",line:2,column:14,operation:"definition"});
