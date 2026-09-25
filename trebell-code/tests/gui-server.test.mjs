@@ -187,6 +187,10 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(semanticDiagnosticsResponse.status,200);
     const semanticDiagnosticsResult=await semanticDiagnosticsResponse.json();
     assert.equal(semanticDiagnosticsResult.semanticRequested,true);assert.equal(semanticDiagnosticsResult.semantic,false);assert.equal(semanticDiagnosticsResult.semanticInfo.available,false);
+    const languageSymbolResponse=await fetch(gui.url+"/api/context/language-symbol?"+new URLSearchParams({path:configProject,file:"src/session.js",line:"1",column:"14",operation:"definition",limit:"10"}));
+    assert.equal(languageSymbolResponse.status,200);
+    const languageSymbolResult=await languageSymbolResponse.json();
+    assert.equal(languageSymbolResult.supported,false);assert.equal(languageSymbolResult.semantic,false);assert.match(languageSymbolResult.reason,/TypeScript/i);
     const referencesResponse=await fetch(gui.url+"/api/context/references?"+new URLSearchParams({path:configProject,name:"RefreshSession",limit:"10"}));
     assert.equal(referencesResponse.status,200);
     const referencesResult=await referencesResponse.json();

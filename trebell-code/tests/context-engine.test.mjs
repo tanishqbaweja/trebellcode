@@ -194,10 +194,17 @@ test("context engine exposes honest bounded JavaScript and TypeScript syntax dia
     await mkdir(join(root,"node_modules","typescript","lib"),{recursive:true});
     await writeFile(join(root,"tsconfig.json"),"{}\n","utf8");
     await writeFile(join(root,"node_modules","typescript","lib","typescript.js"),`const fs=require("fs"),path=require("path");
-module.exports={version:"fixture-ts",sys:{fileExists:fs.existsSync,readFile:p=>fs.readFileSync(p,"utf8")},findConfigFile:root=>path.join(root,"tsconfig.json"),readConfigFile:()=>({config:{}}),parseJsonConfigFileContent:(_c,_s,base)=>({fileNames:[path.join(base,"src","typed.ts")],options:{},errors:[],projectReferences:[]}),createProgram:({rootNames})=>{const fileName=rootNames[0],file={fileName,getLineAndCharacterOfPosition:()=>({line:0,character:13})};return{file,getSourceFile:value=>path.resolve(value)===path.resolve(fileName)?file:undefined}},getPreEmitDiagnostics:program=>[{file:program.file,start:13,category:1,code:2322,messageText:"Type mismatch"}],flattenDiagnosticMessageText:value=>String(value)};\n`,"utf8");
+const makeProgram=rootNames=>{const fileName=rootNames[0],file={fileName,getLineAndCharacterOfPosition:position=>({line:0,character:position}),getPositionOfLineAndCharacter:(_line,column)=>column};return{file,getSourceFile:value=>path.resolve(value)===path.resolve(fileName)?file:undefined}};
+module.exports={version:"fixture-ts",sys:{fileExists:fs.existsSync,readFile:p=>fs.readFileSync(p,"utf8"),readDirectory:()=>[],directoryExists:fs.existsSync,getDirectories:()=>[],useCaseSensitiveFileNames:true,newLine:"\\n"},ScriptSnapshot:{fromString:text=>({text})},findConfigFile:root=>path.join(root,"tsconfig.json"),readConfigFile:()=>({config:{}}),parseJsonConfigFileContent:(_c,_s,base)=>({fileNames:[path.join(base,"src","typed.ts")],options:{},errors:[],projectReferences:[]}),createProgram:({rootNames})=>makeProgram(rootNames),getPreEmitDiagnostics:program=>[{file:program.file,start:13,category:1,code:2322,messageText:"Type mismatch"}],flattenDiagnosticMessageText:value=>Array.isArray(value)?value.map(item=>item.text||item).join(""):String(value),displayPartsToString:value=>(value||[]).map(item=>item.text||"").join(""),getDefaultLibFilePath:()=>"",createDocumentRegistry:()=>({}),createLanguageService:host=>{const program=makeProgram(host.getScriptFileNames());return{getProgram:()=>program,getDefinitionAtPosition:()=>[{fileName:program.file.fileName,textSpan:{start:13,length:5},name:"typed",kind:"const",containerName:""}],findReferences:()=>[{definition:{},references:[{fileName:program.file.fileName,textSpan:{start:13,length:5},isDefinition:true,isWriteAccess:true},{fileName:program.file.fileName,textSpan:{start:20,length:5},isDefinition:false,isWriteAccess:false}]}],getQuickInfoAtPosition:()=>({kind:"const",kindModifiers:"export",displayParts:[{text:"const typed: string"}],documentation:[{text:"fixture docs"}]})}}};\n`,"utf8");
     const semantic=await engine.diagnostics({root,path:"src/typed.ts",semantic:true});
     assert.equal(semantic.semantic,true);assert.equal(semantic.semanticEngine,"typescript");assert.equal(semantic.semanticInfo.version,"fixture-ts");assert.equal(semantic.semanticInfo.included,true);
     assert.deepEqual(semantic.diagnostics,[]);assert.equal(semantic.semanticDiagnostics[0].code,"TS2322");assert.equal(semantic.semanticDiagnostics[0].path,"src/typed.ts");
+    const definition=await engine.languageSymbol({root,path:"src/typed.ts",line:1,column:14,operation:"definition"});
+    assert.equal(definition.supported,true);assert.equal(definition.semantic,true);assert.equal(definition.engine,"typescript");assert.equal(definition.data[0].path,"src/typed.ts");assert.equal(definition.data[0].name,"typed");
+    const references=await engine.languageSymbol({root,path:"src/typed.ts",line:1,column:14,operation:"references"});
+    assert.equal(references.data.length,2);assert.equal(references.data[0].isDefinition,true);assert.equal(references.data[1].isWriteAccess,false);
+    const quickInfo=await engine.languageSymbol({root,path:"src/typed.ts",line:1,column:14,operation:"quick_info"});
+    assert.equal(quickInfo.data.display,"const typed: string");assert.equal(quickInfo.data.documentation,"fixture docs");
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
@@ -331,7 +338,11 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
       if(command==="git"&&args.includes("status"))return ok(status);
       if(command==="git"&&args.includes("diff"))return ok(status?"diff --git a/src/auth/session.js b/src/auth/session.js\n":"");
       if(command==="git"&&args.includes("rev-parse"))return ok("remote-head-1\n");
-      if(command==="node"&&args[0]==="-e")return ok(JSON.stringify({available:true,configured:true,version:"remote-ts",configPath:"tsconfig.json",included:true,projectDiagnosticCount:1,diagnostics:[{path:"src/auth/session.js",line:2,column:1,severity:"error",code:"TS9000",message:"Remote semantic fixture"}],truncated:false}));
+      if(command==="node"&&args[0]==="-e"){
+        const operation=args[6];
+        if(["definition","references","quick_info"].includes(operation))return ok(JSON.stringify({available:true,configured:true,version:"remote-ts",included:true,operation,data:operation==="quick_info"?{kind:"class",display:"class RefreshSession",documentation:"remote fixture"}:[{path:"src/auth/session.js",line:2,column:14,length:14,name:"RefreshSession"}],truncated:false}));
+        return ok(JSON.stringify({available:true,configured:true,version:"remote-ts",configPath:"tsconfig.json",included:true,projectDiagnosticCount:1,diagnostics:[{path:"src/auth/session.js",line:2,column:1,severity:"error",code:"TS9000",message:"Remote semantic fixture"}],truncated:false}));
+      }
       if(command==="head"){
         const target=String(args.at(-1)||""),relativePath=target.slice(root.length+1);
         return files.has(relativePath)?ok(files.get(relativePath)):({exitCode:1,stdout:"",stderr:"missing",timedOut:false});
@@ -380,6 +391,8 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
   assert.equal(remoteDiagnostics.supported,true);assert.deepEqual(remoteDiagnostics.diagnostics,[]);
   const remoteSemantic=await engine.diagnostics({root,io,path:"src/auth/session.js",semantic:true});
   assert.equal(remoteSemantic.semantic,true);assert.equal(remoteSemantic.semanticInfo.version,"remote-ts");assert.equal(remoteSemantic.semanticDiagnostics[0].code,"TS9000");
+  const remoteDefinition=await engine.languageSymbol({root,io,path:"src/auth/session.js",line:2,column:14,operation:"definition"});
+  assert.equal(remoteDefinition.supported,true);assert.equal(remoteDefinition.data[0].name,"RefreshSession");assert.equal(remoteDefinition.version,"remote-ts");
   const remoteSource=await engine.readSourceRange({root,io,path:"src/auth/session.js",startLine:1,endLine:2});
   assert.match(remoteSource.content,/rotateRefreshToken/);assert.equal(remoteSource.endLine,2);
   const remoteReferences=await engine.symbolReferences({root,io,name:"RefreshSession",limit:10});

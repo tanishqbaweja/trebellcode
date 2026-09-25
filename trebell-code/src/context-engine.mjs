@@ -26,6 +26,21 @@ try{
   const rows=all.map(diagnostic=>{const file=diagnostic.file?.fileName?path.resolve(diagnostic.file.fileName):null,position=file&&Number.isFinite(diagnostic.start)?diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start):null;return{path:file?path.relative(root,file).replace(/\\\\/g,"/"):null,line:position?position.line+1:null,column:position?position.character+1:null,severity:category(diagnostic.category),code:"TS"+diagnostic.code,message:ts.flattenDiagnosticMessageText(diagnostic.messageText,"\\n")}}),matching=rows.filter(row=>row.path===relativeRequested||row.path===null);
   out({available:true,configured:true,version:ts.version,configPath:path.relative(root,configPath).replace(/\\\\/g,"/"),included:Boolean(program.getSourceFile(requested)),projectDiagnosticCount:rows.length,diagnostics:matching.slice(0,limit),truncated:matching.length>limit});
 }catch(error){out({available:true,configured:false,failed:true,reason:String(error?.stack||error?.message||error)})}`;
+const TYPESCRIPT_SYMBOL_SCRIPT=`const fs=require("fs"),path=require("path");
+const root=path.resolve(process.argv[1]||"."),requested=path.resolve(root,process.argv[2]||""),line=Math.max(1,Number(process.argv[3])||1),column=Math.max(1,Number(process.argv[4])||1),operation=String(process.argv[5]||"definition"),limit=Math.max(1,Math.min(300,Number(process.argv[6])||100));
+const out=value=>process.stdout.write(JSON.stringify(value)),tsPath=path.join(root,"node_modules","typescript","lib","typescript.js");
+if(!fs.existsSync(tsPath)){out({available:false,configured:false,reason:"Project-local TypeScript is not installed"});process.exit(0)}
+try{
+  const ts=require(tsPath),configPath=ts.findConfigFile(root,ts.sys.fileExists,"tsconfig.json");if(!configPath){out({available:true,configured:false,version:ts.version,reason:"No tsconfig.json was found"});process.exit(0)}
+  const read=ts.readConfigFile(configPath,ts.sys.readFile),parsed=ts.parseJsonConfigFileContent(read.config||{},ts.sys,path.dirname(configPath),{noEmit:true,incremental:false,composite:false},configPath),options={...parsed.options,noEmit:true,incremental:false,composite:false};delete options.tsBuildInfoFile;
+  const files=[...new Set([...(parsed.fileNames||[]),requested].filter(file=>fs.existsSync(file)))],snapshot=file=>{try{return ts.ScriptSnapshot.fromString(fs.readFileSync(file,"utf8"))}catch{return undefined}},host={getCompilationSettings:()=>options,getScriptFileNames:()=>files,getScriptVersion:()=>"0",getScriptSnapshot:snapshot,getCurrentDirectory:()=>root,getDefaultLibFileName:value=>ts.getDefaultLibFilePath(value),fileExists:ts.sys.fileExists,readFile:ts.sys.readFile,readDirectory:ts.sys.readDirectory,directoryExists:ts.sys.directoryExists,getDirectories:ts.sys.getDirectories,useCaseSensitiveFileNames:()=>ts.sys.useCaseSensitiveFileNames,getNewLine:()=>ts.sys.newLine};
+  const service=ts.createLanguageService(host,ts.createDocumentRegistry?ts.createDocumentRegistry():undefined),program=service.getProgram(),source=program?.getSourceFile(requested);if(!source){out({available:true,configured:true,version:ts.version,included:false,reason:"Requested file is not available to the TypeScript language service"});process.exit(0)}
+  const position=source.getPositionOfLineAndCharacter(line-1,column-1),location=(fileName,span,extra={})=>{const absolute=path.resolve(fileName),file=program.getSourceFile(absolute)||program.getSourceFile(fileName);if(!file)return{path:path.relative(root,absolute).replace(/\\\\/g,"/"),line:null,column:null,length:Number(span?.length)||0,...extra};const point=file.getLineAndCharacterOfPosition(span.start);return{path:path.relative(root,absolute).replace(/\\\\/g,"/"),line:point.line+1,column:point.character+1,length:Number(span?.length)||0,...extra}};
+  if(operation==="definition"){const definitions=service.getDefinitionAtPosition(requested,position)||[];out({available:true,configured:true,version:ts.version,included:true,operation,data:definitions.slice(0,limit).map(item=>location(item.fileName,item.textSpan,{name:item.name||null,kind:item.kind||null,containerName:item.containerName||null})),truncated:definitions.length>limit});process.exit(0)}
+  if(operation==="references"){const groups=service.findReferences(requested,position)||[],rows=[],total=groups.reduce((sum,group)=>sum+(group.references||[]).length,0);for(const group of groups)for(const item of group.references||[]){if(rows.length>=limit)break;rows.push(location(item.fileName,item.textSpan,{isDefinition:Boolean(item.isDefinition),isWriteAccess:Boolean(item.isWriteAccess)}))}out({available:true,configured:true,version:ts.version,included:true,operation,data:rows,truncated:total>rows.length});process.exit(0)}
+  if(operation==="quick_info"){const info=service.getQuickInfoAtPosition(requested,position),display=value=>ts.displayPartsToString?ts.displayPartsToString(value||[]):(value||[]).map(part=>part.text||"").join("");out({available:true,configured:true,version:ts.version,included:true,operation,data:info?{kind:info.kind||null,kindModifiers:info.kindModifiers||null,display:display(info.displayParts),documentation:display(info.documentation)}:null});process.exit(0)}
+  out({available:true,configured:true,version:ts.version,failed:true,reason:"Unsupported language symbol operation"});
+}catch(error){out({available:true,configured:false,failed:true,reason:String(error?.stack||error?.message||error)})}`;
 
 function tokenEstimate(value){return Math.ceil(String(value||"").length/4)}
 function slash(value){return String(value||"").split(sep).join("/")}
@@ -316,6 +331,16 @@ async function localTypeScriptDiagnostics(root,{path,limit=100}={}){
   }
 }
 
+async function localTypeScriptSymbol(root,{path,line=1,column=1,operation="definition",limit=100}={}){
+  try{
+    const {stdout}=await execFileAsync(process.execPath,["-e",TYPESCRIPT_SYMBOL_SCRIPT,resolve(root),String(path||""),String(line),String(column),String(operation),String(Math.max(1,Math.min(300,Number(limit)||100)))],{cwd:resolve(root),windowsHide:true,maxBuffer:4*1024*1024,timeout:30_000});
+    return parseTypeScriptDiagnosticsOutput(stdout);
+  }catch(error){
+    const parsed=parseTypeScriptDiagnosticsOutput(error?.stdout);if(parsed?.available||parsed?.reason!=="TypeScript diagnostic adapter returned invalid output")return parsed;
+    return {available:false,configured:false,failed:true,reason:error?.killed?"TypeScript language query timed out":String(error?.stderr||error?.message||"TypeScript language query failed").slice(0,2000)};
+  }
+}
+
 async function localMetadata(root,paths){
   const pairs=await mapLimit(paths,64,async relativePath=>{
     try{
@@ -346,6 +371,7 @@ function localContextIo(root){
     gitHistory:options=>localGitHistory(absolute,options),
     gitBlame:options=>localGitBlame(absolute,options),
     typeScriptDiagnostics:options=>localTypeScriptDiagnostics(absolute,options),
+    typeScriptSymbol:options=>localTypeScriptSymbol(absolute,options),
     gitState:()=>gitState(absolute),
     changedSince:async(fromHead,toHead)=>{
       if(!fromHead||!toHead||fromHead===toHead)return new Set();
@@ -437,6 +463,11 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     if(result.exitCode!==0)return {available:false,configured:false,failed:true,reason:result.timedOut?"TypeScript diagnostics timed out":String(result.stderr||"Remote TypeScript diagnostics failed").slice(0,2000)};
     return parseTypeScriptDiagnosticsOutput(result.stdout);
   };
+  const typeScriptSymbol=async({path,line=1,column=1,operation="definition",limit=100}={})=>{
+    const result=await run({command:"node",args:["-e",TYPESCRIPT_SYMBOL_SCRIPT,absolute,String(path||""),String(line),String(column),String(operation),String(Math.max(1,Math.min(300,Number(limit)||100)))],cwd:"",timeoutMs:35_000,maxOutput:4*1024*1024});
+    if(result.exitCode!==0)return {available:false,configured:false,failed:true,reason:result.timedOut?"TypeScript language query timed out":String(result.stderr||"Remote TypeScript language query failed").slice(0,2000)};
+    return parseTypeScriptDiagnosticsOutput(result.stdout);
+  };
   return {
     cacheKey:"remote:"+environmentId+":"+absolute,
     root:absolute,
@@ -447,6 +478,7 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     gitHistory,
     gitBlame,
     typeScriptDiagnostics,
+    typeScriptSymbol,
     readText:async relativePath=>{
       const target=posix.join(absolute,String(relativePath||"").replace(/^\.\//,""));
       if(target!==absolute&&!target.startsWith(absolute.endsWith("/")?absolute:absolute+"/"))throw new Error("Context file is outside the remote workspace");
@@ -814,6 +846,18 @@ export class ContextEngine{
     }
     const semanticReady=Boolean(semanticResult?.available&&semanticResult?.configured&&!semanticResult?.failed),semanticDiagnostics=Array.isArray(semanticResult?.diagnostics)?semanticResult.diagnostics.slice(0,capped):[];
     return {path:requested,supported:true,engine:"babel-parser",semantic:semanticReady,semanticRequested:Boolean(semantic),semanticEngine:semanticReady?"typescript":null,semanticInfo:semanticResult,semanticDiagnostics,diagnostics:diagnostics.slice(0,capped),truncated:diagnostics.length>capped||Boolean(semanticResult?.truncated)};
+  }
+
+  async languageSymbol({root,path,line=1,column=1,operation="definition",limit=100,io=null}={}){
+    const allowed=new Set(["definition","references","quick_info"]),mode=String(operation||"definition");if(!allowed.has(mode))throw new Error(`Unsupported language symbol operation: ${mode}`);
+    const {contextIo,index}=await this.#indexed(root,io),requested=contextIo.relativeFocus(path)||slash(String(path||"").replace(/^\.\//,""));
+    const entry=index.files.get(requested);if(!entry)throw new Error(`Context file is not indexed: ${path}`);
+    const extension=extname(requested).toLowerCase();if(!BABEL_SOURCE_EXTENSIONS.has(extension))return {path:requested,line:Number(line)||1,column:Number(column)||1,operation:mode,supported:false,engine:null,semantic:false,data:[],reason:`No semantic Trebell language adapter is configured for ${extension||"this file type"}`};
+    if(typeof contextIo.typeScriptSymbol!=="function")return {path:requested,line:Number(line)||1,column:Number(column)||1,operation:mode,supported:false,engine:null,semantic:false,data:[],reason:"TypeScript language queries are unavailable for this workspace"};
+    const row=Math.max(1,Math.trunc(Number(line)||1)),col=Math.max(1,Math.trunc(Number(column)||1)),capped=Math.max(1,Math.min(200,Number(limit)||100));let result;
+    try{result=await contextIo.typeScriptSymbol({path:requested,line:row,column:col,operation:mode,limit:capped})}catch(error){result={available:false,configured:false,failed:true,reason:String(error?.message||error)}}
+    const ready=Boolean(result?.available&&result?.configured&&!result?.failed);
+    return {path:requested,line:row,column:col,operation:mode,supported:ready,engine:ready?"typescript":null,semantic:ready,version:result?.version||null,included:result?.included??null,data:result?.data??(mode==="quick_info"?null:[]),truncated:Boolean(result?.truncated),info:result,reason:ready?null:(result?.reason||"Project-local TypeScript language service is unavailable")};
   }
 
   async fileRelations({root,path,io=null}={}){
