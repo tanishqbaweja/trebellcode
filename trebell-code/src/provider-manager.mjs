@@ -1,5 +1,6 @@
 import { TREBELL_USER_AGENT } from "./version.mjs";
 import { adaptAnthropicResponse, chatToAnthropic } from "./anthropic-chat-adapter.mjs";
+import { normalizeChatTurnResponse, normalizeResponsesTurnResponse, providerTurnToChat, providerTurnToResponses } from "./provider-turn.mjs";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { trebellHome } from "./paths.mjs";
@@ -285,6 +286,21 @@ export class ProviderManager {
       body: JSON.stringify(responsesBody),
       signal: signal || AbortSignal.timeout(300_000),
     });
+  }
+
+  async turn(providerId, request={}, { signal } = {}) {
+    const provider=this.get(providerId),model=String(request.model||"").trim();
+    if(!model)throw new Error("Provider turn requires a model.");
+    if(provider.id==="freebuff")throw new Error("Freebuff provider turns are served by the local Freebuff bridge, not ProviderManager.");
+    const upstream=provider.wireApi==="responses"
+      ?await this.forwardResponses(provider.id,providerTurnToResponses({...request,model}),{signal})
+      :await this.forwardChat(provider.id,providerTurnToChat({...request,model}),{signal});
+    const raw=await upstream.text();
+    if(!upstream.ok)throw new Error(`${provider.name} HTTP ${upstream.status}: ${raw.slice(0,1200)}`);
+    let parsed;try{parsed=raw?JSON.parse(raw):{}}catch{throw new Error(`${provider.name} returned invalid JSON for a provider turn.`)}
+    return provider.wireApi==="responses"
+      ?normalizeResponsesTurnResponse(parsed,provider.id,model)
+      :normalizeChatTurnResponse(parsed,provider.id,model);
   }
 
   async directChat(providerId, { model, prompt }) {

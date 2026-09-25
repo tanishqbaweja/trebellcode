@@ -209,3 +209,53 @@ test("AgentRouter Responses uses the required Codex fingerprint", async () => {
   assert.equal(seen.headers.version,"0.149.1");
   assert.equal(seen.body.model,"deepseek-v4-flash");
 });
+
+test("normalized AgentRouter turns keep the Responses transport and namespaced tool calls",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));let seen=null;
+  const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root},fetchFn:async(url,init)=>{
+    seen={url,headers:init.headers,body:JSON.parse(init.body)};
+    return Response.json({
+      id:"resp-native",object:"response",model:"gpt-5.6",status:"completed",
+      output:[{type:"function_call",call_id:"call-native",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Session"}'}],
+      usage:{input_tokens:11,output_tokens:2,total_tokens:13},
+    });
+  }});
+  manager.setKey("agentrouter","ar-native-key");
+  const result=await manager.turn("agentrouter",{
+    model:"gpt-5.6",messages:[{role:"user",content:"Find Session"}],
+    tools:[{type:"namespace",name:"trebell_repo",tools:[{type:"function",name:"search_symbols",description:"Search",inputSchema:{type:"object",properties:{query:{type:"string"}},required:["query"]}}]}],
+  });
+  assert.equal(seen.url,"https://agentrouter.org/v1/responses");assert.equal(seen.headers.originator,"codex_cli_rs");assert.equal(seen.body.tools[0].name,"trebell_repo");
+  assert.deepEqual(result.toolCalls,[{id:"call-native",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Session"}'}]);
+  assert.equal(result.usage.totalTokens,13);
+});
+
+test("normalized Chat turns flatten namespaces and recover them from tool calls",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));let seen=null;
+  const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root},fetchFn:async(url,init)=>{
+    seen={url,body:JSON.parse(init.body)};
+    return Response.json({id:"chat-native",model:"glm-5.3",choices:[{finish_reason:"tool_calls",message:{role:"assistant",content:"",tool_calls:[{id:"call-chat",type:"function",function:{name:"trebell_repo__search_symbols",arguments:'{"query":"Session"}'}}]}}],usage:{prompt_tokens:9,completion_tokens:2,total_tokens:11}});
+  }});
+  manager.setKey("hcnsec","hc-native-key");
+  const result=await manager.turn("hcnsec",{
+    model:"glm-5.3",messages:[{role:"user",content:"Find Session"}],
+    tools:[{type:"namespace",name:"trebell_repo",tools:[{type:"function",name:"search_symbols",description:"Search",inputSchema:{type:"object",properties:{query:{type:"string"}},required:["query"]}}]}],
+  });
+  assert.equal(seen.url,"https://api.hcnsec.cn/v1/chat/completions");assert.equal(seen.body.tools[0].function.name,"trebell_repo__search_symbols");
+  assert.deepEqual(result.toolCalls,[{id:"call-chat",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Session"}'}]);assert.equal(result.finishReason,"tool_calls");
+});
+
+test("normalized Anthropic-compatible turns reuse the existing tool adapter",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));let seen=null;
+  const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root},fetchFn:async(url,init)=>{
+    seen={url,body:JSON.parse(init.body)};
+    return Response.json({id:"msg-native",type:"message",role:"assistant",model:"claude-opus-4-8",content:[{type:"tool_use",id:"toolu-native",name:"trebell_repo__search_symbols",input:{query:"Session"}}],stop_reason:"tool_use",usage:{input_tokens:7,output_tokens:3}});
+  }});
+  manager.setKey("justworker","jw-native-key");
+  const result=await manager.turn("justworker",{
+    model:"claude-opus-4-8",messages:[{role:"user",content:"Find Session"}],
+    tools:[{type:"namespace",name:"trebell_repo",tools:[{type:"function",name:"search_symbols",description:"Search",inputSchema:{type:"object",properties:{query:{type:"string"}},required:["query"]}}]}],
+  });
+  assert.equal(seen.url,"https://api.justwoker.icu/v1/messages");assert.equal(seen.body.tools[0].name,"trebell_repo__search_symbols");
+  assert.deepEqual(result.toolCalls,[{id:"toolu-native",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Session"}'}]);assert.equal(result.finishReason,"tool_calls");
+});
