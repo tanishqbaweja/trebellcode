@@ -3,6 +3,7 @@ import { Check, Download, ExternalLink, FolderCode, GitBranch, ImagePlus, Layers
 import { api } from "../api.js";
 import { baseProjectRecord, enrichProjectRecords, summarizeProjectRefreshErrors } from "../project-enrichment.js";
 import { PROJECT_PAGE_SIZE, projectGroupCounts, projectGroupKey, projectWindow } from "../project-window.js";
+import { startVisibilityPoll } from "../visibility-poll.js";
 
 function blankScript(){
   return {id:null,name:"",command:"",previewUrl:"",autoOpenPreview:false,runOnWorktreeCreate:false,waitForSetup:false};
@@ -109,7 +110,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
   },[hasDesktopPicker,cloneEnvironmentId,environmentData.profiles]);
   useEffect(()=>setProjectLimit(PROJECT_PAGE_SIZE),[projectQuery]);
   const cloning=projects.some(project=>["running","cancelling"].includes(project.cloneJob?.status));
-  useEffect(()=>{if(!cloning)return;const timer=setInterval(()=>refresh(),750);return()=>clearInterval(timer)},[cloning]);
+  useEffect(()=>{if(!cloning)return;const poll=startVisibilityPoll(()=>refresh(),{intervalMs:750});return()=>poll.dispose()},[cloning]);
 
   async function saveProject(project,patch){
     setError("");

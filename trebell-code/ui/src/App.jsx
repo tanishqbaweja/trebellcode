@@ -46,6 +46,7 @@ import { requestTurnVerificationPlan, verificationPlanEvent } from "./turn-verif
 import { catalogMetaPatch, mergeThreadCatalog, sameCatalogSnapshot, threadCatalogRuntime, threadsFromCatalogMeta } from "./thread-catalog.js";
 import { conversationChunkIndexForMessage, conversationVirtualChunks, shouldVirtualizeConversation } from "./conversation-virtualization.js";
 import { activityWindow, nextActivityWindowEnd, previousActivityWindowEnd } from "./activity-window.js";
+import { startVisibilityPoll } from "./visibility-poll.js";
 
 const TerminalPanel=lazy(()=>import("./components/TerminalPanel.jsx"));
 const WorkspacePanel=lazy(()=>import("./components/WorkspacePanel.jsx"));
@@ -1051,8 +1052,8 @@ export default function App(){
   useEffect(()=>{
     const job=currentProject?.cloneJob;if(!job||!["running","cancelling"].includes(job.status))return;
     setCloneRefreshError("");
-    const timer=setInterval(()=>refreshCloneJob(job.id).catch(error=>setCloneRefreshError("Could not refresh clone progress: "+(error?.message||String(error)))),750);
-    return()=>clearInterval(timer);
+    const poll=startVisibilityPoll(()=>refreshCloneJob(job.id).catch(error=>setCloneRefreshError("Could not refresh clone progress: "+(error?.message||String(error)))),{intervalMs:750});
+    return()=>poll.dispose();
   },[currentProject?.cloneJob?.id,currentProject?.cloneJob?.status,projectPath]);
   async function refreshEnvironmentThemes({strict=false}={}){
     try{
