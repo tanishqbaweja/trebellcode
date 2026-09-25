@@ -32,10 +32,12 @@ test("agent runtime registry exposes real harnesses and capability-gates configu
     assert.equal(manager.capabilities("opencode").nativeLsp,true);
     assert.equal(manager.capabilities("opencode").detachedTasks,true);
     assert.equal(manager.capabilities("opencode").multiModelFanout,true);
+    assert.equal(manager.capabilities("opencode").delegation,true);
     assert.equal(manager.capabilities("opencode").backgroundProcesses,false);
     assert.equal(manager.capabilities("claude").rewind,true);
     assert.equal(manager.capabilities("claude").mcpInjection,true);
     assert.equal(manager.capabilities("claude").detachedTasks,true);
+    assert.equal(manager.capabilities("claude").delegation,true);
     assert.equal(manager.capabilities("claude").runtimeProfileSwitching,true);
     assert.equal(manager.capabilities("cursor").fork,"runtime");
     assert.equal(manager.capabilities("cursor").mcpInjection,true);
@@ -59,12 +61,15 @@ test("runtime capabilities describe adapter behavior without pretending unsuppor
   assert.equal(openCode.mcpInjection,false);
   assert.equal(openCode.detachedTasks,true);
   assert.equal(openCode.multiModelFanout,true);
+  assert.equal(openCode.delegation,true,"Trebell supplies provider-neutral child-task delegation");
   assert.equal(openCode.backgroundProcesses,false);
   assert.equal(runtimeCapabilities("claude").runtimeProfileSwitching,true);
+  assert.equal(runtimeCapabilities("claude").delegation,true);
   const acp=runtimeCapabilities("grok");
   assert.equal(acp.queue,true,"Trebell supplies the queue for external runtimes");
   assert.equal(acp.fork,"runtime","ACP forking must stay conditional on what the connected runtime advertises");
   assert.equal(acp.rewind,false);
+  assert.equal(acp.delegation,true,"manual Trebell delegation stays available even when the runtime cannot invoke dynamic tools itself");
 });
 
 test("runtime launch flags preserve Trebell permission-mode boundaries",()=>{

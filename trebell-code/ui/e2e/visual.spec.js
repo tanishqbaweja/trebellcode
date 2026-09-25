@@ -2171,7 +2171,21 @@ test("model delegation tool starts a bounded child and surfaces it in Agents",as
   }});
   try{
     await routeProjectlessCodexRequestFixture(page,harness,parent,"delegation-tool-fixture");
-    await page.route("**/api/thread-meta?threadId=delegation-child",route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(childMeta)}));
+    await page.route(/\/api\/freebuff\/overview/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({})}));
+    await page.route(/\/api\/source-control\/branch-reviews$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:[]})}));
+    await page.route(/\/api\/checkpoints\?threadId=/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({checkpoints:[]})}));
+    await page.route(/\/api\/thread-meta(?:\?.*)?$/,route=>{
+      const request=route.request(),url=new URL(request.url());
+      if(request.method()==="GET"){
+        const id=url.searchParams.get("threadId");
+        return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(id===child.id?childMeta:{projectless:true,environmentId:null,cwd:parent.cwd})});
+      }
+      if(request.method()==="POST"){
+        const body=request.postDataJSON(),meta=body.threadId===child.id?{...childMeta,...(body.patch||{})}:{projectless:true,environmentId:null,cwd:parent.cwd,...(body.patch||{})};
+        return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(meta)});
+      }
+      return route.fulfill({status:405,contentType:"application/json",body:JSON.stringify({error:"unsupported fixture method"})});
+    });
     await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
     await page.goto("/");
     const parentRow=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Delegation parent"]')});
