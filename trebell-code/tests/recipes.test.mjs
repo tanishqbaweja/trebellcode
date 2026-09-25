@@ -12,8 +12,9 @@ test("recipes normalize slash names, permissions, declared tools, validation and
     permission:"workspace-write",allowedTools:["repo","terminal","browser"],expectedArtifacts:["Green CI"],validation:["Run affected tests","Inspect CI logs"],context:"Avoid unrelated refactors.",maxChildren:2,
   });
   assert.equal(recipe.name,"/fix-ci");assert.equal(recipe.permission,"workspace-write");assert.deepEqual(recipe.allowedTools,["repo","terminal","browser"]);assert.equal(recipe.maxChildren,2);
-  const context=recipeRunContext(recipe,{projectPath:"/repo",input:"The Linux job is failing."});
+  const context=recipeRunContext(recipe,{projectPath:"/repo",input:"The Linux job is failing.",toolPolicyEnforced:true,currentPermission:"supervised"});
   assert.match(context,/Delegation limit: 2 child agents/);assert.match(context,/Avoid unrelated refactors/);assert.match(context,/Linux job is failing/);
+  assert.match(context,/Enforced allowed tool namespaces/);assert.match(context,/does not silently elevate/);
   const goal=recipeGoalPatch(recipe,{input:"Linux job"});assert.equal(goal.childAgentBudget,2);assert.deepEqual(goal.validationExpectations,recipe.validation);
   assert.match(recipeTurnInput(recipe,{input:"Linux job"}),/User input for this recipe/);
 });
@@ -24,6 +25,11 @@ test("recipes default to supervised with zero hidden child agents and deduplicat
   assert.match(recipeRunContext(recipe),/Delegation limit: 0 child agents/);
   const normalized=normalizeRecipes([{name:"release",objective:"Prepare release."},{name:"release",objective:"Duplicate."},{name:"",objective:"Fallback."},{name:"broken"}]);
   assert.equal(normalized.length,2);assert.equal(normalized[0].name,"/release");
+});
+
+test("recipes refuse declared tool allowlists when the runtime cannot prove enforcement",()=>{
+  const recipe=normalizeRecipe({name:"security review",objective:"Review auth.",allowedTools:["repo","browser"]});
+  assert.throws(()=>recipeRunContext(recipe,{toolPolicyEnforced:false}),/cannot prove recipe tool-policy enforcement/i);
 });
 
 test("project state persists recipes separately from direct terminal actions",async()=>{

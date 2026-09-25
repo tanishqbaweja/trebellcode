@@ -46,17 +46,20 @@ export function normalizeRecipes(recipes=[]){
   return out;
 }
 
-export function recipeRunContext(recipe,{projectPath=null,input=""}={}){
+export function recipeRunContext(recipe,{projectPath=null,input="",toolPolicyEnforced=false,currentPermission=null}={}){
   const normalized=normalizeRecipe(recipe);
+  if(normalized.allowedTools.length&&!toolPolicyEnforced)throw new Error(`Recipe ${normalized.name} declares allowedTools, but Trebell cannot prove recipe tool-policy enforcement in this runtime.`);
   const sections=[
     "Trebell project recipe "+normalized.name,
+    "Run this as one explicit workflow. Do not create hidden parallel work unless the recipe's child-agent limit allows it.",
     normalized.description,
     "Objective:\n"+normalized.objective,
     projectPath&&("Project: "+text(projectPath,4000)),
-    normalized.allowedTools.length&&("Allowed tool namespaces/capabilities:\n"+normalized.allowedTools.map(item=>"- "+item).join("\n")),
+    normalized.allowedTools.length&&("Enforced allowed tool namespaces/capabilities:\n"+normalized.allowedTools.map(item=>"- "+item).join("\n")),
     normalized.expectedArtifacts.length&&("Expected artifacts:\n"+normalized.expectedArtifacts.map(item=>"- "+item).join("\n")),
     normalized.validation.length&&("Validation expectations:\n"+normalized.validation.map(item=>"- "+item).join("\n")),
     "Delegation limit: "+normalized.maxChildren+" child agent"+(normalized.maxChildren===1?"":"s")+". Do not exceed this limit.",
+    currentPermission&&("Current Trebell permission profile: "+text(currentPermission,120)+". The recipe does not silently elevate it."),
     normalized.context&&("Workflow-specific context:\n"+normalized.context),
     text(input,8000)&&("Invocation input:\n"+text(input,8000)),
   ].filter(Boolean);
