@@ -43,5 +43,3 @@ export function nextVerificationAction({plan,evidence=[]}={}){
     reviewRecommended:Boolean(plan?.independentReview),
   };
 }
-
-\n
