@@ -6,6 +6,7 @@ import { codexHome, trebellHome } from "./paths.mjs";
 import { resolveCodexHomeLayout } from "./codex-home-layout.mjs";
 import { readAgentRuntimeUsage } from "./agent-usage-limits.mjs";
 import { sharedRuntimeCapabilities } from "./runtime-capabilities.mjs";
+import { withoutSecretEnvironment } from "./secret-redactor.mjs";
 
 const RUNTIMES=Object.freeze({
   codex:{id:"codex",name:"Codex",protocol:"codex",command:null,multipleInstances:true},
@@ -188,6 +189,7 @@ export class AgentRuntimeManager{
     const kind=normalizeAgentRuntime(input.kind);const settings=this.state.settings();const list=Array.isArray(settings.agentRuntimeInstances)?[...settings.agentRuntimeInstances]:[];
     const id=String(input.id||`${kind}-${Date.now()}`);const index=list.findIndex(item=>item.id===id);
     const item={...(index>=0?list[index]:{}),...input,id,kind,displayName:String(input.displayName||RUNTIMES[kind].name),enabled:input.enabled!==false};
+    item.environment=withoutSecretEnvironment(item.environment);
     if(kind==="claude"){
       const raw=input.autoCompactWindow;
       if(raw==null||String(raw).trim()==="")item.autoCompactWindow=null;

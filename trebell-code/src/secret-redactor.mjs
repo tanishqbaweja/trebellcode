@@ -19,6 +19,10 @@ function normalizedKey(value){return String(value||"").replace(/[^a-z0-9]/gi,"")
 export function isSecretEnvironmentName(value){return SECRET_ENV_KEY.test(String(value||""))}
 export function isSecretCliFlag(value){return SECRET_FLAGS.has(String(value||"").trim().toLowerCase())}
 export function isSecretCliArgument(value){return /^--(?:api-key|token|password|secret|credential)(?:=|$)/i.test(String(value||"").trim())}
+export function withoutSecretEnvironment(value={}){
+  if(!value||typeof value!=="object"||Array.isArray(value))return {};
+  return Object.fromEntries(Object.entries(value).filter(([key])=>!isSecretEnvironmentName(key)));
+}
 function exactEnvironmentSecrets(environment={}){
   const values=[];
   for(const [key,value] of Object.entries(environment||{})){

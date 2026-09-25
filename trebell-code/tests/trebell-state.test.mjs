@@ -84,6 +84,20 @@ test("legacy MCP credentials are scrubbed from UI state during load",async()=>{
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
+test("runtime profile credentials are scrubbed from new and legacy UI state",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-state-runtime-secret-")),env={...process.env,TREBELL_HOME:home};
+  const newCredential=["new","runtime","credential"].join("-"),legacyCredential=["legacy","runtime","credential"].join("-");
+  try{
+    const state=new TrebellStateStore(env);
+    state.updateSettings({agentRuntimeInstances:[{id:"cursor-custom",kind:"cursor",displayName:"Cursor Custom",environment:{CURSOR_AUTH_TOKEN:newCredential,NODE_ENV:"production"}}]});
+    assert.deepEqual(state.settings().agentRuntimeInstances[0].environment,{NODE_ENV:"production"});
+    assert.doesNotMatch(await readFile(join(home,"ui-state.json"),"utf8"),new RegExp(newCredential));
+    await writeFile(join(home,"ui-state.json"),JSON.stringify({version:2,projects:[],threadMeta:{},settings:{agentRuntimeInstances:[{id:"grok-custom",kind:"grok",displayName:"Grok Custom",environment:{XAI_API_KEY:legacyCredential,LOG_LEVEL:"debug"}}]}}));
+    const migrated=new TrebellStateStore(env);assert.deepEqual(migrated.settings().agentRuntimeInstances[0].environment,{LOG_LEVEL:"debug"});
+    const disk=await readFile(join(home,"ui-state.json"),"utf8");assert.doesNotMatch(disk,new RegExp(legacyCredential));assert.doesNotMatch(disk,/XAI_API_KEY/);assert.match(disk,/LOG_LEVEL/);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 
 test("project actions persist, sanitize, inherit preference, and allow clearing overrides", async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-state-actions-"));

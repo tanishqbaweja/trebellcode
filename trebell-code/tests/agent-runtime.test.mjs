@@ -16,7 +16,10 @@ test("agent runtime registry exposes real harnesses and capability-gates configu
     const state=new TrebellStateStore({...process.env,TREBELL_HOME:home});
     const manager=new AgentRuntimeManager({state,env:{...process.env,TREBELL_HOME:home}});
     assert.deepEqual(manager.definitions().map(item=>item.id),["codex","claude","cursor","grok","opencode","antigravity"]);
-    const fake=manager.upsertInstance({id:"cursor-fixture",kind:"cursor",displayName:"Fixture Cursor",binaryPath:process.execPath});
+    const credential=["runtime","profile","credential"].join("-");
+    const fake=manager.upsertInstance({id:"cursor-fixture",kind:"cursor",displayName:"Fixture Cursor",binaryPath:process.execPath,environment:{CURSOR_API_KEY:credential,NODE_ENV:"test"}});
+    assert.deepEqual(fake.environment,{NODE_ENV:"test"});
+    assert.doesNotMatch(await readFile(join(home,"ui-state.json"),"utf8"),new RegExp(credential));
     const status=await manager.probe(fake);
     assert.equal(status.installed,true);
     assert.equal(status.available,true);

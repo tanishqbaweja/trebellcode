@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { trebellHome } from "./paths.mjs";
 import { normalizeMcpServers } from "./mcp-registry.mjs";
+import { withoutSecretEnvironment } from "./secret-redactor.mjs";
 
 const DEFAULT_STATE = Object.freeze({
   version: 2,
@@ -79,6 +80,10 @@ function normalizeStorageCleanup(value={}){
     attachmentsAfterDays:normalizeRetentionDays(raw.attachmentsAfterDays),
     terminalHistoryAfterDays:normalizeRetentionDays(raw.terminalHistoryAfterDays),
   };
+}
+function normalizeRuntimeInstances(value){
+  if(!Array.isArray(value))return [];
+  return value.slice(0,100).filter(item=>item&&typeof item==="object").map(item=>({...item,environment:withoutSecretEnvironment(item.environment)}));
 }
 function normalizePullRequestViewedFiles(value){
   if(!value||typeof value!=="object"||Array.isArray(value))return {};
@@ -170,6 +175,9 @@ export class TrebellStateStore {
       const normalizedMcpServers=normalizeMcpServers(settings.mcpServers);
       if(JSON.stringify(rawSettings.mcpServers||[])!==JSON.stringify(normalizedMcpServers))this.needsRewrite=true;
       settings.mcpServers=normalizedMcpServers;
+      const normalizedRuntimeInstances=normalizeRuntimeInstances(settings.agentRuntimeInstances);
+      if(JSON.stringify(rawSettings.agentRuntimeInstances||[])!==JSON.stringify(normalizedRuntimeInstances))this.needsRewrite=true;
+      settings.agentRuntimeInstances=normalizedRuntimeInstances;
       if(!Object.prototype.hasOwnProperty.call(rawSettings,"onboardingComplete")&&projects.length>0)settings.onboardingComplete=true;
       return {
         ...clone(DEFAULT_STATE),
@@ -259,6 +267,7 @@ export class TrebellStateStore {
     if("sourceControlCustomInstructions" in patch)patch={...patch,sourceControlCustomInstructions:normalizeScopedSetting("sourceControlCustomInstructions",patch.sourceControlCustomInstructions)};
     if("sourceControlFollowTemplates" in patch)patch={...patch,sourceControlFollowTemplates:normalizeScopedSetting("sourceControlFollowTemplates",patch.sourceControlFollowTemplates)};
     if("mcpServers" in patch)patch={...patch,mcpServers:normalizeMcpServers(patch.mcpServers)};
+    if("agentRuntimeInstances" in patch)patch={...patch,agentRuntimeInstances:normalizeRuntimeInstances(patch.agentRuntimeInstances)};
     if("panelAnimationMs" in patch){const value=Math.round(Number(patch.panelAnimationMs)||0);patch={...patch,panelAnimationMs:Math.max(0,Math.min(400,value))}}
     this.state.settings={...this.state.settings,...patch};
     this.#save();
