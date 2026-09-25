@@ -230,6 +230,9 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(verificationHistoryResponse.status,200);
     const verificationHistory=(await verificationHistoryResponse.json()).records;
     assert.equal(verificationHistory.length,1);assert.equal(verificationHistory[0].id,persistedVerification.id);assert.equal(verificationHistory[0].status,"verified");
+    const verificationTraces=await fetch(gui.url+"/api/traces?"+new URLSearchParams({threadId:"thread-verification",limit:"20"})).then(r=>r.json());
+    const verificationTrace=verificationTraces.items.find(item=>item.name==="verification.completed");
+    assert.ok(verificationTrace);assert.equal(verificationTrace.status,"verified");assert.equal(verificationTrace.data.verified,true);assert.equal(verificationTrace.data.summary.passed,1);assert.equal(verificationTrace.data.nextAction,"complete");assert.equal(Object.prototype.hasOwnProperty.call(verificationTrace.data,"evidence"),false);
     const relationResponse=await fetch(gui.url+"/api/context/relations?"+new URLSearchParams({path:configProject,file:"src/session.js"}));
     assert.equal(relationResponse.status,200);
     const relationResult=await relationResponse.json();

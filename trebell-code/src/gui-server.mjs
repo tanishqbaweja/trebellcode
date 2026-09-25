@@ -2179,7 +2179,9 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           const body=await readJsonBody(req,2*1024*1024),evidence=Array.isArray(body.evidence)?body.evidence:[],assessment=contextEngine.assessVerification({plan:body.plan,evidence});
           const environmentId=!body.environmentId||body.environmentId==="local"?null:String(body.environmentId);
           const record=state.recordVerification({id:body.id,environmentId,projectPath:body.projectPath||body.path||null,threadId:body.threadId||null,turnId:body.turnId||null,plan:body.plan,evidence,assessment});
-          return json(res,200,{record,nextAction:contextEngine.nextVerificationAction({plan:record.plan,evidence:record.evidence})});
+          const nextAction=contextEngine.nextVerificationAction({plan:record.plan,evidence:record.evidence});
+          eventJournal.record({environmentId,threadId:record.threadId||null,turnId:record.turnId||null,category:"verification",name:"verification.completed",status:assessment.status,data:{recordId:record.id,projectPath:record.projectPath||null,risk:assessment.risk,verified:Boolean(assessment.verified),summary:assessment.summary,nextAction:nextAction.action,nextStepId:nextAction.nextStep?.id||null}});
+          return json(res,200,{record,nextAction});
         }catch(error){return json(res,400,{error:error.message});}
       }
     }
