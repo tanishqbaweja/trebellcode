@@ -7,6 +7,7 @@ import { OpenCodeAgentSession } from "./opencode-agent-session.mjs";
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
 import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread } from "./native-agent-session.mjs";
 import { createNativeBuiltins } from "./native-builtins.mjs";
+import { NativeBackgroundProcessManager } from "./native-background-processes.mjs";
 import { NativeMcpBroker } from "./native-mcp-broker.mjs";
 import { createNativeToolExecutor } from "./native-tool-executor.mjs";
 import { platformDynamicToolNamespaces } from "./platform-tool-catalog.mjs";
@@ -516,6 +517,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
   const liveToolOutput=new Map();
   const pendingDelegations=new Map();
   const nativeQueueStarting=new Set();
+  const nativeBackgroundProcesses=new NativeBackgroundProcessManager({
+    environments,environment:runtimeManager?.env||process.env,platform:runtimeManager?.platform||process.platform,
+    onEvent:event=>{const thread=threadStore.get(event.threadId);journal?.record?.({runtime:"native",provider:agentProviderIdentity(thread),environmentId:thread?.providerMeta?.environmentId??null,threadId:event.threadId,category:"process",name:event.name,status:event.status,data:event.data||{}})},
+  });
   function clearLiveToolOutput(threadId){
     const prefix=String(threadId||"")+":";
     for(const key of liveToolOutput.keys())if(key.startsWith(prefix))liveToolOutput.delete(key);
@@ -599,7 +604,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       });
       const mcpTools=await mcpBroker.connect();
       const tools=[...platformTools,...mcpTools];
-      const nativeBuiltins=createNativeBuiltins({root:runtimeCwd,environments,environmentId,environment:runtimeManager.env||process.env,platform:runtimeManager.platform||process.platform});
+      const nativeBuiltins=createNativeBuiltins({
+        root:runtimeCwd,environments,environmentId,environment:runtimeManager.env||process.env,platform:runtimeManager.platform||process.platform,
+        backgroundProcesses:nativeBackgroundProcesses,threadId:thread.id,environmentNames:runtimeManager.childEnvironmentKeys(instance),
+      });
       const executeTool=createNativeToolExecutor({
         contextEngine,root:runtimeCwd,repository:!projectless,io:repoIo,knowledgeService:repositoryKnowledge,environmentId,mcpBroker,
         projectAvailable:!projectless,
@@ -892,6 +900,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     }
     if(method==="thread/delete"){
       const deletedThread=threadStore.get(params.threadId);
+      if(deletedThread?.runtime==="native")await nativeBackgroundProcesses.clean(params.threadId).catch(()=>{});
       const runtimeSession=sessions.get(params.threadId);if(runtimeSession instanceof ClaudeAgentSession)await runtimeSession.delete().catch(()=>{});else await runtimeSession?.close().catch(()=>{});
       sessions.delete(params.threadId);threadStore.delete(params.threadId);state?.updateThreadMeta?.(params.threadId,{deletedAt:Date.now(),archived:true});emit("thread/deleted",{threadId:params.threadId});if(onThreadDeleted)try{await onThreadDeleted(deletedThread)}catch{}return {ok:true}
     }
@@ -1065,6 +1074,21 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       if(index<0||!queue[index])throw Object.assign(new Error("Queued submission not found"),{code:-32602});
       const submission=queue[index],started=await request(context,"turn/start",{threadId:params.threadId,input:submission.input});
       const next=queue.filter((_,itemIndex)=>itemIndex!==index);saveAgentQueue(state,params.threadId,next);emit("thread/queue/changed",{threadId:params.threadId});return {turn:started.turn};
+    }
+    if(method==="thread/backgroundTerminals/list"){
+      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      if(thread.runtime!=="native")throw Object.assign(new Error(`${thread.runtime||runtime} does not expose Trebell-managed background processes`),{code:-32601});
+      return nativeBackgroundProcesses.list(thread.id,params);
+    }
+    if(method==="thread/backgroundTerminals/terminate"){
+      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      if(thread.runtime!=="native")throw Object.assign(new Error(`${thread.runtime||runtime} does not expose Trebell-managed background processes`),{code:-32601});
+      return {process:await nativeBackgroundProcesses.terminate(thread.id,params.processId)};
+    }
+    if(method==="thread/backgroundTerminals/clean"){
+      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      if(thread.runtime!=="native")throw Object.assign(new Error(`${thread.runtime||runtime} does not expose Trebell-managed background processes`),{code:-32601});
+      return await nativeBackgroundProcesses.clean(thread.id);
     }
     if(method==="thread/archive"){await sessions.get(params.threadId)?.close().catch(()=>{});sessions.delete(params.threadId);const thread=threadStore.update(params.threadId,{archived:true});if(!thread)throw new Error("Thread not found");emit("thread/archived",{threadId:params.threadId});return {thread}}
     if(method==="thread/unarchive"){const thread=threadStore.update(params.threadId,{archived:false});if(!thread)throw new Error("Thread not found");emit("thread/unarchived",{threadId:params.threadId});return {thread}}
@@ -1258,7 +1282,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     for(const context of socketContexts){try{context.ws.terminate()}catch{}}
     socketContexts.clear();
     for(const client of wss.clients){try{client.terminate()}catch{}}
-    await closeSessions();
+    await closeSessions();await nativeBackgroundProcesses.closeAll();
     try{wss.close()}catch{}
   }};
 }

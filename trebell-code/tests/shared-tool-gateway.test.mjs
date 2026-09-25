@@ -86,6 +86,8 @@ test("Native terminal policy classifies argv content instead of trusting a stati
   assert.equal(ordinary.decision,POLICY_ALLOW);assert.equal(ordinary.action.riskLevel,"medium");
   const push=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"git",args:["push","origin","main"],cwd:"."}},{permissionProfile:"auto",workspace:"/repo",runtime:"native"});
   assert.equal(push.decision,POLICY_CONFIRM);assert.equal(push.action.externalSideEffect,true);assert.equal(push.action.riskLevel,"high");
+  const backgroundPush=authorizePlatformToolCall({namespace:"trebell_terminal",name:"start_background",arguments:{command:"git",args:["push","origin","main"],cwd:"."}},{permissionProfile:"auto",workspace:"/repo",runtime:"native"});
+  assert.equal(backgroundPush.decision,POLICY_CONFIRM);assert.equal(backgroundPush.action.externalSideEffect,true);assert.equal(backgroundPush.action.riskLevel,"high");
   const destructive=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"rm",args:["-rf","dist"],cwd:"."}},{permissionProfile:"auto",workspace:"/repo",runtime:"native"});
   assert.equal(destructive.decision,POLICY_REJECT);assert.equal(destructive.action.riskLevel,"critical");
   const readOnly=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"npm",args:["test"],cwd:"."}},{permissionProfile:"read-only",workspace:"/repo",runtime:"native"});assert.equal(readOnly.decision,POLICY_REJECT);

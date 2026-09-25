@@ -115,7 +115,7 @@ function occurrences(text,needle){
   if(!needle)return 0;let count=0,offset=0;for(;;){const index=text.indexOf(needle,offset);if(index<0)return count;count++;offset=index+needle.length}
 }
 
-export function createNativeBuiltins({root,environments=null,environmentId=null,environment=process.env,platform=process.platform}={}){
+export function createNativeBuiltins({root,environments=null,environmentId=null,environment=process.env,platform=process.platform,backgroundProcesses=null,threadId=null,environmentNames=null}={}){
   if(!root)throw new Error("Native built-in tools require an active workspace root");
   return async function execute(call={}){
     const namespace=String(call.namespace||""),name=String(call.name||""),args=call.arguments&&typeof call.arguments==="object"?call.arguments:{};
@@ -144,10 +144,25 @@ export function createNativeBuiltins({root,environments=null,environmentId=null,
       throw new Error(`Unknown Native workspace tool: ${name}`);
     }
     if(namespace==="trebell_terminal"){
-      if(name!=="run")throw new Error(`Unknown Native terminal tool: ${name}`);
-      const command=String(args.command||"").trim();if(!command)throw new Error("command is required");
-      const commandArgs=Array.isArray(args.args)?args.args.map(value=>String(value)).slice(0,256):[];
-      return await runArgv({root,environments,environmentId,environment,platform,command,args:commandArgs,cwd:String(args.cwd||"."),timeoutMs:boundedInteger(args.timeout_ms,30_000,1000,300_000),maxOutput:boundedInteger(args.max_output_bytes,DEFAULT_OUTPUT_BYTES,1024,2*1024*1024),signal:call.signal||null});
+      if(name==="run"){
+        const command=String(args.command||"").trim();if(!command)throw new Error("command is required");
+        const commandArgs=Array.isArray(args.args)?args.args.map(value=>String(value)).slice(0,256):[];
+        return await runArgv({root,environments,environmentId,environment,platform,command,args:commandArgs,cwd:String(args.cwd||"."),timeoutMs:boundedInteger(args.timeout_ms,30_000,1000,300_000),maxOutput:boundedInteger(args.max_output_bytes,DEFAULT_OUTPUT_BYTES,1024,2*1024*1024),signal:call.signal||null});
+      }
+      if(name==="start_background"){
+        if(!backgroundProcesses||!threadId)throw new Error("Native background processes are unavailable");
+        const command=String(args.command||"").trim();if(!command)throw new Error("command is required");
+        const commandArgs=Array.isArray(args.args)?args.args.map(value=>String(value)).slice(0,256):[],located=await safeWorkspacePath(root,String(args.cwd||"."),{environments,environmentId,mustExist:true});
+        const info=located.remote?null:await stat(located.path);if(info&&!info.isDirectory())throw new Error("Command working directory is not a directory");
+        return backgroundProcesses.start({threadId,command,args:commandArgs,cwd:located.path,environmentId,maxOutputBytes:boundedInteger(args.max_output_bytes,DEFAULT_OUTPUT_BYTES,1024,2*1024*1024),environmentNames});
+      }
+      if(name==="background_status"){
+        if(!backgroundProcesses||!threadId)throw new Error("Native background processes are unavailable");return backgroundProcesses.status(threadId,String(args.process_id||""));
+      }
+      if(name==="stop_background"){
+        if(!backgroundProcesses||!threadId)throw new Error("Native background processes are unavailable");return await backgroundProcesses.terminate(threadId,String(args.process_id||""));
+      }
+      throw new Error(`Unknown Native terminal tool: ${name}`);
     }
     throw new Error(`Native built-in executor does not own ${namespace}/${name}`);
   };

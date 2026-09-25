@@ -328,3 +328,24 @@ test("Trebell Native resumes an idle durable queue after restart only when resta
     }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
   }
 });
+
+test("Trebell Native background processes outlive the turn and stay thread-owned",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-background-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home,NATIVE_BACKGROUND_RELAY_SECRET:"must-stay-hidden"},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let calls=0;
+  const nativeProviderTurn=async request=>{
+    calls++;
+    if(calls===1)return{id:"background-tool",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"background-1",namespace:"trebell_terminal",name:"start_background",arguments:JSON.stringify({command:process.execPath,args:["-e","process.stdout.write(process.env.NATIVE_BACKGROUND_RELAY_SECRET||'SAFE');setInterval(()=>{},1000)"],cwd:".",max_output_bytes:8192})}],finishReason:"tool_calls",usage:{}};
+    assert.equal(request.messages.at(-1).role,"tool");assert.match(request.messages.at(-1).content,/processId/);return{id:"background-answer",provider:request.provider,model:request.model,text:"Server is running in the background.",toolCalls:[],finishReason:"stop",usage:{}};
+  };
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
+  try{
+    const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;
+    const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",input:[{type:"text",text:"Start the dev server in the background"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);
+    const listed=await rpc.request("thread/backgroundTerminals/list",{threadId:thread.id,limit:10});assert.equal(listed.data.length,1);const processItem=listed.data[0];assert.equal(processItem.running,true);assert.match(processItem.command,/node|electron/i);assert.equal(processItem.cwd,repo);
+    const sibling=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;
+    assert.equal((await rpc.request("thread/backgroundTerminals/list",{threadId:sibling.id,limit:10})).data.length,0);await assert.rejects(()=>rpc.request("thread/backgroundTerminals/terminate",{threadId:sibling.id,processId:processItem.processId}),/not found/i);
+    const stopped=await rpc.request("thread/backgroundTerminals/terminate",{threadId:thread.id,processId:processItem.processId});assert.equal(stopped.process.running,false);assert.doesNotMatch(stopped.process.stdout,/must-stay-hidden/);assert.equal((await rpc.request("thread/backgroundTerminals/list",{threadId:thread.id,limit:10})).data.length,0);
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+});
