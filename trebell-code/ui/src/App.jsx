@@ -1,4 +1,4 @@
-import React,{lazy,memo,Suspense,useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from "react";
+import React,{forwardRef,lazy,memo,Suspense,useCallback,useEffect,useImperativeHandle,useLayoutEffect,useMemo,useRef,useState} from "react";
 import {
   Check, ChevronDown, CircleStop, Code2, Cpu, FileCode2, FileDiff, FolderCode,
   GitBranch, Globe2, HardDrive, Link2, ListTodo, MemoryStick, Network, Paperclip, Plus, Send,
@@ -264,14 +264,17 @@ function EventIcon({event}){
   if(event.kind==="mcpToolCall")return <Zap size={13}/>;
   return <Sparkles size={13}/>;
 }
-const ActivityTimeline=memo(function ActivityTimeline({events,assistantText,onOpenPanel}){
+const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,initialAssistantText="",onOpenPanel},ref){
+  const [assistantText,setAssistantText]=useState(initialAssistantText);
   const openPanelRef=useRef(onOpenPanel);openPanelRef.current=onOpenPanel;
   const openWorkspace=useCallback(()=>openPanelRef.current?.("workspace"),[]);
+  useImperativeHandle(ref,()=>({setText:value=>setAssistantText(String(value||""))}),[]);
+  useEffect(()=>{setAssistantText(String(initialAssistantText||""))},[initialAssistantText]);
   if(!events.length&&!assistantText)return null;
   return <div className="agent-block"><div className="agent-heading"><div className="agent-star"><Sparkles size={16}/></div><span>Trebell agent activity</span></div><div className="timeline">
     {events.map(event=><ActivityEventRow key={event.id} event={event} onInspectChanges={openWorkspace}/>)}
   </div>{assistantText&&<div className="assistant-answer">{assistantText}</div>}</div>;
-});
+}));
 
 const ActivityEventRow=React.memo(function ActivityEventRow({event,onInspectChanges}){
   return <details className={"tool-event status-"+(event.kind==="error"?"error":event.status)+" kind-"+(event.kind||"event")}><summary><span className="timeline-marker"><EventIcon event={event}/></span><strong>{event.title}</strong><em>{event.kind==="error"?"error":event.status}</em></summary>
@@ -509,12 +512,13 @@ export default function App(){
   const [rpc,setRpc]=useState(null); const [rpcStatus,setRpcStatus]=useState("disconnected");
   const [threads,setThreads]=useState([]); const [sections,setSections]=useState({}); const [threadMeta,setThreadMeta]=useState({});
   const [activeThread,setActiveThread]=useState(null); const [activeTurnId,setActiveTurnId]=useState(null);
-  const [messages,setMessages]=useState([]); const [events,setEvents]=useState([]); const [assistantText,setAssistantText]=useState("");
+  const [messages,setMessages]=useState([]); const [events,setEvents]=useState([]);
+  const assistantTextRef=useRef("");const activityTimelineRef=useRef(null);
   const assistantStreamBufferRef=useRef(null);
   if(!assistantStreamBufferRef.current)assistantStreamBufferRef.current=createTextFrameBuffer({
     schedule:callback=>requestAnimationFrame(callback),
     cancel:handle=>cancelAnimationFrame(handle),
-    onFlush:value=>setAssistantText(previous=>previous+value),
+    onFlush:value=>{assistantTextRef.current+=value;activityTimelineRef.current?.setText(assistantTextRef.current)},
   });
   const commandStreamBufferRef=useRef(null);
   if(!commandStreamBufferRef.current)commandStreamBufferRef.current=createKeyedTextFrameBuffer({
@@ -562,7 +566,7 @@ export default function App(){
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"}); const [paletteDataError,setPaletteDataError]=useState("");
   const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
-  function resetAssistantStream(){assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();setAssistantText("")}
+  function resetAssistantStream(){assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();assistantTextRef.current="";activityTimelineRef.current?.setText("")}
   function appendAssistantStream(value){assistantStreamBufferRef.current?.push(value)}
   useEffect(()=>()=>{assistantStreamBufferRef.current?.dispose();commandStreamBufferRef.current?.dispose();for(const waiter of compactionWaitersRef.current.values()){clearTimeout(waiter.timer);waiter.reject?.(new Error("Trebell closed while context compaction was pending"))}compactionWaitersRef.current.clear()},[]);
   const navigationKey=location=>[location.section,location.threadId||"",location.rightPanelOpen?location.rightPanelTab||"files":""].join("|");
@@ -655,7 +659,7 @@ export default function App(){
       return;
     }
     if(followConversationEndRef.current)node.scrollTop=Math.max(0,node.scrollHeight-node.clientHeight);
-  },[activeThread?.id,messages.length,events.length,assistantText]);
+  },[activeThread?.id,messages.length,events.length]);
   useEffect(()=>{
     const node=conversationScrollRef.current;if(!node||typeof ResizeObserver==="undefined")return;
     const content=node.firstElementChild;if(!content)return;
@@ -3162,7 +3166,7 @@ export default function App(){
             <div className="conversation-column">
               <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
               <Conversation messages={messages} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={["codex","opencode","claude"].includes(agentRuntime)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyPage.nextCursor)} loadingEarlier={historyPage.loading} onLoadEarlier={conversationLoadEarlier} activeFindItemId={threadFind.activeItemId}/>
-              <ActivityTimeline events={events} assistantText={assistantText} onOpenPanel={activityOpenPanel}/>
+              <ActivityTimeline ref={activityTimelineRef} events={events} initialAssistantText={assistantTextRef.current} onOpenPanel={activityOpenPanel}/>
               {guardianDenials.map(review=><div className="inline-approval" key={review.reviewId}><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div>)}
               {approvals[0]&&<div className="inline-approval"><ApprovalCard request={approvals[0]} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
               {queued.map((item,index)=><div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span>{item.native?"Queued in Codex":item.autoStartFailed?"Queued · retry needed":"Queued"}{queuedEditId===item.id?" · editing":""}</span><p>{item.text}</p><div className="queued-message-actions"><button onClick={()=>runUserAction(()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={()=>editQueued(item)} disabled={queuedEditId===item.id||item.editable===false}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={index===0} onClick={()=>runUserAction(()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={index===queued.length-1} onClick={()=>runUserAction(()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button onClick={()=>runUserAction(()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>)}

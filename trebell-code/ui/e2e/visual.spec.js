@@ -1048,6 +1048,34 @@ test("automatic context compaction completes before the next turn starts",async(
   }finally{await harness.close()}
 });
 
+test("live assistant streaming survives page navigation without root-owned stream state",async({page})=>{
+  test.setTimeout(30_000);
+  const thread={id:"stream-isolation-thread",name:"Stream isolation fixture",preview:"Live delta navigation coverage",historyMode:"paginated",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexRequestHarness(thread);
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"stream-isolation-fixture");
+    await page.goto("/");
+    await page.getByRole("button",{name:/Stream isolation fixture/}).click();
+    await expect(page.locator(".thread-row.active")).toContainText("Stream isolation fixture");
+    harness.emit({method:"turn/started",params:{threadId:thread.id,turn:{id:"stream-turn",status:"inProgress"}}});
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeVisible();
+    harness.emit({method:"item/agentMessage/delta",params:{threadId:thread.id,turnId:"stream-turn",delta:"Hello "}});
+    await expect(page.locator(".assistant-answer")).toHaveText("Hello ");
+    await page.getByRole("button",{name:"Settings",exact:true}).click();
+    await expect(page.getByRole("heading",{name:"Settings"})).toBeVisible();
+    harness.emit({method:"item/agentMessage/delta",params:{threadId:thread.id,turnId:"stream-turn",delta:"from hidden chat"}});
+    await page.getByRole("button",{name:"Threads",exact:true}).click();
+    await expect(page.locator(".assistant-answer")).toHaveText("Hello from hidden chat");
+    harness.emit({method:"item/completed",params:{threadId:thread.id,turnId:"stream-turn",item:{id:"stream-answer",type:"agentMessage",text:"Hello from hidden chat"}}});
+    await expect(page.locator(".history-assistant").filter({hasText:"Hello from hidden chat"})).toBeVisible();
+    await expect(page.locator(".assistant-answer")).toHaveCount(0);
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"stream-isolation-navigation-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
 test("direct fallback never drops attachments or failed text sends",async({page,request})=>{
   test.setTimeout(35_000);
   const baseBootstrap=await (await request.get("/api/bootstrap")).json();
