@@ -34,7 +34,7 @@ import { startProviderBridge } from "./provider-bridge.mjs";
 import { AgentRuntimeManager, normalizeAgentRuntime } from "./agent-runtime-manager.mjs";
 import { AgentThreadStore } from "./agent-thread-store.mjs";
 import { importClaudeHistory, publicHistoryCandidate, scanLocalAgentHistory } from "./agent-history-import.mjs";
-import { attachAgentRelay } from "./agent-relay.mjs";
+import { agentPermissionModeFromStart, attachAgentRelay } from "./agent-relay.mjs";
 import { CodexAppServerClient } from "./codex-app-server-client.mjs";
 import { listLicenses, licenseDetail } from "./license-service.mjs";
 import { WorktreeCleanupService } from "./worktree-cleanup.mjs";
@@ -52,6 +52,7 @@ import { continuityAdditionalContext, continuitySnapshot, normalizeContinuityNot
 import { verificationRepairContext, verificationRepairPrompt, verificationRepairState } from "./verification-repair.mjs";
 import { delegationContextValue, delegationGoalPatch, delegationPolicies } from "./delegation-state.mjs";
 import { executeDelegation } from "./delegation-executor.mjs";
+import { resolveCodexApprovalByPolicy } from "./codex-policy-adapter.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
   .then(text=>String(JSON.parse(text).version||"0.0.0"))
@@ -1042,6 +1043,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const childId=String(childThread.id),model=spec.model||codexThreadModels.get(parentThreadId)||childThread.model||null,goal=normalizeGoal({threadId:childId,patch:delegationGoalPatch(spec)});
         state.updateThreadMeta(childId,{
           cwd:workspace.cwd,branch:workspace.branch||null,runtime:"codex",runtimeInstanceId:parentMeta?.runtimeInstanceId||null,environmentId:parentMeta?.environmentId??null,
+          permissionProfile:agentPermissionModeFromStart({permissionProfile:spec.permissions}),
           parentThreadId,delegation:{id:delegationId,parentThreadId,task:spec.task,permission:spec.permissions,requestedPermission:spec.permission,isolation:spec.isolation==="inherit"?"shared":"worktree",requestedIsolation:spec.requestedIsolation,ownership:spec.ownership,model,createdAt:Date.now(),status:"running"},
           goal,goalBudgetBaselines:{toolCalls:0,childAgents:0,toolCallTelemetryComplete:true,childAgentTelemetryComplete:true},
         });
@@ -1068,6 +1070,30 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         result.thread=publicThread;
       },
     });
+  }
+  function codexPermissionProfilePatch(params={}){
+    const hasPolicy=Object.prototype.hasOwnProperty.call(params,"permissionProfile")||Object.prototype.hasOwnProperty.call(params,"approvalPolicy")||Object.prototype.hasOwnProperty.call(params,"sandbox")||Object.prototype.hasOwnProperty.call(params,"sandboxPolicy");
+    return hasPolicy?{permissionProfile:agentPermissionModeFromStart(params)}:{};
+  }
+  function resolveCodexServerApproval(message){
+    const params=message?.params||{},threadId=params.threadId?String(params.threadId):null,meta=threadId?state.threadMeta(threadId):{};
+    const resolved=resolveCodexApprovalByPolicy(message,{
+      profile:meta?.permissionProfile||"supervised",workspace:meta?.cwd||null,
+      rules:Array.isArray(state.settings().policyRules)?state.settings().policyRules:[],
+      provenance:params?._meta?.provenance||params.provenance||"unknown",
+    });
+    if(!resolved?.policy)return null;
+    const action=resolved.policy.action,base={runtime:"codex",provider:selectedProvider,environmentId:meta?.environmentId??state.settings().activeEnvironmentId??null,threadId,turnId:params.turnId||null,category:"policy"};
+    const data={
+      method:message.method,decision:resolved.policy.decision,reason:resolved.policy.reason,profile:resolved.policy.profile,
+      action:action.action,kind:action.kind,riskLevel:action.riskLevel,reversibility:action.reversibility,idempotent:action.idempotent,
+      externalSideEffect:action.externalSideEffect,pathInsideWorkspace:action.pathInsideWorkspace,networkHost:action.networkHost||null,provenance:action.provenance,
+    };
+    eventJournal.record({...base,name:"permission.requested",status:"pending",data:{method:message.method,action:action.action,kind:action.kind}});
+    eventJournal.record({...base,name:"policy.decision",status:resolved.policy.decision.toLowerCase(),data});
+    if(!resolved.handled)return null;
+    eventJournal.record({...base,name:"permission.resolved",status:resolved.policy.decision==="ALLOW"?"accept":"decline",data:{method:message.method,policyDecision:resolved.policy.decision}});
+    return {handled:true,result:resolved.result};
   }
   function withCodexGoalContext(message){
     if(message?.method!=="turn/start")return message;
@@ -2756,6 +2782,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     targetUrl:()=>appServer?.targetUrl||`ws://127.0.0.1:${appPort}`,
     resolveTarget:message=>codexRelayTarget(message),
     transformClientMessage:message=>withCodexGoalContext(message),
+    handleServerRequest:async message=>resolveCodexServerApproval(message),
     handleRequest:async (message,{requestUpstream})=>{
       const params=message.params||{},threadId=params.threadId?String(params.threadId):"";
       if(message.method==="thread/goal/get")return {handled:true,result:{goal:threadId?durableCodexGoal(threadId):null}};
@@ -2809,7 +2836,12 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         state.updateThreadMeta(message.params.threadId,{cwd:message.params.cwd,runtime:"codex",deletedAt:null});
       }
       if(message?.method==="turn/start"){
-        const threadId=message.params?.threadId,model=message.params?.model;if(threadId&&model)codexThreadModels.set(threadId,model);
+        const threadId=message.params?.threadId,model=message.params?.model;
+        if(threadId){
+          const permissionPatch=codexPermissionProfilePatch(message.params||{});
+          if(Object.keys(permissionPatch).length)state.updateThreadMeta(threadId,permissionPatch);
+          if(model)codexThreadModels.set(threadId,model);
+        }
       }
     },
     onServerMessage:(message,route)=>{
@@ -2823,7 +2855,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         if(startedThread.model)codexThreadModels.set(startedThread.id,startedThread.model);
         const routedServer=route?.targetKey?codexAppServers.get(route.targetKey):null;
         if(routedServer)codexThreadServerKeys.set(startedThread.id,routedServer.poolKey);
-        state.updateThreadMeta(startedThread.id,{cwd:startedThread.cwd||null,runtime:"codex",runtimeInstanceId:routedServer?.runtimeInstanceId||agentRuntimes.activeInstance().id,environmentId:routedServer?.environmentId??state.settings().activeEnvironmentId??null,deletedAt:null,active:false});
+        state.updateThreadMeta(startedThread.id,{cwd:startedThread.cwd||null,runtime:"codex",runtimeInstanceId:routedServer?.runtimeInstanceId||agentRuntimes.activeInstance().id,environmentId:routedServer?.environmentId??state.settings().activeEnvironmentId??null,deletedAt:null,active:false,...codexPermissionProfilePatch(route?.requestParams||{})});
       }
       if(message?.method==="thread/deleted"&&params.threadId){
         codexThreadModels.delete(params.threadId);const meta=state.threadMeta(params.threadId);state.updateThreadMeta(params.threadId,{deletedAt:Date.now(),active:false});

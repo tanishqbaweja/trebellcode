@@ -23,6 +23,15 @@ function shellCommand(command,args=[]){
   return [command,...args].map(quotePosix).join(" ");
 }
 
+function isolatedRemoteEnvironment(command,names=[]){
+  const approved=[...new Set((Array.isArray(names)?names:[]).map(value=>String(value||"").trim()).filter(name=>/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)))];
+  if(!approved.length)return command;
+  const assignments=approved.map(name=>name+'="$'+'{'+name+'-}"').join(" ");
+  return "env -i "+assignments+" "+command;
+}
+
+export function remoteEnvironmentCommand(command,names=[]){return isolatedRemoteEnvironment(String(command||""),names)}
+
 const REMOTE_TOOL_PATH_SCRIPT=`trebell_prepend_path() {
   if [ -d "$1" ]; then
     case ":$PATH:" in *":$1:"*) ;; *) PATH="$1:$PATH" ;; esac
@@ -366,14 +375,14 @@ export class EnvironmentManager {
     throw new Error("Unsupported environment type");
   }
 
-  spawnArgv(id,{command,args=[],cwd=null,stdio=["pipe","pipe","pipe"]}={}){
+  spawnArgv(id,{command,args=[],cwd=null,stdio=["pipe","pipe","pipe"],environmentNames=null}={}){
     const profile=this.get(id);
     if(!profile) throw new Error("Environment profile was not found");
     const executable=String(command||"").trim();
     if(!executable)throw new Error("command is required");
     const working=String(cwd??profile.cwd??"").trim();
     if(profile.type==="local")return spawn(executable,args,{cwd:working||undefined,env:this.env,windowsHide:true,stdio});
-    return this.spawnSession(id,{command:shellCommand(executable,args),cwd:working||null,stdio});
+    return this.spawnSession(id,{command:isolatedRemoteEnvironment(shellCommand(executable,args),environmentNames),cwd:working||null,stdio});
   }
 
   async execute(id,{command,cwd=null,timeoutMs=30000,maxOutput=MAX_OUTPUT}={}){
@@ -410,7 +419,7 @@ export class EnvironmentManager {
     return {...result,profile:{id:profile.id,name:profile.name,type:profile.type},durationMs:Date.now()-startedAt};
   }
 
-  async executeArgv(id,{command,args=[],cwd=null,timeoutMs=30000,maxOutput=MAX_OUTPUT}={}){
+  async executeArgv(id,{command,args=[],cwd=null,timeoutMs=30000,maxOutput=MAX_OUTPUT,environmentNames=null}={}){
     const profile=this.get(id);
     if(!profile)throw new Error("Environment profile was not found");
     if(profile.type==="local"){
@@ -418,7 +427,7 @@ export class EnvironmentManager {
       const result=await runProcess(String(command||""),Array.isArray(args)?args:[],{cwd:String(cwd??profile.cwd??"").trim()||undefined,env:this.env,timeoutMs:Math.min(300000,Math.max(1000,Number(timeoutMs)||30000)),maxOutput:Math.max(1024,Math.min(16*1024*1024,Number(maxOutput)||MAX_OUTPUT))});
       return {...result,profile:{id:profile.id,name:profile.name,type:profile.type},durationMs:Date.now()-startedAt};
     }
-    return this.execute(id,{command:shellCommand(String(command||""),Array.isArray(args)?args:[]),cwd,timeoutMs,maxOutput});
+    return this.execute(id,{command:isolatedRemoteEnvironment(shellCommand(String(command||""),Array.isArray(args)?args:[]),environmentNames),cwd,timeoutMs,maxOutput});
   }
 
   async executeArgvInput(id,{command,args=[],input="",cwd=null,timeoutMs=30000,maxOutput=MAX_OUTPUT}={}){

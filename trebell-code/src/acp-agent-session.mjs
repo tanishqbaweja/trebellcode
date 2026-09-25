@@ -14,9 +14,9 @@ function boundedPath(root,path){
   return candidate;
 }
 
-export function acpPermissionChoice(options=[],mode="supervised",kind=null){
+export function acpPermissionChoice(options=[],mode="supervised",kind=null,policyInput={}){
   const find=kind=>options.find(option=>option.kind===kind)?.optionId;
-  const disposition=permissionDisposition(mode,normalizePermissionKind(kind),{readOnlyAllowsRead:false});
+  const disposition=permissionDisposition(mode,normalizePermissionKind(kind),{readOnlyAllowsRead:false,...policyInput});
   if(disposition==="allow")return mode==="edits"?find("allow_once")||find("allow_always")||null:find("allow_always")||find("allow_once")||options[0]?.optionId||null;
   if(disposition==="deny")return find("reject_always")||find("reject_once")||options.at(-1)?.optionId||null;
   return null;
@@ -95,7 +95,7 @@ export class AcpAgentSession{
     }
     if(method==="fs/write_text_file"){
       const options=[{kind:"allow_once",optionId:"allow",name:"Allow"},{kind:"reject_once",optionId:"reject",name:"Reject"}];
-      const selected=acpPermissionChoice(options,this.permissionMode,"edit")||decisionChoice(options,await this.onPermission?.({method,params,options}));
+      const selected=acpPermissionChoice(options,this.permissionMode,"edit",{action:"Write file",rawInput:params,workspace:this.cwd,requestedPath:params.path})||decisionChoice(options,await this.onPermission?.({method,params,options}));
       if(selected!=="allow")throw Object.assign(new Error("File write was denied"),{code:-32000});
       if(this.remoteIo){await this.remoteIo.writeText(params.path,String(params.content??""));return {}}
       const path=boundedPath(this.cwd,params.path);
@@ -103,7 +103,7 @@ export class AcpAgentSession{
       return {};
     }
     if(method==="session/request_permission"){
-      const options=params.options||[],kind=params?.toolCall?.kind??params?.kind??null,automatic=acpPermissionChoice(options,this.permissionMode,kind);
+      const options=params.options||[],kind=params?.toolCall?.kind??params?.kind??null,automatic=acpPermissionChoice(options,this.permissionMode,kind,{action:params?.toolCall?.title||method,rawInput:params?.toolCall?.rawInput||params,workspace:this.cwd});
       const optionId=automatic||decisionChoice(options,await this.onPermission?.({method,params,options}));
       return optionId?{outcome:{outcome:"selected",optionId}}:{outcome:{outcome:"cancelled"}};
     }
@@ -113,7 +113,7 @@ export class AcpAgentSession{
     }
     if(method==="terminal/create"){
       const options=[{kind:"allow_once",optionId:"allow",name:"Allow"},{kind:"reject_once",optionId:"reject",name:"Reject"}];
-      const selected=acpPermissionChoice(options,this.permissionMode,"execute")||decisionChoice(options,await this.onPermission?.({method,params:{...params,toolCall:{title:String(params.command||"Run command"),toolCallId:params.toolCallId||null,rawInput:{command:params.command,args:params.args,cwd:params.cwd||this.cwd},kind:"execute"}},options}));
+      const selected=acpPermissionChoice(options,this.permissionMode,"execute",{action:String(params.command||"Run command"),rawInput:{command:params.command,args:params.args,cwd:params.cwd||this.cwd},workspace:this.cwd,requestedPath:params.cwd||this.cwd})||decisionChoice(options,await this.onPermission?.({method,params:{...params,toolCall:{title:String(params.command||"Run command"),toolCallId:params.toolCallId||null,rawInput:{command:params.command,args:params.args,cwd:params.cwd||this.cwd},kind:"execute"}},options}));
       if(selected!=="allow")throw Object.assign(new Error("Terminal command was denied"),{code:-32000});
       if(this.remoteIo){
         const id=`remote-terminal-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;

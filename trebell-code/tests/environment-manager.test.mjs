@@ -5,7 +5,7 @@ import { PassThrough, Writable } from "node:stream";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { EnvironmentManager } from "../src/environment-manager.mjs";
+import { EnvironmentManager, remoteEnvironmentCommand } from "../src/environment-manager.mjs";
 
 function stateFor(profiles){
   return {
@@ -181,4 +181,18 @@ test("terminal argv specs launch provider auth commands directly and quote remot
   assert.equal(ssh.args.includes("-tt"),true);
   assert.equal(ssh.args.at(-2),"dev@build.example");
   assert.match(ssh.args.at(-1),/exec 'opencode' 'auth' 'login'/);
+});
+
+test("remote runtime argv can clear the login environment and re-expose only approved names",()=>{
+  const profile={id:"ssh",name:"Build box",type:"ssh",cwd:"/srv/app",host:"build.example",user:"dev",port:22};
+  const manager=new EnvironmentManager({state:stateFor([profile]),platform:"linux"});
+  let launch=null;
+  manager.spawnSession=(_id,options)=>{launch=options;return {pid:123}};
+  manager.spawnArgv("ssh",{command:"claude",args:["--version"],cwd:"/srv/app",environmentNames:["PATH","HOME","ANTHROPIC_API_KEY","bad-name?"]});
+  assert.match(launch.command,/^env -i /);
+  assert.match(launch.command,/PATH="\$\{PATH-\}"/);
+  assert.match(launch.command,/ANTHROPIC_API_KEY="\$\{ANTHROPIC_API_KEY-\}"/);
+  assert.doesNotMatch(launch.command,/bad-name/);
+  assert.match(launch.command,/'claude' '--version'/);
+  assert.equal(remoteEnvironmentCommand("'tool'",[]),"'tool'");
 });

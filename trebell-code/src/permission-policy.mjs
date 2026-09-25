@@ -1,25 +1,19 @@
-const MODES=new Set(["supervised","edits","auto","full","read-only"]);
-const KINDS=new Set(["read","edit","execute","fetch","network","other"]);
+import { evaluatePolicy, normalizePolicyKind, normalizePolicyProfile, POLICY_ALLOW, POLICY_REJECT } from "./policy-engine.mjs";
 
 export function normalizePermissionMode(value){
-  const mode=String(value||"supervised").trim().toLowerCase();
-  return MODES.has(mode)?mode:"supervised";
+  const profile=normalizePolicyProfile(value);
+  if(profile==="workspace-write")return "edits";
+  if(profile==="isolated-environment")return "auto";
+  return profile;
 }
 
 export function normalizePermissionKind(value){
-  const kind=String(value||"").trim().toLowerCase();
-  if(["edit","write","file_write","file-write","workspace_write","workspace-write"].includes(kind))return "edit";
-  if(["read","readonly","read_only","read-only"].includes(kind))return "read";
-  if(["execute","exec","bash","shell","terminal","command"].includes(kind))return "execute";
-  if(["fetch","web","webfetch","web_fetch"].includes(kind))return "fetch";
-  if(["network","http","https"].includes(kind))return "network";
-  return KINDS.has(kind)?kind:"other";
+  return normalizePolicyKind(value);
 }
 
-export function permissionDisposition(mode,kind,{readOnlyAllowsRead=true}={}){
+export function permissionDisposition(mode,kind,{readOnlyAllowsRead=true,...policyInput}={}){
   const profile=normalizePermissionMode(mode),action=normalizePermissionKind(kind);
-  if(profile==="full"||profile==="auto")return "allow";
-  if(profile==="edits")return action==="edit"?"allow":"ask";
-  if(profile==="read-only")return readOnlyAllowsRead&&action==="read"?"allow":"deny";
-  return "ask";
+  if(profile==="read-only"&&action==="read"&&!readOnlyAllowsRead)return "deny";
+  const decision=evaluatePolicy({profile,kind:action,...policyInput}).decision;
+  return decision===POLICY_ALLOW?"allow":decision===POLICY_REJECT?"deny":"ask";
 }

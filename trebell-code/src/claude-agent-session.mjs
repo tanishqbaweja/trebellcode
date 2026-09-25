@@ -79,7 +79,7 @@ export class ClaudeAgentSession{
         const answer=await this.onQuestion({toolName,input,options});
         if(answer&&typeof answer==="object")return {behavior:"allow",updatedInput:{...input,answers:answer},toolUseID:options.toolUseID};
       }
-      const policyKind=editTool(toolName)?"edit":readOnlyTool(toolName)?"read":toolKind(toolName),disposition=permissionDisposition(this.permissionMode,policyKind);
+      const policyKind=editTool(toolName)?"edit":readOnlyTool(toolName)?"read":toolKind(toolName),disposition=permissionDisposition(this.permissionMode,policyKind,{action:toolName,rawInput:input,workspace:this.cwd});
       if(disposition==="allow")return {behavior:"allow",updatedInput:input,toolUseID:options.toolUseID};
       if(disposition==="deny")return {behavior:"deny",message:"Trebell read-only mode denied this tool.",toolUseID:options.toolUseID};
       const choices=[

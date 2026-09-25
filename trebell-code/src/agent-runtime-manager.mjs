@@ -7,6 +7,7 @@ import { resolveCodexHomeLayout } from "./codex-home-layout.mjs";
 import { readAgentRuntimeUsage } from "./agent-usage-limits.mjs";
 import { sharedRuntimeCapabilities } from "./runtime-capabilities.mjs";
 import { withoutSecretEnvironment } from "./secret-redactor.mjs";
+import { buildRuntimeEnvironment, normalizeApprovedEnvironmentKeys, runtimeEnvironmentKeys } from "./runtime-environment.mjs";
 
 const RUNTIMES=Object.freeze({
   codex:{id:"codex",name:"Codex",protocol:"codex",command:null,multipleInstances:true},
@@ -190,6 +191,7 @@ export class AgentRuntimeManager{
     const id=String(input.id||`${kind}-${Date.now()}`);const index=list.findIndex(item=>item.id===id);
     const item={...(index>=0?list[index]:{}),...input,id,kind,displayName:String(input.displayName||RUNTIMES[kind].name),enabled:input.enabled!==false};
     item.environment=withoutSecretEnvironment(item.environment);
+    item.approvedEnvironmentKeys=normalizeApprovedEnvironmentKeys(input.approvedEnvironmentKeys??item.approvedEnvironmentKeys);
     if(kind==="claude"){
       const raw=input.autoCompactWindow;
       if(raw==null||String(raw).trim()==="")item.autoCompactWindow=null;
@@ -218,13 +220,19 @@ export class AgentRuntimeManager{
     return def?.command||null;
   }
   childEnv(instance){
-    const env={...this.env,...(instance?.environment||{})};
+    const env=buildRuntimeEnvironment(instance?.kind,{parent:this.env,approved:instance?.approvedEnvironmentKeys,overrides:instance?.environment,platform:this.platform});
     if(instance?.kind==="codex"){
       const layout=resolveCodexHomeLayout({homePath:instance?.homePath,shadowHomePath:instance?.shadowHomePath});
       if(layout.effectiveHomePath)env.CODEX_HOME=layout.effectiveHomePath;
     }
     if(instance?.kind==="claude"&&instance?.homePath)env.CLAUDE_CONFIG_DIR=instance.homePath;
     return env;
+  }
+  childEnvironmentKeys(instanceOrKind=this.activeInstance()){
+    const instance=typeof instanceOrKind==="string"
+      ?(this.instances().find(item=>item.id===instanceOrKind)||this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind)))
+      :instanceOrKind;
+    return runtimeEnvironmentKeys(instance?.kind,{approved:instance?.approvedEnvironmentKeys});
   }
   activeEnvironment(environmentId=undefined){
     const id=environmentId===undefined?(this.state?.settings()?.activeEnvironmentId||null):environmentId;
@@ -235,7 +243,8 @@ export class AgentRuntimeManager{
   }
   processSpawner(instance,environmentId=undefined){
     const profile=this.activeEnvironment(environmentId);if(!profile||profile.type==="local"||!this.environments)return null;
-    return options=>this.environments.spawnArgv(profile.id,{command:this.executable(instance),args:options.args||[],cwd:options.cwd||profile.cwd||null,stdio:options.stdio||["pipe","pipe","pipe"]});
+    const environmentNames=this.childEnvironmentKeys(instance);
+    return options=>this.environments.spawnArgv(profile.id,{command:this.executable(instance),args:options.args||[],cwd:options.cwd||profile.cwd||null,stdio:options.stdio||["pipe","pipe","pipe"],environmentNames});
   }
   remoteIo(cwd,environmentId=undefined){
     const profile=this.activeEnvironment(environmentId);if(!profile||profile.type==="local"||!this.environments)return null;
@@ -265,7 +274,7 @@ export class AgentRuntimeManager{
   async #run(instance,args,{timeoutMs=6000,cwd=null,environmentId=undefined}={}){
     const profile=this.activeEnvironment(environmentId);
     if(profile&&profile.type!=="local"&&this.environments){
-      const result=await this.environments.executeArgv(profile.id,{command:this.executable(instance),args,cwd:cwd||profile.cwd||"",timeoutMs});
+      const result=await this.environments.executeArgv(profile.id,{command:this.executable(instance),args,cwd:cwd||profile.cwd||"",timeoutMs,environmentNames:this.childEnvironmentKeys(instance)});
       return {ok:result.exitCode===0,code:result.exitCode,error:result.timedOut?"probe timed out":null,stdout:result.stdout||"",stderr:result.stderr||""};
     }
     return run(this.executable(instance),args,{env:this.childEnv(instance),cwd:cwd||process.cwd(),timeoutMs});
@@ -440,7 +449,7 @@ export class AgentRuntimeManager{
     const instances=this.instances();const statuses=await Promise.all(instances.map(instance=>this.probe(instance)));
     const publicInstances=instances.map(instance=>{
       const {environment,...safe}=instance;
-      return {...safe,environmentKeys:Object.keys(environment||{})};
+      return {...safe,environmentKeys:Object.keys(environment||{}),approvedEnvironmentKeys:normalizeApprovedEnvironmentKeys(instance.approvedEnvironmentKeys)};
     });
     const definitions=this.definitions().map(def=>({...def,installable:Boolean(INSTALLABLE_PACKAGES[def.id]),packageName:INSTALLABLE_PACKAGES[def.id]||null,canAuthenticate:["claude","cursor","grok","opencode"].includes(def.id)}));
     const active=this.activeInstance();return {selectedRuntime:this.activeRuntime(),selectedInstanceId:active.id,compatibleInstanceIds:this.compatibleInstanceIds(active),capabilities:this.capabilities(active),definitions,instances:publicInstances,statuses};

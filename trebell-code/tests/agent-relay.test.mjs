@@ -6,12 +6,34 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { WebSocket } from "ws";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
-import { acpPlanEvent,agentPermissionTraceData,agentThreadResumePayload,agentToolLifecycle,attachAgentRelay,contextualAgentPrompt,materializeAgentFork,paginateAgentAttachments,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
+import { acpPlanEvent,agentPermissionModeFromStart,agentPermissionPolicyDecision,agentPermissionTraceData,agentThreadResumePayload,agentToolLifecycle,attachAgentRelay,contextualAgentPrompt,materializeAgentFork,paginateAgentAttachments,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
 
 test("permission trace metadata excludes raw tool arguments",()=>{
   const trace=agentPermissionTraceData({toolCall:{toolCallId:"tool-1",title:"Run deployment",kind:"execute",rawInput:{command:"do-not-persist"}},options:[{kind:"allow_once"},{kind:"allow_once"},{kind:"reject_once"}]});
   assert.deepEqual(trace,{toolCallId:"tool-1",title:"Run deployment",kind:"execute",optionKinds:["allow_once","reject_once"]});
   assert.equal(Object.prototype.hasOwnProperty.call(trace,"rawInput"),false);
+});
+
+test("external thread starts preserve Trebell permission profiles across runtime sessions",()=>{
+  assert.equal(agentPermissionModeFromStart({sandbox:"read-only",approvalPolicy:"on-request"}),"read-only");
+  assert.equal(agentPermissionModeFromStart({approvalPolicy:"never",sandbox:"danger-full-access"}),"full");
+  assert.equal(agentPermissionModeFromStart({approvalPolicy:"untrusted",sandbox:"workspace-write"}),"auto");
+  assert.equal(agentPermissionModeFromStart({approvalPolicy:"never",sandbox:"workspace-write"}),"auto");
+  assert.equal(agentPermissionModeFromStart({approvalPolicy:"never"}),"auto");
+  assert.equal(agentPermissionModeFromStart({permissionProfile:"workspace-write"}),"edits");
+  assert.equal(agentPermissionModeFromStart({approvalPolicy:"on-request",sandbox:"workspace-write"}),"supervised");
+});
+
+test("external runtime approval requests use the unified policy decision before asking the user",()=>{
+  const thread={id:"t",runtime:"claude",cwd:"/repo",providerMeta:{permissionProfile:"auto"}};
+  const deploy=agentPermissionPolicyDecision(thread,{params:{toolCall:{title:"Deploy production",kind:"execute",rawInput:{command:"deploy"}},policy:{externalSideEffect:true,riskLevel:"high",reversibility:"none"}}});
+  assert.equal(deploy.decision,"CONFIRM");
+  const injected=agentPermissionPolicyDecision(thread,{params:{toolCall:{title:"Destroy production",kind:"execute"},policy:{externalSideEffect:true,riskLevel:"critical",reversibility:"none",provenance:"untrusted"}}});
+  assert.equal(injected.decision,"REJECT");
+  const outside=agentPermissionPolicyDecision({...thread,providerMeta:{permissionProfile:"edits"}},{params:{toolCall:{title:"Edit outside",kind:"edit"},policy:{requestedPath:"/other/a.js"}}});
+  assert.equal(outside.decision,"REJECT");
+  const allowedByRule=agentPermissionPolicyDecision({...thread,providerMeta:{permissionProfile:"supervised"}},{params:{toolCall:{title:"npm test",kind:"execute"}}},{policyRules:[{effect:"ALLOW",action:"npm test"}]});
+  assert.equal(allowedByRule.decision,"ALLOW");
 });
 
 test("ACP v1 plan updates map item, markdown, file and removal variants into Trebell plans",()=>{

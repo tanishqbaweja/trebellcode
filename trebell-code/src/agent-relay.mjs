@@ -12,11 +12,46 @@ import { enrichGoal, goalAdditionalContext, goalBudgetGate, normalizeGoal } from
 import { continuityAdditionalContext, continuitySnapshot, normalizeContinuityNotes } from "./continuity-state.mjs";
 import { delegationContextValue, delegationGoalPatch, delegationPolicies } from "./delegation-state.mjs";
 import { executeDelegation } from "./delegation-executor.mjs";
+import { normalizePermissionMode } from "./permission-policy.mjs";
+import { evaluatePolicy, POLICY_ALLOW, POLICY_CONFIRM, POLICY_REJECT } from "./policy-engine.mjs";
 
 const IMAGE_MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".bmp":"image/bmp"};
 const LIVE_TOOL_OUTPUT_LIMIT=256*1024;
 
 function textOfInput(input=[]){return input.filter(item=>item?.type==="text").map(item=>item.text||"").join("\n")}
+export function agentPermissionModeFromStart(params={}){
+  if(params.permissionProfile)return normalizePermissionMode(params.permissionProfile);
+  const sandboxType=String(params.sandboxPolicy?.type||params.sandbox||"").toLowerCase();
+  if(sandboxType==="readonly"||sandboxType==="read-only")return "read-only";
+  if(sandboxType==="dangerfullaccess"||sandboxType==="danger-full-access"){
+    if(params.approvalPolicy==="never")return "full";
+    if(params.approvalPolicy==="untrusted")return "auto";
+    return "supervised";
+  }
+  if(sandboxType==="workspacewrite"||sandboxType==="workspace-write"){
+    if(params.approvalPolicy==="untrusted"||params.approvalPolicy==="never")return "auto";
+    return "supervised";
+  }
+  if(params.approvalPolicy==="never"||params.approvalPolicy==="untrusted")return "auto";
+  return "supervised";
+}
+export function agentPermissionPolicyDecision(thread,request={},settings={}){
+  const params=request?.params||{},toolCall=params.toolCall||{},policy=params.policy||toolCall.policy||{};
+  return evaluatePolicy({
+    profile:thread?.providerMeta?.permissionProfile||"supervised",
+    runtime:thread?.runtime||null,workspace:thread?.cwd||null,
+    action:toolCall.title||params.title||request?.method||"Agent tool",
+    kind:toolCall.kind||params.kind||params.permissionType||"other",
+    rawInput:toolCall.rawInput||params.rawInput||{},
+    requestedPath:policy.requestedPath||params.path||null,networkTarget:policy.networkTarget||params.url||null,
+    externalSideEffect:policy.externalSideEffect??policy.externalSideEffects,
+    riskLevel:policy.riskLevel||policy.risk,reversibility:policy.reversibility,idempotent:policy.idempotent,
+    provenance:policy.provenance||params.provenance||"unknown",
+    requestedPermissionEscalation:Boolean(policy.requestedPermissionEscalation),
+    environmentType:thread?.providerMeta?.environmentType||null,environmentIsolated:Boolean(thread?.providerMeta?.environmentIsolated),
+    rules:Array.isArray(settings?.policyRules)?settings.policyRules:[],
+  });
+}
 
 async function acpPrompt(input=[]){
   const out=[];
@@ -499,16 +534,17 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     return ()=>{const next=Math.max(0,(Number(pendingDelegations.get(threadId))||1)-1);if(next)pendingDelegations.set(threadId,next);else pendingDelegations.delete(threadId)};
   }
 
-  async function ensureSession(thread,context,{permissionMode="supervised",model=null}={}){
+  async function ensureSession(thread,context,{permissionMode=null,model=null}={}){
     let session=sessions.get(thread.id);
     if(session)return session;
+    const effectivePermissionMode=normalizePermissionMode(permissionMode||thread.providerMeta?.permissionProfile||"supervised");
     const instances=runtimeManager.instances();
     const instance=instances.find(item=>item.id===thread.runtimeInstanceId)||instances.find(item=>item.kind===thread.runtime)||runtimeManager.activeInstance();
     if(instance.kind==="codex")throw new Error("Codex uses the native Codex relay");
     const environmentId=thread.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null;
     const status=await runtimeManager.probe(instance,{environmentId});if(!status.available)throw new Error(status.message||`${status.name} is unavailable`);
     const runtimeCwd=runtimeManager.runtimeCwd(thread.cwd,environmentId);const spawnProcess=runtimeManager.processSpawner(instance,environmentId);const remoteIo=runtimeManager.remoteIo(runtimeCwd,environmentId);
-    const common={cwd:runtimeCwd,env:runtimeManager.childEnv(instance),permissionMode,onPermission:request=>context.permission(thread,request),onQuestion:request=>context.userQuestion(thread,request),onUpdate:params=>handleUpdate(thread.id,params),version};
+    const common={cwd:runtimeCwd,env:runtimeManager.childEnv(instance),permissionMode:effectivePermissionMode,onPermission:request=>context.permission(thread,request),onQuestion:request=>context.userQuestion(thread,request),onUpdate:params=>handleUpdate(thread.id,params),version};
     const acpMcpServers=acpMcpServersForSession(state?.settings?.().mcpServers||[],{runtime:instance.kind,environmentId});
     const claudeMcpServers=claudeMcpServersForSession(state?.settings?.().mcpServers||[],{environmentId});
     if(instance.kind==="claude"&&contextEngine){
@@ -521,7 +557,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       ?(remoteIo
         ?new AcpAgentSession({...common,runtime:"opencode",command:runtimeManager.executable(instance),args:["acp"],terminals,spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers})
         :new OpenCodeAgentSession({...common,command:runtimeManager.executable(instance),serverUrl:instance.serverUrl||null}))
-      :new AcpAgentSession({...common,runtime:instance.kind,command:runtimeManager.executable(instance),args:runtimeManager.acpArgs(instance,permissionMode,runtimeCwd),terminals,spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers});
+      :new AcpAgentSession({...common,runtime:instance.kind,command:runtimeManager.executable(instance),args:runtimeManager.acpArgs(instance,effectivePermissionMode,runtimeCwd),terminals,spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers});
     const started=await runtime.start({providerSessionId:thread.providerSessionId||null,model:model||thread.model||null});
     const discoveredMeta=threadStore.get(thread.id)?.providerMeta||{};
     threadStore.update(thread.id,{providerSessionId:started.session.sessionId,providerMeta:{...discoveredMeta,initialize:started.initialize,setup:started.session},model:model||started.session.models?.currentModelId||thread.model||null});
@@ -708,9 +744,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const instance=(requestedId?instances.find(item=>item.id===requestedId&&item.kind===runtime):null)||runtimeManager.activeInstance();
       if(instance.kind!==runtime)throw new Error("Requested runtime profile does not match the active external runtime");
       const environmentId=Object.prototype.hasOwnProperty.call(params,"environmentId")?(params.environmentId||null):(state?.settings?.().activeEnvironmentId||null);
-      const effectiveCwd=runtimeManager.runtimeCwd(params.cwd||process.cwd(),environmentId);const seed=threadStore.create({runtime,cwd:effectiveCwd,providerSessionId:"",model:params.model||null,agent:params.agent||null,providerMeta:{runtimeInstanceId:instance.id,environmentId}});
+      const permissionMode=agentPermissionModeFromStart(params),effectiveCwd=runtimeManager.runtimeCwd(params.cwd||process.cwd(),environmentId);const seed=threadStore.create({runtime,cwd:effectiveCwd,providerSessionId:"",model:params.model||null,agent:params.agent||null,providerMeta:{runtimeInstanceId:instance.id,environmentId,permissionProfile:permissionMode}});
       threadStore.update(seed.id,{runtimeInstanceId:instance.id});
-      const session=await ensureSession(threadStore.get(seed.id),context,{permissionMode:params.approvalPolicy==="never"?"full":"supervised",model:params.model||null});
+      const session=await ensureSession(threadStore.get(seed.id),context,{permissionMode,model:params.model||null});
       const thread=threadStore.update(seed.id,{providerSessionId:session.sessionId,model:params.model||session.sessionSetup?.models?.currentModelId||null});
       emit("thread/started",{thread});return {thread};
     }
@@ -948,9 +984,25 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
           const current=threadStore.get(thread.id)||thread,turnId=current?.turns?.at(-1)?.id||null,traceData=agentPermissionTraceData({toolCall:params.toolCall,options});
           const traceBase={runtime:current?.runtime||runtimeManager.activeRuntime(),provider:current?.providerMeta?.runtimeInstanceId||null,environmentId:current?.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null,threadId:thread.id,turnId,category:"policy"};
           journal?.record?.({...traceBase,name:"permission.requested",status:"pending",data:traceData});
+          const policy=agentPermissionPolicyDecision(current,{params,options},state?.settings?.()||{});
+          const policyData={
+            decision:policy.decision,reason:policy.reason,profile:policy.profile,action:policy.action.action,kind:policy.action.kind,
+            riskLevel:policy.action.riskLevel,reversibility:policy.action.reversibility,idempotent:policy.action.idempotent,
+            externalSideEffect:policy.action.externalSideEffect,pathInsideWorkspace:policy.action.pathInsideWorkspace,
+            networkHost:policy.action.networkHost||null,provenance:policy.action.provenance,
+          };
+          journal?.record?.({...traceBase,name:"policy.decision",status:policy.decision.toLowerCase(),data:policyData});
+          if(policy.decision===POLICY_ALLOW){
+            journal?.record?.({...traceBase,name:"permission.resolved",status:"accept",data:{...traceData,decision:"accept",policyDecision:policy.decision}});
+            return "accept";
+          }
+          if(policy.decision===POLICY_REJECT){
+            journal?.record?.({...traceBase,name:"permission.resolved",status:"decline",data:{...traceData,decision:"decline",policyDecision:policy.decision}});
+            return "decline";
+          }
           try{
             const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:params.toolCall?.title||"Agent requests permission",toolCall:params.toolCall,options}),decision=result?.decision||"decline";
-            journal?.record?.({...traceBase,name:"permission.resolved",status:decision,data:{...traceData,decision}});return decision;
+            journal?.record?.({...traceBase,name:"permission.resolved",status:decision,data:{...traceData,decision,policyDecision:POLICY_CONFIRM}});return decision;
           }catch(error){
             journal?.record?.({...traceBase,name:"permission.resolved",status:"error",data:{...traceData,message:error?.message||String(error)}});throw error;
           }

@@ -153,6 +153,30 @@ test("Codex relay broadcasts harness-owned notifications to every connected rend
   }
 });
 
+test("Codex relay can resolve server requests without surfacing phantom renderer approvals",async()=>{
+  const work=await routedUpstream("work");
+  const relayHttp=createServer((_req,res)=>{res.statusCode=404;res.end()});const handled=[];
+  const relay=attachCodexRelay(relayHttp,{
+    targetUrl:work.url,
+    handleServerRequest:async message=>{
+      if(message.method!=="item/commandExecution/requestApproval")return null;
+      handled.push(message);return {handled:true,result:{decision:"accept"}};
+    },
+  });
+  await new Promise(resolve=>relayHttp.listen(0,"127.0.0.1",resolve));
+  let session;
+  try{
+    session=await relayClient(relayHttp);await session.request("initialize",{clientInfo:{name:"relay-test"},capabilities:{experimentalApi:true}});session.client.send(JSON.stringify({method:"initialized",params:{}}));
+    const upstream=[...work.sockets][0],browserMessages=[];session.client.on("message",data=>browserMessages.push(JSON.parse(String(data))));
+    upstream.send(JSON.stringify({id:41,method:"item/commandExecution/requestApproval",params:{threadId:"thread-1",command:"npm test"}}));
+    for(let i=0;i<50&&!work.received.some(item=>item.id===41&&item.result);i++)await new Promise(resolve=>setTimeout(resolve,10));
+    assert.equal(handled.length,1);assert.deepEqual(work.received.find(item=>item.id===41&&item.result)?.result,{decision:"accept"});
+    assert.equal(browserMessages.some(item=>item.method==="item/commandExecution/requestApproval"),false);
+    upstream.send(JSON.stringify({method:"serverRequest/resolved",params:{threadId:"thread-1",requestId:41}}));await new Promise(resolve=>setTimeout(resolve,40));
+    assert.equal(browserMessages.some(item=>item.method==="serverRequest/resolved"&&item.params?.requestId===41),false);
+  }finally{try{session?.client.close()}catch{}relay.close();await Promise.all([work.close(),new Promise(resolve=>relayHttp.close(resolve))])}
+});
+
 test("Codex relay custom handlers can issue routed upstream requests",async()=>{
   const work=await routedUpstream("work");
   const relayHttp=createServer((_req,res)=>{res.statusCode=404;res.end()});

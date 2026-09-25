@@ -85,6 +85,25 @@ test("runtime launch flags preserve Trebell permission-mode boundaries",()=>{
   assert.deepEqual(manager.acpArgs(grok,"full"),["agent","--always-approve","stdio"]);
 });
 
+test("runtime child environments do not inherit unrelated parent secrets",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-runtime-env-"));
+  try{
+    const state=new TrebellStateStore({...process.env,TREBELL_HOME:home});
+    const manager=new AgentRuntimeManager({
+      state,platform:"linux",
+      env:{PATH:"/usr/bin",HOME:"/home/test",ANTHROPIC_API_KEY:"claude-secret",OPENAI_API_KEY:"openai-secret",GITHUB_TOKEN:"github-secret",TEAM_PROXY:"http://proxy"},
+    });
+    const claude=manager.upsertInstance({id:"claude-safe",kind:"claude",displayName:"Claude safe",approvedEnvironmentKeys:["TEAM_PROXY","GITHUB_TOKEN"],environment:{CUSTOM_MODE:"safe",CURSOR_API_KEY:"must-not-persist"}});
+    assert.deepEqual(claude.environment,{CUSTOM_MODE:"safe"});
+    assert.deepEqual(claude.approvedEnvironmentKeys,["TEAM_PROXY","GITHUB_TOKEN"]);
+    const env=manager.childEnv(claude);
+    assert.equal(env.PATH,"/usr/bin");assert.equal(env.ANTHROPIC_API_KEY,"claude-secret");assert.equal(env.OPENAI_API_KEY,undefined);
+    assert.equal(env.GITHUB_TOKEN,"github-secret","explicit approval should pass the current parent value without storing it");assert.equal(env.TEAM_PROXY,"http://proxy");assert.equal(env.CUSTOM_MODE,"safe");
+    const persisted=await readFile(join(home,"ui-state.json"),"utf8");
+    assert.doesNotMatch(persisted,/claude-secret|github-secret|http:\/\/proxy/);assert.match(persisted,/GITHUB_TOKEN/);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 test("remote runtime process spawning cannot escape the active workspace cwd",()=>{
   const calls=[],state={settings:()=>({activeEnvironmentId:"ssh-fixture"})},profile={id:"ssh-fixture",type:"ssh",cwd:"/srv/app"};
   const environments={get:id=>id===profile.id?profile:null,spawnArgv:(id,options)=>{calls.push({id,options});return {pid:123}}};
@@ -95,6 +114,22 @@ test("remote runtime process spawning cannot escape the active workspace cwd",()
   assert.throws(()=>io.spawn({command:"node",args:[],cwd:"/tmp/outside"}),/outside the active remote workspace/i);
   assert.throws(()=>io.spawn({command:"node",args:[],cwd:"../outside"}),/outside the active remote workspace/i);
   assert.equal(calls.length,1,"rejected remote cwd values must never reach the environment spawner");
+});
+
+test("remote runtime processes receive the same least-privilege environment-name allowlist",()=>{
+  const calls=[],profile={id:"ssh-fixture",type:"ssh",cwd:"/srv/app"};
+  const state={settings:()=>({activeEnvironmentId:"ssh-fixture"})};
+  const environments={get:id=>id===profile.id?profile:null,spawnArgv:(id,options)=>{calls.push({id,options});return {pid:123}}};
+  const manager=new AgentRuntimeManager({
+    state,environments,platform:"linux",
+    env:{PATH:"/usr/bin",HOME:"/home/test",ANTHROPIC_API_KEY:"claude-secret",OPENAI_API_KEY:"other-secret",TEAM_PROXY:"http://proxy"},
+  });
+  const instance={id:"claude-remote",kind:"claude",approvedEnvironmentKeys:["TEAM_PROXY"],environment:{}};
+  const spawnRuntime=manager.processSpawner(instance,"ssh-fixture");assert.ok(spawnRuntime);
+  spawnRuntime({args:["--version"],cwd:"/srv/app",stdio:["ignore","pipe","pipe"]});
+  const names=calls[0].options.environmentNames;
+  assert.ok(names.includes("PATH"));assert.ok(names.includes("HOME"));assert.ok(names.includes("ANTHROPIC_API_KEY"));assert.ok(names.includes("TEAM_PROXY"));
+  assert.equal(names.includes("OPENAI_API_KEY"),false);
 });
 
 test("Claude runtime profiles validate and persist auto-compact thresholds",async()=>{

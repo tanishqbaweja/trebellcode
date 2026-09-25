@@ -25,6 +25,7 @@ export function attachCodexRelay(httpServer, {
   targetUrl,
   resolveTarget = null,
   handleRequest = null,
+  handleServerRequest = null,
   transformClientMessage = null,
   path = "/api/codex/ws",
   enabled = () => true,
@@ -115,14 +116,14 @@ export function attachCodexRelay(httpServer, {
         }
         if(record){await record.ready;return record}
         const upstream=new WebSocket(route.url,{headers:{"User-Agent":TREBELL_USER_AGENT,"x-trebell-client":TREBELL_USER_AGENT}});
-        record={key:route.key,url:route.url,socket:upstream,internalPending:new Map(),forwardedRequests:new Map(),initialized:false,ready:null};
+        record={key:route.key,url:route.url,socket:upstream,internalPending:new Map(),forwardedRequests:new Map(),autoHandledRequests:new Set(),initialized:false,ready:null};
         context.upstreams.set(route.key,record);
         record.ready=new Promise((resolve,reject)=>{
           const timer=setTimeout(()=>reject(new Error("Timed out connecting to routed Codex app-server")),12000);
           upstream.once("open",()=>{clearTimeout(timer);resolve()});
           upstream.once("error",error=>{clearTimeout(timer);reject(error)});
         });
-        upstream.on("message",(data,isBinary)=>{
+        upstream.on("message",async(data,isBinary)=>{
           if(isBinary){sendBrowser(data,{binary:true});return}
           let message;try{message=JSON.parse(String(data))}catch{sendBrowser(data);return}
           const pending=record.internalPending.get(message.id);
@@ -135,11 +136,25 @@ export function attachCodexRelay(httpServer, {
           if(requestMeta)record.forwardedRequests.delete(message.id);
           try{onServerMessage(message,{targetKey:record.key,targetUrl:record.url,requestMethod:requestMeta?.method||null,requestParams:requestMeta?.params||null})}catch{}
           if(Object.prototype.hasOwnProperty.call(message,"id")&&message.method){
+            if(handleServerRequest){
+              try{
+                const handled=await handleServerRequest(message,{request,targetKey:record.key,targetUrl:record.url});
+                if(handled?.handled){
+                  record.autoHandledRequests.add(message.id);
+                  while(record.autoHandledRequests.size>500)record.autoHandledRequests.delete(record.autoHandledRequests.values().next().value);
+                  const reply={id:message.id};
+                  if(handled.error)reply.error=handled.error;else reply.result=handled.result??null;
+                  record.socket.send(JSON.stringify(reply));
+                  return;
+                }
+              }catch(error){log("Codex server-request hook failed; using renderer confirmation: "+error.message)}
+            }
             const relayId=`trebell-server-${context.nextServerRequestId++}`;
             context.serverRequestRoutes.set(relayId,{record,originalId:message.id});
             sendBrowser({...message,id:relayId});return;
           }
           if(message?.method==="serverRequest/resolved"&&message.params&&Object.prototype.hasOwnProperty.call(message.params,"requestId")){
+            if(record.autoHandledRequests.has(message.params.requestId)){record.autoHandledRequests.delete(message.params.requestId);return}
             const route=[...context.serverRequestRoutes.entries()].find(([,value])=>value.record===record&&value.originalId===message.params.requestId);
             if(route){
               const [relayId]=route;context.serverRequestRoutes.delete(relayId);
