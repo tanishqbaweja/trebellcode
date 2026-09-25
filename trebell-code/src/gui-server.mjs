@@ -2096,6 +2096,13 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return json(res,200,await contextEngine.repositoryMap({root,query:url.searchParams.get("q")||"",limit:Number(url.searchParams.get("limit")||60),io:remote?createRemoteContextIo({environments,environmentId,root}):null}));
       }catch(error){return json(res,400,{error:error.message});}
     }
+    if(url.pathname==="/api/context/commands"){
+      try{
+        const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
+        const root=environmentPath(url.searchParams.get("path")||process.cwd(),environmentId),remote=remoteEnvironmentProfile(environmentId);
+        return json(res,200,await contextEngine.projectCommands({root,limit:Number(url.searchParams.get("limit")||120),io:remote?createRemoteContextIo({environments,environmentId,root}):null}));
+      }catch(error){return json(res,400,{error:error.message});}
+    }
     if(url.pathname==="/api/context/symbols"){
       try{
         const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);

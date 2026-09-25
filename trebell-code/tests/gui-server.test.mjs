@@ -143,6 +143,7 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     await mkdir(join(configProject,"src"),{recursive:true});
     await mkdir(join(configProject,"tests"),{recursive:true});
     await writeFile(join(configProject,"AGENTS.md"),"Prefer deterministic repository context.\n");
+    await writeFile(join(configProject,"package.json"),JSON.stringify({packageManager:"pnpm@10.0.0",scripts:{test:"node --test",build:"vite build"}}));
     await writeFile(join(configProject,"src","session.js"),"export class RefreshSession { refresh(token) { return token; } }\n");
     await writeFile(join(configProject,"src","broken.ts"),"export const broken: string = ;\n");
     await writeFile(join(configProject,"tests","session.test.js"),"import { RefreshSession } from \"../src/session.js\";\nexport function testSession() { return new RefreshSession().refresh(\"x\"); }\n");
@@ -165,6 +166,11 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(mapResponse.status,200);
     const mapResult=await mapResponse.json();
     assert.ok(mapResult.data.some(item=>item.path==="src/session.js"&&item.definitions.some(definition=>definition.name==="RefreshSession")));
+    const commandsResponse=await fetch(gui.url+"/api/context/commands?"+new URLSearchParams({path:configProject,limit:"10"}));
+    assert.equal(commandsResponse.status,200);
+    const commandsResult=await commandsResponse.json();
+    assert.ok(commandsResult.declared.some(item=>item.command==="pnpm run test"&&item.confidence==="declared"));
+    assert.ok(commandsResult.declared.some(item=>item.command==="pnpm run build"));
     const relationResponse=await fetch(gui.url+"/api/context/relations?"+new URLSearchParams({path:configProject,file:"src/session.js"}));
     assert.equal(relationResponse.status,200);
     const relationResult=await relationResponse.json();

@@ -73,6 +73,50 @@ function taskTerms(task){
 
 function pathTokens(path){return new Set(String(path||"").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean))}
 
+function commandKind(name){
+  const value=String(name||"").toLowerCase();
+  if(/(^|[:_-])(test|spec|e2e|integration|unit)([:_-]|$)/.test(value)||value==="test")return "test";
+  if(/(^|[:_-])(build|compile|bundle|dist)([:_-]|$)/.test(value)||value==="build")return "build";
+  if(/(^|[:_-])(lint|check|typecheck|type-check|tsc)([:_-]|$)/.test(value))return value.includes("type")||value.includes("tsc")?"typecheck":"lint";
+  if(/(^|[:_-])(format|fmt)([:_-]|$)/.test(value))return "format";
+  if(/(^|[:_-])(dev|serve|start|watch)([:_-]|$)/.test(value))return value.includes("start")?"start":"dev";
+  return "other";
+}
+
+function packageManagerFor(path,manifest,available){
+  const directory=slash(dirname(path)),prefix=directory==="."||!directory?"":directory+"/",declared=String(manifest?.packageManager||"").split("@")[0].trim();
+  if(["npm","pnpm","yarn","bun"].includes(declared))return declared;
+  if(available.has(prefix+"pnpm-lock.yaml"))return "pnpm";
+  if(available.has(prefix+"yarn.lock"))return "yarn";
+  if(available.has(prefix+"bun.lock")||available.has(prefix+"bun.lockb"))return "bun";
+  return "npm";
+}
+
+function packageScriptCommand(manager,name){
+  if(manager==="yarn")return `yarn ${name}`;
+  return `${manager} run ${name}`;
+}
+
+function parseMakeTargets(content,runner){
+  const data=[];
+  for(const line of String(content||"").split(/\r?\n/)){
+    if(/^\s/.test(line)||line.startsWith("."))continue;
+    const match=line.match(/^([A-Za-z0-9][A-Za-z0-9_.-]*):(?:\s|$)/);if(!match||match[1].includes("%"))continue;
+    data.push({name:match[1],command:`${runner} ${match[1]}`,kind:commandKind(match[1]),confidence:"declared"});
+  }
+  return data;
+}
+
+function parseJustTargets(content){
+  const data=[];
+  for(const line of String(content||"").split(/\r?\n/)){
+    if(/^\s/.test(line)||line.startsWith("#")||line.startsWith("@"))continue;
+    const match=line.match(/^([A-Za-z_][A-Za-z0-9_-]*)(?:\s+[^:]*)?:\s*(?:#.*)?$/);if(!match)continue;
+    data.push({name:match[1],command:`just ${match[1]}`,kind:commandKind(match[1]),confidence:"declared"});
+  }
+  return data;
+}
+
 function sourceDefinition(line,extension){
   const patterns=[];
   if([".js",".jsx",".ts",".tsx",".mjs",".cjs",".vue",".svelte"].includes(extension))patterns.push(
@@ -794,6 +838,46 @@ export class ContextEngine{
       return {path:entry.relativePath,score:Number((rel.score+central*250).toFixed(3)),centrality:Number(central.toFixed(6)),reasons:rel.reasons,parser:entry.parsed.parser||"regex",definitions:(entry.parsed.definitions||[]).slice(0,16),imports,incoming:(incoming.get(entry.relativePath)||new Set()).size,outgoing:(edges.get(entry.relativePath)||new Map()).size,test:/(^|\/)(test|tests|__tests__|spec)(\/|$)|\.(test|spec)\./i.test(entry.relativePath)};
     }).sort((a,b)=>b.score-a.score||b.centrality-a.centrality||a.path.localeCompare(b.path)).slice(0,capped);
     return {query:String(query||""),data,indexedFiles:index.files.size,graphEdges:edgeCount,changed:[...(git.changed||[])].slice(0,200)};
+  }
+
+  async projectCommands({root,limit=120,io=null}={}){
+    const {contextIo,index}=await this.#indexed(root,io),available=new Set(index.paths),capped=Math.max(1,Math.min(240,Number(limit)||120));
+    const manifestPaths=index.paths.filter(path=>{
+      const base=basename(path).toLowerCase();
+      return base==="package.json"||base==="makefile"||base==="gnumakefile"||base==="justfile"||base==="cargo.toml"||base==="go.mod"||base==="pyproject.toml"||base==="pytest.ini"||base==="pom.xml"||base==="gradlew"||base==="gradlew.bat";
+    }).slice(0,160);
+    const contents=await contextIo.readMany(manifestPaths),declared=[],conventional=[],manifests=[];
+    const pushDeclared=item=>{if(declared.length<capped&&!declared.some(existing=>existing.command===item.command&&existing.path===item.path))declared.push(item)};
+    const pushConvention=item=>{if(conventional.length<capped&&!conventional.some(existing=>existing.command===item.command&&existing.path===item.path))conventional.push(item)};
+    for(const path of manifestPaths){
+      const content=contents.get(path);if(typeof content!=="string")continue;const base=basename(path).toLowerCase(),directory=slash(dirname(path))==="."?"":slash(dirname(path));manifests.push(path);
+      if(base==="package.json"){
+        try{
+          const manifest=JSON.parse(content),manager=packageManagerFor(path,manifest,available),scripts=manifest?.scripts&&typeof manifest.scripts==="object"?manifest.scripts:{};
+          for(const [name,script] of Object.entries(scripts))pushDeclared({path,name,command:packageScriptCommand(manager,name),kind:commandKind(name),confidence:"declared",manager,script:String(script)});
+        }catch{}
+        continue;
+      }
+      if(base==="makefile"||base==="gnumakefile")for(const item of parseMakeTargets(content,"make"))pushDeclared({path,...item});
+      else if(base==="justfile")for(const item of parseJustTargets(content))pushDeclared({path,...item});
+      else if(base==="cargo.toml"){
+        pushConvention({path,name:"test",command:"cargo test",kind:"test",confidence:"convention",reason:"Cargo.toml detected"});
+        pushConvention({path,name:"check",command:"cargo check",kind:"typecheck",confidence:"convention",reason:"Cargo.toml detected"});
+        pushConvention({path,name:"build",command:"cargo build",kind:"build",confidence:"convention",reason:"Cargo.toml detected"});
+      }else if(base==="go.mod"){
+        pushConvention({path,name:"test",command:"go test ./...",kind:"test",confidence:"convention",reason:"go.mod detected"});
+        pushConvention({path,name:"build",command:"go build ./...",kind:"build",confidence:"convention",reason:"go.mod detected"});
+      }else if(base==="pytest.ini"||base==="pyproject.toml"&&/\[tool\.pytest(?:\.ini_options)?\]/.test(content))pushConvention({path,name:"test",command:"python -m pytest",kind:"test",confidence:"convention",reason:"pytest configuration detected"});
+      else if(base==="pom.xml"){
+        pushConvention({path,name:"test",command:"mvn test",kind:"test",confidence:"convention",reason:"pom.xml detected"});
+        pushConvention({path,name:"build",command:"mvn package",kind:"build",confidence:"convention",reason:"pom.xml detected"});
+      }else if(base==="gradlew"||base==="gradlew.bat"){
+        const runner=base.endsWith(".bat")?"gradlew.bat":"./gradlew";
+        pushConvention({path,name:"test",command:`${runner} test`,kind:"test",confidence:"convention",reason:`${base} detected`});
+        pushConvention({path,name:"build",command:`${runner} build`,kind:"build",confidence:"convention",reason:`${base} detected`});
+      }
+    }
+    return {declared:declared.slice(0,capped),conventional:conventional.slice(0,capped),manifests:[...new Set(manifests)].sort(),indexedFiles:index.files.size,filesDiscovered:index.paths.length,truncated:declared.length>=capped||conventional.length>=capped};
   }
 
   async relatedTests({root,path=null,name=null,limit=80,io=null}={}){

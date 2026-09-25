@@ -8,6 +8,7 @@ test("Claude repository tool handlers reuse the shared Context Engine",async()=>
     async searchSymbols(args){calls.push(["symbols",args]);return {data:[{name:"ContextEngine"}]}}
     ,async searchFiles(args){calls.push(["files",args]);return {data:[{path:"src/context-engine.mjs"}]}}
     ,async repositoryMap(args){calls.push(["map",args]);return {data:[{path:"src/context-engine.mjs"}]}}
+    ,async projectCommands(args){calls.push(["commands",args]);return {declared:[{command:"npm run test"}]}}
     ,async fileRelations(args){calls.push(["relations",args]);return {path:args.path}}
     ,async relatedTests(args){calls.push(["tests",args]);return {data:[{path:"tests/context-engine.test.mjs"}]}}
     ,async callHierarchy(args){calls.push(["calls",args]);return {name:args.name,callers:[{path:"src/server.mjs"}]}}
@@ -24,6 +25,7 @@ test("Claude repository tool handlers reuse the shared Context Engine",async()=>
   assert.deepEqual(await handlers.searchSymbols({query:"ContextEngine",limit:7}),{data:[{name:"ContextEngine"}]});
   assert.deepEqual(await handlers.searchFiles({query:"context-engine",limit:8}),{data:[{path:"src/context-engine.mjs"}]});
   assert.deepEqual(await handlers.repositoryMap({query:"context engine",limit:6}),{data:[{path:"src/context-engine.mjs"}]});
+  assert.deepEqual(await handlers.projectCommands({limit:5}),{declared:[{command:"npm run test"}]});
   assert.deepEqual(await handlers.fileRelations({path:"src/context-engine.mjs"}),{path:"src/context-engine.mjs"});
   assert.deepEqual(await handlers.relatedTests({path:"src/context-engine.mjs",name:null,limit:4}),{data:[{path:"tests/context-engine.test.mjs"}]});
   assert.deepEqual(await handlers.callHierarchy({name:"ContextEngine",path:"src/context-engine.mjs",limit:5}),{name:"ContextEngine",callers:[{path:"src/server.mjs"}]});
@@ -39,6 +41,7 @@ test("Claude repository tool handlers reuse the shared Context Engine",async()=>
     ["symbols",{root:"/srv/app",io,query:"ContextEngine",limit:7}],
     ["files",{root:"/srv/app",io,query:"context-engine",limit:8}],
     ["map",{root:"/srv/app",io,query:"context engine",limit:6}],
+    ["commands",{root:"/srv/app",io,limit:5}],
     ["relations",{root:"/srv/app",io,path:"src/context-engine.mjs"}],
     ["tests",{root:"/srv/app",io,path:"src/context-engine.mjs",name:null,limit:4}],
     ["calls",{root:"/srv/app",io,name:"ContextEngine",path:"src/context-engine.mjs",limit:5}],

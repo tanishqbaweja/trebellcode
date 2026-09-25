@@ -148,6 +148,23 @@ test("context engine exposes deterministic symbol and file relationship queries"
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
+test("context engine discovers repository-declared and conventional project commands",async()=>{
+  const root=await fixture();
+  try{
+    await writeFile(join(root,"package.json"),JSON.stringify({packageManager:"pnpm@10.0.0",scripts:{test:"node --test",build:"vite build",lint:"eslint .",dev:"vite"}},null,2),"utf8");
+    await writeFile(join(root,"Makefile"),"verify:\n\t@echo verify\nbuild-native:\n\t@echo build\n","utf8");
+    await writeFile(join(root,"Cargo.toml"),"[package]\nname = \"fixture\"\nversion = \"0.1.0\"\n","utf8");
+    await writeFile(join(root,"pyproject.toml"),"[tool.pytest.ini_options]\naddopts = \"-q\"\n","utf8");
+    const engine=new ContextEngine(),commands=await engine.projectCommands({root});
+    const declared=commands.declared.map(item=>item.command),conventional=commands.conventional.map(item=>item.command);
+    assert.ok(declared.includes("pnpm run test"));assert.ok(declared.includes("pnpm run build"));assert.ok(declared.includes("make verify"));
+    assert.equal(commands.declared.find(item=>item.command==="pnpm run lint").confidence,"declared");
+    assert.ok(conventional.includes("cargo test"));assert.ok(conventional.includes("cargo check"));assert.ok(conventional.includes("python -m pytest"));
+    assert.equal(commands.conventional.find(item=>item.command==="cargo test").confidence,"convention");
+    assert.ok(commands.manifests.includes("package.json"));assert.ok(commands.manifests.includes("Cargo.toml"));
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
 test("context engine exposes bounded code search, source ranges, and Git context",async()=>{
   const root=await fixture();
   try{
@@ -322,6 +339,7 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
   const root="/srv/app";
   const files=new Map([
     ["AGENTS.md","Keep authentication changes covered by tests.\n"],
+    ["package.json",JSON.stringify({packageManager:"npm@11.0.0",scripts:{test:"node --test",build:"node build.mjs"}})],
     ["src/auth/token.js",'export function rotateRefreshToken(token) {\n  return token + "-rotated";\n}\n'],
     ["src/auth/session.js",'import { rotateRefreshToken } from "./token.js";\nexport class RefreshSession {\n  refresh(token) { return rotateRefreshToken(token); }\n}\n'],
     ["src/server.js",'import { RefreshSession } from "./auth/session.js";\nexport function startServer() { return new RefreshSession(); }\n'],
@@ -387,6 +405,9 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
   assert.ok(remoteFiles.data.some(item=>item.path==="src/auth/session.js"));
   const remoteMap=await engine.repositoryMap({root,io,query:"refresh session",limit:8});
   assert.ok(remoteMap.graphEdges>=3);assert.ok(remoteMap.data.some(item=>item.path==="src/auth/session.js"));
+  const remoteCommands=await engine.projectCommands({root,io});
+  assert.ok(remoteCommands.declared.some(item=>item.command==="npm run test"&&item.confidence==="declared"));
+  assert.ok(remoteCommands.declared.some(item=>item.command==="npm run build"));
   const remoteTests=await engine.relatedTests({root,io,path:"src/auth/session.js"});
   assert.deepEqual(remoteTests.data.map(item=>item.path),["tests/auth-refresh.test.js"]);
   const remoteCalls=await engine.callHierarchy({root,io,name:"RefreshSession"});
