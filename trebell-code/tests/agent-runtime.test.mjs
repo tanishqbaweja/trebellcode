@@ -63,7 +63,7 @@ test("runtime capabilities describe adapter behavior without pretending unsuppor
   assert.equal(codex.mcpInjection,false);
   const native=runtimeCapabilities("native");
   assert.equal(native.dynamicTools,true);assert.equal(native.contextReporting,true);assert.equal(native.nativeHistoryPagination,true);
-  assert.equal(native.mcpInjection,false);assert.equal(native.compaction,true);assert.equal(native.delegation,false);assert.equal(native.steering,false);
+  assert.equal(native.mcpInjection,false);assert.equal(native.compaction,true);assert.equal(native.delegation,false);assert.equal(native.steering,true);
   const openCode=runtimeCapabilities("opencode");
   assert.equal(openCode.compaction,true);
   assert.equal(openCode.nativeLsp,true);

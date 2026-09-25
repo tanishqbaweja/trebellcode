@@ -168,3 +168,24 @@ test("Trebell Native compaction keeps full transcript but restarts from the dura
     try{ws.close()}catch{}if(relay)await relay.close().catch(()=>{});if(server.listening)await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
   }
 });
+
+test("Trebell Native turn steering interrupts inference and persists the redirect inside the active turn",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-steer-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let calls=0,firstStartedResolve;const firstStarted=new Promise(resolve=>{firstStartedResolve=resolve});
+  const nativeProviderTurn=async request=>{
+    calls++;
+    if(calls===1){firstStartedResolve();await new Promise((resolve,reject)=>{request.signal.addEventListener("abort",()=>{const error=new Error("provider request aborted by steering");error.name="AbortError";reject(error)},{once:true})});return{text:"obsolete",toolCalls:[],usage:{}}}
+    assert.match(JSON.stringify(request.messages.at(-1).content),/Work on parser\.ts instead/);return{id:"steered-answer",provider:request.provider,model:request.model,text:"Now working on parser.ts.",toolCalls:[],finishReason:"stop",usage:{inputTokens:6,outputTokens:3,totalTokens:9}};
+  };
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
+  try{
+    const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;
+    const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",input:[{type:"text",text:"Work on auth.ts"}]})).turn;await firstStarted;
+    const steered=await rpc.request("turn/steer",{threadId:thread.id,expectedTurnId:turn.id,input:[{type:"text",text:"Work on parser.ts instead"}]});assert.equal(steered.turnId,turn.id);assert.equal(steered.accepted,true);
+    const completed=await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);assert.equal(completed.params.turn.status,"completed");assert.equal(calls,2);
+    const persisted=(await rpc.request("thread/read",{threadId:thread.id})).thread.turns[0];const userItems=persisted.items.filter(item=>item.type==="userMessage");assert.equal(userItems.length,2);assert.match(JSON.stringify(userItems[1].content),/Work on parser\.ts instead/);assert.ok(persisted.items.some(item=>item.type==="agentMessage"&&/parser\.ts/.test(item.text)));
+    await assert.rejects(()=>rpc.request("turn/steer",{threadId:thread.id,expectedTurnId:turn.id,input:[{type:"text",text:"too late"}]}),/no active turn/i);
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+});

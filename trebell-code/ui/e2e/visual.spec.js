@@ -2693,6 +2693,15 @@ test("Trebell Native is a built-in provider-backed runtime in Settings",async({p
   await providerCard.scrollIntoViewIfNeeded();
   metrics=await page.locator(".settings-stage").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   await page.screenshot({path:auditDir+"settings-native-runtime-1280x800.png",fullPage:true});
+  await page.getByRole("button",{name:/General/}).click();
+  const followups=page.locator('[data-setting-target="general-followups"]');
+  await expect(followups).toBeVisible();
+  const followupSelect=followups.locator("select");
+  await expect(followupSelect.locator('option[value="steer"]')).toHaveText("Steer current turn at the next safe boundary");
+  await followupSelect.selectOption("steer");
+  await expect(followupSelect).toHaveValue("steer");
+  metrics=await page.locator(".settings-stage").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"settings-native-steering-1280x800.png",fullPage:true});
 });
 
 test("major workspace surfaces render their real destinations without horizontal overflow",async({page,request})=>{

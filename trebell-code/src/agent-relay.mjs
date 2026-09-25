@@ -19,6 +19,7 @@ import { delegationContextValue, delegationGoalPatch, delegationPolicies } from 
 import { executeDelegation } from "./delegation-executor.mjs";
 import { normalizePermissionMode } from "./permission-policy.mjs";
 import { evaluatePolicy, POLICY_ALLOW, POLICY_CONFIRM, POLICY_REJECT } from "./policy-engine.mjs";
+import { redactSecretText } from "./secret-redactor.mjs";
 
 const IMAGE_MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".bmp":"image/bmp"};
 const LIVE_TOOL_OUTPUT_LIMIT=256*1024;
@@ -1062,7 +1063,19 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       return {turn};
     }
     if(method==="turn/interrupt"){sessions.get(params.threadId)?.cancel();return {ok:true}}
-    if(method==="turn/steer"){throw Object.assign(new Error(`${runtime} does not expose in-flight steering through ACP`),{code:-32601})}
+    if(method==="turn/steer"){
+      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      if(thread.runtime!=="native")throw Object.assign(new Error(`${thread.runtime||runtime} does not expose in-flight steering through ACP`),{code:-32601});
+      const activeTurn=[...(thread.turns||[])].reverse().find(turn=>["inProgress","running","starting"].includes(turn?.status));if(!activeTurn)throw new Error("Trebell Native has no active turn to steer.");
+      if(params.expectedTurnId&&String(params.expectedTurnId)!==String(activeTurn.id))throw new Error("The active Native turn changed before steering could be applied.");
+      const session=sessions.get(thread.id);if(!(session instanceof NativeAgentSession))throw new Error("The active Native session is unavailable for steering.");
+      const prompt=await contextualAgentPrompt(params.input||[],{}),result=session.steer(prompt),text=textOfInput(params.input||[]);
+      const safeText=redactSecretText(text||"Mid-turn steering input",{environment:threadStore.env||process.env});
+      const item={type:"userMessage",id:`steer-${randomUUID()}`,clientId:null,content:[{type:"text",text:safeText}]};threadStore.addItem(thread.id,activeTurn.id,item);
+      emit("item/completed",{threadId:thread.id,turnId:activeTurn.id,item,completedAtMs:Date.now()});
+      journal?.record?.({runtime:"native",provider:agentProviderIdentity(thread),environmentId:thread.providerMeta?.environmentId??null,threadId:thread.id,turnId:activeTurn.id,category:"turn",name:"native.steering.requested",status:"pending",data:{messageChars:text.length}});
+      return {turnId:activeTurn.id,accepted:Boolean(result?.accepted),pending:Number(result?.pending)||0};
+    }
     if(method==="thread/compact/start"){
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
       const session=sessions.get(thread.id)||await ensureSession(thread,context,{});

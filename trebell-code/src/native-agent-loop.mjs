@@ -51,6 +51,18 @@ function emit(onEvent,event){
   try{onEvent?.({...event,at:Date.now()})}catch{}
 }
 
+function steeringMessages(consumeSteering){
+  if(typeof consumeSteering!=="function")return [];
+  const value=consumeSteering();return (Array.isArray(value)?value:[]).filter(message=>message&&typeof message==="object"&&message.role);
+}
+
+function applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn,toolCalls,stage}={}){
+  const messages=steeringMessages(consumeSteering);if(!messages.length)return false;
+  conversation.push(...messages);
+  emit(onEvent,{name:"native.steering.applied",status:"completed",model:String(model||""),provider:provider||null,data:{stage,messageCount:messages.length,modelTurn,toolCalls}});
+  return true;
+}
+
 export function nativeProviderRetryable(error){
   if(!error||error?.name==="AbortError")return false;
   if(typeof error.retryable==="boolean")return error.retryable;
@@ -83,7 +95,7 @@ export function nativeAgentBudget(options={}){
 export async function runNativeAgentTurn({
   providerTurn,executeTool,model,messages=[],tools=[],provider=null,toolChoice="auto",
   maxOutputTokens=null,temperature=null,parallelToolCalls=true,maxModelTurns=24,maxToolCalls=100,
-  maxProviderAttempts=3,retryBaseDelayMs=250,signal=null,onEvent=null,metadata=null,
+  maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,signal=null,onEvent=null,metadata=null,
 }={}){
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
@@ -94,6 +106,7 @@ export async function runNativeAgentTurn({
   emit(onEvent,{name:"native.turn.started",status:"running",model:String(model),provider:provider||null,data:{...metadata,maxModelTurns:budget.maxModelTurns,maxToolCalls:budget.maxToolCalls}});
   try{for(;;){
     throwIfAborted(signal);
+    applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_model"});
     if(modelTurns>=budget.maxModelTurns){
       const error=new Error(`Native agent model-turn budget exhausted (${modelTurns}/${budget.maxModelTurns}).`);error.code="native_model_turn_budget";
       emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(model),provider:provider||null,data:{reason:error.code,modelTurns,toolCalls}});throw error;
@@ -106,6 +119,14 @@ export async function runNativeAgentTurn({
       try{
         response=await providerTurn({model,provider,messages:conversation,tools,toolChoice,maxOutputTokens,temperature,parallelToolCalls,signal});break;
       }catch(error){
+        if(error?.nativeSteered){
+          if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"model_request_interrupted"})){
+            modelTurns=Math.max(0,modelTurns-1);
+            emit(onEvent,{name:"native.model.interrupted",status:"steered",model:String(model),provider:provider||null,data:{attempt,reason:"steering"}});
+            response=null;break;
+          }
+          throw error;
+        }
         if(signal?.aborted||error?.name==="AbortError")throw abortError(signal);
         const retryable=nativeProviderRetryable(error),last=attempt>=providerAttempts;
         if(!retryable||last)throw error;
@@ -114,11 +135,14 @@ export async function runNativeAgentTurn({
         await retryDelay(delay,signal);
       }
     }
+    if(response==null)continue;
     throwIfAborted(signal);lastResponse=response||{};usage=aggregateUsage(usage,lastResponse.usage||{});
     const calls=Array.isArray(lastResponse.toolCalls)?lastResponse.toolCalls:[];
     emit(onEvent,{name:"native.model.completed",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,durationMs:duration(requestStarted),toolCallCount:calls.length,finishReason:lastResponse.finishReason||null,usage:lastResponse.usage||null}});
+    if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"after_model"}))continue;
     conversation.push({role:"assistant",content:String(lastResponse.text||""),toolCalls:calls});
     if(!calls.length){
+      if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_completion"}))continue;
       const result={
         text:String(lastResponse.text||""),model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,
         messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse,
@@ -126,8 +150,21 @@ export async function runNativeAgentTurn({
       emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage}});
       return result;
     }
-    for(const call of calls){
+    let redirected=false;
+    for(let callIndex=0;callIndex<calls.length;callIndex++){
+      const call=calls[callIndex];
       throwIfAborted(signal);
+      const steerNow=steeringMessages(consumeSteering);
+      if(steerNow.length){
+        for(const skipped of calls.slice(callIndex)){
+          const skippedId=String(skipped?.id||"");
+          conversation.push({role:"tool",toolCallId:skippedId,content:"Tool call cancelled before execution because the user steered the active turn."});
+          emit(onEvent,{name:"native.tool.skipped",status:"skipped",model:String(model),provider:provider||null,data:{callId:skippedId,namespace:skipped?.namespace||null,name:skipped?.name||"tool",reason:"steering"}});
+        }
+        conversation.push(...steerNow);
+        emit(onEvent,{name:"native.steering.applied",status:"completed",model:String(model||""),provider:provider||null,data:{stage:"before_tool",messageCount:steerNow.length,modelTurn:modelTurns,toolCalls,skippedToolCalls:calls.length-callIndex}});
+        redirected=true;break;
+      }
       if(toolCalls>=budget.maxToolCalls){
         const error=new Error(`Native agent tool-call budget exhausted (${toolCalls}/${budget.maxToolCalls}).`);error.code="native_tool_call_budget";
         emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(model),provider:provider||null,data:{reason:error.code,modelTurns,toolCalls}});throw error;
@@ -149,6 +186,7 @@ export async function runNativeAgentTurn({
       emit(onEvent,{name:"native.tool.completed",status:success?"completed":"failed",model:String(model),provider:provider||null,data:{toolCall:toolCalls,callId,namespace,name,durationMs:duration(toolStarted),success,error:errorMessage}});
       conversation.push({role:"tool",toolCallId:callId,content});
     }
+    if(redirected)continue;
   }}catch(error){
     if(error&&typeof error==="object"){
       error.nativeUsage={...usage};error.nativeModelTurns=modelTurns;error.nativeToolCalls=toolCalls;

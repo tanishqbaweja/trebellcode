@@ -86,3 +86,31 @@ test("Native session cancellation returns a cancelled stop reason",async()=>{
   await session.start({model:"model"});const pending=session.prompt([{type:"text",text:"wait"}]);setTimeout(()=>session.cancel(),10);
   const result=await pending;assert.equal(result.stopReason,"cancelled");await session.close();
 });
+
+test("Native steering interrupts only the in-flight model request and continues the same turn",async()=>{
+  const requests=[];let startedFirst;const firstStarted=new Promise(resolve=>{startedFirst=resolve});let calls=0;
+  const session=new NativeAgentSession({provider:"fixture",model:"model",providerTurn:async request=>{
+    calls++;requests.push(structuredClone({...request,signal:undefined}));
+    if(calls===1){startedFirst();await new Promise((resolve,reject)=>{request.signal.addEventListener("abort",()=>{const error=new Error("aborted");error.name="AbortError";reject(error)},{once:true})});return{text:"never",toolCalls:[],usage:{}}}
+    assert.match(JSON.stringify(request.messages.at(-1).content),/Use parser\.ts instead/);return{id:"steered",text:"Switched to parser.ts.",toolCalls:[],usage:{inputTokens:4,outputTokens:2,totalTokens:6}};
+  },executeTool:async()=>""});
+  await session.start({model:"model"});const pending=session.prompt([{type:"text",text:"Work on auth.ts"}]);await firstStarted;
+  const steered=session.steer([{type:"text",text:"Use parser.ts instead"}]);assert.equal(steered.accepted,true);
+  const result=await pending;assert.equal(result.stopReason,"end_turn");assert.equal(result.providerMessageId,"steered");assert.equal(calls,2);
+  assert.equal(requests[0].messages.at(-1).content,"Work on auth.ts");assert.match(JSON.stringify(requests[1].messages.at(-1).content),/Use parser\.ts instead/);
+});
+
+test("Native steering skips remaining old-plan tools without replaying side effects",async()=>{
+  const requests=[],executed=[];let session,turn=0;
+  session=new NativeAgentSession({provider:"fixture",model:"model",tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],providerTurn:async request=>{
+    requests.push(structuredClone({...request,signal:undefined}));turn++;
+    if(turn===1)return {id:"old-plan",text:"",toolCalls:[
+      {id:"tool-one",namespace:"trebell_workspace",name:"write_file",arguments:'{"path":"one.txt","content":"one"}'},
+      {id:"tool-two",namespace:"trebell_workspace",name:"write_file",arguments:'{"path":"two.txt","content":"two"}'},
+    ],usage:{}};
+    const tail=request.messages.slice(-3);assert.equal(tail[0].role,"tool");assert.equal(tail[0].toolCallId,"tool-one");assert.equal(tail[1].role,"tool");assert.equal(tail[1].toolCallId,"tool-two");assert.match(tail[1].content,/cancelled before execution/i);assert.equal(tail[2].role,"user");assert.match(JSON.stringify(tail[2].content),/Do not create two\.txt/);
+    return {id:"redirected",text:"Kept only the first requested change.",toolCalls:[],usage:{}};
+  },executeTool:async call=>{executed.push(call.id);if(call.id==="tool-one")session.steer([{type:"text",text:"Do not create two.txt"}]);return {success:true,content:"done"}}});
+  await session.start({model:"model"});const result=await session.prompt([{type:"text",text:"Create both files"}]);
+  assert.equal(result.stopReason,"end_turn");assert.deepEqual(executed,["tool-one"]);assert.equal(requests.length,2);
+});

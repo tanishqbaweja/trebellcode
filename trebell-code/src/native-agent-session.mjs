@@ -83,7 +83,7 @@ export class NativeAgentSession{
   constructor({cwd=process.cwd(),providerTurn,executeTool,provider=null,model=null,tools=[],permissionMode="supervised",onUpdate=()=>{},onEvent=null,initialMessages=[]}={}){
     if(typeof providerTurn!=="function")throw new Error("NativeAgentSession requires providerTurn");
     if(typeof executeTool!=="function")throw new Error("NativeAgentSession requires executeTool");
-    this.cwd=cwd;this.providerTurn=providerTurn;this.executeTool=executeTool;this.provider=provider;this.model=model;this.tools=Array.isArray(tools)?tools:[];this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onEvent=onEvent;this.messages=[...(Array.isArray(initialMessages)?initialMessages:[])];this.sessionId=null;this.controller=null;this.closed=false;
+    this.cwd=cwd;this.providerTurn=providerTurn;this.executeTool=executeTool;this.provider=provider;this.model=model;this.tools=Array.isArray(tools)?tools:[];this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onEvent=onEvent;this.messages=[...(Array.isArray(initialMessages)?initialMessages:[])];this.sessionId=null;this.controller=null;this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.closed=false;
   }
   async start({providerSessionId=null,model=null}={}){
     if(this.closed)throw new Error("Native session is closed");
@@ -92,6 +92,16 @@ export class NativeAgentSession{
   }
   setProvider(provider){this.provider=provider?String(provider):null}
   async setModel(model){this.model=String(model||"")||null;return {model:this.model}}
+  steer(prompt){
+    if(this.closed)throw new Error("Native session is closed");
+    if(!this.turnActive||!this.controller)throw new Error("Trebell Native has no active turn to steer.");
+    const message=promptMessage(prompt);const hasContent=typeof message.content==="string"?Boolean(message.content.trim()):Array.isArray(message.content)&&message.content.length>0;
+    if(!hasContent)throw new Error("Steering input is empty.");
+    this.pendingSteering.push(message);
+    this.onEvent?.({name:"native.steering.queued",status:"pending",model:String(this.model||""),provider:this.provider||null,data:{pending:this.pendingSteering.length},at:Date.now()});
+    if(this.modelController&&!this.modelController.signal.aborted)this.modelController.abort("native-steering");
+    return {accepted:true,pending:this.pendingSteering.length};
+  }
   async compact({maxOutputTokens=4096}={}){
     if(this.closed)throw new Error("Native session is closed");
     if(!this.model)throw new Error("Trebell Native requires a model");
@@ -114,7 +124,8 @@ export class NativeAgentSession{
   }
   async prompt(prompt,{messageId=null,maxModelTurns=24,maxToolCalls=100,maxOutputTokens=null}={}){
     if(this.closed)throw new Error("Native session is closed");if(!this.model)throw new Error("Trebell Native requires a model");
-    this.controller=new AbortController();const user=promptMessage(prompt),base=[...this.messages,user];
+    if(this.turnActive)throw new Error("Trebell Native already has a running turn");
+    this.controller=new AbortController();this.turnActive=true;this.pendingSteering=[];const user=promptMessage(prompt),base=[...this.messages,user];
     const wrappedExecutor=async call=>{
       const definition=platformToolDefinition(call.namespace,call.name),kind=definition?.policy?.kind||"other";
       this.onUpdate({update:{sessionUpdate:"tool_call",toolCallId:call.id,namespace:call.namespace||"native",tool:call.name,title:(call.namespace?call.namespace+" / ":"")+call.name,kind,rawInput:call.arguments,status:"in_progress"}});
@@ -126,7 +137,16 @@ export class NativeAgentSession{
     try{
       const result=await runNativeAgentTurn({
         provider:this.provider,model:this.model,messages:base,tools:this.tools,maxModelTurns,maxToolCalls,maxOutputTokens,signal:this.controller.signal,onEvent:this.onEvent,
-        providerTurn:request=>this.providerTurn({...request,provider:this.provider}),executeTool:wrappedExecutor,
+        consumeSteering:()=>this.pendingSteering.splice(0),
+        providerTurn:async request=>{
+          const modelController=new AbortController();this.modelController=modelController;
+          const signals=[request.signal,modelController.signal].filter(Boolean),signal=signals.length>1?AbortSignal.any(signals):signals[0];
+          try{return await this.providerTurn({...request,provider:this.provider,signal})}
+          catch(error){
+            if(modelController.signal.aborted&&!request.signal?.aborted){const steered=new Error("Native model request interrupted by steering");steered.code="NATIVE_STEER";steered.nativeSteered=true;throw steered}
+            throw error;
+          }finally{if(this.modelController===modelController)this.modelController=null}
+        },executeTool:wrappedExecutor,
       });
       this.messages=result.messages;if(result.text)this.onUpdate({update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:result.text}}});
       this.onUpdate({update:{sessionUpdate:"usage_update",usage:{input_tokens:result.usage.inputTokens,output_tokens:result.usage.outputTokens,cache_read_input_tokens:result.usage.cachedInputTokens,cache_write_input_tokens:result.usage.cacheWriteInputTokens},used:result.usage.totalTokens,size:0}});
@@ -138,8 +158,8 @@ export class NativeAgentSession{
       }
       if(this.controller.signal.aborted||error?.name==="AbortError")return {stopReason:"cancelled",messageId,raw:{cancelled:true}};
       throw error;
-    }finally{this.controller=null}
+    }finally{this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.controller=null}
   }
-  cancel(){if(this.controller&&!this.controller.signal.aborted)this.controller.abort()}
+  cancel(){if(this.controller&&!this.controller.signal.aborted)this.controller.abort();if(this.modelController&&!this.modelController.signal.aborted)this.modelController.abort()}
   async close(){this.cancel();this.closed=true}
 }
