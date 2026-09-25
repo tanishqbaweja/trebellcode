@@ -31,6 +31,7 @@ test("agent runtime registry exposes real harnesses and capability-gates configu
     assert.equal(manager.capabilities("opencode").multiModelFanout,true);
     assert.equal(manager.capabilities("opencode").backgroundProcesses,false);
     assert.equal(manager.capabilities("claude").rewind,true);
+    assert.equal(manager.capabilities("claude").mcpInjection,true);
     assert.equal(manager.capabilities("claude").detachedTasks,true);
     assert.equal(manager.capabilities("claude").runtimeProfileSwitching,true);
     assert.equal(manager.capabilities("cursor").fork,"runtime");

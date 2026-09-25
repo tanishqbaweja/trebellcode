@@ -40,6 +40,16 @@ test("Claude auto-compact threshold is forwarded to the SDK query",async()=>{
   assert.equal(calls.at(-1).options.autoCompactWindow,300000);
 });
 
+test("Claude MCP servers are forwarded to every SDK query",async()=>{
+  const calls=[];
+  const sdk={query:fakeQueryCapture(calls),getSessionInfo:async()=>({}),renameSession:async()=>{},getSessionMessages:async()=>[],deleteSession:async()=>{}};
+  const mcpServers={"Workspace tools":{type:"stdio",command:"workspace-mcp",args:["--stdio"],env:{TOKEN:"secret"}}};
+  const session=new ClaudeAgentSession({cwd:"/repo",sdk,mcpServers});
+  await session.start();
+  await session.prompt([{type:"text",text:"use repository tools"}]);
+  assert.deepEqual(calls.at(-1).options.mcpServers,mcpServers);
+});
+
 test("Claude manual compact sends the native compact command through the active session",async()=>{
   const calls=[];
   const sdk={query:fakeQueryCapture(calls),getSessionInfo:async()=>({}),renameSession:async()=>{},getSessionMessages:async()=>[],deleteSession:async()=>{}};

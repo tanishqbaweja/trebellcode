@@ -60,7 +60,7 @@ test("ACP MCP server settings are normalized and persist",async()=>{
     const state=new TrebellStateStore(env);
     state.updateSettings({mcpServers:[
       {id:"cursor-remote",name:"Remote tools",runtime:"cursor",environmentId:"ssh-a",command:"/opt/remote-mcp",args:["--stdio"],env:[{name:"API_KEY",value:"secret"}]},
-      {id:"invalid",name:"Ignored",runtime:"claude",command:"claude-mcp"},
+      {id:"invalid",name:"Ignored",runtime:"codex",command:"codex-mcp"},
     ]});
     const saved=new TrebellStateStore(env).settings().mcpServers;
     assert.equal(saved.length,1);

@@ -1,4 +1,5 @@
 const ACP_MCP_RUNTIMES=new Set(["cursor","grok","antigravity"]);
+const STDIO_MCP_RUNTIMES=new Set(["claude",...ACP_MCP_RUNTIMES]);
 
 function text(value,max){return String(value??"").trim().slice(0,max)}
 function environmentId(value){const next=text(value,200);return next||null}
@@ -9,7 +10,7 @@ export function normalizeMcpServers(value){
   for(const raw of value.slice(0,50)){
     if(!raw||typeof raw!=="object")continue;
     const runtime=text(raw.runtime,40).toLowerCase();
-    if(!ACP_MCP_RUNTIMES.has(runtime))continue;
+    if(!STDIO_MCP_RUNTIMES.has(runtime))continue;
     const name=text(raw.name,120),command=text(raw.command,4000);
     if(!name||!command)continue;
     let id=text(raw.id,160)||`${runtime}:${environmentId(raw.environmentId)||"local"}:${name}`;
@@ -33,4 +34,14 @@ export function acpMcpServersForSession(value,{runtime,environmentId:targetEnvir
     .map(item=>({name:item.name,command:item.command,args:[...item.args],env:item.env.map(entry=>({...entry}))}));
 }
 
+export function claudeMcpServersForSession(value,{environmentId:targetEnvironmentId=null}={}){
+  const targetEnvironment=environmentId(targetEnvironmentId),servers={};
+  for(const item of normalizeMcpServers(value)){
+    if(!item.enabled||item.runtime!=="claude"||item.environmentId!==targetEnvironment)continue;
+    servers[item.name]={type:"stdio",command:item.command,args:[...item.args],env:Object.fromEntries(item.env.map(entry=>[entry.name,entry.value]))};
+  }
+  return servers;
+}
+
 export function supportsAcpMcpInjection(runtime){return ACP_MCP_RUNTIMES.has(text(runtime,40).toLowerCase())}
+export function supportsMcpInjection(runtime){return STDIO_MCP_RUNTIMES.has(text(runtime,40).toLowerCase())}
