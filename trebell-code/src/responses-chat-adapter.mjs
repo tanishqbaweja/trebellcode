@@ -29,11 +29,22 @@ function contentToChat(content) {
   return parts;
 }
 
-function toolOutputToString(output) {
+function toolOutputToChat(output) {
   if(typeof output==="string")return output;
-  if(Array.isArray(output))return output.map(item=>typeof item==="string"?item:item&&typeof item.text==="string"?item.text:JSON.stringify(item)).join("\n");
-  if(output==null)return"";
-  return typeof output==="object"?JSON.stringify(output):String(output);
+  if(!Array.isArray(output)){
+    if(output==null)return"";
+    return typeof output==="object"?JSON.stringify(output):String(output);
+  }
+  const parts=[];
+  for(const item of output){
+    if(typeof item==="string"){if(item)parts.push({type:"text",text:item});continue}
+    if(["input_text","output_text","text"].includes(item?.type)&&typeof item.text==="string"){parts.push({type:"text",text:item.text});continue}
+    if(item?.type==="input_image"&&typeof item.image_url==="string"){parts.push({type:"image_url",image_url:{url:item.image_url}});continue}
+    if(item&&typeof item==="object")parts.push({type:"text",text:JSON.stringify(item)});
+  }
+  if(!parts.length)return"";
+  if(parts.every(part=>part.type==="text"))return parts.map(part=>part.text).join("\n");
+  return parts;
 }
 
 export function responsesRequestToChat(body={}) {
@@ -58,7 +69,7 @@ export function responsesRequestToChat(body={}) {
         }],
       });
     }else if(item.type==="function_call_output"){
-      messages.push({role:"tool",tool_call_id:item.call_id||item.id||"",content:toolOutputToString(item.output)});
+      messages.push({role:"tool",tool_call_id:item.call_id||item.id||"",content:toolOutputToChat(item.output)});
     }
   }
 

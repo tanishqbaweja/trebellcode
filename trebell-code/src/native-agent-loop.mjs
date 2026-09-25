@@ -16,18 +16,20 @@ function safeArguments(value){
   catch{return {}}
 }
 
-function resultText(value){
+function resultContent(value){
   if(typeof value==="string")return value;
   if(value==null)return "";
   if(typeof value?.content==="string")return value.content;
   if(Array.isArray(value?.contentItems)){
-    const lines=[];
+    const parts=[];let hasImage=false;
     for(const item of value.contentItems){
-      if(typeof item==="string")lines.push(item);
-      else if(["inputText","outputText","text"].includes(item?.type)&&typeof item.text==="string")lines.push(item.text);
-      else if(item?.type==="inputImage"||item?.type==="image")lines.push("[image result omitted from text tool channel]");
+      if(typeof item==="string")parts.push({type:"text",text:item});
+      else if(["inputText","outputText","text"].includes(item?.type)&&typeof item.text==="string")parts.push({type:"text",text:item.text});
+      else if((item?.type==="inputImage"||item?.type==="image")&&(item.imageUrl||item.dataUrl)){
+        hasImage=true;parts.push({type:"image_url",image_url:{url:String(item.imageUrl||item.dataUrl)}});
+      }
     }
-    if(lines.length)return lines.join("\n");
+    if(parts.length)return hasImage?parts:parts.map(part=>part.text).join("\n");
   }
   try{return JSON.stringify(value)}catch{return String(value)}
 }
@@ -109,7 +111,7 @@ export async function runNativeAgentTurn({
         if(signal?.aborted||error?.name==="AbortError")throw abortError(signal);
         success=false;errorMessage=error?.message||String(error);output={success:false,error:errorMessage};
       }
-      const content=resultText(output)||(!success?errorMessage||"Tool execution failed.":"Tool completed without text output.");
+      const content=resultContent(output)||(!success?errorMessage||"Tool execution failed.":"Tool completed without text output.");
       emit(onEvent,{name:"native.tool.completed",status:success?"completed":"failed",model:String(model),provider:provider||null,data:{toolCall:toolCalls,callId,namespace,name,durationMs:duration(toolStarted),success,error:errorMessage}});
       conversation.push({role:"tool",toolCallId:callId,content});
     }

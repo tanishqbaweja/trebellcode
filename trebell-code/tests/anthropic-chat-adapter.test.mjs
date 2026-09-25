@@ -6,6 +6,7 @@ import {
   anthropicMessageToChatCompletion,
   chatToAnthropic,
 } from "../src/anthropic-chat-adapter.mjs";
+const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
 
 test("OpenAI chat payload converts to Anthropic messages and tools",()=>{
   const body=chatToAnthropic({
@@ -25,6 +26,17 @@ test("OpenAI chat payload converts to Anthropic messages and tools",()=>{
   assert.equal(body.messages[2].content[0].type,"tool_result");
   assert.equal(body.tools[0].name,"shell");
   assert.equal(body.stream,true);
+});
+
+test("Anthropic tool results preserve data-URL images as image blocks",()=>{
+  const body=chatToAnthropic({
+    model:"claude-opus-4-8",stream:false,
+    messages:[
+      {role:"assistant",content:null,tool_calls:[{id:"shot-1",type:"function",function:{name:"trebell_browser__screenshot",arguments:"{}"}}]},
+      {role:"tool",tool_call_id:"shot-1",content:[{type:"text",text:"screen metadata"},{type:"image_url",image_url:{url:IMAGE_DATA_URL}}]},
+    ],
+  });
+  const result=body.messages[1].content[0];assert.equal(result.type,"tool_result");assert.ok(Array.isArray(result.content));assert.equal(result.content[1].type,"image");assert.equal(result.content[1].source.media_type,"image/png");assert.equal(result.content[1].source.data,"iVBORw0KGgo=");
 });
 
 test("Anthropic SSE converts to OpenAI chat SSE including tool calls",async()=>{

@@ -10,6 +10,7 @@ import { withoutSecretEnvironment } from "./secret-redactor.mjs";
 import { buildRuntimeEnvironment, normalizeApprovedEnvironmentKeys, runtimeEnvironmentKeys } from "./runtime-environment.mjs";
 
 const RUNTIMES=Object.freeze({
+  native:{id:"native",name:"Trebell Native",protocol:"native",command:null,multipleInstances:false,managed:true},
   codex:{id:"codex",name:"Codex",protocol:"codex",command:null,multipleInstances:true},
   claude:{id:"claude",name:"Claude Code",protocol:"claude",command:"claude",multipleInstances:true},
   cursor:{id:"cursor",name:"Cursor",protocol:"acp",command:"cursor-agent",multipleInstances:true},
@@ -154,6 +155,7 @@ export class AgentRuntimeManager{
       ?this.instances().find(item=>item.id===instanceOrId)
       :instanceOrId;
     if(!instance)return null;
+    if(instance.kind==="native")return "native:in-process";
     if(instance.kind==="codex"){
       return resolveCodexHomeLayout({
         homePath:String(instance.homePath||"").trim()||codexHome(this.env),
@@ -189,6 +191,7 @@ export class AgentRuntimeManager{
   upsertInstance(input={}){
     const kind=normalizeAgentRuntime(input.kind);const settings=this.state.settings();const list=Array.isArray(settings.agentRuntimeInstances)?[...settings.agentRuntimeInstances]:[];
     const id=String(input.id||`${kind}-${Date.now()}`);const index=list.findIndex(item=>item.id===id);
+    if(RUNTIMES[kind]?.multipleInstances===false&&id!==`${kind}-default`)throw new Error(`${RUNTIMES[kind].name} is built into Trebell Code and does not support additional runtime profiles`);
     const item={...(index>=0?list[index]:{}),...input,id,kind,displayName:String(input.displayName||RUNTIMES[kind].name),enabled:input.enabled!==false};
     item.environment=withoutSecretEnvironment(item.environment);
     item.approvedEnvironmentKeys=normalizeApprovedEnvironmentKeys(input.approvedEnvironmentKeys??item.approvedEnvironmentKeys);
@@ -347,6 +350,7 @@ export class AgentRuntimeManager{
   async probe(instanceOrKind,{environmentId=undefined}={}){
     const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;
     const def=RUNTIMES[instance.kind];
+    if(instance.kind==="native")return {id:instance.id,kind:"native",name:def.name,available:true,installed:true,authenticated:null,protocol:"native",managed:true,version:null,binary:null,message:"Built into Trebell Code"};
     if(instance.kind==="codex"){
       if(!instance.binaryPath?.trim())return {id:instance.id,kind:"codex",name:def.name,available:true,installed:true,authenticated:true,protocol:"codex",version:null,binary:null,message:"Bundled Codex app-server"};
       const checked=await this.#run(instance,["--version"],{timeoutMs:6000,environmentId});
@@ -400,6 +404,7 @@ export class AgentRuntimeManager{
   }
   async models(instanceOrKind,{environmentId=undefined}={}){
     const instance=typeof instanceOrKind==="string"?(this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind))):instanceOrKind;
+    if(instance.kind==="native")return {models:[],metadata:[],source:"provider"};
     if(instance.kind==="codex")return {models:[],metadata:[],source:"codex"};
     const status=await this.probe(instance,{environmentId});if(!status.available)return {models:[],metadata:[],source:"unavailable",error:status.message};
     if(instance.kind==="opencode"){

@@ -29,7 +29,7 @@ function threadCanFork(thread,runtimeCapabilities={}){
 const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,onOpen,onSelect,onAction,onMove,runAction,agentRuntime="codex",runtimeCapabilities={}}){
   const section=thread.section?.name||"Active";
   const rowRuntime=threadCatalogRuntime(thread,meta,agentRuntime),foreignRuntime=rowRuntime!==agentRuntime;
-  const rowRuntimeLabel=({codex:"Codex",claude:"Claude",cursor:"Cursor",grok:"Grok",opencode:"OpenCode",antigravity:"Antigravity"}[rowRuntime]||rowRuntime);
+  const rowRuntimeLabel=({native:"Native",codex:"Codex",claude:"Claude",cursor:"Cursor",grok:"Grok",opencode:"OpenCode",antigravity:"Antigravity"}[rowRuntime]||rowRuntime);
   const linked=Array.isArray(meta?.linkedPullRequests)
     ?meta.linkedPullRequests
     :(meta?.attachments||[]).filter(item=>item?.attachmentType==="pull_request").map(item=>item.payload||{}).filter(Boolean);
@@ -47,7 +47,7 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,onOpen
       <span className={"thread-status-dot "+(section==="Pinned"?"pinned":section==="Snoozed"?"snoozed":section==="Settled"?"settled":"")}/>
       <div>
         <strong className="thread-title-line"><span className="thread-title-text">{titleOf(thread)}</span>{foreignRuntime&&<em className="thread-runtime-chip" title={"Owned by "+rowRuntimeLabel}>{rowRuntimeLabel}</em>}{reviewLabel&&<em className={linked.length?"thread-pr-chip linked":"thread-pr-chip detected"} title={linked.length?"Linked pull request":"Detected from saved branch"}><GitPullRequest size={9}/>{reviewLabel}</em>}</strong>
-        <span>{section==="Snoozed"&&meta?.snoozedUntil?"Wakes "+formatSnoozeUntil(meta.snoozedUntil):meta?.projectless?"No project · "+relativeTime(thread.updatedAt):(thread.model?.replace(/^freebuff\//,"")||({codex:"Codex",claude:"Claude",cursor:"Cursor",grok:"Grok",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime))+" · "+relativeTime(thread.updatedAt)}</span>
+        <span>{section==="Snoozed"&&meta?.snoozedUntil?"Wakes "+formatSnoozeUntil(meta.snoozedUntil):meta?.projectless?"No project · "+relativeTime(thread.updatedAt):(thread.model?.replace(/^freebuff\//,"")||({native:"Native",codex:"Codex",claude:"Claude",cursor:"Cursor",grok:"Grok",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime))+" · "+relativeTime(thread.updatedAt)}</span>
       </div>
     </button>
     <details className="thread-menu">
@@ -134,7 +134,7 @@ const ThreadSidebar=memo(function ThreadSidebar({
   const groups=useMemo(()=>groupSidebarThreads(threads,threadMeta),[threads,threadMeta]);
   const bulk=selectedIds.size>0;
   const providerLabel={freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider;
-  const runtimeLabel={codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime;
+  const runtimeLabel={native:"Trebell Native",codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime;
   const toggle=useCallback(id=>{const next=new Set(selectedIds);next.has(id)?next.delete(id):next.add(id);setSelectedIds(next)},[selectedIds,setSelectedIds]);
   const firstGroupName=THREAD_GROUP_NAMES.find(name=>groups[name]?.length)||null;
   const renderRow=useCallback(t=><ThreadRow key={t.id} thread={t} meta={threadMeta[t.id]||null} active={t.id===activeThreadId} bulk={bulk} selected={selectedIds.has(t.id)} onOpen={onOpen} onSelect={toggle} onAction={onThreadAction} onMove={onMove} runAction={runAction} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities}/>,[threadMeta,activeThreadId,bulk,selectedIds,onOpen,toggle,onThreadAction,onMove,runAction,agentRuntime,runtimeCapabilities]);
@@ -187,7 +187,7 @@ const ThreadSidebar=memo(function ThreadSidebar({
         <UtilityButton Icon={Server} label="Environments" active={section==="environments"} onClick={()=>setSection("environments")}/>
         <UtilityButton Icon={Settings} label="Settings" active={section==="settings"} onClick={()=>setSection("settings")}/>
       </div>
-      <button className="sidebar-provider" onClick={()=>setSection(agentRuntime==="codex"&&provider==="freebuff"?"freebuff":"settings")} title={"Configure "+runtimeLabel}><span className="provider-dot"/><div><strong>{runtimeLabel}</strong><span>{agentRuntime==="codex"?providerLabel+" inference":"Agent harness"}</span></div><MoreHorizontal size={13}/></button>
+      <button className="sidebar-provider" onClick={()=>setSection(agentRuntime==="codex"&&provider==="freebuff"?"freebuff":"settings")} title={"Configure "+runtimeLabel}><span className="provider-dot"/><div><strong>{runtimeLabel}</strong><span>{["native","codex"].includes(agentRuntime)?providerLabel+" inference":"Agent harness"}</span></div><MoreHorizontal size={13}/></button>
     </div>
   </aside>;
 });

@@ -1,4 +1,4 @@
-const RUNTIMES=new Set(["codex","claude","opencode","cursor","grok","antigravity"]);
+const RUNTIMES=new Set(["native","codex","claude","opencode","cursor","grok","antigravity"]);
 
 function text(value,max=4000){return String(value??"").trim().slice(0,max)}
 function runtime(value,fallback=null){const key=String(value||"").trim().toLowerCase();return RUNTIMES.has(key)?key:fallback}

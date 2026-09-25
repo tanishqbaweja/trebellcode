@@ -80,3 +80,13 @@ test("tool execution failures are normalized and secret-redacted",async()=>{
   const result=await gateway.invoke({namespace:"trebell_browser",name:"snapshot",arguments:{}},{permissionProfile:"read-only",desktopAvailable:true});
   assert.equal(result.success,false);assert.equal(result.decision,POLICY_ALLOW);assert.doesNotMatch(result.error,new RegExp(secret));assert.match(result.error,/\[redacted\]/);
 });
+
+test("Native terminal policy classifies argv content instead of trusting a static medium-risk label",()=>{
+  const ordinary=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"npm",args:["test"],cwd:"."}},{permissionProfile:"auto",workspace:"/repo",runtime:"native"});
+  assert.equal(ordinary.decision,POLICY_ALLOW);assert.equal(ordinary.action.riskLevel,"medium");
+  const push=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"git",args:["push","origin","main"],cwd:"."}},{permissionProfile:"auto",workspace:"/repo",runtime:"native"});
+  assert.equal(push.decision,POLICY_CONFIRM);assert.equal(push.action.externalSideEffect,true);assert.equal(push.action.riskLevel,"high");
+  const destructive=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"rm",args:["-rf","dist"],cwd:"."}},{permissionProfile:"auto",workspace:"/repo",runtime:"native"});
+  assert.equal(destructive.decision,POLICY_REJECT);assert.equal(destructive.action.riskLevel,"critical");
+  const readOnly=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"npm",args:["test"],cwd:"."}},{permissionProfile:"read-only",workspace:"/repo",runtime:"native"});assert.equal(readOnly.decision,POLICY_REJECT);
+});

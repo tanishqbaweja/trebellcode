@@ -2660,6 +2660,41 @@ test("Claude runtime profile editor exposes real auto-compaction settings",async
   await page.screenshot({path:auditDir+"claude-right-panel-manual-delegation-1280x800.png",fullPage:true});
 });
 
+test("Trebell Native is a built-in provider-backed runtime in Settings",async({page,request})=>{
+  test.setTimeout(35_000);
+  await prepare(page,request);
+  await page.getByRole("button",{name:"Settings"}).click();
+  await page.getByRole("button",{name:/Agents & models/}).click();
+  const nativeOption=page.locator(".agent-runtime-option").filter({hasText:"Trebell Native"});
+  await expect(nativeOption).toBeVisible();
+  await nativeOption.locator("button").first().click();
+  await expect(nativeOption.getByText("Active",{exact:true})).toBeVisible();
+  await expect(nativeOption).toContainText("Built into Trebell Code");
+  const profiles=page.locator('[data-setting-target="agents-profiles"]');
+  await expect(profiles.getByRole("button",{name:"Add profile",exact:true})).toBeDisabled();
+  const providerCard=page.getByTestId("provider-settings-card");
+  await expect(providerCard).toBeVisible();
+  await expect(providerCard).toContainText("inference service used by Trebell Native");
+  await expect(providerCard).toContainText("Threads stay owned by Trebell");
+  const providerSelect=page.getByTestId("provider-selector");
+  await expect(providerSelect).toHaveValue("freebuff");
+  await providerSelect.selectOption("agentrouter");
+  await expect(providerCard).toHaveAttribute("aria-busy","false");
+  await expect(providerSelect).toHaveValue("agentrouter");
+  const runtimeCard=page.locator('[data-setting-target="agents-runtime"]');
+  await expect(runtimeCard).toContainText("Trebell Native");
+  await expect(runtimeCard).toContainText("Inference:");
+  await expect(runtimeCard).toContainText("AgentRouter");
+  await page.setViewportSize({width:1600,height:980});
+  await providerCard.scrollIntoViewIfNeeded();
+  let metrics=await page.locator(".settings-stage").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"settings-native-runtime-1600x980.png",fullPage:true});
+  await page.setViewportSize({width:1280,height:800});
+  await providerCard.scrollIntoViewIfNeeded();
+  metrics=await page.locator(".settings-stage").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"settings-native-runtime-1280x800.png",fullPage:true});
+});
+
 test("major workspace surfaces render their real destinations without horizontal overflow",async({page,request})=>{
   test.setTimeout(55_000);
   await prepare(page,request);

@@ -5,6 +5,10 @@ import { WebSocketServer } from "ws";
 import { AcpAgentSession } from "./acp-agent-session.mjs";
 import { OpenCodeAgentSession } from "./opencode-agent-session.mjs";
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
+import { NativeAgentSession, nativeMessagesFromThread } from "./native-agent-session.mjs";
+import { createNativeBuiltins } from "./native-builtins.mjs";
+import { createNativeToolExecutor } from "./native-tool-executor.mjs";
+import { platformDynamicToolNamespaces } from "./platform-tool-catalog.mjs";
 import { acpMcpServersForSession, claudeMcpServersForSession } from "./mcp-registry.mjs";
 import { createRemoteContextIo } from "./context-engine.mjs";
 import { createClaudeRepositoryMcp } from "./claude-repository-tools.mjs";
@@ -92,6 +96,7 @@ export async function contextualAgentPrompt(input=[],additionalContext={}){
 function acpToolItem(update){
   const id=String(update.toolCallId||randomUUID());
   const status=update.status==="completed"?"completed":update.status==="failed"?"failed":"inProgress";
+  if(update.namespace)return {type:"dynamicToolCall",id,namespace:String(update.namespace),tool:String(update.tool||update.title||update.kind||"tool"),arguments:update.rawInput??{},status,contentItems:update.content||null,success:update.status==="completed"?true:update.status==="failed"?false:null,durationMs:null,locations:update.locations||[],rawOutput:update.rawOutput};
   if(update.kind==="execute")return {type:"commandExecution",id,command:update.title||"Command",cwd:"",processId:null,source:"agent",status,commandActions:[],aggregatedOutput:typeof update.rawOutput==="string"?update.rawOutput:null,exitCode:null,durationMs:null,rawInput:update.rawInput,locations:update.locations||[]};
   if(update.kind==="edit"||update.kind==="delete"||update.kind==="move")return {type:"fileChange",id,status,changes:(update.locations||[]).map(location=>({path:location.path||location.uri||"",kind:update.kind})),rawInput:update.rawInput,rawOutput:update.rawOutput};
   return {type:"dynamicToolCall",id,namespace:"agent",tool:update.title||update.kind||"tool",arguments:update.rawInput??{},status,contentItems:update.content||null,success:update.status==="completed"?true:update.status==="failed"?false:null,durationMs:null,locations:update.locations||[],rawOutput:update.rawOutput};
@@ -494,7 +499,7 @@ function formQuestions(params){
   }));
 }
 
-export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,state,environments=null,contextEngine=null,repositoryKnowledge=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null,journal=null,prepareDelegationWorkspace=null,cleanupDelegationWorkspace=null}={}){
+export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,state,environments=null,contextEngine=null,repositoryKnowledge=null,nativeProviderTurn=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null,journal=null,prepareDelegationWorkspace=null,cleanupDelegationWorkspace=null}={}){
   const wss=new WebSocketServer({noServer:true});
   const sessions=new Map();
   const socketContexts=new Set();
@@ -563,6 +568,47 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     const status=await runtimeManager.probe(instance,{environmentId});if(!status.available)throw new Error(status.message||`${status.name} is unavailable`);
     const runtimeCwd=runtimeManager.runtimeCwd(thread.cwd,environmentId);const spawnProcess=runtimeManager.processSpawner(instance,environmentId);const remoteIo=runtimeManager.remoteIo(runtimeCwd,environmentId);
     const common={cwd:runtimeCwd,env:runtimeManager.childEnv(instance),permissionMode:effectivePermissionMode,onPermission:request=>context.permission(thread,request),onQuestion:request=>context.userQuestion(thread,request),onUpdate:params=>handleUpdate(thread.id,params),version};
+    if(instance.kind==="native"){
+      if(typeof nativeProviderTurn!=="function")throw new Error("Trebell Native provider transport is unavailable");
+      const namespaceNames=new Set(thread.providerMeta?.dynamicToolNamespaces||[]),projectless=Boolean(thread.providerMeta?.projectless);
+      const tools=platformDynamicToolNamespaces({
+        repository:!projectless,
+        workspaceTools:true,terminal:true,
+        browser:namespaceNames.has("trebell_browser"),computer:namespaceNames.has("trebell_computer"),device:namespaceNames.has("trebell_device"),
+        sourceControl:!projectless&&namespaceNames.has("trebell_source_control"),delegation:namespaceNames.has("trebell_delegate"),
+      });
+      const repoIo=remoteIo?createRemoteContextIo({environments,environmentId,root:runtimeCwd}):null;
+      const environmentProfile=environmentId&&environments?environments.get(environmentId):null;
+      const nativeBuiltins=createNativeBuiltins({root:runtimeCwd,environments,environmentId,environment:runtimeManager.env||process.env,platform:runtimeManager.platform||process.platform});
+      const executeTool=createNativeToolExecutor({
+        contextEngine,root:runtimeCwd,repository:!projectless,io:repoIo,knowledgeService:repositoryKnowledge,environmentId,
+        projectAvailable:!projectless,
+        policyContext:()=>({
+          permissionProfile:effectivePermissionMode,runtime:"native",workspace:runtimeCwd,projectAvailable:!projectless,
+          desktopAvailable:namespaceNames.has("trebell_browser")||namespaceNames.has("trebell_computer"),deviceAccess:namespaceNames.has("trebell_device"),delegationAvailable:namespaceNames.has("trebell_delegate"),
+          environmentType:environmentProfile?.type||"local",environmentIsolated:false,provenance:"model",
+        }),
+        executeShared:async call=>["trebell_workspace","trebell_terminal"].includes(call.namespace)
+          ?nativeBuiltins(call)
+          :context.serverRequest("item/tool/call",{threadId:thread.id,callId:call.id||randomUUID(),namespace:call.namespace,tool:call.name,arguments:call.arguments}),
+        confirm:async({call,authorization})=>{
+          const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:authorization.reason||"Trebell Native requests permission",toolCall:{toolCallId:call.id||randomUUID(),title:`${call.namespace}/${call.name}`,kind:authorization.action?.kind||"other",rawInput:call.arguments,policy:{riskLevel:authorization.action?.riskLevel,reversibility:authorization.action?.reversibility,externalSideEffect:authorization.action?.externalSideEffect}}});
+          return result?.decision||"decline";
+        },
+        onEvent:event=>journal?.record?.({runtime:"native",provider:thread.providerMeta?.modelProvider||null,environmentId,threadId:thread.id,category:"tool",name:event.name,status:event.status,data:event.data||{}}),
+      });
+      const runtime=new NativeAgentSession({
+        ...common,provider:thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model:model||thread.model||null,tools,executeTool,
+        providerTurn:request=>nativeProviderTurn(request),initialMessages:[
+          ...(thread.providerMeta?.developerInstructions?[{role:"developer",content:String(thread.providerMeta.developerInstructions)}]:[]),
+          ...nativeMessagesFromThread(thread),
+        ],
+      });
+      const started=await runtime.start({providerSessionId:thread.providerSessionId||null,model:model||thread.model||null});
+      const discoveredMeta=threadStore.get(thread.id)?.providerMeta||{};
+      threadStore.update(thread.id,{providerSessionId:started.session.sessionId,providerMeta:{...discoveredMeta,initialize:started.initialize,setup:started.session},model:model||started.session.models?.currentModelId||thread.model||null});
+      sessions.set(thread.id,runtime);return runtime;
+    }
     const acpMcpServers=acpMcpServersForSession(state?.settings?.().mcpServers||[],{runtime:instance.kind,environmentId});
     const claudeMcpServers=claudeMcpServersForSession(state?.settings?.().mcpServers||[],{environmentId});
     if(instance.kind==="claude"&&contextEngine){
@@ -763,7 +809,15 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const instance=(requestedId?instances.find(item=>item.id===requestedId&&item.kind===runtime):null)||runtimeManager.activeInstance();
       if(instance.kind!==runtime)throw new Error("Requested runtime profile does not match the active external runtime");
       const environmentId=Object.prototype.hasOwnProperty.call(params,"environmentId")?(params.environmentId||null):(state?.settings?.().activeEnvironmentId||null);
-      const permissionMode=agentPermissionModeFromStart(params),effectiveCwd=runtimeManager.runtimeCwd(params.cwd||process.cwd(),environmentId);const seed=threadStore.create({runtime,cwd:effectiveCwd,providerSessionId:"",model:params.model||null,agent:params.agent||null,providerMeta:{runtimeInstanceId:instance.id,environmentId,permissionProfile:permissionMode}});
+      const permissionMode=agentPermissionModeFromStart(params),effectiveCwd=runtimeManager.runtimeCwd(params.cwd||process.cwd(),environmentId);
+      const dynamicToolNamespaces=[...new Set((params.dynamicTools||[]).filter(item=>item?.type==="namespace"&&item.name).map(item=>String(item.name)))];
+      const seed=threadStore.create({runtime,cwd:effectiveCwd,providerSessionId:"",model:params.model||null,agent:params.agent||null,providerMeta:{
+        runtimeInstanceId:instance.id,environmentId,permissionProfile:permissionMode,
+        ...(runtime==="native"?{
+          modelProvider:String(params.modelProvider||state?.settings?.().modelProvider||"freebuff"),
+          dynamicToolNamespaces,projectless:Boolean(params.projectless),developerInstructions:String(params.developerInstructions||""),threadSource:String(params.threadSource||"trebell-code"),
+        }:{}),
+      }});
       threadStore.update(seed.id,{runtimeInstanceId:instance.id});
       const session=await ensureSession(threadStore.get(seed.id),context,{permissionMode,model:params.model||null});
       const thread=threadStore.update(seed.id,{providerSessionId:session.sessionId,model:params.model||session.sessionSetup?.models?.currentModelId||null});
@@ -953,8 +1007,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     if(method==="turn/start"){
       let thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");assertGoalBudget(thread.id);
       const permissionPatch=agentPermissionProfilePatch(params);
-      if(Object.keys(permissionPatch).length)thread=threadStore.update(thread.id,{providerMeta:{...(thread.providerMeta||{}),...permissionPatch}});
+      const providerPatch=runtime==="native"&&params.modelProvider?{modelProvider:String(params.modelProvider)}:{};
+      if(Object.keys(permissionPatch).length||Object.keys(providerPatch).length)thread=threadStore.update(thread.id,{providerMeta:{...(thread.providerMeta||{}),...permissionPatch,...providerPatch}});
       const session=await ensureSession(thread,context,{model:params.model||thread.model});
+      if(runtime==="native"&&params.modelProvider&&typeof session.setProvider==="function")session.setProvider(params.modelProvider);
       if(params.model&&params.model!==thread.model){await session.setModel(params.model).catch(()=>{});threadStore.update(thread.id,{model:params.model})}
       const turn=threadStore.addTurn(thread.id,{inputText:textOfInput(params.input),status:"inProgress"});session.__assistant="";
       session.__usage=null;

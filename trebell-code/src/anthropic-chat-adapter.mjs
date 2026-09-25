@@ -10,6 +10,22 @@ function textContent(content){
   }).join("");
 }
 
+function anthropicToolResultContent(content){
+  if(typeof content==="string")return content;
+  if(!Array.isArray(content))return textContent(content);
+  const blocks=[];
+  for(const part of content){
+    if(typeof part==="string"){if(part)blocks.push({type:"text",text:part});continue}
+    if(["text","input_text","output_text"].includes(part?.type)&&typeof part.text==="string"){blocks.push({type:"text",text:part.text});continue}
+    const url=part?.type==="image_url"?part.image_url?.url:part?.type==="input_image"?part.image_url:null;
+    if(typeof url!=="string"||!url)continue;
+    const match=url.match(/^data:([^;]+);base64,(.+)$/s);
+    if(match)blocks.push({type:"image",source:{type:"base64",media_type:match[1],data:match[2]}});
+    else blocks.push({type:"text",text:`Image result: ${url}`});
+  }
+  return blocks.length?blocks:"";
+}
+
 function safeJson(value){
   if(value&&typeof value==="object")return value;
   try{return JSON.parse(String(value||"{}"))}catch{return{}}
@@ -39,7 +55,7 @@ export function chatToAnthropic(body={}){
       pushMessage(messages,"user",[{
         type:"tool_result",
         tool_use_id:String(message.tool_call_id||""),
-        content:textContent(message.content),
+        content:anthropicToolResultContent(message.content),
       }]);
       continue;
     }

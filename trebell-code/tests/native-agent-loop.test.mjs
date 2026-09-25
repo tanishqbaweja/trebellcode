@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { nativeAgentBudget, runNativeAgentTurn } from "../src/native-agent-loop.mjs";
+const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
 
 test("native agent completes a plain model turn without inventing tool work",async()=>{
   const requests=[],events=[];
@@ -45,6 +46,21 @@ test("native agent turns tool failures into bounded observations instead of cras
     executeTool:async()=>{throw new Error("deliberate tool failure")},
   });
   assert.equal(result.text,"I handled the tool error.");assert.equal(result.modelTurns,2);assert.equal(result.toolCalls,1);
+});
+
+test("native agent preserves image tool observations for the next model turn",async()=>{
+  let turns=0;
+  const result=await runNativeAgentTurn({
+    model:"vision-model",messages:[{role:"user",content:"What is on screen?"}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"shot-1",namespace:"trebell_browser",name:"screenshot",arguments:"{}"}],usage:{}};
+      const observation=request.messages.at(-1);assert.equal(observation.role,"tool");assert.ok(Array.isArray(observation.content));assert.equal(observation.content[1].type,"image_url");assert.equal(observation.content[1].image_url.url,IMAGE_DATA_URL);
+      return {text:"I can see the screenshot.",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>({success:true,contentItems:[{type:"inputText",text:"screen metadata"},{type:"inputImage",imageUrl:IMAGE_DATA_URL}]}),
+  });
+  assert.equal(result.text,"I can see the screenshot.");assert.equal(result.modelTurns,2);
 });
 
 test("native agent enforces model-turn and tool-call budgets before extra work starts",async()=>{

@@ -62,7 +62,7 @@ export default function EnvironmentsPage(){
     try{
       const result=await api("/api/environment/activate",{method:"POST",body:{id:id||null}});
       if(result.error)throw new Error(result.error);
-      const labels={codex:"Codex",claude:"Claude Code",opencode:"OpenCode",cursor:"Cursor",grok:"Grok Build",antigravity:"Antigravity"};
+      const labels={native:"Trebell Native",codex:"Codex",claude:"Claude Code",opencode:"OpenCode",cursor:"Cursor",grok:"Grok Build",antigravity:"Antigravity"};
       const runtimeName=result.agentRuntimeStatus?.name||labels[result.agentRuntime]||"active agent runtime";
       const ready=result.agentRuntimeReady??result.appServerReady;
       setMessage(ready?`Environment switched for ${runtimeName}. Reconnecting…`:`Environment selected, but ${runtimeName} is not ready.`);

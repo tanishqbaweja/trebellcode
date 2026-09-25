@@ -856,7 +856,7 @@ export default function App(){
   };
   const workspaceEnvironmentType=currentProject?.environment?.type||(workspaceEnvironmentId&&(workspaceEnvironmentId===settings.activeEnvironmentId)?bootstrap.activeEnvironment?.type:null)||(workspaceEnvironmentId?"remote":"local");
   const workspaceRemote=Boolean(workspaceEnvironmentId&&workspaceEnvironmentType!=="local");
-  const providerReady=bootstrap.mock||(agentRuntime==="codex"?(provider==="freebuff"?Boolean(bootstrap.loggedIn):Boolean(bootstrap.providerReady)):Boolean(bootstrap.agentRuntimeReady));
+  const providerReady=bootstrap.mock||(["native","codex"].includes(agentRuntime)?(provider==="freebuff"?Boolean(bootstrap.loggedIn):Boolean(bootstrap.providerReady)):Boolean(bootstrap.agentRuntimeReady));
   useEffect(()=>{
     if(!threadFind.open)return;
     const term=threadFind.query.trim();
@@ -2510,7 +2510,7 @@ export default function App(){
       try{nativeProjectId=(await ensureCodexProject(rpc,{trebellProject,cwd}))?.id||null}
       catch(error){showActionError(error,"Could not sync Codex project identity")}
     }
-    const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(nativeProjectId?{projectId:nativeProjectId}:{}),approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools,developerInstructions});
+    const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,projectless,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(nativeProjectId?{projectId:nativeProjectId}:{}),approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools,developerInstructions});
     if(agentRuntime!=="codex"&&result.thread?.providerMeta){setProviderAgent(result.thread.agent||providerAgent||"");const meta=result.thread.providerMeta;applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}
     if(result.thread?.id)await persistThreadWorkspaceContext(result.thread,cwd,{sectionName:"Active",archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
     return result.thread;
@@ -2650,7 +2650,7 @@ export default function App(){
       turnRequestStarted=true;
       const collaboration=selectedCollaborationMode(modelId);
       const contextPacket=await prepareTurnContext(thread,cwd,text,focusPaths||repositoryFocusPaths(paths,contextChips),{projectless,background:true});
-      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(agentRuntime==="codex"&&custom?.effort?{effort:custom.effort}:{}),...(agentRuntime==="codex"&&custom?.serviceTier?{serviceTierForTurn:custom.serviceTier}:{}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths),...(contextPacket?.injection?{additionalContext:{"trebell.repo_context":{kind:"application",value:contextPacket.injection}}}:{})});const turnId=result?.turn?.id||null;
+      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(agentRuntime==="codex"&&custom?.effort?{effort:custom.effort}:{}),...(agentRuntime==="codex"&&custom?.serviceTier?{serviceTierForTurn:custom.serviceTier}:{}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths),...(contextPacket?.injection?{additionalContext:{"trebell.repo_context":{kind:"application",value:contextPacket.injection}}}:{})});const turnId=result?.turn?.id||null;
       if(checkpoint?.id&&turnId)try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}})}catch(error){reportCheckpointIssue("Background file checkpoint was created but could not be linked to its turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}
       return {thread,turnId,cwd};
     }catch(error){
@@ -3322,7 +3322,7 @@ export default function App(){
   const activeTitle=titleOf(activeThread);
   const projectLabel=projectlessMode?"No project":String(projectPath||activeThread?.cwd||bootstrap.cwd||"Workspace").split(/[\\/]/).filter(Boolean).at(-1)||"Workspace";
   const providerLabel=({freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider);
-  const agentRuntimeLabel=({codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime);
+  const agentRuntimeLabel=({native:"Trebell Native",codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime);
   const conversationEditFromHere=useLatestCallback(editFromHere);
   const conversationLoadEarlier=useLatestCallback(loadEarlierMessages);
   const conversationCite=useLatestCallback((message,text)=>runUserAction(()=>citeAssistant(message,text),"Could not cite assistant text"));
@@ -3504,7 +3504,7 @@ export default function App(){
               {!messages.length&&!events.length&&!guardianDenials.length&&!approvals.length&&!queued.length&&!worktreeSetup&&<div className="welcome">
                 <div className="welcome-mark"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/></div>
                 <h1>{projectlessMode?"What do you want to think through?":"What do you want to build?"}</h1>
-                <p>{projectlessMode?"This is a General chat with no attached project. Files and terminal commands stay inside a Trebell-managed scratch workspace.":<>{agentRuntime==="codex"?`${providerLabel} supplies inference to the Codex harness.`:`${agentRuntimeLabel} is the active coding-agent harness.`} Trebell keeps files, terminal, Git, worktrees, previews and project actions in one workspace.</>}</p>
+                <p>{projectlessMode?"This is a General chat with no attached project. Files and terminal commands stay inside a Trebell-managed scratch workspace.":<>{["native","codex"].includes(agentRuntime)?`${providerLabel} supplies inference to ${agentRuntimeLabel}.`:`${agentRuntimeLabel} is the active coding-agent harness.`} Trebell keeps files, terminal, Git, worktrees, previews and project actions in one workspace.</>}</p>
                 <div className="suggestions">{projectlessMode?<><button onClick={()=>setPrompt("Help me plan the architecture for this idea before I choose a repository.")}>Plan an idea</button><button onClick={()=>setPrompt("Research this technical question and give me a practical recommendation: ")}>Research a topic</button><button onClick={()=>setPrompt("Turn this rough idea into a clear technical specification: ")}>Draft a spec</button></>:<><button onClick={()=>setPrompt("Inspect this project and explain the architecture.")}>Explain codebase</button><button onClick={()=>setPrompt("Find a useful bug, fix it, and run the relevant tests.")}>Fix a bug</button><button onClick={()=>setPrompt("Implement the next missing feature and validate it end-to-end.")}>Ship a feature</button></>}</div>
               </div>}
             </div>
@@ -3544,6 +3544,6 @@ export default function App(){
     {snoozeRequest&&<Suspense fallback={null}><SnoozeDialog request={snoozeRequest} onSubmit={submitSnooze} onCancel={()=>setSnoozeRequest(null)}/></Suspense>}
     {threadUndo&&<div className="thread-undo-toast" role="status" aria-live="polite" data-testid="thread-undo-toast"><span>{threadUndo.label}</span><button onClick={undoThreadAction}>Undo</button><em>5s</em></div>}
     {paletteOpen&&<Suspense fallback={null}><CommandPalette open onClose={()=>setPaletteOpen(false)} actions={paletteActions} projects={paletteProjects} threads={threads} environmentNames={paletteEnvironmentNames} dataError={paletteDataError} onOpenProject={project=>onProjectOpen(project.path,project.environmentId||null)} onOpenThread={openThread} onSearchThreadMessages={searchThreadMessages}/></Suspense>}
-    {initialLoaded&&settings.onboardingComplete===false&&<Suspense fallback={null}><OnboardingModal open projectPath={projectPath} onPickWorkspace={window.trebellDesktop?.pickDirectory?pickWorkspace:null} providerLabel={agentRuntime==="codex"?providerLabel:agentRuntimeLabel} providerReady={providerReady} permissionMode={permissionMode} onPermissionMode={setPermissionMode} onHistoryImported={historyImported} onFinish={finishOnboarding}/></Suspense>}
+    {initialLoaded&&settings.onboardingComplete===false&&<Suspense fallback={null}><OnboardingModal open projectPath={projectPath} onPickWorkspace={window.trebellDesktop?.pickDirectory?pickWorkspace:null} providerLabel={["native","codex"].includes(agentRuntime)?providerLabel:agentRuntimeLabel} providerReady={providerReady} permissionMode={permissionMode} onPermissionMode={setPermissionMode} onHistoryImported={historyImported} onFinish={finishOnboarding}/></Suspense>}
   </div>;
 }

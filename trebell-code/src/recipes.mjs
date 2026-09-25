@@ -1,5 +1,5 @@
 const PERMISSIONS=new Set(["read-only","workspace-write","supervised","auto","full","isolated"]);
-const RUNTIMES=new Set(["codex","claude","opencode","cursor","grok","antigravity"]);
+const RUNTIMES=new Set(["native","codex","claude","opencode","cursor","grok","antigravity"]);
 const PERMISSION_RANK=new Map([["read-only",0],["supervised",1],["edits",2],["workspace-write",2],["auto",3],["full",4]]);
 
 function text(value,max=4000){return String(value??"").trim().slice(0,max)}

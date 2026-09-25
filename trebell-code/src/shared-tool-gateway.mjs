@@ -28,6 +28,12 @@ export function authorizePlatformToolCall(call={},context={}){
   if(!namespace||!name||!definition)return rejection(`Unknown Trebell tool: ${namespace||"default"}/${name||"unknown"}.`,definition);
   const requirement=requirementDecision(definition,{...context,namespace});if(requirement)return requirement;
   const args=objectArguments(call.arguments),policy=definition.policy||{};
+  const policyMetadata=policy.classifyFromInput?{}:{
+    externalSideEffect:policy.externalSideEffect,
+    riskLevel:policy.riskLevel,
+    reversibility:policy.reversibility,
+    idempotent:policy.idempotent,
+  };
   return {
     ...evaluatePolicy({
       profile:context.permissionProfile||context.profile||"supervised",
@@ -38,10 +44,7 @@ export function authorizePlatformToolCall(call={},context={}){
       workspace:context.workspace||null,
       requestedPath:context.requestedPath||null,
       networkTarget:context.networkTarget||args.url||null,
-      externalSideEffect:policy.externalSideEffect,
-      riskLevel:policy.riskLevel,
-      reversibility:policy.reversibility,
-      idempotent:policy.idempotent,
+      ...policyMetadata,
       provenance:context.provenance||"model",
       environmentType:context.environmentType||null,
       environmentIsolated:Boolean(context.environmentIsolated),

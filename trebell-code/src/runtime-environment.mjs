@@ -7,6 +7,7 @@ const BASELINE_KEYS=Object.freeze([
 ]);
 
 const RUNTIME_KEYS=Object.freeze({
+  native:Object.freeze([]),
   codex:Object.freeze(["OPENAI_API_KEY","OPENAI_BASE_URL","OPENAI_ORG_ID","OPENAI_PROJECT_ID","CODEX_API_KEY"]),
   claude:Object.freeze(["ANTHROPIC_API_KEY","ANTHROPIC_AUTH_TOKEN","CLAUDE_CODE_OAUTH_TOKEN","ANTHROPIC_BASE_URL"]),
   cursor:Object.freeze(["CURSOR_API_KEY","CURSOR_AUTH_TOKEN","CURSOR_API_ENDPOINT"]),

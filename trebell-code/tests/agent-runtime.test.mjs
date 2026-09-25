@@ -15,7 +15,9 @@ test("agent runtime registry exposes real harnesses and capability-gates configu
   try{
     const state=new TrebellStateStore({...process.env,TREBELL_HOME:home});
     const manager=new AgentRuntimeManager({state,env:{...process.env,TREBELL_HOME:home}});
-    assert.deepEqual(manager.definitions().map(item=>item.id),["codex","claude","cursor","grok","opencode","antigravity"]);
+    assert.deepEqual(manager.definitions().map(item=>item.id),["native","codex","claude","cursor","grok","opencode","antigravity"]);
+    const nativeStatus=await manager.probe("native");assert.equal(nativeStatus.available,true);assert.equal(nativeStatus.protocol,"native");assert.equal(nativeStatus.binary,null);
+    assert.throws(()=>manager.upsertInstance({id:"native-extra",kind:"native"}),/does not support additional runtime profiles/i);
     const credential=["runtime","profile","credential"].join("-");
     const fake=manager.upsertInstance({id:"cursor-fixture",kind:"cursor",displayName:"Fixture Cursor",binaryPath:process.execPath,environment:{CURSOR_API_KEY:credential,NODE_ENV:"test"}});
     assert.deepEqual(fake.environment,{NODE_ENV:"test"});
@@ -29,6 +31,10 @@ test("agent runtime registry exposes real harnesses and capability-gates configu
     const models=await manager.models(fake);
     assert.deepEqual(models.models,["cursor-default"]);
     assert.equal(manager.capabilities("codex").nativeSandbox,true);
+    assert.equal(manager.capabilities("native").dynamicTools,true);
+    assert.equal(manager.capabilities("native").nativeSandbox,false);
+    assert.equal(manager.capabilities("native").mcpInjection,false);
+    assert.equal(manager.capabilities("native").delegation,false);
     assert.equal(manager.capabilities("opencode").nativeLsp,true);
     assert.equal(manager.capabilities("opencode").detachedTasks,true);
     assert.equal(manager.capabilities("opencode").multiModelFanout,true);
@@ -49,12 +55,15 @@ test("agent runtime registry exposes real harnesses and capability-gates configu
 });
 
 test("runtime capabilities describe adapter behavior without pretending unsupported features exist",()=>{
-  assert.deepEqual(new Set(runtimeCapabilityKinds),new Set(["codex","claude","opencode","cursor","grok","antigravity"]));
+  assert.deepEqual(new Set(runtimeCapabilityKinds),new Set(["native","codex","claude","opencode","cursor","grok","antigravity"]));
   for(const runtime of runtimeCapabilityKinds)assert.deepEqual(runtimeCapabilities(runtime),sharedRuntimeCapabilities(runtime));
   const codex=runtimeCapabilities("codex");
   assert.equal(codex.dynamicTools,true);
   assert.equal(codex.nativeQueue,true);
   assert.equal(codex.mcpInjection,false);
+  const native=runtimeCapabilities("native");
+  assert.equal(native.dynamicTools,true);assert.equal(native.contextReporting,true);assert.equal(native.nativeHistoryPagination,true);
+  assert.equal(native.mcpInjection,false);assert.equal(native.compaction,false);assert.equal(native.delegation,false);assert.equal(native.steering,false);
   const openCode=runtimeCapabilities("opencode");
   assert.equal(openCode.compaction,true);
   assert.equal(openCode.nativeLsp,true);

@@ -12,6 +12,7 @@ const tools=[{
     {type:"function",name:"search_symbols",description:"Search symbols",inputSchema:{type:"object",properties:{query:{type:"string"}},required:["query"],additionalProperties:false}},
   ],
 }];
+const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
 
 test("provider turn converts one canonical conversation to Chat Completions without losing namespaced tools",()=>{
   const request=providerTurnToChat({
@@ -44,6 +45,17 @@ test("provider turn converts the same conversation to Responses while preserving
   assert.equal(request.input[2].type,"function_call");assert.equal(request.input[2].namespace,"trebell_repo");assert.equal(request.input[2].name,"search_symbols");
   assert.equal(request.input[3].type,"function_call_output");assert.equal(request.input[3].call_id,"call-1");
   assert.equal(request.tools[0].name,"trebell_repo");
+});
+
+test("provider turns preserve image tool observations for Chat and Responses transports",()=>{
+  const messages=[
+    {role:"assistant",content:"",toolCalls:[{id:"call-image",namespace:"trebell_browser",name:"screenshot",arguments:"{}"}]},
+    {role:"tool",toolCallId:"call-image",content:[{type:"text",text:"screen metadata"},{type:"image_url",image_url:{url:IMAGE_DATA_URL}}]},
+  ];
+  const chat=providerTurnToChat({model:"vision-chat",messages});
+  assert.equal(chat.messages[1].role,"tool");assert.equal(chat.messages[1].content[1].type,"image_url");assert.equal(chat.messages[1].content[1].image_url.url,IMAGE_DATA_URL);
+  const responses=providerTurnToResponses({model:"vision-responses",messages});
+  const output=responses.input.find(item=>item.type==="function_call_output");assert.ok(Array.isArray(output.output));assert.equal(output.output[1].type,"input_image");assert.equal(output.output[1].image_url,IMAGE_DATA_URL);
 });
 
 test("provider turn normalizes Chat Completions text, tool calls, finish reason and usage",()=>{

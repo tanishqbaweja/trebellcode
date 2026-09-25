@@ -16,6 +16,7 @@ function tool(name,description,inputSchema,policy={},requirements={}){
       idempotent:Boolean(policy.idempotent),
       externalSideEffect:Boolean(policy.externalSideEffect),
       asyncSafe:Boolean(policy.asyncSafe),
+      classifyFromInput:Boolean(policy.classifyFromInput),
     },
     requirements:{
       desktop:Boolean(requirements.desktop),
@@ -35,6 +36,15 @@ function namespace(name,description,tools,requirements={}){
 const emptyObjectSchema=freeze({type:"object",properties:{},additionalProperties:false});
 
 export const SHARED_TOOL_NAMESPACE_CATALOG=freeze([
+  namespace("trebell_workspace","Read and modify files inside the active Trebell workspace boundary.",[
+    tool("list","List a bounded workspace subtree.",{type:"object",properties:{path:{type:"string",description:"Workspace-relative directory. Defaults to the workspace root."},depth:{type:"integer",minimum:1,maximum:8},limit:{type:"integer",minimum:1,maximum:1000}},additionalProperties:false},{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,asyncSafe:true},{workspace:true}),
+    tool("read_file","Read one bounded UTF-8 text file inside the workspace.",{type:"object",properties:{path:{type:"string"},max_bytes:{type:"integer",minimum:1,maximum:1048576}},required:["path"],additionalProperties:false},{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,asyncSafe:true},{workspace:true}),
+    tool("write_file","Create or replace one UTF-8 text file inside the workspace. Prefer replace_text for small surgical edits.",{type:"object",properties:{path:{type:"string"},content:{type:"string"}},required:["path","content"],additionalProperties:false},{kind:"edit",riskLevel:"medium",reversibility:"partial"},{workspace:true}),
+    tool("replace_text","Replace an exact text fragment inside one UTF-8 workspace file. By default the fragment must occur exactly once.",{type:"object",properties:{path:{type:"string"},old_text:{type:"string"},new_text:{type:"string"},expected_replacements:{type:"integer",minimum:1,maximum:100}},required:["path","old_text","new_text"],additionalProperties:false},{kind:"edit",riskLevel:"medium",reversibility:"partial"},{workspace:true}),
+  ],{workspace:true}),
+  namespace("trebell_terminal","Run bounded argv-based commands inside the active workspace. Shell pipelines require explicitly invoking a shell such as sh -lc or PowerShell.",[
+    tool("run","Run one bounded command in the active workspace and return exit code, stdout, stderr, timeout state, and duration.",{type:"object",properties:{command:{type:"string"},args:{type:"array",items:{type:"string"},maxItems:256},cwd:{type:"string",description:"Workspace-relative working directory. Defaults to the workspace root."},timeout_ms:{type:"integer",minimum:1000,maximum:300000},max_output_bytes:{type:"integer",minimum:1024,maximum:2097152}},required:["command"],additionalProperties:false},{kind:"execute",classifyFromInput:true},{workspace:true}),
+  ],{workspace:true}),
   namespace("trebell_browser","Control Trebell Code's isolated desktop browser session for web research and testing.",[
     tool("open","Navigate the Trebell browser to a URL.",{type:"object",properties:{url:{type:"string"}},required:["url"],additionalProperties:false},{kind:"fetch",riskLevel:"low",reversibility:"full"},{desktop:true}),
     tool("snapshot","Inspect current page text and interactive elements. Returns refs for click/type.",emptyObjectSchema,{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,asyncSafe:true},{desktop:true}),
@@ -98,8 +108,10 @@ export function dynamicToolNamespace(namespaceDefinition){
   };
 }
 
-export function sharedDynamicToolNamespaces({browser=false,computer=false,device=false,sourceControl=true,delegation=false}={}){
+export function sharedDynamicToolNamespaces({workspaceTools=false,terminal=false,browser=false,computer=false,device=false,sourceControl=true,delegation=false}={}){
   const enabled=new Set([
+    ...(workspaceTools?["trebell_workspace"]:[]),
+    ...(terminal?["trebell_terminal"]:[]),
     ...(browser?["trebell_browser"]:[]),
     ...(computer?["trebell_computer"]:[]),
     ...(device?["trebell_device"]:[]),

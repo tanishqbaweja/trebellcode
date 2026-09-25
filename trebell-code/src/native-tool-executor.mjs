@@ -8,9 +8,9 @@ function baseContext(value,call){
 
 export function createNativeToolExecutor({
   contextEngine=null,root=null,io=null,knowledgeService=null,environmentId=null,
-  executeShared=null,confirm=null,environment=process.env,onEvent=null,policyContext={},projectAvailable=null,
+  repository=true,executeShared=null,confirm=null,environment=process.env,onEvent=null,policyContext={},projectAvailable=null,
 }={}){
-  const repositoryHandlers=contextEngine&&root?repositoryToolHandlers({contextEngine,root,io,knowledgeService,environmentId}):null;
+  const repositoryHandlers=repository&&contextEngine&&root?repositoryToolHandlers({contextEngine,root,io,knowledgeService,environmentId}):null;
   const gateway=createSharedToolGateway({
     confirm,environment,onEvent,
     contextForCall:(call,override={})=>{

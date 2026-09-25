@@ -49,6 +49,10 @@ test("policy action classification derives useful side-effect metadata without c
   assert.equal(push.externalSideEffect,true);assert.equal(push.riskLevel,"high");assert.equal(push.reversibility,"none");assert.equal(push.idempotent,false);
   const read=classifyPolicyAction({kind:"read",action:"Read file",rawInput:{path:"/repo/src/a.js"},workspace:"/repo"});
   assert.equal(read.pathInsideWorkspace,true);assert.equal(read.riskLevel,"low");assert.equal(read.externalSideEffect,false);
+  const argvPush=classifyPolicyAction({kind:"execute",action:"trebell_terminal.run",rawInput:{command:"git",args:["push","origin","main"],cwd:"/repo"},workspace:"/repo"});
+  assert.equal(argvPush.externalSideEffect,true);assert.equal(argvPush.riskLevel,"high");assert.equal(argvPush.reversibility,"none");
+  const argvDelete=classifyPolicyAction({kind:"execute",action:"trebell_terminal.run",rawInput:{command:"rm",args:["-rf","dist"],cwd:"/repo"},workspace:"/repo",provenance:"untrusted"});
+  assert.equal(argvDelete.riskLevel,"critical");assert.equal(argvDelete.reversibility,"none");
   assert.equal(policyPathInside("C:\\repo","c:\\repo\\src\\a.js"),true);
   assert.equal(policyPathInside("C:\\repo","src\\a.js"),true);
   assert.equal(policyPathInside("C:\\repo","..\\outside\\a.js"),false);

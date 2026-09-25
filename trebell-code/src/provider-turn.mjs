@@ -72,7 +72,7 @@ export function providerTurnToChat({model,messages=[],tools=[],toolChoice="auto"
   for(const message of Array.isArray(messages)?messages:[]){
     if(!message||typeof message!=="object")continue;
     if(message.role==="tool"){
-      chatMessages.push({role:"tool",tool_call_id:String(message.toolCallId||message.tool_call_id||""),content:textContent(message.content)});continue;
+      chatMessages.push({role:"tool",tool_call_id:String(message.toolCallId||message.tool_call_id||""),content:openAiContent(message.content)});continue;
     }
     if(message.role==="assistant"){
       const calls=(message.toolCalls||message.tool_calls||[]).map(call=>{
@@ -116,7 +116,8 @@ export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="
       const text=textContent(message.content).trim();if(text)instructions.push(text);continue;
     }
     if(message.role==="tool"){
-      input.push({type:"function_call_output",call_id:String(message.toolCallId||message.tool_call_id||""),output:textContent(message.content)});continue;
+      const output=typeof message.content==="string"?message.content:responsesContent(message.content);
+      input.push({type:"function_call_output",call_id:String(message.toolCallId||message.tool_call_id||""),output});continue;
     }
     if(message.role==="assistant"){
       const content=responsesContent(message.content,{assistant:true});if(content.length)input.push({type:"message",role:"assistant",content});

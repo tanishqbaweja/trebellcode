@@ -73,7 +73,7 @@ export function classifyPolicyAction(input={}){
   const kind=normalizePolicyKind(input.kind||input.toolCall?.kind||input.permissionKind);
   let action=actionText(input);
   if(kind==="execute"&&raw?.command){
-    const command=Array.isArray(raw.command)?raw.command.map(String).join(" "):String(raw.command);
+    const command=[Array.isArray(raw.command)?raw.command.map(String).join(" "):String(raw.command),...(Array.isArray(raw.args)?raw.args.map(String):[])].join(" ").trim();
     if(command&&!action.toLowerCase().includes(command.toLowerCase()))action=(action+" "+command).trim().slice(0,500);
   }
   const lower=action.toLowerCase();

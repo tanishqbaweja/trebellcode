@@ -19,6 +19,14 @@ test("provider changes inside the same runtime cannot erase the existing convers
   assert.equal(merged.length,1);assert.equal(merged[0].id,"codex-provider-thread");assert.equal(merged[0].trebellRuntime,"codex");
 });
 
+test("Trebell Native thread identity stays separate from the inference provider",()=>{
+  const existing=[{id:"native-thread",name:"Keep Native history",updatedAt:35,trebellRuntime:"native",trebellProvider:"agentrouter"}];
+  const merged=mergeThreadCatalog(existing,[],{runtime:"native",provider:"hcnsec"});
+  assert.equal(merged.length,1);assert.equal(merged[0].id,"native-thread");assert.equal(merged[0].trebellRuntime,"native");
+  const patch=catalogMetaPatch({id:"native-thread",name:"Keep Native history",updatedAt:35},{runtime:"native",provider:"hcnsec",runtimeInstanceId:"native-default"});
+  assert.equal(threadCatalogRuntime({id:"native-thread"},patch,"codex"),"native");
+});
+
 test("thread catalog reconstructs durable rows from thread metadata and omits archived/deleted rows",()=>{
   const rows=threadsFromCatalogMeta({
     a:{runtime:"claude",cwd:"C:/repo",threadSnapshot:{id:"a",name:"Remembered task",preview:"Fix parser",updatedAt:50,model:"claude-x",runtime:"claude"}},
@@ -38,7 +46,9 @@ test("legacy metadata can recover runtime ownership without a modern thread snap
   const rows=threadsFromCatalogMeta({
     claudeLegacy:{cwd:"C:/repo",runtimeInstanceId:"claude-default",trebellContext:{runtime:"claude"}},
     codexLegacy:{cwd:"C:/repo",runtimeInstanceId:"codex-profile-2"},
+    nativeLegacy:{cwd:"C:/repo",runtimeInstanceId:"native-default"},
   });
   assert.equal(rows.find(item=>item.id==="claudeLegacy").trebellRuntime,"claude");
   assert.equal(rows.find(item=>item.id==="codexLegacy").trebellRuntime,"codex");
+  assert.equal(rows.find(item=>item.id==="nativeLegacy").trebellRuntime,"native");
 });

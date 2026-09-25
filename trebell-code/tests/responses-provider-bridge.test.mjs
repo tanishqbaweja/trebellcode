@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import { responsesRequestToChat, adaptResponsesBody } from "../src/responses-chat-adapter.mjs";
 import { startProviderBridge } from "../src/provider-bridge.mjs";
+const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
 
 test("Responses request is translated to chat messages and function tools", () => {
   const chat = responsesRequestToChat({
@@ -29,6 +30,17 @@ test("Responses request is translated to chat messages and function tools", () =
   assert.equal(chat.tools[0].function.name,"trebell_browser__open");
   assert.deepEqual(chat.tools[0].function.parameters.required,["url"]);
   assert.equal(chat.stream,true);
+});
+
+test("Responses function outputs preserve image content when bridged to Chat",()=>{
+  const chat=responsesRequestToChat({
+    model:"vision-model",stream:false,
+    input:[
+      {type:"function_call",call_id:"shot-1",namespace:"trebell_browser",name:"screenshot",arguments:"{}"},
+      {type:"function_call_output",call_id:"shot-1",output:[{type:"input_text",text:"screen metadata"},{type:"input_image",image_url:IMAGE_DATA_URL}]},
+    ],
+  });
+  const tool=chat.messages[1];assert.equal(tool.role,"tool");assert.ok(Array.isArray(tool.content));assert.equal(tool.content[1].type,"image_url");assert.equal(tool.content[1].image_url.url,IMAGE_DATA_URL);
 });
 
 test("Chat SSE is translated back into Responses SSE with tool calls", async () => {

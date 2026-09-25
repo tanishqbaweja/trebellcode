@@ -30,6 +30,7 @@ import { RemoteAuthStore } from "./remote-auth-store.mjs";
 import { RemoteAccessSecretStore } from "./remote-access-secret-store.mjs";
 import { DeviceService } from "./device-service.mjs";
 import { ProviderManager, normalizeProviderId } from "./provider-manager.mjs";
+import { normalizeChatTurnResponse, providerTurnToChat } from "./provider-turn.mjs";
 import { startProviderBridge } from "./provider-bridge.mjs";
 import { AgentRuntimeManager, normalizeAgentRuntime } from "./agent-runtime-manager.mjs";
 import { AgentThreadStore } from "./agent-thread-store.mjs";
@@ -1270,14 +1271,14 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
 
   async function selectedModels(){
     const mergeCustom=catalog=>{
-      if(!["codex","claude","opencode"].includes(selectedAgentRuntime))return catalog;
-      const custom=(state.settings().customModels||[]).filter(item=>item&&item.id&&item.runtime===selectedAgentRuntime&&(selectedAgentRuntime!=="codex"||item.provider===selectedProvider));
+      if(!["native","codex","claude","opencode"].includes(selectedAgentRuntime))return catalog;
+      const custom=(state.settings().customModels||[]).filter(item=>item&&item.id&&item.runtime===selectedAgentRuntime&&(!["native","codex"].includes(selectedAgentRuntime)||item.provider===selectedProvider));
       if(!custom.length)return catalog;
       const baseModels=Array.isArray(catalog.models)?catalog.models:[];const models=[...baseModels];for(const item of custom)if(!models.includes(item.id))models.push(item.id);
-      const metadataModels=[...(catalog.metadata?.models||[])];for(const item of custom){const index=metadataModels.findIndex(model=>model.id===item.id);const meta={id:item.id,name:item.name||item.id,provider:selectedAgentRuntime==="codex"?selectedProvider:selectedAgentRuntime,agent:selectedAgentRuntime,custom:true,effort:item.effort||null,serviceTier:item.serviceTier||null};if(index>=0)metadataModels[index]={...metadataModels[index],...meta};else metadataModels.push(meta)}
+      const metadataModels=[...(catalog.metadata?.models||[])];for(const item of custom){const index=metadataModels.findIndex(model=>model.id===item.id);const meta={id:item.id,name:item.name||item.id,provider:["native","codex"].includes(selectedAgentRuntime)?selectedProvider:selectedAgentRuntime,agent:selectedAgentRuntime,custom:true,effort:item.effort||null,serviceTier:item.serviceTier||null};if(index>=0)metadataModels[index]={...metadataModels[index],...meta};else metadataModels.push(meta)}
       return {...catalog,models,metadata:{...(catalog.metadata||{}),models:metadataModels}};
     };
-    if(selectedAgentRuntime!=="codex"){
+    if(!["native","codex"].includes(selectedAgentRuntime)){
       const result=await agentRuntimes.models(agentRuntimes.activeInstance());
       return mergeCustom({models:result.models||[],metadata:{provider:selectedAgentRuntime,agentRuntime:selectedAgentRuntime,source:result.source,models:result.metadata||[]},error:result.error||null});
     }
@@ -1339,7 +1340,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           agentRuntime:selectedAgentRuntime,
           agentRuntimeStatus:agentStatus,
           provider:selectedProvider,
-          providerReady:selectedAgentRuntime==="codex"?providerReady():Boolean(agentStatus?.available),
+          providerReady:["native","codex"].includes(selectedAgentRuntime)?providerReady():Boolean(agentStatus?.available),
           appServerReady:mock||await appServerReady(appServer,appPort),
           model:catalog.models?.[0]||null,
           projects:state.projects(),
@@ -1371,6 +1372,20 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     if(!response.ok) throw new Error(raw.slice(0,1200)||`Freebuff HTTP ${response.status}`);
     const parsed=JSON.parse(raw);
     return {text:parsed?.choices?.[0]?.message?.content ?? "",model,raw:parsed};
+  }
+  async function nativeProviderTurn(request={}){
+    const provider=normalizeProviderId(request.provider||selectedProvider),model=String(request.model||"").trim();if(!model)throw new Error("Trebell Native requires a model.");
+    if(mock){
+      const last=[...(request.messages||[])].reverse().find(message=>message?.role==="user"),content=typeof last?.content==="string"?last.content:"";
+      return {id:"mock-native-"+randomUUID(),provider,model,text:`Mock Trebell Native reply: ${content}`.trim(),toolCalls:[],finishReason:"stop",status:"completed",usage:{inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0},raw:{mock:true}};
+    }
+    if(provider!=="freebuff")return providers.turn(provider,request,{signal:request.signal});
+    if(!isLoggedIn(env))throw new Error("Sign in to Freebuff first.");await ensureBridge();
+    const signals=[request.signal,AbortSignal.timeout(300000)].filter(Boolean),signal=signals.length>1?AbortSignal.any(signals):signals[0];
+    const response=await fetchImpl(`http://127.0.0.1:${DEFAULT_PORT}/v1/chat/completions`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(providerTurnToChat(request)),signal});
+    const raw=await response.text();if(!response.ok)throw new Error(raw.slice(0,1200)||`Freebuff HTTP ${response.status}`);
+    let parsed;try{parsed=raw?JSON.parse(raw):{}}catch{throw new Error("Freebuff returned invalid JSON for a Native provider turn.")}
+    return normalizeChatTurnResponse(parsed,"freebuff",model);
   }
   function sourceControlStyleInstruction(style,kind,customInstructions=""){
     if(style==="conventional")return kind==="review"
@@ -2732,9 +2747,9 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     if(url.pathname==="/api/models"){
       try{
         const catalog=await selectedModels();
-        return json(res,200,{provider:selectedProvider,agentRuntime:selectedAgentRuntime,ready:selectedAgentRuntime==="codex"?providerReady():true,models:catalog.models||[],metadata:catalog.metadata||null,error:catalog.error||null});
+        return json(res,200,{provider:selectedProvider,agentRuntime:selectedAgentRuntime,ready:["native","codex"].includes(selectedAgentRuntime)?providerReady():true,models:catalog.models||[],metadata:catalog.metadata||null,error:catalog.error||null});
       }catch(error){
-        return json(res,503,{provider:selectedProvider,agentRuntime:selectedAgentRuntime,ready:selectedAgentRuntime==="codex"?providerReady():false,models:[],error:error instanceof Error?error.message:String(error)});
+        return json(res,503,{provider:selectedProvider,agentRuntime:selectedAgentRuntime,ready:["native","codex"].includes(selectedAgentRuntime)?providerReady():false,models:[],error:error instanceof Error?error.message:String(error)});
       }
     }
     if(url.pathname==="/api/login/start" && req.method==="POST"){
@@ -2975,6 +2990,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     environments,
     contextEngine,
     repositoryKnowledge,
+    nativeProviderTurn,
     version:TREBELL_VERSION,
       log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"agent-relay",text:safeLogText(String(message)+"\n")}),
     onThreadDeleted:thread=>thread?.cwd?worktreeCleanup.sweep({reason:"thread-delete",path:thread.cwd}):null,
