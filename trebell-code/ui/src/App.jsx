@@ -1920,6 +1920,9 @@ export default function App(){
       setEvents(prev=>[...prev,{id:"elicitation-complete-"+(p.elicitationId||Date.now()),kind:"tool",title:"External interaction completed",status:"done",raw:p}]);
     }
     else if(message.method==="thread/queue/changed"&&isCurrent)loadNativeQueue(rpcRef.current,p.threadId).catch(error=>setEvents(prev=>[...prev,{id:"queue-refresh-error-"+Date.now(),kind:"error",title:"Could not refresh queued follow-ups: "+(error.message||String(error)),status:"done",raw:{}}]));
+    else if(message.method==="thread/sourceControl/updated"&&isCurrent&&p.gitInfo){
+      setGitInfo(current=>({...current,...p.gitInfo}));
+    }
     else if(message.method==="skills/changed")loadSkills(rpcRef.current,projectPath,true,{strict:true}).catch(error=>showActionError(error,"Could not refresh skills"));
     else if(message.method==="windowsSandbox/setupCompleted"){
       window.dispatchEvent(new CustomEvent("trebell:windows-sandbox-setup",{detail:p}));

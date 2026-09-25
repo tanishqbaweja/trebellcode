@@ -8,6 +8,7 @@ import { ClaudeAgentSession } from "./claude-agent-session.mjs";
 import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread } from "./native-agent-session.mjs";
 import { createNativeBuiltins } from "./native-builtins.mjs";
 import { NativeBackgroundProcessManager } from "./native-background-processes.mjs";
+import { createNativeSourceControl } from "./native-source-control.mjs";
 import { NativeMcpBroker } from "./native-mcp-broker.mjs";
 import { createNativeToolExecutor } from "./native-tool-executor.mjs";
 import { platformDynamicToolNamespaces } from "./platform-tool-catalog.mjs";
@@ -608,6 +609,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         root:runtimeCwd,environments,environmentId,environment:runtimeManager.env||process.env,platform:runtimeManager.platform||process.platform,
         backgroundProcesses:nativeBackgroundProcesses,threadId:thread.id,environmentNames:runtimeManager.childEnvironmentKeys(instance),
       });
+      const nativeSourceControl=!projectless&&namespaceNames.has("trebell_source_control")?createNativeSourceControl({
+        root:runtimeCwd,environments,environmentId,environment:runtimeManager.env||process.env,platform:runtimeManager.platform||process.platform,environmentNames:runtimeManager.childEnvironmentKeys(instance),
+      }):null;
       const executeTool=createNativeToolExecutor({
         contextEngine,root:runtimeCwd,repository:!projectless,io:repoIo,knowledgeService:repositoryKnowledge,environmentId,mcpBroker,
         projectAvailable:!projectless,
@@ -616,9 +620,21 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
           desktopAvailable:namespaceNames.has("trebell_browser")||namespaceNames.has("trebell_computer"),deviceAccess:namespaceNames.has("trebell_device"),delegationAvailable:namespaceNames.has("trebell_delegate"),
           environmentType:environmentProfile?.type||"local",environmentIsolated:false,provenance:"model",
         }),
-        executeShared:async call=>["trebell_workspace","trebell_terminal"].includes(call.namespace)
-          ?nativeBuiltins(call)
-          :context.serverRequest("item/tool/call",{threadId:thread.id,callId:call.id||randomUUID(),namespace:call.namespace,tool:call.name,arguments:call.arguments}),
+        executeShared:async call=>{
+          if(["trebell_workspace","trebell_terminal"].includes(call.namespace))return nativeBuiltins(call);
+          if(call.namespace==="trebell_source_control"&&call.name!=="link_pull_request"){
+            if(!nativeSourceControl)throw new Error("Native source control is unavailable for this thread");
+            const startedAt=Date.now();journal?.record?.({runtime:"native",provider:thread.providerMeta?.modelProvider||null,environmentId,threadId:thread.id,category:"source-control",name:`source_control.${call.name}`,status:"running",data:{tool:call.name}});
+            try{
+              const result=await nativeSourceControl(call),gitInfo=result?.info||result;
+              journal?.record?.({runtime:"native",provider:thread.providerMeta?.modelProvider||null,environmentId,threadId:thread.id,category:"source-control",name:`source_control.${call.name}`,status:"completed",data:{tool:call.name,durationMs:Date.now()-startedAt}});
+              emit("thread/sourceControl/updated",{threadId:thread.id,tool:call.name,gitInfo:gitInfo&&typeof gitInfo==="object"?gitInfo:null});
+              return result;
+            }
+            catch(error){journal?.record?.({runtime:"native",provider:thread.providerMeta?.modelProvider||null,environmentId,threadId:thread.id,category:"source-control",name:`source_control.${call.name}`,status:"failed",data:{tool:call.name,durationMs:Date.now()-startedAt,message:redactSecretText(error?.message||String(error),{environment:runtimeManager.env||process.env})}});throw error}
+          }
+          return context.serverRequest("item/tool/call",{threadId:thread.id,callId:call.id||randomUUID(),namespace:call.namespace,tool:call.name,arguments:call.arguments});
+        },
         confirm:async({call,authorization})=>{
           const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:authorization.reason||"Trebell Native requests permission",toolCall:{toolCallId:call.id||randomUUID(),title:`${call.namespace}/${call.name}`,kind:authorization.action?.kind||"other",rawInput:call.arguments,policy:{riskLevel:authorization.action?.riskLevel,reversibility:authorization.action?.reversibility,externalSideEffect:authorization.action?.externalSideEffect}}});
           return result?.decision||"decline";

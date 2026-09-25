@@ -92,3 +92,13 @@ test("Native terminal policy classifies argv content instead of trusting a stati
   assert.equal(destructive.decision,POLICY_REJECT);assert.equal(destructive.action.riskLevel,"critical");
   const readOnly=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"npm",args:["test"],cwd:"."}},{permissionProfile:"read-only",workspace:"/repo",runtime:"native"});assert.equal(readOnly.decision,POLICY_REJECT);
 });
+
+test("Native source-control policy keeps reads cheap and remote writes explicit",()=>{
+  const status=authorizePlatformToolCall({namespace:"trebell_source_control",name:"status",arguments:{}},{permissionProfile:"read-only",workspace:"/repo",projectAvailable:true,runtime:"native"});
+  assert.equal(status.decision,POLICY_ALLOW);assert.equal(status.action.riskLevel,"low");
+  const commit=authorizePlatformToolCall({namespace:"trebell_source_control",name:"commit_all",arguments:{message:"local change"}},{permissionProfile:"auto",workspace:"/repo",projectAvailable:true,runtime:"native"});
+  assert.equal(commit.decision,POLICY_ALLOW);assert.equal(commit.action.externalSideEffect,false);
+  const push=authorizePlatformToolCall({namespace:"trebell_source_control",name:"push",arguments:{set_upstream:true}},{permissionProfile:"auto",workspace:"/repo",projectAvailable:true,runtime:"native"});
+  assert.equal(push.decision,POLICY_CONFIRM);assert.equal(push.action.externalSideEffect,true);assert.equal(push.action.reversibility,"none");
+  const readOnlyCommit=authorizePlatformToolCall({namespace:"trebell_source_control",name:"commit_all",arguments:{message:"nope"}},{permissionProfile:"read-only",workspace:"/repo",projectAvailable:true,runtime:"native"});assert.equal(readOnlyCommit.decision,POLICY_REJECT);
+});

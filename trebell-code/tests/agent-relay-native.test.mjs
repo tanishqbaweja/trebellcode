@@ -1,10 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdtemp,mkdir,rm,writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { WebSocket } from "ws";
 import { attachAgentRelay } from "../src/agent-relay.mjs";
 import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
@@ -32,6 +34,7 @@ function client(ws){
 }
 
 const nativeMcpFixture=resolve(fileURLToPath(new URL("fixtures/native-mcp-server.mjs",import.meta.url)));
+const execFileAsync=promisify(execFile);
 
 test("Trebell Native relay executes repository tools and switches inference provider without changing thread identity",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
@@ -348,5 +351,26 @@ test("Trebell Native background processes outlive the turn and stay thread-owned
     const sibling=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;
     assert.equal((await rpc.request("thread/backgroundTerminals/list",{threadId:sibling.id,limit:10})).data.length,0);await assert.rejects(()=>rpc.request("thread/backgroundTerminals/terminate",{threadId:sibling.id,processId:processItem.processId}),/not found/i);
     const stopped=await rpc.request("thread/backgroundTerminals/terminate",{threadId:thread.id,processId:processItem.processId});assert.equal(stopped.process.running,false);assert.doesNotMatch(stopped.process.stdout,/must-stay-hidden/);assert.equal((await rpc.request("thread/backgroundTerminals/list",{threadId:thread.id,limit:10})).data.length,0);
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+});
+
+test("Trebell Native exposes first-class Git status directly to the model loop",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-source-control-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  await execFileAsync("git",["init"],{cwd:repo,windowsHide:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let calls=0;
+  const nativeProviderTurn=async request=>{
+    calls++;
+    const sourceControl=request.tools.find(item=>item.name==="trebell_source_control");assert.ok(sourceControl);assert.ok(sourceControl.tools.some(item=>item.name==="status"));assert.ok(sourceControl.tools.some(item=>item.name==="push"));
+    if(calls===1)return{id:"source-status-tool",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"source-status-1",namespace:"trebell_source_control",name:"status",arguments:"{}"}],finishReason:"tool_calls",usage:{}};
+    assert.equal(request.messages.at(-1).role,"tool");assert.match(request.messages.at(-1).content,/\"isGit\":true/);return{id:"source-status-answer",provider:request.provider,model:request.model,text:"Git status checked through Trebell.",toolCalls:[],finishReason:"stop",usage:{}};
+  };
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
+  try{
+    const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"read-only",dynamicTools:[{type:"namespace",name:"trebell_source_control"}]})).thread;
+    const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"read-only",input:[{type:"text",text:"Check Git status"}]})).turn;
+    await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);assert.equal(calls,2);
+    const persisted=threadStore.get(thread.id);assert.ok(persisted.turns[0].items.some(item=>item.type==="dynamicToolCall"&&item.namespace==="trebell_source_control"&&item.tool==="status"));
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
 });
