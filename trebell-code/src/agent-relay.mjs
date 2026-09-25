@@ -462,7 +462,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     const acpMcpServers=acpMcpServersForSession(state?.settings?.().mcpServers||[],{runtime:instance.kind,environmentId});
     const claudeMcpServers=claudeMcpServersForSession(state?.settings?.().mcpServers||[],{environmentId});
     if(instance.kind==="claude"&&contextEngine){
-      const repoIo=environmentId&&environments?createRemoteContextIo({environments,environmentId,root:runtimeCwd}):null;
+      const repoIo=remoteIo?createRemoteContextIo({environments,environmentId,root:runtimeCwd}):null;
       claudeMcpServers.trebell_repository=createClaudeRepositoryMcp({contextEngine,root:runtimeCwd,io:repoIo,version});
     }
     const runtime=instance.kind==="claude"

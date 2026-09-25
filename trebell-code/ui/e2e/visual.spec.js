@@ -2360,6 +2360,15 @@ test("Claude runtime profile editor exposes real auto-compaction settings",async
   await expect(page.getByRole("heading",{name:"Agent harness"})).toBeVisible();
   await page.locator(".agent-runtime-option").filter({hasText:"Claude Code"}).locator("button").first().click();
   await expect(page.locator(".agent-runtime-option").filter({hasText:"Claude Code"}).getByText("Active",{exact:true})).toBeVisible();
+  const claudeMcp=page.locator('[data-setting-target="agents-mcp"]');
+  await expect(claudeMcp.getByRole("heading",{name:"MCP servers"})).toBeVisible();
+  await expect(claudeMcp).toContainText("Claude Code sessions");
+  await claudeMcp.scrollIntoViewIfNeeded();
+  await page.setViewportSize({width:1280,height:800});
+  const mcpMetrics=await claudeMcp.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(mcpMetrics.scroll).toBeLessThanOrEqual(mcpMetrics.client+1);
+  await claudeMcp.screenshot({path:auditDir+"settings-claude-mcp-card-1280x800.png"});
+  await page.screenshot({path:auditDir+"settings-claude-mcp-1280x800.png",fullPage:true});
   await page.getByRole("button",{name:"Add profile",exact:true}).click();
   const editor=page.locator(".runtime-profile-editor");
   await expect(editor).toBeVisible();

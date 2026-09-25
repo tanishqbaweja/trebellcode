@@ -54,17 +54,19 @@ test("automatic context compaction defaults on and persists user preferences",as
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
-test("ACP MCP server settings are normalized and persist",async()=>{
+test("MCP server settings are normalized and persist across supported runtimes",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-state-mcp-"));const env={...process.env,TREBELL_HOME:home};
   try{
     const state=new TrebellStateStore(env);
     state.updateSettings({mcpServers:[
       {id:"cursor-remote",name:"Remote tools",runtime:"cursor",environmentId:"ssh-a",command:"/opt/remote-mcp",args:["--stdio"],env:[{name:"API_KEY",value:"secret"}]},
+      {id:"claude-local",name:"Claude tools",runtime:"claude",command:"claude-mcp",args:["--stdio"]},
       {id:"invalid",name:"Ignored",runtime:"codex",command:"codex-mcp"},
     ]});
     const saved=new TrebellStateStore(env).settings().mcpServers;
-    assert.equal(saved.length,1);
+    assert.equal(saved.length,2);
     assert.deepEqual(saved[0],{id:"cursor-remote",name:"Remote tools",type:"stdio",runtime:"cursor",environmentId:"ssh-a",enabled:true,command:"/opt/remote-mcp",args:["--stdio"],env:[{name:"API_KEY",value:"secret"}]});
+    assert.deepEqual(saved[1],{id:"claude-local",name:"Claude tools",type:"stdio",runtime:"claude",environmentId:null,enabled:true,command:"claude-mcp",args:["--stdio"],env:[]});
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
