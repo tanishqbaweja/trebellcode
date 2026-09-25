@@ -1235,6 +1235,7 @@ export default function App(){
   },[agentRuntime,rpc,rpcStatus,activeThread?.id]);
 
   useEffect(()=>{
+    if(section!=="chat")return;
     let disposed=false,busy=false;
     const poll=async()=>{
       if(disposed||busy||document.hidden)return;busy=true;
@@ -1248,7 +1249,7 @@ export default function App(){
     poll();const timer=setInterval(poll,3500);
     const visible=()=>{if(!document.hidden)poll()};document.addEventListener("visibilitychange",visible);
     return()=>{disposed=true;clearInterval(timer);document.removeEventListener("visibilitychange",visible)};
-  },[projectPath,workspaceRemote,projectlessMode]);
+  },[section,projectPath,workspaceRemote,projectlessMode]);
   useEffect(()=>{
     const shouldPoll=section==="settings"||(rightPanelOpen&&rightPanelTab==="runtime");
     if(!shouldPoll)return;

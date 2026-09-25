@@ -2435,6 +2435,23 @@ test("background Git polling failures preserve the last valid repository state",
   await page.screenshot({path:auditDir+"git-polling-failure-preserves-state-1280x800.png",fullPage:true});
 });
 
+test("Git polling sleeps on secondary pages and refreshes when chat returns",async({page,request})=>{
+  test.setTimeout(30_000);
+  let gitCalls=0;
+  await page.route(/\/api\/git\/info\?/,route=>{gitCalls++;return route.continue()});
+  await prepare(page,request);
+  await expect.poll(()=>gitCalls).toBeGreaterThan(0);
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Settings"})).toBeVisible();
+  await page.waitForTimeout(250);
+  const sleepingAt=gitCalls;
+  await page.waitForTimeout(3800);
+  expect(gitCalls).toBe(sleepingAt);
+  await page.getByRole("button",{name:"Threads",exact:true}).click();
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await expect.poll(()=>gitCalls).toBeGreaterThan(sleepingAt);
+});
+
 test("switching workspaces clears Git state from the previous project",async({page,request})=>{
   test.setTimeout(35_000);
   const targetPath=await mkdtemp(join(tmpdir(),"trebell-non-git-state-"));
