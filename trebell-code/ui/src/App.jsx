@@ -2620,11 +2620,11 @@ export default function App(){
       }
       const p=presetFor(permissionModeOverride||permissionMode);
       const sandboxPolicy=p.sandbox==="danger-full-access"?{type:"dangerFullAccess"}:p.sandbox==="read-only"?{type:"readOnly",networkAccess:false}:{type:"workspaceWrite",writableRoots:[cwd],networkAccess:true,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
-      const custom=(settings.customModels||[]).find(item=>item.id===modelId&&item.runtime===agentRuntime&&(agentRuntime!=="codex"||item.provider===provider));
+      const custom=(settings.customModels||[]).find(item=>item.id===modelId&&item.runtime===agentRuntime&&(!["native","codex"].includes(agentRuntime)||item.provider===provider));
       const collaboration=selectedCollaborationMode(modelId);
       const contextPacket=await prepareTurnContext(thread,cwd,text,focusPathsOverride||repositoryFocusPaths(paths,contextChips),{projectless:projectlessMode,ignoreUsage:autoCompaction.compacted});
       const turnContext={...(contextPacket?.injection?{"trebell.repo_context":{kind:"application",value:contextPacket.injection}}:{}),...(additionalContext||{})};
-      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(agentRuntime==="codex"&&custom?.effort?{effort:custom.effort}:{}),...(agentRuntime==="codex"&&custom?.serviceTier?{serviceTierForTurn:custom.serviceTier}:{}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);
+      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(agentRuntime==="codex"&&custom?.effort?{effort:custom.effort}:{}),...(agentRuntime==="codex"&&custom?.serviceTier?{serviceTierForTurn:custom.serviceTier}:{}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);
       setMessages(prev=>prev.map(m=>m.id===clientId?{...m,turnId,checkpointId:checkpoint?.id||null}:m));if(checkpoint?.id&&turnId){try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}});setCheckpointByTurn(prev=>({...prev,[turnId]:{...checkpoint,turnId}}))}catch(error){reportCheckpointIssue("File checkpoint was created but could not be linked to this turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}}setAttachments([]);setContextChips([]);return{thread,turnId};
     }catch(error){
       setMessages(prev=>prev.filter(message=>message.id!==clientId));
@@ -2646,7 +2646,7 @@ export default function App(){
       }
       const p=presetFor(permissionMode);
       const sandboxPolicy=p.sandbox==="danger-full-access"?{type:"dangerFullAccess"}:p.sandbox==="read-only"?{type:"readOnly",networkAccess:false}:{type:"workspaceWrite",writableRoots:[cwd],networkAccess:true,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
-      const custom=(settings.customModels||[]).find(item=>item.id===modelId&&item.runtime===agentRuntime&&(agentRuntime!=="codex"||item.provider===provider));
+      const custom=(settings.customModels||[]).find(item=>item.id===modelId&&item.runtime===agentRuntime&&(!["native","codex"].includes(agentRuntime)||item.provider===provider));
       turnRequestStarted=true;
       const collaboration=selectedCollaborationMode(modelId);
       const contextPacket=await prepareTurnContext(thread,cwd,text,focusPaths||repositoryFocusPaths(paths,contextChips),{projectless,background:true});

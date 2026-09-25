@@ -14,6 +14,7 @@ import { createRemoteContextIo } from "./context-engine.mjs";
 import { createClaudeRepositoryMcp } from "./claude-repository-tools.mjs";
 import { enrichGoal, goalAdditionalContext, goalBudgetGate, normalizeGoal } from "./goal-state.mjs";
 import { continuityAdditionalContext, continuitySnapshot, normalizeContinuityNotes } from "./continuity-state.mjs";
+import { verificationRepairContext, verificationRepairPrompt, verificationRepairState } from "./verification-repair.mjs";
 import { delegationContextValue, delegationGoalPatch, delegationPolicies } from "./delegation-state.mjs";
 import { executeDelegation } from "./delegation-executor.mjs";
 import { normalizePermissionMode } from "./permission-policy.mjs";
@@ -874,6 +875,28 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       if(!threadStore.get(params.threadId))throw new Error("Thread not found");
       state.updateThreadMeta(params.threadId,{continuityNotes:undefined});const continuity=durableContinuity(params.threadId);
       emit("thread/continuity/updated",{threadId:params.threadId,continuity});return {ok:true,continuity};
+    }
+    if(method==="thread/verification/get"){
+      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      const records=state?.verificationRecords?.({threadId:thread.id,limit:50})||[];
+      if(!records.length)return {record:null,nextAction:null};
+      return verificationRepairState(records,params.recordId||null);
+    }
+    if(method==="thread/verification/repair"){
+      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      if(thread.status?.type==="active")throw new Error("Stop the running turn before starting verification repair.");
+      const records=state?.verificationRecords?.({threadId:thread.id,limit:50})||[];
+      if(!records.length)throw new Error("No persisted verification record is available for this thread.");
+      const prepared=verificationRepairState(records,params.recordId||null),{record,nextAction}=prepared;
+      if(nextAction.action!=="repair")throw new Error("Latest verification does not require repair (next action: "+nextAction.action+").");
+      const repairContext=verificationRepairContext(prepared),repairPrompt=verificationRepairPrompt();
+      const started=await request(context,"turn/start",{
+        threadId:thread.id,model:thread.model||undefined,
+        ...(thread.runtime==="native"&&thread.providerMeta?.modelProvider?{modelProvider:thread.providerMeta.modelProvider}:{}),
+        input:[{type:"text",text:repairPrompt}],additionalContext:{"trebell.verification_repair":{kind:"application",value:repairContext}},
+      });
+      journal?.record?.({runtime:thread.runtime||runtime,provider:thread.providerMeta?.modelProvider||thread.providerMeta?.runtimeInstanceId||null,environmentId:thread.providerMeta?.environmentId??null,threadId:thread.id,turnId:started?.turn?.id||null,category:"verification",name:"verification.repair_started",status:"running",data:{recordId:record.id,nextAction:nextAction.action,failedSteps:nextAction.failedSteps||[]}});
+      return {record,nextAction,turn:started?.turn||null};
     }
     if(method==="thread/delegate"){
       const parent=threadStore.get(params.threadId||params.parentThreadId);if(!parent)throw new Error("Parent thread not found");
