@@ -24,7 +24,7 @@ import { approvalResponse } from "./approval-utils.js";
 import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./fanout-utils.js";
 import { matchingMessageExcerpt, matchingPullRequestExcerpt } from "./thread-message-search.js";
 import { parseVisualizationMessage, visualizationUrl } from "./visualization-utils.js";
-import { captureThreadScrollPosition, rememberThreadScrollPosition, restoredThreadScrollTop } from "./thread-scroll.js";
+import { captureHistoryPrependAnchor, captureThreadScrollPosition, rememberThreadScrollPosition, restoreHistoryPrependAnchor, restoredThreadScrollTop } from "./thread-scroll.js";
 import { DEFAULT_LAYOUT, clampLayoutValue, normalizeLayoutPreferences } from "./layout-preferences.js";
 import { nativeThreadSearchMatches, threadListParams } from "./thread-list-query.js";
 import { resizeTextarea } from "./textarea-size.js";
@@ -755,7 +755,17 @@ export default function App(){
     const node=conversationScrollRef.current;const threadId=activeThread?.id;if(!node||!threadId)return;
     if(pendingHistoryPrependRef.current?.threadId===threadId){
       const pending=pendingHistoryPrependRef.current;node.scrollTop=Math.max(0,pending.scrollTop+(node.scrollHeight-pending.scrollHeight));
-      followConversationEndRef.current=false;pendingHistoryPrependRef.current=null;return;
+      followConversationEndRef.current=false;
+      let frame=0,attempt=0,cancelled=false;
+      const settleAnchor=()=>{
+        if(cancelled||pendingHistoryPrependRef.current!==pending)return;
+        restoreHistoryPrependAnchor(node,pending.anchor);
+        attempt++;
+        if(attempt<12)frame=requestAnimationFrame(settleAnchor);
+        else pendingHistoryPrependRef.current=null;
+      };
+      frame=requestAnimationFrame(settleAnchor);
+      return()=>{cancelled=true;if(frame)cancelAnimationFrame(frame)};
     }
     if(pendingThreadScrollRestoreRef.current===threadId){
       const position=threadScrollPositionsRef.current.get(threadId)||null;
@@ -2341,7 +2351,9 @@ export default function App(){
   async function loadEarlierMessages(){
     const threadId=activeThreadRef.current?.id;const cursor=historyPage.threadId===threadId?historyPage.nextCursor:null;
     if(!rpc||rpcStatus!=="connected"||!threadId||!cursor||historyPage.loading)return;
-    const node=conversationScrollRef.current;setHistoryPage(current=>current.threadId===threadId?{...current,loading:true}:current);
+    const node=conversationScrollRef.current;
+    const prependSnapshot=node?{scrollHeight:node.scrollHeight,scrollTop:node.scrollTop,anchor:captureHistoryPrependAnchor(node)}:null;
+    setHistoryPage(current=>current.threadId===threadId?{...current,loading:true}:current);
     try{
       const page=historyPage.itemPaging
         ?await loadItemHistoryPage(rpc,threadId,cursor)
@@ -2350,7 +2362,7 @@ export default function App(){
       const earlier=historyPage.itemPaging
         ?historyFromItemEntries([...(page?.data||[])].reverse(),checkpointByTurn)
         :historyFromTurns([...(page?.data||[])].reverse(),checkpointByTurn);
-      if(earlier.length&&node)pendingHistoryPrependRef.current={threadId,scrollHeight:node.scrollHeight,scrollTop:node.scrollTop};
+      if(earlier.length&&node&&prependSnapshot)pendingHistoryPrependRef.current={threadId,...prependSnapshot};
       if(earlier.length)setMessages(current=>mergeHistoryMessages(earlier,current));
       setHistoryPage({threadId,nextCursor:page?.nextCursor||null,paginated:true,itemPaging:Boolean(historyPage.itemPaging),loading:false});
     }catch(error){
