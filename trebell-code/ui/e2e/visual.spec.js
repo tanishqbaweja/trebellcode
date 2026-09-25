@@ -1076,6 +1076,39 @@ test("live assistant streaming survives page navigation without root-owned strea
   }finally{await harness.close()}
 });
 
+test("live command output survives page navigation without root-owned event churn",async({page})=>{
+  test.setTimeout(30_000);
+  const thread={id:"command-stream-isolation-thread",name:"Command stream isolation fixture",preview:"Command delta navigation coverage",historyMode:"paginated",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexRequestHarness(thread);
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"command-stream-isolation-fixture");
+    await page.goto("/");
+    await page.getByRole("button",{name:/Command stream isolation fixture/}).click();
+    await expect(page.locator(".thread-row.active")).toContainText("Command stream isolation fixture");
+    harness.emit({method:"turn/started",params:{threadId:thread.id,turn:{id:"command-stream-turn",status:"inProgress"}}});
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeVisible();
+    harness.emit({method:"item/started",params:{threadId:thread.id,turnId:"command-stream-turn",item:{id:"command-stream-item",type:"commandExecution",command:["npm","test"],status:"inProgress"}}});
+    const commandEvent=page.locator(".tool-event").filter({hasText:"npm test"});
+    await expect(commandEvent).toBeVisible();
+    harness.emit({method:"item/commandExecution/outputDelta",params:{threadId:thread.id,turnId:"command-stream-turn",itemId:"command-stream-item",delta:"line one\n"}});
+    await expect(commandEvent.locator(".tool-event-body")).toContainText("line one");
+    await page.getByRole("button",{name:"Settings",exact:true}).click();
+    await expect(page.getByRole("heading",{name:"Settings"})).toBeVisible();
+    harness.emit({method:"item/commandExecution/outputDelta",params:{threadId:thread.id,turnId:"command-stream-turn",itemId:"command-stream-item",delta:"line two\n"}});
+    await page.getByRole("button",{name:"Threads",exact:true}).click();
+    const restoredEvent=page.locator(".tool-event").filter({hasText:"npm test"});
+    await expect(restoredEvent.locator(".tool-event-body")).toContainText("line one\nline two");
+    harness.emit({method:"item/completed",params:{threadId:thread.id,turnId:"command-stream-turn",item:{id:"command-stream-item",type:"commandExecution",command:["npm","test"],status:"completed"}}});
+    await expect(restoredEvent).toHaveClass(/status-done/);
+    await expect(restoredEvent.locator(".tool-event-body")).toContainText("line one\nline two");
+    await restoredEvent.locator("summary").click();
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"command-stream-isolation-navigation-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
 test("direct fallback never drops attachments or failed text sends",async({page,request})=>{
   test.setTimeout(35_000);
   const baseBootstrap=await (await request.get("/api/bootstrap")).json();

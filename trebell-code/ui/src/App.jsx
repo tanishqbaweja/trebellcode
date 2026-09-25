@@ -264,15 +264,24 @@ function EventIcon({event}){
   if(event.kind==="mcpToolCall")return <Zap size={13}/>;
   return <Sparkles size={13}/>;
 }
-const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,initialAssistantText="",onOpenPanel},ref){
+const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,initialAssistantText="",initialCommandOutputs,onOpenPanel},ref){
   const [assistantText,setAssistantText]=useState(initialAssistantText);
+  const [commandOutputs,setCommandOutputs]=useState(()=>new Map(initialCommandOutputs||[]));
   const openPanelRef=useRef(onOpenPanel);openPanelRef.current=onOpenPanel;
   const openWorkspace=useCallback(()=>openPanelRef.current?.("workspace"),[]);
-  useImperativeHandle(ref,()=>({setText:value=>setAssistantText(String(value||""))}),[]);
-  useEffect(()=>{setAssistantText(String(initialAssistantText||""))},[initialAssistantText]);
+  useImperativeHandle(ref,()=>({
+    setText:value=>setAssistantText(String(value||"")),
+    appendCommandOutputs:entries=>setCommandOutputs(previous=>{
+      const next=new Map(previous);
+      for(const [key,value] of entries||[]){const id=String(key||""),text=String(value||"");if(id&&text)next.set(id,(next.get(id)||"")+text)}
+      return next;
+    }),
+    clearCommandOutput:key=>setCommandOutputs(previous=>{const id=String(key||"");if(!previous.has(id))return previous;const next=new Map(previous);next.delete(id);return next}),
+    resetStreams:()=>{setAssistantText("");setCommandOutputs(new Map())},
+  }),[]);
   if(!events.length&&!assistantText)return null;
   return <div className="agent-block"><div className="agent-heading"><div className="agent-star"><Sparkles size={16}/></div><span>Trebell agent activity</span></div><div className="timeline">
-    {events.map(event=><ActivityEventRow key={event.id} event={event} onInspectChanges={openWorkspace}/>)}
+    {events.map(event=>{const streamedOutput=commandOutputs.get(String(event.id))||"";const rowEvent=!event.output&&streamedOutput?{...event,output:streamedOutput}:event;return <ActivityEventRow key={event.id} event={rowEvent} onInspectChanges={openWorkspace}/>})}
   </div>{assistantText&&<div className="assistant-answer">{assistantText}</div>}</div>;
 }));
 
@@ -513,7 +522,7 @@ export default function App(){
   const [threads,setThreads]=useState([]); const [sections,setSections]=useState({}); const [threadMeta,setThreadMeta]=useState({});
   const [activeThread,setActiveThread]=useState(null); const [activeTurnId,setActiveTurnId]=useState(null);
   const [messages,setMessages]=useState([]); const [events,setEvents]=useState([]);
-  const assistantTextRef=useRef("");const activityTimelineRef=useRef(null);
+  const assistantTextRef=useRef("");const commandOutputRef=useRef(new Map());const activityTimelineRef=useRef(null);
   const assistantStreamBufferRef=useRef(null);
   if(!assistantStreamBufferRef.current)assistantStreamBufferRef.current=createTextFrameBuffer({
     schedule:callback=>requestAnimationFrame(callback),
@@ -524,14 +533,10 @@ export default function App(){
   if(!commandStreamBufferRef.current)commandStreamBufferRef.current=createKeyedTextFrameBuffer({
     schedule:callback=>requestAnimationFrame(callback),
     cancel:handle=>cancelAnimationFrame(handle),
-    onFlush:entries=>setEvents(previous=>{
-      const updates=new Map(entries);let changed=false;
-      const next=previous.map(event=>{
-        const delta=updates.get(String(event.id));if(!delta)return event;
-        changed=true;return {...event,output:(event.output||"")+delta};
-      });
-      return changed?next:previous;
-    }),
+    onFlush:entries=>{
+      for(const [key,value] of entries){const id=String(key||""),text=String(value||"");if(id&&text)commandOutputRef.current.set(id,(commandOutputRef.current.get(id)||"")+text)}
+      activityTimelineRef.current?.appendCommandOutputs(entries);
+    },
   });
   const [historyPage,setHistoryPage]=useState({threadId:null,nextCursor:null,paginated:false,loading:false});
   const [threadFind,setThreadFind]=useState({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});
@@ -566,7 +571,7 @@ export default function App(){
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"}); const [paletteDataError,setPaletteDataError]=useState("");
   const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
-  function resetAssistantStream(){assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();assistantTextRef.current="";activityTimelineRef.current?.setText("")}
+  function resetAssistantStream(){assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();assistantTextRef.current="";commandOutputRef.current.clear();activityTimelineRef.current?.resetStreams()}
   function appendAssistantStream(value){assistantStreamBufferRef.current?.push(value)}
   useEffect(()=>()=>{assistantStreamBufferRef.current?.dispose();commandStreamBufferRef.current?.dispose();for(const waiter of compactionWaitersRef.current.values()){clearTimeout(waiter.timer);waiter.reject?.(new Error("Trebell closed while context compaction was pending"))}compactionWaitersRef.current.clear()},[]);
   const navigationKey=location=>[location.section,location.threadId||"",location.rightPanelOpen?location.rightPanelTab||"files":""].join("|");
@@ -1638,7 +1643,14 @@ export default function App(){
       if(isCurrent&&isActivityItem)setEvents(prev=>[...prev.filter(e=>e.id!==item.id),item]);
     }
     else if(message.method==="item/completed"&&p.item){
-      if(isCurrent&&p.item.type==="commandExecution")commandStreamBufferRef.current?.flushKey(p.item.id||"command");
+      let streamedCommandOutput="";
+      if(isCurrent&&p.item.type==="commandExecution"){
+        const commandId=String(p.item.id||"command");
+        commandStreamBufferRef.current?.flushKey(commandId);
+        streamedCommandOutput=commandOutputRef.current.get(commandId)||"";
+        commandOutputRef.current.delete(commandId);
+        activityTimelineRef.current?.clearCommandOutput(commandId);
+      }
       const item=normalizeItem({...p.item,status:"completed"});
       const completedAtMs=p.completedAtMs||Date.now();
       const isActivityItem=!["userMessage","agentMessage"].includes(p.item.type);
@@ -1649,7 +1661,7 @@ export default function App(){
           setMessages(prev=>prev.some(message=>message.id===id)?prev:[...prev,{id,role:"user",text:draft.draftText||draft.text,turnId:p.turnId||null}]);
         }
         if(p.item.type==="agentMessage"&&p.item.text?.trim()){setMessages(prev=>prev.some(m=>m.id===p.item.id)?prev:[...prev,{id:p.item.id,role:"assistant",text:p.item.text,turnId:p.turnId||null}]);resetAssistantStream()}
-        if(isActivityItem)setEvents(prev=>prev.some(e=>e.id===item.id)?prev.map(e=>e.id===item.id?{...e,...item,output:item.output||e.output}:e):[...prev,item]);
+        if(isActivityItem)setEvents(prev=>prev.some(e=>e.id===item.id)?prev.map(e=>e.id===item.id?{...e,...item,output:item.output||streamedCommandOutput||e.output}:e):[...prev,{...item,output:item.output||streamedCommandOutput}]);
       }
     }
     else if(message.method==="item/autoApprovalReview/started"){
@@ -3166,7 +3178,7 @@ export default function App(){
             <div className="conversation-column">
               <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
               <Conversation messages={messages} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={["codex","opencode","claude"].includes(agentRuntime)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyPage.nextCursor)} loadingEarlier={historyPage.loading} onLoadEarlier={conversationLoadEarlier} activeFindItemId={threadFind.activeItemId}/>
-              <ActivityTimeline ref={activityTimelineRef} events={events} initialAssistantText={assistantTextRef.current} onOpenPanel={activityOpenPanel}/>
+              <ActivityTimeline ref={activityTimelineRef} events={events} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} onOpenPanel={activityOpenPanel}/>
               {guardianDenials.map(review=><div className="inline-approval" key={review.reviewId}><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div>)}
               {approvals[0]&&<div className="inline-approval"><ApprovalCard request={approvals[0]} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
               {queued.map((item,index)=><div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span>{item.native?"Queued in Codex":item.autoStartFailed?"Queued · retry needed":"Queued"}{queuedEditId===item.id?" · editing":""}</span><p>{item.text}</p><div className="queued-message-actions"><button onClick={()=>runUserAction(()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={()=>editQueued(item)} disabled={queuedEditId===item.id||item.editable===false}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={index===0} onClick={()=>runUserAction(()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={index===queued.length-1} onClick={()=>runUserAction(()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button onClick={()=>runUserAction(()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>)}
