@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { readFile, readdir, stat } from "node:fs/promises";
-import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, posix, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync=promisify(execFile);
@@ -13,6 +13,13 @@ const STOP_WORDS=new Set(["the","and","for","with","that","this","from","into","
 function tokenEstimate(value){return Math.ceil(String(value||"").length/4)}
 function slash(value){return String(value||"").split(sep).join("/")}
 function boundedNumber(value,fallback,min,max){const number=Number(value);return Number.isFinite(number)?Math.max(min,Math.min(max,number)):fallback}
+async function mapLimit(items,limit,worker){
+  const values=Array.from(items||[]),results=new Array(values.length),size=Math.max(1,Math.min(values.length||1,Number(limit)||1));let cursor=0;
+  await Promise.all(Array.from({length:size},async()=>{
+    for(;;){const index=cursor++;if(index>=values.length)return;results[index]=await worker(values[index],index)}
+  }));
+  return results;
+}
 function indexablePath(path){
   const parts=slash(path).split("/").filter(Boolean);
   return parts.length>0&&!parts.some(part=>SKIP.has(part))&&!parts.includes("..");
@@ -97,8 +104,113 @@ async function gitState(root){
       execFileAsync("git",["-C",root,"diff","--no-ext-diff","--no-color","--unified=1"],{windowsHide:true,maxBuffer:2*1024*1024,timeout:15_000}),
     ]);
     const changed=new Set(String(status||"").split(/\r?\n/).filter(Boolean).map(line=>slash(line.slice(3).replace(/^.* -> /,""))));
-    return {changed,status:String(status||"").slice(0,12_000),diff:String(diff||"").slice(0,16_000)};
-  }catch{return {changed:new Set(),status:"",diff:""}}
+    return {isGit:true,changed,status:String(status||"").slice(0,12_000),diff:String(diff||"").slice(0,16_000)};
+  }catch{return {isGit:false,changed:new Set(),status:"",diff:""}}
+}
+
+async function localMetadata(root,paths){
+  const pairs=await mapLimit(paths,64,async relativePath=>{
+    try{
+      const info=await stat(resolve(root,relativePath));
+      return info.isFile()?[relativePath,{size:info.size,version:String(info.mtimeMs)}]:null;
+    }catch{return null}
+  });
+  return new Map(pairs.filter(Boolean));
+}
+
+async function localReadMany(root,paths){
+  const pairs=await mapLimit(paths,32,async relativePath=>{
+    try{return [relativePath,await readFile(resolve(root,relativePath),"utf8")]}catch{return null}
+  });
+  return new Map(pairs.filter(Boolean));
+}
+
+function localContextIo(root){
+  const absolute=resolve(root);
+  return {
+    cacheKey:"local:"+absolute,
+    root:absolute,
+    discoverFiles:()=>discoverFiles(absolute),
+    metadata:paths=>localMetadata(absolute,paths),
+    readMany:paths=>localReadMany(absolute,paths),
+    readText:path=>readFile(resolve(absolute,path),"utf8"),
+    gitState:()=>gitState(absolute),
+    relativeFocus:path=>slash(relative(absolute,resolve(absolute,path))).replace(/^\.\//,""),
+  };
+}
+
+function remoteInput(paths){return paths.map(path=>"./"+String(path||"").replace(/^\.\//,"")).join("\0")+"\0"}
+function decodeBase64(value){try{return Buffer.from(String(value||""),"base64").toString("utf8")}catch{return ""}}
+
+export function createRemoteContextIo({environments,environmentId,root}={}){
+  if(!environments||!environmentId)throw new Error("Remote context requires an environment");
+  const absolute=posix.normalize(String(root||"/"));
+  const run=options=>environments.executeArgv(environmentId,options);
+  const runInput=options=>environments.executeArgvInput(environmentId,options);
+  const discoverFiles=async()=>{
+    const git=await run({command:"git",args:["-C",absolute,"ls-files","-co","--exclude-standard","-z"],cwd:"",timeoutMs:20_000,maxOutput:16*1024*1024});
+    if(git.exitCode===0)return String(git.stdout||"").split("\0").filter(Boolean).map(path=>path.replace(/\\/g,"/")).filter(indexablePath);
+    const args=[".","(","-name",".git","-o","-name","node_modules","-o","-name","target","-o","-name","dist","-o","-name","build","-o","-name",".next","-o","-name",".cache","-o","-name","desktop-dist","-o","-name","coverage","-o","-name","vendor",")","-prune","-o","-type","f","-print0"];
+    const found=await run({command:"find",args,cwd:absolute,timeoutMs:25_000,maxOutput:16*1024*1024});
+    if(found.exitCode!==0)throw new Error(found.stderr||"Could not list remote workspace for context indexing");
+    return String(found.stdout||"").split("\0").filter(Boolean).map(path=>path.replace(/^\.\//,"")).filter(indexablePath);
+  };
+  const metadata=async paths=>{
+    if(!paths.length)return new Map();
+    const script="while IFS= read -r -d '' f; do [ -f \"$f\" ] || continue; if m=$(stat -c '%s\\t%y' \"$f\" 2>/dev/null); then :; else m=$(stat -f '%z\\t%m' \"$f\" 2>/dev/null) || continue; fi; printf '%s\\t' \"$m\"; printf '%s' \"${f#./}\" | base64 | tr -d '\\r\\n'; printf '\\n'; done";
+    const result=await runInput({command:"bash",args:["-lc",script],input:remoteInput(paths),cwd:absolute,timeoutMs:30_000,maxOutput:8*1024*1024});
+    if(result.exitCode!==0)throw new Error(result.stderr||"Could not inspect remote workspace files");
+    const entries=[];
+    for(const line of String(result.stdout||"").split(/\r?\n/)){
+      if(!line)continue;const parts=line.split("\t");if(parts.length<3)continue;
+      const size=Number(parts[0]),encoded=parts.at(-1),relativePath=decodeBase64(encoded);
+      if(!relativePath||!Number.isFinite(size))continue;
+      entries.push([relativePath,{size,version:parts.slice(1,-1).join("\t")}]);
+    }
+    return new Map(entries);
+  };
+  const readMany=async paths=>{
+    const output=new Map();
+    const script="while IFS= read -r -d '' f; do [ -f \"$f\" ] || continue; printf '%s\\t' \"$(printf '%s' \"${f#./}\" | base64 | tr -d '\\r\\n')\"; base64 < \"$f\" | tr -d '\\r\\n'; printf '\\n'; done";
+    for(let offset=0;offset<paths.length;offset+=16){
+      const batch=paths.slice(offset,offset+16);
+      const result=await runInput({command:"bash",args:["-lc",script],input:remoteInput(batch),cwd:absolute,timeoutMs:45_000,maxOutput:12*1024*1024});
+      if(result.exitCode!==0)throw new Error(result.stderr||"Could not read remote workspace files");
+      for(const line of String(result.stdout||"").split(/\r?\n/)){
+        if(!line)continue;const tab=line.indexOf("\t");if(tab<1)continue;
+        const relativePath=decodeBase64(line.slice(0,tab));if(relativePath)output.set(relativePath,decodeBase64(line.slice(tab+1)));
+      }
+    }
+    return output;
+  };
+  const remoteGitState=async()=>{
+    const [status,diff]=await Promise.all([
+      run({command:"git",args:["-C",absolute,"status","--short"],cwd:"",timeoutMs:15_000,maxOutput:1024*1024}),
+      run({command:"git",args:["-C",absolute,"diff","--no-ext-diff","--no-color","--unified=1"],cwd:"",timeoutMs:20_000,maxOutput:2*1024*1024}),
+    ]);
+    if(status.exitCode!==0)return {isGit:false,changed:new Set(),status:"",diff:""};
+    const changed=new Set(String(status.stdout||"").split(/\r?\n/).filter(Boolean).map(line=>line.slice(3).replace(/^.* -> /,"").replace(/\\/g,"/")));
+    return {isGit:true,changed,status:String(status.stdout||"").slice(0,12_000),diff:diff.exitCode===0?String(diff.stdout||"").slice(0,16_000):""};
+  };
+  return {
+    cacheKey:"remote:"+environmentId+":"+absolute,
+    root:absolute,
+    discoverFiles,
+    metadata,
+    readMany,
+    readText:async relativePath=>{
+      const target=posix.join(absolute,String(relativePath||"").replace(/^\.\//,""));
+      if(target!==absolute&&!target.startsWith(absolute.endsWith("/")?absolute:absolute+"/"))throw new Error("Context file is outside the remote workspace");
+      const result=await run({command:"head",args:["-c","65536",target],cwd:"",timeoutMs:15_000,maxOutput:128*1024});
+      if(result.exitCode!==0)throw new Error(result.stderr||"Could not read remote context file");
+      return String(result.stdout||"");
+    },
+    gitState:remoteGitState,
+    relativeFocus:path=>{
+      const raw=String(path||"");const target=raw.startsWith("/")?posix.normalize(raw):posix.normalize(posix.join(absolute,raw));
+      const rel=posix.relative(absolute,target);return rel.startsWith("../")||posix.isAbsolute(rel)?"":rel;
+    },
+  };
 }
 
 function resolveImport(fromPath,spec,available){
@@ -170,26 +282,42 @@ function publicItem(entry,score,centrality,reasons,tokenCost){
 export class ContextEngine{
   constructor({maxFileBytes=256_000}={}){this.maxFileBytes=maxFileBytes;this.roots=new Map()}
 
-  async #index(root){
-    const started=Date.now(),absolute=resolve(root),paths=await discoverFiles(absolute),previous=this.roots.get(absolute)||new Map(),next=new Map();let reparsed=0,reused=0,skipped=0;
-    for(const relativePath of paths.slice(0,20_000)){
-      const extension=extname(relativePath).toLowerCase();if(!SOURCE_EXTENSIONS.has(extension)){continue}
-      const full=resolve(absolute,relativePath);let info;try{info=await stat(full)}catch{continue}
-      if(!info.isFile()||info.size>this.maxFileBytes){skipped++;continue}
-      const cached=previous.get(relativePath);if(cached&&cached.size===info.size&&cached.mtimeMs===info.mtimeMs){next.set(relativePath,cached);reused++;continue}
-      let content;try{content=await readFile(full,"utf8")}catch{skipped++;continue}
-      if(content.includes("\0")){skipped++;continue}
-      next.set(relativePath,{relativePath,full,size:info.size,mtimeMs:info.mtimeMs,sample:content.slice(0,64_000),parsed:parseSource(content,relativePath)});reparsed++;
+  async #index(root,contextIo,git){
+    const started=Date.now(),io=contextIo||localContextIo(root),absolute=io.root,cacheKey=io.cacheKey||absolute;
+    const paths=(await io.discoverFiles()).slice(0,20_000),previous=this.roots.get(cacheKey)||new Map(),next=new Map();let reparsed=0,reused=0,skipped=0;
+    const sourcePaths=paths.filter(relativePath=>SOURCE_EXTENSIONS.has(extname(relativePath).toLowerCase()));
+    const inspect=(!previous.size||!git?.isGit)
+      ?sourcePaths
+      :sourcePaths.filter(relativePath=>!previous.has(relativePath)||git.changed.has(relativePath));
+    const inspectSet=new Set(inspect);
+    const metadata=await io.metadata(inspect);
+    const toRead=[];
+    for(const relativePath of sourcePaths){
+      const cached=previous.get(relativePath);
+      if(cached&&!inspectSet.has(relativePath)){next.set(relativePath,cached);reused++;continue}
+      const info=metadata.get(relativePath);
+      if(!info||info.size>this.maxFileBytes){skipped++;continue}
+      if(cached&&cached.size===info.size&&cached.version===info.version){next.set(relativePath,cached);reused++;continue}
+      toRead.push(relativePath);
     }
-    this.roots.set(absolute,next);return {root:absolute,files:next,paths,reparsed,reused,skipped,durationMs:Date.now()-started};
+    const contents=await io.readMany(toRead,this.maxFileBytes);
+    for(const relativePath of toRead){
+      const info=metadata.get(relativePath),content=contents.get(relativePath);
+      if(!info||typeof content!=="string"||content.includes("\0")){skipped++;continue}
+      next.set(relativePath,{relativePath,size:info.size,version:info.version,sample:content.slice(0,64_000),parsed:parseSource(content,relativePath)});reparsed++;
+    }
+    this.roots.set(cacheKey,next);
+    return {root:absolute,files:next,paths,reparsed,reused,skipped,inspected:inspect.length,durationMs:Date.now()-started,cacheKey};
   }
 
-  async buildPacket({root,task="",focusPaths=[],maxTokens=7000,maxFiles=24}={}){
+  async buildPacket({root,task="",focusPaths=[],maxTokens=7000,maxFiles=24,io=null}={}){
     if(!root)throw new Error("Context Engine requires a workspace path");
+    const contextIo=io||localContextIo(root);
     const budget=Math.round(boundedNumber(maxTokens,7000,800,20_000)),fileLimit=Math.round(boundedNumber(maxFiles,24,4,80));
-    const [index,git]=await Promise.all([this.#index(root),gitState(resolve(root))]);const terms=taskTerms(task),files=[...index.files.values()],available=new Set(index.files.keys());
+    const git=await contextIo.gitState();
+    const index=await this.#index(root,contextIo,git);const terms=taskTerms(task),files=[...index.files.values()],available=new Set(index.files.keys());
     const definitionIndex=new Map();for(const entry of files)for(const definition of entry.parsed.definitions){let owners=definitionIndex.get(definition.name);if(!owners){owners=[];definitionIndex.set(definition.name,owners)}owners.push(entry.relativePath)}
-    const edges=new Map(),relevance=new Map(),personalization=new Map(),focusSet=new Set((focusPaths||[]).map(path=>slash(relative(index.root,resolve(index.root,path))).replace(/^\.\//,"")));
+    const edges=new Map(),relevance=new Map(),personalization=new Map(),focusSet=new Set((focusPaths||[]).map(path=>contextIo.relativeFocus(path)).filter(Boolean));
     for(const entry of files){
       const rank=relevanceFor(entry,terms,git.changed,focusSet);relevance.set(entry.relativePath,rank);personalization.set(entry.relativePath,1+rank.score);
       for(const spec of entry.parsed.imports){const target=resolveImport(entry.relativePath,spec,available);if(target)addEdge(edges,entry.relativePath,target,4)}
@@ -211,16 +339,19 @@ export class ContextEngine{
     const sections=[];let used=tokenEstimate(header)+20;
     if(instructionPaths.length){
       let block="Repository instructions:\n";
-      for(const path of instructionPaths){try{const content=(await readFile(resolve(index.root,path),"utf8")).slice(0,5000);block+=`\n### ${path}\n${content.trim()}\n`}catch{}}
+      for(const path of instructionPaths){try{const content=(await contextIo.readText(path)).slice(0,5000);block+=`\n### ${path}\n${content.trim()}\n`}catch{}}
       const cost=tokenEstimate(block);if(cost<budget*.35){sections.push(block.trim());used+=cost}
     }
     if(git.status){const block=`Current Git status:\n${git.status.trim()}${git.diff?`\n\nCurrent diff excerpt:\n${git.diff.trim()}`:""}`;const clipped=block.slice(0,12_000),cost=tokenEstimate(clipped);if(used+cost<budget*.55){sections.push(clipped);used+=cost}}
 
+    const candidatePaths=ranked.slice(0,Math.max(fileLimit*2,16)).map(candidate=>candidate.entry.relativePath);
+    const candidateContents=await contextIo.readMany(candidatePaths,this.maxFileBytes);
     const selected=[];
     for(const candidate of ranked){
       if(selected.length>=fileLimit)break;
       const {entry,rel,central,combined}=candidate;if(combined<=0&&selected.length>=Math.min(6,fileLimit))break;
-      let content;try{content=await readFile(entry.full,"utf8")}catch{continue}
+      let content=candidateContents.get(entry.relativePath);
+      if(typeof content!=="string"){try{content=await contextIo.readText(entry.relativePath)}catch{continue}}
       const excerpt=relevantExcerpt(content,entry,terms),symbols=entry.parsed.definitions.slice(0,20).map(item=>`${item.kind} ${item.name} (L${item.line})`).join(", ");
       const reasons=[...rel.reasons];if(central>1/Math.max(1,files.length)*1.35)reasons.push("structurally central in repository graph");
       const block=`### ${entry.relativePath}\nWhy selected: ${reasons.join("; ")||"repository structure"}\n${symbols?`Key symbols: ${symbols}\n`:""}${excerpt?`Relevant structure/excerpt:\n${excerpt}`:""}`.trim();
@@ -233,7 +364,7 @@ export class ContextEngine{
       id:`ctx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`,
       root:index.root,task:String(task||""),generatedAt:Date.now(),tokenEstimate:tokenEstimate(injection),maxTokens:budget,
       items:selected,injection,
-      stats:{filesIndexed:files.length,reparsed:index.reparsed,reused:index.reused,skipped:index.skipped,graphEdges:[...edges.values()].reduce((sum,row)=>sum+row.size,0),durationMs:index.durationMs},
+      stats:{filesIndexed:files.length,reparsed:index.reparsed,reused:index.reused,skipped:index.skipped,inspected:index.inspected,graphEdges:[...edges.values()].reduce((sum,row)=>sum+row.size,0),durationMs:index.durationMs,remote:Boolean(io)},
     };
   }
 }

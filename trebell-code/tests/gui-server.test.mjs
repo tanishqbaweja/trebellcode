@@ -151,7 +151,7 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.ok(contextPacket.tokenEstimate<=1200);
     const remoteContextResponse=await fetch(gui.url+"/api/context/packet",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({path:"/srv/app",task:"remote task",environmentId:"ssh-test"})});
     assert.equal(remoteContextResponse.status,400);
-    assert.match((await remoteContextResponse.json()).error,/local workspaces only/i);
+    assert.doesNotMatch((await remoteContextResponse.json()).error,/local workspaces only/i);
     const t3Suggested=await fetch(gui.url+"/api/project-actions/suggestions?path="+encodeURIComponent(configProject)).then(r=>r.json());
     assert.equal(t3Suggested.t3.defaultThreadEnvMode,"worktree");assert.equal(t3Suggested.t3.worktreeSubmodules,"top-level");
     const visualizationDir=join(configProject,"artifacts");await mkdir(visualizationDir,{recursive:true});

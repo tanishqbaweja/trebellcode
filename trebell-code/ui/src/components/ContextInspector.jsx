@@ -19,11 +19,7 @@ export default function ContextInspector({packet=null,error=null,remote=false}){
     <section className="context-inspector-hero">
       <span>Trebell Context Engine</span>
       <strong>No repository context has been injected for this thread yet.</strong>
-      <p>{error?.message||(
-        remote
-          ?"This thread uses a remote workspace. Trebell's local structural index does not pretend it can see that repository yet."
-          :"Send a repository task and Trebell will build a bounded structural context packet before the model starts."
-      )}</p>
+      <p>{error?.message||"Send a repository task and Trebell will build a bounded structural context packet before the model starts."}</p>
     </section>
   </div>;
 
@@ -39,6 +35,7 @@ export default function ContextInspector({packet=null,error=null,remote=false}){
         <div><span>Reused</span><strong>{packet.stats?.reused??"—"}</strong></div>
         <div><span>Reparsed</span><strong>{packet.stats?.reparsed??"—"}</strong></div>
         <div><span>Relations</span><strong>{packet.stats?.graphEdges??"—"}</strong></div>
+        <div><span>Workspace</span><strong>{packet.stats?.remote||remote?"Remote":"Local"}</strong></div>
       </div>
     </section>
 

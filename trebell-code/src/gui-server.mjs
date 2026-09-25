@@ -42,7 +42,7 @@ import { sweepAutoPullProjects } from "./auto-pull-service.mjs";
 import { CloneJobService } from "./clone-job-service.mjs";
 import { prepareCodexHome } from "./codex-home-layout.mjs";
 import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
-import { ContextEngine } from "./context-engine.mjs";
+import { ContextEngine, createRemoteContextIo } from "./context-engine.mjs";
 import { EventJournal } from "./event-journal.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
@@ -2088,14 +2088,15 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")
           ?requestedEnvironmentId(body.environmentId,{fallback:false})
           :requestedEnvironmentId(null);
-        if(remoteEnvironmentProfile(environmentId))return json(res,400,{error:"Trebell repository context indexing is currently available for local workspaces only."});
         const root=environmentPath(body.path||process.cwd(),environmentId);
+        const remote=remoteEnvironmentProfile(environmentId);
         const packet=await contextEngine.buildPacket({
           root,
           task:body.task||"",
           focusPaths:Array.isArray(body.focusPaths)?body.focusPaths:[],
           maxTokens:body.maxTokens,
           maxFiles:body.maxFiles,
+          io:remote?createRemoteContextIo({environments,environmentId,root}):null,
         });
         return json(res,200,packet);
       }catch(error){return json(res,400,{error:error.message});}
