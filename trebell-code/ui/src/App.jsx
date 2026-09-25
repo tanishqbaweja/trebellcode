@@ -44,6 +44,7 @@ import { hydratePersistedQueue, persistedQueueItems } from "./persistent-queue.j
 import { contextTaskAnchor, contextTaskText } from "./context-task.js";
 import { requestTurnVerificationPlan, verificationPlanEvent } from "./turn-verification.js";
 import { catalogMetaPatch, mergeThreadCatalog, sameCatalogSnapshot, threadCatalogRuntime, threadsFromCatalogMeta } from "./thread-catalog.js";
+import { conversationChunkIndexForMessage, conversationVirtualChunks, shouldVirtualizeConversation } from "./conversation-virtualization.js";
 
 const TerminalPanel=lazy(()=>import("./components/TerminalPanel.jsx"));
 const WorkspacePanel=lazy(()=>import("./components/WorkspacePanel.jsx"));
@@ -350,9 +351,38 @@ const ConversationMessageRow=memo(function ConversationMessageRow({message,activ
   })}</div></div>;
 },sameConversationMessageRowProps);
 
-const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId,canLoadEarlier=false,loadingEarlier=false,onLoadEarlier,activeFindItemId=null}){
+const ConversationVirtualChunk=memo(function ConversationVirtualChunk({chunk,rootRef,forceMount=false,initialMount=false,renderMessage}){
+  const ref=useRef(null),[mounted,setMounted]=useState(Boolean(initialMount||forceMount)),[placeholderHeight,setPlaceholderHeight]=useState(Math.max(1,Number(chunk.estimatedHeight)||1));
+  useEffect(()=>{if(forceMount)setMounted(true)},[forceMount]);
+  useLayoutEffect(()=>{
+    if(!mounted||!ref.current)return;
+    const measure=()=>{const height=Math.ceil(ref.current?.getBoundingClientRect?.().height||0);if(height>0)setPlaceholderHeight(height)};
+    measure();
+    if(typeof ResizeObserver==="undefined")return;
+    const observer=new ResizeObserver(measure);observer.observe(ref.current);return()=>observer.disconnect();
+  },[mounted,chunk.key]);
+  useEffect(()=>{
+    const node=ref.current,root=rootRef?.current;if(!node||!root||typeof IntersectionObserver==="undefined"){setMounted(true);return}
+    let timer=null;
+    const observer=new IntersectionObserver(entries=>{
+      const visible=entries.some(entry=>entry.isIntersecting);
+      if(visible||forceMount){
+        if(timer){clearTimeout(timer);timer=null}
+        setMounted(true);return;
+      }
+      const height=Math.ceil(node.getBoundingClientRect().height||0);if(height>0)setPlaceholderHeight(height);
+      timer=setTimeout(()=>setMounted(false),120);
+    },{root,rootMargin:"1400px 0px 1400px 0px",threshold:0});
+    observer.observe(node);
+    return()=>{if(timer)clearTimeout(timer);observer.disconnect()};
+  },[rootRef,forceMount,chunk.key]);
+  return <div ref={ref} className={"conversation-virtual-chunk"+(mounted?" mounted":" placeholder")} data-virtual-chunk={chunk.key} style={mounted?undefined:{height:placeholderHeight}}>{mounted?chunk.messages.map(renderMessage):null}</div>;
+});
+
+const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId,canLoadEarlier=false,loadingEarlier=false,onLoadEarlier,activeFindItemId=null,scrollContainerRef=null}){
   const historyRef=useRef(null);
-  return <div className="conversation-history" ref={historyRef}>{canLoadEarlier&&<div className="history-page-control"><button type="button" disabled={loadingEarlier} onClick={onLoadEarlier}>{loadingEarlier?"Loading earlier messages…":"Load earlier messages"}</button></div>}{messages.map(message=><ConversationMessageRow
+  const virtualized=shouldVirtualizeConversation(messages),chunks=useMemo(()=>virtualized?conversationVirtualChunks(messages):[],[messages,virtualized]),forcedChunk=virtualized?conversationChunkIndexForMessage(chunks,activeFindItemId):-1;
+  const renderMessage=useCallback(message=><ConversationMessageRow
     key={message.id}
     message={message}
     activeFind={String(message.id)===String(activeFindItemId||"")}
@@ -361,7 +391,10 @@ const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,al
     environmentId={environmentId}
     threadId={threadId}
     onEditFromHere={onEditFromHere}
-  />)}<AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></div>;
+  />,[activeFindItemId,allowRevert,projectPath,environmentId,threadId,onEditFromHere]);
+  return <div className="conversation-history" ref={historyRef}>{canLoadEarlier&&<div className="history-page-control"><button type="button" disabled={loadingEarlier} onClick={onLoadEarlier}>{loadingEarlier?"Loading earlier messages…":"Load earlier messages"}</button></div>}{virtualized
+    ?chunks.map((chunk,index)=><ConversationVirtualChunk key={chunk.key} chunk={chunk} rootRef={scrollContainerRef} forceMount={index===forcedChunk} initialMount={index>=chunks.length-2} renderMessage={renderMessage}/>)
+    :messages.map(renderMessage)}<AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></div>;
 });
 function ApprovalCard({request,onResolve}){
   if(!request)return null;
@@ -3491,7 +3524,7 @@ export default function App(){
           <div className="conversation-scroll" ref={conversationScrollRef} onScroll={conversationScrolled}>
             <div className="conversation-column">
               <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
-              <Conversation messages={messages} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyPage.nextCursor)} loadingEarlier={historyPage.loading} onLoadEarlier={conversationLoadEarlier} activeFindItemId={threadFind.activeItemId}/>
+              <Conversation messages={messages} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={Boolean(runtimeCapabilities.rewind)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyPage.nextCursor)} loadingEarlier={historyPage.loading} onLoadEarlier={conversationLoadEarlier} activeFindItemId={threadFind.activeItemId} scrollContainerRef={conversationScrollRef}/>
               <ActivityTimeline ref={activityTimelineRef} events={events} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel}/>
               {guardianDenials.map(review=><div className="inline-approval" key={review.reviewId}><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div>)}
               {approvals[0]&&<div className="inline-approval"><ApprovalCard request={approvals[0]} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
