@@ -2660,6 +2660,9 @@ test("non-Codex runtimes open long threads with bounded history and load older p
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
     await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
     await page.goto("/");
+    await expect(page.locator(".composer-status")).not.toContainText("Ctrl/Cmd+Enter background");
+    await page.setViewportSize({width:1280,height:800});
+    await page.screenshot({path:auditDir+"opencode-no-background-affordance-1280x800.png",fullPage:true});
     await page.getByRole("button",{name:/OpenCode bounded history/}).click();
     await expect(page.locator("[data-message-id]")).toHaveCount(100);
     const resume=requests.find(item=>item.method==="thread/resume");
@@ -4155,6 +4158,7 @@ test("failed background work restores the draft when stash saving also fails",as
     await general.click();
     const composer=page.getByTestId("composer");
     await expect(composer).toBeVisible();
+    await expect(page.locator(".composer-status")).toContainText("Ctrl/Cmd+Enter background");
     const draft="Keep this draft safe even when both background start and stash saving fail.";
     await composer.fill(draft);
     await composer.press("Control+Enter");
