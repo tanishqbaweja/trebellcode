@@ -1870,6 +1870,38 @@ test("runtime server requests use the latest permission mode",async({page})=>{
   }finally{await harness.close()}
 });
 
+test("Codex repository tools query Trebell context intelligence end to end",async({page})=>{
+  test.setTimeout(35_000);
+  const root=process.cwd(),project={id:"repo-tools-project",name:"Repository tools fixture",path:root,environmentId:null,effectiveSettings:{defaultWorkspaceMode:"current"}};
+  const thread={id:"repo-tools-thread",name:"Repository tools fixture",preview:"Deterministic repository intelligence",cwd:root,createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexRequestHarness(thread);
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:root,platform:process.platform,version:"repo-tools-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[thread.id]:{projectless:false,cwd:root,environmentId:null}}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff",agent:"Codex"}]}})}));
+    await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})}));
+    await page.route(/\/api\/thread-meta$/,route=>{const body=route.request().postDataJSON?.()||{};return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(body.patch||{})})});
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.goto("/");
+    await page.getByRole("button",{name:/Repository tools fixture/}).click();
+    await expect(page.locator(".thread-row.active")).toContainText("Repository tools fixture");
+
+    const symbolsResponse=await harness.request("item/tool/call",{threadId:thread.id,namespace:"trebell_repo",tool:"search_symbols",arguments:{query:"ContextEngine",limit:10}});
+    expect(symbolsResponse.result?.success).toBe(true);
+    const symbols=JSON.parse(symbolsResponse.result.contentItems[0].text);
+    expect(symbols.data.some(item=>item.name==="ContextEngine"&&item.path==="src/context-engine.mjs"&&item.parser==="babel")).toBe(true);
+
+    const relationsResponse=await harness.request("item/tool/call",{threadId:thread.id,namespace:"trebell_repo",tool:"file_relations",arguments:{path:"src/context-engine.mjs"}});
+    expect(relationsResponse.result?.success).toBe(true);
+    const relations=JSON.parse(relationsResponse.result.contentItems[0].text);
+    expect(relations.path).toBe("src/context-engine.mjs");
+    expect(relations.definitions.some(item=>item.name==="ContextEngine")).toBe(true);
+    expect(relations.importers.some(item=>item.path==="src/gui-server.mjs")).toBe(true);
+  }finally{await harness.close()}
+});
+
 test("Agents refresh failures preserve the last valid thread list",async({page})=>{
   test.setTimeout(35_000);
   const child={id:"agents-refresh-child",parentThreadId:"agents-refresh-parent",name:"Preserved delegated agent",preview:"Agent refresh preservation",agentRole:"researcher",status:{type:"idle"},model:"freebuff/test/coding-fast",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
@@ -4591,9 +4623,9 @@ test("non-blocking worktree setup monitor failures stay visible after the turn s
   const project={id:"background-setup-monitor-project",name:"Background Setup Monitor Project",path:basePath,environmentId:null,effectiveSettings:{defaultWorkspaceMode:"worktree"}};
   const seedThread={id:"background-setup-seed",name:"Background setup seed",preview:"Fixture only",cwd:basePath,createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
   const createdThread={id:"background-setup-created",name:"Background setup created",preview:"Running turn",cwd:worktree,createdAt:Date.now()/1000,updatedAt:Date.now()/1000,turns:[]};
-  let monitorReads=0,turnStarts=0;
+  let monitorReads=0,turnStarts=0,threadStartParams=null;
   const harness=await startCodexRequestHarness(seedThread,{onRequest:async(message,ws)=>{
-    if(message.method==="thread/start"){ws.send(JSON.stringify({id:message.id,result:{thread:createdThread}}));return true}
+    if(message.method==="thread/start"){threadStartParams=message.params;ws.send(JSON.stringify({id:message.id,result:{thread:createdThread}}));return true}
     if(message.method==="turn/start"){turnStarts++;ws.send(JSON.stringify({id:message.id,result:{turn:{id:"background-setup-turn",status:"inProgress"}}}));return true}
     return false;
   }});
@@ -4630,6 +4662,7 @@ test("non-blocking worktree setup monitor failures stay visible after the turn s
     await composer.fill("Start the turn even if background setup monitoring later fails");
     await page.getByTestId("send").click();
     await expect.poll(()=>turnStarts).toBe(1);
+    expect(threadStartParams?.dynamicTools?.some(item=>item.type==="namespace"&&item.name==="trebell_repo"&&item.tools?.some(tool=>tool.name==="search_symbols")&&item.tools?.some(tool=>tool.name==="file_relations"))).toBe(true);
     await expect(page.locator(".user-bubble").filter({hasText:"Start the turn even if background setup monitoring later fails"})).toBeVisible();
     await expect(composer).toHaveValue("");
     await expect.poll(()=>monitorReads).toBeGreaterThanOrEqual(3);

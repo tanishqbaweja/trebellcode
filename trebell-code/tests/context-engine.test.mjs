@@ -106,6 +106,26 @@ test("context engine ranks task-relevant code, instructions and tests under a ha
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
+test("context engine exposes deterministic symbol and file relationship queries",async()=>{
+  const root=await fixture();
+  try{
+    const engine=new ContextEngine();
+    const symbols=await engine.searchSymbols({root,query:"RefreshSession"});
+    assert.equal(symbols.data[0].path,"src/auth/session.js");
+    assert.equal(symbols.data[0].name,"RefreshSession");
+    assert.equal(symbols.data[0].kind,"class");
+    assert.equal(symbols.data[0].parser,"babel");
+
+    const relations=await engine.fileRelations({root,path:"src/auth/session.js"});
+    assert.ok(relations.imports.some(item=>item.specifier==="./token.js"&&item.target==="src/auth/token.js"));
+    assert.ok(relations.importers.some(item=>item.path==="src/server.js"));
+    assert.ok(relations.importers.some(item=>item.path==="tests/auth-refresh.test.js"));
+    assert.ok(relations.referencedSymbols.some(item=>item.name==="rotateRefreshToken"&&item.target==="src/auth/token.js"));
+    assert.ok(relations.referencedBy.some(item=>item.name==="RefreshSession"&&item.path==="src/server.js"));
+    assert.deepEqual(relations.relatedTests,["tests/auth-refresh.test.js"]);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
 test("large scoped repository instructions are bounded without dropping nested guidance",async()=>{
   const root=await fixture();
   try{

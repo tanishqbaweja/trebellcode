@@ -2082,6 +2082,20 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       }
       catch(error){return json(res,400,{error:error.message});}
     }
+    if(url.pathname==="/api/context/symbols"){
+      try{
+        const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
+        const root=environmentPath(url.searchParams.get("path")||process.cwd(),environmentId),remote=remoteEnvironmentProfile(environmentId);
+        return json(res,200,await contextEngine.searchSymbols({root,query:url.searchParams.get("q")||"",limit:Number(url.searchParams.get("limit")||40),io:remote?createRemoteContextIo({environments,environmentId,root}):null}));
+      }catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/context/relations"){
+      try{
+        const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
+        const root=environmentPath(url.searchParams.get("path")||process.cwd(),environmentId),remote=remoteEnvironmentProfile(environmentId);
+        return json(res,200,await contextEngine.fileRelations({root,path:url.searchParams.get("file")||"",io:remote?createRemoteContextIo({environments,environmentId,root}):null}));
+      }catch(error){return json(res,400,{error:error.message});}
+    }
     if(url.pathname==="/api/context/packet"&&req.method==="POST"){
       try{
         const body=await readJsonBody(req);

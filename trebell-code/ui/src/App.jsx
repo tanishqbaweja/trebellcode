@@ -174,6 +174,15 @@ const TREBELL_SOURCE_CONTROL_TOOLS=[{
     {type:"function",name:"link_pull_request",description:"Link a pull request URL to the current thread so Trebell can track its review state and native stack.",inputSchema:{type:"object",properties:{url:{type:"string"}},required:["url"],additionalProperties:false}}
   ]
 }];
+const TREBELL_REPO_TOOLS=[{
+  type:"namespace",
+  name:"trebell_repo",
+  description:"Query Trebell's deterministic repository index for symbols and structural file relationships before reading full source.",
+  tools:[
+    {type:"function",name:"search_symbols",description:"Find repository symbol definitions by name or signature.",inputSchema:{type:"object",properties:{query:{type:"string"},limit:{type:"integer",minimum:1,maximum:100}},required:["query"],additionalProperties:false}},
+    {type:"function",name:"file_relations",description:"Inspect a source file's definitions, imports, importers, cross-file symbol references, and related tests.",inputSchema:{type:"object",properties:{path:{type:"string"}},required:["path"],additionalProperties:false}},
+  ]
+}];
 
 function titleOf(thread){return thread?.name||thread?.preview||"New Trebell task"}
 function modelLabel(id,freebuff){
@@ -1665,6 +1674,20 @@ export default function App(){
         })();
         return;
       }
+      if(p.namespace==="trebell_repo"){
+        (async()=>{
+          try{
+            if(!projectPath)throw new Error("A workspace must be open before querying repository intelligence.");
+            const args=p.arguments||{},params=new URLSearchParams({path:projectPath});if(workspaceEnvironmentId)params.set("environmentId",workspaceEnvironmentId);
+            let result;
+            if(p.tool==="search_symbols"){params.set("q",String(args.query||""));if(args.limit!=null)params.set("limit",String(args.limit));result=await api("/api/context/symbols?"+params)}
+            else if(p.tool==="file_relations"){params.set("file",String(args.path||""));result=await api("/api/context/relations?"+params)}
+            else throw new Error("Unknown Trebell repository tool: "+p.tool);
+            client.respond(message.id,{contentItems:[{type:"inputText",text:JSON.stringify(result)}],success:true});
+          }catch(error){client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false})}
+        })();
+        return;
+      }
       client.respond(message.id,{contentItems:[{type:"inputText",text:"No client-defined dynamic tool is registered for "+(p.namespace||"default")+"/"+p.tool}],success:false});
       return;
     }
@@ -2347,8 +2370,8 @@ export default function App(){
   }
   async function createThreadFor(modelId,cwd,{projectless=projectlessMode}={}){
     const p=presetFor(permissionMode);
-    const dynamicTools=[...TREBELL_BROWSER_TOOLS,...TREBELL_COMPUTER_TOOLS,...TREBELL_SOURCE_CONTROL_TOOLS,...(effectiveProjectSettings.agentDeviceAccess?TREBELL_DEVICE_TOOLS:[])];
-    const researchInstruction="Web research is available when useful. Use it when current or external information materially improves the task; use trebell_browser for interactive pages.";
+    const dynamicTools=[...TREBELL_REPO_TOOLS,...TREBELL_BROWSER_TOOLS,...TREBELL_COMPUTER_TOOLS,...TREBELL_SOURCE_CONTROL_TOOLS,...(effectiveProjectSettings.agentDeviceAccess?TREBELL_DEVICE_TOOLS:[])];
+    const researchInstruction="Web research is available when useful. Use it when current or external information materially improves the task; use trebell_browser for interactive pages."+(runtimeCapabilities.dynamicTools?" Use trebell_repo for deterministic symbol and structural repository lookups when that is faster than manual exploration.":"");
     const developerInstructions=projectless
       ?"This is a Trebell General chat with no attached project or repository. The working directory is an app-managed scratch workspace. Do not assume it is a codebase, repository, or user project. "+researchInstruction
       :researchInstruction;
@@ -3208,7 +3231,7 @@ export default function App(){
 
   function rightPanelContent(){
     if(rightPanelTab==="files"||rightPanelTab==="diff")return <WorkspacePanel key={rightPanelTab+":"+(workspaceEnvironmentId||"local")} defaultTab={rightPanelTab==="diff"&&!projectlessMode?"diff":"files"} allowDiff={!projectlessMode} projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} activeThreadId={activeThread?.id} reviewedFiles={reviewedFiles} onReviewedChange={toggleReviewed} onAttachPath={path=>addFiles([path])} onReviewComment={attachReviewComment}/>;
-    if(rightPanelTab==="context")return <ContextInspector packet={activeThread?.id?threadMeta[activeThread.id]?.trebellContext||null:null} error={activeThread?.id?threadMeta[activeThread.id]?.trebellContextError||null:null} pressure={activeThread?.id?threadMeta[activeThread.id]?.trebellContextPressure||null:null} remote={workspaceRemote}/>;
+    if(rightPanelTab==="context")return <ContextInspector packet={activeThread?.id?threadMeta[activeThread.id]?.trebellContext||null:null} error={activeThread?.id?threadMeta[activeThread.id]?.trebellContextError||null:null} pressure={activeThread?.id?threadMeta[activeThread.id]?.trebellContextPressure||null:null} remote={workspaceRemote} root={projectPath||null} environmentId={workspaceEnvironmentId||null}/>;
     if(rightPanelTab==="preview")return previewSurface;
     if(rightPanelTab==="source")return projectlessMode?<div className="empty-state">General chats are not attached to source control.</div>:<SourceControlPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} model={model} provider={provider} threadId={activeThread?.id||null} sourceControlSettings={currentProject?.effectiveSettings||effectiveProjectSettings} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} onLinkPrUrl={linkPullRequestUrl} onOpenLinkedThread={openLinkedThread} onSelectedPrChange={setSourceSelectedPr} onLinkedPullRequestsChanged={links=>activeThread?.id&&applyThreadPullRequestLinks(activeThread.id,links)} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
     if(rightPanelTab==="device")return <DevicePanel/>;

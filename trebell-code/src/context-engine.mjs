@@ -424,6 +424,12 @@ export function planContextBudget({task="",focusPaths=[],tokensUsed=null,context
 export class ContextEngine{
   constructor({maxFileBytes=256_000}={}){this.maxFileBytes=maxFileBytes;this.roots=new Map();this.gitStates=new Map()}
 
+  async #indexed(root,io=null){
+    if(!root)throw new Error("Context Engine requires a workspace path");
+    const contextIo=io||localContextIo(root),git=await contextIo.gitState(),index=await this.#index(root,contextIo,git);
+    return {contextIo,git,index};
+  }
+
   async #index(root,contextIo,git){
     const started=Date.now(),io=contextIo||localContextIo(root),absolute=io.root,cacheKey=io.cacheKey||absolute;
     const paths=(await io.discoverFiles()).slice(0,20_000),previous=this.roots.get(cacheKey)||new Map(),previousGit=this.gitStates.get(cacheKey)||null,next=new Map();let reparsed=0,reused=0,skipped=0;
@@ -523,6 +529,54 @@ export class ContextEngine{
       root:index.root,task:String(task||""),generatedAt:Date.now(),tokenEstimate:tokenEstimate(injection),maxTokens:budget,
       items:selected,injection,budget:budgetPlan,
       stats:{filesIndexed:files.length,reparsed:index.reparsed,reused:index.reused,skipped:index.skipped,inspected:index.inspected,graphEdges:[...edges.values()].reduce((sum,row)=>sum+row.size,0),durationMs:index.durationMs,remote:Boolean(io),revisionChanged:index.revisionChanged,revisionUnknown:index.revisionUnknown,revisionDiffUsed:index.revisionDiffUsed},
+    };
+  }
+
+  async searchSymbols({root,query="",limit=40,io=null}={}){
+    const needle=String(query||"").trim().toLowerCase();if(!needle)throw new Error("Symbol search requires a query");
+    const {index}=await this.#indexed(root,io);const capped=Math.max(1,Math.min(200,Number(limit)||40)),matches=[];
+    for(const entry of index.files.values()){
+      for(const definition of entry.parsed.definitions||[]){
+        const name=String(definition.name||""),lower=name.toLowerCase(),signature=String(definition.signature||""),path=entry.relativePath.toLowerCase();
+        let score=0;if(lower===needle)score=100;else if(lower.startsWith(needle))score=85;else if(lower.includes(needle))score=70;else if(signature.toLowerCase().includes(needle))score=45;else if(path.includes(needle))score=25;else continue;
+        matches.push({path:entry.relativePath,name,kind:definition.kind,line:definition.line,signature,parser:entry.parsed.parser||"regex",score});
+      }
+    }
+    return {query:String(query),data:matches.sort((a,b)=>b.score-a.score||a.name.localeCompare(b.name)||a.path.localeCompare(b.path)).slice(0,capped),indexedFiles:index.files.size};
+  }
+
+  async fileRelations({root,path,io=null}={}){
+    const {contextIo,index}=await this.#indexed(root,io),available=new Set(index.files.keys());
+    const requested=contextIo.relativeFocus(path)||slash(String(path||"").replace(/^\.\//,""));
+    const entry=index.files.get(requested);if(!entry)throw new Error(`Context file is not indexed: ${path}`);
+    const imports=(entry.parsed.imports||[]).map(specifier=>({specifier,target:resolveImport(entry.relativePath,specifier,available)}));
+    const importers=[],referencedSymbols=[],referencedBy=[];
+    const owners=new Map();for(const candidate of index.files.values())for(const definition of candidate.parsed.definitions||[]){let list=owners.get(definition.name);if(!list){list=[];owners.set(definition.name,list)}list.push(candidate.relativePath)}
+    for(const candidate of index.files.values()){
+      if(candidate.relativePath!==entry.relativePath){
+        for(const specifier of candidate.parsed.imports||[])if(resolveImport(candidate.relativePath,specifier,available)===entry.relativePath){importers.push({path:candidate.relativePath,specifier});break}
+      }
+    }
+    for(const [name,count] of entry.parsed.references||[]){
+      const targets=(owners.get(name)||[]).filter(target=>target!==entry.relativePath);if(!targets.length||targets.length>4)continue;
+      for(const target of targets)referencedSymbols.push({name,target,count});
+    }
+    const definedNames=new Set((entry.parsed.definitions||[]).map(item=>item.name));
+    if(definedNames.size){
+      for(const candidate of index.files.values()){
+        if(candidate.relativePath===entry.relativePath)continue;
+        for(const [name,count] of candidate.parsed.references||[])if(definedNames.has(name))referencedBy.push({name,path:candidate.relativePath,count});
+      }
+    }
+    const testLike=path=>/(^|\/)(test|tests|__tests__|spec)(\/|$)|\.(test|spec)\./i.test(path);
+    const relatedTests=[...new Set([
+      ...importers.filter(item=>testLike(item.path)).map(item=>item.path),
+      ...referencedBy.filter(item=>testLike(item.path)).map(item=>item.path),
+    ])].slice(0,80);
+    return {
+      path:entry.relativePath,parser:entry.parsed.parser||"regex",definitions:(entry.parsed.definitions||[]).slice(0,200),
+      imports:imports.slice(0,200),importers:importers.slice(0,200),referencedSymbols:referencedSymbols.sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name)).slice(0,200),
+      referencedBy:referencedBy.sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name)).slice(0,200),relatedTests,indexedFiles:index.files.size,
     };
   }
 }
