@@ -727,6 +727,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         const failed=threadStore.finishTurn(thread.id,recovery.turnId,{status:"failed",error:{message:`Could not continue after restart: ${error.message}`}});emit("error",{threadId:thread.id,turnId:recovery.turnId,message:error.message});if(failed)emit("turn/completed",{threadId:thread.id,turn:failed});recoveryInFlight.delete(thread.id);
       }
     }
+    for(const thread of threadStore.list()){
+      if(thread.runtime!=="native"||thread.status?.type!=="idle"||thread.recovery?.pending||!agentQueue(state,thread.id).length)continue;
+      await autoStartNextNativeQueue(thread.id,context);
+    }
   }
 
   function handleUpdate(threadId,params){

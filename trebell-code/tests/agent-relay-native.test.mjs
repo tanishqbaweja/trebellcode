@@ -306,3 +306,25 @@ test("Trebell Native durable queue edits, reorders and auto-starts after a succe
     assert.equal((await rpc.request("thread/queue/list",{threadId:thread.id,limit:10})).data.length,0);
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
 });
+
+test("Trebell Native resumes an idle durable queue after restart only when restart continuation is enabled",async()=>{
+  for(const continueThreadsAfterRestart of [true,false]){
+    const root=await mkdtemp(join(tmpdir(),`trebell-native-queue-restart-${continueThreadsAfterRestart?"on":"off"}-`)),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+    const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null,continueThreadsAfterRestart});
+    const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env),requests=[];
+    const thread=threadStore.create({runtime:"native",cwd:repo,providerSessionId:"native-restart-queue",model:"model-a",providerMeta:{runtimeInstanceId:"native-default",modelProvider:"agentrouter",permissionProfile:"auto",projectless:false,environmentId:null}});
+    state.updateThreadMeta(thread.id,{queuedSubmissions:[{id:"restart-q1",input:[{type:"text",text:"QUEUED AFTER RESTART"}],clientUserMessageId:"restart-client"}]});
+    const nativeProviderTurn=async request=>{requests.push(structuredClone({...request,signal:undefined}));return{id:"restart-queue-answer",provider:request.provider,model:request.model,text:"Restarted queue completed.",toolCalls:[],finishReason:"stop",usage:{}}};
+    const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+    const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
+    try{
+      ws.send(JSON.stringify({method:"initialized"}));
+      if(continueThreadsAfterRestart){
+        const completed=await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.threadId===thread.id,5000);assert.equal(completed.params.turn.status,"completed");
+        assert.equal(requests.length,1);assert.match(JSON.stringify(requests[0].messages.at(-1)?.content||""),/QUEUED AFTER RESTART/);assert.equal((state.threadMeta(thread.id).queuedSubmissions||[]).length,0);assert.equal(threadStore.get(thread.id).turns.length,1);
+      }else{
+        await new Promise(resolve=>setTimeout(resolve,100));assert.equal(requests.length,0);assert.equal((state.threadMeta(thread.id).queuedSubmissions||[]).length,1);assert.equal(threadStore.get(thread.id).turns.length,0);
+      }
+    }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+  }
+});
