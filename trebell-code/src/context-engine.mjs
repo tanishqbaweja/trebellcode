@@ -50,6 +50,20 @@ try{
   }
   out({available:true,configured:true,version:ts.version,failed:true,reason:"Unsupported language symbol operation"});
 }catch(error){out({available:true,configured:false,failed:true,reason:String(error?.stack||error?.message||error)})}`;
+const TYPESCRIPT_CODE_ACTIONS_SCRIPT=`const fs=require("fs"),path=require("path");
+const root=path.resolve(process.argv[1]||"."),requested=path.resolve(root,process.argv[2]||""),line=Math.max(1,Number(process.argv[3])||1),column=Math.max(1,Number(process.argv[4])||1),limit=Math.max(1,Math.min(100,Number(process.argv[5])||20)),requestedCodes=String(process.argv[6]||"").split(",").map(value=>Number(value)).filter(Number.isFinite);
+const out=value=>process.stdout.write(JSON.stringify(value)),tsPath=path.join(root,"node_modules","typescript","lib","typescript.js");
+if(!fs.existsSync(tsPath)){out({available:false,configured:false,reason:"Project-local TypeScript is not installed"});process.exit(0)}
+try{
+  const ts=require(tsPath),configPath=ts.findConfigFile(root,ts.sys.fileExists,"tsconfig.json");if(!configPath){out({available:true,configured:false,version:ts.version,reason:"No tsconfig.json was found"});process.exit(0)}
+  const read=ts.readConfigFile(configPath,ts.sys.readFile),parsed=ts.parseJsonConfigFileContent(read.config||{},ts.sys,path.dirname(configPath),{noEmit:true,incremental:false,composite:false},configPath),options={...parsed.options,noEmit:true,incremental:false,composite:false};delete options.tsBuildInfoFile;
+  const files=[...new Set([...(parsed.fileNames||[]),requested].filter(file=>fs.existsSync(file)))],snapshot=file=>{try{return ts.ScriptSnapshot.fromString(fs.readFileSync(file,"utf8"))}catch{return undefined}},host={getCompilationSettings:()=>options,getScriptFileNames:()=>files,getScriptVersion:()=>"0",getScriptSnapshot:snapshot,getCurrentDirectory:()=>root,getDefaultLibFileName:value=>ts.getDefaultLibFilePath(value),fileExists:ts.sys.fileExists,readFile:ts.sys.readFile,readDirectory:ts.sys.readDirectory,directoryExists:ts.sys.directoryExists,getDirectories:ts.sys.getDirectories,useCaseSensitiveFileNames:()=>ts.sys.useCaseSensitiveFileNames,getNewLine:()=>ts.sys.newLine};
+  const service=ts.createLanguageService(host,ts.createDocumentRegistry?ts.createDocumentRegistry():undefined),program=service.getProgram(),source=program?.getSourceFile(requested);if(!source){out({available:true,configured:true,version:ts.version,included:false,reason:"Requested file is not available to the TypeScript language service"});process.exit(0)}
+  const position=source.getPositionOfLineAndCharacter(line-1,column-1),all=[...(service.getSyntacticDiagnostics?.(requested)||[]),...(service.getSemanticDiagnostics?.(requested)||[]),...(service.getSuggestionDiagnostics?.(requested)||[])],selected=requestedCodes.length?all.filter(item=>requestedCodes.includes(Number(item.code))):all.filter(item=>{const start=Number.isFinite(item.start)?item.start:position,end=start+Math.max(0,Number(item.length)||0);return position>=start&&position<=end}),display=value=>ts.flattenDiagnosticMessageText?ts.flattenDiagnosticMessageText(value,"\\n"):String(value||"");
+  const diagnosticRows=selected.slice(0,50).map(item=>{const start=Number.isFinite(item.start)?item.start:position,point=source.getLineAndCharacterOfPosition(start);return{code:"TS"+item.code,severity:item.category===0?"warning":item.category===1?"error":item.category===2?"suggestion":"message",line:point.line+1,column:point.character+1,length:Number(item.length)||0,message:display(item.messageText)}}),actions=[],seen=new Set(),locate=(fileName,span)=>{const absolute=path.resolve(fileName),file=program.getSourceFile(absolute)||program.getSourceFile(fileName);if(!file)return{path:path.relative(root,absolute).replace(/\\\\/g,"/"),line:null,column:null,length:Number(span?.length)||0};const point=file.getLineAndCharacterOfPosition(span.start);return{path:path.relative(root,absolute).replace(/\\\\/g,"/"),line:point.line+1,column:point.character+1,length:Number(span?.length)||0}};
+  for(const diagnostic of selected){if(actions.length>=limit)break;const start=Number.isFinite(diagnostic.start)?diagnostic.start:position,end=start+Math.max(0,Number(diagnostic.length)||0),fixes=service.getCodeFixesAtPosition?.(requested,start,end,[Number(diagnostic.code)],{}, {})||[];for(const fix of fixes){if(actions.length>=limit)break;const key=String(fix.fixName||"")+"\\0"+String(fix.description||"");if(seen.has(key))continue;seen.add(key);actions.push({fixName:fix.fixName||null,description:fix.description||"",fixAllDescription:fix.fixAllDescription||null,fixAllAvailable:Boolean(fix.fixId),requiresCommand:Boolean(fix.commands?.length),commands:(fix.commands||[]).slice(0,5).map(command=>({type:command?.type||null,packageName:command?.packageName||null,file:command?.file?path.relative(root,path.resolve(command.file)).replace(/\\\\/g,"/"):null})),changes:(fix.changes||[]).slice(0,20).map(change=>({file:path.relative(root,path.resolve(change.fileName)).replace(/\\\\/g,"/"),isNewFile:Boolean(change.isNewFile),textChanges:(change.textChanges||[]).slice(0,80).map(textChange=>{const where=locate(change.fileName,textChange.span),text=String(textChange.newText||"");return{...where,newText:text.slice(0,4000),newTextTruncated:text.length>4000}})}))})}}
+  out({available:true,configured:true,version:ts.version,included:true,diagnostics:diagnosticRows,actions,truncated:actions.length>=limit,requestedCodes});
+}catch(error){out({available:true,configured:false,failed:true,reason:String(error?.stack||error?.message||error)})}`;
 
 function tokenEstimate(value){return Math.ceil(String(value||"").length/4)}
 function slash(value){return String(value||"").split(sep).join("/")}
@@ -394,6 +408,16 @@ async function localTypeScriptSymbol(root,{path,line=1,column=1,operation="defin
   }
 }
 
+async function localTypeScriptCodeActions(root,{path,line=1,column=1,limit=20,codes=[]}={}){
+  try{
+    const codeList=Array.from(codes||[]).map(Number).filter(Number.isFinite).slice(0,50).join(","),{stdout}=await execFileAsync(process.execPath,["-e",TYPESCRIPT_CODE_ACTIONS_SCRIPT,resolve(root),String(path||""),String(line),String(column),String(Math.max(1,Math.min(100,Number(limit)||20))),codeList],{cwd:resolve(root),windowsHide:true,maxBuffer:6*1024*1024,timeout:30_000});
+    return parseTypeScriptDiagnosticsOutput(stdout);
+  }catch(error){
+    const parsed=parseTypeScriptDiagnosticsOutput(error?.stdout);if(parsed?.available||parsed?.reason!=="TypeScript diagnostic adapter returned invalid output")return parsed;
+    return {available:false,configured:false,failed:true,reason:error?.killed?"TypeScript code actions timed out":String(error?.stderr||error?.message||"TypeScript code actions failed").slice(0,2000)};
+  }
+}
+
 async function localMetadata(root,paths){
   const pairs=await mapLimit(paths,64,async relativePath=>{
     try{
@@ -425,6 +449,7 @@ function localContextIo(root){
     gitBlame:options=>localGitBlame(absolute,options),
     typeScriptDiagnostics:options=>localTypeScriptDiagnostics(absolute,options),
     typeScriptSymbol:options=>localTypeScriptSymbol(absolute,options),
+    typeScriptCodeActions:options=>localTypeScriptCodeActions(absolute,options),
     gitState:()=>gitState(absolute),
     changedSince:async(fromHead,toHead)=>{
       if(!fromHead||!toHead||fromHead===toHead)return new Set();
@@ -521,6 +546,11 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     if(result.exitCode!==0)return {available:false,configured:false,failed:true,reason:result.timedOut?"TypeScript language query timed out":String(result.stderr||"Remote TypeScript language query failed").slice(0,2000)};
     return parseTypeScriptDiagnosticsOutput(result.stdout);
   };
+  const typeScriptCodeActions=async({path,line=1,column=1,limit=20,codes=[]}={})=>{
+    const codeList=Array.from(codes||[]).map(Number).filter(Number.isFinite).slice(0,50).join(","),result=await run({command:"node",args:["-e",TYPESCRIPT_CODE_ACTIONS_SCRIPT,absolute,String(path||""),String(line),String(column),String(Math.max(1,Math.min(100,Number(limit)||20))),codeList],cwd:"",timeoutMs:35_000,maxOutput:6*1024*1024});
+    if(result.exitCode!==0)return {available:false,configured:false,failed:true,reason:result.timedOut?"TypeScript code actions timed out":String(result.stderr||"Remote TypeScript code actions failed").slice(0,2000)};
+    return parseTypeScriptDiagnosticsOutput(result.stdout);
+  };
   return {
     cacheKey:"remote:"+environmentId+":"+absolute,
     root:absolute,
@@ -532,6 +562,7 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     gitBlame,
     typeScriptDiagnostics,
     typeScriptSymbol,
+    typeScriptCodeActions,
     readText:async relativePath=>{
       const target=posix.join(absolute,String(relativePath||"").replace(/^\.\//,""));
       if(target!==absolute&&!target.startsWith(absolute.endsWith("/")?absolute:absolute+"/"))throw new Error("Context file is outside the remote workspace");
@@ -951,6 +982,17 @@ export class ContextEngine{
     try{result=await contextIo.typeScriptSymbol({path:requested,line:row,column:col,operation:mode,limit:capped})}catch(error){result={available:false,configured:false,failed:true,reason:String(error?.message||error)}}
     const ready=Boolean(result?.available&&result?.configured&&!result?.failed&&!result?.unsupported);
     return {path:requested,line:row,column:col,operation:mode,supported:ready,engine:ready?"typescript":null,semantic:ready,version:result?.version||null,included:result?.included??null,data:result?.data??(mode==="quick_info"?null:[]),truncated:Boolean(result?.truncated),info:result,reason:ready?null:(result?.reason||"Project-local TypeScript language service is unavailable")};
+  }
+
+  async codeActions({root,path,line=1,column=1,limit=20,codes=[],io=null}={}){
+    const {contextIo,index}=await this.#indexed(root,io),requested=contextIo.relativeFocus(path)||slash(String(path||"").replace(/^\.\//,""));
+    const entry=index.files.get(requested);if(!entry)throw new Error(`Context file is not indexed: ${path}`);
+    const extension=extname(requested).toLowerCase(),row=Math.max(1,Math.trunc(Number(line)||1)),col=Math.max(1,Math.trunc(Number(column)||1)),capped=Math.max(1,Math.min(100,Number(limit)||20)),diagnosticCodes=Array.from(codes||[]).map(value=>Number(String(value).replace(/^TS/i,""))).filter(Number.isFinite).slice(0,50);
+    if(!BABEL_SOURCE_EXTENSIONS.has(extension))return {path:requested,line:row,column:col,supported:false,engine:null,semantic:false,diagnostics:[],actions:[],reason:`No semantic Trebell code-action adapter is configured for ${extension||"this file type"}`};
+    if(typeof contextIo.typeScriptCodeActions!=="function")return {path:requested,line:row,column:col,supported:false,engine:null,semantic:false,diagnostics:[],actions:[],reason:"TypeScript code actions are unavailable for this workspace"};
+    let result;try{result=await contextIo.typeScriptCodeActions({path:requested,line:row,column:col,limit:capped,codes:diagnosticCodes})}catch(error){result={available:false,configured:false,failed:true,reason:String(error?.message||error)}}
+    const ready=Boolean(result?.available&&result?.configured&&!result?.failed);
+    return {path:requested,line:row,column:col,supported:ready,engine:ready?"typescript":null,semantic:ready,version:result?.version||null,included:result?.included??null,diagnostics:Array.isArray(result?.diagnostics)?result.diagnostics:[],actions:Array.isArray(result?.actions)?result.actions.slice(0,capped):[],truncated:Boolean(result?.truncated),requestedCodes:diagnosticCodes,info:result,reason:ready?null:(result?.reason||"Project-local TypeScript code actions are unavailable")};
   }
 
   async fileRelations({root,path,io=null}={}){

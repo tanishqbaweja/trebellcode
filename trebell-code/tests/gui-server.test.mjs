@@ -197,6 +197,10 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(languageSymbolResponse.status,200);
     const languageSymbolResult=await languageSymbolResponse.json();
     assert.equal(languageSymbolResult.supported,false);assert.equal(languageSymbolResult.semantic,false);assert.match(languageSymbolResult.reason,/TypeScript/i);
+    const codeActionsResponse=await fetch(gui.url+"/api/context/code-actions?"+new URLSearchParams({path:configProject,file:"src/session.js",line:"1",column:"14",codes:"2322",limit:"10"}));
+    assert.equal(codeActionsResponse.status,200);
+    const codeActionsResult=await codeActionsResponse.json();
+    assert.equal(codeActionsResult.supported,false);assert.equal(codeActionsResult.semantic,false);assert.deepEqual(codeActionsResult.actions,[]);assert.match(codeActionsResult.reason,/TypeScript/i);
     const referencesResponse=await fetch(gui.url+"/api/context/references?"+new URLSearchParams({path:configProject,name:"RefreshSession",limit:"10"}));
     assert.equal(referencesResponse.status,200);
     const referencesResult=await referencesResponse.json();

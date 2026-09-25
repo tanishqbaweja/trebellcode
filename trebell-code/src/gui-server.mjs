@@ -2145,6 +2145,13 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return json(res,200,await contextEngine.languageSymbol({root,path:url.searchParams.get("file")||"",line:Number(url.searchParams.get("line")||1),column:Number(url.searchParams.get("column")||1),operation:url.searchParams.get("operation")||"definition",limit:Number(url.searchParams.get("limit")||100),io:remote?createRemoteContextIo({environments,environmentId,root}):null}));
       }catch(error){return json(res,400,{error:error.message});}
     }
+    if(url.pathname==="/api/context/code-actions"){
+      try{
+        const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
+        const root=environmentPath(url.searchParams.get("path")||process.cwd(),environmentId),remote=remoteEnvironmentProfile(environmentId),codes=String(url.searchParams.get("codes")||"").split(",").map(value=>Number(String(value).replace(/^TS/i,""))).filter(Number.isFinite);
+        return json(res,200,await contextEngine.codeActions({root,path:url.searchParams.get("file")||"",line:Number(url.searchParams.get("line")||1),column:Number(url.searchParams.get("column")||1),limit:Number(url.searchParams.get("limit")||20),codes,io:remote?createRemoteContextIo({environments,environmentId,root}):null}));
+      }catch(error){return json(res,400,{error:error.message});}
+    }
     if(url.pathname==="/api/context/references"){
       try{
         const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
