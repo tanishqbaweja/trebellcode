@@ -1,4 +1,4 @@
-import React,{memo,useEffect,useRef,useState} from "react";
+import React,{memo,useCallback,useEffect,useMemo,useRef,useState} from "react";
 import {
   Archive, BarChart3, Bot, Clock3, Folder, Globe2, History,
   GitPullRequest, MoreHorizontal, Pin, Plus, Search, Settings, SlidersHorizontal, Wrench, Server, PanelLeftClose
@@ -6,6 +6,7 @@ import {
 import { formatSnoozeUntil } from "../thread-snooze.js";
 import { threadReferenceValues } from "../thread-references.js";
 import { writeClipboardText } from "../clipboard.js";
+import { groupSidebarThreads, THREAD_GROUP_NAMES } from "../thread-sidebar-groups.js";
 
 function titleOf(thread){return thread.name||thread.preview||"Untitled task"}
 function relativeTime(epoch){
@@ -17,7 +18,7 @@ function relativeTime(epoch){
   return Math.floor(d/86400)+"d";
 }
 
-function ThreadRow({thread,meta,active,selected,bulk,onOpen,onSelect,onAction,onMove,runAction,agentRuntime="codex"}){
+const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,onOpen,onSelect,onAction,onMove,runAction,agentRuntime="codex"}){
   const section=thread.section?.name||"Active";
   const linked=Array.isArray(meta?.linkedPullRequests)
     ?meta.linkedPullRequests
@@ -56,7 +57,7 @@ function ThreadRow({thread,meta,active,selected,bulk,onOpen,onSelect,onAction,on
       </div>
     </details>
   </div>;
-}
+});
 
 function UtilityButton({Icon,label,active,onClick}){
   return <button className={active?"sidebar-utility active":"sidebar-utility"} onClick={onClick} aria-label={label} title={label}>
@@ -71,26 +72,20 @@ const ThreadSidebar=memo(function ThreadSidebar({
 }){
   const searchRef=useRef(null);
   const [actionError,setActionError]=useState("");
-  function runAction(action){
+  const runAction=useCallback(action=>{
     setActionError("");
     return Promise.resolve().then(action).catch(error=>setActionError(error?.message||String(error)||"Action failed."));
-  }
+  },[]);
   useEffect(()=>{
     const focus=()=>{searchRef.current?.focus();searchRef.current?.select?.()};
     window.addEventListener("trebell:sidebar-search",focus);
     return()=>window.removeEventListener("trebell:sidebar-search",focus);
   },[]);
-  const groups={
-    Pinned:threads.filter(t=>t.section?.name==="Pinned"),
-    General:threads.filter(t=>!t.section&&threadMeta[t.id]?.projectless),
-    Active:threads.filter(t=>!t.section&&!threadMeta[t.id]?.projectless),
-    Snoozed:threads.filter(t=>t.section?.name==="Snoozed"),
-    Settled:threads.filter(t=>t.section?.name==="Settled"),
-  };
+  const groups=useMemo(()=>groupSidebarThreads(threads,threadMeta),[threads,threadMeta]);
   const bulk=selectedIds.size>0;
   const providerLabel={freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider;
   const runtimeLabel={codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime;
-  function toggle(id){const next=new Set(selectedIds);next.has(id)?next.delete(id):next.add(id);setSelectedIds(next)}
+  const toggle=useCallback(id=>{const next=new Set(selectedIds);next.has(id)?next.delete(id):next.add(id);setSelectedIds(next)},[selectedIds,setSelectedIds]);
 
   return <aside className="sidebar">
     <div className="sidebar-titlebar">
@@ -122,10 +117,10 @@ const ThreadSidebar=memo(function ThreadSidebar({
     </div>}
 
     <div className="thread-sections">
-      {Object.entries(groups).map(([name,items])=>items.length>0&&<section key={name}>
+      {THREAD_GROUP_NAMES.map(name=>{const items=groups[name];return items.length>0&&<section key={name}>
         <h4>{name}<span>{items.length}</span></h4>
         {items.map(t=><ThreadRow key={t.id} thread={t} meta={threadMeta[t.id]||null} active={t.id===activeThreadId} bulk={bulk} selected={selectedIds.has(t.id)} onOpen={onOpen} onSelect={toggle} onAction={onThreadAction} onMove={onMove} runAction={runAction} agentRuntime={agentRuntime}/>)}
-      </section>)}
+      </section>})}
       {!threads.length&&<div className="sidebar-empty">{query?"No matching threads.":<>No threads yet.<br/>Start a task to create one.</>}</div>}
     </div>
 
