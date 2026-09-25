@@ -26,6 +26,10 @@ test("repository knowledge service remembers verified evidence, ranks relevance,
     await writeFile(join(root,"relay.md"),"The policy layer now owns routing before the relay.\n");
     const refreshed=await service.refresh({projectPath:root});assert.equal(refreshed.find(item=>item.id===architecture.id).status,"stale");
     const after=await service.context({projectPath:root,query:"runtime",refresh:false});assert.doesNotMatch(after.context,/Runtime requests go through the relay/);
+    await writeFile(join(root,"relay.md"),"The relay owns runtime routing.\n");
+    const recovered=await service.context({projectPath:root,query:"relay runtime",refresh:true});
+    assert.equal(recovered.entries.find(item=>item.id===architecture.id)?.status,"verified");
+    assert.match(recovered.context,/Runtime requests go through the relay/);
     assert.equal(service.forget(command.id),true);
   }finally{await rm(root,{recursive:true,force:true});await rm(home,{recursive:true,force:true})}
 });

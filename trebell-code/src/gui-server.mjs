@@ -45,6 +45,8 @@ import { prepareCodexHome } from "./codex-home-layout.mjs";
 import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
 import { ContextEngine, createRemoteContextIo } from "./context-engine.mjs";
+import { RepositoryKnowledgeService } from "./repository-knowledge-service.mjs";
+import { REPOSITORY_TOOL_DEFINITIONS, invokeRepositoryTool, repositoryDynamicToolNamespace, repositoryToolHandlers } from "./repository-tool-catalog.mjs";
 import { EventJournal } from "./event-journal.mjs";
 import { enrichGoal, goalAdditionalContext, goalBudgetGate, normalizeGoal } from "./goal-state.mjs";
 import { recordCodexBudgetEvidence, recordCodexChildAgentEvidence } from "./codex-budget-evidence.mjs";
@@ -508,6 +510,13 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     }
   }
   const contextEngine=new ContextEngine();
+  const repositoryKnowledge=new RepositoryKnowledgeService({
+    state,
+    ioFactory:async({projectPath,environmentId})=>{
+      const profile=environmentId?environments.get(environmentId):null;
+      return profile&&profile.type!=="local"?createRemoteContextIo({environments,environmentId,root:projectPath}):null;
+    },
+  });
   const terminals=mock ? null : new TerminalManager({env});
   function terminalOptions({environmentId=null,cwd=null,name=null,cols=120,rows=32,terminalEnv=null}={}){
     const spec=environments.terminalSpec(environmentId,{cwd});
@@ -1075,6 +1084,36 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     const hasPolicy=Object.prototype.hasOwnProperty.call(params,"permissionProfile")||Object.prototype.hasOwnProperty.call(params,"approvalPolicy")||Object.prototype.hasOwnProperty.call(params,"sandbox")||Object.prototype.hasOwnProperty.call(params,"sandboxPolicy");
     return hasPolicy?{permissionProfile:agentPermissionModeFromStart(params)}:{};
   }
+  function withCodexRepositoryTools(message){
+    if(message?.method!=="thread/start")return message;
+    const params=message.params||{},existing=Array.isArray(params.dynamicTools)?params.dynamicTools:[];
+    const repositoryNamespace=repositoryDynamicToolNamespace()[0];
+    const dynamicTools=[...existing.filter(item=>String(item?.name||"")!=="trebell_repo"),repositoryNamespace];
+    return {...message,params:{...params,dynamicTools}};
+  }
+  async function resolveCodexRepositoryTool(message){
+    const params=message?.params||{};
+    if(message?.method!=="item/tool/call"||params.namespace!=="trebell_repo")return null;
+    const threadId=String(params.threadId||"").trim();
+    if(!threadId)return {handled:true,result:{contentItems:[{type:"inputText",text:"A Trebell thread is required before querying repository intelligence."}],success:false}};
+    const meta=state.threadMeta(threadId),root=meta?.cwd||null;
+    if(!root)return {handled:true,result:{contentItems:[{type:"inputText",text:"The active thread has no pinned workspace for repository intelligence."}],success:false}};
+    const definition=REPOSITORY_TOOL_DEFINITIONS.find(item=>item.name===params.tool);
+    if(!definition)return {handled:true,result:{contentItems:[{type:"inputText",text:"Unknown Trebell repository tool: "+String(params.tool||"")}],success:false}};
+    const environmentId=Object.prototype.hasOwnProperty.call(meta||{},"environmentId")?meta.environmentId:null,profile=environmentId?environments.get(environmentId):null;
+    const io=profile&&profile.type!=="local"?createRemoteContextIo({environments,environmentId,root}):null;
+    const handlers=repositoryToolHandlers({contextEngine,root,io,knowledgeService:repositoryKnowledge,environmentId});
+    const traceBase={runtime:"codex",provider:selectedProvider,environmentId,threadId:threadId||null,turnId:params.turnId||null,category:"tool"};
+    try{
+      const args=definition.inputSchema.parse(params.arguments||{});
+      const result=await invokeRepositoryTool(handlers,definition,args);
+      eventJournal.record({...traceBase,name:"repository_tool.completed",status:"completed",data:{tool:definition.name}});
+      return {handled:true,result:{contentItems:[{type:"inputText",text:JSON.stringify(result)}],success:true}};
+    }catch(error){
+      eventJournal.record({...traceBase,name:"repository_tool.completed",status:"failed",data:{tool:definition.name,message:error?.message||String(error)}});
+      return {handled:true,result:{contentItems:[{type:"inputText",text:error?.message||String(error)}],success:false}};
+    }
+  }
   function resolveCodexServerApproval(message){
     const params=message?.params||{},threadId=params.threadId?String(params.threadId):null,meta=threadId?state.threadMeta(threadId):{};
     const resolved=resolveCodexApprovalByPolicy(message,{
@@ -1095,13 +1134,29 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     eventJournal.record({...base,name:"permission.resolved",status:resolved.policy.decision==="ALLOW"?"accept":"decline",data:{method:message.method,policyDecision:resolved.policy.decision}});
     return {handled:true,result:resolved.result};
   }
-  function withCodexGoalContext(message){
+  async function resolveCodexServerRequest(message){
+    return await resolveCodexRepositoryTool(message)||resolveCodexServerApproval(message);
+  }
+  async function withCodexGoalContext(message){
     if(message?.method!=="turn/start")return message;
     const params=message.params||{},threadId=params.threadId?String(params.threadId):"";if(!threadId)return message;
     const goalContext=goalAdditionalContext(params.additionalContext,durableCodexGoal(threadId));
-    const additionalContext=continuityAdditionalContext(goalContext,durableCodexContinuity(threadId));
+    let additionalContext=continuityAdditionalContext(goalContext,durableCodexContinuity(threadId));
+    const meta=state.threadMeta(threadId),projectPath=meta?.cwd||params.cwd||null;
+    if(projectPath){
+      const query=(Array.isArray(params.input)?params.input:[]).filter(item=>item?.type==="text").map(item=>String(item.text||"")).join("\n").slice(0,4000);
+      try{
+        const knowledge=await repositoryKnowledge.context({projectPath,environmentId:meta?.environmentId??null,query,limit:12,refresh:true});
+        if(knowledge.context)additionalContext={...additionalContext,"trebell.repository_knowledge":{kind:"application",value:knowledge.context}};
+      }catch(error){
+        appServer?.logs?.push({at:Date.now(),stream:"repository-knowledge",text:safeLogText((error?.message||String(error))+"\n")});
+      }
+    }
     if(additionalContext===params.additionalContext)return message;
     return {...message,params:{...params,additionalContext}};
+  }
+  async function transformCodexClientMessage(message){
+    return withCodexGoalContext(withCodexRepositoryTools(message));
   }
   function markCodexTurnActive(threadId,turnId){
     if(!threadId||!turnId)return;
@@ -2781,8 +2836,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   const relay=attachCodexRelay(server,{
     targetUrl:()=>appServer?.targetUrl||`ws://127.0.0.1:${appPort}`,
     resolveTarget:message=>codexRelayTarget(message),
-    transformClientMessage:message=>withCodexGoalContext(message),
-    handleServerRequest:async message=>resolveCodexServerApproval(message),
+    transformClientMessage:message=>transformCodexClientMessage(message),
+    handleServerRequest:async message=>resolveCodexServerRequest(message),
     handleRequest:async (message,{requestUpstream})=>{
       const params=message.params||{},threadId=params.threadId?String(params.threadId):"";
       if(message.method==="thread/goal/get")return {handled:true,result:{goal:threadId?durableCodexGoal(threadId):null}};
@@ -2882,6 +2937,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     state,
     environments,
     contextEngine,
+    repositoryKnowledge,
     version:TREBELL_VERSION,
       log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"agent-relay",text:safeLogText(String(message)+"\n")}),
     onThreadDeleted:thread=>thread?.cwd?worktreeCleanup.sweep({reason:"thread-delete",path:thread.cwd}):null,

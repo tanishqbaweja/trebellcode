@@ -2,9 +2,9 @@ import { z } from "zod";
 import { mcpAnnotationsForPolicy, REPOSITORY_READ_POLICY } from "./tool-policy.mjs";
 
 export const REPOSITORY_TOOL_ANNOTATIONS=mcpAnnotationsForPolicy(REPOSITORY_READ_POLICY);
-export const REPOSITORY_TOOL_INSTRUCTIONS="Use these deterministic Trebell repository-index tools for symbol discovery, structural relationships, bounded source retrieval, semantic evidence, verification, and Git context before doing broad manual exploration.";
+export const REPOSITORY_TOOL_INSTRUCTIONS="Use these deterministic Trebell repository-index tools for symbol discovery, structural relationships, bounded source retrieval, semantic evidence, durable project knowledge, verification, and Git context before doing broad manual exploration.";
 
-export function repositoryToolHandlers({contextEngine,root,io=null}={}){
+export function repositoryToolHandlers({contextEngine,root,io=null,knowledgeService=null,environmentId=null}={}){
   if(!contextEngine)throw new Error("Repository tools require a Context Engine");
   if(!root)throw new Error("Repository tools require a workspace root");
   return {
@@ -29,6 +29,12 @@ export function repositoryToolHandlers({contextEngine,root,io=null}={}){
     gitContext:()=>contextEngine.gitContext({root,io}),
     gitHistory:({path="",limit=20})=>contextEngine.gitHistory({root,io,path,limit}),
     gitBlame:({path,startLine=1,endLine=null,maxLines=120})=>contextEngine.gitBlame({root,io,path,startLine,endLine,maxLines}),
+    knowledgeList:({query="",limit=20,includeUnverified=true})=>knowledgeService
+      ?{supported:true,entries:knowledgeService.list({projectPath:root,environmentId,query,limit,includeUnverified})}
+      :{supported:false,reason:"Repository knowledge is unavailable for this runtime."},
+    knowledgeContext:async({query="",limit=20,refresh=true})=>knowledgeService
+      ?{supported:true,...await knowledgeService.context({projectPath:root,environmentId,query,limit,refresh})}
+      :{supported:false,reason:"Repository knowledge is unavailable for this runtime.",entries:[],context:""},
   };
 }
 
@@ -58,7 +64,22 @@ export const REPOSITORY_TOOL_DEFINITIONS=Object.freeze([
   definition("git_context","gitContext","Read bounded current Git status, changed paths, HEAD, and workspace diff.",{},"repository git diff status changes"),
   definition("git_history","gitHistory","Read bounded repository or file Git history.",{path:z.string().min(1).optional(),limit:z.number().int().min(1).max(100).optional()},"repository git history commits file history"),
   definition("git_blame","gitBlame","Read bounded line-level Git blame for an indexed source file.",{path:z.string().min(1),startLine:z.number().int().min(1).optional(),endLine:z.number().int().min(1).optional(),maxLines:z.number().int().min(1).max(200).optional()},"repository git blame authors commits lines"),
+  definition("knowledge_list","knowledgeList","List bounded durable Trebell repository facts relevant to the current task. Stale facts are excluded.",{query:z.string().max(1000).optional(),limit:z.number().int().min(1).max(100).optional(),includeUnverified:z.boolean().optional()},"repository durable knowledge architecture conventions decisions commands evidence"),
+  definition("knowledge_context","knowledgeContext","Retrieve bounded task-relevant durable repository knowledge and refresh evidence-backed facts before returning them.",{query:z.string().max(1000).optional(),limit:z.number().int().min(1).max(100).optional(),refresh:z.boolean().optional()},"repository knowledge context verified evidence stale facts decisions conventions"),
 ]);
+
+export function repositoryDynamicToolNamespace(){
+  return [{
+    type:"namespace",
+    name:"trebell_repo",
+    description:"Query Trebell's deterministic repository intelligence, verification helpers, Git evidence, and durable evidence-backed repository knowledge.",
+    tools:REPOSITORY_TOOL_DEFINITIONS.map(definition=>{
+      const inputSchema=z.toJSONSchema(z.object(definition.inputSchema));
+      delete inputSchema.$schema;
+      return {type:"function",name:definition.name,description:definition.description,inputSchema};
+    }),
+  }];
+}
 
 export function invokeRepositoryTool(handlers,definition,args={}){
   const handler=handlers?.[definition?.handler];

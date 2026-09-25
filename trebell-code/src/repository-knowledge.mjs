@@ -152,10 +152,10 @@ export function repositoryKnowledgeContext(entries=[],{limit=20}={}){
 function tokens(value){
   return new Set(String(value||"").toLowerCase().match(/[a-z0-9_.-]{2,}/g)||[]);
 }
-export function selectRepositoryKnowledge(entries=[],{query="",limit=20,includeUnverified=true}={}){
+export function selectRepositoryKnowledge(entries=[],{query="",limit=20,includeUnverified=true,includeStale=false}={}){
   const wanted=tokens(query),cap=Math.max(1,Math.min(100,Number(limit)||20));
   return (Array.isArray(entries)?entries:[])
-    .filter(item=>item?.status!=="stale"&&(includeUnverified||item?.status==="verified"))
+    .filter(item=>(includeStale||item?.status!=="stale")&&(includeUnverified||item?.status==="verified"))
     .map((item,index)=>{
       const hay=tokens([item.category,item.scope,item.fact,...(item.evidence||[]).flatMap(evidence=>[evidence.path,evidence.symbol])].filter(Boolean).join(" "));
       let overlap=0;for(const token of wanted)if(hay.has(token))overlap++;

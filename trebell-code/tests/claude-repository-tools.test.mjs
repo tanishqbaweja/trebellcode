@@ -81,6 +81,24 @@ test("Claude repository MCP is an SDK-hosted server instead of a spawned duplica
   assert.equal(server.name,"trebell_repository");
   assert.ok(server.instance);
   const registered=server.instance._registeredTools;
-  assert.ok(registered&&registered.search_symbols&&registered.rename_preview&&registered.code_actions);
+  assert.ok(registered&&registered.search_symbols&&registered.rename_preview&&registered.code_actions&&registered.knowledge_context&&registered.knowledge_list);
   for(const definition of Object.values(registered))assert.deepEqual(definition.annotations,{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false});
+});
+
+test("shared repository tools expose task-relevant durable knowledge",async()=>{
+  const calls=[],knowledgeService={
+    list(options){calls.push(["list",options]);return [{id:"fact-1",fact:"Use the relay for runtime routing.",status:"verified"}]},
+    async context(options){calls.push(["context",options]);return {entries:[{id:"fact-1"}],context:"Durable Trebell repository knowledge\n- Use the relay for runtime routing."}},
+  };
+  const handlers=repositoryToolHandlers({contextEngine:{},root:"/repo",knowledgeService,environmentId:"ssh-prod"});
+  assert.deepEqual(handlers.knowledgeList({query:"runtime",limit:7,includeUnverified:false}),{
+    supported:true,entries:[{id:"fact-1",fact:"Use the relay for runtime routing.",status:"verified"}],
+  });
+  assert.deepEqual(await handlers.knowledgeContext({query:"runtime",limit:5,refresh:true}),{
+    supported:true,entries:[{id:"fact-1"}],context:"Durable Trebell repository knowledge\n- Use the relay for runtime routing.",
+  });
+  assert.deepEqual(calls,[
+    ["list",{projectPath:"/repo",environmentId:"ssh-prod",query:"runtime",limit:7,includeUnverified:false}],
+    ["context",{projectPath:"/repo",environmentId:"ssh-prod",query:"runtime",limit:5,refresh:true}],
+  ]);
 });

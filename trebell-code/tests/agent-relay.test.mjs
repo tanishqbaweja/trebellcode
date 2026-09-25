@@ -56,7 +56,7 @@ test("external runtimes receive Trebell application context before the visible u
     "trebell.repo_context":{kind:"application",value:"src/auth/session.js is relevant because it defines RefreshSession."},
   });
   assert.equal(prompt.length,2);
-  assert.match(prompt[0].text,/Trebell supplied the following bounded repository context/);
+  assert.match(prompt[0].text,/Trebell supplied the following bounded working context/);
   assert.match(prompt[0].text,/src\/auth\/session\.js/);
   assert.equal(prompt[1].text,"Fix the refresh bug");
 });

@@ -72,6 +72,42 @@ function waitNotification(ws,method,predicate=()=>true,timeoutMs=15000){
   });
 }
 
+test("Trebell owns the Codex repository dynamic-tool namespace", {timeout:45000}, async () => {
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  const home=await mkdtemp(join(tmpdir(),"trebell-repository-tools-"));
+  const env={...process.env,TREBELL_HOME:home};
+  const gui=await createGuiServer({port,appPort,mock:false,env});
+  let ws;
+  try{
+    let boot=null;
+    for(let i=0;i<80;i++){
+      boot=await fetch(gui.url+"/api/bootstrap").then(response=>response.json());
+      if(boot.appServerReady)break;
+      await new Promise(resolve=>setTimeout(resolve,200));
+    }
+    assert.equal(boot.appServerReady,true,"Codex app-server never became ready");
+    ws=new WebSocket(boot.wsUrl,{origin:gui.url});
+    await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});
+    await rpc(ws,1,"initialize",{clientInfo:{name:"trebell-repository-tool-test",title:"Trebell Repository Tool Test",version:"1.0.0"},capabilities:{experimentalApi:true}});
+    ws.send(JSON.stringify({method:"initialized",params:{}}));
+
+    const started=await rpc(ws,2,"thread/start",{
+      cwd:process.cwd(),
+      modelProvider:"freebuff",
+      approvalPolicy:"never",
+      sandbox:"danger-full-access",
+      ephemeral:true,
+      threadSource:"trebell-repository-tool-test",
+      dynamicTools:[{type:"not-a-real-dynamic-tool",name:"trebell_repo"}],
+    });
+    assert.ok(started.thread?.id,"backend repository-tool replacement should make thread/start valid");
+  }finally{
+    try{ws?.close()}catch{}
+    await gui.close();
+    await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
+  }
+});
+
 test("real Codex app-server is reachable through Trebell browser relay", {timeout:45000}, async () => {
   const [port,appPort]=await Promise.all([freePort(),freePort()]);
   const home=await mkdtemp(join(tmpdir(),"trebell-relay-integration-"));

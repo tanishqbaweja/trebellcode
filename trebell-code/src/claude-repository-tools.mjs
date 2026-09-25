@@ -3,10 +3,12 @@ import {
   REPOSITORY_TOOL_DEFINITIONS,
   REPOSITORY_TOOL_INSTRUCTIONS,
   invokeRepositoryTool,
-  repositoryToolHandlers,
+  repositoryToolHandlers as sharedRepositoryToolHandlers,
 } from "./repository-tool-catalog.mjs";
 
-function repositoryTool(definition,handlers){
+export const repositoryToolHandlers=sharedRepositoryToolHandlers;
+
+function claudeRepositoryTool(definition,handlers){
   return tool(
     definition.name,
     definition.description,
@@ -16,14 +18,12 @@ function repositoryTool(definition,handlers){
   );
 }
 
-export { repositoryToolHandlers };
-
-export function createClaudeRepositoryMcp({contextEngine,root,io=null,version="0.0.0"}={}){
-  const handlers=repositoryToolHandlers({contextEngine,root,io});
+export function createClaudeRepositoryMcp({contextEngine,root,io=null,knowledgeService=null,environmentId=null,version="0.0.0"}={}){
+  const handlers=sharedRepositoryToolHandlers({contextEngine,root,io,knowledgeService,environmentId});
   return createSdkMcpServer({
     name:"trebell_repository",
     version,
     instructions:REPOSITORY_TOOL_INSTRUCTIONS,
-    tools:REPOSITORY_TOOL_DEFINITIONS.map(definition=>repositoryTool(definition,handlers)),
+    tools:REPOSITORY_TOOL_DEFINITIONS.map(definition=>claudeRepositoryTool(definition,handlers)),
   });
 }

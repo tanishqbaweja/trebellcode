@@ -41,7 +41,12 @@ export class RepositoryKnowledgeService{
   }
   forget(id){return this.state.removeRepositoryKnowledge(id)}
   async context({projectPath,environmentId=null,query="",limit=20,refresh=true}={}){
-    if(refresh)await this.refresh({projectPath,environmentId});
+    if(refresh){
+      const pool=this.state.repositoryKnowledge({projectPath,environmentId,limit:Math.max(100,Math.min(1000,Number(limit||20)*10))});
+      const candidates=selectRepositoryKnowledge(pool,{query,limit:Math.max(20,Math.min(100,Number(limit||20)*2)),includeUnverified:true,includeStale:true});
+      const ids=candidates.filter(item=>item.evidence?.length).map(item=>item.id).filter(Boolean);
+      if(ids.length)await this.refresh({projectPath,environmentId,ids,limit:ids.length});
+    }
     const entries=this.list({projectPath,environmentId,query,limit});
     return {entries,context:repositoryKnowledgeContext(entries,{limit})};
   }
