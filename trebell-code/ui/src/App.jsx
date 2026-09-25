@@ -42,6 +42,7 @@ import { sharedRuntimeCapabilities } from "../../src/runtime-capabilities.mjs";
 import { repositoryFocusPaths } from "./context-focus.js";
 import { hydratePersistedQueue, persistedQueueItems } from "./persistent-queue.js";
 import { contextTaskAnchor, contextTaskText } from "./context-task.js";
+import { requestTurnVerificationPlan, verificationPlanEvent } from "./turn-verification.js";
 
 const TerminalPanel=lazy(()=>import("./components/TerminalPanel.jsx"));
 const WorkspacePanel=lazy(()=>import("./components/WorkspacePanel.jsx"));
@@ -1734,6 +1735,20 @@ export default function App(){
     if(message.method.includes("requestApproval")||message.method==="applyPatchApproval"||message.method==="execCommandApproval"){setApprovals(prev=>[...prev,message]);desktopNotify("Approval required",message.params?.reason||message.params?.command||"Trebell Code is waiting for permission.");return}
     client.reject(message.id,-32601,"Unsupported Trebell client request: "+message.method);
   }
+  async function planCompletedTurnEvidence(threadId,turnId){
+    if(!threadId||!turnId)return;
+    try{
+      const result=await requestTurnVerificationPlan({request:api,threadId,turnId});
+      const event=verificationPlanEvent(result,turnId);
+      if(event&&activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous.filter(item=>item.id!==event.id),event]);
+      if(result?.record&&rpcRef.current){
+        const refreshed=await rpcRef.current.request("thread/continuity/get",{threadId}).catch(()=>null);
+        if(refreshed&&activeThreadRef.current?.id===threadId)setContinuity(refreshed.continuity||null);
+      }
+    }catch(error){
+      if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-plan-error-"+turnId,kind:"error",title:"Could not plan turn verification: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId}}]);
+    }
+  }
   function handleNotification(message){
     const p=message.params||{};
     const threadId=p.threadId||null;
@@ -1789,8 +1804,9 @@ export default function App(){
       }
     }
     else if(message.method==="turn/completed"){
-      const completedAtMs=p.turn?.completedAt?Number(p.turn.completedAt)*1000:Date.now();
+      const completedTurnId=p.turn?.id||p.turnId||null,completedAtMs=p.turn?.completedAt?Number(p.turn.completedAt)*1000:Date.now();
       updateThreadTelemetry(threadId,{turnId:null,turnStartedAtMs:null,currentActivity:null,lastTurn:{id:p.turn?.id||p.turnId||null,status:p.turn?.status||"completed",durationMs:p.turn?.durationMs??null,completedAtMs},lastActivityAt:completedAtMs});
+      if(!p.turn?.status||p.turn.status==="completed")void planCompletedTurnEvidence(threadId,completedTurnId);
       if(isCurrent){
         setRunning(false);setActiveTurnId(null);setEvents(prev=>prev.map(e=>e.status==="running"?{...e,status:"done"}:e));loadThreads(rpcRef.current,{strict:true}).catch(error=>showActionError(error,"Turn completed, but the thread list could not refresh"));desktopNotify("Trebell Code finished",titleOf(activeThreadRef.current)+" is ready for review.");
       }else if(threadId&&backgroundThreadsRef.current.has(threadId)){

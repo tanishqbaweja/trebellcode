@@ -2337,6 +2337,26 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return json(res,200,contextEngine.nextVerificationAction({plan:body.plan,evidence:Array.isArray(body.evidence)?body.evidence:[]}));
       }catch(error){return json(res,400,{error:error.message});}
     }
+    if(url.pathname==="/api/verification/plan-turn"&&req.method==="POST"){
+      try{
+        const body=await readJsonBody(req,2*1024*1024),threadId=String(body.threadId||"").trim(),turnId=String(body.turnId||"").trim();
+        if(!threadId||!turnId)return json(res,400,{error:"threadId and turnId are required"});
+        const checkpoint=checkpoints.list(threadId).filter(item=>String(item.turnId||"")===turnId).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0))[0]||null;
+        if(!checkpoint)return json(res,200,{supported:false,reason:"checkpoint_unavailable",threadId,turnId,changedPaths:[],record:null,nextAction:null});
+        const changed=await checkpoints.changedPaths(checkpoint.id,{threadId});
+        if(!changed.paths.length){
+          eventJournal.record({environmentId:state.threadMeta(threadId)?.environmentId??null,threadId,turnId,category:"verification",name:"verification.skipped",status:"completed",data:{checkpointId:checkpoint.id,reason:"no_workspace_changes"}});
+          return json(res,200,{supported:true,checkpointId:checkpoint.id,threadId,turnId,changedPaths:[],record:null,nextAction:{action:"complete",reason:"No workspace file changes were detected since the pre-turn checkpoint."}});
+        }
+        const meta=state.threadMeta(threadId),riskHints=Array.isArray(body.riskHints)?body.riskHints.map(String).filter(Boolean).slice(0,20):[];
+        const plan=await contextEngine.verificationPlan({root:changed.root,paths:changed.paths,riskHints,capabilities:{diagnostics:body.diagnostics!==false,semanticDiagnostics:Boolean(body.semanticDiagnostics)}});
+        const evidence=[],assessment=contextEngine.assessVerification({plan,evidence});
+        const record=state.recordVerification({environmentId:meta?.environmentId??null,projectPath:changed.root,threadId,turnId,plan,evidence,assessment});
+        const nextAction=contextEngine.nextVerificationAction({plan:record.plan,evidence:record.evidence});
+        eventJournal.record({environmentId:meta?.environmentId??null,threadId,turnId,category:"verification",name:"verification.planned",status:assessment.status,data:{recordId:record.id,checkpointId:checkpoint.id,projectPath:changed.root,risk:assessment.risk,changedPathCount:changed.paths.length,changedPaths:changed.paths.slice(0,100),nextAction:nextAction.action,nextStepId:nextAction.nextStep?.id||null}});
+        return json(res,200,{supported:true,checkpointId:checkpoint.id,threadId,turnId,changedPaths:changed.paths,record,nextAction});
+      }catch(error){return json(res,400,{error:error.message});}
+    }
     if(url.pathname==="/api/verification-records/repair-context"&&req.method==="POST"){
       try{
         const body=await readJsonBody(req,512*1024),threadId=String(body.threadId||"").trim();if(!threadId)throw new Error("threadId is required");
