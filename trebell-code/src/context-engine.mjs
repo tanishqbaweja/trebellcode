@@ -11,6 +11,21 @@ const BABEL_SOURCE_EXTENSIONS=new Set([".js",".jsx",".ts",".tsx",".mjs",".cjs"])
 const RESOLVE_EXTENSIONS=[".js",".jsx",".ts",".tsx",".mjs",".cjs",".py",".rs",".go",".java",".kt",".cs"];
 const INSTRUCTION_NAMES=new Set(["AGENTS.md","CLAUDE.md"]);
 const STOP_WORDS=new Set(["the","and","for","with","that","this","from","into","when","where","what","which","while","your","trebell","code","make","need","should","would","could","have","has","had","are","was","were","will","fix","add","use","using","work","working"]);
+const TYPESCRIPT_DIAGNOSTICS_SCRIPT=`const fs=require("fs"),path=require("path");
+const root=path.resolve(process.argv[1]||"."),requested=path.resolve(root,process.argv[2]||""),limit=Math.max(1,Math.min(300,Number(process.argv[3])||100));
+const out=value=>process.stdout.write(JSON.stringify(value));
+const tsPath=path.join(root,"node_modules","typescript","lib","typescript.js");
+if(!fs.existsSync(tsPath)){out({available:false,configured:false,reason:"Project-local TypeScript is not installed"});process.exit(0)}
+try{
+  const ts=require(tsPath),configPath=ts.findConfigFile(root,ts.sys.fileExists,"tsconfig.json");
+  if(!configPath){out({available:true,configured:false,version:ts.version,reason:"No tsconfig.json was found"});process.exit(0)}
+  const read=ts.readConfigFile(configPath,ts.sys.readFile),parsed=ts.parseJsonConfigFileContent(read.config||{},ts.sys,path.dirname(configPath),{noEmit:true,incremental:false,composite:false},configPath),options={...parsed.options,noEmit:true,incremental:false,composite:false};
+  delete options.tsBuildInfoFile;
+  const program=ts.createProgram({rootNames:parsed.fileNames,options,projectReferences:parsed.projectReferences}),all=[...(read.error?[read.error]:[]),...(parsed.errors||[]),...ts.getPreEmitDiagnostics(program)];
+  const relativeRequested=path.relative(root,requested).replace(/\\\\/g,"/"),category=value=>value===0?"warning":value===1?"error":value===2?"suggestion":"message";
+  const rows=all.map(diagnostic=>{const file=diagnostic.file?.fileName?path.resolve(diagnostic.file.fileName):null,position=file&&Number.isFinite(diagnostic.start)?diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start):null;return{path:file?path.relative(root,file).replace(/\\\\/g,"/"):null,line:position?position.line+1:null,column:position?position.character+1:null,severity:category(diagnostic.category),code:"TS"+diagnostic.code,message:ts.flattenDiagnosticMessageText(diagnostic.messageText,"\\n")}}),matching=rows.filter(row=>row.path===relativeRequested||row.path===null);
+  out({available:true,configured:true,version:ts.version,configPath:path.relative(root,configPath).replace(/\\\\/g,"/"),included:Boolean(program.getSourceFile(requested)),projectDiagnosticCount:rows.length,diagnostics:matching.slice(0,limit),truncated:matching.length>limit});
+}catch(error){out({available:true,configured:false,failed:true,reason:String(error?.stack||error?.message||error)})}`;
 
 function tokenEstimate(value){return Math.ceil(String(value||"").length/4)}
 function slash(value){return String(value||"").split(sep).join("/")}
@@ -287,6 +302,20 @@ async function localGitBlame(root,{path,startLine=1,endLine=null,maxLines=120}={
   return parseGitBlame(stdout).slice(0,cap);
 }
 
+function parseTypeScriptDiagnosticsOutput(stdout){
+  try{return JSON.parse(String(stdout||"{}"))}catch{return {available:false,configured:false,failed:true,reason:"TypeScript diagnostic adapter returned invalid output"}}
+}
+
+async function localTypeScriptDiagnostics(root,{path,limit=100}={}){
+  try{
+    const {stdout}=await execFileAsync(process.execPath,["-e",TYPESCRIPT_DIAGNOSTICS_SCRIPT,resolve(root),String(path||""),String(Math.max(1,Math.min(300,Number(limit)||100)))],{cwd:resolve(root),windowsHide:true,maxBuffer:4*1024*1024,timeout:30_000});
+    return parseTypeScriptDiagnosticsOutput(stdout);
+  }catch(error){
+    const parsed=parseTypeScriptDiagnosticsOutput(error?.stdout);if(parsed?.available||parsed?.reason!=="TypeScript diagnostic adapter returned invalid output")return parsed;
+    return {available:false,configured:false,failed:true,reason:error?.killed?"TypeScript diagnostics timed out":String(error?.stderr||error?.message||"TypeScript diagnostics failed").slice(0,2000)};
+  }
+}
+
 async function localMetadata(root,paths){
   const pairs=await mapLimit(paths,64,async relativePath=>{
     try{
@@ -316,6 +345,7 @@ function localContextIo(root){
     searchPaths:options=>localMatchingFiles(absolute,options),
     gitHistory:options=>localGitHistory(absolute,options),
     gitBlame:options=>localGitBlame(absolute,options),
+    typeScriptDiagnostics:options=>localTypeScriptDiagnostics(absolute,options),
     gitState:()=>gitState(absolute),
     changedSince:async(fromHead,toHead)=>{
       if(!fromHead||!toHead||fromHead===toHead)return new Set();
@@ -402,6 +432,11 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     if(result.exitCode!==0)throw new Error(result.stderr||"Could not read remote Git blame");
     return parseGitBlame(result.stdout).slice(0,cap);
   };
+  const typeScriptDiagnostics=async({path,limit=100}={})=>{
+    const result=await run({command:"node",args:["-e",TYPESCRIPT_DIAGNOSTICS_SCRIPT,absolute,String(path||""),String(Math.max(1,Math.min(300,Number(limit)||100)))],cwd:"",timeoutMs:35_000,maxOutput:4*1024*1024});
+    if(result.exitCode!==0)return {available:false,configured:false,failed:true,reason:result.timedOut?"TypeScript diagnostics timed out":String(result.stderr||"Remote TypeScript diagnostics failed").slice(0,2000)};
+    return parseTypeScriptDiagnosticsOutput(result.stdout);
+  };
   return {
     cacheKey:"remote:"+environmentId+":"+absolute,
     root:absolute,
@@ -411,6 +446,7 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     searchPaths,
     gitHistory,
     gitBlame,
+    typeScriptDiagnostics,
     readText:async relativePath=>{
       const target=posix.join(absolute,String(relativePath||"").replace(/^\.\//,""));
       if(target!==absolute&&!target.startsWith(absolute.endsWith("/")?absolute:absolute+"/"))throw new Error("Context file is outside the remote workspace");
@@ -764,14 +800,20 @@ export class ContextEngine{
     return {name:symbol,path:requested,definitions:definitions.slice(0,80),callers,callees,indexedFiles:index.files.size,supportedFiles:candidates.length,truncated:callers.length>=capped||callees.length>=capped,precision:"ast-lexical",semantic:false};
   }
 
-  async diagnostics({root,path,limit=100,io=null}={}){
+  async diagnostics({root,path,limit=100,semantic=false,io=null}={}){
     const {contextIo,index}=await this.#indexed(root,io),requested=contextIo.relativeFocus(path)||slash(String(path||"").replace(/^\.\//,""));
     const entry=index.files.get(requested);if(!entry)throw new Error(`Context file is not indexed: ${path}`);
     const extension=extname(requested).toLowerCase(),capped=Math.max(1,Math.min(200,Number(limit)||100));
-    if(!BABEL_SOURCE_EXTENSIONS.has(extension))return {path:requested,supported:false,engine:null,semantic:false,diagnostics:[],reason:`No deterministic Trebell diagnostics adapter is configured for ${extension||"this file type"}`};
+    if(!BABEL_SOURCE_EXTENSIONS.has(extension))return {path:requested,supported:false,engine:null,semantic:false,semanticRequested:Boolean(semantic),semanticDiagnostics:[],diagnostics:[],reason:`No deterministic Trebell diagnostics adapter is configured for ${extension||"this file type"}`};
     const contents=await contextIo.readMany([requested]),content=contents.get(requested);if(typeof content!=="string")throw new Error(`Could not read context file: ${path}`);
     const diagnostics=javascriptSyntaxDiagnostics(content,requested);
-    return {path:requested,supported:true,engine:"babel-parser",semantic:false,diagnostics:diagnostics.slice(0,capped),truncated:diagnostics.length>capped};
+    let semanticResult=null;
+    if(semantic&&typeof contextIo.typeScriptDiagnostics==="function"){
+      try{semanticResult=await contextIo.typeScriptDiagnostics({path:requested,limit:capped})}
+      catch(error){semanticResult={available:false,configured:false,failed:true,reason:String(error?.message||error)}}
+    }
+    const semanticReady=Boolean(semanticResult?.available&&semanticResult?.configured&&!semanticResult?.failed),semanticDiagnostics=Array.isArray(semanticResult?.diagnostics)?semanticResult.diagnostics.slice(0,capped):[];
+    return {path:requested,supported:true,engine:"babel-parser",semantic:semanticReady,semanticRequested:Boolean(semantic),semanticEngine:semanticReady?"typescript":null,semanticInfo:semanticResult,semanticDiagnostics,diagnostics:diagnostics.slice(0,capped),truncated:diagnostics.length>capped||Boolean(semanticResult?.truncated)};
   }
 
   async fileRelations({root,path,io=null}={}){

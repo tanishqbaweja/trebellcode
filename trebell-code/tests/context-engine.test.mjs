@@ -182,6 +182,7 @@ test("context engine exposes honest bounded JavaScript and TypeScript syntax dia
   const root=await fixture();
   try{
     await writeFile(join(root,"src","broken.ts"),"export const broken: string = ;\n","utf8");
+    await writeFile(join(root,"src","typed.ts"),"export const typed: string = 1;\n","utf8");
     await writeFile(join(root,"src","tool.py"),"def tool():\n    return True\n","utf8");
     const engine=new ContextEngine(),broken=await engine.diagnostics({root,path:"src/broken.ts"});
     assert.equal(broken.supported,true);assert.equal(broken.engine,"babel-parser");assert.equal(broken.semantic,false);assert.ok(broken.diagnostics.length>=1);
@@ -190,6 +191,13 @@ test("context engine exposes honest bounded JavaScript and TypeScript syntax dia
     assert.equal(valid.supported,true);assert.deepEqual(valid.diagnostics,[]);
     const unsupported=await engine.diagnostics({root,path:"src/tool.py"});
     assert.equal(unsupported.supported,false);assert.equal(unsupported.semantic,false);assert.deepEqual(unsupported.diagnostics,[]);assert.match(unsupported.reason,/no deterministic Trebell diagnostics adapter/i);
+    await mkdir(join(root,"node_modules","typescript","lib"),{recursive:true});
+    await writeFile(join(root,"tsconfig.json"),"{}\n","utf8");
+    await writeFile(join(root,"node_modules","typescript","lib","typescript.js"),`const fs=require("fs"),path=require("path");
+module.exports={version:"fixture-ts",sys:{fileExists:fs.existsSync,readFile:p=>fs.readFileSync(p,"utf8")},findConfigFile:root=>path.join(root,"tsconfig.json"),readConfigFile:()=>({config:{}}),parseJsonConfigFileContent:(_c,_s,base)=>({fileNames:[path.join(base,"src","typed.ts")],options:{},errors:[],projectReferences:[]}),createProgram:({rootNames})=>{const fileName=rootNames[0],file={fileName,getLineAndCharacterOfPosition:()=>({line:0,character:13})};return{file,getSourceFile:value=>path.resolve(value)===path.resolve(fileName)?file:undefined}},getPreEmitDiagnostics:program=>[{file:program.file,start:13,category:1,code:2322,messageText:"Type mismatch"}],flattenDiagnosticMessageText:value=>String(value)};\n`,"utf8");
+    const semantic=await engine.diagnostics({root,path:"src/typed.ts",semantic:true});
+    assert.equal(semantic.semantic,true);assert.equal(semantic.semanticEngine,"typescript");assert.equal(semantic.semanticInfo.version,"fixture-ts");assert.equal(semantic.semanticInfo.included,true);
+    assert.deepEqual(semantic.diagnostics,[]);assert.equal(semantic.semanticDiagnostics[0].code,"TS2322");assert.equal(semantic.semanticDiagnostics[0].path,"src/typed.ts");
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
@@ -323,6 +331,7 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
       if(command==="git"&&args.includes("status"))return ok(status);
       if(command==="git"&&args.includes("diff"))return ok(status?"diff --git a/src/auth/session.js b/src/auth/session.js\n":"");
       if(command==="git"&&args.includes("rev-parse"))return ok("remote-head-1\n");
+      if(command==="node"&&args[0]==="-e")return ok(JSON.stringify({available:true,configured:true,version:"remote-ts",configPath:"tsconfig.json",included:true,projectDiagnosticCount:1,diagnostics:[{path:"src/auth/session.js",line:2,column:1,severity:"error",code:"TS9000",message:"Remote semantic fixture"}],truncated:false}));
       if(command==="head"){
         const target=String(args.at(-1)||""),relativePath=target.slice(root.length+1);
         return files.has(relativePath)?ok(files.get(relativePath)):({exitCode:1,stdout:"",stderr:"missing",timedOut:false});
@@ -369,6 +378,8 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
   assert.ok(remoteCalls.callers.some(item=>item.path==="src/server.js"&&item.caller==="startServer"));
   const remoteDiagnostics=await engine.diagnostics({root,io,path:"src/auth/session.js"});
   assert.equal(remoteDiagnostics.supported,true);assert.deepEqual(remoteDiagnostics.diagnostics,[]);
+  const remoteSemantic=await engine.diagnostics({root,io,path:"src/auth/session.js",semantic:true});
+  assert.equal(remoteSemantic.semantic,true);assert.equal(remoteSemantic.semanticInfo.version,"remote-ts");assert.equal(remoteSemantic.semanticDiagnostics[0].code,"TS9000");
   const remoteSource=await engine.readSourceRange({root,io,path:"src/auth/session.js",startLine:1,endLine:2});
   assert.match(remoteSource.content,/rotateRefreshToken/);assert.equal(remoteSource.endLine,2);
   const remoteReferences=await engine.symbolReferences({root,io,name:"RefreshSession",limit:10});

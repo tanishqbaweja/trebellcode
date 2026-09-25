@@ -183,6 +183,10 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(diagnosticsResponse.status,200);
     const diagnosticsResult=await diagnosticsResponse.json();
     assert.equal(diagnosticsResult.supported,true);assert.equal(diagnosticsResult.engine,"babel-parser");assert.equal(diagnosticsResult.semantic,false);assert.ok(diagnosticsResult.diagnostics.length>=1);
+    const semanticDiagnosticsResponse=await fetch(gui.url+"/api/context/diagnostics?"+new URLSearchParams({path:configProject,file:"src/session.js",semantic:"true",limit:"10"}));
+    assert.equal(semanticDiagnosticsResponse.status,200);
+    const semanticDiagnosticsResult=await semanticDiagnosticsResponse.json();
+    assert.equal(semanticDiagnosticsResult.semanticRequested,true);assert.equal(semanticDiagnosticsResult.semantic,false);assert.equal(semanticDiagnosticsResult.semanticInfo.available,false);
     const referencesResponse=await fetch(gui.url+"/api/context/references?"+new URLSearchParams({path:configProject,name:"RefreshSession",limit:"10"}));
     assert.equal(referencesResponse.status,200);
     const referencesResult=await referencesResponse.json();

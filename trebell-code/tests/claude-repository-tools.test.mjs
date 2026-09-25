@@ -40,7 +40,7 @@ test("Claude repository tool handlers reuse the shared Context Engine",async()=>
     ["relations",{root:"/srv/app",io,path:"src/context-engine.mjs"}],
     ["tests",{root:"/srv/app",io,path:"src/context-engine.mjs",name:null,limit:4}],
     ["calls",{root:"/srv/app",io,name:"ContextEngine",path:"src/context-engine.mjs",limit:5}],
-    ["diagnostics",{root:"/srv/app",io,path:"src/context-engine.mjs",limit:6}],
+    ["diagnostics",{root:"/srv/app",io,path:"src/context-engine.mjs",limit:6,semantic:false}],
     ["references",{root:"/srv/app",io,name:"ContextEngine",path:"src/context-engine.mjs",limit:11}],
     ["code",{root:"/srv/app",io,query:"ContextEngine",regex:false,caseSensitive:true,limit:9}],
     ["source",{root:"/srv/app",io,path:"src/context-engine.mjs",startLine:5,endLine:12,maxLines:20}],
