@@ -2,6 +2,7 @@ import React,{useEffect,useMemo,useState} from "react";
 import { Check, FileCode2, FileDiff, FileImage, FileText, Folder, Music2, Paperclip, RefreshCw, Save, Search, Video, X } from "lucide-react";
 import Prism from "prismjs";
 import { api } from "../api.js";
+import { WORKSPACE_CHANGED_PAGE_SIZE, WORKSPACE_DIFF_CHUNK_CHARS, WORKSPACE_TREE_PAGE_SIZE, workspaceListWindow, workspaceTextWindow } from "../workspace-view-window.js";
 import OpenInPicker from "./OpenInPicker.jsx";
 
 const IMAGE_EXT=new Set(["png","jpg","jpeg","gif","webp","bmp","svg","ico"]);
@@ -84,6 +85,9 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   const [searchError,setSearchError]=useState("");
   const [actionError,setActionError]=useState("");
   const [actionBusy,setActionBusy]=useState("");
+  const [treeLimit,setTreeLimit]=useState(WORKSPACE_TREE_PAGE_SIZE);
+  const [changedLimit,setChangedLimit]=useState(WORKSPACE_CHANGED_PAGE_SIZE);
+  const [diffLimit,setDiffLimit]=useState(WORKSPACE_DIFF_CHUNK_CHARS);
   function params(values={}){
     const query=new URLSearchParams(values);
     query.set("environmentId",environmentId||"");
@@ -106,8 +110,9 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
     }catch(error){setDiffError(error.message||String(error)||"Could not refresh workspace changes.")}
     finally{setLoading(false)}
   }
-  useEffect(()=>{setDiff({status:"",diff:""});setDiffError("");refreshTree();refreshDiff();setFile(null);setError("");},[projectPath,environmentId]);
+  useEffect(()=>{setDiff({status:"",diff:""});setDiffError("");setTreeLimit(WORKSPACE_TREE_PAGE_SIZE);setChangedLimit(WORKSPACE_CHANGED_PAGE_SIZE);setDiffLimit(WORKSPACE_DIFF_CHUNK_CHARS);refreshTree();refreshDiff();setFile(null);setError("");},[projectPath,environmentId]);
   useEffect(()=>{setTab(defaultTab==="diff"?"diff":"files")},[defaultTab]);
+  useEffect(()=>{setTreeLimit(WORKSPACE_TREE_PAGE_SIZE)},[query]);
   useEffect(()=>{
     let timer=null;
     const changed=event=>{
@@ -179,6 +184,9 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
   const changedPaths=useMemo(()=>String(diff.status||"").split(/\r?\n/).filter(Boolean).map(line=>line.slice(3)),[diff.status]);
   const diffPanelError=[diffError,actionError].filter(Boolean).join(" · ");
   const source=query?searchResults:entries;
+  const treeWindow=useMemo(()=>query?{visible:source,total:source.length,shown:source.length,hasMore:false,nextCount:0}:workspaceListWindow(source,{limit:treeLimit,pageSize:WORKSPACE_TREE_PAGE_SIZE}),[source,query,treeLimit]);
+  const changedWindow=useMemo(()=>workspaceListWindow(changedPaths,{limit:changedLimit,pageSize:WORKSPACE_CHANGED_PAGE_SIZE}),[changedPaths,changedLimit]);
+  const diffWindow=useMemo(()=>workspaceTextWindow(diff.diff||diff.error||"No unstaged diff.",{limit:diffLimit,chunkSize:WORKSPACE_DIFF_CHUNK_CHARS}),[diff.diff,diff.error,diffLimit]);
   const rawUrl=file&&projectPath?"/api/workspace/raw?"+params({root:projectPath,path:file.path}):"";
   const table=useMemo(()=>file?.kind==="table"?parseDelimited(file.content,extension(file.name)==="tsv"?"\t":","):[],[file]);
 
@@ -202,14 +210,14 @@ export default function WorkspacePanel({projectPath,environmentId=null,remote=fa
     {tab==="files"&&<div className="workspace-files">
       <div className="workspace-search"><Search size={14}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search files…"/></div>
       <div className="workspace-body">
-        <div className="tree-list">{(searchError||treeError)&&<p className="workspace-tree-error" role="alert">{searchError||treeError}</p>}{loading?<p>Loading…</p>:source.map(entry=><button key={entry.path} style={{paddingLeft:8+(entry.depth||0)*14}} onClick={()=>entry.isFile&&open(entry.path)}>{entry.isDirectory?<Folder size={14}/>:fileIcon(entry.name)}<span>{entry.relativePath||entry.name}</span>{entry.isFile&&<i onClick={e=>{e.stopPropagation();onAttachPath?.(entry.path)}}><Paperclip size={11}/></i>}</button>)}</div>
+        <div className="tree-list">{(searchError||treeError)&&<p className="workspace-tree-error" role="alert">{searchError||treeError}</p>}{loading?<p>Loading…</p>:treeWindow.visible.map(entry=><button data-workspace-entry key={entry.path} style={{paddingLeft:8+(entry.depth||0)*14}} onClick={()=>entry.isFile&&open(entry.path)}>{entry.isDirectory?<Folder size={14}/>:fileIcon(entry.name)}<span>{entry.relativePath||entry.name}</span>{entry.isFile&&<i onClick={e=>{e.stopPropagation();onAttachPath?.(entry.path)}}><Paperclip size={11}/></i>}</button>)}{treeWindow.hasMore&&<div className="workspace-window-footer"><button onClick={()=>setTreeLimit(limit=>limit+WORKSPACE_TREE_PAGE_SIZE)}>Show {treeWindow.nextCount} more files</button><span>{treeWindow.shown} of {treeWindow.total} mounted</span></div>}</div>
         <div className={"file-view"+(error?" has-error":"")}>{file&&<div className="file-head"><strong>{file.name}</strong><div>{!remote&&<OpenInPicker path={file.path} compact/>}<button onClick={()=>onAttachPath?.(file.path)}><Paperclip size={13}/> Attach</button>{editable&&<button onClick={()=>{setError("");setEdit(v=>!v)}}>{edit?<X size={13}/>:<FileCode2 size={13}/>} {edit?"Cancel":"Edit"}</button>}{edit&&<button onClick={save}><Save size={13}/> Save</button>}</div></div>}{error&&file?.kind!=="unsupported"&&<div className="workspace-file-error" role="alert">{error}</div>}{preview()}</div>
       </div>
     </div>}
     {tab==="diff"&&(changedPaths.length?<div className={"changes-view"+(diffPanelError?" has-action-error":"")}>
       {diffPanelError&&<div className="inline-error workspace-diff-error" role="alert">{diffPanelError}</div>}
-      <div className="changed-files">{changedPaths.map(path=><div className={reviewedFiles.includes(path)?"changed-file-row reviewed":"changed-file-row"} key={path}><button onClick={()=>changeReviewed(path,!reviewedFiles.includes(path))} disabled={actionBusy==="reviewed:"+path}><span>{reviewedFiles.includes(path)?<Check size={12}/>:<FileDiff size={12}/>}</span>{path}</button><button className="review-comment" title="Add review comment as context" onClick={()=>addReviewComment(path)} disabled={actionBusy==="comment:"+path}>+</button></div>)}</div>
-      <pre className="git-diff">{diff.diff||diff.error||"No unstaged diff."}</pre>
+      <div className="changed-files">{changedWindow.visible.map(path=><div className={reviewedFiles.includes(path)?"changed-file-row reviewed":"changed-file-row"} key={path}><button onClick={()=>changeReviewed(path,!reviewedFiles.includes(path))} disabled={actionBusy==="reviewed:"+path}><span>{reviewedFiles.includes(path)?<Check size={12}/>:<FileDiff size={12}/>}</span>{path}</button><button className="review-comment" title="Add review comment as context" onClick={()=>addReviewComment(path)} disabled={actionBusy==="comment:"+path}>+</button></div>)}{changedWindow.hasMore&&<div className="workspace-window-footer"><button onClick={()=>setChangedLimit(limit=>limit+WORKSPACE_CHANGED_PAGE_SIZE)}>Show {changedWindow.nextCount} more changed files</button><span>{changedWindow.shown} of {changedWindow.total} mounted</span></div>}</div>
+      <div className="workspace-diff-preview"><pre className="git-diff" data-testid="workspace-diff-preview">{diffWindow.text}</pre>{diffWindow.hasMore&&<div className="workspace-window-footer"><button onClick={()=>setDiffLimit(limit=>limit+WORKSPACE_DIFF_CHUNK_CHARS)}>Show more diff</button><span>{Math.round(diffWindow.shown/1000)}k of {Math.round(diffWindow.total/1000)}k characters shown</span></div>}</div>
     </div>:<div className={"changes-empty"+((diffError||diff.error)?" error":"")}><FileDiff size={20}/><strong>{(diffError||diff.error)?"Could not load changes":"Working tree clean"}</strong><span>{diffError||diff.error||"No unstaged changes to review."}</span></div>)}
   </div>;
 }
