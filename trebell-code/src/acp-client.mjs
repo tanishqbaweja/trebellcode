@@ -40,6 +40,17 @@ function processExitError(code,signal,stderr,environment){
   return new Error(detail?base+"\n"+detail:base);
 }
 
+export function defaultAcpClientCapabilities(){
+  return {
+    fs:{readTextFile:true,writeTextFile:true},
+    terminal:true,
+    auth:{terminal:true},
+    plan:{},
+    session:{compaction:{}},
+    elicitation:{form:{},url:{}},
+  };
+}
+
 /** Lightweight ACP v1 JSON-RPC/NDJSON client used by Cursor, Grok and OpenCode. */
 export class AcpClient extends EventEmitter{
   constructor({command,args=[],cwd=process.cwd(),env=process.env,onRequest=null,onStderr=null,timeoutMs=DEFAULT_TIMEOUT_MS,spawnProcess=null}={}){
@@ -112,12 +123,7 @@ export class AcpClient extends EventEmitter{
     return this.request("initialize",{
       protocolVersion:1,
       clientInfo:{name,title,version},
-      clientCapabilities:capabilities||{
-        fs:{readTextFile:true,writeTextFile:true},
-        terminal:true,
-        auth:{terminal:true},
-        elicitation:{form:{},url:{}},
-      },
+      clientCapabilities:capabilities||defaultAcpClientCapabilities(),
     },30_000);
   }
 

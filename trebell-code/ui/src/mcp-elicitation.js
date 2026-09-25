@@ -8,6 +8,17 @@ export function elicitationMeta(request){
   return object(request?.params?._meta);
 }
 
+export function isAcpElicitation(request){
+  return elicitationMeta(request).trebell_source==="acp";
+}
+
+export function buildElicitationResponse(request,decision,content=null){
+  if(!isAcpElicitation(request))return buildMcpApprovalResponse(decision);
+  if(decision==="once")return {action:"accept",...(content!=null?{content}:{}),_meta:null};
+  if(decision==="decline")return {action:"decline",_meta:null};
+  return {action:"cancel",_meta:null};
+}
+
 export function isMcpToolApproval(request){
   const params=request?.params||{};
   if(!["form","openai/form","openaiForm"].includes(String(params.mode||"")))return false;

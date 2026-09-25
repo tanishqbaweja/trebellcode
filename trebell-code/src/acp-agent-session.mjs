@@ -40,6 +40,9 @@ export class AcpAgentSession{
     const client=new AcpClient({command:this.command,args:this.args,cwd:this.cwd,env:this.env,spawnProcess:this.spawnProcess,onRequest:(method,params)=>this.#clientRequest(method,params)});
     this.client=client;
     client.on("sessionUpdate",params=>this.onUpdate?.(params));
+    client.on("notification",message=>{
+      if(message?.method==="elicitation/complete")this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"elicitation_complete",elicitationId:message.params?.elicitationId||null}});
+    });
     client.on("protocolWarning",warning=>this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"protocol_warning",...warning}}));
     client.on("terminated",error=>this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message:error.message}}));
     await client.start();

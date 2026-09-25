@@ -6,7 +6,22 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { WebSocket } from "ws";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
-import { agentThreadResumePayload,agentToolLifecycle,attachAgentRelay,contextualAgentPrompt,materializeAgentFork,paginateAgentAttachments,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
+import { acpPlanEvent,agentThreadResumePayload,agentToolLifecycle,attachAgentRelay,contextualAgentPrompt,materializeAgentFork,paginateAgentAttachments,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
+
+test("ACP v1 plan updates map item, markdown, file and removal variants into Trebell plans",()=>{
+  assert.deepEqual(acpPlanEvent({sessionUpdate:"plan_update",plan:{type:"items",planId:"p1",entries:[
+    {content:"Inspect",status:"in_progress",priority:"high"},{content:"Fix",status:"pending"},
+  ]}}),{planId:"p1",plan:[
+    {step:"Inspect",status:"inProgress",priority:"high"},{step:"Fix",status:"pending",priority:null},
+  ]});
+  assert.deepEqual(acpPlanEvent({sessionUpdate:"plan_update",plan:{type:"markdown",planId:"p2",content:"1. Inspect\n2. Fix"}}),{
+    planId:"p2",plan:[{step:"1. Inspect\n2. Fix",status:"pending",format:"markdown"}],
+  });
+  assert.deepEqual(acpPlanEvent({sessionUpdate:"plan_update",plan:{type:"file",planId:"p3",uri:"file:///tmp/plan.md"}}),{
+    planId:"p3",plan:[{step:"Plan file · file:///tmp/plan.md",status:"pending",format:"file",uri:"file:///tmp/plan.md"}],
+  });
+  assert.deepEqual(acpPlanEvent({sessionUpdate:"plan_removed",planId:"p3"}),{planId:"p3",plan:[]});
+});
 
 test("external runtimes receive Trebell application context before the visible user prompt",async()=>{
   const prompt=await contextualAgentPrompt([{type:"text",text:"Fix the refresh bug"}],{

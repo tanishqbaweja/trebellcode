@@ -616,6 +616,40 @@ test("MCP app responses stay visible and retryable when the runtime disconnects"
   }finally{await harness.close()}
 });
 
+test("ACP URL elicitation opens only after consent and completes out of band",async({page})=>{
+  test.setTimeout(30_000);
+  const thread={id:"acp-url-elicitation-thread",name:"ACP URL elicitation fixture",preview:"ACP URL flow coverage",historyMode:"paginated",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexRequestHarness(thread);
+  try{
+    await page.addInitScript(()=>{window.__trebellOpenedUrl="";window.open=(url)=>{window.__trebellOpenedUrl=String(url||"");return null}});
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"acp-url-elicitation-fixture");
+    await page.goto("/");
+    await page.getByRole("button",{name:/ACP URL elicitation fixture/}).click();
+    const responsePromise=harness.request("mcpServer/elicitation/request",{
+      threadId:thread.id,serverName:"Grok Build",mode:"url",elicitationId:"oauth-fixture",url:"https://agent.example.test/connect?flow=fixture",
+      message:"Authorize the external coding agent.",_meta:{trebell_source:"acp",trebell_runtime:"grok"},
+    });
+    const modal=page.getByTestId("mcp-elicitation");
+    await expect(modal).toBeVisible();
+    await expect(modal).toContainText("App needs browser input");
+    await expect(modal).toContainText("https://agent.example.test/connect?flow=fixture");
+    await expect(modal.getByRole("button",{name:"Open & continue",exact:true})).toBeVisible();
+    await expect(modal.getByRole("button",{name:"I completed it",exact:true})).toHaveCount(0);
+    await expect.poll(()=>page.evaluate(()=>window.__trebellOpenedUrl)).toBe("");
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await modal.locator(".mcp-elicitation-modal").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"acp-url-elicitation-1280x800.png",fullPage:true});
+    await modal.getByRole("button",{name:"Open & continue",exact:true}).click();
+    const response=await responsePromise;
+    expect(response.result).toEqual({action:"accept",_meta:null});
+    await expect(modal).toBeHidden();
+    await expect.poll(()=>page.evaluate(()=>window.__trebellOpenedUrl)).toBe("https://agent.example.test/connect?flow=fixture");
+    harness.emit({method:"thread/elicitation/completed",params:{threadId:thread.id,turnId:"turn-fixture",elicitationId:"oauth-fixture"}});
+    await expect(page.locator(".tool-event").filter({hasText:"External interaction completed"})).toBeVisible();
+  }finally{await harness.close()}
+});
+
 test("command palette keeps failed actions visible with useful feedback",async({page,request})=>{
   test.setTimeout(30_000);
   await prepare(page,request);

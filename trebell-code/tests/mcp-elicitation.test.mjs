@@ -2,12 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildMcpApprovalResponse,
+  buildElicitationResponse,
   buildUserVerificationResponse,
   coerceElicitationFormContent,
   elicitationApprovalDetails,
   elicitationFormFields,
   elicitationSupportsPersist,
   isMcpToolApproval,
+  isAcpElicitation,
   mcpElicitationKind,
 } from "../ui/src/mcp-elicitation.js";
 
@@ -90,4 +92,13 @@ test("MCP elicitation kinds keep device verification distinct from ordinary URL 
   assert.equal(mcpElicitationKind({params:{mode:"url"}}),"url");
   assert.equal(mcpElicitationKind({params:{mode:"openai/userVerification"}}),"verification");
   assert.equal(mcpElicitationKind({params:{mode:"future"}}),"unsupported");
+});
+
+test("ACP elicitations use protocol-shaped accept, decline and cancel responses",()=>{
+  const request={params:{mode:"url",url:"https://agent.example/connect",_meta:{trebell_source:"acp"}}};
+  assert.equal(isAcpElicitation(request),true);
+  assert.deepEqual(buildElicitationResponse(request,"once"),{action:"accept",_meta:null});
+  assert.deepEqual(buildElicitationResponse(request,"once",{name:"Ada"}),{action:"accept",content:{name:"Ada"},_meta:null});
+  assert.deepEqual(buildElicitationResponse(request,"decline"),{action:"decline",_meta:null});
+  assert.deepEqual(buildElicitationResponse(request,"cancel"),{action:"cancel",_meta:null});
 });

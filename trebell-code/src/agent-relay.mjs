@@ -62,6 +62,19 @@ export function agentToolLifecycle(update,previousOutput=""){
 }
 
 function planSteps(update){return (update.entries||update.plan||[]).map(entry=>({step:entry.content||entry.step||entry.text||"Plan step",status:entry.status==="in_progress"?"inProgress":entry.status||"pending",priority:entry.priority||null}))}
+export function acpPlanEvent(update={}){
+  const type=String(update.sessionUpdate||"");
+  if(type==="plan_removed")return {planId:update.planId||null,plan:[]};
+  if(type==="plan")return {planId:update.planId||null,plan:planSteps(update)};
+  if(type==="plan_update"){
+    const content=update.plan||{};
+    if(content.type==="items")return {planId:content.planId||null,plan:planSteps(content)};
+    if(content.type==="markdown")return {planId:content.planId||null,plan:[{step:String(content.content||"Plan updated"),status:"pending",format:"markdown"}]};
+    if(content.type==="file")return {planId:content.planId||null,plan:[{step:"Plan file · "+String(content.uri||"unknown"),status:"pending",format:"file",uri:content.uri||null}]};
+    return {planId:content.planId||update.planId||null,plan:planSteps(content)};
+  }
+  return null;
+}
 
 function usageFromPromptResult(result,fallback=null){
   const openCode=result?.raw?.info?.tokens;
@@ -537,8 +550,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       if(lifecycle.outputDelta)emit("item/commandExecution/outputDelta",{threadId,turnId,itemId:item.id,delta:lifecycle.outputDelta});
       if(lifecycle.terminal){liveToolOutput.delete(key);emit("item/completed",{threadId,turnId,item,completedAtMs:Date.now()})}
       else{if(lifecycle.output)liveToolOutput.set(key,lifecycle.output);emit("item/tool/progress",{threadId,turnId,item})}
-    }else if(type==="plan"){
-      if(turnId)emit("turn/plan/updated",{threadId,turnId,plan:planSteps(update)});
+    }else if(type==="plan"||type==="plan_update"||type==="plan_removed"){
+      const planEvent=acpPlanEvent(update);
+      if(turnId&&planEvent)emit("turn/plan/updated",{threadId,turnId,...planEvent});
     }else if(type==="usage_update"){
       const usage=update.usage||{};
       const input=Number(usage.input_tokens??usage.inputTokens??0)||0;
@@ -556,6 +570,19 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const current=threadStore.get(threadId)?.providerMeta||{};const next={...current};delete next.claudeFork;delete next.claudeRewindBackup;
       threadStore.update(threadId,{providerMeta:next});
       emit("thread/providerMetadata/updated",{threadId,type,update});
+    }else if(type==="compaction_update"||type==="compaction_summary_chunk"){
+      const current=threadStore.get(threadId)?.providerMeta||{};
+      const key=String(update.compactionId||"current");
+      const previous=current.compactions?.[key]||{};
+      const summaryChunk=type==="compaction_summary_chunk"&&update.content?.type==="text"?String(update.content.text||""):"";
+      const nextEntry=type==="compaction_update"
+        ?{...previous,...update,summaryText:Array.isArray(update.summary)?update.summary.filter(item=>item?.type==="text").map(item=>item.text||"").join(""):(update.summary===null?"":previous.summaryText||"")}
+        :{...previous,compactionId:update.compactionId,summaryText:String(previous.summaryText||"")+summaryChunk};
+      const compactions={...(current.compactions||{}),[key]:nextEntry};
+      threadStore.update(threadId,{providerMeta:{...current,compactions,compaction_update:nextEntry}});
+      emit("thread/providerMetadata/updated",{threadId,type:"compaction_update",update:nextEntry});
+    }else if(type==="elicitation_complete"){
+      emit("thread/elicitation/completed",{threadId,turnId,elicitationId:update.elicitationId||null});
     }else if(type==="available_commands_update"||type==="config_option_update"||type==="current_mode_update"||type==="session_info_update"){
       const current=threadStore.get(threadId)?.providerMeta||{};
       threadStore.update(threadId,{providerMeta:{...current,[type]:update}});
@@ -796,8 +823,14 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
           return answers;
         },
         async elicitation(thread,{params}){
-          const questions=formQuestions(params);if(!questions.length)return {action:"cancel"};const result=await context.serverRequest("item/tool/requestUserInput",{threadId:thread.id,questions});
-          const content={};for(const [id,value] of Object.entries(result?.answers||{}))content[id]=Array.isArray(value?.answers)?value.answers.join(", "):value;return {action:"accept",content};
+          const mode=String(params?.mode||"form");
+          if(!["form","url"].includes(mode))return {action:"cancel"};
+          return context.serverRequest("mcpServer/elicitation/request",{
+            ...params,
+            mode,
+            serverName:thread.runtime==="opencode"?"OpenCode":thread.runtime==="cursor"?"Cursor":thread.runtime==="grok"?"Grok Build":thread.runtime==="antigravity"?"Antigravity":"ACP agent",
+            _meta:{...(params?._meta||{}),trebell_source:"acp",trebell_runtime:thread.runtime},
+          });
         },
       };
       socketContexts.add(context);

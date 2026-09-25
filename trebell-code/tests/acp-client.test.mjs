@@ -1,6 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { AcpClient, ACP_STDERR_TAIL_MAX_CHARS, appendAcpStderrTail, sanitizeAcpStderrExcerpt } from "../src/acp-client.mjs";
+import { AcpClient, ACP_STDERR_TAIL_MAX_CHARS, appendAcpStderrTail, defaultAcpClientCapabilities, sanitizeAcpStderrExcerpt } from "../src/acp-client.mjs";
+
+test("ACP initialization advertises only client features Trebell actually handles",()=>{
+  assert.deepEqual(defaultAcpClientCapabilities(),{
+    fs:{readTextFile:true,writeTextFile:true},
+    terminal:true,
+    auth:{terminal:true},
+    plan:{},
+    session:{compaction:{}},
+    elicitation:{form:{},url:{}},
+  });
+});
 
 test("ACP stderr tail stays bounded and redacts secrets before surfacing",()=>{
   const prefix="x".repeat(ACP_STDERR_TAIL_MAX_CHARS);

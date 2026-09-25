@@ -1657,6 +1657,9 @@ export default function App(){
     }
     else if(message.method==="thread/goal/updated"&&isCurrent)setGoal(p.goal||null);
     else if(message.method==="thread/goal/cleared"&&isCurrent)setGoal(null);
+    else if(message.method==="thread/elicitation/completed"&&isCurrent){
+      setEvents(prev=>[...prev,{id:"elicitation-complete-"+(p.elicitationId||Date.now()),kind:"tool",title:"External interaction completed",status:"done",raw:p}]);
+    }
     else if(message.method==="thread/queue/changed"&&isCurrent)loadNativeQueue(rpcRef.current,p.threadId).catch(error=>setEvents(prev=>[...prev,{id:"queue-refresh-error-"+Date.now(),kind:"error",title:"Could not refresh queued follow-ups: "+(error.message||String(error)),status:"done",raw:{}}]));
     else if(message.method==="skills/changed")loadSkills(rpcRef.current,projectPath,true,{strict:true}).catch(error=>showActionError(error,"Could not refresh skills"));
     else if(message.method==="windowsSandbox/setupCompleted"){
@@ -1679,7 +1682,7 @@ export default function App(){
     }
     else if(message.method==="thread/providerMetadata/updated"){
       setThreads(prev=>prev.map(thread=>thread.id===p.threadId?{...thread,providerMeta:{...(thread.providerMeta||{}),[p.type]:p.update}}:thread));
-      const compaction=p.type==="session_info_update"?contextCompactionSignal(p.update):null;
+      const compaction=(p.type==="session_info_update"||p.type==="compaction_update")?contextCompactionSignal(p.update):null;
       if(compaction&&threadId){
         const at=Date.now(),id="context-compact-"+threadId;
         if(compaction.phase==="running"){

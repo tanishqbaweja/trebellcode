@@ -6,8 +6,10 @@ import {
   coerceElicitationFormContent,
   elicitationApprovalDetails,
   elicitationFormFields,
+  isAcpElicitation,
   elicitationSupportsPersist,
   mcpElicitationKind,
+  buildElicitationResponse,
 } from "../mcp-elicitation.js";
 
 function pretty(value){
@@ -18,6 +20,7 @@ function pretty(value){
 export default function McpElicitationModal({request,onResolve,onVerify,verificationAvailable=true}){
   const kind=mcpElicitationKind(request);
   const params=request?.params||{};
+  const acp=isAcpElicitation(request);
   const details=useMemo(()=>elicitationApprovalDetails(request),[request]);
   const fields=useMemo(()=>elicitationFormFields(request),[request]);
   const [values,setValues]=useState(()=>Object.fromEntries(fields.map(field=>[field.id,field.defaultValue])));
@@ -34,8 +37,18 @@ export default function McpElicitationModal({request,onResolve,onVerify,verifica
     finally{setResolveBusy(false)}
   }
   async function submitForm(){
-    try{await resolve({action:"accept",content:coerceElicitationFormContent(fields,values),_meta:null})}
+    try{await resolve(acp?buildElicitationResponse(request,"once",coerceElicitationFormContent(fields,values)):{action:"accept",content:coerceElicitationFormContent(fields,values),_meta:null})}
     catch(err){setError(err?.message||String(err))}
+  }
+  async function openUrl(){
+    let parsed;
+    try{
+      parsed=new URL(String(params.url||""));
+      const local=["localhost","127.0.0.1","::1"].includes(parsed.hostname);
+      if(parsed.protocol!=="https:"&&!(parsed.protocol==="http:"&&local))throw new Error("Only HTTPS links (or local development HTTP links) can be opened.");
+    }catch(err){setError(err?.message||"The app supplied an invalid URL.");return}
+    window.open(parsed.href,"_blank","noopener,noreferrer");
+    if(acp)await resolve(buildElicitationResponse(request,"once"));
   }
   async function verify(){
     if(!onVerify||!verificationAvailable)return;
@@ -48,7 +61,7 @@ export default function McpElicitationModal({request,onResolve,onVerify,verifica
   const message=String(params.message||"").trim();
   const title=kind==="approval"?"Approve app action":kind==="url"?"App needs browser input":kind==="verification"?"Verification required":"App needs input";
   return <div className="modal-backdrop" data-testid="mcp-elicitation"><div className="mcp-elicitation-modal">
-    <div className="modal-head"><div>{kind==="approval"?<ShieldCheck size={18}/>:<PlugZap size={18}/>}<strong>{title}</strong></div><button disabled={resolveBusy||verificationBusy} onClick={()=>resolve(buildMcpApprovalResponse("cancel"))} aria-label="Cancel app request"><X size={17}/></button></div>
+    <div className="modal-head"><div>{kind==="approval"?<ShieldCheck size={18}/>:<PlugZap size={18}/>}<strong>{title}</strong></div><button disabled={resolveBusy||verificationBusy} onClick={()=>resolve(acp?buildElicitationResponse(request,"cancel"):buildMcpApprovalResponse("cancel"))} aria-label="Cancel app request"><X size={17}/></button></div>
     {error&&<div className="inline-error" role="alert">{error}</div>}
 
     {kind==="approval"&&<>
@@ -75,14 +88,14 @@ export default function McpElicitationModal({request,onResolve,onVerify,verifica
           :field.type==="boolean"?<span className="mcp-boolean"><input type="checkbox" checked={Boolean(values[field.id])} onChange={event=>setValues(current=>({...current,[field.id]:event.target.checked}))}/> Enabled</span>
           :<input type={field.secret?"password":field.type==="number"?"number":field.format==="email"?"email":field.format==="uri"?"url":"text"} min={field.minimum} max={field.maximum} minLength={field.minLength} maxLength={field.maxLength} step={field.integer?1:undefined} value={values[field.id]??""} onChange={event=>setValues(current=>({...current,[field.id]:event.target.value}))}/>}
       </label>)}</div>:<p className="mcp-elicitation-message">This MCP server is asking permission to continue.</p>}
-      <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button disabled={resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("decline"))}>Decline</button>{fields.length>0?<button className="primary" disabled={resolveBusy} onClick={submitForm}>Submit</button>:<button className="primary" disabled={resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("once"))}>Allow</button>}</div>
+      <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button disabled={resolveBusy} onClick={()=>resolve(acp?buildElicitationResponse(request,"decline"):buildMcpApprovalResponse("decline"))}>Decline</button>{fields.length>0?<button className="primary" disabled={resolveBusy} onClick={submitForm}>Submit</button>:<button className="primary" disabled={resolveBusy} onClick={()=>resolve(acp?buildElicitationResponse(request,"once"):buildMcpApprovalResponse("once"))}>Allow</button>}</div>
     </>}
 
     {kind==="url"&&<>
       {message&&<p className="mcp-elicitation-message">{message}</p>}
-      <div className="mcp-url-card"><code>{params.url}</code><button onClick={()=>window.open(params.url,"_blank","noopener,noreferrer")}><ExternalLink size={12}/> Open link</button></div>
-      <p className="mcp-approval-note">Trebell does not mark the request complete just because the link was opened. Confirm only after you finish the requested step in your browser.</p>
-      <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button disabled={resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("decline"))}>Decline</button><button className="primary" disabled={resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("once"))}>I completed it</button></div>
+      <div className="mcp-url-card"><code>{params.url}</code>{!acp&&<button onClick={openUrl}><ExternalLink size={12}/> Open link</button>}</div>
+      <p className="mcp-approval-note">{acp?"Opening the link tells the agent you consented to the out-of-band flow. Trebell never reads what you enter there; the agent can report completion separately.":"Trebell does not mark the request complete just because the link was opened. Confirm only after you finish the requested step in your browser."}</p>
+      <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button disabled={resolveBusy} onClick={()=>resolve(acp?buildElicitationResponse(request,"decline"):buildMcpApprovalResponse("decline"))}>Decline</button>{acp?<button className="primary" disabled={resolveBusy} onClick={openUrl}><ExternalLink size={12}/> Open & continue</button>:<button className="primary" disabled={resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("once"))}>I completed it</button>}</div>
     </>}
 
     {kind==="verification"&&<>
