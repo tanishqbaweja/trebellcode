@@ -26,7 +26,7 @@ test("Trebell Native receives a desktop-browser screenshot as a model-visible im
   const nativeProviderTurn=async request=>{
     calls++;const browser=(request.tools||[]).find(item=>item.name==="trebell_browser");assert.ok(browser);assert.ok(browser.tools.some(tool=>tool.name==="screenshot"));
     if(calls===1)return{id:"browser-shot-call",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"browser-shot-1",namespace:"trebell_browser",name:"screenshot",arguments:"{}"}],finishReason:"tool_calls",usage:{}};
-    const observation=request.messages.at(-1);assert.equal(observation.role,"tool");assert.ok(Array.isArray(observation.content));assert.ok(observation.content.some(item=>item.type==="image_url"&&item.image_url?.url===IMAGE_DATA_URL));
+    const observation=request.messages.at(-1);assert.equal(observation.role,"tool");assert.ok(Array.isArray(observation.content));assert.ok(observation.content.some(item=>item.type==="text"&&/untrusted external tool data/i.test(item.text||"")));assert.ok(observation.content.some(item=>item.type==="image_url"&&item.image_url?.url===IMAGE_DATA_URL));
     return{id:"browser-shot-done",provider:request.provider,model:request.model,text:"Browser screenshot received.",toolCalls:[],finishReason:"stop",usage:{}};
   };
   const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"visual-fixture"});

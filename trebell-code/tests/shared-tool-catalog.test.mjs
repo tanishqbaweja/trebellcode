@@ -6,6 +6,8 @@ import {
   sharedDynamicToolNamespaces,
   sharedToolDefinition,
   sharedToolNamespace,
+  sharedToolOutputProvenance,
+  sharedToolResponseContent,
 } from "../src/shared-tool-catalog.mjs";
 
 test("shared Trebell tool catalog owns unique schemas and policy metadata",()=>{
@@ -32,6 +34,13 @@ test("shared Trebell tool catalog owns unique schemas and policy metadata",()=>{
   assert.equal(sharedToolDefinition("trebell_source_control","status").policy.kind,"read");
   const push=sharedToolDefinition("trebell_source_control","push");assert.equal(push.policy.riskLevel,"high");assert.equal(push.policy.externalSideEffect,true);assert.equal(push.policy.reversibility,"none");
   assert.equal(sharedToolDefinition("trebell_browser","click").policy.externalSideEffect,true);assert.equal(sharedToolDefinition("trebell_browser","type").policy.externalSideEffect,true);
+  assert.equal(sharedToolOutputProvenance("trebell_browser"),"untrusted");assert.equal(sharedToolOutputProvenance("trebell_computer"),"untrusted");assert.equal(sharedToolOutputProvenance("trebell_device"),"untrusted");assert.equal(sharedToolOutputProvenance("trebell_workspace"),"trusted");
+});
+
+test("untrusted desktop tool output carries a compact provenance marker without dropping images",()=>{
+  const content=sharedToolResponseContent("trebell_browser",[{type:"inputImage",imageUrl:"data:image/png;base64,abc"},{type:"inputText",text:"page metadata"}]);
+  assert.match(content[0].text,/untrusted external tool data/i);assert.equal(content[1].type,"inputImage");assert.equal(content[2].text,"page metadata");
+  assert.deepEqual(sharedToolResponseContent("trebell_workspace",[{type:"inputText",text:"workspace"}]),[{type:"inputText",text:"workspace"}]);
 });
 
 test("dynamic tool serialization strips harness-only metadata",()=>{

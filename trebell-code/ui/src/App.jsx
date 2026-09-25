@@ -40,7 +40,7 @@ import { sameConversationMessageRowProps } from "./conversation-row.js";
 import { nextSnoozeWakeAt } from "./thread-snooze.js";
 import { userVerificationAvailability } from "./mcp-elicitation.js";
 import { sharedRuntimeCapabilities } from "../../src/runtime-capabilities.mjs";
-import { sharedDynamicToolNamespaces } from "../../src/shared-tool-catalog.mjs";
+import { sharedDynamicToolNamespaces, sharedToolResponseContent } from "../../src/shared-tool-catalog.mjs";
 import { repositoryFocusPaths } from "./context-focus.js";
 import { repositoryContextEntries } from "./context-provenance.js";
 import { hydratePersistedQueue, persistedQueueItems } from "./persistent-queue.js";
@@ -1654,10 +1654,10 @@ export default function App(){
             else if(p.tool==="type")result=await window.trebellDesktop.browser.type(p.arguments?.ref,p.arguments?.text);
             else if(p.tool==="screenshot"){
               const shot=await window.trebellDesktop.browser.screenshot();
-              client.respond(message.id,{contentItems:[{type:"inputImage",imageUrl:shot.dataUrl},{type:"inputText",text:JSON.stringify({url:shot.url,title:shot.title})}],success:true});
+              client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_browser",[{type:"inputImage",imageUrl:shot.dataUrl},{type:"inputText",text:JSON.stringify({url:shot.url,title:shot.title})}]),success:true});
               return;
             }else throw new Error("Unknown Trebell browser tool: "+p.tool);
-            client.respond(message.id,{contentItems:[{type:"inputText",text:JSON.stringify(result)}],success:true});
+            client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_browser",[{type:"inputText",text:JSON.stringify(result)}]),success:true});
           }catch(error){
             client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false});
           }
@@ -1672,7 +1672,7 @@ export default function App(){
             if(p.tool!=="screenshot"&&permissionMode!=="full")throw new Error("Desktop mouse and keyboard control requires Full access mode.");
             if(p.tool==="screenshot"){
               const shot=await window.trebellDesktop.computer.screenshot();
-              client.respond(message.id,{contentItems:[{type:"inputImage",imageUrl:shot.dataUrl},{type:"inputText",text:JSON.stringify({width:shot.width,height:shot.height,displayId:shot.displayId,originX:shot.originX,originY:shot.originY,scaleFactor:shot.scaleFactor})}],success:true});
+              client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_computer",[{type:"inputImage",imageUrl:shot.dataUrl},{type:"inputText",text:JSON.stringify({width:shot.width,height:shot.height,displayId:shot.displayId,originX:shot.originX,originY:shot.originY,scaleFactor:shot.scaleFactor})}]),success:true});
               return;
             }
             let result;
@@ -1682,7 +1682,7 @@ export default function App(){
             else if(p.tool==="type")result=await window.trebellDesktop.computer.type(args.text);
             else if(p.tool==="key")result=await window.trebellDesktop.computer.key(args.key);
             else throw new Error("Unknown Trebell computer tool: "+p.tool);
-            client.respond(message.id,{contentItems:[{type:"inputText",text:JSON.stringify(result)}],success:true});
+            client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_computer",[{type:"inputText",text:JSON.stringify(result)}]),success:true});
           }catch(error){
             client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false});
           }
@@ -1696,11 +1696,11 @@ export default function App(){
             const args=p.arguments||{};
             if(p.tool==="list"){
               const result=await api("/api/devices");
-              client.respond(message.id,{contentItems:[{type:"inputText",text:JSON.stringify(result)}],success:true});return;
+              client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_device",[{type:"inputText",text:JSON.stringify(result)}]),success:true});return;
             }
             if(p.tool==="screenshot"){
               const shot=await api("/api/device/screenshot?id="+encodeURIComponent(args.id||""));
-              client.respond(message.id,{contentItems:[{type:"inputImage",imageUrl:shot.dataUrl},{type:"inputText",text:JSON.stringify({id:shot.id,platform:shot.platform,width:shot.width,height:shot.height})}],success:true});return;
+              client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_device",[{type:"inputImage",imageUrl:shot.dataUrl},{type:"inputText",text:JSON.stringify({id:shot.id,platform:shot.platform,width:shot.width,height:shot.height})}]),success:true});return;
             }
             let result;
             if(p.tool==="tap")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"tap",args:{x:args.x,y:args.y}}});
@@ -1708,7 +1708,7 @@ export default function App(){
             else if(p.tool==="key")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"key",args:{key:args.key}}});
             else if(p.tool==="foreground")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"foreground",args:{}}});
             else throw new Error("Unknown Trebell device tool: "+p.tool);
-            client.respond(message.id,{contentItems:[{type:"inputText",text:JSON.stringify(result)}],success:true});
+            client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_device",[{type:"inputText",text:JSON.stringify(result)}]),success:true});
           }catch(error){client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false})}
         })();
         return;
