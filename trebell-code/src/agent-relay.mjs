@@ -8,6 +8,7 @@ import { ClaudeAgentSession } from "./claude-agent-session.mjs";
 import { acpMcpServersForSession, claudeMcpServersForSession } from "./mcp-registry.mjs";
 import { createRemoteContextIo } from "./context-engine.mjs";
 import { createClaudeRepositoryMcp } from "./claude-repository-tools.mjs";
+import { enrichGoal, normalizeGoal } from "./goal-state.mjs";
 
 const IMAGE_MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".bmp":"image/bmp"};
 const LIVE_TOOL_OUTPUT_LIMIT=256*1024;
@@ -448,6 +449,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     const prefix=String(threadId||"")+":";
     for(const key of liveToolOutput.keys())if(key.startsWith(prefix))liveToolOutput.delete(key);
   }
+  function durableGoal(threadId){
+    const raw=state?.threadMeta?.(threadId)?.goal;if(!raw)return null;
+    const thread=threadStore.get(threadId),createdAt=Number(raw.createdAt)||(Number(thread?.createdAt)||Math.floor(Date.now()/1000))*1000;
+    const goal=normalizeGoal({threadId,previous:{...raw,createdAt},patch:{},now:Number(raw.updatedAt)||Date.now()});
+    return enrichGoal(goal,{usage:state?.threadUsage?.(threadId,{since:goal.createdAt}),turns:thread?.turns||[]});
+  }
 
   async function ensureSession(thread,context,{permissionMode="supervised",model=null}={}){
     let session=sessions.get(thread.id);
@@ -690,8 +697,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const current=threadStore.get(params.threadId);const nextSettings={...(current?.settings||{}),...(params.settings||{})};
       return {thread:threadStore.update(params.threadId,{settings:nextSettings,...(Object.prototype.hasOwnProperty.call(params.settings||{},"agent")?{agent:params.settings.agent||null}:{})})}
     }
-    if(method==="thread/goal/get")return {goal:state.threadMeta(params.threadId)?.goal||null};
-    if(method==="thread/goal/set"){const meta=state.updateThreadMeta(params.threadId,{goal:{...(state.threadMeta(params.threadId)?.goal||{}),...params}});emit("thread/goal/updated",{threadId:params.threadId,goal:meta.goal});return {goal:meta.goal}}
+    if(method==="thread/goal/get")return {goal:durableGoal(params.threadId)};
+    if(method==="thread/goal/set"){
+      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      const previous=state.threadMeta(params.threadId)?.goal||null,goal=normalizeGoal({threadId:params.threadId,previous,patch:params});
+      state.updateThreadMeta(params.threadId,{goal});const enriched=durableGoal(params.threadId);emit("thread/goal/updated",{threadId:params.threadId,goal:enriched});return {goal:enriched}
+    }
     if(method==="thread/goal/clear"){state.updateThreadMeta(params.threadId,{goal:null});emit("thread/goal/cleared",{threadId:params.threadId});return {ok:true}}
     if(method==="thread/attachment/list"){
       if(!threadStore.get(params.threadId))throw new Error("Thread not found");

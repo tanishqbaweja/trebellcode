@@ -449,6 +449,12 @@ export class TrebellStateStore {
     }
     return {days:horizon,total,models,runtimes,daily,environments,environmentIds:selected?[...selected]:null,records:clone(records)};
   }
+  threadUsage(threadId,{since=0}={}){
+    const id=String(threadId||""),start=Math.max(0,Number(since)||0),records=this.state.usageRecords.filter(item=>item.threadId===id&&Number(item.at||0)>=start);
+    const total={totalTokens:0,inputTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,outputTokens:0,reasoningOutputTokens:0};
+    for(const record of records)for(const key of Object.keys(total))total[key]+=Number(record.usage?.[key]||0);
+    return {...total,turns:records.length};
+  }
   clearUsage(){const count=this.state.usageRecords.length;this.state.usageRecords=[];this.#save();return count}
   recordVerification(entry={}){
     const now=Number(entry.updatedAt)||Date.now(),environmentId=normalizeEnvironmentId(entry.environmentId),projectPath=entry.projectPath?String(entry.projectPath):null,threadId=entry.threadId?String(entry.threadId):null,turnId=entry.turnId?String(entry.turnId):null;

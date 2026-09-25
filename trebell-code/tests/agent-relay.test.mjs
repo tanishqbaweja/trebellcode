@@ -257,6 +257,10 @@ test("agent relay broadcasts Codex-compatible archive, unarchive and delete life
     threadStore.finishTurn(thread.id,activeTurn.id);queue=await rpc("thread/queue/list",{threadId:thread.id,limit:10});assert.equal(queue.data.length,2,"failed queue start must not consume the draft");
     const deleted=await rpc("thread/queue/delete",{threadId:thread.id,queuedSubmissionId:q1.queuedSubmission.id});assert.equal(deleted.deleted,true);
     assert.equal((await rpc("thread/queue/list",{threadId:thread.id,limit:10})).data.length,1);
+    const goalSet=await rpc("thread/goal/set",{threadId:thread.id,objective:"Ship the fixture safely",completionConditions:["Lifecycle tests pass"],constraints:["Keep compatibility"],tokenBudget:5000,timeBudgetMinutes:30,unexpected:"ignored"});
+    assert.equal(goalSet.goal.objective,"Ship the fixture safely");assert.equal(goalSet.goal.tokenBudget,5000);assert.equal(goalSet.goal.tokensUsed,0);assert.equal(goalSet.goal.tokenBudgetRemaining,5000);assert.equal(Object.prototype.hasOwnProperty.call(goalSet.goal,"unexpected"),false);
+    const goalRead=await rpc("thread/goal/get",{threadId:thread.id});assert.equal(goalRead.goal.objective,"Ship the fixture safely");assert.deepEqual(goalRead.goal.completionConditions,["Lifecycle tests pass"]);
+    await assert.rejects(rpc("thread/goal/set",{threadId:thread.id,tokenBudget:-1}),/positive whole number/i);
     await rpc("thread/archive",{threadId:thread.id});
     await rpc("thread/unarchive",{threadId:thread.id});
     await rpc("thread/delete",{threadId:thread.id});
@@ -265,6 +269,7 @@ test("agent relay broadcasts Codex-compatible archive, unarchive and delete life
     const lifecycle=lifecycleMessages();
     assert.deepEqual(lifecycle.map(message=>message.method),["thread/archived","thread/unarchived","thread/deleted"]);
     assert.ok(notifications.filter(message=>message.method==="thread/queue/changed").length>=5);
+    assert.ok(notifications.some(message=>message.method==="thread/goal/updated"&&message.params.goal?.objective==="Ship the fixture safely"));
     assert.deepEqual(notifications.filter(message=>message.method==="thread/attachment/updated").map(message=>message.params.operation),["created","deleted"]);
     assert.ok(notifications.every(message=>message.params?.threadId===thread.id));
     assert.ok(traces.some(event=>event.direction==="client"&&event.method==="thread/archive"));
