@@ -1,4 +1,4 @@
-import React,{memo,useCallback,useEffect,useMemo,useRef,useState} from "react";
+import React,{memo,useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from "react";
 import {
   Archive, BarChart3, Bot, Clock3, Folder, Globe2, History,
   GitPullRequest, MoreHorizontal, Pin, Plus, Search, Settings, SlidersHorizontal, Wrench, Server, PanelLeftClose
@@ -8,6 +8,7 @@ import { threadReferenceValues } from "../thread-references.js";
 import { writeClipboardText } from "../clipboard.js";
 import { groupSidebarThreads, THREAD_GROUP_NAMES } from "../thread-sidebar-groups.js";
 import { threadCatalogRuntime } from "../thread-catalog.js";
+import { shouldVirtualizeSidebarGroup, sidebarChunkIndexForThread, sidebarVirtualChunks } from "../sidebar-virtualization.js";
 
 function titleOf(thread){return thread.name||thread.preview||"Untitled task"}
 function relativeTime(epoch){
@@ -40,7 +41,7 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,onOpen
     const copied=await writeClipboardText(value);
     if(!copied)throw new Error("Could not copy to clipboard.");
   };
-  return <div className={active?"thread-row active":"thread-row"}>
+  return <div className={active?"thread-row active":"thread-row"} data-thread-id={thread.id}>
     {bulk&&<input className="thread-select" type="checkbox" checked={selected} disabled={foreignRuntime} title={foreignRuntime?"Open this thread before applying bulk actions":undefined} onChange={()=>onSelect(thread.id)}/>}
     <button className="thread-main" onClick={()=>runAction(()=>onOpen(thread))} title={titleOf(thread)}>
       <span className={"thread-status-dot "+(section==="Pinned"?"pinned":section==="Snoozed"?"snoozed":section==="Settled"?"settled":"")}/>
@@ -69,6 +70,44 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,onOpen
   </div>;
 });
 
+const SidebarVirtualChunk=memo(function SidebarVirtualChunk({chunk,rootRef,forceMount=false,initialMount=false,activeThreadId=null,renderRow}){
+  const ref=useRef(null),[mounted,setMounted]=useState(Boolean(initialMount||forceMount)),[placeholderHeight,setPlaceholderHeight]=useState(Math.max(1,Number(chunk.estimatedHeight)||1));
+  useEffect(()=>{if(forceMount)setMounted(true)},[forceMount]);
+  useEffect(()=>{
+    if(!mounted||!ref.current)return;
+    const measure=()=>{const height=Math.ceil(ref.current?.getBoundingClientRect?.().height||0);if(height>0)setPlaceholderHeight(height)};
+    measure();
+    if(typeof ResizeObserver==="undefined")return;
+    const observer=new ResizeObserver(measure);observer.observe(ref.current);return()=>observer.disconnect();
+  },[mounted,chunk.key]);
+  useEffect(()=>{
+    const node=ref.current,root=rootRef?.current;if(!node||!root||typeof IntersectionObserver==="undefined"){setMounted(true);return}
+    let timer=null;
+    const observer=new IntersectionObserver(entries=>{
+      const visible=entries.some(entry=>entry.isIntersecting);
+      if(visible||forceMount){if(timer){clearTimeout(timer);timer=null}setMounted(true);return}
+      const height=Math.ceil(node.getBoundingClientRect().height||0);if(height>0)setPlaceholderHeight(height);
+      timer=setTimeout(()=>setMounted(false),120);
+    },{root,rootMargin:"600px 0px 600px 0px",threshold:0});
+    observer.observe(node);return()=>{if(timer)clearTimeout(timer);observer.disconnect()};
+  },[rootRef,forceMount,chunk.key]);
+  useEffect(()=>{
+    const node=ref.current,root=rootRef?.current;if(!node||!root)return;
+    const update=()=>{
+      const rootRect=root.getBoundingClientRect(),rect=node.getBoundingClientRect();
+      if(rect.bottom>=rootRect.top-600&&rect.top<=rootRect.bottom+600)setMounted(true);
+    };
+    update();root.addEventListener("scroll",update,{passive:true});window.addEventListener("resize",update);
+    return()=>{root.removeEventListener("scroll",update);window.removeEventListener("resize",update)};
+  },[rootRef,chunk.key]);
+  useLayoutEffect(()=>{
+    if(!forceMount||!mounted||!activeThreadId)return;
+    const target=[...(ref.current?.querySelectorAll?.("[data-thread-id]")||[])].find(element=>String(element.dataset.threadId)===String(activeThreadId));
+    target?.scrollIntoView?.({block:"nearest",behavior:"auto"});
+  },[forceMount,mounted,activeThreadId,chunk.key]);
+  return <div ref={ref} className={"sidebar-virtual-chunk"+(mounted?" mounted":" placeholder")} data-sidebar-chunk={chunk.key} style={mounted?undefined:{height:placeholderHeight}}>{mounted?chunk.items.map(renderRow):null}</div>;
+});
+
 function UtilityButton({Icon,label,active,onClick}){
   return <button className={active?"sidebar-utility active":"sidebar-utility"} onClick={onClick} aria-label={label} title={label}>
     <Icon size={15}/><span>{label}</span>
@@ -81,6 +120,7 @@ const ThreadSidebar=memo(function ThreadSidebar({
   rightPanelOpen=false,rightPanelTab="files",searchError="",runtimeCapabilities={}
 }){
   const searchRef=useRef(null);
+  const sectionsRef=useRef(null);
   const [actionError,setActionError]=useState("");
   const runAction=useCallback(action=>{
     setActionError("");
@@ -96,6 +136,8 @@ const ThreadSidebar=memo(function ThreadSidebar({
   const providerLabel={freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider;
   const runtimeLabel={codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime;
   const toggle=useCallback(id=>{const next=new Set(selectedIds);next.has(id)?next.delete(id):next.add(id);setSelectedIds(next)},[selectedIds,setSelectedIds]);
+  const firstGroupName=THREAD_GROUP_NAMES.find(name=>groups[name]?.length)||null;
+  const renderRow=useCallback(t=><ThreadRow key={t.id} thread={t} meta={threadMeta[t.id]||null} active={t.id===activeThreadId} bulk={bulk} selected={selectedIds.has(t.id)} onOpen={onOpen} onSelect={toggle} onAction={onThreadAction} onMove={onMove} runAction={runAction} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities}/>,[threadMeta,activeThreadId,bulk,selectedIds,onOpen,toggle,onThreadAction,onMove,runAction,agentRuntime,runtimeCapabilities]);
 
   return <aside className="sidebar">
     <div className="sidebar-titlebar">
@@ -126,10 +168,10 @@ const ThreadSidebar=memo(function ThreadSidebar({
       <button onClick={()=>runAction(()=>onBulkAction("archive"))}>Archive</button>
     </div>}
 
-    <div className="thread-sections">
-      {THREAD_GROUP_NAMES.map(name=>{const items=groups[name];return items.length>0&&<section key={name}>
+    <div className="thread-sections" ref={sectionsRef}>
+      {THREAD_GROUP_NAMES.map(name=>{const items=groups[name],virtualized=shouldVirtualizeSidebarGroup(items),chunks=virtualized?sidebarVirtualChunks(items):[],activeChunk=virtualized?sidebarChunkIndexForThread(chunks,activeThreadId):-1;return items.length>0&&<section key={name}>
         <h4>{name}<span>{items.length}</span></h4>
-        {items.map(t=><ThreadRow key={t.id} thread={t} meta={threadMeta[t.id]||null} active={t.id===activeThreadId} bulk={bulk} selected={selectedIds.has(t.id)} onOpen={onOpen} onSelect={toggle} onAction={onThreadAction} onMove={onMove} runAction={runAction} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities}/>)}
+        {virtualized?chunks.map((chunk,index)=><SidebarVirtualChunk key={chunk.key} chunk={chunk} rootRef={sectionsRef} forceMount={index===activeChunk} initialMount={name===firstGroupName&&index===0} activeThreadId={activeThreadId} renderRow={renderRow}/>):items.map(renderRow)}
       </section>})}
       {!threads.length&&<div className="sidebar-empty">{query?"No matching threads.":<>No threads yet.<br/>Start a task to create one.</>}</div>}
     </div>
