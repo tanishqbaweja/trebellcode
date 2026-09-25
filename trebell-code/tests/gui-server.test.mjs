@@ -94,6 +94,15 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.ok(checkpointEvents.some(item=>item.name==="checkpoint.created"&&item.status==="completed"));
     assert.ok(checkpointEvents.some(item=>item.name==="checkpoint.linked"&&item.turnId==="trace-turn"));
     assert.ok(checkpointEvents.some(item=>item.name==="checkpoint.restore_failed"&&item.status==="error"));
+    const privateCommitMessage="trace-message-must-not-be-journaled";await writeFile(join(checkpointRepo,"fixture.txt"),"after\n");
+    const commitMutation=await fetch(gui.url+"/api/git/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"commit",cwd:checkpointRepo,message:privateCommitMessage})});
+    assert.equal(commitMutation.status,200);
+    const pushMutation=await fetch(gui.url+"/api/git/action",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"push",cwd:checkpointRepo})});
+    assert.equal(pushMutation.status,400);
+    const sourceControlTraces=await fetch(gui.url+"/api/traces?limit=100").then(r=>r.json()),sourceControlEvents=sourceControlTraces.items.filter(item=>item.category==="source-control");
+    assert.ok(sourceControlEvents.some(item=>item.name==="source_control.git.commit"&&item.status==="completed"&&item.data?.externalSideEffect===false));
+    assert.ok(sourceControlEvents.some(item=>item.name==="source_control.push"&&item.status==="failed"&&item.data?.externalSideEffect===true));
+    assert.doesNotMatch(JSON.stringify(sourceControlEvents),new RegExp(privateCommitMessage));
     assert.equal(models.metadata.provider,boot.provider);
     assert.ok(models.metadata.models.every(model=>model.provider===boot.provider));
     const runtimeUsage=await fetch(gui.url+"/api/agent-runtime-usage").then(r=>r.json());

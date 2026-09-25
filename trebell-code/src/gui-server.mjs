@@ -487,6 +487,19 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       data:{checkpointId:checkpoint?.id||extra.checkpointId||null,root:checkpoint?.root||null,commit:checkpoint?.commit||null,label:checkpoint?.label||null,reason:extra.reason||null,message:extra.message||null},
     });
   }
+  const EXTERNAL_SOURCE_CONTROL_ACTIONS=new Set(["push","git.push","publish","pr.create","pr.edit","pr.edit-comment","pr.approve-workflows","pr.revert","pr.rebase-stack","pr.comment","pr.review","pr.merge","pr.update-branch","pr.request-reviewer"]);
+  async function tracedSourceControlMutation(action,{cwd=null,environmentId=null,provider=null,number=null,threadId=null}={},run){
+    const startedAt=Date.now(),externalSideEffect=EXTERNAL_SOURCE_CONTROL_ACTIONS.has(String(action||""));
+    try{
+      const result=await run();
+      const resolvedNumber=number??result?.number??result?.item?.number??null;
+      eventJournal.record({environmentId:environmentId||null,threadId:threadId||null,category:"source-control",name:"source_control."+String(action||"mutation"),status:"completed",data:{action,cwd,provider:provider||result?.provider||result?.item?.provider||null,number:resolvedNumber==null?null:Number(resolvedNumber),externalSideEffect,durationMs:Date.now()-startedAt}});
+      return result;
+    }catch(error){
+      eventJournal.record({environmentId:environmentId||null,threadId:threadId||null,category:"source-control",name:"source_control."+String(action||"mutation"),status:"failed",data:{action,cwd,provider:provider||null,number:number==null?null:Number(number),externalSideEffect,durationMs:Date.now()-startedAt,message:error?.message||String(error)}});
+      throw error;
+    }
+  }
   const contextEngine=new ContextEngine();
   const terminals=mock ? null : new TerminalManager({env});
   function terminalOptions({environmentId=null,cwd=null,name=null,cols=120,rows=32,terminalEnv=null}={}){
@@ -1673,7 +1686,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const cwd=environmentPath(body.cwd||remoteProfile?.cwd||process.cwd(),environmentId);
         if(remoteProfile){
           if(body.action==="clone")return json(res,400,{error:"Clone into a remote environment from its Terminal or create the project after cloning."});
-          const result=await inSourceControlEnvironment(environmentId,()=>sourceControlGitAction(cwd,{
+          const result=await tracedSourceControlMutation("git."+body.action,{cwd,environmentId},()=>inSourceControlEnvironment(environmentId,()=>sourceControlGitAction(cwd,{
             action:body.action,
             name:body.action==="worktree-create"?body.branch:body.name,
             message:body.message,
@@ -1681,7 +1694,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
             startPoint:body.baseBranch||body.startPoint||null,
             path:body.path||null,
             force:Boolean(body.force),
-          }));
+          })));
           if(body.action==="init")state.touchProject(cwd,{environmentId});
           if(body.action==="worktree-create"&&body.path){
             const sourceProject=state.project(cwd,environmentId);
@@ -1702,21 +1715,21 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         }
         let result;
         switch(body.action){
-          case "clone": result=await cloneRepository(body.url,body.destination); state.touchProject(result.root||body.destination,{environmentId:null}); break;
-          case "init": result=await initializeRepository(cwd); state.touchProject(result.root||cwd,{environmentId:null}); break;
-          case "branch-create": result=await createBranch(cwd,body.name,{checkout:body.checkout!==false,startPoint:body.startPoint||null}); break;
-          case "branch-switch": result=await switchBranch(cwd,body.name); break;
-          case "commit": result=await commitAll(cwd,body.message||"Trebell Code changes"); break;
-          case "fetch": result=await fetchRepo(cwd); break;
-          case "pull": result=await pullRepo(cwd); break;
-          case "push": result=await pushRepo(cwd,{setUpstream:Boolean(body.setUpstream)}); break;
-          case "auto-pull": result=await safeAutoPull(cwd); break;
+          case "clone": result=await tracedSourceControlMutation("git.clone",{cwd:body.destination},()=>cloneRepository(body.url,body.destination)); state.touchProject(result.root||body.destination,{environmentId:null}); break;
+          case "init": result=await tracedSourceControlMutation("git.init",{cwd},()=>initializeRepository(cwd)); state.touchProject(result.root||cwd,{environmentId:null}); break;
+          case "branch-create": result=await tracedSourceControlMutation("git.branch-create",{cwd},()=>createBranch(cwd,body.name,{checkout:body.checkout!==false,startPoint:body.startPoint||null})); break;
+          case "branch-switch": result=await tracedSourceControlMutation("git.branch-switch",{cwd},()=>switchBranch(cwd,body.name)); break;
+          case "commit": result=await tracedSourceControlMutation("git.commit",{cwd},()=>commitAll(cwd,body.message||"Trebell Code changes")); break;
+          case "fetch": result=await tracedSourceControlMutation("git.fetch",{cwd},()=>fetchRepo(cwd)); break;
+          case "pull": result=await tracedSourceControlMutation("git.pull",{cwd},()=>pullRepo(cwd)); break;
+          case "push": result=await tracedSourceControlMutation("push",{cwd},()=>pushRepo(cwd,{setUpstream:Boolean(body.setUpstream)})); break;
+          case "auto-pull": result=await tracedSourceControlMutation("git.auto-pull",{cwd},()=>safeAutoPull(cwd)); break;
           case "worktree-create": {
             const sourceProject=state.project(resolve(cwd),null);
             const projectConfig=await projectActionSuggestions(cwd).catch(()=>({t3:{}}));
             const scoped=sourceProject?state.projectSettings(sourceProject.path,null):{defaults:state.environmentDefaults(null),overrides:{}};
             const submodules=scoped.overrides.worktreeSubmodules||projectConfig?.t3?.worktreeSubmodules||scoped.defaults.worktreeSubmodules||"recursive";
-            result=await createWorktree(cwd,{branch:body.branch,path:body.path,baseBranch:body.baseBranch||null,submodules});
+            result=await tracedSourceControlMutation("git.worktree-create",{cwd},()=>createWorktree(cwd,{branch:body.branch,path:body.path,baseBranch:body.baseBranch||null,submodules}));
             const inherited=sourceProject?{
               defaultModel:sourceProject.defaultModel??null,
               permissionMode:sourceProject.permissionMode??null,
@@ -1737,7 +1750,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
             }
             break;
           }
-          case "worktree-remove": result=await removeWorktree(cwd,body.path,{force:Boolean(body.force)}); break;
+          case "worktree-remove": result=await tracedSourceControlMutation("git.worktree-remove",{cwd},()=>removeWorktree(cwd,body.path,{force:Boolean(body.force)})); break;
           default:return json(res,400,{error:"unknown git action"});
         }
         return json(res,200,{ok:true,result});
@@ -1763,7 +1776,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const body=await readJsonBody(req);
         const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);
         const cwd=environmentPath(body.cwd||remoteEnvironmentProfile(environmentId)?.cwd||process.cwd(),environmentId);
-        return json(res,200,{ok:true,...await inSourceControlEnvironment(environmentId,()=>createPullRequest(cwd,body))});
+        const result=await tracedSourceControlMutation("pr.create",{cwd,environmentId,provider:body.provider||null},()=>inSourceControlEnvironment(environmentId,()=>createPullRequest(cwd,body)));
+        return json(res,200,{ok:true,...result});
       }catch(error){return json(res,400,{ok:false,error:error.message});}
     }
     if(url.pathname==="/api/source-control/publish" && req.method==="POST"){
@@ -1771,7 +1785,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const body=await readJsonBody(req);
         const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);
         const cwd=environmentPath(body.cwd||remoteEnvironmentProfile(environmentId)?.cwd||process.cwd(),environmentId);
-        return json(res,200,await inSourceControlEnvironment(environmentId,()=>publishRepository(cwd,body)));
+        return json(res,200,await tracedSourceControlMutation("publish",{cwd,environmentId,provider:body.provider||null},()=>inSourceControlEnvironment(environmentId,()=>publishRepository(cwd,body))));
       }catch(error){return json(res,400,{ok:false,error:error.message});}
     }
     if(url.pathname==="/api/source-control/pr-detail"){
@@ -1869,18 +1883,22 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const body=await readJsonBody(req);
         const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);
         const cwd=environmentPath(body.cwd||remoteEnvironmentProfile(environmentId)?.cwd||process.cwd(),environmentId);
-        if(body.action==="edit") return json(res,200,await inSourceControlEnvironment(environmentId,()=>editPullRequest(cwd,body.number,{provider:body.provider||null,title:body.title,body:body.body||""})));
-        if(body.action==="edit-comment") return json(res,200,await inSourceControlEnvironment(environmentId,()=>editPullRequestComment(cwd,body.number,body.commentId,body.body||"",{provider:body.provider||null})));
-        if(body.action==="approve-workflows") return json(res,200,await inSourceControlEnvironment(environmentId,()=>approvePullRequestWorkflows(cwd,body.number,{provider:body.provider||null})));
-        if(body.action==="revert") return json(res,200,await inSourceControlEnvironment(environmentId,()=>revertPullRequest(cwd,body.number,{provider:body.provider||null})));
-        if(body.action==="rebase-stack") return json(res,200,await inSourceControlEnvironment(environmentId,()=>rebasePullRequestStack(cwd,body.number,{provider:body.provider||null})));
-        if(body.action==="comment") return json(res,200,await inSourceControlEnvironment(environmentId,()=>commentOnPullRequest(cwd,body.number,body.body||"",{provider:body.provider||null})));
-        if(body.action==="review") return json(res,200,await inSourceControlEnvironment(environmentId,()=>reviewPullRequest(cwd,body.number,{provider:body.provider||null,event:body.event,body:body.body||""})));
-        if(body.action==="merge") return json(res,200,await inSourceControlEnvironment(environmentId,()=>mergePullRequest(cwd,body.number,{provider:body.provider||null,method:body.method,auto:Boolean(body.auto)})));
-        if(body.action==="update-branch") return json(res,200,await inSourceControlEnvironment(environmentId,()=>updatePullRequestBranch(cwd,body.number,{provider:body.provider||null,rebase:body.rebase!==false})));
-        if(body.action==="checkout") return json(res,200,await inSourceControlEnvironment(environmentId,()=>checkoutPullRequest(cwd,body.number,{provider:body.provider||null})));
-        if(body.action==="request-reviewer") return json(res,200,await inSourceControlEnvironment(environmentId,()=>requestPullRequestReviewer(cwd,body.number,body.reviewer,{provider:body.provider||null})));
-        return json(res,400,{error:"unknown PR action"});
+        const action=String(body.action||""),provider=body.provider||null;
+        const result=await tracedSourceControlMutation("pr."+action,{cwd,environmentId,provider,number:body.number,threadId:body.threadId||null},()=>{
+          if(action==="edit")return inSourceControlEnvironment(environmentId,()=>editPullRequest(cwd,body.number,{provider,title:body.title,body:body.body||""}));
+          if(action==="edit-comment")return inSourceControlEnvironment(environmentId,()=>editPullRequestComment(cwd,body.number,body.commentId,body.body||"",{provider}));
+          if(action==="approve-workflows")return inSourceControlEnvironment(environmentId,()=>approvePullRequestWorkflows(cwd,body.number,{provider}));
+          if(action==="revert")return inSourceControlEnvironment(environmentId,()=>revertPullRequest(cwd,body.number,{provider}));
+          if(action==="rebase-stack")return inSourceControlEnvironment(environmentId,()=>rebasePullRequestStack(cwd,body.number,{provider}));
+          if(action==="comment")return inSourceControlEnvironment(environmentId,()=>commentOnPullRequest(cwd,body.number,body.body||"",{provider}));
+          if(action==="review")return inSourceControlEnvironment(environmentId,()=>reviewPullRequest(cwd,body.number,{provider,event:body.event,body:body.body||""}));
+          if(action==="merge")return inSourceControlEnvironment(environmentId,()=>mergePullRequest(cwd,body.number,{provider,method:body.method,auto:Boolean(body.auto)}));
+          if(action==="update-branch")return inSourceControlEnvironment(environmentId,()=>updatePullRequestBranch(cwd,body.number,{provider,rebase:body.rebase!==false}));
+          if(action==="checkout")return inSourceControlEnvironment(environmentId,()=>checkoutPullRequest(cwd,body.number,{provider}));
+          if(action==="request-reviewer")return inSourceControlEnvironment(environmentId,()=>requestPullRequestReviewer(cwd,body.number,body.reviewer,{provider}));
+          throw new Error("unknown PR action");
+        });
+        return json(res,200,result);
       }catch(error){return json(res,400,{ok:false,error:error.message});}
     }
     if(url.pathname==="/api/git/commit-message" && req.method==="POST"){
