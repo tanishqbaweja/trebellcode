@@ -50,6 +50,7 @@ test("Trebell Native exposes real thread-owned background processes in Runtime",
     await page.goto("/");
     const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Native background fixture"]')});await expect(row).toBeVisible({timeout:10_000});await row.locator(".thread-main").click();
     const composer=page.getByTestId("composer");await composer.fill("Start a background server");await page.getByTestId("send").click();await expect(page.getByText("Background server started.",{exact:true})).toBeVisible({timeout:10_000});
+    await composer.fill("/p");await expect(page.locator(".slash-menu")).toContainText("Show agent background processes");await composer.fill("/s");await expect(page.locator(".slash-menu")).toContainText("Stop agent background processes");await composer.fill("");
     await page.getByTestId("right-panel-toggle").click();const panel=page.getByTestId("right-panel");await panel.getByRole("button",{name:"Runtime",exact:true}).click();
     const background=panel.getByTestId("agent-background-terminals");await expect(background).toBeVisible();await expect(background).toContainText("Agent background processes");await expect(background).toContainText(process.execPath.split(/[\\/]/).pop(),{timeout:10_000});
     const capability=panel.getByTestId("runtime-capabilities").locator(".runtime-capability-grid>div").filter({hasText:"Background processes"});await expect(capability).toContainText("available");
