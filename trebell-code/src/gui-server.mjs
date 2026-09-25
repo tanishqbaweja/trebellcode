@@ -43,6 +43,7 @@ import { sweepAutoPullProjects } from "./auto-pull-service.mjs";
 import { CloneJobService } from "./clone-job-service.mjs";
 import { prepareCodexHome } from "./codex-home-layout.mjs";
 import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
+import { redactSecretText } from "./secret-redactor.mjs";
 import { ContextEngine, createRemoteContextIo } from "./context-engine.mjs";
 import { EventJournal } from "./event-journal.mjs";
 
@@ -208,15 +209,16 @@ async function startAppServer({appPort,env=process.env,mock=false,provider="free
         });
         return {...remote,appPort,runtimeInstanceId:runtimeInstance?.id||"codex-default"};
       }catch(error){
+        const text=redactSecretText((error?.stack||error?.message||String(error))+"\n",{environment:{...env,...(runtimeInstance?.environment||{})}});
         return {
           child:null,
-          logs:[{at:Date.now(),stream:"environment",text:boundDiagnosticText((error?.stack||error?.message||String(error))+"\n")}],
+          logs:[{at:Date.now(),stream:"environment",text:boundDiagnosticText(text)}],
           targetUrl:`ws://127.0.0.1:${appPort}`,
           readyUrl:null,
           environment:{id:profile.id,name:profile.name,type:profile.type},
           appPort,
           runtimeInstanceId:runtimeInstance?.id||"codex-default",
-          error:error instanceof Error?error.message:String(error),
+          error:redactSecretText(error instanceof Error?error.message:String(error),{environment:{...env,...(runtimeInstance?.environment||{})}}),
         };
       }
     }
@@ -231,10 +233,10 @@ async function startAppServer({appPort,env=process.env,mock=false,provider="free
   const args=[...codexProviderOverrides({port:inferencePort,provider}),"app-server","--listen",`ws://127.0.0.1:${appPort}`];
   const logs=[];
   const pushLog=(chunk,stream)=>{
-    const line=boundDiagnosticText(chunk);
+    const line=boundDiagnosticText(redactSecretText(chunk,{environment:runtimeEnv}));
     logs.push({at:Date.now(),stream,text:line});
     if(logs.length>250) logs.splice(0,logs.length-250);
-    if(env.TREBELL_GUI_DEBUG==="1") (stream==="stderr"?process.stderr:process.stdout).write(chunk);
+    if(env.TREBELL_GUI_DEBUG==="1") (stream==="stderr"?process.stderr:process.stdout).write(line);
   };
   const child=spawn(command,args,{
     cwd:process.cwd(),
@@ -461,13 +463,14 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   if(state.settings().agentRuntime!==selectedAgentRuntime) state.updateSettings({agentRuntime:selectedAgentRuntime,agentRuntimeInstanceId:`${selectedAgentRuntime}-default`});
   let selectedProvider=normalizeProviderId(state.settings().modelProvider);
   if(state.settings().modelProvider!==selectedProvider) state.updateSettings({modelProvider:selectedProvider});
+  const safeLogText=value=>boundDiagnosticText(redactSecretText(value,{environment:env}));
   const providerBridgeLogs=[];
   const providerBridge=mock?null:await startProviderBridge({
     port:0,
     providerManager:providers,
     provider:selectedProvider,
     log:(message)=>{
-      providerBridgeLogs.push({at:Date.now(),stream:"provider-bridge",text:boundDiagnosticText(message)});
+      providerBridgeLogs.push({at:Date.now(),stream:"provider-bridge",text:safeLogText(message)});
       if(providerBridgeLogs.length>100) providerBridgeLogs.splice(0,providerBridgeLogs.length-100);
     },
   });
@@ -837,9 +840,9 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     return {activePaths,referencedPaths};
   }
   const cleanupLogs=[];
-  const worktreeCleanup=new WorktreeCleanupService({state,getUsage:worktreeUsage,log:message=>{cleanupLogs.push({at:Date.now(),stream:"cleanup",text:String(message)+"\n"});if(cleanupLogs.length>100)cleanupLogs.splice(0,cleanupLogs.length-100)}});
-  const storageCleanup=new StorageCleanupService({state,env,terminals,worktreeCleanup,log:message=>{cleanupLogs.push({at:Date.now(),stream:"storage-cleanup",text:String(message)+"\n"});if(cleanupLogs.length>100)cleanupLogs.splice(0,cleanupLogs.length-100)}});
-  const cloneJobs=new CloneJobService({state,environments,env,log:message=>appServer?.logs?.push({at:Date.now(),stream:"clone",text:String(message)+"\n"})});
+  const worktreeCleanup=new WorktreeCleanupService({state,getUsage:worktreeUsage,log:message=>{cleanupLogs.push({at:Date.now(),stream:"cleanup",text:safeLogText(String(message)+"\n")});if(cleanupLogs.length>100)cleanupLogs.splice(0,cleanupLogs.length-100)}});
+  const storageCleanup=new StorageCleanupService({state,env,terminals,worktreeCleanup,log:message=>{cleanupLogs.push({at:Date.now(),stream:"storage-cleanup",text:safeLogText(String(message)+"\n")});if(cleanupLogs.length>100)cleanupLogs.splice(0,cleanupLogs.length-100)}});
+  const cloneJobs=new CloneJobService({state,environments,env,log:message=>appServer?.logs?.push({at:Date.now(),stream:"clone",text:safeLogText(String(message)+"\n")})});
   await cloneJobs.recoverInterrupted();
   const codexAppServers=new Map(),codexAppServerStarts=new Map(),codexThreadServerKeys=new Map(),codexThreadReleases=new Map();
   const codexPoolKey=(ownerKey,instanceId,environmentId=state.settings().activeEnvironmentId||null)=>String(ownerKey||"catalog")+":"+(environmentId||"local")+":"+String(instanceId||"codex-default");
@@ -2520,7 +2523,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       return null;
     },
     enabled:()=>mock || Boolean(appServer?.child && appServer.child.exitCode===null),
-    log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"relay",text:message}),
+      log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"relay",text:safeLogText(message)}),
     onClientMessage:message=>{
       const traceParams=message?.params||{};const traceThreadId=traceParams.threadId||null;const traceMeta=traceThreadId?state.threadMeta(traceThreadId):null;
       eventJournal.recordProtocol({runtime:"codex",provider:selectedProvider,environmentId:traceMeta?.environmentId??state.settings().activeEnvironmentId??null,direction:"client",method:message?.method||"",params:traceParams});
@@ -2545,7 +2548,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       if(message?.method==="thread/deleted"&&params.threadId){
         codexThreadModels.delete(params.threadId);const meta=state.threadMeta(params.threadId);state.updateThreadMeta(params.threadId,{deletedAt:Date.now(),active:false});
         setTimeout(()=>releaseCodexThreadServer(params.threadId).catch(()=>{}),0);
-        if(meta?.cwd)worktreeCleanup.sweep({reason:"thread-delete",path:meta.cwd}).catch(error=>cleanupLogs.push({at:Date.now(),stream:"cleanup",text:error.message+"\n"}));
+      if(meta?.cwd)worktreeCleanup.sweep({reason:"thread-delete",path:meta.cwd}).catch(error=>cleanupLogs.push({at:Date.now(),stream:"cleanup",text:safeLogText(error.message+"\n")}));
       }
       if(message?.method==="thread/archived"&&params.threadId)setTimeout(()=>releaseCodexThreadServer(params.threadId).catch(()=>{}),0);
       if(route?.requestMethod==="thread/unsubscribe"&&!message?.error&&route.requestParams?.threadId){
@@ -2568,7 +2571,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     environments,
     contextEngine,
     version:TREBELL_VERSION,
-    log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"agent-relay",text:String(message)+"\n"}),
+      log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"agent-relay",text:safeLogText(String(message)+"\n")}),
     onThreadDeleted:thread=>thread?.cwd?worktreeCleanup.sweep({reason:"thread-delete",path:thread.cwd}):null,
     journal:eventJournal,
   });
@@ -2585,7 +2588,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     if(pullRequestSyncRunning)return;pullRequestSyncRunning=true;
     try{
       const now=Date.now();
-      await syncBranchPullRequests().catch(error=>appServer?.logs?.push({at:Date.now(),stream:"branch-pr-sync",text:error.message+"\n"}));
+    await syncBranchPullRequests().catch(error=>appServer?.logs?.push({at:Date.now(),stream:"branch-pr-sync",text:safeLogText(error.message+"\n")}));
       for(const [threadId,meta] of Object.entries(state.listThreadMeta())){
         const links=(meta.attachments||[]).filter(item=>item?.attachmentType==="pull_request").map(item=>item.payload||{});
         if(!links.length)continue;
@@ -2594,7 +2597,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const openOrUnknown=states.some(value=>!value||value==="OPEN");
         const cadence=openOrUnknown?60_000:10*60_000;
         if(now-Number(meta.lastPullRequestSyncAt||0)<cadence)continue;
-        await syncThreadPullRequestLinks(threadId).catch(error=>appServer?.logs?.push({at:Date.now(),stream:"pr-sync",text:error.message+"\n"}));
+    await syncThreadPullRequestLinks(threadId).catch(error=>appServer?.logs?.push({at:Date.now(),stream:"pr-sync",text:safeLogText(error.message+"\n")}));
       }
     }finally{pullRequestSyncRunning=false}
   };
@@ -2604,20 +2607,20 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       await sweepAutoPullProjects({
         state,
         pullProject:project=>inSourceControlEnvironment(project.environmentId||null,()=>sourceControlGitAction(project.path,{action:"auto-pull"})),
-        log:message=>appServer?.logs?.push({at:Date.now(),stream:"auto-pull",text:String(message)+"\n"}),
+    log:message=>appServer?.logs?.push({at:Date.now(),stream:"auto-pull",text:safeLogText(String(message)+"\n")}),
       });
     }finally{autoPullRunning=false}
   };
   if(!mock){
-    storageCleanup.sweep().catch(error=>cleanupLogs.push({at:Date.now(),stream:"storage-cleanup",text:error.message+"\n"}));
-    cleanupTimer=setInterval(()=>storageCleanup.sweep().catch(error=>cleanupLogs.push({at:Date.now(),stream:"storage-cleanup",text:error.message+"\n"})),60*60_000);cleanupTimer.unref?.();
+  storageCleanup.sweep().catch(error=>cleanupLogs.push({at:Date.now(),stream:"storage-cleanup",text:safeLogText(error.message+"\n")}));
+  cleanupTimer=setInterval(()=>storageCleanup.sweep().catch(error=>cleanupLogs.push({at:Date.now(),stream:"storage-cleanup",text:safeLogText(error.message+"\n")})),60*60_000);cleanupTimer.unref?.();
     setTimeout(()=>sweepPullRequestLinks().catch(()=>{}),5000).unref?.();
     pullRequestSyncTimer=setInterval(()=>sweepPullRequestLinks().catch(()=>{}),60_000);pullRequestSyncTimer.unref?.();
     setTimeout(()=>sweepAutoPull().catch(()=>{}),7000).unref?.();
     autoPullTimer=setInterval(()=>sweepAutoPull().catch(()=>{}),5*60_000);autoPullTimer.unref?.();
   }
   if(state.settings().remoteAccessEnabled) await syncRemoteControl().catch(error=>{
-    appServer?.logs?.push({at:Date.now(),stream:"remote",text:"remote access failed: "+error.message+"\n"});
+      appServer?.logs?.push({at:Date.now(),stream:"remote",text:safeLogText("remote access failed: "+error.message+"\n")});
   });
 
   return {

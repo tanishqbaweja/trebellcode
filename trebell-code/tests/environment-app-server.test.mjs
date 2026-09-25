@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { remoteCodexArgs, remoteCodexProfileSetup, sshRemotePorts } from "../src/environment-app-server.mjs";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import { remoteCodexArgs, remoteCodexProfileSetup, sshRemotePorts, startRemoteAppServer } from "../src/environment-app-server.mjs";
 import { remoteToolPathPrelude } from "../src/environment-manager.mjs";
 
 test("remote harness PATH bootstrap covers Linuxbrew and common Node version managers",()=>{
@@ -66,4 +68,21 @@ test("SSH remote Codex servers derive distinct app and provider tunnel ports",()
   assert.notEqual(first.appPort,first.providerPort);
   assert.notDeepEqual(first,second);
   for(const port of [first.appPort,first.providerPort,second.appPort,second.providerPort])assert.ok(port>1024&&port<65536);
+});
+
+test("remote app-server logs redact runtime credentials before entering Trebell diagnostics",async()=>{
+  const credential=["opaque","runtime","log","credential"].join("-"),child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();
+  const profile={id:"wsl-a",name:"WSL",type:"wsl",cwd:"/srv/app"};
+  const environments={
+    get:id=>id===profile.id?profile:null,
+    execute:async()=>({exitCode:0,stdout:"HOST=127.0.0.1\nGUEST=127.0.0.1\n",stderr:""}),
+    spawnSession:()=>child,
+  };
+  const remote=await startRemoteAppServer({environments,environmentId:profile.id,appPort:33456,provider:"freebuff",localProviderPort:9,runtimeInstance:{environment:{CUSTOM_RUNTIME_TOKEN:credential}}});
+  try{
+    child.stderr.write(`runtime failed with ${credential}\n`);child.stdout.write("safe output\n");
+    await new Promise(resolve=>setImmediate(resolve));
+    const text=remote.logs.map(item=>item.text).join("\n");
+    assert.doesNotMatch(text,new RegExp(credential));assert.match(text,/\[redacted\]/);assert.match(text,/safe output/);
+  }finally{await remote.close()}
 });

@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { DEFAULT_PORT, PROVIDER_COMPAT_PORT } from "./config.mjs";
 import { remoteToolPathPrelude } from "./environment-manager.mjs";
 import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
+import { redactSecretText } from "./secret-redactor.mjs";
 
 function quotePosix(value){
   return "'" + String(value).replace(/'/g,"'\\''") + "'";
@@ -74,12 +75,12 @@ export function remoteCodexArgs({provider,baseUrl,listen}){
   ];
 }
 
-function attachLogs(child,logs,{debug=false}={}){
+function attachLogs(child,logs,{debug=false,environment=process.env}={}){
   const push=(chunk,stream)=>{
-    const text=boundDiagnosticText(chunk);
+    const text=boundDiagnosticText(redactSecretText(chunk,{environment}));
     logs.push({at:Date.now(),stream,text});
     if(logs.length>250)logs.splice(0,logs.length-250);
-    if(debug)(stream==="stderr"?process.stderr:process.stdout).write(chunk);
+    if(debug)(stream==="stderr"?process.stderr:process.stdout).write(text);
   };
   child.stdout?.on("data",chunk=>push(chunk,"stdout"));
   child.stderr?.on("data",chunk=>push(chunk,"stderr"));
@@ -131,6 +132,7 @@ export async function startRemoteAppServer({
   const profile=environments?.get(environmentId);
   if(!profile||profile.type==="local")return null;
   const logs=[];
+  const logEnvironment={...process.env,...(runtimeInstance?.environment||{})};
   const resolvedProviderPort=providerPort(provider,localProviderPort);
   const runtime=remoteCodexProfileSetup({profile,runtimeInstance});
 
@@ -147,7 +149,7 @@ export async function startRemoteAppServer({
       await proxy.close().catch(()=>{});
       throw error;
     }
-    attachLogs(child,logs,{debug});
+    attachLogs(child,logs,{debug,environment:logEnvironment});
     return {
       child,
       logs,
@@ -179,7 +181,7 @@ export async function startRemoteAppServer({
     if(profile.identityFile)args.push("-i",profile.identityFile);
     args.push(profile.user?profile.user+"@"+profile.host:profile.host,remoteCommand);
     const child=spawn(executable,args,{env:process.env,windowsHide:true,stdio:["ignore","pipe","pipe"]});
-    attachLogs(child,logs,{debug});
+    attachLogs(child,logs,{debug,environment:logEnvironment});
     return {
       child,
       logs,
