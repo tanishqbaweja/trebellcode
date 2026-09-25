@@ -178,6 +178,10 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.deepEqual(verificationResult.paths,["src/session.js"]);
     assert.deepEqual(verificationResult.relatedTests,["tests/session.test.js"]);
     assert.ok(verificationResult.steps.some(item=>item.id==="targeted_tests"&&item.command==="pnpm run test"));
+    const assessmentResponse=await fetch(gui.url+"/api/context/verification/assess",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({plan:{risk:"medium",steps:[{id:"tests",kind:"tests",required:true}]},evidence:[{stepId:"tests",exitCode:0}]})});
+    assert.equal(assessmentResponse.status,200);
+    const assessmentResult=await assessmentResponse.json();
+    assert.equal(assessmentResult.status,"verified");assert.equal(assessmentResult.verified,true);assert.equal(assessmentResult.summary.passed,1);
     const relationResponse=await fetch(gui.url+"/api/context/relations?"+new URLSearchParams({path:configProject,file:"src/session.js"}));
     assert.equal(relationResponse.status,200);
     const relationResult=await relationResponse.json();

@@ -2110,6 +2110,12 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return json(res,200,await contextEngine.verificationPlan({root,paths:files.length?files:null,riskHints,capabilities:{diagnostics:!['0','false','no'].includes(String(url.searchParams.get("diagnostics")||"").toLowerCase()),semanticDiagnostics:['1','true','yes'].includes(String(url.searchParams.get("semantic")||"").toLowerCase())},io:remote?createRemoteContextIo({environments,environmentId,root}):null}));
       }catch(error){return json(res,400,{error:error.message});}
     }
+    if(url.pathname==="/api/context/verification/assess"&&req.method==="POST"){
+      try{
+        const body=await readJsonBody(req,2*1024*1024);
+        return json(res,200,contextEngine.assessVerification({plan:body.plan,evidence:Array.isArray(body.evidence)?body.evidence:[]}));
+      }catch(error){return json(res,400,{error:error.message});}
+    }
     if(url.pathname==="/api/context/symbols"){
       try{
         const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);

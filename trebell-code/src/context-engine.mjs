@@ -4,6 +4,7 @@ import { basename, dirname, extname, join, posix, relative, resolve, sep } from 
 import { promisify } from "node:util";
 import { parse as parseJavaScriptAst } from "@babel/parser";
 import { planVerification } from "./verification-planner.mjs";
+import { assessVerification } from "./verification-assessor.mjs";
 
 const execFileAsync=promisify(execFile);
 const SKIP=new Set([".git","node_modules","target","dist","build",".next",".cache","desktop-dist","coverage","vendor"]);
@@ -992,6 +993,10 @@ export class ContextEngine{
     }
     const commands=await this.projectCommands({root,limit:160,io}),plan=planVerification({changedPaths,projectCommands:commands,relatedTests:[...related].sort(),riskHints,capabilities});
     return {...plan,paths:changedPaths,pathSource:explicit?"explicit":"git",relatedTests:[...related].sort(),commands:{declared:commands.declared,conventional:commands.conventional},indexedFiles:index.files.size};
+  }
+
+  assessVerification({plan,evidence=[]}={}){
+    return assessVerification({plan,evidence});
   }
 
   async relatedTests({root,path=null,name=null,limit=80,io=null}={}){
