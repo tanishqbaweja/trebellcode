@@ -1216,7 +1216,7 @@ export default function App(){
       const excerpt=matchingPullRequestExcerpt(threadMeta[thread.id]||{},needle);
       if(excerpt){results.push({threadId:thread.id,excerpt:"PR · "+excerpt,thread});matched.add(thread.id)}
     }
-    if(agentRuntime==="codex"){
+    if(runtimeCapabilities.threadSearch){
       try{
         const response=await rpc.request("thread/search",{searchTerm:needle,limit:50,sortKey:"recency_at",sortDirection:"desc",archived:false});
         if(response?.data){
@@ -1496,7 +1496,7 @@ export default function App(){
         if(!cancelled){setSearchResults([...found.values()]);setThreadSearchError("Could not search thread messages: "+(error?.message||String(error)))}
       }
     },250);return()=>{cancelled=true;clearTimeout(timer)}
-  },[query,threads,threadMeta,rpc,rpcStatus,agentRuntime]);
+  },[query,threads,threadMeta,rpc,rpcStatus,agentRuntime,runtimeCapabilities.threadSearch]);
 
   function showActionError(error,label="Action failed"){
     const detail=error?.message||String(error)||"Unknown error";

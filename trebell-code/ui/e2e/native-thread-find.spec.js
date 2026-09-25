@@ -50,3 +50,34 @@ test("Trebell Native finds an old conversation match that is not initially mount
     await page.setViewportSize({width:1280,height:800});await expect(find).toBeVisible();await expect(oldMessage).toBeVisible();metrics=await page.locator(".workspace-shell").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({path:auditDir+"native-thread-find-1280x800.png",fullPage:true});
   }finally{await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });
+
+test("Trebell Native global search finds conversation text outside the loaded sidebar page",async({page})=>{
+  test.setTimeout(45_000);
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-global-find-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env),needle="buried-native-message-908";
+  const hidden=threadStore.importHistory({
+    runtime:"native",cwd:repo,providerSessionId:"native-hidden-search",model:"gpt-5.6",name:"Hidden Native history",preview:"Not in the first sidebar page",createdAt:1,updatedAt:1,
+    providerMeta:{runtimeInstanceId:"native-default",modelProvider:"agentrouter",permissionProfile:"supervised",projectless:false,environmentId:null},
+    turns:[{id:"hidden-turn",startedAt:1,completedAt:2,durationMs:1000,error:null,status:"completed",items:[{id:"hidden-user",type:"userMessage",clientId:null,content:[{type:"text",text:`The unique searchable phrase is ${needle}.`}]},{id:"hidden-answer",type:"agentMessage",text:"Stored far beyond the loaded sidebar page."}]}],
+  });
+  for(let index=0;index<100;index++)threadStore.create({runtime:"native",cwd:repo,providerSessionId:`native-dummy-${index}`,model:"gpt-5.6",name:`Recent Native thread ${index}`,preview:"Recent sidebar filler",providerMeta:{runtimeInstanceId:"native-default",modelProvider:"agentrouter",permissionProfile:"supervised",projectless:false,environmentId:null}});
+  const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn:async request=>({id:"unused-global-find-provider",provider:request.provider,model:request.model,text:"",toolCalls:[],finishReason:"stop",usage:{}}),version:"visual-fixture"});
+  const relayPort=await freePort();await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
+  const project={id:"native-global-find-project",name:"Native Global Find Project",path:repo,environmentId:null,effectiveSettings:{}};const metas={};
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"agentrouter",providerReady:true,agentRuntime:"native",agentRuntimeReady:true,wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,cwd:repo,platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"queue"},projects:[project],activeProjectId:project.id,threadMeta:metas})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["gpt-5.6"],metadata:{provider:"agentrouter",models:[{id:"gpt-5.6",name:"GPT-5.6",provider:"agentrouter",agent:"Trebell Native"}]}})}));
+    await page.route(/\/api\/projects(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(route.request().method()==="POST"?{project}:{projects:[project]})}));
+    await page.route(/\/api\/git\/info(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:false,cwd:repo,root:null,branch:null,branches:[],status:[],remotes:[],worktrees:[]})}));
+    await page.route(/\/api\/thread-meta(?:\?.*)?$/,async route=>{if(route.request().method()==="POST"){const body=route.request().postDataJSON();metas[body.threadId]={...(metas[body.threadId]||{}),...(body.patch||{})};return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(metas[body.threadId])})}return route.fulfill({status:200,contentType:"application/json",body:"{}"})});
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:300,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");const hiddenRow=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Hidden Native history"]')});await expect(page.locator(".thread-row").first()).toBeVisible({timeout:10_000});await expect(hiddenRow).toHaveCount(0);
+    await page.getByPlaceholder("Search").fill(needle);await expect(hiddenRow).toBeVisible({timeout:10_000});await expect(page.locator(".thread-row")).toHaveCount(1);
+    let metrics=await page.locator(".app-shell").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({path:auditDir+"native-global-thread-search-1600x980.png",fullPage:true});
+    await page.setViewportSize({width:1280,height:800});await expect(hiddenRow).toBeVisible();metrics=await page.locator(".app-shell").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({path:auditDir+"native-global-thread-search-1280x800.png",fullPage:true});
+    expect(hidden.id).toBeTruthy();
+  }finally{await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
