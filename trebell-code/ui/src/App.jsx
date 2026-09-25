@@ -39,6 +39,7 @@ import { ensureCodexProject, sameWorkspacePath } from "./codex-projects.js";
 import { writeClipboardText } from "./clipboard.js";
 import { createKeyedTextFrameBuffer, createTextFrameBuffer } from "./text-frame-buffer.js";
 import { autoCompactionDecision } from "./auto-compaction.js";
+import { hasAutoSettleCandidates } from "./auto-settle.js";
 import { sameConversationMessageRowProps } from "./conversation-row.js";
 import { nextSnoozeWakeAt } from "./thread-snooze.js";
 
@@ -572,6 +573,7 @@ export default function App(){
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"}); const [paletteDataError,setPaletteDataError]=useState("");
   const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
+  const autoSettleCandidates=useMemo(()=>hasAutoSettleCandidates(threads,threadMeta),[threads,threadMeta]);
   function resetAssistantStream(){assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();assistantTextRef.current="";commandOutputRef.current.clear();activityTimelineRef.current?.resetStreams()}
   function appendAssistantStream(value){assistantStreamBufferRef.current?.push(value)}
   useEffect(()=>()=>{assistantStreamBufferRef.current?.dispose();commandStreamBufferRef.current?.dispose();for(const waiter of compactionWaitersRef.current.values()){clearTimeout(waiter.timer);waiter.reject?.(new Error("Trebell closed while context compaction was pending"))}compactionWaitersRef.current.clear()},[]);
@@ -1303,7 +1305,7 @@ export default function App(){
     return()=>{disposed=true;if(timer!=null)clearTimeout(timer)};
   },[rpc,rpcStatus,threads,threadMeta,sections]);
   useEffect(()=>{
-    if(!settings.autoSettleMergedThreads||!rpc||rpcStatus!=="connected")return;
+    if(!settings.autoSettleMergedThreads||!autoSettleCandidates||!rpc||rpcStatus!=="connected")return;
     let disposed=false,busy=false;
     const applyPending=async()=>{
       if(disposed||busy)return;busy=true;
@@ -1327,7 +1329,7 @@ export default function App(){
     };
     applyPending();const timer=setInterval(applyPending,30000);
     return()=>{disposed=true;clearInterval(timer)};
-  },[settings.autoSettleMergedThreads,rpc,rpcStatus,threads,sections]);
+  },[settings.autoSettleMergedThreads,autoSettleCandidates,rpc,rpcStatus,threads,sections]);
   useEffect(()=>{
     const visible=section==="chat"||section==="new"||(rightPanelOpen&&rightPanelTab==="source");
     if(!visible)return;

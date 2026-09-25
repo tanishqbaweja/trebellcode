@@ -347,6 +347,21 @@ test("snoozed threads use the next deadline instead of a permanent polling loop"
   }finally{await harness.close()}
 });
 
+test("auto-settle polling sleeps when there are no linked pull requests",async({page})=>{
+  test.setTimeout(30_000);
+  const thread={id:"auto-settle-idle-thread",name:"Auto-settle idle fixture",preview:"No linked reviews",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexRequestHarness(thread);
+  let settlementCalls=0;
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"auto-settle-idle-fixture",{settingsPatch:{autoSettleMergedThreads:true}});
+    await page.route(/\/api\/source-control\/settlements$/,route=>{settlementCalls++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:[]})})});
+    await page.goto("/");
+    await expect(page.getByTestId("composer")).toBeVisible();
+    await page.waitForTimeout(750);
+    expect(settlementCalls).toBe(0);
+  }finally{await harness.close()}
+});
+
 test("settings loads provider and runtime catalogs only on relevant sections",async({page,request})=>{
   test.setTimeout(35_000);
   await prepare(page,request);
@@ -1528,7 +1543,10 @@ test("automatic source-control sync failures stay visible while retrying",async(
   const harness=await startCodexRequestHarness(thread);
   let mode="settlements";
   try{
-    await routeProjectlessCodexRequestFixture(page,harness,thread,"source-sync-error-fixture",{settingsPatch:{autoSettleMergedThreads:true}});
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"source-sync-error-fixture",{
+      settingsPatch:{autoSettleMergedThreads:true},
+      threadMeta:{[thread.id]:{projectless:true,linkedPullRequests:[{provider:"github",host:"github.com",repository:"example/repo",number:1,state:"OPEN"}]}}
+    });
     await page.route(/\/api\/source-control\/settlements$/,route=>mode==="settlements"
       ?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate settlement sync failure"})})
       :route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:[]})}));
