@@ -16,11 +16,14 @@ const SENSITIVE_KEYS=new Set([
 const SECRET_FLAGS=new Set(["--api-key","--token","--password","--secret","--credential"]);
 
 function normalizedKey(value){return String(value||"").replace(/[^a-z0-9]/gi,"").toLowerCase()}
+export function isSecretEnvironmentName(value){return SECRET_ENV_KEY.test(String(value||""))}
+export function isSecretCliFlag(value){return SECRET_FLAGS.has(String(value||"").trim().toLowerCase())}
+export function isSecretCliArgument(value){return /^--(?:api-key|token|password|secret|credential)(?:=|$)/i.test(String(value||"").trim())}
 function exactEnvironmentSecrets(environment={}){
   const values=[];
   for(const [key,value] of Object.entries(environment||{})){
     const secret=typeof value==="string"?value:"";
-    if(SECRET_ENV_KEY.test(String(key||""))&&secret.length>=6)values.push(secret);
+    if(isSecretEnvironmentName(key)&&secret.length>=6)values.push(secret);
   }
   return [...new Set(values)].sort((a,b)=>b.length-a.length);
 }
@@ -49,7 +52,7 @@ export function redactSecretValue(value,{environment=process.env,maxDepth=10,max
   if(typeof value==="string")return redactSecretText(value,{environment});
   if(value==null||typeof value==="number"||typeof value==="boolean")return value;
   if(Array.isArray(value))return value.slice(0,maxArray).map((item,index,array)=>{
-    if(index>0&&SECRET_FLAGS.has(String(array[index-1]||"").toLowerCase()))return "[redacted]";
+    if(index>0&&isSecretCliFlag(array[index-1]))return "[redacted]";
     return redactSecretValue(item,{environment,maxDepth,maxArray,maxFields},depth+1);
   });
   if(typeof value!=="object")return redactSecretText(String(value),{environment});

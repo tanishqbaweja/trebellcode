@@ -142,7 +142,9 @@ export class TrebellStateStore {
   constructor(env=process.env){
     this.path=join(trebellHome(env),"ui-state.json");
     mkdirSync(dirname(this.path),{recursive:true});
+    this.needsRewrite=false;
     this.state=this.#load();
+    if(this.needsRewrite)this.#save();
   }
   #load(){
     try{
@@ -165,7 +167,9 @@ export class TrebellStateStore {
       settings.sourceControlTextModel=normalizeScopedSetting("sourceControlTextModel",settings.sourceControlTextModel);
       settings.sourceControlCustomInstructions=normalizeScopedSetting("sourceControlCustomInstructions",settings.sourceControlCustomInstructions);
       settings.sourceControlFollowTemplates=normalizeScopedSetting("sourceControlFollowTemplates",settings.sourceControlFollowTemplates);
-      settings.mcpServers=normalizeMcpServers(settings.mcpServers);
+      const normalizedMcpServers=normalizeMcpServers(settings.mcpServers);
+      if(JSON.stringify(rawSettings.mcpServers||[])!==JSON.stringify(normalizedMcpServers))this.needsRewrite=true;
+      settings.mcpServers=normalizedMcpServers;
       if(!Object.prototype.hasOwnProperty.call(rawSettings,"onboardingComplete")&&projects.length>0)settings.onboardingComplete=true;
       return {
         ...clone(DEFAULT_STATE),

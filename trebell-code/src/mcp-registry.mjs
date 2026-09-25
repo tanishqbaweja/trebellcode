@@ -1,3 +1,5 @@
+import { isSecretCliArgument, isSecretCliFlag, isSecretEnvironmentName } from "./secret-redactor.mjs";
+
 const ACP_MCP_RUNTIMES=new Set(["cursor","grok","antigravity"]);
 const STDIO_MCP_RUNTIMES=new Set(["claude",...ACP_MCP_RUNTIMES]);
 
@@ -15,11 +17,20 @@ export function normalizeMcpServers(value){
     if(!name||!command)continue;
     let id=text(raw.id,160)||`${runtime}:${environmentId(raw.environmentId)||"local"}:${name}`;
     if(ids.has(id))id=id+":"+(out.length+1);ids.add(id);
-    const args=Array.isArray(raw.args)?raw.args.slice(0,64).map(item=>String(item??"").slice(0,4000)):[];
+    const args=[];const rawArgs=Array.isArray(raw.args)?raw.args.slice(0,64):[];
+    for(let index=0;index<rawArgs.length;index++){
+      const arg=String(rawArgs[index]??"").slice(0,4000);
+      if(isSecretCliArgument(arg)){
+        if(isSecretCliFlag(arg)&&index+1<rawArgs.length)index++;
+        continue;
+      }
+      args.push(arg);
+    }
     const env=[];const envNames=new Set();
     for(const item of Array.isArray(raw.env)?raw.env.slice(0,64):[]){
       if(!item||typeof item!=="object")continue;
       const envName=text(item.name,160);if(!envName||envNames.has(envName))continue;envNames.add(envName);
+      if(isSecretEnvironmentName(envName))continue;
       env.push({name:envName,value:String(item.value??"").slice(0,12000)});
     }
     out.push({id,name,type:"stdio",runtime,environmentId:environmentId(raw.environmentId),enabled:raw.enabled!==false,command,args,env});

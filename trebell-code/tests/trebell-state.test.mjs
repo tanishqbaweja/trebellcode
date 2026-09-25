@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
@@ -57,16 +57,30 @@ test("automatic context compaction defaults on and persists user preferences",as
 test("MCP server settings are normalized and persist across supported runtimes",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-state-mcp-"));const env={...process.env,TREBELL_HOME:home};
   try{
+    const credential=["saved","mcp","credential"].join("-");
     const state=new TrebellStateStore(env);
     state.updateSettings({mcpServers:[
-      {id:"cursor-remote",name:"Remote tools",runtime:"cursor",environmentId:"ssh-a",command:"/opt/remote-mcp",args:["--stdio"],env:[{name:"API_KEY",value:"secret"}]},
+      {id:"cursor-remote",name:"Remote tools",runtime:"cursor",environmentId:"ssh-a",command:"/opt/remote-mcp",args:["--stdio"],env:[{name:"API_KEY",value:credential},{name:"LOG_LEVEL",value:"debug"}]},
       {id:"claude-local",name:"Claude tools",runtime:"claude",command:"claude-mcp",args:["--stdio"]},
       {id:"invalid",name:"Ignored",runtime:"codex",command:"codex-mcp"},
     ]});
     const saved=new TrebellStateStore(env).settings().mcpServers;
     assert.equal(saved.length,2);
-    assert.deepEqual(saved[0],{id:"cursor-remote",name:"Remote tools",type:"stdio",runtime:"cursor",environmentId:"ssh-a",enabled:true,command:"/opt/remote-mcp",args:["--stdio"],env:[{name:"API_KEY",value:"secret"}]});
+    assert.deepEqual(saved[0],{id:"cursor-remote",name:"Remote tools",type:"stdio",runtime:"cursor",environmentId:"ssh-a",enabled:true,command:"/opt/remote-mcp",args:["--stdio"],env:[{name:"LOG_LEVEL",value:"debug"}]});
     assert.deepEqual(saved[1],{id:"claude-local",name:"Claude tools",type:"stdio",runtime:"claude",environmentId:null,enabled:true,command:"claude-mcp",args:["--stdio"],env:[]});
+    assert.doesNotMatch(await readFile(join(home,"ui-state.json"),"utf8"),new RegExp(credential));
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
+test("legacy MCP credentials are scrubbed from UI state during load",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-state-mcp-migration-")),env={...process.env,TREBELL_HOME:home},credential=["legacy","mcp","credential"].join("-"),cliCredential=["legacy","cli","credential"].join("-");
+  try{
+    await writeFile(join(home,"ui-state.json"),JSON.stringify({version:2,projects:[],threadMeta:{},settings:{mcpServers:[{id:"legacy",name:"Legacy tools",runtime:"claude",command:"legacy-mcp",args:["--stdio","--token",cliCredential,"--safe","yes"],env:[{name:"ACCESS_TOKEN",value:credential},{name:"LOG_LEVEL",value:"warn"}]}]}}));
+    const state=new TrebellStateStore(env),servers=state.settings().mcpServers;
+    assert.deepEqual(servers[0].env,[{name:"LOG_LEVEL",value:"warn"}]);
+    assert.deepEqual(servers[0].args,["--stdio","--safe","yes"]);
+    const persisted=await readFile(join(home,"ui-state.json"),"utf8");
+    assert.doesNotMatch(persisted,new RegExp(credential));assert.doesNotMatch(persisted,new RegExp(cliCredential));assert.doesNotMatch(persisted,/ACCESS_TOKEN|--token/);assert.match(persisted,/LOG_LEVEL/);
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
