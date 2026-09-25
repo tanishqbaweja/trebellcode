@@ -123,6 +123,10 @@ test("context engine exposes deterministic symbol and file relationship queries"
     assert.ok(relations.referencedSymbols.some(item=>item.name==="rotateRefreshToken"&&item.target==="src/auth/token.js"));
     assert.ok(relations.referencedBy.some(item=>item.name==="RefreshSession"&&item.path==="src/server.js"));
     assert.deepEqual(relations.relatedTests,["tests/auth-refresh.test.js"]);
+    const references=await engine.symbolReferences({root,name:"RefreshSession"});
+    assert.ok(references.data.some(item=>item.path==="src/auth/session.js"&&item.definition===true&&item.precision==="ast"));
+    assert.ok(references.data.some(item=>item.path==="src/server.js"&&item.line===2&&item.definition===false&&item.precision==="ast"));
+    assert.ok(references.data.some(item=>item.path==="tests/auth-refresh.test.js"&&item.precision==="ast"));
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
@@ -153,6 +157,21 @@ test("context engine exposes bounded code search, source ranges, and Git context
     assert.ok(git.changed.includes("src/auth/session.js"));
     assert.match(git.status,/src\/auth\/session\.js/);
     assert.match(git.diff,/gitContextMarker/);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("context engine exposes bounded Git history and blame",async()=>{
+  const root=await fixture();
+  try{
+    await execFileAsync("git",["-c","user.name=Trebell Test","-c","user.email=trebell@example.test","commit","-qm","Initial fixture"],{cwd:root});
+    await writeFile(join(root,"src","auth","session.js"),"import { rotateRefreshToken } from \"./token.js\";\nexport class RefreshSession {\n  refresh(token) { return rotateRefreshToken(token); }\n}\n// second revision\n","utf8");
+    await execFileAsync("git",["add","src/auth/session.js"],{cwd:root});
+    await execFileAsync("git",["-c","user.name=Trebell Test","-c","user.email=trebell@example.test","commit","-qm","Update refresh session"],{cwd:root});
+    const engine=new ContextEngine(),history=await engine.gitHistory({root,path:"src/auth/session.js",limit:5});
+    assert.equal(history.data.length,2);assert.equal(history.data[0].subject,"Update refresh session");assert.equal(history.data[1].subject,"Initial fixture");
+    const blame=await engine.gitBlame({root,path:"src/auth/session.js",startLine:1,endLine:5,maxLines:5});
+    assert.equal(blame.data.length,5);assert.equal(blame.data[0].author,"Trebell Test");assert.equal(blame.data.at(-1).text,"// second revision");assert.equal(blame.data.at(-1).summary,"Update refresh session");
+    await assert.rejects(()=>engine.gitHistory({root,path:"../outside.txt"}),/outside or unknown/i);
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
@@ -266,6 +285,8 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
         const matches=[...files].filter(([,content])=>String(content).toLowerCase().includes(pattern)).map(([path])=>path);
         return matches.length?ok(matches.join("\0")+"\0"):{exitCode:1,stdout:"",stderr:"",timedOut:false};
       }
+      if(command==="git"&&args.includes("log"))return ok("\x1e"+"a".repeat(40)+"\x1fRemote Tester\x1fremote@example.test\x1f1700000000\x1fRemote history\n");
+      if(command==="git"&&args.includes("blame"))return ok("b".repeat(40)+" 1 1 1\nauthor Remote Tester\nauthor-mail <remote@example.test>\nauthor-time 1700000000\nsummary Remote history\nfilename src/auth/session.js\n\timport { rotateRefreshToken } from \"./token.js\";\n");
       if(command==="git"&&args.includes("status"))return ok(status);
       if(command==="git"&&args.includes("diff"))return ok(status?"diff --git a/src/auth/session.js b/src/auth/session.js\n":"");
       if(command==="git"&&args.includes("rev-parse"))return ok("remote-head-1\n");
@@ -307,6 +328,12 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
   assert.equal(remoteSearch.source,"git-grep");assert.ok(remoteSearch.data.some(item=>item.path==="src/auth/session.js"));
   const remoteSource=await engine.readSourceRange({root,io,path:"src/auth/session.js",startLine:1,endLine:2});
   assert.match(remoteSource.content,/rotateRefreshToken/);assert.equal(remoteSource.endLine,2);
+  const remoteReferences=await engine.symbolReferences({root,io,name:"RefreshSession",limit:10});
+  assert.ok(remoteReferences.data.some(item=>item.path==="src/server.js"&&item.precision==="ast"));
+  const remoteHistory=await engine.gitHistory({root,io,path:"src/auth/session.js",limit:3});
+  assert.equal(remoteHistory.data[0].subject,"Remote history");
+  const remoteBlame=await engine.gitBlame({root,io,path:"src/auth/session.js",startLine:1,endLine:1,maxLines:1});
+  assert.equal(remoteBlame.data[0].author,"Remote Tester");
   files.set("src/auth/session.js",files.get("src/auth/session.js")+"export const changed = true;\n");versions.set("src/auth/session.js","v2");status=" M src/auth/session.js\n";
   const third=await engine.buildPacket({root,io,task:"refresh session",maxTokens:1800,maxFiles:8});
   assert.equal(third.stats.reparsed,1);assert.ok(third.stats.reused>=3);

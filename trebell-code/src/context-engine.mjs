@@ -124,6 +124,30 @@ function parseJavaScriptSource(content,relativePath){
   return {definitions,references,imports:[...imports],parser:"babel"};
 }
 
+function javascriptIdentifierLines(content,relativePath,name){
+  const extension=extname(relativePath).toLowerCase(),plugins=["decorators-legacy"],wanted=String(name||""),lines=new Set();
+  if(extension===".jsx"||extension===".tsx")plugins.push("jsx");
+  if(extension===".ts"||extension===".tsx")plugins.push("typescript");
+  const ast=parseJavaScriptAst(String(content||""),{sourceType:"unambiguous",errorRecovery:true,plugins});
+  const visit=node=>{
+    if(!node||typeof node!=="object")return;
+    if(node.type==="Identifier"&&node.name===wanted){const line=Number(node?.loc?.start?.line)||0;if(line>0)lines.add(line)}
+    for(const [key,value] of Object.entries(node)){
+      if(["loc","start","end","extra","errors","comments","tokens"].includes(key)||!value)continue;
+      if(Array.isArray(value)){for(const child of value)if(child&&typeof child==="object"&&typeof child.type==="string")visit(child)}
+      else if(typeof value==="object"&&typeof value.type==="string")visit(value);
+    }
+  };
+  visit(ast.program);return [...lines].sort((a,b)=>a-b);
+}
+
+function textualIdentifierLines(content,name){
+  const escaped=String(name||"").replace(/[|\\{}()[\]^$+*?.-]/g,"\\$&"),pattern=new RegExp("(^|[^A-Za-z0-9_$])"+escaped+"(?=$|[^A-Za-z0-9_$])");
+  const lines=String(content||"").split(/\r?\n/),matches=[];
+  for(let index=0;index<lines.length;index++)if(pattern.test(lines[index]))matches.push(index+1);
+  return matches;
+}
+
 function parseSource(content,relativePath){
   const extension=extname(relativePath).toLowerCase(),lines=String(content||"").split(/\r?\n/),definitions=[];
   if(BABEL_SOURCE_EXTENSIONS.has(extension)){
@@ -182,6 +206,49 @@ async function localMatchingFiles(root,{query,regex=false,caseSensitive=false,li
   }
 }
 
+function parseGitHistory(output){
+  const data=[];
+  for(const record of String(output||"").split("\x1e")){
+    const value=record.replace(/^\r?\n/,"");if(!value)continue;
+    const [commit,author,email,time,...subject]=value.split("\x1f");if(!commit)continue;
+    data.push({commit,author:author||"",email:email||"",timestamp:Number(time)||0,subject:subject.join("\x1f").trim()});
+  }
+  return data;
+}
+
+function parseGitBlame(output){
+  const data=[];let current=null;
+  for(const line of String(output||"").split(/\r?\n/)){
+    const header=line.match(/^(\^?[0-9a-f]{40,64})\s+\d+\s+(\d+)(?:\s+\d+)?$/i);
+    if(header){current={commit:header[1].replace(/^\^/,""),line:Number(header[2]),author:"",email:"",timestamp:0,summary:"",text:""};continue}
+    if(!current)continue;
+    if(line.startsWith("author "))current.author=line.slice(7);
+    else if(line.startsWith("author-mail "))current.email=line.slice(12).replace(/^<|>$/g,"");
+    else if(line.startsWith("author-time "))current.timestamp=Number(line.slice(12))||0;
+    else if(line.startsWith("summary "))current.summary=line.slice(8);
+    else if(line.startsWith("\t")){current.text=line.slice(1);data.push(current);current=null}
+  }
+  return data;
+}
+
+async function localGitHistory(root,{path="",limit=20}={}){
+  const capped=Math.max(1,Math.min(100,Number(limit)||20)),args=["-C",root,"log","--no-decorate","-n"+capped,"--format=%x1e%H%x1f%an%x1f%ae%x1f%at%x1f%s"];
+  if(path)args.push("--",path);
+  try{
+    const {stdout}=await execFileAsync("git",args,{windowsHide:true,maxBuffer:2*1024*1024,timeout:20_000});
+    return parseGitHistory(stdout).slice(0,capped);
+  }catch(error){
+    if(Number(error?.code)===128)return [];
+    throw error;
+  }
+}
+
+async function localGitBlame(root,{path,startLine=1,endLine=null,maxLines=120}={}){
+  const start=Math.max(1,Math.trunc(Number(startLine)||1)),cap=Math.max(1,Math.min(200,Math.trunc(Number(maxLines)||120))),end=Math.max(start,Math.min(start+cap-1,Math.trunc(Number(endLine)||start+cap-1)));
+  const {stdout}=await execFileAsync("git",["-C",root,"blame","--line-porcelain","-L"+start+","+end,"--",path],{windowsHide:true,maxBuffer:4*1024*1024,timeout:20_000});
+  return parseGitBlame(stdout).slice(0,cap);
+}
+
 async function localMetadata(root,paths){
   const pairs=await mapLimit(paths,64,async relativePath=>{
     try{
@@ -209,6 +276,8 @@ function localContextIo(root){
     readMany:paths=>localReadMany(absolute,paths),
     readText:path=>readFile(resolve(absolute,path),"utf8"),
     searchPaths:options=>localMatchingFiles(absolute,options),
+    gitHistory:options=>localGitHistory(absolute,options),
+    gitBlame:options=>localGitBlame(absolute,options),
     gitState:()=>gitState(absolute),
     changedSince:async(fromHead,toHead)=>{
       if(!fromHead||!toHead||fromHead===toHead)return new Set();
@@ -281,6 +350,20 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     if(result.exitCode!==0)throw new Error(result.stderr||"Could not search remote repository text");
     return String(result.stdout||"").split("\0").filter(Boolean).map(path=>path.replace(/\\/g,"/")).filter(indexablePath).slice(0,Math.max(1,Math.min(500,Number(limit)||120)));
   };
+  const gitHistory=async({path="",limit=20}={})=>{
+    const capped=Math.max(1,Math.min(100,Number(limit)||20)),args=["-C",absolute,"log","--no-decorate","-n"+capped,"--format=%x1e%H%x1f%an%x1f%ae%x1f%at%x1f%s"];
+    if(path)args.push("--",path);
+    const result=await run({command:"git",args,cwd:"",timeoutMs:25_000,maxOutput:2*1024*1024});
+    if(result.exitCode===128)return [];
+    if(result.exitCode!==0)throw new Error(result.stderr||"Could not read remote Git history");
+    return parseGitHistory(result.stdout).slice(0,capped);
+  };
+  const gitBlame=async({path,startLine=1,endLine=null,maxLines=120}={})=>{
+    const start=Math.max(1,Math.trunc(Number(startLine)||1)),cap=Math.max(1,Math.min(200,Math.trunc(Number(maxLines)||120))),end=Math.max(start,Math.min(start+cap-1,Math.trunc(Number(endLine)||start+cap-1)));
+    const result=await run({command:"git",args:["-C",absolute,"blame","--line-porcelain","-L"+start+","+end,"--",path],cwd:"",timeoutMs:25_000,maxOutput:4*1024*1024});
+    if(result.exitCode!==0)throw new Error(result.stderr||"Could not read remote Git blame");
+    return parseGitBlame(result.stdout).slice(0,cap);
+  };
   return {
     cacheKey:"remote:"+environmentId+":"+absolute,
     root:absolute,
@@ -288,6 +371,8 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     metadata,
     readMany,
     searchPaths,
+    gitHistory,
+    gitBlame,
     readText:async relativePath=>{
       const target=posix.join(absolute,String(relativePath||"").replace(/^\.\//,""));
       if(target!==absolute&&!target.startsWith(absolute.endsWith("/")?absolute:absolute+"/"))throw new Error("Context file is outside the remote workspace");
@@ -600,6 +685,53 @@ export class ContextEngine{
       imports:imports.slice(0,200),importers:importers.slice(0,200),referencedSymbols:referencedSymbols.sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name)).slice(0,200),
       referencedBy:referencedBy.sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name)).slice(0,200),relatedTests,indexedFiles:index.files.size,
     };
+  }
+
+  async symbolReferences({root,name="",path=null,limit=120,io=null}={}){
+    const symbol=String(name||"").trim();if(!symbol)throw new Error("Symbol references require a name");
+    if(symbol.length>256)throw new Error("Symbol reference name is too long");
+    const {contextIo,index}=await this.#indexed(root,io),resultLimit=Math.max(1,Math.min(200,Number(limit)||120));
+    let candidates=[...index.files.values()].filter(entry=>(entry.parsed.references||new Map()).has(symbol)||(entry.parsed.definitions||[]).some(item=>item.name===symbol));
+    if(path!=null&&String(path).trim()){
+      const requested=contextIo.relativeFocus(path)||slash(String(path||"").replace(/^\.\//,"")),entry=index.files.get(requested);
+      if(!entry)throw new Error(`Context file is not indexed: ${path}`);
+      candidates=[entry];
+    }
+    candidates=candidates.slice(0,240);
+    const contents=await contextIo.readMany(candidates.map(entry=>entry.relativePath)),data=[];let matchedFiles=0;
+    for(const entry of candidates){
+      const content=contents.get(entry.relativePath);if(typeof content!=="string")continue;
+      let lines=[],precision="text";
+      if(BABEL_SOURCE_EXTENSIONS.has(extname(entry.relativePath).toLowerCase())){try{lines=javascriptIdentifierLines(content,entry.relativePath,symbol);precision="ast"}catch{lines=textualIdentifierLines(content,symbol)}}
+      else lines=textualIdentifierLines(content,symbol);
+      if(!lines.length)continue;matchedFiles++;
+      const sourceLines=content.split(/\r?\n/),definitionLines=new Set((entry.parsed.definitions||[]).filter(item=>item.name===symbol).map(item=>Number(item.line)));
+      for(const line of lines){
+        data.push({path:entry.relativePath,line,text:String(sourceLines[line-1]||"").slice(0,600),definition:definitionLines.has(line),parser:entry.parsed.parser||"regex",precision});
+        if(data.length>=resultLimit)break;
+      }
+      if(data.length>=resultLimit)break;
+    }
+    return {name:symbol,path:path==null?null:String(path),data,indexedFiles:index.files.size,matchedFiles,truncated:data.length>=resultLimit};
+  }
+
+  async gitHistory({root,path="",limit=20,io=null}={}){
+    const {contextIo,index}=await this.#indexed(root,io);if(typeof contextIo.gitHistory!=="function")throw new Error("Git history is unavailable for this workspace");
+    let requested="";
+    if(String(path||"").trim()){
+      requested=contextIo.relativeFocus(path)||slash(String(path||"").replace(/^\.\//,""));
+      if(!requested||requested.startsWith("../")||!new Set(index.paths).has(requested))throw new Error(`Context path is outside or unknown to the repository: ${path}`);
+    }
+    const capped=Math.max(1,Math.min(100,Number(limit)||20)),data=await contextIo.gitHistory({path:requested,limit:capped});
+    return {path:requested||null,data:data.slice(0,capped),indexedFiles:index.files.size};
+  }
+
+  async gitBlame({root,path,startLine=1,endLine=null,maxLines=120,io=null}={}){
+    const {contextIo,index}=await this.#indexed(root,io);if(typeof contextIo.gitBlame!=="function")throw new Error("Git blame is unavailable for this workspace");
+    const requested=contextIo.relativeFocus(path)||slash(String(path||"").replace(/^\.\//,""));
+    if(!index.files.has(requested))throw new Error(`Context file is not indexed: ${path}`);
+    const start=Math.max(1,Math.trunc(Number(startLine)||1)),cap=Math.max(1,Math.min(200,Math.trunc(Number(maxLines)||120))),rows=await contextIo.gitBlame({path:requested,startLine:start,endLine,maxLines:cap});
+    return {path:requested,startLine:start,endLine:rows.length?rows.at(-1).line:start-1,data:rows.slice(0,cap),indexedFiles:index.files.size};
   }
 
   async searchCode({root,query="",regex=false,caseSensitive=false,limit=80,io=null}={}){
