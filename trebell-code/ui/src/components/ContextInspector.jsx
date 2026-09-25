@@ -22,11 +22,13 @@ function ContextExplorer({root,environmentId=null}){
   const [searched,setSearched]=useState(false);
   const [selected,setSelected]=useState(null);
   const [relations,setRelations]=useState(null);
+  const [diagnostics,setDiagnostics]=useState(null);
+  const [fixes,setFixes]=useState(null);
   const [view,setView]=useState(null);
   const [viewData,setViewData]=useState(null);
   const [busy,setBusy]=useState("");
   const [error,setError]=useState("");
-  useEffect(()=>{setMode("symbols");setQuery("");setResults([]);setSearched(false);setSelected(null);setRelations(null);setView(null);setViewData(null);setBusy("");setError("")},[root,environmentId]);
+  useEffect(()=>{setMode("symbols");setQuery("");setResults([]);setSearched(false);setSelected(null);setRelations(null);setDiagnostics(null);setFixes(null);setView(null);setViewData(null);setBusy("");setError("")},[root,environmentId]);
   if(!root)return null;
   const params=extra=>{const value=new URLSearchParams({path:root,...extra});if(environmentId)value.set("environmentId",environmentId);return value};
   const modeMeta={
@@ -34,7 +36,7 @@ function ContextExplorer({root,environmentId=null}){
     files:{label:"Files",placeholder:"Find files, e.g. session",endpoint:"/api/context/files",empty:"No repository files matched"},
     code:{label:"Code",placeholder:"Search source text or regex",endpoint:"/api/context/search",empty:"No source matches found"},
   }[mode];
-  function chooseMode(next){if(next===mode)return;setMode(next);setResults([]);setSearched(false);setSelected(null);setRelations(null);setError("")}
+  function chooseMode(next){if(next===mode)return;setMode(next);setResults([]);setSearched(false);setSelected(null);setRelations(null);setDiagnostics(null);setFixes(null);setError("")}
   async function search(event){
     event?.preventDefault?.();const value=query.trim();if(!value||busy)return;
     setBusy("search");setError("");setSelected(null);setRelations(null);
@@ -43,9 +45,21 @@ function ContextExplorer({root,environmentId=null}){
     finally{setBusy("")}
   }
   async function inspect(path){
-    if(!path||busy)return;setBusy("relations");setError("");setSelected(path);setRelations(null);
+    if(!path||busy)return;setBusy("relations");setError("");setSelected(path);setRelations(null);setDiagnostics(null);setFixes(null);
     try{setRelations(await api("/api/context/relations?"+params({file:path})))}
     catch(relationError){setError(relationError.message||String(relationError))}
+    finally{setBusy("")}
+  }
+  async function loadDiagnostics(){
+    if(!selected||busy)return;setBusy("diagnostics");setError("");setDiagnostics(null);setFixes(null);
+    try{setDiagnostics(await api("/api/context/diagnostics?"+params({file:selected,semantic:"true",limit:"40"})))}
+    catch(diagnosticError){setError(diagnosticError.message||String(diagnosticError))}
+    finally{setBusy("")}
+  }
+  async function loadFixes(diagnostic){
+    if(!selected||busy||!diagnostic?.code)return;setBusy("fixes");setError("");setFixes(null);
+    try{setFixes(await api("/api/context/code-actions?"+params({file:selected,line:String(diagnostic.line||1),column:String(diagnostic.column||1),codes:String(diagnostic.code),limit:"12"})))}
+    catch(fixError){setError(fixError.message||String(fixError))}
     finally{setBusy("")}
   }
   async function loadView(next){
@@ -67,6 +81,7 @@ function ContextExplorer({root,environmentId=null}){
   const resultLabel=item=>mode==="symbols"?item.name:mode==="files"?item.path:`${item.path}:${item.line}`;
   const resultDetail=item=>mode==="symbols"?`${item.kind} · ${item.path}:${item.line}`:mode==="files"?`${item.indexedSource?"indexed source":"repository file"}${item.extension?` · ${item.extension}`:""}`:String(item.text||"").trim();
   const resultMeta=item=>mode==="symbols"?(item.parser||"index"):mode==="files"?String(item.score??""):item.line?`L${item.line}`:"match";
+  const diagnosticRows=diagnostics?[...(diagnostics.diagnostics||[]),...(diagnostics.semanticDiagnostics||[])]:[];
   return <section className="context-explorer" data-testid="context-explorer">
     <div className="context-inspector-section-head"><strong>Repository explorer</strong><span>deterministic index</span></div>
     <div className="context-explorer-modes" role="group" aria-label="Repository search mode">{["symbols","files","code"].map(item=><button type="button" key={item} className={mode===item?"active":""} onClick={()=>chooseMode(item)}>{({symbols:"Symbols",files:"Files",code:"Code"})[item]}</button>)}</div>
@@ -98,9 +113,23 @@ function ContextExplorer({root,environmentId=null}){
     {selected&&busy==="relations"&&<p className="context-explorer-empty">Tracing imports and references for {selected}…</p>}
     {relations&&<div className="context-explorer-relations" data-testid="context-file-relations">
       <div><strong>{relations.path}</strong><span>{relations.definitions?.length||0} definitions · {relations.importers?.length||0} importers</span></div>
+      <p className="context-explorer-relation-actions"><button type="button" onClick={loadDiagnostics} disabled={Boolean(busy)}>{busy==="diagnostics"?"Checking…":diagnostics?"Refresh diagnostics":"Diagnostics"}</button>{diagnostics&&<span>{diagnostics.semantic?`${diagnostics.semanticEngine||"semantic"} + ${diagnostics.engine||"parser"}`:(diagnostics.engine||"parser")}</span>}</p>
       {(relations.relatedTests||[]).length>0&&<p><b>Related tests</b>{relations.relatedTests.map(path=><button type="button" key={path} onClick={()=>inspect(path)}>{path}</button>)}</p>}
       {relationPaths.length>0&&<p><b>Related files</b>{relationPaths.map(path=><button type="button" key={path} onClick={()=>inspect(path)}>{path}</button>)}</p>}
       {!relationPaths.length&&!(relations.relatedTests||[]).length&&<p className="context-explorer-empty">No indexed imports or symbol references connect this file to another source file.</p>}
+      {diagnostics&&<div className="context-diagnostics" data-testid="context-diagnostics">
+        <div><strong>Diagnostics</strong><span>{diagnosticRows.length?`${diagnosticRows.length} issue${diagnosticRows.length===1?"":"s"}`:"clean"}</span></div>
+        {!diagnosticRows.length&&<p className="context-explorer-empty">No parser or semantic diagnostics were reported for this file.</p>}
+        {diagnosticRows.slice(0,16).map((item,index)=><article key={`${item.code||"diag"}:${item.line||0}:${item.column||0}:${index}`}>
+          <span><b>{item.code||item.severity||"diagnostic"}</b><small>{item.line?`L${item.line}:${item.column||1} · `:""}{item.message}</small></span>
+          {String(item.code||"").startsWith("TS")&&<button type="button" onClick={()=>loadFixes(item)} disabled={Boolean(busy)}>{busy==="fixes"?"Loading…":"Fixes"}</button>}
+        </article>)}
+      </div>}
+      {fixes&&<div className="context-fixes" data-testid="context-code-actions">
+        <div><strong>Proposed fixes</strong><span>inspect only · not applied</span></div>
+        {(fixes.actions||[]).slice(0,10).map((action,index)=><article key={`${action.fixName||"fix"}:${index}`}><b>{action.description||action.fixName||"TypeScript fix"}</b><span>{(action.changes||[]).reduce((sum,change)=>sum+(change.textChanges||[]).length,0)} text edit{(action.changes||[]).reduce((sum,change)=>sum+(change.textChanges||[]).length,0)===1?"":"s"}{action.requiresCommand?" · extra command required":""}</span></article>)}
+        {!(fixes.actions||[]).length&&<p className="context-explorer-empty">TypeScript did not offer a code fix for this diagnostic.</p>}
+      </div>}
     </div>}
   </section>;
 }

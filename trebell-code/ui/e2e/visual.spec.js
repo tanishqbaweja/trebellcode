@@ -1086,6 +1086,8 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
       {path:"package.json",name:"test",command:"npm run test",kind:"test",confidence:"declared",manager:"npm",script:"node --test"},
       {path:"package.json",name:"build",command:"npm run ui:build",kind:"build",confidence:"declared",manager:"npm",script:"vite build"},
     ],conventional:[{path:"Cargo.toml",name:"check",command:"cargo check",kind:"typecheck",confidence:"convention",reason:"Cargo.toml detected"}]})}));
+    await page.route(/\/api\/context\/diagnostics\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({path:"src/auth/session.js",supported:true,engine:"babel-parser",semantic:true,semanticEngine:"typescript",semanticInfo:{available:true,configured:true,version:"5.9.3"},diagnostics:[],semanticDiagnostics:[{path:"src/auth/session.js",line:8,column:14,severity:"error",code:"TS2322",message:"Type 'number' is not assignable to type 'string'."}]})}));
+    await page.route(/\/api\/context\/code-actions\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({path:"src/auth/session.js",supported:true,engine:"typescript",semantic:true,diagnostics:[{code:"TS2322",line:8,column:14,severity:"error",message:"Type mismatch"}],actions:[{fixName:"fixRefresh",description:"Convert refresh token to string",requiresCommand:false,commands:[],changes:[{file:"src/auth/session.js",textChanges:[{path:"src/auth/session.js",line:8,column:14,length:5,newText:"String(token)",newTextTruncated:false}]}]}]})}));
     await page.route(/\/api\/context\/relations\?/,route=>{
       const file=new URL(route.request().url()).searchParams.get("file")||"";
       const body=file==="src/auth/session.js"
@@ -1130,6 +1132,17 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     await expect(relations).toContainText("2 importers");
     await expect(relations).toContainText("tests/auth-refresh.test.js");
     await expect(relations).toContainText("src/auth/token.js");
+    await relations.getByRole("button",{name:"Diagnostics",exact:true}).click();
+    const diagnostics=explorer.getByTestId("context-diagnostics");
+    await expect(diagnostics).toContainText("TS2322");
+    await expect(diagnostics).toContainText("Type 'number' is not assignable to type 'string'.");
+    await diagnostics.getByRole("button",{name:"Fixes",exact:true}).click();
+    const fixes=explorer.getByTestId("context-code-actions");
+    await expect(fixes).toContainText("Convert refresh token to string");
+    await expect(fixes).toContainText("1 text edit");
+    await expect(fixes).toContainText("inspect only · not applied");
+    await page.setViewportSize({width:1280,height:800});
+    await page.screenshot({path:auditDir+"context-inspector-diagnostics-1280x800.png",fullPage:true});
     await explorer.getByRole("button",{name:"Files",exact:true}).click();
     await explorer.getByLabel("Search repository files").fill("session");
     await explorer.getByRole("button",{name:"Search",exact:true}).click();
