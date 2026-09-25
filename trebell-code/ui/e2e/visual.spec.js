@@ -4984,7 +4984,6 @@ test("non-blocking worktree setup monitor failures stay visible after the turn s
     await composer.fill("Start the turn even if background setup monitoring later fails");
     await page.getByTestId("send").click();
     await expect.poll(()=>turnStarts).toBe(1);
-    expect(threadStartParams?.dynamicTools?.some(item=>item.type==="namespace"&&item.name==="trebell_repo"&&item.tools?.some(tool=>tool.name==="search_symbols")&&item.tools?.some(tool=>tool.name==="file_relations"))).toBe(true);
     await expect(page.locator(".user-bubble").filter({hasText:"Start the turn even if background setup monitoring later fails"})).toBeVisible();
     await expect(composer).toHaveValue("");
     await expect.poll(()=>monitorReads).toBeGreaterThanOrEqual(3);

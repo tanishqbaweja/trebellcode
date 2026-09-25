@@ -39,6 +39,7 @@ import { hasAutoSettleCandidates } from "./auto-settle.js";
 import { sameConversationMessageRowProps } from "./conversation-row.js";
 import { nextSnoozeWakeAt } from "./thread-snooze.js";
 import { sharedRuntimeCapabilities } from "../../src/runtime-capabilities.mjs";
+import { sharedDynamicToolNamespaces } from "../../src/shared-tool-catalog.mjs";
 import { repositoryFocusPaths } from "./context-focus.js";
 import { hydratePersistedQueue, persistedQueueItems } from "./persistent-queue.js";
 import { contextTaskAnchor, contextTaskText } from "./context-task.js";
@@ -130,88 +131,6 @@ async function resumeWithBoundedHistory(rpc,params){
   }catch{}
   return rpc.request("thread/resume",{...params,excludeTurns:false}).then(result=>({...result,__trebellFullHistoryFallback:true}));
 }
-
-const TREBELL_BROWSER_TOOLS=[{
-  type:"namespace",
-  name:"trebell_browser",
-  description:"Control Trebell Code's isolated desktop browser session for web research and testing.",
-  tools:[
-    {type:"function",name:"open",description:"Navigate the Trebell browser to a URL.",inputSchema:{type:"object",properties:{url:{type:"string"}},required:["url"],additionalProperties:false}},
-    {type:"function",name:"snapshot",description:"Inspect current page text and interactive elements. Returns refs for click/type.",inputSchema:{type:"object",properties:{},additionalProperties:false}},
-    {type:"function",name:"click",description:"Click an element from the latest snapshot by ref.",inputSchema:{type:"object",properties:{ref:{type:"string"}},required:["ref"],additionalProperties:false}},
-    {type:"function",name:"type",description:"Set text in an input or editable element from the latest snapshot.",inputSchema:{type:"object",properties:{ref:{type:"string"},text:{type:"string"}},required:["ref","text"],additionalProperties:false}},
-    {type:"function",name:"screenshot",description:"Capture the current page as an image visible to the model.",inputSchema:{type:"object",properties:{},additionalProperties:false}}
-  ]
-}];
-
-const TREBELL_COMPUTER_TOOLS=[{
-  type:"namespace",
-  name:"trebell_computer",
-  description:"Control the Windows desktop on the primary display. Screenshot is always available; mouse and keyboard input require Trebell Full access mode.",
-  tools:[
-    {type:"function",name:"screenshot",description:"Capture the primary desktop and return it to the model with coordinate metadata.",inputSchema:{type:"object",properties:{},additionalProperties:false}},
-    {type:"function",name:"move",description:"Move the mouse to screenshot pixel coordinates.",inputSchema:{type:"object",properties:{x:{type:"integer"},y:{type:"integer"}},required:["x","y"],additionalProperties:false}},
-    {type:"function",name:"click",description:"Click at screenshot pixel coordinates.",inputSchema:{type:"object",properties:{x:{type:"integer"},y:{type:"integer"},button:{type:"string",enum:["left","right","middle"]},count:{type:"integer",minimum:1,maximum:3}},required:["x","y"],additionalProperties:false}},
-    {type:"function",name:"scroll",description:"Scroll at the current pointer position. Positive delta scrolls up; negative scrolls down.",inputSchema:{type:"object",properties:{delta:{type:"integer"}},required:["delta"],additionalProperties:false}},
-    {type:"function",name:"type",description:"Type text into the focused desktop application.",inputSchema:{type:"object",properties:{text:{type:"string"}},required:["text"],additionalProperties:false}},
-    {type:"function",name:"key",description:"Send a supported key or shortcut such as ENTER, TAB, ESC, CTRL+A, CTRL+C, CTRL+V, ALT+TAB, UP, DOWN, LEFT, RIGHT.",inputSchema:{type:"object",properties:{key:{type:"string"}},required:["key"],additionalProperties:false}}
-  ]
-}];
-
-const TREBELL_DEVICE_TOOLS=[{
-  type:"namespace",
-  name:"trebell_device",
-  description:"Inspect and control local Android emulators or iOS simulators exposed by Trebell Code. Physical phones are never controlled by these tools.",
-  tools:[
-    {type:"function",name:"list",description:"List available Android emulators and iOS simulators.",inputSchema:{type:"object",properties:{},additionalProperties:false}},
-    {type:"function",name:"screenshot",description:"Capture a simulator screen as an image.",inputSchema:{type:"object",properties:{id:{type:"string"}},required:["id"],additionalProperties:false}},
-    {type:"function",name:"tap",description:"Tap simulator pixel coordinates from the latest screenshot.",inputSchema:{type:"object",properties:{id:{type:"string"},x:{type:"number"},y:{type:"number"}},required:["id","x","y"],additionalProperties:false}},
-    {type:"function",name:"type",description:"Type text into the focused Android emulator control.",inputSchema:{type:"object",properties:{id:{type:"string"},text:{type:"string"}},required:["id","text"],additionalProperties:false}},
-    {type:"function",name:"key",description:"Send Android emulator Back, Home, Recents, or Enter.",inputSchema:{type:"object",properties:{id:{type:"string"},key:{type:"string",enum:["back","home","recents","enter"]}},required:["id","key"],additionalProperties:false}},
-    {type:"function",name:"foreground",description:"Read the foreground Android emulator app/activity.",inputSchema:{type:"object",properties:{id:{type:"string"}},required:["id"],additionalProperties:false}}
-  ]
-}];
-const TREBELL_SOURCE_CONTROL_TOOLS=[{
-  type:"namespace",
-  name:"trebell_source_control",
-  description:"Link hosted pull requests to the current Trebell thread.",
-  tools:[
-    {type:"function",name:"link_pull_request",description:"Link a pull request URL to the current thread so Trebell can track its review state and native stack.",inputSchema:{type:"object",properties:{url:{type:"string"}},required:["url"],additionalProperties:false}}
-  ]
-}];
-const TREBELL_REPO_TOOLS=[{
-  type:"namespace",
-  name:"trebell_repo",
-  description:"Query Trebell's deterministic repository index for symbols and structural file relationships before reading full source.",
-  tools:[
-    {type:"function",name:"search_symbols",description:"Find repository symbol definitions by name or signature.",inputSchema:{type:"object",properties:{query:{type:"string"},limit:{type:"integer",minimum:1,maximum:100}},required:["query"],additionalProperties:false}},
-    {type:"function",name:"file_relations",description:"Inspect a source file's definitions, imports, importers, cross-file symbol references, and related tests.",inputSchema:{type:"object",properties:{path:{type:"string"}},required:["path"],additionalProperties:false}},
-  ]
-}];
-const TREBELL_DELEGATION_TOOLS=[{
-  type:"namespace",
-  name:"trebell_delegate",
-  description:"Delegate a bounded child task through Trebell. Coding delegates use isolated Git worktrees by default so parallel agents do not edit the same checkout.",
-  tools:[{
-    type:"function",name:"delegate",description:"Start one bounded child task. Use delegation only when parallel or specialized work is genuinely useful; do not create swarms.",
-    inputSchema:{
-      type:"object",additionalProperties:false,required:["task"],
-      properties:{
-        task:{type:"string",description:"Concrete child objective."},
-        permissions:{type:"string",enum:["inherit","read-only","workspace-write","supervised","full"],description:"Child permission profile. inherit resolves to supervised for delegated workers."},
-        isolation:{type:"string",enum:["auto","worktree","inherit","shared"],description:"auto/worktree use an isolated Git worktree; inherit/shared reuse the parent workspace."},
-        model:{type:"string",description:"Optional model id; defaults to the parent's selected model."},
-        ownership:{type:"array",items:{type:"string"},maxItems:50,description:"Files or areas the child owns."},
-        context:{type:"string",description:"Additional bounded context that is not already in repository context."},
-        label:{type:"string",description:"Optional short label for the child task."},
-        budget:{type:"object",additionalProperties:false,properties:{
-          tokenBudget:{type:"integer",minimum:1},timeBudgetMinutes:{type:"integer",minimum:1},turnBudget:{type:"integer",minimum:1,maximum:500},
-          toolCallBudget:{type:"integer",minimum:1,maximum:1000},childAgentBudget:{type:"integer",minimum:1,maximum:100},costBudgetUsd:{type:"number",exclusiveMinimum:0},
-        }},
-      },
-    },
-  }],
-}];
 
 function titleOf(thread){return thread?.name||thread?.preview||"New Trebell task"}
 function modelLabel(id,freebuff){
@@ -2568,7 +2487,13 @@ export default function App(){
   }
   async function createThreadFor(modelId,cwd,{projectless=projectlessMode}={}){
     const p=presetFor(permissionMode);
-    const dynamicTools=[...TREBELL_REPO_TOOLS,...TREBELL_BROWSER_TOOLS,...TREBELL_COMPUTER_TOOLS,...TREBELL_SOURCE_CONTROL_TOOLS,...(runtimeCapabilities.delegation&&runtimeCapabilities.dynamicTools?TREBELL_DELEGATION_TOOLS:[]),...(effectiveProjectSettings.agentDeviceAccess?TREBELL_DEVICE_TOOLS:[])];
+    const dynamicTools=sharedDynamicToolNamespaces({
+      browser:Boolean(window.trebellDesktop?.browser),
+      computer:Boolean(window.trebellDesktop?.computer),
+      device:Boolean(effectiveProjectSettings.agentDeviceAccess),
+      sourceControl:!projectless,
+      delegation:Boolean(runtimeCapabilities.delegation&&runtimeCapabilities.dynamicTools),
+    });
     const researchInstruction="Web research is available when useful. Use it when current or external information materially improves the task; use trebell_browser for interactive pages."+(runtimeCapabilities.dynamicTools?" Use trebell_repo for deterministic symbol and structural repository lookups when that is faster than manual exploration.":"")+(runtimeCapabilities.dynamicTools&&runtimeCapabilities.delegation?" Trebell delegation is available for bounded parallel child tasks; use it only when parallelism materially helps, prefer explicit ownership and budgets, and do not create agent swarms.":"");
     const developerInstructions=projectless
       ?"This is a Trebell General chat with no attached project or repository. The working directory is an app-managed scratch workspace. Do not assume it is a codebase, repository, or user project. "+researchInstruction
