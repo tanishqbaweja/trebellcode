@@ -479,6 +479,14 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   let bridge=null;
   let loginPromise=null;
   const checkpoints=new CheckpointService({state,env});
+  function recordCheckpointTrace(name,status,checkpoint=null,extra={}){
+    const threadId=checkpoint?.threadId||extra.threadId||null,meta=threadId?state.threadMeta(threadId):{};
+    eventJournal.record({
+      runtime:meta?.runtime||null,provider:meta?.runtimeInstanceId||null,environmentId:meta?.environmentId??state.settings().activeEnvironmentId??null,
+      threadId,turnId:checkpoint?.turnId||extra.turnId||null,category:"checkpoint",name,status,
+      data:{checkpointId:checkpoint?.id||extra.checkpointId||null,root:checkpoint?.root||null,commit:checkpoint?.commit||null,label:checkpoint?.label||null,reason:extra.reason||null,message:extra.message||null},
+    });
+  }
   const contextEngine=new ContextEngine();
   const terminals=mock ? null : new TerminalManager({env});
   function terminalOptions({environmentId=null,cwd=null,name=null,cols=120,rows=32,terminalEnv=null}={}){
@@ -1906,21 +1914,32 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       if(req.method==="POST"){
         try{
           const body=await readJsonBody(req);
-          return json(res,200,await checkpoints.create(body));
-        }catch(error){return json(res,400,{error:error.message});}
+          const checkpoint=await checkpoints.create(body);
+          recordCheckpointTrace(checkpoint?.supported===false?"checkpoint.skipped":"checkpoint.created",checkpoint?.supported===false?"unsupported":"completed",checkpoint,{threadId:body.threadId||null,reason:checkpoint?.reason||null});
+          return json(res,200,checkpoint);
+        }catch(error){
+          recordCheckpointTrace("checkpoint.create_failed","error",null,{message:error.message});
+          return json(res,400,{error:error.message});
+        }
       }
     }
     if(url.pathname==="/api/checkpoints/link" && req.method==="POST"){
       try{
         const body=await readJsonBody(req);
-        return json(res,200,{checkpoint:checkpoints.link(body.id,body.patch||{})});
+        const checkpoint=checkpoints.link(body.id,body.patch||{});recordCheckpointTrace("checkpoint.linked","completed",checkpoint,{checkpointId:body.id,turnId:body.patch?.turnId||null});
+        return json(res,200,{checkpoint});
       }catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/checkpoints/restore" && req.method==="POST"){
+      let body=null;
       try{
-        const body=await readJsonBody(req);
-        return json(res,200,await checkpoints.restore(body.id,{threadId:body.threadId||null}));
-      }catch(error){return json(res,400,{error:error.message});}
+        body=await readJsonBody(req);
+        const result=await checkpoints.restore(body.id,{threadId:body.threadId||null});recordCheckpointTrace("checkpoint.restored","completed",result.checkpoint,{checkpointId:body.id,threadId:body.threadId||null});
+        return json(res,200,result);
+      }catch(error){
+        recordCheckpointTrace("checkpoint.restore_failed","error",null,{checkpointId:body?.id||null,threadId:body?.threadId||null,message:error.message});
+        return json(res,400,{error:error.message});
+      }
     }
     if(url.pathname==="/api/terminal/sessions"){
       if(mock){

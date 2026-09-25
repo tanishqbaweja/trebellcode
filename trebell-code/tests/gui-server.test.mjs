@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { createGuiServer, offlineE2eFetch } from "../src/gui-server.mjs";
+import { git } from "../src/git-service.mjs";
 
 const packageVersion=JSON.parse(await readFile(new URL("../package.json",import.meta.url),"utf8")).version;
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
@@ -80,6 +81,19 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.ok(Array.isArray(traces.items));
     assert.equal(traces.journal.lastError,null);
     assert.equal(typeof traces.journal.records,"number");
+    const checkpointRepo=join(home,"checkpoint-trace-repo");await mkdir(checkpointRepo,{recursive:true});
+    await git(checkpointRepo,["init"]);await git(checkpointRepo,["config","user.email","trace@example.test"]);await git(checkpointRepo,["config","user.name","Trace Test"]);await writeFile(join(checkpointRepo,"fixture.txt"),"before\n");await git(checkpointRepo,["add","fixture.txt"]);await git(checkpointRepo,["commit","-m","fixture"]);
+    const checkpoint=await fetch(gui.url+"/api/checkpoints",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({cwd:checkpointRepo,threadId:"checkpoint-trace-thread",label:"Trace checkpoint"})}).then(r=>r.json());
+    assert.equal(checkpoint.supported,true);assert.ok(checkpoint.id);
+    const checkpointLinked=await fetch(gui.url+"/api/checkpoints/link",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id:checkpoint.id,patch:{turnId:"trace-turn"}})}).then(r=>r.json());
+    assert.equal(checkpointLinked.checkpoint.turnId,"trace-turn");
+    const failedRestore=await fetch(gui.url+"/api/checkpoints/restore",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id:checkpoint.id,threadId:"wrong-thread"})});
+    assert.equal(failedRestore.status,400);
+    const checkpointTraces=await fetch(gui.url+"/api/traces?limit=100").then(r=>r.json());
+    const checkpointEvents=checkpointTraces.items.filter(item=>item.category==="checkpoint"&&item.data?.checkpointId===checkpoint.id);
+    assert.ok(checkpointEvents.some(item=>item.name==="checkpoint.created"&&item.status==="completed"));
+    assert.ok(checkpointEvents.some(item=>item.name==="checkpoint.linked"&&item.turnId==="trace-turn"));
+    assert.ok(checkpointEvents.some(item=>item.name==="checkpoint.restore_failed"&&item.status==="error"));
     assert.equal(models.metadata.provider,boot.provider);
     assert.ok(models.metadata.models.every(model=>model.provider===boot.provider));
     const runtimeUsage=await fetch(gui.url+"/api/agent-runtime-usage").then(r=>r.json());
