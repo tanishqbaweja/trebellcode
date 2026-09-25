@@ -51,8 +51,8 @@ export const SHARED_TOOL_NAMESPACE_CATALOG=freeze([
   namespace("trebell_browser","Control Trebell Code's isolated desktop browser session for web research and testing.",[
     tool("open","Navigate the Trebell browser to a URL.",{type:"object",properties:{url:{type:"string"}},required:["url"],additionalProperties:false},{kind:"fetch",riskLevel:"low",reversibility:"full"},{desktop:true}),
     tool("snapshot","Inspect current page text and interactive elements. Returns refs for click/type.",emptyObjectSchema,{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,asyncSafe:true},{desktop:true}),
-    tool("click","Click an element from the latest snapshot by ref.",{type:"object",properties:{ref:{type:"string"}},required:["ref"],additionalProperties:false},{kind:"other",riskLevel:"medium",reversibility:"partial"},{desktop:true}),
-    tool("type","Set text in an input or editable element from the latest snapshot.",{type:"object",properties:{ref:{type:"string"},text:{type:"string"}},required:["ref","text"],additionalProperties:false},{kind:"other",riskLevel:"medium",reversibility:"partial"},{desktop:true}),
+    tool("click","Click an element from the latest snapshot by ref.",{type:"object",properties:{ref:{type:"string"}},required:["ref"],additionalProperties:false},{kind:"other",riskLevel:"medium",reversibility:"partial",externalSideEffect:true},{desktop:true}),
+    tool("type","Set text in an input or editable element from the latest snapshot.",{type:"object",properties:{ref:{type:"string"},text:{type:"string"}},required:["ref","text"],additionalProperties:false},{kind:"other",riskLevel:"medium",reversibility:"partial",externalSideEffect:true},{desktop:true}),
     tool("screenshot","Capture the current page as an image visible to the model.",emptyObjectSchema,{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,asyncSafe:true},{desktop:true}),
   ],{desktop:true}),
   namespace("trebell_computer","Control the primary desktop display. Screenshot is read-only; mouse and keyboard input require Trebell Full access mode.",[

@@ -102,3 +102,9 @@ test("Native source-control policy keeps reads cheap and remote writes explicit"
   assert.equal(push.decision,POLICY_CONFIRM);assert.equal(push.action.externalSideEffect,true);assert.equal(push.action.reversibility,"none");
   const readOnlyCommit=authorizePlatformToolCall({namespace:"trebell_source_control",name:"commit_all",arguments:{message:"nope"}},{permissionProfile:"read-only",workspace:"/repo",projectAvailable:true,runtime:"native"});assert.equal(readOnlyCommit.decision,POLICY_REJECT);
 });
+
+test("interactive browser actions are treated as external side effects",()=>{
+  const snapshot=authorizePlatformToolCall({namespace:"trebell_browser",name:"snapshot",arguments:{}},{permissionProfile:"auto",desktopAvailable:true,runtime:"native"});assert.equal(snapshot.decision,POLICY_ALLOW);assert.equal(snapshot.action.externalSideEffect,false);
+  const click=authorizePlatformToolCall({namespace:"trebell_browser",name:"click",arguments:{ref:"button-1"}},{permissionProfile:"auto",desktopAvailable:true,runtime:"native"});assert.equal(click.decision,POLICY_CONFIRM);assert.equal(click.action.externalSideEffect,true);
+  const type=authorizePlatformToolCall({namespace:"trebell_browser",name:"type",arguments:{ref:"input-1",text:"hello"}},{permissionProfile:"read-only",desktopAvailable:true,runtime:"native"});assert.equal(type.decision,POLICY_REJECT);assert.equal(type.action.externalSideEffect,true);
+});

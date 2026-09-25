@@ -31,6 +31,7 @@ test("shared Trebell tool catalog owns unique schemas and policy metadata",()=>{
   assert.equal(sharedToolDefinition("trebell_terminal","background_status").policy.kind,"read");assert.equal(sharedToolDefinition("trebell_terminal","stop_background").policy.kind,"execute");
   assert.equal(sharedToolDefinition("trebell_source_control","status").policy.kind,"read");
   const push=sharedToolDefinition("trebell_source_control","push");assert.equal(push.policy.riskLevel,"high");assert.equal(push.policy.externalSideEffect,true);assert.equal(push.policy.reversibility,"none");
+  assert.equal(sharedToolDefinition("trebell_browser","click").policy.externalSideEffect,true);assert.equal(sharedToolDefinition("trebell_browser","type").policy.externalSideEffect,true);
 });
 
 test("dynamic tool serialization strips harness-only metadata",()=>{
