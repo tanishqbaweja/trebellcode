@@ -1,7 +1,12 @@
 import React,{useEffect,useMemo,useRef,useState} from "react";
 import { CornerDownLeft, FolderCode, MessageSquareText, Search } from "lucide-react";
 
-export default function CommandPalette({open,onClose,actions=[],projects=[],threads=[],environmentNames={},dataError="",onOpenProject,onOpenThread,onSearchThreadMessages}){
+export default function CommandPalette(props){
+  if(!props.open)return null;
+  return <CommandPaletteOpen {...props}/>;
+}
+
+function CommandPaletteOpen({open,onClose,actions=[],projects=[],threads=[],environmentNames={},dataError="",onOpenProject,onOpenThread,onSearchThreadMessages}){
   const [query,setQuery]=useState("");
   const [selected,setSelected]=useState(0);
   const [messageMatches,setMessageMatches]=useState([]);
@@ -59,7 +64,6 @@ export default function CommandPalette({open,onClose,actions=[],projects=[],thre
     return (q?all.filter(item=>item.messageMatch||(item.label+" "+(item.detail||"")).toLowerCase().includes(q)):all).slice(0,24);
   },[actions,projects,threads,environmentNames,onOpenProject,onOpenThread,query,messageMatches]);
   useEffect(()=>{if(selected>=items.length)setSelected(Math.max(0,items.length-1))},[items.length,selected]);
-  if(!open)return null;
   async function run(item){
     if(!item||runningId)return;
     setRunningId(item.id);setActionError("");

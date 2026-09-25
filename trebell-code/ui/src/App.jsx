@@ -3022,7 +3022,7 @@ export default function App(){
   const sidebarBulkAction=useLatestCallback(bulkAction);
   const sidebarCollapse=useLatestCallback(()=>setSidebarOpen(false));
   const completedEvents=events.filter(event=>event.status==="done").length;
-  const paletteActions=[
+  const paletteActions=paletteOpen?[
     {id:"new",label:"New thread",detail:"Start a clean coding task",shortcut:"Ctrl+N",onRun:newChat},
     {id:"new-general",label:"New general chat",detail:"Start without attaching a project or repository",onRun:newGeneralChat},
     ...(window.trebellDesktop?.pickDirectory?[{id:"folder",label:"Open workspace folder",detail:projectPath||"Choose a local folder",onRun:pickWorkspace}]:[]),
@@ -3050,7 +3050,7 @@ export default function App(){
     ...(settings.customThemes||[]).map(theme=>({id:"theme-custom:"+theme.id,label:"Theme: "+theme.name,detail:`Custom ${theme.appearance||"dark"} theme`,onRun:()=>saveAppSettings({appearance:theme.id})})),
     {id:"settings",label:"Settings",detail:window.trebellDesktop?"Providers, permissions and desktop behavior":"Providers, permissions and workspace behavior",onRun:()=>setSection("settings")},
     ...(activeThread?.id&&messages.length?[{id:"copy",label:"Copy conversation",detail:"Copy this thread as text",onRun:shareThread}]:[]),
-  ];
+  ]:null;
 
   const previewSurface=<PreviewPage
     projectPath={projectPath}
