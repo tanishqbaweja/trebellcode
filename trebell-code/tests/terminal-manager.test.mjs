@@ -57,6 +57,24 @@ test("terminal scrollback survives manager restart as stopped history",{timeout:
   }finally{await first?.shutdown().catch(()=>{});await second?.shutdown().catch(()=>{});await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:100})}
 });
 
+test("terminal history redacts persisted credentials without changing live scrollback",{timeout:30000},async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-terminal-redaction-")),credential=["opaque","terminal","credential"].join("-");
+  const env={...process.env,TREBELL_HOME:home,CUSTOM_TERMINAL_TOKEN:credential};let first=null,second=null;
+  try{
+    first=new TerminalManager({env});
+    const shell=process.platform==="win32"?(process.env.COMSPEC||"cmd.exe"):(process.env.SHELL||"/bin/bash");
+    const args=process.platform==="win32"?["/d","/s","/c",`echo ${credential}`]:["-lc",`printf '${credential}\\n'`];
+    const session=await first.create({cwd:process.cwd(),shell,args,name:"Redaction fixture"});
+    await first.waitForExit(session.id,{timeoutMs:10000});
+    assert.match(first.snapshot(session.id).buffer,new RegExp(credential),"live terminal output should remain unchanged");
+    await first.shutdown();first=null;
+    const storedText=await import("node:fs/promises").then(fs=>fs.readFile(join(home,"terminal-history.json"),"utf8"));
+    assert.doesNotMatch(storedText,new RegExp(credential));assert.match(storedText,/\[redacted\]/);
+    second=new TerminalManager({env});const restored=second.snapshot(session.id);
+    assert.ok(restored);assert.doesNotMatch(restored.buffer,new RegExp(credential));assert.match(restored.buffer,/\[redacted\]/);
+  }finally{await first?.shutdown().catch(()=>{});await second?.shutdown().catch(()=>{});await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:100})}
+});
+
 test("terminal history pruning removes only stopped sessions older than the cutoff",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-terminal-prune-"));const env={...process.env,TREBELL_HOME:home};
   const manager=new TerminalManager({env,persist:false});

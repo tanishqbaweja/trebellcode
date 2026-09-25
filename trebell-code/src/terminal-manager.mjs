@@ -7,6 +7,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { WebSocketServer } from "ws";
 import { trebellHome } from "./paths.mjs";
+import { redactSecretText } from "./secret-redactor.mjs";
 
 const MAX_BYTES=8*1024*1024;
 const MAX_LINES=5000;
@@ -50,7 +51,7 @@ export class TerminalManager extends EventEmitter{
     if(!this.persist)return;
     clearTimeout(this.saveTimer);this.saveTimer=null;
     const sessions=[...this.sessions.values()].sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0)).map(session=>({
-      id:session.id,name:session.name,cwd:session.cwd,environmentId:session.environmentId||null,environmentName:session.environmentName||"Local machine",environmentType:session.environmentType||"local",cols:session.cols,rows:session.rows,buffer:trimBuffer(session.buffer||""),running:false,exitCode:session.exitCode,createdAt:session.createdAt,updatedAt:session.updatedAt,
+      id:session.id,name:session.name,cwd:session.cwd,environmentId:session.environmentId||null,environmentName:session.environmentName||"Local machine",environmentType:session.environmentType||"local",cols:session.cols,rows:session.rows,buffer:trimBuffer(redactSecretText(session.buffer||"",{environment:this.env})),running:false,exitCode:session.exitCode,createdAt:session.createdAt,updatedAt:session.updatedAt,
     }));
     try{mkdirSync(dirname(this.historyPath),{recursive:true});const tmp=this.historyPath+".tmp";writeFileSync(tmp,JSON.stringify({version:1,sessions},null,2),{encoding:"utf8",mode:0o600});renameSync(tmp,this.historyPath)}catch{}
   }
