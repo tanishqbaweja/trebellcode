@@ -215,6 +215,13 @@ export function attachCodexRelay(httpServer, {
   });
 
   return {
+    broadcast(method,params={}){
+      const payload=JSON.stringify({method,params});
+      for(const context of clients){
+        const socket=context.browserSocket;
+        if(socket.readyState===WebSocket.OPEN)try{socket.send(payload)}catch{}
+      }
+    },
     close() {
       for (const context of clients) {
         try { context.browserSocket.terminate(); } catch {}

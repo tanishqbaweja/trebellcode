@@ -130,6 +130,29 @@ test("Codex relay transforms client turn context before tracing, routing, and up
   }finally{try{session?.client.close()}catch{}relay.close();await Promise.all([work.close(),new Promise(resolve=>relayHttp.close(resolve))])}
 });
 
+test("Codex relay broadcasts harness-owned notifications to every connected renderer",async()=>{
+  const relayHttp=createServer((_req,res)=>{res.statusCode=404;res.end()});
+  const relay=attachCodexRelay(relayHttp,{targetUrl:null,enabled:()=>true});
+  await new Promise(resolve=>relayHttp.listen(0,"127.0.0.1",resolve));
+  const clients=[];
+  try{
+    for(let index=0;index<2;index++){
+      const client=new WebSocket(`ws://127.0.0.1:${relayHttp.address().port}/api/codex/ws`);
+      await new Promise((resolve,reject)=>{client.once("open",resolve);client.once("error",reject)});clients.push(client);
+    }
+    const received=clients.map(client=>new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>reject(new Error("broadcast timed out")),2000);
+      client.once("message",data=>{clearTimeout(timer);resolve(JSON.parse(String(data)))});
+    }));
+    relay.broadcast("thread/goal/updated",{threadId:"thread-1",goal:{objective:"Ship"}});
+    const messages=await Promise.all(received);
+    assert.ok(messages.every(message=>message.method==="thread/goal/updated"&&message.params.threadId==="thread-1"&&message.params.goal.objective==="Ship"));
+  }finally{
+    for(const client of clients)try{client.close()}catch{}
+    relay.close();await new Promise(resolve=>relayHttp.close(resolve));
+  }
+});
+
 test("Codex relay namespaces server request ids and returns replies to the originating app-server",async()=>{
   const work=await routedUpstream("work"),personal=await routedUpstream("personal");
   const relayHttp=createServer((_req,res)=>{res.statusCode=404;res.end()});

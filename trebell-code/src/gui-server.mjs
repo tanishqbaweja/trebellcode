@@ -2609,11 +2609,13 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
             toolCallTelemetryComplete:!previous,childAgentTelemetryComplete:!previous,
           };
         }
-        state.updateThreadMeta(threadId,{goal,goalBudgetBaselines});return {handled:true,result:{goal:durableCodexGoal(threadId)}};
+        state.updateThreadMeta(threadId,{goal,goalBudgetBaselines});
+        const enriched=durableCodexGoal(threadId);relay.broadcast("thread/goal/updated",{threadId,goal:enriched});
+        return {handled:true,result:{goal:enriched}};
       }
       if(message.method==="thread/goal/clear"){
         if(!threadId)throw Object.assign(new Error("threadId is required"),{code:-32602});
-        state.updateThreadMeta(threadId,{goal:null,goalBudgetBaselines:undefined});return {handled:true,result:{ok:true}};
+        state.updateThreadMeta(threadId,{goal:null,goalBudgetBaselines:undefined});relay.broadcast("thread/goal/updated",{threadId,goal:null});return {handled:true,result:{ok:true}};
       }
       if(((message.method==="turn/start"&&params.turnTrigger!=="trebell-restart-continuation")||message.method==="thread/queue/start")&&threadId)assertCodexGoalBudget(threadId);
       if(message.method==="thread/runtimeInstances/list")return {handled:true,result:await codexThreadProfiles(message.params?.threadId)};

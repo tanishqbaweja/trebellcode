@@ -13,12 +13,14 @@ function request(ws){let id=0;return (method,params={})=>new Promise((resolve,re
 
 test("Codex relay owns durable goal RPCs and blocks exhausted direct or queued work before upstream",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-codex-goal-")),[port,appPort]=await Promise.all([freePort(),freePort()]);
-  const gui=await createGuiServer({port,appPort,mock:true,env:{...process.env,TREBELL_HOME:home}});const threadId="codex-goal-thread";let ws;
+  const gui=await createGuiServer({port,appPort,mock:true,env:{...process.env,TREBELL_HOME:home}});const threadId="codex-goal-thread";let ws,observer;const observerMessages=[];
   try{
     await fetch(gui.url+"/api/thread-meta",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId,patch:{runtime:"codex",runtimeInstanceId:"codex-default",environmentId:null,cwd:home}})});
-    ws=await connect(gui.url.replace(/^http/,"ws")+"/api/codex/ws");const rpc=request(ws);
+    ws=await connect(gui.url.replace(/^http/,"ws")+"/api/codex/ws");observer=await connect(gui.url.replace(/^http/,"ws")+"/api/codex/ws");observer.on("message",raw=>{const message=JSON.parse(String(raw));if(message.method&&message.id==null)observerMessages.push(message)});const rpc=request(ws);
     const set=await rpc("thread/goal/set",{threadId,objective:"Finish the Codex fixture",completionConditions:["Budget gate works"],constraints:["Do not forward exhausted work"],validationExpectations:["Trace the block"],tokenBudget:1000,timeBudgetMinutes:1,turnBudget:2,toolCallBudget:2,childAgentBudget:1,costBudgetUsd:10,unexpected:"ignored"});
     assert.equal(set.goal.objective,"Finish the Codex fixture");assert.equal(set.goal.timeBudgetMinutes,1);assert.equal(set.goal.turnBudget,2);assert.equal(set.goal.toolCallBudget,2);assert.equal(set.goal.childAgentBudget,1);assert.equal(set.goal.toolCallsUsed,0);assert.equal(set.goal.toolCallTelemetryComplete,true);assert.equal(set.goal.childAgentsUsed,0);assert.equal(set.goal.childAgentTelemetryComplete,true);assert.equal(set.goal.costBudgetUsd,10);assert.equal(set.goal.timeUsedSeconds,0);assert.equal(Object.prototype.hasOwnProperty.call(set.goal,"unexpected"),false);
+    for(let attempt=0;attempt<50&&!observerMessages.some(message=>message.method==="thread/goal/updated"&&message.params?.goal?.objective==="Finish the Codex fixture");attempt++)await new Promise(resolve=>setTimeout(resolve,10));
+    assert.ok(observerMessages.some(message=>message.method==="thread/goal/updated"&&message.params?.threadId===threadId&&message.params?.goal?.objective==="Finish the Codex fixture"));
     const startedAt=Date.now()-61_000;
     await fetch(gui.url+"/api/thread-meta",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId,patch:{goal:{...set.goal,createdAt:startedAt-1_000},codexToolCallCount:2,codexChildAgentCount:1,active:true,restartRecovery:{runtime:"codex",bootId:"fixture-boot",threadId,turnId:"turn-1",status:"active",startedAt}}})});
     const recovery=await fetch(gui.url+"/api/recovery",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId,action:"completed"})});assert.equal(recovery.status,200);
@@ -43,7 +45,9 @@ test("Codex relay owns durable goal RPCs and blocks exhausted direct or queued w
     const pausedStart=pausedTraces.items.find(item=>item.category==="client"&&item.name==="turn/start");
     assert.equal(pausedStart?.data?.additionalContextKeys?.includes("trebell.goal")||false,false,"paused goals must not steer new work");
     assert.equal((await rpc("thread/goal/clear",{threadId})).ok,true);assert.equal((await rpc("thread/goal/get",{threadId})).goal,null);
+    for(let attempt=0;attempt<50&&!observerMessages.some(message=>message.method==="thread/goal/updated"&&message.params?.goal===null);attempt++)await new Promise(resolve=>setTimeout(resolve,10));
+    assert.ok(observerMessages.some(message=>message.method==="thread/goal/updated"&&message.params?.threadId===threadId&&message.params?.goal===null));
   }finally{
-    try{ws?.close()}catch{}await gui.close();await rm(home,{recursive:true,force:true});
+    try{ws?.close()}catch{}try{observer?.close()}catch{}await gui.close();await rm(home,{recursive:true,force:true});
   }
 });
