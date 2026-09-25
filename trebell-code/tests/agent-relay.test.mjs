@@ -6,7 +6,13 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { WebSocket } from "ws";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
-import { acpPlanEvent,agentThreadResumePayload,agentToolLifecycle,attachAgentRelay,contextualAgentPrompt,materializeAgentFork,paginateAgentAttachments,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
+import { acpPlanEvent,agentPermissionTraceData,agentThreadResumePayload,agentToolLifecycle,attachAgentRelay,contextualAgentPrompt,materializeAgentFork,paginateAgentAttachments,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
+
+test("permission trace metadata excludes raw tool arguments",()=>{
+  const trace=agentPermissionTraceData({toolCall:{toolCallId:"tool-1",title:"Run deployment",kind:"execute",rawInput:{command:"do-not-persist"}},options:[{kind:"allow_once"},{kind:"allow_once"},{kind:"reject_once"}]});
+  assert.deepEqual(trace,{toolCallId:"tool-1",title:"Run deployment",kind:"execute",optionKinds:["allow_once","reject_once"]});
+  assert.equal(Object.prototype.hasOwnProperty.call(trace,"rawInput"),false);
+});
 
 test("ACP v1 plan updates map item, markdown, file and removal variants into Trebell plans",()=>{
   assert.deepEqual(acpPlanEvent({sessionUpdate:"plan_update",plan:{type:"items",planId:"p1",entries:[

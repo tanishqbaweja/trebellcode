@@ -416,6 +416,16 @@ function approvalOption(options,decision){
   return find("reject_once")||find("reject_always")||null;
 }
 
+export function agentPermissionTraceData({toolCall=null,options=[]}={}){
+  const kinds=[...new Set((Array.isArray(options)?options:[]).map(option=>String(option?.kind||"").trim()).filter(Boolean))].slice(0,20);
+  return {
+    toolCallId:toolCall?.toolCallId||toolCall?.id||null,
+    title:String(toolCall?.title||"Agent tool").slice(0,300),
+    kind:String(toolCall?.kind||"other").slice(0,80),
+    optionKinds:kinds,
+  };
+}
+
 export function restoreClaudeRejectedRewind(threadStore,threadId,error){
   const current=threadStore.get(threadId);if(!current)return null;
   const backup=current.providerMeta?.claudeRewindBackup;
@@ -826,7 +836,15 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
           const id=`agent-${nextServerId++}`;ws.send(JSON.stringify({id,method,params}));return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{pendingServer.delete(id);reject(new Error(`${method} user response timed out`))},5*60_000);pendingServer.set(id,{resolve,reject,timer})});
         },
         async permission(thread,{params,options}){
-          const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:params.toolCall?.title||"Agent requests permission",toolCall:params.toolCall,options});return result?.decision||"decline";
+          const current=threadStore.get(thread.id)||thread,turnId=current?.turns?.at(-1)?.id||null,traceData=agentPermissionTraceData({toolCall:params.toolCall,options});
+          const traceBase={runtime:current?.runtime||runtimeManager.activeRuntime(),provider:current?.providerMeta?.runtimeInstanceId||null,environmentId:current?.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null,threadId:thread.id,turnId,category:"policy"};
+          journal?.record?.({...traceBase,name:"permission.requested",status:"pending",data:traceData});
+          try{
+            const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:params.toolCall?.title||"Agent requests permission",toolCall:params.toolCall,options}),decision=result?.decision||"decline";
+            journal?.record?.({...traceBase,name:"permission.resolved",status:decision,data:{...traceData,decision}});return decision;
+          }catch(error){
+            journal?.record?.({...traceBase,name:"permission.resolved",status:"error",data:{...traceData,message:error?.message||String(error)}});throw error;
+          }
         },
         async userQuestion(thread,{input}){
           const questions=(input?.questions||[]).map((question,index)=>({
