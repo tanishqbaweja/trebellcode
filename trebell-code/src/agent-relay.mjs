@@ -510,7 +510,7 @@ function formQuestions(params){
   }));
 }
 
-export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,state,environments=null,contextEngine=null,repositoryKnowledge=null,nativeProviderTurn=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null,journal=null,prepareDelegationWorkspace=null,cleanupDelegationWorkspace=null}={}){
+export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,state,environments=null,contextEngine=null,repositoryKnowledge=null,nativeProviderTurn=null,nativeModelContextWindow=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null,journal=null,prepareDelegationWorkspace=null,cleanupDelegationWorkspace=null}={}){
   const wss=new WebSocketServer({noServer:true});
   const sessions=new Map();
   const socketContexts=new Set();
@@ -1149,6 +1149,11 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       if(runtime==="native"&&params.modelProvider&&typeof session.setProvider==="function")session.setProvider(params.modelProvider);
       if(runtime==="native"&&typeof session.setPermissionMode==="function")session.setPermissionMode((threadStore.get(thread.id)||thread)?.providerMeta?.permissionProfile||"supervised");
       if(params.model&&params.model!==thread.model){await session.setModel(params.model).catch(()=>{});threadStore.update(thread.id,{model:params.model})}
+      if(runtime==="native"&&typeof session.setContextWindow==="function"){
+        let contextWindow=null;
+        if(typeof nativeModelContextWindow==="function")try{contextWindow=await nativeModelContextWindow({provider:params.modelProvider||thread.providerMeta?.modelProvider||null,model:params.model||thread.model||null,thread:threadStore.get(thread.id)||thread})}catch(error){log("Native model context metadata unavailable: "+(error?.message||String(error)))}
+        session.setContextWindow(contextWindow);
+      }
       const turn=threadStore.addTurn(thread.id,{inputText:textOfInput(params.input),status:"inProgress"});session.__assistant="";
       session.__usage=null;
       emit("turn/started",{threadId:thread.id,turn});

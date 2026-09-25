@@ -30,6 +30,7 @@ import { RemoteAuthStore } from "./remote-auth-store.mjs";
 import { RemoteAccessSecretStore } from "./remote-access-secret-store.mjs";
 import { DeviceService } from "./device-service.mjs";
 import { ProviderManager, normalizeProviderId } from "./provider-manager.mjs";
+import { modelContextWindowFromMetadata, modelContextWindowKey } from "./model-context-window.mjs";
 import { normalizeChatTurnResponse, providerTurnToChat } from "./provider-turn.mjs";
 import { startProviderBridge } from "./provider-bridge.mjs";
 import { AgentRuntimeManager, normalizeAgentRuntime } from "./agent-runtime-manager.mjs";
@@ -488,6 +489,24 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   if(state.settings().agentRuntime!==selectedAgentRuntime) state.updateSettings({agentRuntime:selectedAgentRuntime,agentRuntimeInstanceId:`${selectedAgentRuntime}-default`});
   let selectedProvider=normalizeProviderId(state.settings().modelProvider);
   if(state.settings().modelProvider!==selectedProvider) state.updateSettings({modelProvider:selectedProvider});
+  const nativeModelContextWindows=new Map();
+  function rememberNativeModelContextWindows(catalog,{fallbackProvider=selectedProvider}={}){
+    for(const row of catalog?.metadata?.models||[]){
+      const size=modelContextWindowFromMetadata(row);if(!size)continue;
+      nativeModelContextWindows.set(modelContextWindowKey(row.provider||fallbackProvider,row.id),size);
+    }
+  }
+  async function resolveNativeModelContextWindow({provider,model}={}){
+    const providerId=normalizeProviderId(provider||selectedProvider),key=modelContextWindowKey(providerId,model);if(nativeModelContextWindows.has(key))return nativeModelContextWindows.get(key);
+    if(mock||!model)return null;
+    if(providerId==="freebuff"){
+      if(!isLoggedIn(env))return null;await ensureBridge();
+      const metadata=await listModelMetadata(DEFAULT_PORT);rememberNativeModelContextWindows({metadata:{models:metadata?.models||[]}}, {fallbackProvider:"freebuff"});
+    }else{
+      const result=await providers.models(providerId);rememberNativeModelContextWindows({metadata:{models:result.metadata||[]}}, {fallbackProvider:providerId});
+    }
+    return nativeModelContextWindows.get(key)||null;
+  }
   const safeLogText=value=>boundDiagnosticText(redactSecretText(value,{environment:env}));
   const providerBridgeLogs=[];
   const providerBridge=mock?null:await startProviderBridge({
@@ -1278,22 +1297,27 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       const metadataModels=[...(catalog.metadata?.models||[])];for(const item of custom){const index=metadataModels.findIndex(model=>model.id===item.id);const meta={id:item.id,name:item.name||item.id,provider:["native","codex"].includes(selectedAgentRuntime)?selectedProvider:selectedAgentRuntime,agent:selectedAgentRuntime,custom:true,effort:item.effort||null,serviceTier:item.serviceTier||null};if(index>=0)metadataModels[index]={...metadataModels[index],...meta};else metadataModels.push(meta)}
       return {...catalog,models,metadata:{...(catalog.metadata||{}),models:metadataModels}};
     };
+    const finish=catalog=>{
+      const merged=mergeCustom(catalog);
+      if(selectedAgentRuntime==="native")rememberNativeModelContextWindows(merged);
+      return merged;
+    };
     if(!["native","codex"].includes(selectedAgentRuntime)){
       const result=await agentRuntimes.models(agentRuntimes.activeInstance());
-      return mergeCustom({models:result.models||[],metadata:{provider:selectedAgentRuntime,agentRuntime:selectedAgentRuntime,source:result.source,models:result.metadata||[]},error:result.error||null});
+      return finish({models:result.models||[],metadata:{provider:selectedAgentRuntime,agentRuntime:selectedAgentRuntime,source:result.source,models:result.metadata||[]},error:result.error||null});
     }
-    if(mock) return mergeCustom({models:fakeModels(selectedProvider),metadata:{provider:selectedProvider,models:fakeModels(selectedProvider).map(id=>({id,provider:selectedProvider}))}});
+    if(mock) return finish({models:fakeModels(selectedProvider),metadata:{provider:selectedProvider,models:fakeModels(selectedProvider).map(id=>({id,provider:selectedProvider}))}});
     if(selectedProvider==="freebuff"){
-      if(!isLoggedIn(env)) return mergeCustom({models:[],metadata:{provider:"freebuff",models:[]}});
+      if(!isLoggedIn(env)) return finish({models:[],metadata:{provider:"freebuff",models:[]}});
       await ensureBridge();
       const [models,metadata]=await Promise.all([
         listModels(DEFAULT_PORT),
         listModelMetadata(DEFAULT_PORT).catch(()=>({registry:null,models:[]})),
       ]);
-      return mergeCustom({models:models.filter(id=>id.startsWith("freebuff/")),metadata:{...metadata,provider:"freebuff"}});
+      return finish({models:models.filter(id=>id.startsWith("freebuff/")),metadata:{...metadata,provider:"freebuff"}});
     }
     const result=await providers.models(selectedProvider);
-    return mergeCustom({models:result.models||[],metadata:{provider:selectedProvider,source:result.source,models:result.metadata||[]},error:result.error||null});
+    return finish({models:result.models||[],metadata:{provider:selectedProvider,source:result.source,models:result.metadata||[]},error:result.error||null});
   }
 
   function newRemoteToken(){ return randomBytes(24).toString("base64url"); }
@@ -2997,6 +3021,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     contextEngine,
     repositoryKnowledge,
     nativeProviderTurn,
+    nativeModelContextWindow:resolveNativeModelContextWindow,
     version:TREBELL_VERSION,
       log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"agent-relay",text:safeLogText(String(message)+"\n")}),
     onThreadDeleted:thread=>thread?.cwd?worktreeCleanup.sweep({reason:"thread-delete",path:thread.cwd}):null,

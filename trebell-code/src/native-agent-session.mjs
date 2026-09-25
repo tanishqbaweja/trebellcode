@@ -80,10 +80,10 @@ function contentItems(value){
 }
 
 export class NativeAgentSession{
-  constructor({cwd=process.cwd(),providerTurn,executeTool,provider=null,model=null,tools=[],permissionMode="supervised",onUpdate=()=>{},onEvent=null,onClose=null,initialMessages=[]}={}){
+  constructor({cwd=process.cwd(),providerTurn,executeTool,provider=null,model=null,contextWindow=null,tools=[],permissionMode="supervised",onUpdate=()=>{},onEvent=null,onClose=null,initialMessages=[]}={}){
     if(typeof providerTurn!=="function")throw new Error("NativeAgentSession requires providerTurn");
     if(typeof executeTool!=="function")throw new Error("NativeAgentSession requires executeTool");
-    this.cwd=cwd;this.providerTurn=providerTurn;this.executeTool=executeTool;this.provider=provider;this.model=model;this.tools=Array.isArray(tools)?tools:[];this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onEvent=onEvent;this.onClose=onClose;this.messages=[...(Array.isArray(initialMessages)?initialMessages:[])];this.sessionId=null;this.controller=null;this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.closed=false;
+    this.cwd=cwd;this.providerTurn=providerTurn;this.executeTool=executeTool;this.provider=provider;this.model=model;this.contextWindow=null;this.setContextWindow(contextWindow);this.tools=Array.isArray(tools)?tools:[];this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onEvent=onEvent;this.onClose=onClose;this.messages=[...(Array.isArray(initialMessages)?initialMessages:[])];this.sessionId=null;this.controller=null;this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.closed=false;
   }
   async start({providerSessionId=null,model=null}={}){
     if(this.closed)throw new Error("Native session is closed");
@@ -92,6 +92,7 @@ export class NativeAgentSession{
   }
   setProvider(provider){this.provider=provider?String(provider):null}
   async setModel(model){this.model=String(model||"")||null;return {model:this.model}}
+  setContextWindow(value){const number=Number(value);this.contextWindow=Number.isFinite(number)&&number>0?Math.trunc(number):null;return {contextWindow:this.contextWindow}}
   setPermissionMode(mode){this.permissionMode=String(mode||"supervised")||"supervised";return {permissionMode:this.permissionMode}}
   steer(prompt){
     if(this.closed)throw new Error("Native session is closed");
@@ -150,12 +151,12 @@ export class NativeAgentSession{
         },executeTool:wrappedExecutor,
       });
       this.messages=result.messages;if(result.text)this.onUpdate({update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:result.text}}});
-      this.onUpdate({update:{sessionUpdate:"usage_update",usage:{input_tokens:result.usage.inputTokens,output_tokens:result.usage.outputTokens,cache_read_input_tokens:result.usage.cachedInputTokens,cache_write_input_tokens:result.usage.cacheWriteInputTokens},used:result.usage.totalTokens,size:0}});
+      this.onUpdate({update:{sessionUpdate:"usage_update",usage:{input_tokens:result.usage.inputTokens,output_tokens:result.usage.outputTokens,cache_read_input_tokens:result.usage.cachedInputTokens,cache_write_input_tokens:result.usage.cacheWriteInputTokens},used:result.usage.totalTokens,size:this.contextWindow||0}});
       return {stopReason:"end_turn",messageId,providerMessageId:result.lastResponse?.id||null,raw:{usage:result.usage,modelTurns:result.modelTurns,toolCalls:result.toolCalls,provider:result.provider,model:result.model}};
     }catch(error){
       if(error?.nativeUsage){
         const usage=error.nativeUsage;
-        this.onUpdate({update:{sessionUpdate:"usage_update",usage:{input_tokens:usage.inputTokens,output_tokens:usage.outputTokens,cache_read_input_tokens:usage.cachedInputTokens,cache_write_input_tokens:usage.cacheWriteInputTokens},used:usage.totalTokens,size:0}});
+        this.onUpdate({update:{sessionUpdate:"usage_update",usage:{input_tokens:usage.inputTokens,output_tokens:usage.outputTokens,cache_read_input_tokens:usage.cachedInputTokens,cache_write_input_tokens:usage.cacheWriteInputTokens},used:usage.totalTokens,size:this.contextWindow||0}});
       }
       if(this.controller.signal.aborted||error?.name==="AbortError")return {stopReason:"cancelled",messageId,raw:{cancelled:true}};
       throw error;

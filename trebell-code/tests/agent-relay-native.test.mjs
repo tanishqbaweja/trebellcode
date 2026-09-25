@@ -40,7 +40,7 @@ test("Trebell Native relay executes repository tools and switches inference prov
   const root=await mkdtemp(join(tmpdir(),"trebell-native-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   await writeFile(join(repo,"session.js"),"export class SessionManager { refresh(){ return true; } }\n","utf8");
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
-  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env),providers=[];let modelTurns=0;
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env),providers=[],contextLookups=[];let modelTurns=0;
   const nativeProviderTurn=async request=>{
     providers.push(request.provider);modelTurns++;
     assert.equal(request.messages[0]?.role,"developer");assert.match(String(request.messages[0]?.content||""),/Use repository intelligence when useful/);
@@ -49,13 +49,14 @@ test("Trebell Native relay executes repository tools and switches inference prov
     return {id:"native-second-provider",provider:request.provider,model:request.model,text:"Still the same Trebell thread.",toolCalls:[],finishReason:"stop",usage:{inputTokens:6,outputTokens:4,totalTokens:10}};
   };
   const server=createServer((_req,res)=>{res.writeHead(404);res.end()});
-  const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,nativeModelContextWindow:({provider,model})=>{contextLookups.push([provider,model]);return provider==="agentrouter"?128000:64000},version:"test"});
   const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
   try{
     const started=await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,approvalPolicy:"never",sandbox:"read-only",dynamicTools:[],developerInstructions:"Use repository intelligence when useful."});
     const threadId=started.thread.id;assert.equal(started.thread.runtime,"native");assert.equal(started.thread.providerMeta.modelProvider,"agentrouter");assert.equal(started.thread.providerSessionId.startsWith("native_"),true);
     const first=await rpc.request("turn/start",{threadId,model:"model-a",modelProvider:"agentrouter",approvalPolicy:"never",sandboxPolicy:{type:"readOnly"},input:[{type:"text",text:"Find SessionManager"}]});
     await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===first.turn.id);
+    const firstTelemetry=await rpc.waitFor(message=>message.method==="thread/tokenUsage/updated"&&message.params?.turnId===first.turn.id);assert.equal(firstTelemetry.params.tokenUsage.modelContextWindow,128000);assert.equal(firstTelemetry.params.tokenUsage.last.inputTokens,12);
     const firstUsage=state.threadUsage(threadId);assert.equal(firstUsage.totalTokens,16);assert.equal(firstUsage.inputTokens,12);assert.equal(firstUsage.outputTokens,4);
     const firstUsageRecord=state.usage({days:1,limit:20}).records.find(record=>record.turnId===first.turn.id);assert.equal(firstUsageRecord.provider,"agentrouter");
     const afterFirst=(await rpc.request("thread/read",{threadId})).thread;assert.equal(afterFirst.id,threadId);assert.equal(afterFirst.turns.length,1);
@@ -63,8 +64,9 @@ test("Trebell Native relay executes repository tools and switches inference prov
 
     const second=await rpc.request("turn/start",{threadId,model:"model-b",modelProvider:"hcnsec",approvalPolicy:"never",sandboxPolicy:{type:"readOnly"},input:[{type:"text",text:"Continue on the same thread"}]});
     await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===second.turn.id);
+    const secondTelemetry=await rpc.waitFor(message=>message.method==="thread/tokenUsage/updated"&&message.params?.turnId===second.turn.id);assert.equal(secondTelemetry.params.tokenUsage.modelContextWindow,64000);assert.equal(secondTelemetry.params.tokenUsage.last.inputTokens,6);
     const afterSecond=(await rpc.request("thread/read",{threadId})).thread;assert.equal(afterSecond.id,threadId);assert.equal(afterSecond.turns.length,2);assert.equal(afterSecond.model,"model-b");assert.equal(afterSecond.providerMeta.modelProvider,"hcnsec");
-    assert.deepEqual(providers,["agentrouter","agentrouter","hcnsec"]);
+    assert.deepEqual(providers,["agentrouter","agentrouter","hcnsec"]);assert.deepEqual(contextLookups,[["agentrouter","model-a"],["hcnsec","model-b"]]);
   }finally{
     try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
   }

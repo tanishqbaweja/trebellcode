@@ -28,10 +28,10 @@ test("Trebell Native exposes real thread-owned background processes in Runtime",
   let calls=0;
   const nativeProviderTurn=async request=>{
     calls++;
-    if(calls===1)return{id:"background-ui-tool",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"background-ui-call",namespace:"trebell_terminal",name:"start_background",arguments:JSON.stringify({command:process.execPath,args:["-e","process.stdout.write('READY');setInterval(()=>{},1000)"],cwd:"."})}],finishReason:"tool_calls",usage:{}};
-    return{id:"background-ui-answer",provider:request.provider,model:request.model,text:"Background server started.",toolCalls:[],finishReason:"stop",usage:{}};
+    if(calls===1)return{id:"background-ui-tool",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"background-ui-call",namespace:"trebell_terminal",name:"start_background",arguments:JSON.stringify({command:process.execPath,args:["-e","process.stdout.write('READY');setInterval(()=>{},1000)"],cwd:"."})}],finishReason:"tool_calls",usage:{inputTokens:30_000,outputTokens:1_000,totalTokens:31_000}};
+    return{id:"background-ui-answer",provider:request.provider,model:request.model,text:"Background server started.",toolCalls:[],finishReason:"stop",usage:{inputTokens:40_000,outputTokens:1_000,totalTokens:41_000}};
   };
-  const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"visual-fixture"});
+  const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,nativeModelContextWindow:()=>100_000,version:"visual-fixture"});
   const relayPort=await freePort();await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
   const project={id:"native-background-project",name:"Native Background Project",path:repo,environmentId:null,effectiveSettings:{}};let uiMeta={projectless:false,environmentId:null,cwd:repo,runtime:"native",runtimeInstanceId:"native-default"};
   try{
@@ -52,6 +52,7 @@ test("Trebell Native exposes real thread-owned background processes in Runtime",
     const composer=page.getByTestId("composer");await composer.fill("Start a background server");await page.getByTestId("send").click();await expect(page.getByText("Background server started.",{exact:true})).toBeVisible({timeout:10_000});
     await composer.fill("/p");await expect(page.locator(".slash-menu")).toContainText("Show agent background processes");await composer.fill("/s");await expect(page.locator(".slash-menu")).toContainText("Stop agent background processes");await composer.fill("");
     await page.getByTestId("right-panel-toggle").click();const panel=page.getByTestId("right-panel");await panel.getByRole("button",{name:"Runtime",exact:true}).click();
+    await expect(panel.locator(".runtime-grid")).toContainText("Context 70%",{timeout:10_000});
     const background=panel.getByTestId("agent-background-terminals");await expect(background).toBeVisible();await expect(background).toContainText("Agent background processes");await expect(background).toContainText(process.execPath.split(/[\\/]/).pop(),{timeout:10_000});
     const capability=panel.getByTestId("runtime-capabilities").locator(".runtime-capability-grid>div").filter({hasText:"Background processes"});await expect(capability).toContainText("available");
     const language=panel.getByTestId("runtime-capabilities").locator(".runtime-capability-grid>div").filter({hasText:"Language intelligence"});await expect(language).toContainText("available");
