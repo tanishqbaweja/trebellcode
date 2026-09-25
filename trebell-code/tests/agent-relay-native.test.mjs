@@ -118,6 +118,30 @@ test("Trebell Native exposes configured MCP tools directly to the model loop",as
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
 });
 
+test("Trebell Native reloads changed MCP settings on the next turn of the same thread",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-mcp-reload-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const serverConfig=value=>[{id:"reload-native",name:"Reload Native MCP",runtime:"native",enabled:true,type:"stdio",command:process.execPath,args:[nativeMcpFixture],env:[{name:"FIXTURE_VISIBLE",value}]}];
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null,mcpServers:serverConfig("before")});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let call=0,namespaceName=null;
+  const nativeProviderTurn=async request=>{
+    call++;const namespace=(request.tools||[]).find(item=>item.name?.startsWith("mcp_"));assert.ok(namespace);namespaceName=namespace.name;
+    if(call===1||call===3)return{id:`reload-call-${call}`,provider:request.provider,model:request.model,text:"",toolCalls:[{id:`reload-tool-${call}`,namespace:namespace.name,name:"echo-read",arguments:JSON.stringify({text:call===1?"first":"second"})}],finishReason:"tool_calls",usage:{}};
+    const observation=String(request.messages.at(-1)?.content||"");
+    if(call===2){assert.match(observation,/echo:first:env=before/);return{id:"reload-done-before",provider:request.provider,model:request.model,text:"First MCP config used.",toolCalls:[],finishReason:"stop",usage:{}}}
+    assert.equal(call,4);assert.match(observation,/echo:second:env=after/);return{id:"reload-done-after",provider:request.provider,model:request.model,text:"Reloaded MCP config used.",toolCalls:[],finishReason:"stop",usage:{}};
+  };
+  const events=[],journal={record:event=>events.push(event),recordProtocol:()=>{}};
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test",journal});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
+  try{
+    const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"read-only",dynamicTools:[]})).thread;
+    const first=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"read-only",input:[{type:"text",text:"Use MCP before reload"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===first.id);
+    state.updateSettings({mcpServers:serverConfig("after")});
+    const second=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"read-only",input:[{type:"text",text:"Use MCP after reload"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===second.id);
+    assert.equal(call,4);assert.ok(events.some(event=>event.name==="native.mcp.reloaded"&&event.threadId===thread.id));const persisted=threadStore.get(thread.id);assert.equal(persisted.id,thread.id);assert.deepEqual(persisted.providerMeta.nativeMcp.namespaces,[namespaceName]);assert.equal(persisted.turns.length,2);
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
 test("Trebell Native enforces the remaining goal tool budget inside an active turn",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-budget-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});

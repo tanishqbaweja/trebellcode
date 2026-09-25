@@ -174,23 +174,28 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     return next;
   }
   function mcpArgs(value){return String(value||"").split(/\r?\n/).map(item=>item.trim()).filter(Boolean).slice(0,64)}
+  function mcpSavedMessage(action="updated"){
+    return selectedAgent==="native"
+      ?`MCP server ${action}. Trebell Native threads reload MCP tools before their next turn.`
+      :`MCP server ${action}. New or resumed sessions will receive the change.`;
+  }
   async function addMcpServer(){
     if(!mcpDraft?.name?.trim()||!mcpDraft?.command?.trim())return;
     const environmentId=settings.activeEnvironmentId||null;
     const entry={id:`mcp-${crypto.randomUUID()}`,name:mcpDraft.name.trim(),runtime:selectedAgent,environmentId,enabled:true,type:"stdio",command:mcpDraft.command.trim(),args:mcpArgs(mcpDraft.argsText),env:[]};
     try{
       await save({mcpServers:[...(settings.mcpServers||[]),entry]});
-      setMcpDraft(null);setMcpMessage("MCP server saved. New or resumed sessions will receive it.");
+      setMcpDraft(null);setMcpMessage(mcpSavedMessage("saved"));
     }catch(error){setMcpMessage(error?.message||String(error))}
   }
   async function toggleMcpServer(server){
     setMcpMessage("");
-    try{await save({mcpServers:(settings.mcpServers||[]).map(item=>item.id===server.id?{...item,enabled:item.enabled===false}:item)})}
+    try{await save({mcpServers:(settings.mcpServers||[]).map(item=>item.id===server.id?{...item,enabled:item.enabled===false}:item)});setMcpMessage(mcpSavedMessage(server.enabled===false?"enabled":"disabled"))}
     catch(error){setMcpMessage(error?.message||String(error))}
   }
   async function removeMcpServer(server){
     setMcpMessage("");
-    try{await save({mcpServers:(settings.mcpServers||[]).filter(item=>item.id!==server.id)});setMcpDraft(current=>current?.id===server.id?null:current)}
+    try{await save({mcpServers:(settings.mcpServers||[]).filter(item=>item.id!==server.id)});setMcpDraft(current=>current?.id===server.id?null:current);setMcpMessage(mcpSavedMessage("removed"))}
     catch(error){setMcpMessage(error?.message||String(error))}
   }
   async function setBackgroundMode(enabled){

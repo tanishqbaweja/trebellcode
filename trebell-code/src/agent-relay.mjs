@@ -575,6 +575,14 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
 
   async function ensureSession(thread,context,{permissionMode=null,model=null}={}){
     let session=sessions.get(thread.id);
+    if(session instanceof NativeAgentSession){
+      const environmentId=thread.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null;
+      const currentServers=nativeMcpServersForSession(state?.settings?.().mcpServers||[],{environmentId}),currentFingerprint=JSON.stringify(currentServers);
+      if(session.__trebellMcpFingerprint!==currentFingerprint&&!session.turnActive){
+        await session.close().catch(()=>{});sessions.delete(thread.id);session=null;
+        journal?.record?.({runtime:"native",provider:thread.providerMeta?.modelProvider||null,environmentId,threadId:thread.id,category:"mcp",name:"native.mcp.reloaded",status:"completed",data:{serverCount:currentServers.length}});
+      }
+    }
     if(session)return session;
     const effectivePermissionMode=normalizePermissionMode(permissionMode||thread.providerMeta?.permissionProfile||"supervised");
     const instances=runtimeManager.instances();
@@ -657,6 +665,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
           journal?.record?.({runtime:"native",provider:providerId,environmentId:current?.providerMeta?.environmentId??null,threadId:thread.id,category,name:event.name,status:event.status,data:event.data||{}});
         },
       });
+      runtime.__trebellMcpFingerprint=JSON.stringify(mcpServers);
       const started=await runtime.start({providerSessionId:thread.providerSessionId||null,model:model||thread.model||null});
       const discoveredMeta=threadStore.get(thread.id)?.providerMeta||{};
       threadStore.update(thread.id,{providerSessionId:started.session.sessionId,providerMeta:{...discoveredMeta,initialize:started.initialize,setup:started.session,nativeMcp:{namespaces:mcpTools.map(item=>item.name),failures:mcpBroker.failures()}},model:model||started.session.models?.currentModelId||thread.model||null});
