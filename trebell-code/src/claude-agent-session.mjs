@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { deleteSession, forkSession, getSessionInfo, getSessionMessages, query, renameSession } from "@anthropic-ai/claude-agent-sdk";
+import { permissionDisposition } from "./permission-policy.mjs";
 
 const MODEL_ALIASES=["sonnet","opus","haiku"];
 
@@ -78,9 +79,9 @@ export class ClaudeAgentSession{
         const answer=await this.onQuestion({toolName,input,options});
         if(answer&&typeof answer==="object")return {behavior:"allow",updatedInput:{...input,answers:answer},toolUseID:options.toolUseID};
       }
-      if(this.permissionMode==="full"||this.permissionMode==="auto")return {behavior:"allow",updatedInput:input,toolUseID:options.toolUseID};
-      if(this.permissionMode==="edits"&&editTool(toolName))return {behavior:"allow",updatedInput:input,toolUseID:options.toolUseID};
-      if(this.permissionMode==="read-only")return readOnlyTool(toolName)?{behavior:"allow",updatedInput:input,toolUseID:options.toolUseID}:{behavior:"deny",message:"Trebell read-only mode denied this tool.",toolUseID:options.toolUseID};
+      const policyKind=editTool(toolName)?"edit":readOnlyTool(toolName)?"read":toolKind(toolName),disposition=permissionDisposition(this.permissionMode,policyKind);
+      if(disposition==="allow")return {behavior:"allow",updatedInput:input,toolUseID:options.toolUseID};
+      if(disposition==="deny")return {behavior:"deny",message:"Trebell read-only mode denied this tool.",toolUseID:options.toolUseID};
       const choices=[
         {optionId:"allow_once",name:"Allow once",kind:"allow_once"},
         ...((options.suggestions||[]).length?[{optionId:"allow_always",name:"Always allow",kind:"allow_always"}]:[]),

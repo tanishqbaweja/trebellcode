@@ -51,6 +51,26 @@ test("Claude MCP servers are forwarded to every SDK query",async()=>{
   assert.deepEqual(calls.at(-1).options.mcpServers,mcpServers);
 });
 
+test("Claude permission modes use Trebell shared policy without weakening edit or read-only boundaries",async()=>{
+  const calls=[];let approvalCalls=0;
+  const sdk={query:fakeQueryCapture(calls),getSessionInfo:async()=>({}),renameSession:async()=>{},getSessionMessages:async()=>[],deleteSession:async()=>{}};
+  const edits=new ClaudeAgentSession({cwd:"/repo",sdk,permissionMode:"edits",onPermission:async()=>{approvalCalls++;return "decline"}});
+  await edits.start();await edits.prompt([{type:"text",text:"edit safely"}]);
+  const editsCanUse=calls.at(-1).options.canUseTool,toolOptions={toolUseID:"tool-permission",suggestions:[]};
+  assert.equal((await editsCanUse("Edit",{file_path:"a.js"},toolOptions)).behavior,"allow");
+  assert.equal(approvalCalls,0);
+  assert.equal((await editsCanUse("Bash",{command:"echo hi"},toolOptions)).behavior,"deny");
+  assert.equal(approvalCalls,1);
+
+  const readOnly=new ClaudeAgentSession({cwd:"/repo",sdk,permissionMode:"read-only",onPermission:async()=>{approvalCalls++;return "accept"}});
+  await readOnly.start();await readOnly.prompt([{type:"text",text:"inspect safely"}]);
+  const readOnlyCanUse=calls.at(-1).options.canUseTool;
+  assert.equal((await readOnlyCanUse("Read",{file_path:"a.js"},toolOptions)).behavior,"allow");
+  assert.equal((await readOnlyCanUse("WebFetch",{url:"https://example.test"},toolOptions)).behavior,"allow");
+  assert.equal((await readOnlyCanUse("Write",{file_path:"a.js"},toolOptions)).behavior,"deny");
+  assert.equal(approvalCalls,1,"read-only denials must not be overridable through approval prompts");
+});
+
 test("Claude preserves live SDK-hosted MCP server instances",async()=>{
   const calls=[],contextEngine={searchSymbols:async()=>({data:[]}),fileRelations:async()=>({})};
   const sdk={query:fakeQueryCapture(calls),getSessionInfo:async()=>({}),renameSession:async()=>{},getSessionMessages:async()=>[],deleteSession:async()=>{}};

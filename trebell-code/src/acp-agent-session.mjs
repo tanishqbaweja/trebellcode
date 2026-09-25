@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve, relative, isAbsolute, posix } from "node:path";
 import { AcpClient } from "./acp-client.mjs";
+import { normalizePermissionKind, permissionDisposition } from "./permission-policy.mjs";
 
 function inside(root,candidate){
   const rel=relative(resolve(root),resolve(candidate));
@@ -13,18 +14,11 @@ function boundedPath(root,path){
   return candidate;
 }
 
-function normalizedPermissionKind(value){
-  const kind=String(value||"").trim().toLowerCase();
-  if(["edit","write","file_write","file-write","workspace_write","workspace-write"].includes(kind))return "edit";
-  if(["read","execute","fetch","network","other"].includes(kind))return kind;
-  return null;
-}
-
 export function acpPermissionChoice(options=[],mode="supervised",kind=null){
   const find=kind=>options.find(option=>option.kind===kind)?.optionId;
-  if(mode==="full"||mode==="auto")return find("allow_always")||find("allow_once")||options[0]?.optionId||null;
-  if(mode==="edits"&&normalizedPermissionKind(kind)==="edit")return find("allow_once")||find("allow_always")||null;
-  if(mode==="read-only")return find("reject_always")||find("reject_once")||options.at(-1)?.optionId||null;
+  const disposition=permissionDisposition(mode,normalizePermissionKind(kind),{readOnlyAllowsRead:false});
+  if(disposition==="allow")return mode==="edits"?find("allow_once")||find("allow_always")||null:find("allow_always")||find("allow_once")||options[0]?.optionId||null;
+  if(disposition==="deny")return find("reject_always")||find("reject_once")||options.at(-1)?.optionId||null;
   return null;
 }
 function decisionChoice(options=[],decision="decline"){
