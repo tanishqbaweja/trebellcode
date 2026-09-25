@@ -2179,7 +2179,9 @@ export default function App(){
     const previousThreadId=activeThreadRef.current?.id;
     const reopeningCurrentThread=previousThreadId===thread.id;
     const threadEnvironmentId=thread.providerMeta?.environmentId||null;
-    const savedMeta=threadMeta[thread.id]||{};const projectless=Boolean(savedMeta.projectless);const useNativeQueue=Boolean(runtimeCapabilities.nativeQueue&&projectless);
+    const savedMeta=threadMeta[thread.id]||{};
+    const projectless=Object.prototype.hasOwnProperty.call(savedMeta,"projectless")?Boolean(savedMeta.projectless):Boolean(thread.providerMeta?.projectless);
+    const useNativeQueue=Boolean(runtimeCapabilities.nativeQueue&&projectless);
     const savedContextTask=savedMeta.trebellContext?.continuityTask||savedMeta.trebellContext?.userTask||savedMeta.trebellContext?.task||"";if(savedContextTask)contextTaskRef.current.set(thread.id,savedContextTask);
     const restoredLocalQueue=useNativeQueue?[]:hydratePersistedQueue(savedMeta.trebellQueue||[]);
     if(thread.cwd&&!threadEnvironmentId&&!projectless)await api("/api/worktree/ensure",{method:"POST",body:{path:thread.cwd,environmentId:null}}).catch(error=>{throw new Error("Could not restore this managed worktree: "+error.message)});

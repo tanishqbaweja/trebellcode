@@ -7,8 +7,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { attachAgentRelay } from "../../src/agent-relay.mjs";
+import { AgentRuntimeManager } from "../../src/agent-runtime-manager.mjs";
 import { attachCodexRelay } from "../../src/codex-relay.mjs";
 import { AgentThreadStore } from "../../src/agent-thread-store.mjs";
+import { ContextEngine } from "../../src/context-engine.mjs";
+import { TrebellStateStore } from "../../src/trebell-state.mjs";
 
 const auditDir=fileURLToPath(new URL("../../visual-audit/",import.meta.url));
 mkdirSync(auditDir,{recursive:true});
@@ -2702,6 +2705,57 @@ test("Trebell Native is a built-in provider-backed runtime in Settings",async({p
   await expect(followupSelect).toHaveValue("steer");
   metrics=await page.locator(".settings-stage").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   await page.screenshot({path:auditDir+"settings-native-steering-1280x800.png",fullPage:true});
+});
+
+test("Trebell Native fork and rewind stay usable and visually honest",async({page})=>{
+  test.setTimeout(45_000);
+  const home=await mkdtemp(join(tmpdir(),"trebell-native-fork-visual-"));
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);
+  state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);
+  const thread=threadStore.create({
+    runtime:"native",cwd:process.cwd(),providerSessionId:"native-visual-source",model:"gpt-5.6",name:"Native fork fixture",preview:"Fork and rewind fixture",
+    providerMeta:{runtimeInstanceId:"native-default",modelProvider:"agentrouter",permissionProfile:"supervised",projectless:true,environmentId:null},
+  });
+  const turn=threadStore.addTurn(thread.id,{inputText:"Keep parser behavior"});
+  threadStore.addItem(thread.id,turn.id,{id:"native-visual-answer",type:"agentMessage",text:"Parser behavior is preserved."});
+  threadStore.finishTurn(thread.id,turn.id);
+  const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});
+  const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn:async request=>({id:"native-visual-provider",provider:request.provider,model:request.model,text:"Visual fixture response",toolCalls:[],finishReason:"stop",usage:{}}),version:"visual-fixture"});
+  const relayPort=await freePort();await new Promise((resolve,reject)=>relayServer.listen(relayPort,"127.0.0.1",resolve).once("error",reject));
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+      mock:false,loggedIn:true,provider:"agentrouter",providerReady:true,agentRuntime:"native",agentRuntimeReady:true,
+      wsUrl:`ws://127.0.0.1:${relayPort}/api/agent/ws`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null,
+    })}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+      settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},
+      projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}},
+    })}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["gpt-5.6"],metadata:{provider:"agentrouter",models:[{id:"gpt-5.6",name:"GPT-5.6",provider:"agentrouter",agent:"Trebell Native"}]}})}));
+    await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const sourceRow=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Native fork fixture"]')});
+    await expect(sourceRow).toBeVisible({timeout:10_000});await sourceRow.hover();await sourceRow.locator(".thread-menu summary").click();
+    const forkButton=sourceRow.getByRole("button",{name:"Fork thread",exact:true});await expect(forkButton).toBeVisible();
+    await page.screenshot({path:auditDir+"native-thread-fork-menu-1600x980.png",fullPage:true});
+    await forkButton.click();
+    await expect(sourceRow.locator("details")).toHaveJSProperty("open",false);
+    const forkRow=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Native fork fixture (fork)"]')});
+    await expect(forkRow).toBeVisible({timeout:10_000});
+    await expect(page.getByText("Keep parser behavior",{exact:true})).toBeVisible({timeout:10_000});
+    const editFromHere=page.getByRole("button",{name:"Edit from here",exact:true});await expect(editFromHere).toBeVisible();
+    await page.screenshot({path:auditDir+"native-forked-thread-rewind-1600x980.png",fullPage:true});
+    await editFromHere.click();
+    await expect(page.getByTestId("composer")).toHaveValue("Keep parser behavior");await expect(page.locator(".user-row")).toHaveCount(0);
+    const forked=threadStore.list("native").find(item=>item.forkedFromId===thread.id);expect(forked).toBeTruthy();expect(forked.turns).toHaveLength(0);
+    await page.setViewportSize({width:1280,height:800});const workspace=page.locator(".workspace-shell");const metrics=await workspace.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"native-rewound-thread-1280x800.png",fullPage:true});
+  }finally{
+    await relay.close();await new Promise(resolve=>relayServer.close(()=>resolve()));await rm(home,{recursive:true,force:true});
+  }
 });
 
 test("major workspace surfaces render their real destinations without horizontal overflow",async({page,request})=>{
