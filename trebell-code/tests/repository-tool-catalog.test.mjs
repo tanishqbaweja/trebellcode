@@ -4,6 +4,7 @@ import {
   REPOSITORY_TOOL_ANNOTATIONS,
   REPOSITORY_TOOL_DEFINITIONS,
   invokeRepositoryTool,
+  parseRepositoryToolArguments,
   repositoryDynamicToolNamespace,
   repositoryToolHandlers,
 } from "../src/repository-tool-catalog.mjs";
@@ -37,6 +38,13 @@ test("catalog definitions invoke the shared Context Engine handler instead of ad
 
 test("repository tool invocation fails closed when a definition has no handler",()=>{
   assert.throws(()=>invokeRepositoryTool({}, {name:"missing",handler:"missing"},{}),/handler is unavailable/i);
+});
+
+test("repository tool arguments are parsed from the shared Zod shape before invocation",()=>{
+  const definition=REPOSITORY_TOOL_DEFINITIONS.find(item=>item.name==="search_symbols");
+  assert.deepEqual(parseRepositoryToolArguments(definition,{query:"Session",limit:5}),{query:"Session",limit:5});
+  assert.throws(()=>parseRepositoryToolArguments(definition,{limit:5}),/query/i);
+  assert.throws(()=>parseRepositoryToolArguments(definition,{query:"Session",limit:1000}),/too big|less than or equal|100/i);
 });
 
 test("repository tool catalog serializes into one Codex dynamic-tool namespace",()=>{

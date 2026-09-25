@@ -81,6 +81,11 @@ export function repositoryDynamicToolNamespace(){
   }];
 }
 
+export function parseRepositoryToolArguments(definition,args={}){
+  if(!definition?.inputSchema||typeof definition.inputSchema!=="object")throw new Error(`Repository tool schema is unavailable: ${definition?.name||"unknown"}`);
+  return z.object(definition.inputSchema).parse(args||{});
+}
+
 export function invokeRepositoryTool(handlers,definition,args={}){
   const handler=handlers?.[definition?.handler];
   if(typeof handler!=="function")throw new Error(`Repository tool handler is unavailable: ${definition?.name||"unknown"}`);

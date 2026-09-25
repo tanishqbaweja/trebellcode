@@ -46,7 +46,7 @@ import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
 import { ContextEngine, createRemoteContextIo } from "./context-engine.mjs";
 import { RepositoryKnowledgeService } from "./repository-knowledge-service.mjs";
-import { REPOSITORY_TOOL_DEFINITIONS, invokeRepositoryTool, repositoryDynamicToolNamespace, repositoryToolHandlers } from "./repository-tool-catalog.mjs";
+import { REPOSITORY_TOOL_DEFINITIONS, invokeRepositoryTool, parseRepositoryToolArguments, repositoryDynamicToolNamespace, repositoryToolHandlers } from "./repository-tool-catalog.mjs";
 import { EventJournal } from "./event-journal.mjs";
 import { enrichGoal, goalAdditionalContext, goalBudgetGate, normalizeGoal } from "./goal-state.mjs";
 import { recordCodexBudgetEvidence, recordCodexChildAgentEvidence } from "./codex-budget-evidence.mjs";
@@ -1120,7 +1120,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     const handlers=repositoryToolHandlers({contextEngine,root,io,knowledgeService:repositoryKnowledge,environmentId});
     const traceBase={runtime:"codex",provider:selectedProvider,environmentId,threadId:threadId||null,turnId:params.turnId||null,category:"tool"};
     try{
-      const args=definition.inputSchema.parse(params.arguments||{});
+      const args=parseRepositoryToolArguments(definition,params.arguments||{});
       const result=await invokeRepositoryTool(handlers,definition,args);
       eventJournal.record({...traceBase,name:"repository_tool.completed",status:"completed",data:{tool:definition.name}});
       return {handled:true,result:{contentItems:[{type:"inputText",text:JSON.stringify(result)}],success:true}};
