@@ -13,10 +13,17 @@ function boundedPath(root,path){
   return candidate;
 }
 
-function permissionChoice(options=[],mode="supervised"){
+function normalizedPermissionKind(value){
+  const kind=String(value||"").trim().toLowerCase();
+  if(["edit","write","file_write","file-write","workspace_write","workspace-write"].includes(kind))return "edit";
+  if(["read","execute","fetch","network","other"].includes(kind))return kind;
+  return null;
+}
+
+export function acpPermissionChoice(options=[],mode="supervised",kind=null){
   const find=kind=>options.find(option=>option.kind===kind)?.optionId;
   if(mode==="full"||mode==="auto")return find("allow_always")||find("allow_once")||options[0]?.optionId||null;
-  if(mode==="edits")return find("allow_once")||find("allow_always")||options[0]?.optionId||null;
+  if(mode==="edits"&&normalizedPermissionKind(kind)==="edit")return find("allow_once")||find("allow_always")||null;
   if(mode==="read-only")return find("reject_always")||find("reject_once")||options.at(-1)?.optionId||null;
   return null;
 }
@@ -94,7 +101,7 @@ export class AcpAgentSession{
     }
     if(method==="fs/write_text_file"){
       const options=[{kind:"allow_once",optionId:"allow",name:"Allow"},{kind:"reject_once",optionId:"reject",name:"Reject"}];
-      const selected=permissionChoice(options,this.permissionMode)||decisionChoice(options,await this.onPermission?.({method,params,options}));
+      const selected=acpPermissionChoice(options,this.permissionMode,"edit")||decisionChoice(options,await this.onPermission?.({method,params,options}));
       if(selected!=="allow")throw Object.assign(new Error("File write was denied"),{code:-32000});
       if(this.remoteIo){await this.remoteIo.writeText(params.path,String(params.content??""));return {}}
       const path=boundedPath(this.cwd,params.path);
@@ -102,7 +109,7 @@ export class AcpAgentSession{
       return {};
     }
     if(method==="session/request_permission"){
-      const options=params.options||[];const automatic=permissionChoice(options,this.permissionMode);
+      const options=params.options||[],kind=params?.toolCall?.kind??params?.kind??null,automatic=acpPermissionChoice(options,this.permissionMode,kind);
       const optionId=automatic||decisionChoice(options,await this.onPermission?.({method,params,options}));
       return optionId?{outcome:{outcome:"selected",optionId}}:{outcome:{outcome:"cancelled"}};
     }
