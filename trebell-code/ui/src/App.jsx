@@ -353,7 +353,7 @@ const SLASH_COMMANDS=[
   ["/clear","Reset the current draft/thread view"],
 ];
 
-function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,submitting=false,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",runtimeCapabilities={},login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,onFileMentionSearch,onFileMentionAttach,permissionMode,setPermissionMode,collaborationModes=[],collaborationMode="default",onCollaborationMode,collaborationModeBusy=false,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,gitAvailable=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onModelPickerOpenChange}){
+const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,submitting=false,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",runtimeCapabilities={},login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,onFileMentionSearch,onFileMentionAttach,permissionMode,setPermissionMode,collaborationModes=[],collaborationMode="default",onCollaborationMode,collaborationModeBusy=false,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,gitAvailable=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onModelPickerOpenChange}){
   const [modelOpen,setModelOpen]=useState(false);
   const [listening,setListening]=useState(false);
   const [caret,setCaret]=useState(0);
@@ -502,7 +502,7 @@ function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgr
     </div></div>
     <div className={"composer-status"+(modelError||promptTooLong?" error":"")}><span>{promptTooLong?`Draft is ${prompt.length.toLocaleString()} characters · maximum ${MAX_COMPOSER_CHARS.toLocaleString()}`:modelError||<>{tokenLabel(tokenUsage,priceConfig)}{canCompact&&!running&&<button className="context-compact-btn" type="button" onClick={onCompact} title="Compact conversation context">Compact</button>}</>}</span><span>{prompt.length.toLocaleString()}/{MAX_COMPOSER_CHARS.toLocaleString()} · {canBackground?"Ctrl/Cmd+Enter background · ":""}{settings.followUpMode==="steer"?"Steer":"Queue"} follow-ups</span></div>
   </div>;
-}
+});
 
 export default function App(){
   const [bootstrap,setBootstrap]=useState({mock:false,loggedIn:false,wsUrl:null,cwd:"",platform:""});
@@ -783,9 +783,9 @@ export default function App(){
   },[]);
 
   const agentRuntime=settings.agentRuntime||bootstrap.agentRuntime||"codex";
-  const runtimeCapabilities=bootstrap.agentRuntime===agentRuntime&&bootstrap.runtimeCapabilities
+  const runtimeCapabilities=useMemo(()=>bootstrap.agentRuntime===agentRuntime&&bootstrap.runtimeCapabilities
     ?bootstrap.runtimeCapabilities
-    :fallbackRuntimeCapabilities(agentRuntime);
+    :fallbackRuntimeCapabilities(agentRuntime),[bootstrap.agentRuntime,bootstrap.runtimeCapabilities,agentRuntime]);
   const provider=settings.modelProvider||bootstrap.provider||"freebuff";
   useEffect(()=>{
     const next=agentRuntime+"\0"+provider;
@@ -2995,6 +2995,24 @@ export default function App(){
   const conversationEditFromHere=useLatestCallback(editFromHere);
   const conversationLoadEarlier=useLatestCallback(loadEarlierMessages);
   const conversationCite=useLatestCallback((message,text)=>runUserAction(()=>citeAssistant(message,text),"Could not cite assistant text"));
+  const composerPromptEdit=useLatestCallback(()=>setPromptHistoryIndex(-1));
+  const composerSend=useLatestCallback(send);
+  const composerBackgroundSend=useLatestCallback(sendInBackground);
+  const composerLogin=useLatestCallback(login);
+  const composerConfigureProvider=useLatestCallback(()=>setSection("settings"));
+  const composerSetModel=useLatestCallback(changeComposerModel);
+  const composerRemoveAttachment=useLatestCallback(path=>setAttachments(prev=>prev.filter(x=>x!==path)));
+  const composerRemoveContext=useLatestCallback(removeContext);
+  const composerPickFiles=useLatestCallback(()=>runUserAction(pickFiles,"Could not attach files"));
+  const composerCaptureScreen=useLatestCallback(()=>runUserAction(captureDesktop,"Could not capture screen"));
+  const composerPaste=useLatestCallback(onPaste);
+  const composerDrop=useLatestCallback(onDrop);
+  const composerFileMentionSearch=useLatestCallback(searchComposerFiles);
+  const composerFileMentionAttach=useLatestCallback(item=>runUserAction(()=>attachComposerFileMention(item),"Could not attach file mention"));
+  const composerCollaborationMode=useLatestCallback(changeCollaborationMode);
+  const composerProviderAgent=useLatestCallback(changeProviderAgent);
+  const composerCompact=useLatestCallback(compactContext);
+  const composerRuntimeProfile=useLatestCallback(switchThreadRuntimeProfile);
   const activityOpenPanel=useLatestCallback(name=>name==="workspace"?openRightPanel("diff"):setPanel(name));
   const sidebarNavigate=useLatestCallback(navigateSection);
   const sidebarOpenThread=useLatestCallback(openThread);
@@ -3158,7 +3176,7 @@ export default function App(){
           </div>
 
           {currentProject?.cloneJob&&currentProject.cloneJob.status!=="completed"&&<div className={"clone-banner "+currentProject.cloneJob.status} data-testid="clone-banner"><div><strong>{currentProject.cloneJob.phase||"Cloning repository"}</strong><span>{currentProject.cloneJob.status==="failed"?(currentProject.cloneJob.error||"Clone failed"):currentProject.cloneJob.status==="cancelled"?"Clone cancelled":"You can keep writing. Send waits until the repository is ready."}</span>{cloneRefreshError&&<span className="clone-refresh-error" role="alert">{cloneRefreshError}</span>}</div>{["running","cancelling"].includes(currentProject.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(currentProject.cloneJob.progress)||0)+"%"}}/></i>}<em>{Math.round(currentProject.cloneJob.progress||0)}%</em>{currentProject.cloneJob.status==="running"&&<button onClick={()=>runUserAction(()=>cloneProjectAction("cancel"),"Could not cancel clone")}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(currentProject.cloneJob.status)&&<button onClick={()=>runUserAction(()=>cloneProjectAction("retry"),"Could not retry clone")}>Retry clone</button>}</div>}
-          <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={()=>setPromptHistoryIndex(-1)} historyIndex={promptHistoryIndex} onSend={send} onBackgroundSend={sendInBackground} canBackground={!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} runtimeCapabilities={runtimeCapabilities} login={login} onConfigureProvider={()=>setSection("settings")} models={models} modelMeta={modelMeta} model={model} setModel={changeComposerModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={path=>setAttachments(prev=>prev.filter(x=>x!==path))} onRemoveContext={removeContext} onPickFiles={()=>runUserAction(pickFiles,"Could not attach files")} onCaptureScreen={()=>runUserAction(captureDesktop,"Could not capture screen")} onPaste={onPaste} onDrop={onDrop} onFileMentionSearch={searchComposerFiles} onFileMentionAttach={item=>runUserAction(()=>attachComposerFileMention(item),"Could not attach file mention")} permissionMode={permissionMode} setPermissionMode={setPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={changeCollaborationMode} collaborationModeBusy={collaborationModeBusy} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={changeProviderAgent} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&runtimeCapabilities.compaction)} onCompact={compactContext} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={switchThreadRuntimeProfile} onModelPickerOpenChange={setModelPickerOpen}/>
+          <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={composerPromptEdit} historyIndex={promptHistoryIndex} onSend={composerSend} onBackgroundSend={composerBackgroundSend} canBackground={!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} runtimeCapabilities={runtimeCapabilities} login={composerLogin} onConfigureProvider={composerConfigureProvider} models={models} modelMeta={modelMeta} model={model} setModel={composerSetModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={composerRemoveAttachment} onRemoveContext={composerRemoveContext} onPickFiles={composerPickFiles} onCaptureScreen={composerCaptureScreen} onPaste={composerPaste} onDrop={composerDrop} onFileMentionSearch={composerFileMentionSearch} onFileMentionAttach={composerFileMentionAttach} permissionMode={permissionMode} setPermissionMode={setPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={composerCollaborationMode} collaborationModeBusy={collaborationModeBusy} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={composerProviderAgent} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&runtimeCapabilities.compaction)} onCompact={composerCompact} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={composerRuntimeProfile} onModelPickerOpenChange={setModelPickerOpen}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="layout-resizer terminal-resizer" data-testid="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" onPointerDown={event=>beginLayoutResize("terminal",event)}/>
