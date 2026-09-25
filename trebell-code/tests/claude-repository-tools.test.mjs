@@ -16,6 +16,8 @@ test("Claude repository tool handlers reuse the shared Context Engine",async()=>
     ,async diagnostics(args){calls.push(["diagnostics",args]);return {path:args.path,supported:true,diagnostics:[]}}
     ,async languageSymbol(args){calls.push(["language",args]);return {path:args.path,operation:args.operation,data:[{path:"src/context-engine.mjs"}]}}
     ,async codeActions(args){calls.push(["actions",args]);return {path:args.path,actions:[{description:"Fix it"}]}}
+    ,async organizeImports(args){calls.push(["organize",args]);return {path:args.path,changes:[{file:args.path}]}}
+    ,async renamePreview(args){calls.push(["rename",args]);return {path:args.path,newName:args.newName,locations:[{path:"src/context-engine.mjs"}]}}
     ,async symbolReferences(args){calls.push(["references",args]);return {name:args.name,data:[{path:"src/context-engine.mjs",line:1}]}}
     ,async searchCode(args){calls.push(["code",args]);return {data:[{path:"src/context-engine.mjs",line:1}]}}
     ,async readSourceRange(args){calls.push(["source",args]);return {path:args.path,startLine:args.startLine,endLine:args.endLine}}
@@ -35,6 +37,8 @@ test("Claude repository tool handlers reuse the shared Context Engine",async()=>
   assert.deepEqual(await handlers.diagnostics({path:"src/context-engine.mjs",limit:6}),{path:"src/context-engine.mjs",supported:true,diagnostics:[]});
   assert.deepEqual(await handlers.languageSymbol({path:"src/context-engine.mjs",line:50,column:3,operation:"definition",limit:4}),{path:"src/context-engine.mjs",operation:"definition",data:[{path:"src/context-engine.mjs"}]});
   assert.deepEqual(await handlers.codeActions({path:"src/context-engine.mjs",line:50,column:3,limit:4,codes:[2322]}),{path:"src/context-engine.mjs",actions:[{description:"Fix it"}]});
+  assert.deepEqual(await handlers.organizeImports({path:"src/context-engine.mjs",limit:15}),{path:"src/context-engine.mjs",changes:[{file:"src/context-engine.mjs"}]});
+  assert.deepEqual(await handlers.renamePreview({path:"src/context-engine.mjs",line:50,column:3,newName:"ContextGraph",limit:12}),{path:"src/context-engine.mjs",newName:"ContextGraph",locations:[{path:"src/context-engine.mjs"}]});
   assert.deepEqual(await handlers.symbolReferences({name:"ContextEngine",path:"src/context-engine.mjs",limit:11}),{name:"ContextEngine",data:[{path:"src/context-engine.mjs",line:1}]});
   assert.deepEqual(await handlers.searchCode({query:"ContextEngine",regex:false,caseSensitive:true,limit:9}),{data:[{path:"src/context-engine.mjs",line:1}]});
   assert.deepEqual(await handlers.readSource({path:"src/context-engine.mjs",startLine:5,endLine:12,maxLines:20}),{path:"src/context-engine.mjs",startLine:5,endLine:12});
@@ -53,6 +57,8 @@ test("Claude repository tool handlers reuse the shared Context Engine",async()=>
     ["diagnostics",{root:"/srv/app",io,path:"src/context-engine.mjs",limit:6,semantic:false}],
     ["language",{root:"/srv/app",io,path:"src/context-engine.mjs",line:50,column:3,operation:"definition",limit:4}],
     ["actions",{root:"/srv/app",io,path:"src/context-engine.mjs",line:50,column:3,limit:4,codes:[2322]}],
+    ["organize",{root:"/srv/app",io,path:"src/context-engine.mjs",limit:15}],
+    ["rename",{root:"/srv/app",io,path:"src/context-engine.mjs",line:50,column:3,newName:"ContextGraph",limit:12}],
     ["references",{root:"/srv/app",io,name:"ContextEngine",path:"src/context-engine.mjs",limit:11}],
     ["code",{root:"/srv/app",io,query:"ContextEngine",regex:false,caseSensitive:true,limit:9}],
     ["source",{root:"/srv/app",io,path:"src/context-engine.mjs",startLine:5,endLine:12,maxLines:20}],
@@ -63,9 +69,12 @@ test("Claude repository tool handlers reuse the shared Context Engine",async()=>
 });
 
 test("Claude repository MCP is an SDK-hosted server instead of a spawned duplicate index",()=>{
-  const contextEngine={searchSymbols:async()=>({data:[]}),searchFiles:async()=>({data:[]}),repositoryMap:async()=>({data:[]}),projectCommands:async()=>({declared:[]}),fileRelations:async()=>({}),relatedTests:async()=>({data:[]}),callHierarchy:async()=>({callers:[],callees:[]}),diagnostics:async()=>({diagnostics:[]}),languageSymbol:async()=>({data:[]}),codeActions:async()=>({actions:[]}),symbolReferences:async()=>({data:[]}),searchCode:async()=>({data:[]}),readSourceRange:async()=>({}),gitContext:async()=>({}),gitHistory:async()=>({data:[]}),gitBlame:async()=>({data:[]})};
+  const contextEngine={searchSymbols:async()=>({data:[]}),searchFiles:async()=>({data:[]}),repositoryMap:async()=>({data:[]}),projectCommands:async()=>({declared:[]}),verificationPlan:async()=>({steps:[]}),fileRelations:async()=>({}),relatedTests:async()=>({data:[]}),callHierarchy:async()=>({callers:[],callees:[]}),diagnostics:async()=>({diagnostics:[]}),languageSymbol:async()=>({data:[]}),codeActions:async()=>({actions:[]}),organizeImports:async()=>({changes:[]}),renamePreview:async()=>({locations:[]}),symbolReferences:async()=>({data:[]}),searchCode:async()=>({data:[]}),readSourceRange:async()=>({}),gitContext:async()=>({}),gitHistory:async()=>({data:[]}),gitBlame:async()=>({data:[]})};
   const server=createClaudeRepositoryMcp({contextEngine,root:"/repo",version:"fixture"});
   assert.equal(server.type,"sdk");
   assert.equal(server.name,"trebell_repository");
   assert.ok(server.instance);
+  const registered=server.instance._registeredTools;
+  assert.ok(registered&&registered.search_symbols&&registered.rename_preview&&registered.code_actions);
+  for(const definition of Object.values(registered))assert.deepEqual(definition.annotations,{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false});
 });

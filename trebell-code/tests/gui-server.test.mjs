@@ -208,6 +208,14 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(codeActionsResponse.status,200);
     const codeActionsResult=await codeActionsResponse.json();
     assert.equal(codeActionsResult.supported,false);assert.equal(codeActionsResult.semantic,false);assert.deepEqual(codeActionsResult.actions,[]);assert.match(codeActionsResult.reason,/TypeScript/i);
+    const organizeImportsResponse=await fetch(gui.url+"/api/context/organize-imports?"+new URLSearchParams({path:configProject,file:"src/session.js",limit:"10"}));
+    assert.equal(organizeImportsResponse.status,200);
+    const organizeImportsResult=await organizeImportsResponse.json();
+    assert.equal(organizeImportsResult.supported,false);assert.equal(organizeImportsResult.semantic,false);assert.deepEqual(organizeImportsResult.changes,[]);assert.match(organizeImportsResult.reason,/TypeScript/i);
+    const renameResponse=await fetch(gui.url+"/api/context/rename-preview?"+new URLSearchParams({path:configProject,file:"src/session.js",line:"1",column:"14",newName:"RenamedSession",limit:"10"}));
+    assert.equal(renameResponse.status,200);
+    const renameResult=await renameResponse.json();
+    assert.equal(renameResult.supported,false);assert.equal(renameResult.semantic,false);assert.equal(renameResult.canRename,false);assert.deepEqual(renameResult.locations,[]);assert.match(renameResult.reason,/TypeScript/i);
     const referencesResponse=await fetch(gui.url+"/api/context/references?"+new URLSearchParams({path:configProject,name:"RefreshSession",limit:"10"}));
     assert.equal(referencesResponse.status,200);
     const referencesResult=await referencesResponse.json();

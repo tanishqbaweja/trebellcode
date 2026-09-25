@@ -65,6 +65,36 @@ try{
   for(const diagnostic of selected){if(actions.length>=limit)break;const start=Number.isFinite(diagnostic.start)?diagnostic.start:position,end=start+Math.max(0,Number(diagnostic.length)||0),fixes=service.getCodeFixesAtPosition?.(requested,start,end,[Number(diagnostic.code)],{}, {})||[];for(const fix of fixes){if(actions.length>=limit)break;const key=String(fix.fixName||"")+"\\0"+String(fix.description||"");if(seen.has(key))continue;seen.add(key);actions.push({fixName:fix.fixName||null,description:fix.description||"",fixAllDescription:fix.fixAllDescription||null,fixAllAvailable:Boolean(fix.fixId),requiresCommand:Boolean(fix.commands?.length),commands:(fix.commands||[]).slice(0,5).map(command=>({type:command?.type||null,packageName:command?.packageName||null,file:command?.file?path.relative(root,path.resolve(command.file)).replace(/\\\\/g,"/"):null})),changes:(fix.changes||[]).slice(0,20).map(change=>({file:path.relative(root,path.resolve(change.fileName)).replace(/\\\\/g,"/"),isNewFile:Boolean(change.isNewFile),textChanges:(change.textChanges||[]).slice(0,80).map(textChange=>{const where=locate(change.fileName,textChange.span),text=String(textChange.newText||"");return{...where,newText:text.slice(0,4000),newTextTruncated:text.length>4000}})}))})}}
   out({available:true,configured:true,version:ts.version,included:true,diagnostics:diagnosticRows,actions,truncated:actions.length>=limit,requestedCodes});
 }catch(error){out({available:true,configured:false,failed:true,reason:String(error?.stack||error?.message||error)})}`;
+const TYPESCRIPT_ORGANIZE_IMPORTS_SCRIPT=`const fs=require("fs"),path=require("path");
+const root=path.resolve(process.argv[1]||"."),requested=path.resolve(root,process.argv[2]||""),limit=Math.max(1,Math.min(500,Number(process.argv[3])||200)),operation="organize_imports";
+const out=value=>process.stdout.write(JSON.stringify(value)),tsPath=path.join(root,"node_modules","typescript","lib","typescript.js");
+if(!fs.existsSync(tsPath)){out({available:false,configured:false,reason:"Project-local TypeScript is not installed"});process.exit(0)}
+try{
+  const ts=require(tsPath),configPath=ts.findConfigFile(root,ts.sys.fileExists,"tsconfig.json");if(!configPath){out({available:true,configured:false,version:ts.version,reason:"No tsconfig.json was found"});process.exit(0)}
+  const read=ts.readConfigFile(configPath,ts.sys.readFile),parsed=ts.parseJsonConfigFileContent(read.config||{},ts.sys,path.dirname(configPath),{noEmit:true,incremental:false,composite:false},configPath),options={...parsed.options,noEmit:true,incremental:false,composite:false};delete options.tsBuildInfoFile;
+  const files=[...new Set([...(parsed.fileNames||[]),requested].filter(file=>fs.existsSync(file)))],snapshot=file=>{try{return ts.ScriptSnapshot.fromString(fs.readFileSync(file,"utf8"))}catch{return undefined}},host={getCompilationSettings:()=>options,getScriptFileNames:()=>files,getScriptVersion:()=>"0",getScriptSnapshot:snapshot,getCurrentDirectory:()=>root,getDefaultLibFileName:value=>ts.getDefaultLibFilePath(value),fileExists:ts.sys.fileExists,readFile:ts.sys.readFile,readDirectory:ts.sys.readDirectory,directoryExists:ts.sys.directoryExists,getDirectories:ts.sys.getDirectories,useCaseSensitiveFileNames:()=>ts.sys.useCaseSensitiveFileNames,getNewLine:()=>ts.sys.newLine};
+  const service=ts.createLanguageService(host,ts.createDocumentRegistry?ts.createDocumentRegistry():undefined),program=service.getProgram(),source=program?.getSourceFile(requested);if(!source){out({available:true,configured:true,version:ts.version,included:false,reason:"Requested file is not available to the TypeScript language service"});process.exit(0)}
+  const locate=(fileName,span,newText)=>{const absolute=path.resolve(fileName),file=program.getSourceFile(absolute)||program.getSourceFile(fileName);if(!file)return{path:path.relative(root,absolute).replace(/\\\\/g,"/"),line:null,column:null,length:Number(span?.length)||0,newText:String(newText||"")};const point=file.getLineAndCharacterOfPosition(span.start);return{path:path.relative(root,absolute).replace(/\\\\/g,"/"),line:point.line+1,column:point.character+1,length:Number(span?.length)||0,newText:String(newText||"")}},groupChanges=rows=>{const map=new Map();for(const row of rows){let list=map.get(row.path);if(!list){list=[];map.set(row.path,list)}list.push(row)}return[...map].map(([file,textChanges])=>({file,textChanges}))};
+  if(operation==="organize_imports"){
+    if(typeof service.organizeImports!=="function"){out({available:true,configured:true,version:ts.version,included:true,operation,unsupported:true,reason:"Project TypeScript does not expose organizeImports",changes:[]});process.exit(0)}
+    const fileChanges=service.organizeImports({type:"file",fileName:requested},{},{})||[],rows=[];for(const change of fileChanges)for(const edit of change.textChanges||[]){if(rows.length>=limit)break;rows.push(locate(change.fileName,edit.span,edit.newText))}out({available:true,configured:true,version:ts.version,included:true,operation,changes:groupChanges(rows),editCount:fileChanges.reduce((sum,change)=>sum+(change.textChanges||[]).length,0),truncated:fileChanges.reduce((sum,change)=>sum+(change.textChanges||[]).length,0)>rows.length});process.exit(0)
+  }
+  out({available:true,configured:true,version:ts.version,failed:true,reason:"Unsupported semantic refactor operation"});
+}catch(error){out({available:true,configured:false,failed:true,reason:String(error?.stack||error?.message||error)})}`;
+const TYPESCRIPT_RENAME_SCRIPT=`const fs=require("fs"),path=require("path");
+const root=path.resolve(process.argv[1]||"."),requested=path.resolve(root,process.argv[2]||""),line=Math.max(1,Number(process.argv[3])||1),column=Math.max(1,Number(process.argv[4])||1),newName=String(process.argv[5]||""),limit=Math.max(1,Math.min(500,Number(process.argv[6])||200));
+const out=value=>process.stdout.write(JSON.stringify(value)),tsPath=path.join(root,"node_modules","typescript","lib","typescript.js");
+if(!fs.existsSync(tsPath)){out({available:false,configured:false,reason:"Project-local TypeScript is not installed"});process.exit(0)}
+try{
+  const ts=require(tsPath),configPath=ts.findConfigFile(root,ts.sys.fileExists,"tsconfig.json");if(!configPath){out({available:true,configured:false,version:ts.version,reason:"No tsconfig.json was found"});process.exit(0)}
+  const read=ts.readConfigFile(configPath,ts.sys.readFile),parsed=ts.parseJsonConfigFileContent(read.config||{},ts.sys,path.dirname(configPath),{noEmit:true,incremental:false,composite:false},configPath),options={...parsed.options,noEmit:true,incremental:false,composite:false};delete options.tsBuildInfoFile;
+  const files=[...new Set([...(parsed.fileNames||[]),requested].filter(file=>fs.existsSync(file)))],snapshot=file=>{try{return ts.ScriptSnapshot.fromString(fs.readFileSync(file,"utf8"))}catch{return undefined}},host={getCompilationSettings:()=>options,getScriptFileNames:()=>files,getScriptVersion:()=>"0",getScriptSnapshot:snapshot,getCurrentDirectory:()=>root,getDefaultLibFileName:value=>ts.getDefaultLibFilePath(value),fileExists:ts.sys.fileExists,readFile:ts.sys.readFile,readDirectory:ts.sys.readDirectory,directoryExists:ts.sys.directoryExists,getDirectories:ts.sys.getDirectories,useCaseSensitiveFileNames:()=>ts.sys.useCaseSensitiveFileNames,getNewLine:()=>ts.sys.newLine};
+  const service=ts.createLanguageService(host,ts.createDocumentRegistry?ts.createDocumentRegistry():undefined),program=service.getProgram(),source=program?.getSourceFile(requested);if(!source){out({available:true,configured:true,version:ts.version,included:false,reason:"Requested file is not available to the TypeScript language service"});process.exit(0)}
+  const position=source.getPositionOfLineAndCharacter(line-1,column-1),info=service.getRenameInfo?.(requested,position);if(!info||info.canRename===false){out({available:true,configured:true,version:ts.version,included:true,canRename:false,reason:info?.localizedErrorMessage||"TypeScript cannot rename this symbol",info:info||null,locations:[]});process.exit(0)}
+  const locations=service.findRenameLocations?.(requested,position,false,false,true)||[],locate=item=>{const absolute=path.resolve(item.fileName),file=program.getSourceFile(absolute)||program.getSourceFile(item.fileName);let line=null,column=null;if(file){const point=file.getLineAndCharacterOfPosition(item.textSpan.start);line=point.line+1;column=point.character+1}return{path:path.relative(root,absolute).replace(/\\\\/g,"/"),line,column,length:Number(item.textSpan?.length)||0,prefixText:item.prefixText||"",suffixText:item.suffixText||"",newText:String(item.prefixText||"")+newName+String(item.suffixText||"")}};
+  const trigger=info.triggerSpan?(()=>{const point=source.getLineAndCharacterOfPosition(info.triggerSpan.start);return{line:point.line+1,column:point.character+1,length:Number(info.triggerSpan.length)||0}})():null;
+  out({available:true,configured:true,version:ts.version,included:true,canRename:true,newName,displayName:info.displayName||null,fullDisplayName:info.fullDisplayName||null,kind:info.kind||null,kindModifiers:info.kindModifiers||null,trigger,locations:locations.slice(0,limit).map(locate),truncated:locations.length>limit});
+}catch(error){out({available:true,configured:false,failed:true,reason:String(error?.stack||error?.message||error)})}`;
 
 function tokenEstimate(value){return Math.ceil(String(value||"").length/4)}
 function slash(value){return String(value||"").split(sep).join("/")}
@@ -419,6 +449,26 @@ async function localTypeScriptCodeActions(root,{path,line=1,column=1,limit=20,co
   }
 }
 
+async function localTypeScriptOrganizeImports(root,{path,limit=200}={}){
+  try{
+    const {stdout}=await execFileAsync(process.execPath,["-e",TYPESCRIPT_ORGANIZE_IMPORTS_SCRIPT,resolve(root),String(path||""),String(Math.max(1,Math.min(500,Number(limit)||200)))],{cwd:resolve(root),windowsHide:true,maxBuffer:8*1024*1024,timeout:30_000});
+    return parseTypeScriptDiagnosticsOutput(stdout);
+  }catch(error){
+    const parsed=parseTypeScriptDiagnosticsOutput(error?.stdout);if(parsed?.available||parsed?.reason!=="TypeScript diagnostic adapter returned invalid output")return parsed;
+    return {available:false,configured:false,failed:true,reason:error?.killed?"TypeScript organize imports timed out":String(error?.stderr||error?.message||"TypeScript organize imports failed").slice(0,2000)};
+  }
+}
+
+async function localTypeScriptRename(root,{path,line=1,column=1,newName="",limit=200}={}){
+  try{
+    const {stdout}=await execFileAsync(process.execPath,["-e",TYPESCRIPT_RENAME_SCRIPT,resolve(root),String(path||""),String(line),String(column),String(newName||""),String(Math.max(1,Math.min(500,Number(limit)||200)))],{cwd:resolve(root),windowsHide:true,maxBuffer:6*1024*1024,timeout:30_000});
+    return parseTypeScriptDiagnosticsOutput(stdout);
+  }catch(error){
+    const parsed=parseTypeScriptDiagnosticsOutput(error?.stdout);if(parsed?.available||parsed?.reason!=="TypeScript diagnostic adapter returned invalid output")return parsed;
+    return {available:false,configured:false,failed:true,reason:error?.killed?"TypeScript rename preview timed out":String(error?.stderr||error?.message||"TypeScript rename preview failed").slice(0,2000)};
+  }
+}
+
 async function localMetadata(root,paths){
   const pairs=await mapLimit(paths,64,async relativePath=>{
     try{
@@ -451,6 +501,8 @@ function localContextIo(root){
     typeScriptDiagnostics:options=>localTypeScriptDiagnostics(absolute,options),
     typeScriptSymbol:options=>localTypeScriptSymbol(absolute,options),
     typeScriptCodeActions:options=>localTypeScriptCodeActions(absolute,options),
+    typeScriptOrganizeImports:options=>localTypeScriptOrganizeImports(absolute,options),
+    typeScriptRename:options=>localTypeScriptRename(absolute,options),
     gitState:()=>gitState(absolute),
     changedSince:async(fromHead,toHead)=>{
       if(!fromHead||!toHead||fromHead===toHead)return new Set();
@@ -552,6 +604,16 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     if(result.exitCode!==0)return {available:false,configured:false,failed:true,reason:result.timedOut?"TypeScript code actions timed out":String(result.stderr||"Remote TypeScript code actions failed").slice(0,2000)};
     return parseTypeScriptDiagnosticsOutput(result.stdout);
   };
+  const typeScriptRename=async({path,line=1,column=1,newName="",limit=200}={})=>{
+    const result=await run({command:"node",args:["-e",TYPESCRIPT_RENAME_SCRIPT,absolute,String(path||""),String(line),String(column),String(newName||""),String(Math.max(1,Math.min(500,Number(limit)||200)))],cwd:"",timeoutMs:35_000,maxOutput:6*1024*1024});
+    if(result.exitCode!==0)return {available:false,configured:false,failed:true,reason:result.timedOut?"TypeScript rename preview timed out":String(result.stderr||"Remote TypeScript rename preview failed").slice(0,2000)};
+    return parseTypeScriptDiagnosticsOutput(result.stdout);
+  };
+  const typeScriptOrganizeImports=async({path,limit=200}={})=>{
+    const result=await run({command:"node",args:["-e",TYPESCRIPT_ORGANIZE_IMPORTS_SCRIPT,absolute,String(path||""),String(Math.max(1,Math.min(500,Number(limit)||200)))],cwd:"",timeoutMs:35_000,maxOutput:8*1024*1024});
+    if(result.exitCode!==0)return {available:false,configured:false,failed:true,reason:result.timedOut?"TypeScript organize imports timed out":String(result.stderr||"Remote TypeScript organize imports failed").slice(0,2000)};
+    return parseTypeScriptDiagnosticsOutput(result.stdout);
+  };
   return {
     cacheKey:"remote:"+environmentId+":"+absolute,
     root:absolute,
@@ -564,6 +626,8 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     typeScriptDiagnostics,
     typeScriptSymbol,
     typeScriptCodeActions,
+    typeScriptOrganizeImports,
+    typeScriptRename,
     readText:async relativePath=>{
       const target=posix.join(absolute,String(relativePath||"").replace(/^\.\//,""));
       if(target!==absolute&&!target.startsWith(absolute.endsWith("/")?absolute:absolute+"/"))throw new Error("Context file is outside the remote workspace");
@@ -1012,6 +1076,29 @@ export class ContextEngine{
     let result;try{result=await contextIo.typeScriptCodeActions({path:requested,line:row,column:col,limit:capped,codes:diagnosticCodes})}catch(error){result={available:false,configured:false,failed:true,reason:String(error?.message||error)}}
     const ready=Boolean(result?.available&&result?.configured&&!result?.failed);
     return {path:requested,line:row,column:col,supported:ready,engine:ready?"typescript":null,semantic:ready,version:result?.version||null,included:result?.included??null,diagnostics:Array.isArray(result?.diagnostics)?result.diagnostics:[],actions:Array.isArray(result?.actions)?result.actions.slice(0,capped):[],truncated:Boolean(result?.truncated),requestedCodes:diagnosticCodes,info:result,reason:ready?null:(result?.reason||"Project-local TypeScript code actions are unavailable")};
+  }
+
+  async organizeImports({root,path,limit=200,io=null}={}){
+    const {contextIo,index}=await this.#indexed(root,io),requested=contextIo.relativeFocus(path)||slash(String(path||"").replace(/^\.\//,""));
+    const entry=index.files.get(requested);if(!entry)throw new Error(`Context file is not indexed: ${path}`);
+    const extension=extname(requested).toLowerCase(),capped=Math.max(1,Math.min(500,Number(limit)||200));
+    if(!BABEL_SOURCE_EXTENSIONS.has(extension))return {path:requested,supported:false,engine:null,semantic:false,changes:[],reason:`No semantic Trebell organize-imports adapter is configured for ${extension||"this file type"}`};
+    if(typeof contextIo.typeScriptOrganizeImports!=="function")return {path:requested,supported:false,engine:null,semantic:false,changes:[],reason:"TypeScript organize imports is unavailable for this workspace"};
+    let result;try{result=await contextIo.typeScriptOrganizeImports({path:requested,limit:capped})}catch(error){result={available:false,configured:false,failed:true,reason:String(error?.message||error)}}
+    const ready=Boolean(result?.available&&result?.configured&&!result?.failed&&!result?.unsupported),changes=Array.isArray(result?.changes)?result.changes.slice(0,capped):[];
+    return {path:requested,supported:ready,engine:ready?"typescript":null,semantic:ready,version:result?.version||null,included:result?.included??null,changes,editCount:Number(result?.editCount)||0,truncated:Boolean(result?.truncated),info:result,reason:ready?null:(result?.reason||"Project-local TypeScript organize imports is unavailable")};
+  }
+
+  async renamePreview({root,path,line=1,column=1,newName="",limit=200,io=null}={}){
+    const target=String(newName||"").trim();if(!target)throw new Error("Rename preview requires a new name");if(target.length>256)throw new Error("Rename preview name is too long");
+    const {contextIo,index}=await this.#indexed(root,io),requested=contextIo.relativeFocus(path)||slash(String(path||"").replace(/^\.\//,""));
+    const entry=index.files.get(requested);if(!entry)throw new Error(`Context file is not indexed: ${path}`);
+    const extension=extname(requested).toLowerCase(),row=Math.max(1,Math.trunc(Number(line)||1)),col=Math.max(1,Math.trunc(Number(column)||1)),capped=Math.max(1,Math.min(500,Number(limit)||200));
+    if(!BABEL_SOURCE_EXTENSIONS.has(extension))return {path:requested,line:row,column:col,newName:target,supported:false,engine:null,semantic:false,canRename:false,locations:[],reason:`No semantic Trebell rename adapter is configured for ${extension||"this file type"}`};
+    if(typeof contextIo.typeScriptRename!=="function")return {path:requested,line:row,column:col,newName:target,supported:false,engine:null,semantic:false,canRename:false,locations:[],reason:"TypeScript rename preview is unavailable for this workspace"};
+    let result;try{result=await contextIo.typeScriptRename({path:requested,line:row,column:col,newName:target,limit:capped})}catch(error){result={available:false,configured:false,failed:true,reason:String(error?.message||error)}}
+    const ready=Boolean(result?.available&&result?.configured&&!result?.failed),canRename=Boolean(ready&&result?.canRename);
+    return {path:requested,line:row,column:col,newName:target,supported:ready,engine:ready?"typescript":null,semantic:ready,version:result?.version||null,included:result?.included??null,canRename,displayName:result?.displayName||null,fullDisplayName:result?.fullDisplayName||null,kind:result?.kind||null,kindModifiers:result?.kindModifiers||null,trigger:result?.trigger||null,locations:Array.isArray(result?.locations)?result.locations.slice(0,capped):[],truncated:Boolean(result?.truncated),info:result,reason:canRename?null:(result?.reason||"Project-local TypeScript cannot rename this symbol")};
   }
 
   async fileRelations({root,path,io=null}={}){
