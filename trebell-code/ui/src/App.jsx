@@ -2966,7 +2966,7 @@ export default function App(){
     if(!runtimeCapabilities.rewind||!rpc||!activeThread?.id||!message.turnId)return;
     const normalizePath=value=>String(value||"").replace(/\\/g,"/").replace(/\/+$/,"").toLowerCase();
     const isolatedWorktree=Boolean(
-      agentRuntime==="codex"&&message.checkpointId&&currentProject?.managedWorktree&&!currentProject.managedWorktree.cleanedAt
+      message.checkpointId&&currentProject?.managedWorktree&&!currentProject.managedWorktree.cleanedAt
       &&normalizePath(currentProject.path)===normalizePath(activeThread.cwd||projectPath)
     );
     const restoreFiles=isolatedWorktree?confirm("Also restore workspace files to the checkpoint before this turn?\n\nOK = conversation + files\nCancel = conversation only"):false;
