@@ -23,7 +23,7 @@ import { resolveKeybinding } from "./keybindings.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
 import { applyFileMention, fileMentionAt, rankFileMentions } from "./composer-mentions.js";
 import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, reorderQueue } from "./native-queue.js";
-import { historyFromItemEntries, historyFromTurns, mergeHistoryMessages } from "./thread-history.js";
+import { historyFromItemEntries, historyFromTurns, mergeHistoryMessages, resumedActiveTurnId } from "./thread-history.js";
 import { normalizeCustomTheme, themeCssVariables } from "./theme-utils.js";
 import { approvalResponse } from "./approval-utils.js";
 import { fanoutWorkspaceError, nextModelSelection, threadForWorktree } from "./fanout-utils.js";
@@ -43,6 +43,8 @@ import { hasAutoSettleCandidates } from "./auto-settle.js";
 import { sameConversationMessageRowProps } from "./conversation-row.js";
 import { nextSnoozeWakeAt } from "./thread-snooze.js";
 import { sharedRuntimeCapabilities } from "../../src/runtime-capabilities.mjs";
+import { repositoryFocusPaths } from "./context-focus.js";
+import { hydratePersistedQueue, persistedQueueItems } from "./persistent-queue.js";
 
 const TerminalPanel=lazy(()=>import("./components/TerminalPanel.jsx"));
 const WorkspacePanel=lazy(()=>import("./components/WorkspacePanel.jsx"));
@@ -877,7 +879,7 @@ export default function App(){
     setModelMeta(Object.fromEntries((d?.metadata?.models||[]).map(item=>[item.id,item])));
     const next=ids.includes(model)?model:(ids[0]||"");
     setModels(ids);setModel(next);setSelectedModels(next?[next]:[]);
-    if(resetThread){activeThreadRef.current=null;setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);resetAssistantStream();setQueued([]);setQueueMode(runtimeCapabilities.nativeQueue?"unknown":"local");setQueuedEditId(null)}
+    if(resetThread){activeThreadRef.current=null;setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);resetAssistantStream();setQueued([]);setQueueMode(runtimeCapabilities.nativeQueue&&projectlessMode?"unknown":"local");setQueuedEditId(null)}
     if(targetRuntime==="codex"&&targetProvider==="freebuff"&&next){
       const params=new URLSearchParams({timezone,model:next});
       api("/api/freebuff/overview?"+params).then(data=>{if(seq===modelRefreshSeqRef.current&&data)setFreebuff(data)}).catch(error=>showActionError(error,"Models refreshed, but Freebuff account state could not refresh"));
@@ -1533,16 +1535,21 @@ export default function App(){
     if(running||!queued.length)return;
     const next=queued[0];if(next?.autoStartFailed||localQueueStartRef.current===next.id)return;
     localQueueStartRef.current=next.id;
-    startTurn(next.text,next.attachments,next.model||model).then(()=>{
-      localQueueStartRef.current=null;
-      setQueued(prev=>prev.filter(item=>item.id!==next.id));
-    }).catch(error=>{
-      localQueueStartRef.current=null;
-      setQueued(prev=>prev.map(item=>item.id===next.id?{...item,autoStartFailed:true}:item));
-      setEvents(prev=>[...prev,{id:"queue-error-"+Date.now(),kind:"error",title:"Could not start queued follow-up: "+(error?.message||String(error)),status:"done"}]);
-    });
+    (async()=>{
+      const threadId=activeThreadRef.current?.id||null,dispatching=queued.map(item=>item.id===next.id?{...item,dispatchingAt:Date.now(),autoStartFailed:false}:item);
+      try{
+        if(threadId)await persistLocalQueue(threadId,dispatching);else setQueued(dispatching);
+        await startTurn(next.text,next.attachments,next.model||model,null,null,repositoryFocusPaths(next.attachments,next.contextChips));
+        const remaining=dispatching.filter(item=>item.id!==next.id);
+        if(threadId)await persistLocalQueue(threadId,remaining);else setQueued(remaining);
+      }catch(error){
+        const failed=dispatching.map(item=>item.id===next.id?{...item,dispatchingAt:null,autoStartFailed:true}:item);
+        try{if(threadId)await persistLocalQueue(threadId,failed);else setQueued(failed)}catch{setQueued(failed)}
+        setEvents(prev=>[...prev,{id:"queue-error-"+Date.now(),kind:"error",title:"Could not start queued follow-up: "+(error?.message||String(error)),status:"done"}]);
+      }finally{localQueueStartRef.current=null}
+    })();
   },[running,queued,queueMode,runtimeCapabilities.nativeQueue]);
-  useEffect(()=>{setQueueMode(runtimeCapabilities.nativeQueue?"unknown":"local");setQueuedEditId(null)},[agentRuntime,runtimeCapabilities.nativeQueue]);
+  useEffect(()=>{setQueueMode(runtimeCapabilities.nativeQueue&&projectlessMode?"unknown":"local");setQueuedEditId(null)},[agentRuntime,runtimeCapabilities.nativeQueue,projectlessMode]);
 
   function handleServerRequest(client,message){
     if(message.method==="item/tool/requestUserInput"){setQuestion({client,request:message});desktopNotify("Trebell Code needs input","The running agent asked you a question.");return}
@@ -1847,6 +1854,13 @@ export default function App(){
     setThreadMeta(prev=>({...prev,[threadId]:meta}));
     return meta;
   }
+  async function persistLocalQueue(threadId,items){
+    const stored=persistedQueueItems(items);
+    if(!threadId){setQueued(stored);return stored}
+    await updateThreadMeta(threadId,{trebellQueue:stored},{strict:true});
+    if(activeThreadRef.current?.id===threadId)setQueued(stored);
+    return stored;
+  }
   async function persistThreadWorkspaceContext(thread,cwd=thread?.cwd,extra={},{strict=false}={}){
     if(!thread?.id||!cwd)return null;
     const existing=threadMeta[thread.id]||{};
@@ -1996,7 +2010,7 @@ export default function App(){
     if(agentRuntime!=="codex"||!threadId||running||!rpc||rpcStatus!=="connected")return;
     rpc.request("thread/unsubscribe",{threadId}).catch(()=>{});
   }
-  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(runtimeCapabilities.nativeQueue?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
+  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(runtimeCapabilities.nativeQueue&&projectlessMode?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
@@ -2009,7 +2023,8 @@ export default function App(){
     const previousThreadId=activeThreadRef.current?.id;
     const reopeningCurrentThread=previousThreadId===thread.id;
     const threadEnvironmentId=thread.providerMeta?.environmentId||null;
-    const savedMeta=threadMeta[thread.id]||{};const projectless=Boolean(savedMeta.projectless);
+    const savedMeta=threadMeta[thread.id]||{};const projectless=Boolean(savedMeta.projectless);const useNativeQueue=Boolean(runtimeCapabilities.nativeQueue&&projectless);
+    const restoredLocalQueue=useNativeQueue?[]:hydratePersistedQueue(savedMeta.trebellQueue||[]);
     if(thread.cwd&&!threadEnvironmentId&&!projectless)await api("/api/worktree/ensure",{method:"POST",body:{path:thread.cwd,environmentId:null}}).catch(error=>{throw new Error("Could not restore this managed worktree: "+error.message)});
     const connectedClient=Boolean(client&&!(client===rpc&&rpcStatus!=="connected"));
     let resumed=null,cp=null,goalData=null,attachmentData=null;
@@ -2030,7 +2045,9 @@ export default function App(){
     const openedThread=resumed?.thread||thread;
     rememberConversationPosition();
     if(previousThreadId&&previousThreadId!==thread.id)releaseInactiveCodexThread(previousThreadId);
-    activeThreadRef.current=openedThread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection)setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
+    const resumedRunning=openedThread.status?.type==="active",resumedTurnId=resumedActiveTurnId(resumed);
+    activeThreadRef.current=openedThread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection)setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setRunning(resumedRunning);setActiveTurnId(resumedTurnId);setActiveThread(openedThread);setThreads(previous=>{const existing=previous.findIndex(item=>item.id===openedThread.id);if(existing>=0)return previous.map(item=>item.id===openedThread.id?{...item,...openedThread}:item);return [openedThread,...previous].slice(0,100)});setQueueMode(useNativeQueue?"unknown":"local");setQueued(useNativeQueue?[]:restoredLocalQueue);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
+    if(!useNativeQueue&&(savedMeta.trebellQueue||[]).some(item=>item?.dispatchingAt))updateThreadMeta(openedThread.id,{trebellQueue:persistedQueueItems(restoredLocalQueue)},{strict:true}).catch(error=>showActionError(error,"Recovered an uncertain queued follow-up, but could not save its retry state"));
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(openedThread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
     else if(openedThread.cwd)await touchProject(openedThread.cwd,threadEnvironmentId);else setProjectPath(projectPath);
     if(!reopeningCurrentThread){setCheckpointByTurn({});setGoal(null);setLinkedPullRequests(savedMeta.linkedPullRequests||[])}
@@ -2086,7 +2103,7 @@ export default function App(){
           showActionError(error,"Could not restore latest activity timeline");
         });
     }
-    if(runtimeCapabilities.nativeQueue)await loadNativeQueue(client,thread.id).catch(error=>setEvents(prev=>[...prev,{id:"queue-load-error-"+Date.now(),kind:"error",title:"Could not load queued follow-ups: "+(error.message||String(error)),status:"done",raw:{}}]));else{setQueueMode("local");setQueued([])}
+    if(useNativeQueue)await loadNativeQueue(client,thread.id).catch(error=>setEvents(prev=>[...prev,{id:"queue-load-error-"+Date.now(),kind:"error",title:"Could not load queued follow-ups: "+(error.message||String(error)),status:"done",raw:{}}]));
     const meta=threadMeta[thread.id]||{};setReviewedFiles(meta.reviewedFiles||[]);
     if(goalData)setGoal(goalData?.goal||null);
     if(attachmentData){
@@ -2411,7 +2428,7 @@ export default function App(){
       return null;
     }
   }
-  async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null){
+  async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null,focusPathsOverride=null){
     if(!projectlessMode&&!threadOverride&&(cwdOverride||projectPath)===projectPath)await waitForActiveClone();
     await validateAttachmentPaths(paths||[]);
     if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");let thread=threadOverride||activeThread;let cwd=cwdOverride||projectPath||bootstrap.cwd;
@@ -2428,7 +2445,7 @@ export default function App(){
       const sandboxPolicy=p.sandbox==="danger-full-access"?{type:"dangerFullAccess"}:p.sandbox==="read-only"?{type:"readOnly",networkAccess:false}:{type:"workspaceWrite",writableRoots:[cwd],networkAccess:true,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
       const custom=(settings.customModels||[]).find(item=>item.id===modelId&&item.runtime===agentRuntime&&(agentRuntime!=="codex"||item.provider===provider));
       const collaboration=selectedCollaborationMode(modelId);
-      const contextPacket=await prepareTurnContext(thread,cwd,text,paths,{projectless:projectlessMode,ignoreUsage:autoCompaction.compacted});
+      const contextPacket=await prepareTurnContext(thread,cwd,text,focusPathsOverride||repositoryFocusPaths(paths,contextChips),{projectless:projectlessMode,ignoreUsage:autoCompaction.compacted});
       const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(agentRuntime==="codex"&&custom?.effort?{effort:custom.effort}:{}),...(agentRuntime==="codex"&&custom?.serviceTier?{serviceTierForTurn:custom.serviceTier}:{}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths),...(contextPacket?.injection?{additionalContext:{"trebell.repo_context":{kind:"application",value:contextPacket.injection}}}:{})});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);
       setMessages(prev=>prev.map(m=>m.id===clientId?{...m,turnId,checkpointId:checkpoint?.id||null}:m));if(checkpoint?.id&&turnId){try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}});setCheckpointByTurn(prev=>({...prev,[turnId]:{...checkpoint,turnId}}))}catch(error){reportCheckpointIssue("File checkpoint was created but could not be linked to this turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}}setAttachments([]);setContextChips([]);return{thread,turnId};
     }catch(error){
@@ -2437,7 +2454,7 @@ export default function App(){
       throw error;
     }
   }
-  async function startDetachedTurn(text,paths,modelId=model,{forceWorktree=false,basePath=null,projectless=projectlessMode}={}){
+  async function startDetachedTurn(text,paths,modelId=model,{forceWorktree=false,basePath=null,projectless=projectlessMode,focusPaths=null}={}){
     await validateAttachmentPaths(paths||[]);if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");
     let cwd=basePath||projectPath||bootstrap.cwd;if(!cwd)throw new Error(projectless?"Could not prepare the General chat workspace.":"Choose a project before starting background work.");if(!projectless)cwd=await prepareDetachedWorktree(cwd,modelId,{force:forceWorktree});
     let thread=null;let turnRequestStarted=false;
@@ -2454,7 +2471,7 @@ export default function App(){
       const custom=(settings.customModels||[]).find(item=>item.id===modelId&&item.runtime===agentRuntime&&(agentRuntime!=="codex"||item.provider===provider));
       turnRequestStarted=true;
       const collaboration=selectedCollaborationMode(modelId);
-      const contextPacket=await prepareTurnContext(thread,cwd,text,paths,{projectless,background:true});
+      const contextPacket=await prepareTurnContext(thread,cwd,text,focusPaths||repositoryFocusPaths(paths,contextChips),{projectless,background:true});
       const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(agentRuntime==="codex"&&custom?.effort?{effort:custom.effort}:{}),...(agentRuntime==="codex"&&custom?.serviceTier?{serviceTierForTurn:custom.serviceTier}:{}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths),...(contextPacket?.injection?{additionalContext:{"trebell.repo_context":{kind:"application",value:contextPacket.injection}}}:{})});const turnId=result?.turn?.id||null;
       if(checkpoint?.id&&turnId)try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}})}catch(error){reportCheckpointIssue("Background file checkpoint was created but could not be linked to its turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}
       return {thread,turnId,cwd};
@@ -2506,7 +2523,7 @@ export default function App(){
     try{await validateAttachmentPaths(attachments)}catch(error){setEvents(prev=>[...prev,{id:"fanout-attachment-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return true}
     const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd};
     setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);setEvents([]);resetAssistantStream();setSection("chat");
-    const launches=fanout.map(modelId=>startDetachedTurn(draft.text,draft.attachments,modelId,{forceWorktree:true,basePath:draft.projectPath}).then(result=>({ok:true,modelId,result})).catch(error=>({ok:false,modelId,error})));
+    const launches=fanout.map(modelId=>startDetachedTurn(draft.text,draft.attachments,modelId,{forceWorktree:true,basePath:draft.projectPath,focusPaths:repositoryFocusPaths(draft.attachments,draft.contextChips)}).then(result=>({ok:true,modelId,result})).catch(error=>({ok:false,modelId,error})));
     Promise.all(launches).then(async results=>{
       const started=results.filter(item=>item.ok);const failed=results.filter(item=>!item.ok);const uncertain=failed.filter(item=>item.error?.trebellUncertain);
       const summary=[];
@@ -2595,10 +2612,13 @@ export default function App(){
       const draft={text,attachments:[...attachments],contextChips:[...contextChips],model};setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);
       if(runtimeCapabilities.steering&&settings.followUpMode==="steer"&&rpc&&activeThread&&activeTurnId){try{await validateAttachmentPaths(draft.attachments);await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(draft.text,draft.attachments)});setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:draft.text,turnId:activeTurnId}])}catch(error){setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);throw error}return}
       if(runtimeCapabilities.nativeQueue&&rpc&&activeThread&&queueMode!=="local"){
-        try{if(await saveNativeQueuedFollowup(draft.text,draft.attachments,draft.contextChips))return;setQueued(prev=>[...prev,{id:crypto.randomUUID(),...draft}]);return}
+        try{
+          if(await saveNativeQueuedFollowup(draft.text,draft.attachments,draft.contextChips))return;
+          const item={id:crypto.randomUUID(),createdAt:Date.now(),...draft};await persistLocalQueue(activeThread.id,[...queued,item]);return;
+        }
         catch(error){setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);setEvents(prev=>[...prev,{id:"queue-add-error-"+Date.now(),kind:"error",title:"Could not queue follow-up: "+(error.message||String(error)),status:"done",raw:{}}]);return}
       }
-      try{await validateAttachmentPaths(draft.attachments);setQueued(prev=>[...prev,{id:crypto.randomUUID(),...draft}])}
+      try{await validateAttachmentPaths(draft.attachments);const item={id:crypto.randomUUID(),createdAt:Date.now(),...draft};if(activeThread?.id)await persistLocalQueue(activeThread.id,[...queued,item]);else setQueued(prev=>[...prev,item])}
       catch(error){setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);setEvents(prev=>[...prev,{id:"queue-local-error-"+Date.now(),kind:"error",title:"Could not queue follow-up: "+(error.message||String(error)),status:"done",raw:{}}])}return;
     }
     try{await waitForActiveClone()}catch(error){setEvents(prev=>[...prev,{id:"clone-wait-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
@@ -2621,7 +2641,7 @@ export default function App(){
       }finally{setRunning(false)}
       return;
     }
-    await startTurn(draft.text,draft.attachments,draft.model).catch(e=>{restoreFailedDraft(draft);setRunning(false);setEvents([{id:"send-error",kind:"error",title:e.message,status:"done",raw:{}}])});
+    await startTurn(draft.text,draft.attachments,draft.model,null,null,repositoryFocusPaths(draft.attachments,draft.contextChips)).catch(e=>{restoreFailedDraft(draft);setRunning(false);setEvents([{id:"send-error",kind:"error",title:e.message,status:"done",raw:{}}])});
   }
   async function send(){
     if(submittingRef.current)return;
@@ -2642,7 +2662,7 @@ export default function App(){
     try{await validateAttachmentPaths(attachments)}catch(error){setEvents(prev=>[...prev,{id:"background-attachment-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
     const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd,model,projectless:projectlessMode};
     setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);setEvents([]);resetAssistantStream();setSection("chat");
-    startDetachedTurn(draft.text,draft.attachments,draft.model,{basePath:draft.projectPath,projectless:draft.projectless}).catch(async error=>{
+    startDetachedTurn(draft.text,draft.attachments,draft.model,{basePath:draft.projectPath,projectless:draft.projectless,focusPaths:repositoryFocusPaths(draft.attachments,draft.contextChips)}).catch(async error=>{
       const guard=error?.trebellUncertain;
       const guardedDraft=guard?{...draft,text:"[CHECK EXISTING THREAD BEFORE RETRY] "+draft.text}:draft;
       const possibleThread=guard?.threadId?" Possible thread: "+guard.threadId+".":"";
@@ -2695,31 +2715,39 @@ export default function App(){
     await validateAttachmentPaths(item.attachments||[]);
     if(runtimeCapabilities.steering&&running&&rpc&&activeThread&&activeTurnId){
       await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments)});
-      setQueued(prev=>prev.filter(q=>q.id!==item.id));setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,turnId:activeTurnId}]);return;
+      await persistLocalQueue(activeThread.id,queued.filter(q=>q.id!==item.id));setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,turnId:activeTurnId}]);return;
     }
     if(running)return;
-    await startTurn(item.text,item.attachments,item.model||model);
-    setQueued(prev=>prev.filter(q=>q.id!==item.id));
+    const threadId=activeThread?.id||null,dispatching=queued.map(q=>q.id===item.id?{...q,dispatchingAt:Date.now(),autoStartFailed:false}:q);
+    if(threadId)await persistLocalQueue(threadId,dispatching);else setQueued(dispatching);
+    try{
+      await startTurn(item.text,item.attachments,item.model||model,null,null,repositoryFocusPaths(item.attachments,item.contextChips));
+      const remaining=dispatching.filter(q=>q.id!==item.id);if(threadId)await persistLocalQueue(threadId,remaining);else setQueued(remaining);
+    }catch(error){
+      const failed=dispatching.map(q=>q.id===item.id?{...q,dispatchingAt:null,autoStartFailed:true}:q);try{if(threadId)await persistLocalQueue(threadId,failed);else setQueued(failed)}catch{setQueued(failed)}throw error;
+    }
   }
   async function editQueued(item){
-    if(item?.native){if(!item.editable){setEvents(prev=>[...prev,{id:"queue-edit-unavailable-"+Date.now(),kind:"error",title:"This queued follow-up contains input Trebell cannot safely edit yet.",status:"done",raw:{}}]);return}setQueuedEditId(item.id)}else setQueued(prev=>prev.filter(entry=>entry.id!==item.id));
+    if(item?.native){if(!item.editable){setEvents(prev=>[...prev,{id:"queue-edit-unavailable-"+Date.now(),kind:"error",title:"This queued follow-up contains input Trebell cannot safely edit yet.",status:"done",raw:{}}]);return}setQueuedEditId(item.id)}
+    else if(activeThread?.id)await persistLocalQueue(activeThread.id,queued.filter(entry=>entry.id!==item.id));else setQueued(prev=>prev.filter(entry=>entry.id!==item.id));
     setPrompt(item.draftText??item.text??"");setAttachments(item.attachments||[]);setContextChips(item.contextChips||[]);
   }
   async function removeQueued(item){
-    if(item?.native&&rpc&&activeThread?.id){await rpc.request("thread/queue/delete",{threadId:activeThread.id,queuedSubmissionId:item.id});if(queuedEditId===item.id)setQueuedEditId(null)}
-    setQueued(prev=>prev.filter(entry=>entry.id!==item.id));
+    if(item?.native&&rpc&&activeThread?.id){await rpc.request("thread/queue/delete",{threadId:activeThread.id,queuedSubmissionId:item.id});if(queuedEditId===item.id)setQueuedEditId(null);setQueued(prev=>prev.filter(entry=>entry.id!==item.id));return}
+    if(activeThread?.id)await persistLocalQueue(activeThread.id,queued.filter(entry=>entry.id!==item.id));else setQueued(prev=>prev.filter(entry=>entry.id!==item.id));
   }
   async function moveQueued(item,direction){
     const next=reorderQueue(queued,item.id,direction);if(next===queued||next.map(entry=>entry.id).join("\0")===queued.map(entry=>entry.id).join("\0"))return;
-    if(item?.native&&rpc&&activeThread?.id)await rpc.request("thread/queue/reorder",{threadId:activeThread.id,queuedSubmissionIds:next.map(entry=>entry.id)});
-    setQueued(next);
+    if(item?.native&&rpc&&activeThread?.id){await rpc.request("thread/queue/reorder",{threadId:activeThread.id,queuedSubmissionIds:next.map(entry=>entry.id)});setQueued(next);return}
+    if(activeThread?.id)await persistLocalQueue(activeThread.id,next);else setQueued(next);
   }
   async function stop(){
     if(rpc&&activeThread?.id&&activeTurnId)await rpc.request("turn/interrupt",{threadId:activeThread.id,turnId:activeTurnId});
     if(runtimeCapabilities.nativeQueue&&queueMode==="native"){setRunning(false);setActiveTurnId(null);await loadNativeQueue(rpc,activeThread?.id);return}
     const restored=restoreQueuedDraft({prompt,attachments,contextChips,queued,maxAttachments:MAX_COMPOSER_ATTACHMENTS});
+    if(activeThread?.id)await persistLocalQueue(activeThread.id,[]);else setQueued([]);
     setPrompt(restored.prompt);setAttachments(restored.attachments);setContextChips(restored.contextChips);
-    setQueued([]);setRunning(false);
+    setRunning(false);
   }
   async function editFromHere(message){
     if(!runtimeCapabilities.rewind||!rpc||!activeThread?.id||!message.turnId)return;
@@ -2739,11 +2767,11 @@ export default function App(){
     setPrompt(stash.text||"");setAttachments(stash.attachments||[]);setContextChips(stash.contextChips||[]);
   }
   async function addFiles(paths){setAttachments(prev=>[...new Set([...prev,...paths])].slice(0,MAX_COMPOSER_ATTACHMENTS))}
-  async function addContextPath(path,{kind="context",label="Context",detail=""}={}){
+  async function addContextPath(path,{kind="context",label="Context",detail="",sourcePath=null}={}){
     if(!path)return null;
     if(!attachments.includes(path)&&attachments.length>=MAX_COMPOSER_ATTACHMENTS)throw new Error(`Composer supports up to ${MAX_COMPOSER_ATTACHMENTS} attachments/context items.`);
     await addFiles([path]);
-    setContextChips(prev=>[...prev.filter(chip=>chip.path!==path),{id:crypto.randomUUID(),path,kind,label,detail}].slice(-MAX_COMPOSER_ATTACHMENTS));
+    setContextChips(prev=>[...prev.filter(chip=>chip.path!==path),{id:crypto.randomUUID(),path,kind,label,detail,sourcePath:sourcePath||null}].slice(-MAX_COMPOSER_ATTACHMENTS));
     return path;
   }
   async function prepareAttachmentPaths(paths){
@@ -2774,7 +2802,7 @@ export default function App(){
     const body={paths:[item.path]};if(workspaceEnvironmentId!==undefined)body.environmentId=workspaceEnvironmentId;
     const imported=await api("/api/attachments/import",{method:"POST",body});
     const path=imported.files?.[0]?.path||item.path;
-    await addContextPath(path,{kind:"file",label:item.name||String(item.path).split(/[\\/]/).pop()||"File",detail:item.relativePath||item.path});
+    await addContextPath(path,{kind:"file",label:item.name||String(item.path).split(/[\\/]/).pop()||"File",detail:item.relativePath||item.path,sourcePath:item.path});
     return path;
   }
   async function pickFiles(){
@@ -3258,7 +3286,7 @@ export default function App(){
               <ActivityTimeline ref={activityTimelineRef} events={events} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel}/>
               {guardianDenials.map(review=><div className="inline-approval" key={review.reviewId}><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div>)}
               {approvals[0]&&<div className="inline-approval"><ApprovalCard request={approvals[0]} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
-              {queued.map((item,index)=><div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span>{item.native?`Queued in ${agentRuntimeLabel}`:item.autoStartFailed?"Queued · retry needed":"Queued"}{queuedEditId===item.id?" · editing":""}</span><p>{item.text}</p><div className="queued-message-actions"><button disabled={running&&!runtimeCapabilities.steering} onClick={()=>runUserAction(()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={()=>editQueued(item)} disabled={queuedEditId===item.id||item.editable===false}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={index===0} onClick={()=>runUserAction(()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={index===queued.length-1} onClick={()=>runUserAction(()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button onClick={()=>runUserAction(()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>)}
+              {queued.map((item,index)=><div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span>{item.native?`Queued in ${agentRuntimeLabel}`:item.autoStartFailed?"Queued · retry needed":"Queued"}{queuedEditId===item.id?" · editing":""}</span><p>{item.text}</p><div className="queued-message-actions"><button disabled={running&&!runtimeCapabilities.steering} onClick={()=>runUserAction(()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={()=>runUserAction(()=>editQueued(item),"Could not edit queued follow-up")} disabled={queuedEditId===item.id||item.editable===false}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={index===0} onClick={()=>runUserAction(()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={index===queued.length-1} onClick={()=>runUserAction(()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button onClick={()=>runUserAction(()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>)}
               {!messages.length&&!events.length&&!guardianDenials.length&&!approvals.length&&!queued.length&&!worktreeSetup&&<div className="welcome">
                 <div className="welcome-mark"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/></div>
                 <h1>{projectlessMode?"What do you want to think through?":"What do you want to build?"}</h1>

@@ -74,6 +74,20 @@ test("context engine ranks task-relevant code, instructions and tests under a ha
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
+test("large scoped repository instructions are bounded without dropping nested guidance",async()=>{
+  const root=await fixture();
+  try{
+    await writeFile(join(root,"AGENTS.md"),"ROOT_SENTINEL keep authentication behavior safe.\n"+"root guidance filler\n".repeat(900),"utf8");
+    await writeFile(join(root,"src","auth","AGENTS.md"),"NESTED_SENTINEL auth files require refresh-token coverage.\n"+"nested guidance filler\n".repeat(500),"utf8");
+    const packet=await new ContextEngine().buildPacket({root,task:"Fix the refresh token session bug",maxTokens:1200,maxFiles:6});
+    assert.ok(packet.tokenEstimate<=1200,`packet used ${packet.tokenEstimate} tokens`);
+    assert.match(packet.injection,/ROOT_SENTINEL/);
+    assert.match(packet.injection,/NESTED_SENTINEL/);
+    assert.match(packet.injection,/nested files override broader guidance/);
+    assert.match(packet.injection,/truncated by Trebell context budget/);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
 test("context engine reuses unchanged files and reparses only changed files",async()=>{
   const root=await fixture();
   try{

@@ -288,6 +288,26 @@ function publicItem(entry,score,centrality,reasons,tokenCost){
   return {path:entry.relativePath,score:Number(score.toFixed(3)),centrality:Number(centrality.toFixed(6)),reasons,symbols:entry.parsed.definitions.slice(0,16),tokenEstimate:tokenCost};
 }
 
+async function boundedInstructionBlock(contextIo,paths,maxTokens){
+  const unique=[...new Set(paths||[])];if(!unique.length||maxTokens<=0)return "";
+  const depth=path=>slash(dirname(path)).split("/").filter(part=>part&&part!==".").length;
+  const ordered=unique.sort((a,b)=>depth(a)-depth(b)||a.localeCompare(b));
+  const prefix="Repository instructions (scoped; nested files override broader guidance):\n";
+  const maxChars=Math.max(256,Math.floor(maxTokens)*4),chunks=[];let remaining=Math.max(0,maxChars-prefix.length);
+  for(let index=0;index<ordered.length&&remaining>80;index++){
+    const path=ordered[index],left=ordered.length-index,header=`### ${path}\n`,marker="\n[truncated by Trebell context budget]";
+    let content="";try{content=String(await contextIo.readText(path)||"").trim()}catch{continue}
+    if(!content)continue;
+    const share=Math.max(96,Math.floor(remaining/left)),contentLimit=Math.max(32,share-header.length-(content.length>share?marker.length:0));
+    let clipped=content.slice(0,contentLimit);if(clipped.length<content.length)clipped=clipped.trimEnd()+marker;
+    let chunk=header+clipped;if(chunk.length>remaining)chunk=chunk.slice(0,remaining);
+    if(chunk.length<=header.length)continue;
+    chunks.push(chunk);remaining-=chunk.length+2;
+  }
+  const block=chunks.length?prefix+"\n"+chunks.join("\n\n"):"";
+  return tokenEstimate(block)<=maxTokens?block:block.slice(0,Math.max(0,Math.floor(maxTokens)*4));
+}
+
 export function planContextBudget({task="",focusPaths=[],tokensUsed=null,contextWindow=null,maxTokens=null,maxFiles=null}={}){
   const text=String(task||"").trim(),terms=taskTerms(text),focusCount=Array.isArray(focusPaths)?focusPaths.length:0;
   const broadIntent=/\b(?:architecture|architectural|across|codebase|repo(?:sitory)?|refactor|redesign|migrate|parity|end[- ]to[- ]end|integrat(?:e|ion)|system[- ]wide|all files|everywhere)\b/i.test(text);
@@ -399,9 +419,9 @@ export class ContextEngine{
     }).slice(0,20);
     const sections=[];let used=tokenEstimate(header)+20;
     if(instructionPaths.length){
-      let block="Repository instructions:\n";
-      for(const path of instructionPaths){try{const content=(await contextIo.readText(path)).slice(0,5000);block+=`\n### ${path}\n${content.trim()}\n`}catch{}}
-      const cost=tokenEstimate(block);if(cost<budget*.35){sections.push(block.trim());used+=cost}
+      const instructionBudget=Math.max(160,Math.min(Math.floor(budget*.35),budget-used-80));
+      const block=await boundedInstructionBlock(contextIo,instructionPaths,instructionBudget),cost=tokenEstimate(block);
+      if(block&&cost>0&&used+cost<=budget){sections.push(block.trim());used+=cost}
     }
     if(git.status){const block=`Current Git status:\n${git.status.trim()}${git.diff?`\n\nCurrent diff excerpt:\n${git.diff.trim()}`:""}`;const clipped=block.slice(0,12_000),cost=tokenEstimate(clipped);if(used+cost<budget*.55){sections.push(clipped);used+=cost}}
 

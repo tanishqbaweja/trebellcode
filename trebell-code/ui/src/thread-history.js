@@ -43,3 +43,18 @@ export function mergeHistoryMessages(earlier=[],current=[]){
   return merged;
 }
 
+function activeTurn(turn){
+  return turn?.status==="inProgress"||turn?.status==="active"||turn?.status?.type==="active";
+}
+
+export function resumedActiveTurnId(resumed){
+  if(resumed?.thread?.status?.type!=="active")return null;
+  const explicit=resumed?.activeTurnId||resumed?.thread?.activeTurnId||resumed?.thread?.status?.turnId;
+  if(explicit)return String(explicit);
+  const threadTurn=[...(resumed?.thread?.turns||[])].reverse().find(activeTurn);if(threadTurn?.id)return String(threadTurn.id);
+  if(resumed?.__trebellHistoryPage?.kind==="turns"){
+    const pageTurn=(resumed.__trebellHistoryPage.data||[]).find(activeTurn);if(pageTurn?.id)return String(pageTurn.id);
+  }
+  return null;
+}
+
