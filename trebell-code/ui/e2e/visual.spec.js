@@ -1241,6 +1241,45 @@ test("repeated turn diff updates replace one activity row instead of growing the
   }finally{await harness.close()}
 });
 
+test("token telemetry stays thread-local and catches up after hidden-page updates",async({page})=>{
+  test.setTimeout(35_000);
+  const first={id:"token-usage-first",name:"Token usage first fixture",preview:"First token usage thread",historyMode:"paginated",cwd:process.cwd(),createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000-10,turns:[]};
+  const second={id:"token-usage-second",name:"Token usage second fixture",preview:"Second token usage thread",historyMode:"paginated",cwd:process.cwd(),createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexRequestHarness(first,{onRequest:async(message,ws)=>{
+    if(message.method==="thread/list"){
+      ws.send(JSON.stringify({id:message.id,result:{data:[second,first],nextCursor:null}}));return true;
+    }
+    if(message.method==="thread/resume"){
+      const selected=message.params?.threadId===second.id?second:first;
+      ws.send(JSON.stringify({id:message.id,result:{thread:selected,itemsBackwardsCursor:null,turnsBackwardsCursor:null}}));return true;
+    }
+    return false;
+  }});
+  const usage=percent=>({last:{inputTokens:percent},total:{totalTokens:percent+5},modelContextWindow:100});
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,first,"token-telemetry-isolation-fixture",{threadMeta:{[second.id]:{projectless:true,environmentId:null}}});
+    await page.goto("/");
+    await page.getByRole("button",{name:/Token usage first fixture/}).click();
+    await expect(page.locator(".thread-row.active")).toContainText("Token usage first fixture");
+    harness.emit({method:"thread/tokenUsage/updated",params:{threadId:first.id,tokenUsage:usage(50)}});
+    await expect(page.locator(".composer-status")).toContainText("Context 50%");
+    await page.getByRole("button",{name:/Token usage second fixture/}).click();
+    await expect(page.locator(".thread-row.active")).toContainText("Token usage second fixture");
+    await expect(page.locator(".composer-status")).not.toContainText("Context 50%");
+    harness.emit({method:"thread/tokenUsage/updated",params:{threadId:second.id,tokenUsage:usage(20)}});
+    await expect(page.locator(".composer-status")).toContainText("Context 20%");
+    await page.getByRole("button",{name:"Settings",exact:true}).click();
+    await expect(page.getByRole("heading",{name:"Settings"})).toBeVisible();
+    harness.emit({method:"thread/tokenUsage/updated",params:{threadId:second.id,tokenUsage:usage(80)}});
+    await page.getByRole("button",{name:"Threads",exact:true}).click();
+    await expect(page.locator(".composer-status")).toContainText("Context 80%");
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"token-telemetry-isolation-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
 test("direct fallback never drops attachments or failed text sends",async({page,request})=>{
   test.setTimeout(35_000);
   const baseBootstrap=await (await request.get("/api/bootstrap")).json();

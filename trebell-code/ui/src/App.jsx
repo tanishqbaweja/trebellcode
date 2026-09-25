@@ -734,6 +734,12 @@ export default function App(){
     if(render)setThreadTelemetry(prev=>({...prev,[threadId]:next}));
   }
   useEffect(()=>{if(rightPanelOpen&&rightPanelTab==="agents")setThreadTelemetry({...threadTelemetryRef.current})},[rightPanelOpen,rightPanelTab]);
+  useEffect(()=>{
+    const visible=section==="chat"||section==="new"||(rightPanelOpen&&rightPanelTab==="runtime");
+    const threadId=activeThread?.id;if(!visible||!threadId)return;
+    const latest=threadTelemetryRef.current[threadId];
+    if(latest&&Object.prototype.hasOwnProperty.call(latest,"tokenUsage"))setTokenUsage(current=>current===latest.tokenUsage?current:latest.tokenUsage||null);
+  },[section,rightPanelOpen,rightPanelTab,activeThread?.id]);
   function settleCompactionWaiter(threadId,error=null,result={ok:true}){
     const id=String(threadId||"");const waiter=compactionWaitersRef.current.get(id);if(!waiter)return false;
     compactionWaitersRef.current.delete(id);clearTimeout(waiter.timer);
@@ -1748,7 +1754,7 @@ export default function App(){
     }
     else if(message.method==="thread/tokenUsage/updated"){
       updateThreadTelemetry(threadId,{tokenUsage:p.tokenUsage||null,lastActivityAt:Date.now()});
-      if(isCurrent)setTokenUsage(p.tokenUsage||null);
+      if(isCurrent&&(section==="chat"||section==="new"||(rightPanelOpen&&rightPanelTab==="runtime")))setTokenUsage(p.tokenUsage||null);
     }
     else if(message.method==="thread/goal/updated"&&isCurrent)setGoal(p.goal||null);
     else if(message.method==="thread/goal/cleared"&&isCurrent)setGoal(null);
@@ -2002,7 +2008,7 @@ export default function App(){
     const openedThread=resumed?.thread||thread;
     rememberConversationPosition();
     if(previousThreadId&&previousThreadId!==thread.id)releaseInactiveCodexThread(previousThreadId);
-    activeThreadRef.current=openedThread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection)setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setActiveThread(openedThread);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
+    activeThreadRef.current=openedThread;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=threadScrollPositionsRef.current.get(thread.id)?.atEnd??true;if(!preserveSection)setSection("chat");setMessages([]);setHistoryPage({threadId:thread.id,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setWorktreeSetup(null);setTokenUsage(threadTelemetryRef.current[thread.id]?.tokenUsage||null);setActiveThread(openedThread);persistThreadWorkspaceContext(openedThread,openedThread.cwd,{archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(openedThread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
     else if(openedThread.cwd)await touchProject(openedThread.cwd,threadEnvironmentId);else setProjectPath(projectPath);
     if(!reopeningCurrentThread){setCheckpointByTurn({});setGoal(null);setLinkedPullRequests(savedMeta.linkedPullRequests||[])}
