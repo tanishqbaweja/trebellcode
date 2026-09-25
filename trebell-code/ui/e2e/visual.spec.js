@@ -968,7 +968,7 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     ],
     stats:{filesIndexed:138,reparsed:3,reused:135,skipped:2,graphEdges:412,durationMs:24},
   };
-  const turnContexts=[];
+  const turnContexts=[],contextBodies=[];
   let failContext=false,contextCalls=0;
   let meta={projectless:false,environmentId:null};
   const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
@@ -990,7 +990,7 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
       return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(meta)});
     });
     await page.route(/\/api\/context\/packet$/,route=>{
-      contextCalls++;const body=route.request().postDataJSON();
+      contextCalls++;const body=route.request().postDataJSON();contextBodies.push(body);
       if(Number(body?.tokensUsed)>=93_000){
         return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
         id:"ctx-pressure-fixture",root:project.path,task:body.task||"",generatedAt:Date.now(),tokenEstimate:0,maxTokens:0,items:[],injection:"",skipped:true,
@@ -1040,6 +1040,8 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     await composer.fill("Continue even if repository context refresh fails");
     await page.getByTestId("send").click();
     await expect.poll(()=>turnContexts.length).toBe(2);
+    expect(contextBodies[1].task).toContain("Fix refresh token session bug");
+    expect(contextBodies[1].task).toContain("Continue even if repository context refresh fails");
     expect(turnContexts[1]).toBeNull();
     await expect(page.locator(".tool-event.kind-error").filter({hasText:"Trebell repository context unavailable"})).toContainText("Deliberate context refresh failure");
     await expect(inspector.getByRole("alert")).toContainText("Latest context refresh failed");

@@ -45,6 +45,7 @@ import { nextSnoozeWakeAt } from "./thread-snooze.js";
 import { sharedRuntimeCapabilities } from "../../src/runtime-capabilities.mjs";
 import { repositoryFocusPaths } from "./context-focus.js";
 import { hydratePersistedQueue, persistedQueueItems } from "./persistent-queue.js";
+import { contextTaskAnchor, contextTaskText } from "./context-task.js";
 
 const TerminalPanel=lazy(()=>import("./components/TerminalPanel.jsx"));
 const WorkspacePanel=lazy(()=>import("./components/WorkspacePanel.jsx"));
@@ -572,7 +573,7 @@ export default function App(){
   const [threadTelemetry,setThreadTelemetry]=useState({});const threadTelemetryRef=useRef({});
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false); const [initialLoadError,setInitialLoadError]=useState(""); const [initialLoadRevision,setInitialLoadRevision]=useState(0);
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"}); const [paletteDataError,setPaletteDataError]=useState("");
-  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
+  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
   const autoSettleCandidates=useMemo(()=>hasAutoSettleCandidates(threads,threadMeta),[threads,threadMeta]);
   function resetAssistantStream(){assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();assistantTextRef.current="";commandOutputRef.current.clear();mcpProgressRef.current.clear();activityTimelineRef.current?.resetStreams()}
@@ -2024,6 +2025,7 @@ export default function App(){
     const reopeningCurrentThread=previousThreadId===thread.id;
     const threadEnvironmentId=thread.providerMeta?.environmentId||null;
     const savedMeta=threadMeta[thread.id]||{};const projectless=Boolean(savedMeta.projectless);const useNativeQueue=Boolean(runtimeCapabilities.nativeQueue&&projectless);
+    const savedContextTask=savedMeta.trebellContext?.continuityTask||savedMeta.trebellContext?.userTask||savedMeta.trebellContext?.task||"";if(savedContextTask)contextTaskRef.current.set(thread.id,savedContextTask);
     const restoredLocalQueue=useNativeQueue?[]:hydratePersistedQueue(savedMeta.trebellQueue||[]);
     if(thread.cwd&&!threadEnvironmentId&&!projectless)await api("/api/worktree/ensure",{method:"POST",body:{path:thread.cwd,environmentId:null}}).catch(error=>{throw new Error("Could not restore this managed worktree: "+error.message)});
     const connectedClient=Boolean(client&&!(client===rpc&&rpcStatus!=="connected"));
@@ -2404,9 +2406,12 @@ export default function App(){
   async function prepareTurnContext(thread,cwd,text,paths,{projectless=projectlessMode,background=false,ignoreUsage=false}={}){
     if(projectless||bootstrap.mock||!thread?.id||!cwd)return null;
     const usage=ignoreUsage?null:(threadTelemetryRef.current[thread.id]?.tokenUsage||(activeThread?.id===thread.id?tokenUsage:null));
+    const previousTask=contextTaskRef.current.get(thread.id)||threadMeta[thread.id]?.trebellContext?.continuityTask||threadMeta[thread.id]?.trebellContext?.userTask||threadMeta[thread.id]?.trebellContext?.task||"";
+    const contextTask=contextTaskText(text,previousTask);
+    const continuityTask=contextTaskAnchor(text,previousTask);
     try{
       const packet=await api("/api/context/packet",{method:"POST",body:{
-        path:cwd,task:text,focusPaths:paths||[],environmentId:workspaceEnvironmentId||null,
+        path:cwd,task:contextTask,focusPaths:paths||[],environmentId:workspaceEnvironmentId||null,
         tokensUsed:usage?.last?.inputTokens??null,contextWindow:usage?.modelContextWindow??null,
       }});
       if(packet.skipped){
@@ -2416,9 +2421,10 @@ export default function App(){
         if(!background)setEvents(prev=>[...prev,{id:"context-pressure-"+packet.id,kind:"context",title:"Trebell context skipped · preserving "+Number(pressure.reserveTokens||0).toLocaleString()+" tokens for the response",status:"done",raw:{contextId:packet.id,budget:packet.budget}}]);
         return packet;
       }
-      const stored={...packet,runtime:agentRuntime,delivery:agentRuntime==="codex"?"additionalContext":"promptPreamble"};
+      const stored={...packet,userTask:String(text||""),queryTask:contextTask,continuityTask,runtime:agentRuntime,delivery:agentRuntime==="codex"?"additionalContext":"promptPreamble"};
       try{await updateThreadMeta(thread.id,{trebellContext:stored,trebellContextError:null,trebellContextPressure:null},{strict:true})}
       catch(error){showActionError(error,"Repository context was injected but its inspector state could not be saved")}
+      contextTaskRef.current.set(thread.id,continuityTask);
       if(!background)setEvents(prev=>[...prev,{id:"context-"+packet.id,kind:"context",title:`Trebell context · ${packet.items?.length||0} files · ~${packet.tokenEstimate||0} tokens`,status:"done",raw:{contextId:packet.id,items:packet.items?.length||0,tokenEstimate:packet.tokenEstimate||0}}]);
       return packet;
     }catch(error){
