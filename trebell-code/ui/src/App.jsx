@@ -2825,7 +2825,7 @@ export default function App(){
       const draft={text,attachments:[...attachments],contextChips:[...contextChips]};setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);
       try{
         if(await saveNativeQueuedFollowup(draft.text,draft.attachments,draft.contextChips,{queuedId:queuedEditId}))return;
-        setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);setEvents(prev=>[...prev,{id:"queue-update-unavailable-"+Date.now(),kind:"error",title:"This Codex runtime does not support editing native queued follow-ups.",status:"done",raw:{}}]);return;
+        setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);setEvents(prev=>[...prev,{id:"queue-update-unavailable-"+Date.now(),kind:"error",title:`${agentRuntimeLabel} does not support editing native queued follow-ups.`,status:"done",raw:{}}]);return;
       }catch(error){setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);setEvents(prev=>[...prev,{id:"queue-update-error-"+Date.now(),kind:"error",title:"Could not update queued follow-up: "+(error.message||String(error)),status:"done",raw:{}}]);return}
     }
     if(running){
@@ -3144,7 +3144,7 @@ export default function App(){
     setElicitations(prev=>prev.slice(1));return true;
   }
   async function verifyMcpUser(request){
-    if(agentRuntime!=="codex"||!rpc)throw new Error("Native user verification requires the Codex runtime.");
+    if(agentRuntime!=="codex"||!rpc)throw new Error("Device-backed user verification requires the Codex runtime.");
     if(workspaceEnvironmentId)throw new Error("Device verification is unavailable for remote workspaces.");
     const params=request?.params||{};
     if(params.mode!=="openai/userVerification")throw new Error("This request is not a Codex user-verification challenge.");
