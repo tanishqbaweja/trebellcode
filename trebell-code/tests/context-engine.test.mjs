@@ -5,7 +5,38 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { ContextEngine, createRemoteContextIo, pageRank, planContextBudget } from "../src/context-engine.mjs";
+import { ContextEngine, createRemoteContextIo, pageRank, parseSource, planContextBudget } from "../src/context-engine.mjs";
+
+test("JavaScript and TypeScript structure uses a real parser with graceful regex fallback",()=>{
+  const parsed=parseSource(`
+import {
+  rotateRefreshToken as rotate,
+  type Token,
+} from "./token.js";
+export { verifyToken } from "./token.js";
+export interface SessionOptions { token: Token }
+export type SessionState = "fresh" | "expired";
+export enum SessionMode { Strict, Relaxed }
+export const createSession =
+  (options: SessionOptions) => rotate(options.token);
+const misleading = "GhostSymbol";
+// GhostComment should not become a reference either.
+`,"src/session.ts");
+  assert.equal(parsed.parser,"babel");
+  assert.deepEqual(parsed.imports,["./token.js"]);
+  const definitions=new Map(parsed.definitions.map(item=>[item.name,item.kind]));
+  assert.equal(definitions.get("SessionOptions"),"interface");
+  assert.equal(definitions.get("SessionState"),"type");
+  assert.equal(definitions.get("SessionMode"),"enum");
+  assert.equal(definitions.get("createSession"),"function");
+  assert.ok(parsed.references.has("rotateRefreshToken"),"aliased import should retain the exported symbol relationship");
+  assert.equal(parsed.references.has("GhostSymbol"),false,"string contents must not create structural references");
+  assert.equal(parsed.references.has("GhostComment"),false,"comments must not create structural references");
+
+  const fallback=parseSource("function broken( {", "src/broken.js");
+  assert.equal(fallback.parser,"regex");
+  assert.ok(fallback.definitions.some(item=>item.name==="broken"));
+});
 
 test("context budgeting is deterministic and shrinks repository injection as the active context fills",()=>{
   const focused=planContextBudget({task:"Rename the save button"});
@@ -69,6 +100,7 @@ test("context engine ranks task-relevant code, instructions and tests under a ha
     assert.ok(paths.includes("src/auth/token.js"),paths.join(", "));
     assert.ok(paths.includes("tests/auth-refresh.test.js"),paths.join(", "));
     const session=packet.items.find(item=>item.path==="src/auth/session.js");
+    assert.equal(session.parser,"babel");
     assert.ok(session.reasons.some(reason=>/task-related symbol|task terms|path matches/i.test(reason)));
     assert.ok(packet.stats.graphEdges>=3);
   }finally{await rm(root,{recursive:true,force:true})}

@@ -2,10 +2,12 @@ import { execFile } from "node:child_process";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { basename, dirname, extname, join, posix, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { parse as parseJavaScriptAst } from "@babel/parser";
 
 const execFileAsync=promisify(execFile);
 const SKIP=new Set([".git","node_modules","target","dist","build",".next",".cache","desktop-dist","coverage","vendor"]);
 const SOURCE_EXTENSIONS=new Set([".js",".jsx",".ts",".tsx",".mjs",".cjs",".py",".rs",".go",".java",".kt",".kts",".cs",".c",".h",".cc",".cpp",".cxx",".hpp",".hh",".rb",".php",".swift",".vue",".svelte"]);
+const BABEL_SOURCE_EXTENSIONS=new Set([".js",".jsx",".ts",".tsx",".mjs",".cjs"]);
 const RESOLVE_EXTENSIONS=[".js",".jsx",".ts",".tsx",".mjs",".cjs",".py",".rs",".go",".java",".kt",".cs"];
 const INSTRUCTION_NAMES=new Set(["AGENTS.md","CLAUDE.md"]);
 const STOP_WORDS=new Set(["the","and","for","with","that","this","from","into","when","where","what","which","while","your","trebell","code","make","need","should","would","could","have","has","had","are","was","were","will","fix","add","use","using","work","working"]);
@@ -66,15 +68,74 @@ function importSpecifiers(content,extension){
   return [...new Set(specs)].slice(0,300);
 }
 
+function parserVersion(relativePath){return BABEL_SOURCE_EXTENSIONS.has(extname(relativePath).toLowerCase())?"babel-js-v1":"regex-v1"}
+
+function bindingNames(node,out=[]){
+  if(!node||typeof node!=="object")return out;
+  if(node.type==="Identifier"){out.push(node.name);return out}
+  if(node.type==="RestElement")return bindingNames(node.argument,out);
+  if(node.type==="AssignmentPattern")return bindingNames(node.left,out);
+  if(node.type==="ArrayPattern"){for(const item of node.elements||[])bindingNames(item,out);return out}
+  if(node.type==="ObjectPattern"){
+    for(const property of node.properties||[]){
+      if(property?.type==="RestElement")bindingNames(property.argument,out);
+      else bindingNames(property?.value,out);
+    }
+  }
+  return out;
+}
+
+function parseJavaScriptSource(content,relativePath){
+  const extension=extname(relativePath).toLowerCase(),plugins=["decorators-legacy"];
+  if(extension===".jsx"||extension===".tsx")plugins.push("jsx");
+  if(extension===".ts"||extension===".tsx")plugins.push("typescript");
+  const ast=parseJavaScriptAst(String(content||""),{sourceType:"unambiguous",errorRecovery:true,plugins});
+  const lines=String(content||"").split(/\r?\n/),definitions=[],references=new Map(),imports=new Set(),seenDefinitions=new Set();
+  const addDefinition=(name,kind,node)=>{
+    const value=String(name||"");if(!value||definitions.length>=500)return;
+    const line=Number(node?.loc?.start?.line)||1,key=kind+"\0"+value+"\0"+line;if(seenDefinitions.has(key))return;seenDefinitions.add(key);
+    definitions.push({name:value,kind,line,signature:String(lines[line-1]||"").trim().slice(0,300)});
+  };
+  const addImport=value=>{const spec=String(value||"").trim();if(spec&&imports.size<300)imports.add(spec)};
+  const visit=node=>{
+    if(!node||typeof node!=="object")return;
+    if(node.type==="Identifier")references.set(node.name,Math.min(50,(references.get(node.name)||0)+1));
+    if(node.type==="ImportDeclaration"||node.type==="ExportAllDeclaration")addImport(node.source?.value);
+    else if(node.type==="ExportNamedDeclaration"&&node.source)addImport(node.source.value);
+    else if(node.type==="TSImportEqualsDeclaration"&&node.moduleReference?.type==="TSExternalModuleReference")addImport(node.moduleReference.expression?.value);
+    else if(node.type==="ImportExpression")addImport(node.source?.value);
+    else if(node.type==="CallExpression"){
+      const dynamicImport=node.callee?.type==="Import",commonJs=node.callee?.type==="Identifier"&&node.callee.name==="require";
+      if(dynamicImport||commonJs)addImport(node.arguments?.[0]?.value);
+    }
+    if(node.type==="FunctionDeclaration"&&node.id)addDefinition(node.id.name,"function",node);
+    else if(node.type==="ClassDeclaration"&&node.id)addDefinition(node.id.name,"class",node);
+    else if(node.type==="TSInterfaceDeclaration"&&node.id)addDefinition(node.id.name,"interface",node);
+    else if(node.type==="TSTypeAliasDeclaration"&&node.id)addDefinition(node.id.name,"type",node);
+    else if(node.type==="TSEnumDeclaration"&&node.id)addDefinition(node.id.name,"enum",node);
+    else if(node.type==="VariableDeclarator"&&["ArrowFunctionExpression","FunctionExpression"].includes(node.init?.type))for(const name of bindingNames(node.id))addDefinition(name,"function",node);
+    for(const [key,value] of Object.entries(node)){
+      if(["loc","start","end","extra","errors","comments","tokens"].includes(key)||!value)continue;
+      if(Array.isArray(value)){for(const child of value)if(child&&typeof child==="object"&&typeof child.type==="string")visit(child)}
+      else if(typeof value==="object"&&typeof value.type==="string")visit(value);
+    }
+  };
+  visit(ast.program);
+  return {definitions,references,imports:[...imports],parser:"babel"};
+}
+
 function parseSource(content,relativePath){
   const extension=extname(relativePath).toLowerCase(),lines=String(content||"").split(/\r?\n/),definitions=[];
+  if(BABEL_SOURCE_EXTENSIONS.has(extension)){
+    try{return parseJavaScriptSource(content,relativePath)}catch{}
+  }
   for(let index=0;index<lines.length&&definitions.length<500;index++){
     const found=sourceDefinition(lines[index],extension);if(found)definitions.push({...found,line:index+1,signature:lines[index].trim().slice(0,300)});
   }
   const references=new Map();
   const identifiers=String(content||"").match(/[A-Za-z_$][\w$]{2,}/g)||[];
   for(const name of identifiers.slice(0,40_000))references.set(name,Math.min(50,(references.get(name)||0)+1));
-  return {definitions,references,imports:importSpecifiers(content,extension)};
+  return {definitions,references,imports:importSpecifiers(content,extension),parser:"regex"};
 }
 
 async function fallbackFiles(root){
@@ -285,7 +346,7 @@ function excerptNeedsFullSource(entry,terms){
 }
 
 function publicItem(entry,score,centrality,reasons,tokenCost){
-  return {path:entry.relativePath,score:Number(score.toFixed(3)),centrality:Number(centrality.toFixed(6)),reasons,symbols:entry.parsed.definitions.slice(0,16),tokenEstimate:tokenCost};
+  return {path:entry.relativePath,score:Number(score.toFixed(3)),centrality:Number(centrality.toFixed(6)),reasons,symbols:entry.parsed.definitions.slice(0,16),parser:entry.parsed.parser||"regex",tokenEstimate:tokenCost};
 }
 
 async function boundedInstructionBlock(contextIo,paths,maxTokens){
@@ -362,7 +423,7 @@ export class ContextEngine{
     const dirtyPaths=new Set([...(git?.changed||[]),...(previousGit?.changed||[])]);
     const inspect=(!previous.size||!git?.isGit||revisionChanged||revisionUnknown)
       ?sourcePaths
-      :sourcePaths.filter(relativePath=>!previous.has(relativePath)||dirtyPaths.has(relativePath));
+      :sourcePaths.filter(relativePath=>!previous.has(relativePath)||previous.get(relativePath)?.parserVersion!==parserVersion(relativePath)||dirtyPaths.has(relativePath));
     const inspectSet=new Set(inspect);
     const metadata=await io.metadata(inspect);
     const toRead=[];
@@ -371,14 +432,15 @@ export class ContextEngine{
       if(cached&&!inspectSet.has(relativePath)){next.set(relativePath,cached);reused++;continue}
       const info=metadata.get(relativePath);
       if(!info||info.size>this.maxFileBytes){skipped++;continue}
-      if(cached&&cached.size===info.size&&cached.version===info.version){next.set(relativePath,cached);reused++;continue}
+      const parser=parserVersion(relativePath);
+      if(cached&&cached.parserVersion===parser&&cached.size===info.size&&cached.version===info.version){next.set(relativePath,cached);reused++;continue}
       toRead.push(relativePath);
     }
     const contents=await io.readMany(toRead,this.maxFileBytes);
     for(const relativePath of toRead){
       const info=metadata.get(relativePath),content=contents.get(relativePath);
       if(!info||typeof content!=="string"||content.includes("\0")){skipped++;continue}
-      next.set(relativePath,{relativePath,size:info.size,version:info.version,sample:content.slice(0,64_000),parsed:parseSource(content,relativePath)});reparsed++;
+      next.set(relativePath,{relativePath,size:info.size,version:info.version,parserVersion:parserVersion(relativePath),sample:content.slice(0,64_000),parsed:parseSource(content,relativePath)});reparsed++;
     }
     this.roots.set(cacheKey,next);this.gitStates.set(cacheKey,{head:currentHead,changed:new Set(git?.changed||[])});
     return {root:absolute,files:next,paths,reparsed,reused,skipped,inspected:inspect.length,durationMs:Date.now()-started,cacheKey,revisionChanged,revisionUnknown};
