@@ -514,6 +514,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
   const recoveryInFlight=new Set();
   const liveToolOutput=new Map();
   const pendingDelegations=new Map();
+  const nativeQueueStarting=new Set();
   function clearLiveToolOutput(threadId){
     const prefix=String(threadId||"")+":";
     for(const key of liveToolOutput.keys())if(key.startsWith(prefix))liveToolOutput.delete(key);
@@ -656,7 +657,20 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     for(const context of socketContexts)if(context.ws.readyState===context.ws.OPEN)context.ws.send(JSON.stringify({method,params}));
   }
 
-  function settlePrompt({thread,turn,session,promptPromise,model=null}){
+  async function autoStartNextNativeQueue(threadId,context){
+    const id=String(threadId||"");if(!id||!context||nativeQueueStarting.has(id))return false;
+    const current=threadStore.get(id);if(!current||current.runtime!=="native"||current.status?.type==="active")return false;
+    const queue=agentQueue(state,id);if(!queue.length)return false;
+    nativeQueueStarting.add(id);
+    try{
+      await request(context,"thread/queue/start",{threadId:id,queuedSubmissionId:queue[0].id});return true;
+    }catch(error){
+      journal?.record?.({runtime:"native",provider:agentProviderIdentity(current),environmentId:current.providerMeta?.environmentId??null,threadId:id,category:"queue",name:"queue.auto_start_failed",status:"error",data:{queuedSubmissionId:queue[0].id,message:String(error?.message||error).slice(0,500)}});
+      emit("error",{threadId:id,message:"Could not start queued Native follow-up: "+(error?.message||String(error))});return false;
+    }finally{nativeQueueStarting.delete(id)}
+  }
+
+  function settlePrompt({thread,turn,session,promptPromise,model=null,context=null}){
     const persistUsage=result=>{
       const usage=usageFromPromptResult(result,session.__usage);if(!usage)return;const current=threadStore.get(thread.id)||thread;
       state?.recordUsage?.({runtime:current.runtime||runtimeManager.activeRuntime(),provider:agentProviderIdentity(current),model:current.model||model||null,environmentId:current.providerMeta?.environmentId??null,threadId:thread.id,turnId:turn.id,usage:usage.usage,cost:usage.cost,at:usage.at||Date.now()});
@@ -669,6 +683,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const assistant=String(session.__assistant||"").trim();if(assistant){const item={type:"agentMessage",id:`assistant-${turn.id}`,text:assistant,phase:null,memoryCitation:null,delivery:null,questions:null};threadStore.addItem(thread.id,turn.id,item);emit("item/completed",{threadId:thread.id,turnId:turn.id,item,completedAtMs:Date.now()})}
       const status=result?.stopReason==="cancelled"?"cancelled":result?.stopReason==="refusal"?"failed":"completed";const completed=threadStore.finishTurn(thread.id,turn.id,{status,error:status==="failed"?{message:"Agent refused the turn"}:null});
       emit("turn/completed",{threadId:thread.id,turn:completed});emit("thread/status/changed",{threadId:thread.id,status:threadStore.get(thread.id).status});
+      if(status==="completed"&&thread.runtime==="native")queueMicrotask(()=>void autoStartNextNativeQueue(thread.id,context));
     }).catch(error=>{
       if(error?.code==="CLAUDE_REWIND_REJECTED"){
         const restored=restoreClaudeRejectedRewind(threadStore,thread.id,error);
@@ -695,7 +710,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         session.__assistant="";session.__usage=null;emit("turn/started",{threadId:thread.id,turn});emit("thread/status/changed",{threadId:thread.id,status:{type:"active",activeFlags:[]}});
         const continueText="Continue where you left off.";
         const prompt=await contextualAgentPrompt([{type:"text",text:continueText}],await withDurableContext(thread.id,{},continueText));
-        settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,{messageId:randomUUID(),agent:thread.agent||null}),model:thread.model||null});
+        settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,{messageId:randomUUID(),agent:thread.agent||null}),model:thread.model||null,context});
       }catch(error){
         const failed=threadStore.finishTurn(thread.id,recovery.turnId,{status:"failed",error:{message:`Could not continue after restart: ${error.message}`}});emit("error",{threadId:thread.id,turnId:recovery.turnId,message:error.message});if(failed)emit("turn/completed",{threadId:thread.id,turn:failed});recoveryInFlight.delete(thread.id);
       }
@@ -1076,7 +1091,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const promptOptions={messageId:randomUUID(),agent:selectedAgent};
       if(session instanceof NativeAgentSession&&turnGoal?.toolCallBudget!=null&&turnGoal.toolCallTelemetryComplete!==false)promptOptions.maxToolCalls=Math.max(0,Number(turnGoal.toolCallBudget)-Number(turnGoal.toolCallsUsed||0));
       if(session instanceof NativeAgentSession&&turnGoal?.tokenBudgetRemaining!=null)promptOptions.maxOutputTokens=Math.max(1,Math.floor(Number(turnGoal.tokenBudgetRemaining)||1));
-      settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,promptOptions),model:params.model||thread.model||null});
+      settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,promptOptions),model:params.model||thread.model||null,context});
       return {turn};
     }
     if(method==="turn/interrupt"){sessions.get(params.threadId)?.cancel();return {ok:true}}

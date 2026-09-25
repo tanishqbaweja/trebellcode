@@ -183,6 +183,8 @@ test("Trebell Native turn steering interrupts inference and persists the redirec
   try{
     const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;
     const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",input:[{type:"text",text:"Work on auth.ts"}]})).turn;await firstStarted;
+    await assert.rejects(()=>rpc.request("thread/fork",{threadId:thread.id,excludeTurns:true}),/Stop the running Native turn before forking/i);
+    await assert.rejects(()=>rpc.request("thread/revert",{threadId:thread.id,beforeTurnId:turn.id}),/Stop the running Native turn before rewinding/i);
     const steered=await rpc.request("turn/steer",{threadId:thread.id,expectedTurnId:turn.id,input:[{type:"text",text:"Work on parser.ts instead"}]});assert.equal(steered.turnId,turn.id);assert.equal(steered.accepted,true);
     const completed=await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);assert.equal(completed.params.turn.status,"completed");assert.equal(calls,2);
     const persisted=(await rpc.request("thread/read",{threadId:thread.id})).thread.turns[0];const userItems=persisted.items.filter(item=>item.type==="userMessage");assert.equal(userItems.length,2);assert.match(JSON.stringify(userItems[1].content),/Work on parser\.ts instead/);assert.ok(persisted.items.some(item=>item.type==="agentMessage"&&/parser\.ts/.test(item.text)));
@@ -218,8 +220,16 @@ test("Trebell Native fork clones Trebell history and rewind invalidates crossed 
   const nativeProviderTurn=async request=>{
     if(phase==="turn1")return{id:"first-answer",provider:request.provider,model:request.model,text:"FIRST ANSWER",toolCalls:[],finishReason:"stop",usage:{}};
     if(phase==="compact")return{id:"compact-answer",provider:request.provider,model:request.model,text:"Keep parser decision from turn one.",toolCalls:[],finishReason:"stop",usage:{}};
-    assert.ok(request.messages.some(message=>message.trebellCompaction&&String(message.content||"").includes("parser decision")));assert.equal(request.messages.some(message=>String(message.content||"").includes("FIRST REQUEST")),false);
-    return{id:"second-answer",provider:request.provider,model:request.model,text:"SECOND ANSWER",toolCalls:[],finishReason:"stop",usage:{}};
+    if(phase==="turn2"){
+      assert.ok(request.messages.some(message=>message.trebellCompaction&&String(message.content||"").includes("parser decision")));assert.equal(request.messages.some(message=>String(message.content||"").includes("FIRST REQUEST")),false);
+      return{id:"second-answer",provider:request.provider,model:request.model,text:"SECOND ANSWER",toolCalls:[],finishReason:"stop",usage:{}};
+    }
+    if(phase==="after-retained-rewind"){
+      assert.ok(request.messages.some(message=>message.trebellCompaction&&String(message.content||"").includes("parser decision")));assert.equal(request.messages.some(message=>String(message.content||"").includes("SECOND REQUEST")),false);
+      return{id:"retained-answer",provider:request.provider,model:request.model,text:"RETAINED ANSWER",toolCalls:[],finishReason:"stop",usage:{}};
+    }
+    assert.equal(phase,"after-empty-rewind");assert.equal(request.messages.some(message=>message.trebellCompaction),false);assert.equal(request.messages.some(message=>/FIRST REQUEST|SECOND REQUEST|AFTER RETAINED/.test(String(message.content||""))),false);
+    return{id:"empty-answer",provider:request.provider,model:request.model,text:"EMPTY ANSWER",toolCalls:[],finishReason:"stop",usage:{}};
   };
   const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
   const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
@@ -233,7 +243,40 @@ test("Trebell Native fork clones Trebell history and rewind invalidates crossed 
     const forked=threadStore.get(forkedResponse.thread.id);assert.equal(forked.forkedFromId,source.id);assert.equal(forked.turns.length,2);assert.equal(forked.providerMeta.modelProvider,"hcnsec");assert.deepEqual(forked.providerMeta.dynamicToolNamespaces,["trebell_browser"]);assert.equal(forked.providerMeta.nativeCompaction.throughTurnId,first.id);assert.equal(forked.providerMeta.nativeFork.sourceThreadId,source.id);
 
     const retained=(await rpc.request("thread/revert",{threadId:source.id,beforeTurnId:second.id})).thread;assert.equal(retained.turns.length,1);assert.equal(retained.turns[0].id,first.id);assert.equal(retained.providerMeta.nativeCompaction.throughTurnId,first.id);
+    phase="after-retained-rewind";const retainedTurn=(await rpc.request("turn/start",{threadId:source.id,model:"model-a",modelProvider:"hcnsec",permissionProfile:"auto",input:[{type:"text",text:"AFTER RETAINED"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===retainedTurn.id);
     const emptied=(await rpc.request("thread/revert",{threadId:source.id,beforeTurnId:first.id})).thread;assert.equal(emptied.turns.length,0);assert.equal(Object.prototype.hasOwnProperty.call(emptied.providerMeta||{},"nativeCompaction"),false);
+    phase="after-empty-rewind";const emptyTurn=(await rpc.request("turn/start",{threadId:source.id,model:"model-a",modelProvider:"hcnsec",permissionProfile:"auto",input:[{type:"text",text:"AFTER EMPTY"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===emptyTurn.id);
     const forkStillIntact=threadStore.get(forked.id);assert.equal(forkStillIntact.turns.length,2);assert.equal(forkStillIntact.providerMeta.nativeCompaction.throughTurnId,first.id);
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+});
+
+test("Trebell Native durable queue edits, reorders and auto-starts after a successful turn",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-queue-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env),prompts=[];let firstStartedResolve,releaseFirstResolve;const firstStarted=new Promise(resolve=>{firstStartedResolve=resolve}),releaseFirst=new Promise(resolve=>{releaseFirstResolve=resolve});
+  const nativeProviderTurn=async request=>{
+    const visible=JSON.stringify(request.messages.at(-1)?.content||"");prompts.push(visible);
+    if(prompts.length===1){firstStartedResolve();await releaseFirst;return{id:"initial-done",provider:request.provider,model:request.model,text:"Initial done",toolCalls:[],finishReason:"stop",usage:{}}}
+    return{id:"queued-done-"+prompts.length,provider:request.provider,model:request.model,text:"Queued done",toolCalls:[],finishReason:"stop",usage:{}};
+  };
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
+  try{
+    const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:true,permissionProfile:"auto",dynamicTools:[]})).thread;
+    const initial=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",input:[{type:"text",text:"INITIAL TURN"}]})).turn;await firstStarted;
+    const q1=(await rpc.request("thread/queue/add",{threadId:thread.id,input:[{type:"text",text:"FIRST QUEUED"}],clientUserMessageId:"client-q1"})).queuedSubmission;
+    const q2=(await rpc.request("thread/queue/add",{threadId:thread.id,input:[{type:"text",text:"SECOND QUEUED"}],clientUserMessageId:"client-q2"})).queuedSubmission;
+    await rpc.request("thread/queue/update",{threadId:thread.id,queuedSubmissionId:q1.id,input:[{type:"text",text:"FIRST QUEUED EDITED"}]});
+    await rpc.request("thread/queue/reorder",{threadId:thread.id,queuedSubmissionIds:[q2.id,q1.id]});
+    let queued=(await rpc.request("thread/queue/list",{threadId:thread.id,limit:10})).data;assert.deepEqual(queued.map(item=>item.id),[q2.id,q1.id]);assert.match(JSON.stringify(queued[1].input),/FIRST QUEUED EDITED/);
+    releaseFirstResolve();await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===initial.id);
+    for(let attempt=0;attempt<100;attempt++){
+      const current=threadStore.get(thread.id),remaining=(state.threadMeta(thread.id)?.queuedSubmissions||[]).length;
+      if(current.turns.length===3&&current.turns.every(turn=>turn.status==="completed")&&remaining===0)break;
+      await new Promise(resolve=>setTimeout(resolve,20));
+    }
+    const final=threadStore.get(thread.id);assert.equal(final.turns.length,3);assert.ok(final.turns.every(turn=>turn.status==="completed"));assert.equal((state.threadMeta(thread.id)?.queuedSubmissions||[]).length,0);assert.equal(prompts.length,3);
+    assert.match(prompts[0],/INITIAL TURN/);assert.match(prompts[1],/SECOND QUEUED/);assert.match(prompts[2],/FIRST QUEUED EDITED/);
+    assert.equal((await rpc.request("thread/queue/list",{threadId:thread.id,limit:10})).data.length,0);
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
 });
