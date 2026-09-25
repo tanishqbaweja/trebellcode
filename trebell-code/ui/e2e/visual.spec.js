@@ -2586,7 +2586,7 @@ test("Claude runtime profile editor exposes real auto-compaction settings",async
   await prepare(page,request);
   const baseSettings=await (await request.get("/api/settings")).json();
   const baseAgentInfo=await (await request.get("/api/agent-runtimes")).json();
-  let selectedRuntime="codex";
+  let selectedRuntime="codex",savedProfile=null;
   const runtimeFixture=()=>{
     const instances=[...(baseAgentInfo.instances||[])];
     if(!instances.some(item=>item.id==="claude-default"))instances.push({id:"claude-default",kind:"claude",displayName:"Claude Code"});
@@ -2604,6 +2604,11 @@ test("Claude runtime profile editor exposes real auto-compaction settings",async
       const instance=snapshot.instances.find(item=>item.id===(body.instanceId||snapshot.selectedInstanceId))||snapshot.instances.find(item=>item.kind===selectedRuntime);
       const status=snapshot.statuses.find(item=>item.id===instance?.id)||{id:instance?.id,kind:selectedRuntime,available:true};
       return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...snapshot,selected:{runtime:selectedRuntime,instance,status}})});
+    }
+    if(body.action==="upsert"){
+      savedProfile=body.instance||null;
+      const snapshot=runtimeFixture();
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...snapshot,instances:[...(snapshot.instances||[]).filter(item=>item.id!==savedProfile?.id),savedProfile].filter(Boolean)})});
     }
     return route.continue();
   });
@@ -2632,15 +2637,27 @@ test("Claude runtime profile editor exposes real auto-compaction settings",async
   await expect(threshold).toBeVisible();
   await threshold.fill("300000");
   await expect(threshold).toHaveValue("300000");
+  const approvedEnvironment=editor.getByLabel("Approved inherited environment variables");
+  await expect(approvedEnvironment).toBeVisible();
+  await approvedEnvironment.fill("HTTPS_PROXY\nAWS_SECRET_ACCESS_KEY");
+  await expect(approvedEnvironment).toHaveValue("HTTPS_PROXY\nAWS_SECRET_ACCESS_KEY");
+  await expect(editor).toContainText("Values are read from the parent process at launch time and are not stored in the profile.");
   const metrics=await editor.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   await page.screenshot({path:auditDir+"settings-claude-profile-1600x980.png",fullPage:true});
   await page.setViewportSize({width:1280,height:800});
   await page.screenshot({path:auditDir+"settings-claude-profile-1280x800.png",fullPage:true});
+  await editor.getByRole("button",{name:"Save profile",exact:true}).click();
+  await expect(editor).toHaveCount(0);
+  expect(savedProfile?.approvedEnvironmentKeys).toEqual(["HTTPS_PROXY","AWS_SECRET_ACCESS_KEY"]);
+  expect(JSON.stringify(savedProfile)).not.toContain("proxy-secret");
   await page.getByRole("button",{name:"Threads",exact:true}).click();
   await page.getByTestId("right-panel-toggle").click();
-  await expect(page.getByTestId("right-panel").getByRole("button",{name:"Agents",exact:true})).toHaveCount(0);
-  await page.screenshot({path:auditDir+"claude-right-panel-no-agents-1280x800.png",fullPage:true});
+  const agentsTab=page.getByTestId("right-panel").getByRole("button",{name:"Agents",exact:true});
+  await expect(agentsTab).toBeVisible();
+  await agentsTab.click();
+  await expect(page.locator(".agents-page")).toContainText("Manual delegation is available");
+  await page.screenshot({path:auditDir+"claude-right-panel-manual-delegation-1280x800.png",fullPage:true});
 });
 
 test("major workspace surfaces render their real destinations without horizontal overflow",async({page,request})=>{
