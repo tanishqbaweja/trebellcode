@@ -105,6 +105,41 @@ test("clean Git workspaces skip per-file metadata scans after the first context 
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
+test("context cache invalidates clean tracked files when Git HEAD changes",async()=>{
+  const root=await fixture();
+  try{
+    await execFileAsync("git",["-c","user.name=Trebell Test","-c","user.email=trebell@example.test","commit","-m","baseline","-q"],{cwd:root});
+    const engine=new ContextEngine();
+    const first=await engine.buildPacket({root,task:"refresh session revision marker",maxTokens:1800,maxFiles:8});
+    assert.equal(first.stats.revisionChanged,false);
+    await writeFile(join(root,"src","auth","session.js"),`import { rotateRefreshToken } from "./token.js";\nexport class RefreshSession { refresh(token) { return rotateRefreshToken(token); } }\nexport const revisionMarker = "HEAD_TWO_MARKER";\n`,"utf8");
+    await execFileAsync("git",["add","src/auth/session.js"],{cwd:root});
+    await execFileAsync("git",["-c","user.name=Trebell Test","-c","user.email=trebell@example.test","commit","-m","second","-q"],{cwd:root});
+    const second=await engine.buildPacket({root,task:"refresh session revisionMarker",maxTokens:1800,maxFiles:8});
+    assert.equal(second.stats.revisionChanged,true);
+    assert.ok(second.stats.inspected>=4,"a clean revision change must invalidate the cached index");
+    assert.equal(second.stats.reparsed,1);
+    assert.match(second.injection,/HEAD_TWO_MARKER/);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("context cache rechecks files that were dirty when they become clean at the same HEAD",async()=>{
+  const root=await fixture();
+  try{
+    await execFileAsync("git",["-c","user.name=Trebell Test","-c","user.email=trebell@example.test","commit","-m","baseline","-q"],{cwd:root});
+    const engine=new ContextEngine();
+    await engine.buildPacket({root,task:"refresh session reset marker",maxTokens:1800,maxFiles:8});
+    await writeFile(join(root,"src","auth","session.js"),`export class RefreshSession {}\nexport const dirtyResetMarker = "DIRTY_CACHE_MARKER";\n`,"utf8");
+    const dirty=await engine.buildPacket({root,task:"refresh session dirtyResetMarker",maxTokens:1800,maxFiles:8});
+    assert.match(dirty.injection,/DIRTY_CACHE_MARKER/);
+    await execFileAsync("git",["checkout","--","src/auth/session.js"],{cwd:root});
+    const restored=await engine.buildPacket({root,task:"refresh session dirtyResetMarker",maxTokens:1800,maxFiles:8});
+    assert.equal(restored.stats.revisionChanged,false);
+    assert.equal(restored.stats.reparsed,1,"the previously dirty path must be re-read after reset");
+    assert.doesNotMatch(restored.injection,/DIRTY_CACHE_MARKER/);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
 test("weighted PageRank makes depended-on files more central",()=>{
   const nodes=["server.js","session.js","token.js"];
   const edges=new Map([
@@ -131,6 +166,7 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
       if(command==="git"&&args.includes("ls-files"))return ok([...files.keys()].join("\0")+"\0");
       if(command==="git"&&args.includes("status"))return ok(status);
       if(command==="git"&&args.includes("diff"))return ok(status?"diff --git a/src/auth/session.js b/src/auth/session.js\n":"");
+      if(command==="git"&&args.includes("rev-parse"))return ok("remote-head-1\n");
       if(command==="head"){
         const target=String(args.at(-1)||""),relativePath=target.slice(root.length+1);
         return files.has(relativePath)?ok(files.get(relativePath)):({exitCode:1,stdout:"",stderr:"missing",timedOut:false});
