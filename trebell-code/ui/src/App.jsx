@@ -1310,8 +1310,11 @@ export default function App(){
     return()=>{disposed=true;clearInterval(timer)};
   },[settings.autoSettleMergedThreads,rpc,rpcStatus,threads,sections]);
   useEffect(()=>{
-    let disposed=false;
+    const visible=section==="chat"||section==="new"||(rightPanelOpen&&rightPanelTab==="source");
+    if(!visible)return;
+    let disposed=false,busy=false;
     const refreshBranchReviews=async()=>{
+      if(disposed||busy||document.hidden)return;busy=true;
       try{
         const data=await api("/api/source-control/branch-reviews");if(disposed||!data?.items)return;
         setThreadMeta(previous=>{
@@ -1335,11 +1338,13 @@ export default function App(){
           backgroundSyncErrorRef.current.branchReviews=detail;
           showActionError(error,"Could not refresh branch review state");
         }
-      }
+      }finally{busy=false}
     };
     refreshBranchReviews();const timer=setInterval(refreshBranchReviews,30_000);
-    return()=>{disposed=true;clearInterval(timer)};
-  },[]);
+    const onVisibilityChange=()=>{if(!document.hidden)refreshBranchReviews()};
+    document.addEventListener("visibilitychange",onVisibilityChange);
+    return()=>{disposed=true;clearInterval(timer);document.removeEventListener("visibilitychange",onVisibilityChange)};
+  },[section,rightPanelOpen,rightPanelTab]);
 
   useEffect(()=>{
     if(!query.trim()){setSearchResults(null);setThreadSearchError("");return} const q=query.toLowerCase(); const titleMatches=threads.filter(t=>titleOf(t).toLowerCase().includes(q)||(t.cwd||"").toLowerCase().includes(q)||Boolean(matchingPullRequestExcerpt(threadMeta[t.id]||{},q)));

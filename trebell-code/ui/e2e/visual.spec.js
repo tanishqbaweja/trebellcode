@@ -295,7 +295,29 @@ test("chat defers telemetry polling until a surface actually needs it",async({pa
   expect(runtimeCalls).toBe(stoppedRuntime);
 });
 
-test("settings mount avoids duplicate provider and runtime bootstrap requests",async({page,request})=>{
+test("branch review polling sleeps on secondary pages and refreshes when chat returns",async({page,request})=>{
+  test.setTimeout(30_000);
+  await prepare(page,request);
+  let branchReviewCalls=0;
+  await page.route(/\/api\/source-control\/branch-reviews$/,route=>{branchReviewCalls++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:[]})})});
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Settings"})).toBeVisible();
+  await page.waitForTimeout(500);
+  expect(branchReviewCalls).toBe(0);
+  await page.setViewportSize({width:1280,height:800});
+  const settingsMetrics=await page.locator(".secondary-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(settingsMetrics.scroll).toBeLessThanOrEqual(settingsMetrics.client+1);
+  await page.screenshot({path:auditDir+"branch-review-polling-paused-settings-1280x800.png",fullPage:true});
+  await page.getByRole("button",{name:"Threads",exact:true}).click();
+  await expect.poll(()=>branchReviewCalls).toBeGreaterThan(0);
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"Settings"})).toBeVisible();
+  const pausedCalls=branchReviewCalls;
+  await page.waitForTimeout(500);
+  expect(branchReviewCalls).toBe(pausedCalls);
+});
+
+test("settings loads provider and runtime catalogs only on relevant sections",async({page,request})=>{
   test.setTimeout(35_000);
   await prepare(page,request);
   let providerCalls=0,runtimeCalls=0;
@@ -306,6 +328,10 @@ test("settings mount avoids duplicate provider and runtime bootstrap requests",a
   });
   await page.getByRole("button",{name:"Settings",exact:true}).click();
   await expect(page.locator(".settings-page")).toBeVisible();
+  await page.waitForTimeout(500);
+  expect(providerCalls).toBe(0);
+  expect(runtimeCalls).toBe(0);
+  await page.locator(".settings-nav").getByRole("button",{name:/Agents & models/}).click();
   await expect.poll(()=>providerCalls).toBeGreaterThan(0);
   await expect.poll(()=>runtimeCalls).toBeGreaterThan(0);
   await page.waitForTimeout(500);
