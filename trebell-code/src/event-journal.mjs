@@ -6,6 +6,7 @@ import { trebellHome } from "./paths.mjs";
 import { boundDiagnosticValue } from "./diagnostic-bounds.mjs";
 import { redactSecretValue } from "./secret-redactor.mjs";
 import { SqliteEventStore } from "./sqlite-event-store.mjs";
+import { createReplayFixture } from "./event-replay.mjs";
 
 const DEFAULT_MAX_RECORDS=5000;
 const DEFAULT_MAX_BYTES=8*1024*1024;
@@ -114,6 +115,18 @@ export class EventJournal{
   status(){
     let sqliteStats=null;if(this.sqlite)try{sqliteStats=this.sqlite.stats()}catch{}
     return {path:this.path,databasePath:this.sqlite?this.databasePath:null,backend:this.sqlite?"sqlite":"jsonl",records:sqliteStats?.records??this.recent.length,bytes:sqliteStats?.logicalBytes??this.bytes,fileBytes:sqliteStats?.fileBytes??this.bytes,exportBytes:this.bytes,lastError:this.lastError?clone(this.lastError):null,exportError:this.exportError?clone(this.exportError):null};
+  }
+
+  replayBundle(options={}){
+    const filters={
+      threadId:options.threadId||null,turnId:options.turnId||null,runtime:options.runtime||null,category:options.category||null,
+      before:options.before??null,after:options.after??null,limit:Math.max(1,Math.min(1000,Number(options.limit)||1000)),
+    };
+    return {
+      ...createReplayFixture(this.list(filters).reverse(),{environment:this.env,maxEvents:filters.limit}),
+      source:this.sqlite?this.databasePath:this.path,
+      filters,
+    };
   }
 
   async #compact(){

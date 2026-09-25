@@ -115,3 +115,16 @@ test("event journal reconciles newer JSONL fallback events into an existing SQLi
     assert.equal(reconciled.status().records,2);await reconciled.close();
   }finally{await rm(home,{recursive:true,force:true})}
 });
+
+test("event journal exports a sanitized bounded replay fixture from indexed filters",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-events-replay-")),secret=["event","replay","secret"].join("-");
+  try{
+    const journal=new EventJournal({TREBELL_HOME:home,CUSTOM_TOKEN:secret},{maxRecords:100,maxBytes:256*1024});
+    journal.record({id:"replay-a",at:100,runtime:"codex",threadId:"thread-replay",turnId:"turn-a",category:"runtime",name:"turn/started",data:{authorization:"Bearer "+secret}});
+    journal.record({id:"replay-b",at:200,runtime:"claude",threadId:"other-thread",turnId:"turn-b",category:"runtime",name:"turn/started"});
+    const bundle=journal.replayBundle({threadId:"thread-replay",limit:20});
+    assert.equal(bundle.events.length,1);assert.equal(bundle.events[0].id,"replay-a");assert.equal(bundle.filters.threadId,"thread-replay");assert.equal(bundle.diagnostics.replayEvents,1);assert.equal(bundle.diagnostics.outOfOrder,0);
+    assert.doesNotMatch(JSON.stringify(bundle),new RegExp(secret));assert.match(JSON.stringify(bundle),/\[redacted\]/);
+    await journal.close();
+  }finally{await rm(home,{recursive:true,force:true})}
+});
