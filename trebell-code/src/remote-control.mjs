@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
 import { timingSafeEqual } from "node:crypto";
 import { attachCodexRelay } from "./codex-relay.mjs";
+import { DEFAULT_REMOTE_SCOPES, hasRemoteScope, remoteDeniedServerResult, remoteRpcScope, remoteServerRequestScope } from "./remote-scopes.mjs";
 
 function json(res,status,body){
   const data=Buffer.from(JSON.stringify(body));
@@ -107,9 +108,13 @@ export async function createRemoteControlServer({
 }={}){
   if(!token) throw new Error("Remote control access token is required");
   if(!environments) throw new Error("Remote control requires an environment manager");
-  const authorized=(req,url)=>{
-    const raw=authToken(req,url);return sameToken(raw,token)||Boolean(authStore?.authenticate(raw));
+  const sessionFor=(req,url)=>{
+    const raw=authToken(req,url);
+    if(sameToken(raw,token))return {id:"admin-recovery",name:"Admin recovery token",scopes:[...DEFAULT_REMOTE_SCOPES],admin:true};
+    return authStore?.authenticate(raw)||null;
   };
+  const authorized=(req,url)=>Boolean(sessionFor(req,url));
+  const requireScope=(req,url,scope)=>{const session=sessionFor(req,url);return session&&hasRemoteScope(session,scope)?session:null};
   const server=createServer(async(req,res)=>{
     const url=new URL(req.url||"/","http://127.0.0.1");
     if(url.pathname==="/"&&req.method==="GET"){
@@ -128,15 +133,23 @@ export async function createRemoteControlServer({
       try{const body=await readJson(req);return json(res,200,authStore.exchangePairing(body.token,{name:body.name,userAgent:req.headers["user-agent"]||""}))}
       catch(error){return json(res,401,{error:error.message||"pairing_failed"})}
     }
-    if(!authorized(req,url)) return json(res,401,{error:"unauthorized"});
+    const session=sessionFor(req,url);if(!session) return json(res,401,{error:"unauthorized"});
     try{
-      if(url.pathname==="/api/status"&&req.method==="GET") return json(res,200,{version,...await getStatus()});
-      if(url.pathname==="/api/environments"&&req.method==="GET") return json(res,200,await environments.discover());
+      if(url.pathname==="/api/status"&&req.method==="GET"){
+        if(!hasRemoteScope(session,"status"))return json(res,403,{error:"forbidden",requiredScope:"status"});
+        return json(res,200,{version,remoteScopes:session.scopes,...await getStatus()});
+      }
+      if(url.pathname==="/api/environments"&&req.method==="GET"){
+        if(!hasRemoteScope(session,"environments:read"))return json(res,403,{error:"forbidden",requiredScope:"environments:read"});
+        return json(res,200,await environments.discover());
+      }
       if(url.pathname==="/api/environment/probe"&&req.method==="POST"){
+        if(!hasRemoteScope(session,"environments:read"))return json(res,403,{error:"forbidden",requiredScope:"environments:read"});
         const body=await readJson(req);
         return json(res,200,await environments.probe(body.id));
       }
       if(url.pathname==="/api/environment/execute"&&req.method==="POST"){
+        if(!hasRemoteScope(session,"environments:execute"))return json(res,403,{error:"forbidden",requiredScope:"environments:execute"});
         const body=await readJson(req);
         return json(res,200,await environments.execute(body.id,body));
       }
@@ -150,6 +163,19 @@ export async function createRemoteControlServer({
     targetUrl:targetUrl||("ws://127.0.0.1:"+appPort),
     enabled,
     authorize:(request,url)=>authorized(request,url),
+    transformClientMessage:(message,{request})=>{
+      if(!message?.method)return message;
+      const session=sessionFor(request,new URL(request.url||"/","http://127.0.0.1")),scope=remoteRpcScope(message.method);
+      if(scope===false)throw Object.assign(new Error("Remote RPC method is not allowed: "+message.method),{code:-32003});
+      if(scope&&!hasRemoteScope(session,scope))throw Object.assign(new Error("Remote device lacks required scope: "+scope),{code:-32003});
+      return message;
+    },
+    handleServerRequest:(message,{request})=>{
+      const session=sessionFor(request,new URL(request.url||"/","http://127.0.0.1")),scope=remoteServerRequestScope(message?.method);
+      if(scope===false)return {handled:true,error:{code:-32601,message:"Remote server request is not supported: "+String(message?.method||"")}};
+      if(scope&&!hasRemoteScope(session,scope))return {handled:true,result:remoteDeniedServerResult(message.method)};
+      return null;
+    },
   });
 
   await new Promise((resolve,reject)=>{
@@ -161,9 +187,9 @@ export async function createRemoteControlServer({
   return {
     port:actualPort,
     urls:lanUrls(actualPort),
-    createPairing:()=>{
+    createPairing:(options={})=>{
       if(!authStore)throw new Error("Pairing is unavailable");
-      const grant=authStore.createPairing();return {...grant,urls:lanUrls(actualPort,"pair",grant.token)};
+      const grant=authStore.createPairing(options);return {...grant,urls:lanUrls(actualPort,"pair",grant.token)};
     },
     devices:()=>authStore?.listDevices?.()||[],
     revokeDevice:id=>authStore?.revokeDevice?.(id)||false,
