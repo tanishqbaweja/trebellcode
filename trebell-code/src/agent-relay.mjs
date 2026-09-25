@@ -35,6 +35,13 @@ export function agentPermissionModeFromStart(params={}){
   if(params.approvalPolicy==="never"||params.approvalPolicy==="untrusted")return "auto";
   return "supervised";
 }
+export function agentPermissionProfilePatch(params={}){
+  const hasPolicy=Object.prototype.hasOwnProperty.call(params,"permissionProfile")
+    ||Object.prototype.hasOwnProperty.call(params,"approvalPolicy")
+    ||Object.prototype.hasOwnProperty.call(params,"sandbox")
+    ||Object.prototype.hasOwnProperty.call(params,"sandboxPolicy");
+  return hasPolicy?{permissionProfile:agentPermissionModeFromStart(params)}:{};
+}
 export function agentPermissionPolicyDecision(thread,request={},settings={}){
   const params=request?.params||{},toolCall=params.toolCall||{},policy=params.policy||toolCall.policy||{};
   return evaluatePolicy({
@@ -944,7 +951,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       emit("thread/started",{thread:materialized.thread});return {thread:materialized.thread};
     }
     if(method==="turn/start"){
-      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");assertGoalBudget(thread.id);const session=await ensureSession(thread,context,{model:params.model||thread.model});
+      let thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");assertGoalBudget(thread.id);
+      const permissionPatch=agentPermissionProfilePatch(params);
+      if(Object.keys(permissionPatch).length)thread=threadStore.update(thread.id,{providerMeta:{...(thread.providerMeta||{}),...permissionPatch}});
+      const session=await ensureSession(thread,context,{model:params.model||thread.model});
       if(params.model&&params.model!==thread.model){await session.setModel(params.model).catch(()=>{});threadStore.update(thread.id,{model:params.model})}
       const turn=threadStore.addTurn(thread.id,{inputText:textOfInput(params.input),status:"inProgress"});session.__assistant="";
       session.__usage=null;

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { WebSocket } from "ws";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
-import { acpPlanEvent,agentPermissionModeFromStart,agentPermissionPolicyDecision,agentPermissionTraceData,agentThreadResumePayload,agentToolLifecycle,attachAgentRelay,contextualAgentPrompt,materializeAgentFork,paginateAgentAttachments,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
+import { acpPlanEvent,agentPermissionModeFromStart,agentPermissionPolicyDecision,agentPermissionProfilePatch,agentPermissionTraceData,agentThreadResumePayload,agentToolLifecycle,attachAgentRelay,contextualAgentPrompt,materializeAgentFork,paginateAgentAttachments,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
 
 test("permission trace metadata excludes raw tool arguments",()=>{
   const trace=agentPermissionTraceData({toolCall:{toolCallId:"tool-1",title:"Run deployment",kind:"execute",rawInput:{command:"do-not-persist"}},options:[{kind:"allow_once"},{kind:"allow_once"},{kind:"reject_once"}]});
@@ -22,6 +22,9 @@ test("external thread starts preserve Trebell permission profiles across runtime
   assert.equal(agentPermissionModeFromStart({approvalPolicy:"never"}),"auto");
   assert.equal(agentPermissionModeFromStart({permissionProfile:"workspace-write"}),"edits");
   assert.equal(agentPermissionModeFromStart({approvalPolicy:"on-request",sandbox:"workspace-write"}),"supervised");
+  assert.deepEqual(agentPermissionProfilePatch({sandboxPolicy:{type:"readOnly",networkAccess:false},approvalPolicy:"on-request"}),{permissionProfile:"read-only"});
+  assert.deepEqual(agentPermissionProfilePatch({sandboxPolicy:{type:"workspaceWrite"},approvalPolicy:"on-request"}),{permissionProfile:"supervised"});
+  assert.deepEqual(agentPermissionProfilePatch({}),{},"turns without a policy override must retain the thread's current permission profile");
 });
 
 test("external runtime approval requests use the unified policy decision before asking the user",()=>{
