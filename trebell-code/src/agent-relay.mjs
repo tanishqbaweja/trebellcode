@@ -8,7 +8,7 @@ import { ClaudeAgentSession } from "./claude-agent-session.mjs";
 import { acpMcpServersForSession, claudeMcpServersForSession } from "./mcp-registry.mjs";
 import { createRemoteContextIo } from "./context-engine.mjs";
 import { createClaudeRepositoryMcp } from "./claude-repository-tools.mjs";
-import { enrichGoal, goalBudgetGate, normalizeGoal } from "./goal-state.mjs";
+import { enrichGoal, goalAdditionalContext, goalBudgetGate, normalizeGoal } from "./goal-state.mjs";
 
 const IMAGE_MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".bmp":"image/bmp"};
 const LIVE_TOOL_OUTPUT_LIMIT=256*1024;
@@ -465,6 +465,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     const goal=normalizeGoal({threadId,previous:{...raw,createdAt},patch:{},now:Number(raw.updatedAt)||Date.now()});
     return enrichGoal(goal,{usage:state?.threadUsage?.(threadId,{since:goal.createdAt}),turns:thread?.turns||[]});
   }
+  function withDurableGoalContext(threadId,additionalContext={}){
+    return goalAdditionalContext(additionalContext,durableGoal(threadId));
+  }
   function assertGoalBudget(threadId){
     const goal=durableGoal(threadId),gate=goalBudgetGate(goal);if(gate.allowed)return goal;
     const thread=threadStore.get(threadId),meta=thread?.providerMeta||{};
@@ -550,7 +553,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         const session=await ensureSession(thread,context,{model:thread.model||null});const turn=threadStore.restartTurn(thread.id,recovery.turnId);
         if(!turn)throw new Error("Interrupted turn was not found");
         session.__assistant="";session.__usage=null;emit("turn/started",{threadId:thread.id,turn});emit("thread/status/changed",{threadId:thread.id,status:{type:"active",activeFlags:[]}});
-        const prompt=[{type:"text",text:"Continue where you left off."}];
+        const prompt=await contextualAgentPrompt([{type:"text",text:"Continue where you left off."}],withDurableGoalContext(thread.id));
         settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,{messageId:randomUUID(),agent:thread.agent||null}),model:thread.model||null});
       }catch(error){
         const failed=threadStore.finishTurn(thread.id,recovery.turnId,{status:"failed",error:{message:`Could not continue after restart: ${error.message}`}});emit("error",{threadId:thread.id,turnId:recovery.turnId,message:error.message});if(failed)emit("turn/completed",{threadId:thread.id,turn:failed});recoveryInFlight.delete(thread.id);
@@ -798,7 +801,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const turn=threadStore.addTurn(thread.id,{inputText:textOfInput(params.input),status:"inProgress"});session.__assistant="";
       session.__usage=null;
       emit("turn/started",{threadId:thread.id,turn});
-      const prompt=await contextualAgentPrompt(params.input||[],params.additionalContext||{});
+      const prompt=await contextualAgentPrompt(params.input||[],withDurableGoalContext(thread.id,params.additionalContext||{}));
       const selectedAgent=Object.prototype.hasOwnProperty.call(params,"agent")?(params.agent||null):(thread.agent||null);
       if(selectedAgent!==thread.agent)threadStore.update(thread.id,{agent:selectedAgent});
       settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,{messageId:randomUUID(),agent:selectedAgent}),model:params.model||thread.model||null});

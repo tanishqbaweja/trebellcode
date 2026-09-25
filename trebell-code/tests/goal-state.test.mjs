@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { enrichGoal, goalBudgetGate, isToolCallItem, normalizeGoal } from "../src/goal-state.mjs";
+import { enrichGoal, goalAdditionalContext, goalBudgetGate, goalContextValue, isToolCallItem, normalizeGoal } from "../src/goal-state.mjs";
 
 test("durable goals normalize bounded structured fields and status transitions",()=>{
   const goal=normalizeGoal({threadId:"thread-1",now:1000,patch:{objective:" Ship reliable auth ",status:"active",completionConditions:["Tests pass","Login works"],constraints:"No schema change\nKeep compatibility",validationExpectations:["Run auth tests"],tokenBudget:12000,timeBudgetMinutes:90,turnBudget:8,toolCallBudget:20,childAgentBudget:3,costBudgetUsd:12.5,unexpected:"ignored"}});
@@ -54,4 +54,22 @@ test("goal budget gate blocks only new work after an active budget is exhausted"
 test("tool budget evidence counts real tool items but ignores chat and reasoning rows",()=>{
   for(const type of ["commandExecution","fileChange","dynamicToolCall","mcpToolCall","collabAgentToolCall","webSearch"])assert.equal(isToolCallItem({type}),true,type);
   for(const type of ["userMessage","agentMessage","reasoning","plan"])assert.equal(isToolCallItem({type}),false,type);
+});
+
+test("active durable goals become bounded application context without overriding the current user message",()=>{
+  const goal={
+    objective:"Ship the durable controller",status:"active",
+    completionConditions:["Targeted tests pass"],constraints:["Preserve compatibility"],validationExpectations:["Inspect screenshots"],
+    tokenBudget:1000,tokensUsed:250,tokenBudgetRemaining:750,turnBudget:4,turnsUsed:1,turnBudgetRemaining:3,
+    childAgentBudget:2,childAgentsUsed:null,childAgentTelemetryComplete:false,
+  };
+  const value=goalContextValue(goal);
+  assert.match(value,/Persistent Trebell goal \(active\)/);
+  assert.match(value,/user's current message has priority/i);
+  assert.match(value,/Ship the durable controller/);assert.match(value,/Targeted tests pass/);assert.match(value,/Preserve compatibility/);assert.match(value,/Inspect screenshots/);
+  assert.match(value,/Tokens: 250\/1000/);assert.match(value,/Child agents: 2 limit · telemetry unavailable or incomplete/);
+  const existing={"trebell.repo_context":{kind:"application",value:"repository evidence"}};
+  const merged=goalAdditionalContext(existing,goal);assert.equal(merged["trebell.repo_context"],existing["trebell.repo_context"]);assert.equal(merged["trebell.goal"].kind,"application");assert.equal(merged["trebell.goal"].value,value);
+  assert.equal(goalContextValue({...goal,status:"paused"}),"");
+  assert.equal(goalAdditionalContext(existing,{...goal,status:"complete"}),existing);
 });

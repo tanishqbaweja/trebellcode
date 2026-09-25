@@ -46,7 +46,7 @@ import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
 import { ContextEngine, createRemoteContextIo } from "./context-engine.mjs";
 import { EventJournal } from "./event-journal.mjs";
-import { enrichGoal, goalBudgetGate, normalizeGoal } from "./goal-state.mjs";
+import { enrichGoal, goalAdditionalContext, goalBudgetGate, normalizeGoal } from "./goal-state.mjs";
 import { recordCodexBudgetEvidence, recordCodexChildAgentEvidence } from "./codex-budget-evidence.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
@@ -937,6 +937,13 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     const meta=state.threadMeta(threadId);
     eventJournal.record({runtime:"codex",provider:selectedProvider,environmentId:meta?.environmentId??state.settings().activeEnvironmentId??null,threadId,category:"budget",name:"goal.budget_blocked",status:"blocked",data:{goalStatus:goal?.status||null,tokenBudget:goal?.tokenBudget??null,tokensUsed:goal?.tokensUsed??0,timeBudgetMinutes:goal?.timeBudgetMinutes??null,timeUsedSeconds:goal?.timeUsedSeconds??0,turnBudget:goal?.turnBudget??null,turnsUsed:goal?.turnsUsed??0,toolCallBudget:goal?.toolCallBudget??null,toolCallsUsed:goal?.toolCallsUsed??0,toolCallTelemetryComplete:goal?.toolCallTelemetryComplete??true,childAgentBudget:goal?.childAgentBudget??null,childAgentsUsed:goal?.childAgentsUsed??null,childAgentTelemetryComplete:goal?.childAgentTelemetryComplete??false,costBudgetUsd:goal?.costBudgetUsd??null,costUsedUsd:goal?.costUsedUsd??null,costTelemetryComplete:goal?.costTelemetryComplete??true,tokenExhausted:gate.tokenExhausted,timeExhausted:gate.timeExhausted,turnExhausted:gate.turnExhausted,toolCallExhausted:gate.toolCallExhausted,childAgentExhausted:gate.childAgentExhausted,costExhausted:gate.costExhausted}});
     throw Object.assign(new Error(gate.reason),{code:-32001});
+  }
+  function withCodexGoalContext(message){
+    if(message?.method!=="turn/start")return message;
+    const params=message.params||{},threadId=params.threadId?String(params.threadId):"";if(!threadId)return message;
+    const additionalContext=goalAdditionalContext(params.additionalContext,durableCodexGoal(threadId));
+    if(additionalContext===params.additionalContext)return message;
+    return {...message,params:{...params,additionalContext}};
   }
   function markCodexTurnActive(threadId,turnId){
     if(!threadId||!turnId)return;
@@ -2588,6 +2595,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   const relay=attachCodexRelay(server,{
     targetUrl:()=>appServer?.targetUrl||`ws://127.0.0.1:${appPort}`,
     resolveTarget:message=>codexRelayTarget(message),
+    transformClientMessage:message=>withCodexGoalContext(message),
     handleRequest:async message=>{
       const params=message.params||{},threadId=params.threadId?String(params.threadId):"";
       if(message.method==="thread/goal/get")return {handled:true,result:{goal:threadId?durableCodexGoal(threadId):null}};
@@ -2607,7 +2615,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         if(!threadId)throw Object.assign(new Error("threadId is required"),{code:-32602});
         state.updateThreadMeta(threadId,{goal:null,goalBudgetBaselines:undefined});return {handled:true,result:{ok:true}};
       }
-      if((message.method==="turn/start"||message.method==="thread/queue/start")&&threadId)assertCodexGoalBudget(threadId);
+      if(((message.method==="turn/start"&&params.turnTrigger!=="trebell-restart-continuation")||message.method==="thread/queue/start")&&threadId)assertCodexGoalBudget(threadId);
       if(message.method==="thread/runtimeInstances/list")return {handled:true,result:await codexThreadProfiles(message.params?.threadId)};
       if(message.method==="thread/runtimeInstance/set")return {handled:true,result:await setCodexThreadProfile(message.params?.threadId,message.params?.instanceId)};
       return null;

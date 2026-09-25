@@ -25,6 +25,7 @@ export function attachCodexRelay(httpServer, {
   targetUrl,
   resolveTarget = null,
   handleRequest = null,
+  transformClientMessage = null,
   path = "/api/codex/ws",
   enabled = () => true,
   authorize = () => true,
@@ -160,11 +161,15 @@ export function attachCodexRelay(httpServer, {
       };
       const forward=async(message,raw,isBinary=false)=>{
         if(isBinary){const record=await ensureUpstream(await baseTarget());record.socket.send(raw,{binary:true});return}
-        try{onClientMessage(message,{primaryKey:context.primaryKey})}catch{}
         if(message&&Object.prototype.hasOwnProperty.call(message,"id")&&!message.method){
           const routed=context.serverRequestRoutes.get(message.id);
           if(routed){context.serverRequestRoutes.delete(message.id);const restored={...message,id:routed.originalId};routed.record.socket.send(JSON.stringify(restored));return}
         }
+        if(message?.method&&transformClientMessage){
+          const transformed=await transformClientMessage(message,{request,primaryKey:context.primaryKey,resolveTarget:routeFor});
+          if(transformed&&transformed!==message){message=transformed;raw=JSON.stringify(transformed)}
+        }
+        try{onClientMessage(message,{primaryKey:context.primaryKey})}catch{}
         if(message?.method&&Object.prototype.hasOwnProperty.call(message,"id")&&handleRequest){
           try{
             const handled=await handleRequest(message,{request,primaryKey:context.primaryKey,resolveTarget:routeFor});

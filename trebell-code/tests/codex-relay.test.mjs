@@ -110,6 +110,26 @@ test("Codex relay initializes and routes secondary app-server connections per th
   }finally{try{session?.client.close()}catch{}relay.close();await Promise.all([work.close(),personal.close(),new Promise(resolve=>relayHttp.close(resolve))])}
 });
 
+test("Codex relay transforms client turn context before tracing, routing, and upstream forwarding",async()=>{
+  const work=await routedUpstream("work");
+  const relayHttp=createServer((_req,res)=>{res.statusCode=404;res.end()});const seen=[];
+  const relay=attachCodexRelay(relayHttp,{
+    targetUrl:work.url,
+    transformClientMessage:message=>message.method==="turn/start"?{...message,params:{...message.params,additionalContext:{...(message.params?.additionalContext||{}),"trebell.goal":{kind:"application",value:"durable goal"}}}}:message,
+    onClientMessage:message=>seen.push(message),
+  });
+  await new Promise(resolve=>relayHttp.listen(0,"127.0.0.1",resolve));
+  let session;
+  try{
+    session=await relayClient(relayHttp);
+    await session.request("turn/start",{threadId:"thread-goal",additionalContext:{"trebell.repo_context":{kind:"application",value:"repo"}}});
+    const forwarded=work.received.find(message=>message.method==="turn/start");
+    assert.equal(forwarded?.params?.additionalContext?.["trebell.repo_context"]?.value,"repo");
+    assert.equal(forwarded?.params?.additionalContext?.["trebell.goal"]?.value,"durable goal");
+    assert.equal(seen.find(message=>message.method==="turn/start")?.params?.additionalContext?.["trebell.goal"]?.kind,"application");
+  }finally{try{session?.client.close()}catch{}relay.close();await Promise.all([work.close(),new Promise(resolve=>relayHttp.close(resolve))])}
+});
+
 test("Codex relay namespaces server request ids and returns replies to the originating app-server",async()=>{
   const work=await routedUpstream("work"),personal=await routedUpstream("personal");
   const relayHttp=createServer((_req,res)=>{res.statusCode=404;res.end()});

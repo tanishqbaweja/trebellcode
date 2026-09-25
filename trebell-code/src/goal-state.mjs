@@ -20,6 +20,44 @@ export function isToolCallItem(item){
   const type=String(item?.type||"").trim().toLowerCase();if(!type||NON_TOOL_ITEM_TYPES.has(type))return false;
   return type==="commandexecution"||type==="filechange"||type==="websearch"||type==="imagegeneration"||type==="computertoolcall"||type==="collabagenttoolcall"||type==="dynamictoolcall"||type==="mcptoolcall"||type.endsWith("toolcall");
 }
+
+function goalListBlock(label,items=[]){
+  const values=(Array.isArray(items)?items:[]).filter(Boolean);if(!values.length)return "";
+  return label+":\n"+values.map(item=>"- "+String(item)).join("\n");
+}
+function budgetValue(used,budget,{unit="",remaining=null,known=true}={}){
+  if(budget==null)return null;
+  if(!known)return `${budget}${unit} limit · telemetry unavailable or incomplete`;
+  const usedText=used==null?"unknown":String(used),remainingText=remaining==null?"":` · ${remaining}${unit} remaining`;
+  return `${usedText}/${budget}${unit}${remainingText}`;
+}
+export function goalContextValue(goal){
+  if(!goal||goal.status!=="active"||!String(goal.objective||"").trim())return "";
+  const sections=[
+    "Persistent Trebell goal (active)",
+    "Use this durable goal across compaction, restart, and handoff. The user's current message has priority if it explicitly changes, pauses, completes, or replaces this goal.",
+    "Objective:\n"+String(goal.objective).trim(),
+    goalListBlock("Completion conditions",goal.completionConditions),
+    goalListBlock("Constraints",goal.constraints),
+    goalListBlock("Validation expectations",goal.validationExpectations),
+  ].filter(Boolean);
+  const budgets=[
+    goal.tokenBudget!=null&&("Tokens: "+budgetValue(goal.tokensUsed??0,goal.tokenBudget,{remaining:goal.tokenBudgetRemaining})),
+    goal.timeBudgetMinutes!=null&&("Agent work time: "+budgetValue(Math.ceil(Number(goal.timeUsedSeconds||0)/60),goal.timeBudgetMinutes,{unit:" min",remaining:goal.timeBudgetRemainingMinutes==null?null:Math.max(0,Math.ceil(goal.timeBudgetRemainingMinutes))})),
+    goal.turnBudget!=null&&("Model turns: "+budgetValue(goal.turnsUsed??0,goal.turnBudget,{remaining:goal.turnBudgetRemaining})),
+    goal.toolCallBudget!=null&&("Tool calls: "+budgetValue(goal.toolCallsUsed??0,goal.toolCallBudget,{remaining:goal.toolCallBudgetRemaining,known:goal.toolCallTelemetryComplete!==false})),
+    goal.childAgentBudget!=null&&("Child agents: "+budgetValue(goal.childAgentsUsed,goal.childAgentBudget,{remaining:goal.childAgentBudgetRemaining,known:goal.childAgentTelemetryComplete===true})),
+    goal.costBudgetUsd!=null&&("Known cost USD: "+budgetValue(goal.costUsedUsd,goal.costBudgetUsd,{remaining:goal.costBudgetRemainingUsd,known:goal.costTelemetryComplete!==false&&goal.costUsedUsd!=null})),
+  ].filter(Boolean);
+  if(budgets.length)sections.push("Budget guardrails:\n"+budgets.map(item=>"- "+item).join("\n")+"\nTrebell may gate the next new turn after an external runtime reports an exhausted limit; do not assume an in-flight external turn can be stopped mid-action.");
+  return sections.join("\n\n").slice(0,16_000);
+}
+
+export function goalAdditionalContext(additionalContext,goal){
+  const value=goalContextValue(goal);if(!value)return additionalContext;
+  const base=additionalContext&&typeof additionalContext==="object"&&!Array.isArray(additionalContext)?additionalContext:{};
+  return {...base,"trebell.goal":{kind:"application",value}};
+}
 function toolCallsFromTurns(turns=[]){
   const seen=new Set();let anonymous=0;
   for(const turn of turns)for(const item of Array.isArray(turn?.items)?turn.items:[]){
