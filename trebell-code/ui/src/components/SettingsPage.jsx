@@ -601,9 +601,9 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
           <div className="provider-key-actions"><button className="setting-action" onClick={addCustomModel} disabled={!modelDraft.id.trim()}>Save custom model</button><button onClick={()=>setCustomModelEditorOpen(false)}>Cancel</button></div>
         </div>}
       </div>}
-      {settingsSection==="agents"&&["claude","cursor","grok","antigravity"].includes(selectedAgent)&&<div className="settings-card custom-model-settings" {...targetProps("agents-mcp")}>
+      {settingsSection==="agents"&&["native","claude","cursor","grok","antigravity"].includes(selectedAgent)&&<div className="settings-card custom-model-settings" {...targetProps("agents-mcp")}>
         <h3><PlugZap size={14}/> MCP servers</h3>
-        <p>Inject stdio MCP servers into {selectedAgent==="claude"?"Claude Code":"ACP"} sessions on <strong>{mcpEnvironmentId?"the active remote environment":"Local machine"}</strong>. The MCP process inherits the runtime environment; secret values do not need to be stored here.</p>
+        <p>{selectedAgent==="native"?"Connect stdio MCP servers directly to Trebell Native":`Inject stdio MCP servers into ${selectedAgent==="claude"?"Claude Code":"ACP"} sessions`} on <strong>{mcpEnvironmentId?"the active remote environment":"Local machine"}</strong>. Trebell strips secret-looking stored arguments and environment values; prefer the server's own authentication flow or inherited runtime credentials.</p>
         <div className="custom-model-list">{scopedMcpServers.map(server=><div key={server.id}><span><strong>{server.name}</strong><small>{server.command}{server.args?.length?" · "+server.args.join(" "):""}</small></span><button onClick={()=>toggleMcpServer(server)}>{server.enabled===false?"Enable":"Disable"}</button><button onClick={()=>removeMcpServer(server)}>Remove</button></div>)}</div>
         {!mcpDraft?<button className="setting-action" onClick={()=>{setMcpDraft({name:"",command:"",argsText:""});setMcpMessage("")}}>Add MCP server</button>:<div className="custom-model-editor">
           <label>Name<input aria-label="MCP server name" value={mcpDraft.name||""} onChange={e=>setMcpDraft({...mcpDraft,name:e.target.value})} placeholder="Workspace tools"/></label>

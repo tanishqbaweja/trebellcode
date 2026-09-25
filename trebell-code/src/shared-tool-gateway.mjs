@@ -23,8 +23,8 @@ function requirementDecision(definition,context={}){
   return null;
 }
 
-export function authorizePlatformToolCall(call={},context={}){
-  const {namespace,name}=callName(call),definition=platformToolDefinition(namespace,name);
+export function authorizePlatformToolCall(call={},context={},resolveDefinition=platformToolDefinition){
+  const {namespace,name}=callName(call),definition=(typeof resolveDefinition==="function"?resolveDefinition(namespace,name):null)||null;
   if(!namespace||!name||!definition)return rejection(`Unknown Trebell tool: ${namespace||"default"}/${name||"unknown"}.`,definition);
   const requirement=requirementDecision(definition,{...context,namespace});if(requirement)return requirement;
   const args=objectArguments(call.arguments),policy=definition.policy||{};
@@ -67,16 +67,16 @@ function confirmationAllowed(value){
 
 function event(onEvent,event){try{onEvent?.({...event,at:Date.now()})}catch{}}
 
-export function createSharedToolGateway({execute,confirm=null,environment=process.env,onEvent=null,contextForCall=null}={}){
+export function createSharedToolGateway({execute,confirm=null,environment=process.env,onEvent=null,contextForCall=null,resolveDefinition=platformToolDefinition}={}){
   if(typeof execute!=="function")throw new Error("Shared tool gateway requires an execute function.");
   return {
     authorize(call,context={}){
       const resolvedContext=typeof contextForCall==="function"?contextForCall(call,context)||context:context;
-      return authorizePlatformToolCall(call,resolvedContext);
+      return authorizePlatformToolCall(call,resolvedContext,resolveDefinition);
     },
     async invoke(call={},context={}){
       const names=callName(call),resolvedContext=typeof contextForCall==="function"?contextForCall(call,context)||context:context;
-      const authorization=authorizePlatformToolCall(call,resolvedContext),trace={namespace:names.namespace,name:names.name,decision:authorization.decision,reason:authorization.reason||null,riskLevel:authorization.action?.riskLevel||authorization.definition?.policy?.riskLevel||null};
+      const authorization=authorizePlatformToolCall(call,resolvedContext,resolveDefinition),trace={namespace:names.namespace,name:names.name,decision:authorization.decision,reason:authorization.reason||null,riskLevel:authorization.action?.riskLevel||authorization.definition?.policy?.riskLevel||null};
       event(onEvent,{name:"shared_tool.policy",status:authorization.decision.toLowerCase(),data:trace});
       if(authorization.decision===POLICY_REJECT)return {success:false,decision:POLICY_REJECT,error:authorization.reason,authorization};
       if(authorization.decision===POLICY_CONFIRM){

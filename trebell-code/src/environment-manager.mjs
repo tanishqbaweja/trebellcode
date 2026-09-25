@@ -23,14 +23,18 @@ function shellCommand(command,args=[]){
   return [command,...args].map(quotePosix).join(" ");
 }
 
-function isolatedRemoteEnvironment(command,names=[]){
+function isolatedRemoteEnvironment(command,names=[],environment={}){
   const approved=[...new Set((Array.isArray(names)?names:[]).map(value=>String(value||"").trim()).filter(name=>/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)))];
-  if(!approved.length)return command;
-  const assignments=approved.map(name=>name+'="$'+'{'+name+'-}"').join(" ");
+  const explicit=Object.entries(environment&&typeof environment==="object"?environment:{})
+    .filter(([name,value])=>/^[A-Za-z_][A-Za-z0-9_]*$/.test(String(name))&&value!=null)
+    .slice(0,200)
+    .map(([name,value])=>String(name)+"="+quotePosix(String(value)));
+  if(!approved.length&&!explicit.length)return command;
+  const assignments=[...approved.map(name=>name+'="$'+'{'+name+'-}"'),...explicit].join(" ");
   return "env -i "+assignments+" "+command;
 }
 
-export function remoteEnvironmentCommand(command,names=[]){return isolatedRemoteEnvironment(String(command||""),names)}
+export function remoteEnvironmentCommand(command,names=[],environment={}){return isolatedRemoteEnvironment(String(command||""),names,environment)}
 
 const REMOTE_TOOL_PATH_SCRIPT=`trebell_prepend_path() {
   if [ -d "$1" ]; then
@@ -375,14 +379,14 @@ export class EnvironmentManager {
     throw new Error("Unsupported environment type");
   }
 
-  spawnArgv(id,{command,args=[],cwd=null,stdio=["pipe","pipe","pipe"],environmentNames=null}={}){
+  spawnArgv(id,{command,args=[],cwd=null,stdio=["pipe","pipe","pipe"],environmentNames=null,environment=null}={}){
     const profile=this.get(id);
     if(!profile) throw new Error("Environment profile was not found");
     const executable=String(command||"").trim();
     if(!executable)throw new Error("command is required");
     const working=String(cwd??profile.cwd??"").trim();
-    if(profile.type==="local")return spawn(executable,args,{cwd:working||undefined,env:this.env,windowsHide:true,stdio});
-    return this.spawnSession(id,{command:isolatedRemoteEnvironment(shellCommand(executable,args),environmentNames),cwd:working||null,stdio});
+    if(profile.type==="local")return spawn(executable,args,{cwd:working||undefined,env:environment&&typeof environment==="object"?environment:this.env,windowsHide:true,stdio});
+    return this.spawnSession(id,{command:isolatedRemoteEnvironment(shellCommand(executable,args),environmentNames,environment||{}),cwd:working||null,stdio});
   }
 
   async execute(id,{command,cwd=null,timeoutMs=30000,maxOutput=MAX_OUTPUT}={}){

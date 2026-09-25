@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { acpMcpServersForSession, claudeMcpServersForSession, normalizeMcpServers, supportsAcpMcpInjection, supportsMcpInjection } from "../src/mcp-registry.mjs";
+import { acpMcpServersForSession, claudeMcpServersForSession, nativeMcpServersForSession, normalizeMcpServers, supportsAcpMcpInjection, supportsMcpInjection } from "../src/mcp-registry.mjs";
 
 test("MCP registry normalizes stdio servers and scopes them by runtime and environment",()=>{
   const normalized=normalizeMcpServers([
@@ -8,10 +8,11 @@ test("MCP registry normalizes stdio servers and scopes them by runtime and envir
     {id:"local-cursor",name:"Local tools",runtime:"cursor",command:"C:\\tools\\mcp.exe",enabled:false},
     {id:"grok",name:"Grok tools",runtime:"grok",command:"/opt/grok-mcp"},
     {id:"claude",name:"Claude tools",runtime:"claude",environmentId:"ssh-a",command:"/opt/claude-mcp",env:[{name:"API_KEY",value:"claude-secret"},{name:"NODE_ENV",value:"production"}]},
+    {id:"native",name:"Native tools",runtime:"native",environmentId:"ssh-a",command:"/opt/native-mcp",env:[{name:"TOKEN",value:"hidden"},{name:"LOG_LEVEL",value:"debug"}]},
     {id:"ignored",name:"Unsupported runtime",runtime:"codex",command:"codex-mcp"},
     {id:"broken",runtime:"cursor",command:"missing-name"},
   ]);
-  assert.equal(normalized.length,4);
+  assert.equal(normalized.length,5);
   assert.deepEqual(normalized[0].args,["--stdio","4","--safe","yes"]);
   assert.deepEqual(normalized[0].env,[{name:"LOG_LEVEL",value:"debug"}]);
   assert.equal(normalized[0].type,"stdio");
@@ -25,7 +26,11 @@ test("MCP registry normalizes stdio servers and scopes them by runtime and envir
   assert.deepEqual(claudeMcpServersForSession(normalized,{environmentId:"ssh-a"}),{
     "Claude tools":{type:"stdio",command:"/opt/claude-mcp",args:[],env:{NODE_ENV:"production"}},
   });
+  assert.deepEqual(nativeMcpServersForSession(normalized,{environmentId:"ssh-a"}),[
+    {id:"native",name:"Native tools",type:"stdio",runtime:"native",environmentId:"ssh-a",enabled:true,command:"/opt/native-mcp",args:[],env:[{name:"LOG_LEVEL",value:"debug"}]},
+  ]);
   assert.equal(supportsAcpMcpInjection("cursor"),true);
   assert.equal(supportsAcpMcpInjection("claude"),false);
   assert.equal(supportsMcpInjection("claude"),true);
+  assert.equal(supportsMcpInjection("native"),true);
 });

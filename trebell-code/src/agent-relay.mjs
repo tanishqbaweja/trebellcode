@@ -7,9 +7,10 @@ import { OpenCodeAgentSession } from "./opencode-agent-session.mjs";
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
 import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread } from "./native-agent-session.mjs";
 import { createNativeBuiltins } from "./native-builtins.mjs";
+import { NativeMcpBroker } from "./native-mcp-broker.mjs";
 import { createNativeToolExecutor } from "./native-tool-executor.mjs";
 import { platformDynamicToolNamespaces } from "./platform-tool-catalog.mjs";
-import { acpMcpServersForSession, claudeMcpServersForSession } from "./mcp-registry.mjs";
+import { acpMcpServersForSession, claudeMcpServersForSession, nativeMcpServersForSession } from "./mcp-registry.mjs";
 import { createRemoteContextIo } from "./context-engine.mjs";
 import { createClaudeRepositoryMcp } from "./claude-repository-tools.mjs";
 import { enrichGoal, goalAdditionalContext, goalBudgetGate, normalizeGoal } from "./goal-state.mjs";
@@ -580,7 +581,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     if(instance.kind==="native"){
       if(typeof nativeProviderTurn!=="function")throw new Error("Trebell Native provider transport is unavailable");
       const namespaceNames=new Set(thread.providerMeta?.dynamicToolNamespaces||[]),projectless=Boolean(thread.providerMeta?.projectless);
-      const tools=platformDynamicToolNamespaces({
+      const platformTools=platformDynamicToolNamespaces({
         repository:!projectless,
         workspaceTools:true,terminal:true,
         browser:namespaceNames.has("trebell_browser"),computer:namespaceNames.has("trebell_computer"),device:namespaceNames.has("trebell_device"),
@@ -588,9 +589,19 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       });
       const repoIo=remoteIo?createRemoteContextIo({environments,environmentId,root:runtimeCwd}):null;
       const environmentProfile=environmentId&&environments?environments.get(environmentId):null;
+      const mcpServers=nativeMcpServersForSession(state?.settings?.().mcpServers||[],{environmentId});
+      const mcpBroker=new NativeMcpBroker({
+        servers:mcpServers,cwd:runtimeCwd,environments,environmentId,localEnvironment:runtimeManager.childEnv(instance),remoteEnvironmentNames:runtimeManager.childEnvironmentKeys(instance),version,
+        onElicitation:async({server,params})=>context.serverRequest("mcpServer/elicitation/request",{
+          ...params,threadId:thread.id,serverName:server.name,_meta:{...(params?._meta||{}),trebell_source:"native",mcp_server_id:server.id},
+        }),
+        onEvent:event=>journal?.record?.({runtime:"native",provider:thread.providerMeta?.modelProvider||null,environmentId,threadId:thread.id,category:"mcp",name:event.name,status:event.status,data:event.data||{}}),
+      });
+      const mcpTools=await mcpBroker.connect();
+      const tools=[...platformTools,...mcpTools];
       const nativeBuiltins=createNativeBuiltins({root:runtimeCwd,environments,environmentId,environment:runtimeManager.env||process.env,platform:runtimeManager.platform||process.platform});
       const executeTool=createNativeToolExecutor({
-        contextEngine,root:runtimeCwd,repository:!projectless,io:repoIo,knowledgeService:repositoryKnowledge,environmentId,
+        contextEngine,root:runtimeCwd,repository:!projectless,io:repoIo,knowledgeService:repositoryKnowledge,environmentId,mcpBroker,
         projectAvailable:!projectless,
         policyContext:()=>({
           permissionProfile:effectivePermissionMode,runtime:"native",workspace:runtimeCwd,projectAvailable:!projectless,
@@ -611,6 +622,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const compactedMessage=compactionBoundary?nativeCompactionMessage(compactionBoundary.summary):null;
       const runtime=new NativeAgentSession({
         ...common,provider:thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model:model||thread.model||null,tools,executeTool,
+        onClose:()=>mcpBroker.close(),
         providerTurn:request=>nativeProviderTurn(request),initialMessages:[
           ...(thread.providerMeta?.developerInstructions?[{role:"developer",content:String(thread.providerMeta.developerInstructions)}]:[]),
           ...(compactedMessage?[compactedMessage]:[]),
@@ -623,7 +635,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       });
       const started=await runtime.start({providerSessionId:thread.providerSessionId||null,model:model||thread.model||null});
       const discoveredMeta=threadStore.get(thread.id)?.providerMeta||{};
-      threadStore.update(thread.id,{providerSessionId:started.session.sessionId,providerMeta:{...discoveredMeta,initialize:started.initialize,setup:started.session},model:model||started.session.models?.currentModelId||thread.model||null});
+      threadStore.update(thread.id,{providerSessionId:started.session.sessionId,providerMeta:{...discoveredMeta,initialize:started.initialize,setup:started.session,nativeMcp:{namespaces:mcpTools.map(item=>item.name),failures:mcpBroker.failures()}},model:model||started.session.models?.currentModelId||thread.model||null});
       sessions.set(thread.id,runtime);return runtime;
     }
     const acpMcpServers=acpMcpServersForSession(state?.settings?.().mcpServers||[],{runtime:instance.kind,environmentId});
@@ -1053,14 +1065,15 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     if(method==="thread/archive"){await sessions.get(params.threadId)?.close().catch(()=>{});sessions.delete(params.threadId);const thread=threadStore.update(params.threadId,{archived:true});if(!thread)throw new Error("Thread not found");emit("thread/archived",{threadId:params.threadId});return {thread}}
     if(method==="thread/unarchive"){const thread=threadStore.update(params.threadId,{archived:false});if(!thread)throw new Error("Thread not found");emit("thread/unarchived",{threadId:params.threadId});return {thread}}
     if(method==="thread/fork"){
-      const source=threadStore.get(params.threadId);if(!source)throw new Error("Thread not found");const runtimeSession=sessions.get(source.id)||await ensureSession(source,context,{});
-      if(runtimeSession instanceof NativeAgentSession){
+      const source=threadStore.get(params.threadId);if(!source)throw new Error("Thread not found");
+      if(source.runtime==="native"){
         if(source.status?.type==="active")throw new Error("Stop the running Native turn before forking this thread.");
         const providerSessionId=`native_${randomUUID()}`;
         const providerMeta={...(source.providerMeta||{}),nativeFork:{sourceThreadId:source.id,sourceSessionId:source.providerSessionId||null,createdAt:Date.now()}};
         const materialized=materializeAgentFork(threadStore,source,{runtime:"native",providerSessionId,providerMeta,excludeTurns:Boolean(params.excludeTurns)});
         emit("thread/started",{thread:materialized.thread});return {thread:materialized.thread};
       }
+      const runtimeSession=sessions.get(source.id)||await ensureSession(source,context,{});
       let fork;
       if(runtimeSession instanceof OpenCodeAgentSession)fork=await runtimeSession.fork();
       else if(runtimeSession instanceof ClaudeAgentSession)fork=await runtimeSession.fork();
@@ -1125,15 +1138,16 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       throw Object.assign(new Error(`${runtime} does not expose a generic compaction RPC`),{code:-32601});
     }
     if(method==="thread/revert"){
-      const thread=threadStore.get(params.threadId);const session=thread&&(sessions.get(thread.id)||await ensureSession(thread,context,{}));
-      if(session instanceof NativeAgentSession){
+      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      if(thread.runtime==="native"){
         if(thread.status?.type==="active")throw new Error("Stop the running Native turn before rewinding this thread.");
         const index=thread.turns.findIndex(item=>item.id===params.beforeTurnId);if(index<0)throw new Error("Native rewind target turn was not found.");
         const retained=thread.turns.slice(0,index),currentMeta={...(thread.providerMeta||{})};
         if(currentMeta.nativeCompaction&&!retained.some(turn=>String(turn.id)===String(currentMeta.nativeCompaction.throughTurnId)))delete currentMeta.nativeCompaction;
-        await session.close().catch(()=>{});sessions.delete(thread.id);
+        const session=sessions.get(thread.id);if(session)await session.close().catch(()=>{});sessions.delete(thread.id);
         const updated=threadStore.update(thread.id,{turns:retained,status:{type:"idle"},providerMeta:currentMeta});emit("thread/reverted",{threadId:thread.id,thread:updated});return {thread:updated};
       }
+      const session=sessions.get(thread.id)||await ensureSession(thread,context,{});
       if(session instanceof OpenCodeAgentSession){
         const turn=thread.turns?.find(item=>item.id===params.beforeTurnId);const providerMessageId=turn?.providerMessageId||turn?.items?.find(item=>item.providerMessageId)?.providerMessageId;if(!providerMessageId)throw new Error("This OpenCode turn does not have a provider message checkpoint yet");
         await session.revert(providerMessageId);const index=thread.turns.findIndex(item=>item.id===params.beforeTurnId);threadStore.update(thread.id,{turns:index>=0?thread.turns.slice(0,index):thread.turns});emit("thread/reverted",{threadId:thread.id});return {thread:threadStore.get(thread.id)};

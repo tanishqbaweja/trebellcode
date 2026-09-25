@@ -188,11 +188,15 @@ test("remote runtime argv can clear the login environment and re-expose only app
   const manager=new EnvironmentManager({state:stateFor([profile]),platform:"linux"});
   let launch=null;
   manager.spawnSession=(_id,options)=>{launch=options;return {pid:123}};
-  manager.spawnArgv("ssh",{command:"claude",args:["--version"],cwd:"/srv/app",environmentNames:["PATH","HOME","ANTHROPIC_API_KEY","bad-name?"]});
+  manager.spawnArgv("ssh",{command:"claude",args:["--version"],cwd:"/srv/app",environmentNames:["PATH","HOME","ANTHROPIC_API_KEY","bad-name?"],environment:{LOG_LEVEL:"debug",BROKEN_NAME:null,"bad-key":"nope","QUOTE_TEST":"a'b"}});
   assert.match(launch.command,/^env -i /);
   assert.match(launch.command,/PATH="\$\{PATH-\}"/);
   assert.match(launch.command,/ANTHROPIC_API_KEY="\$\{ANTHROPIC_API_KEY-\}"/);
+  assert.match(launch.command,/LOG_LEVEL='debug'/);
+  assert.match(launch.command,/QUOTE_TEST='a'\\''b'/);
   assert.doesNotMatch(launch.command,/bad-name/);
+  assert.doesNotMatch(launch.command,/bad-key|BROKEN_NAME/);
   assert.match(launch.command,/'claude' '--version'/);
   assert.equal(remoteEnvironmentCommand("'tool'",[]),"'tool'");
+  assert.match(remoteEnvironmentCommand("'tool'",[],{FIXTURE:"visible"}),/^env -i FIXTURE='visible' 'tool'$/);
 });

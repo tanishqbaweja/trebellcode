@@ -1,7 +1,7 @@
 import { isSecretCliArgument, isSecretCliFlag, isSecretEnvironmentName } from "./secret-redactor.mjs";
 
 const ACP_MCP_RUNTIMES=new Set(["cursor","grok","antigravity"]);
-const STDIO_MCP_RUNTIMES=new Set(["claude",...ACP_MCP_RUNTIMES]);
+const STDIO_MCP_RUNTIMES=new Set(["native","claude",...ACP_MCP_RUNTIMES]);
 
 function text(value,max){return String(value??"").trim().slice(0,max)}
 function environmentId(value){const next=text(value,200);return next||null}
@@ -52,6 +52,13 @@ export function claudeMcpServersForSession(value,{environmentId:targetEnvironmen
     servers[item.name]={type:"stdio",command:item.command,args:[...item.args],env:Object.fromEntries(item.env.map(entry=>[entry.name,entry.value]))};
   }
   return servers;
+}
+
+export function nativeMcpServersForSession(value,{environmentId:targetEnvironmentId=null}={}){
+  const targetEnvironment=environmentId(targetEnvironmentId);
+  return normalizeMcpServers(value)
+    .filter(item=>item.enabled&&item.runtime==="native"&&item.environmentId===targetEnvironment)
+    .map(item=>({...item,args:[...item.args],env:item.env.map(entry=>({...entry}))}));
 }
 
 export function supportsAcpMcpInjection(runtime){return ACP_MCP_RUNTIMES.has(text(runtime,40).toLowerCase())}

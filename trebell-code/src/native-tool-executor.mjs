@@ -1,4 +1,5 @@
 import { createSharedToolGateway } from "./shared-tool-gateway.mjs";
+import { platformToolDefinition } from "./platform-tool-catalog.mjs";
 import { invokeRepositoryTool, parseRepositoryToolArguments, repositoryToolHandlers } from "./repository-tool-catalog.mjs";
 
 function baseContext(value,call){
@@ -8,11 +9,12 @@ function baseContext(value,call){
 
 export function createNativeToolExecutor({
   contextEngine=null,root=null,io=null,knowledgeService=null,environmentId=null,
-  repository=true,executeShared=null,confirm=null,environment=process.env,onEvent=null,policyContext={},projectAvailable=null,
+  repository=true,mcpBroker=null,executeShared=null,confirm=null,environment=process.env,onEvent=null,policyContext={},projectAvailable=null,
 }={}){
   const repositoryHandlers=repository&&contextEngine&&root?repositoryToolHandlers({contextEngine,root,io,knowledgeService,environmentId}):null;
   const gateway=createSharedToolGateway({
     confirm,environment,onEvent,
+    resolveDefinition:(namespace,name)=>mcpBroker?.toolDefinition?.(namespace,name)||platformToolDefinition(namespace,name),
     contextForCall:(call,override={})=>{
       const base=baseContext(policyContext,call);
       return {...base,workspace:override.workspace??base.workspace??root??null,projectAvailable:override.projectAvailable??base.projectAvailable??(projectAvailable==null?Boolean(root):Boolean(projectAvailable)),...override};
@@ -22,6 +24,10 @@ export function createNativeToolExecutor({
         if(!repositoryHandlers)throw new Error("Repository intelligence is unavailable without an active Context Engine workspace.");
         const args=parseRepositoryToolArguments(call.definition.rawDefinition,call.arguments||{});
         return await invokeRepositoryTool(repositoryHandlers,call.definition.rawDefinition,args);
+      }
+      if(call.definition?.source==="mcp"){
+        if(!mcpBroker)throw new Error("Native MCP broker is unavailable.");
+        return await mcpBroker.call({namespace:call.namespace,name:call.name,arguments:call.arguments||{},signal:call.signal||null});
       }
       if(typeof executeShared!=="function")throw new Error(`No Native executor is connected for ${call.namespace}/${call.name}.`);
       return await executeShared(call);

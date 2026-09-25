@@ -80,10 +80,10 @@ function contentItems(value){
 }
 
 export class NativeAgentSession{
-  constructor({cwd=process.cwd(),providerTurn,executeTool,provider=null,model=null,tools=[],permissionMode="supervised",onUpdate=()=>{},onEvent=null,initialMessages=[]}={}){
+  constructor({cwd=process.cwd(),providerTurn,executeTool,provider=null,model=null,tools=[],permissionMode="supervised",onUpdate=()=>{},onEvent=null,onClose=null,initialMessages=[]}={}){
     if(typeof providerTurn!=="function")throw new Error("NativeAgentSession requires providerTurn");
     if(typeof executeTool!=="function")throw new Error("NativeAgentSession requires executeTool");
-    this.cwd=cwd;this.providerTurn=providerTurn;this.executeTool=executeTool;this.provider=provider;this.model=model;this.tools=Array.isArray(tools)?tools:[];this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onEvent=onEvent;this.messages=[...(Array.isArray(initialMessages)?initialMessages:[])];this.sessionId=null;this.controller=null;this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.closed=false;
+    this.cwd=cwd;this.providerTurn=providerTurn;this.executeTool=executeTool;this.provider=provider;this.model=model;this.tools=Array.isArray(tools)?tools:[];this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onEvent=onEvent;this.onClose=onClose;this.messages=[...(Array.isArray(initialMessages)?initialMessages:[])];this.sessionId=null;this.controller=null;this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.closed=false;
   }
   async start({providerSessionId=null,model=null}={}){
     if(this.closed)throw new Error("Native session is closed");
@@ -161,5 +161,5 @@ export class NativeAgentSession{
     }finally{this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.controller=null}
   }
   cancel(){if(this.controller&&!this.controller.signal.aborted)this.controller.abort();if(this.modelController&&!this.modelController.signal.aborted)this.modelController.abort()}
-  async close(){this.cancel();this.closed=true}
+  async close(){if(this.closed)return;this.cancel();this.closed=true;await this.onClose?.()}
 }
