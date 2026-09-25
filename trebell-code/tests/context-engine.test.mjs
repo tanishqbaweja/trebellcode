@@ -164,8 +164,26 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
   const second=await engine.buildPacket({root,io,task:"Fix the refresh token session bug",maxTokens:1800,maxFiles:8});
   assert.equal(second.stats.reparsed,0);assert.ok(second.stats.reused>=4);
   assert.equal(metadataCalls,afterFirstMetadata,"clean Git state should not restat cached remote source files");
-  assert.ok(contentCalls>afterFirstContent,"selected excerpts are refreshed from the remote workspace");
+  assert.equal(contentCalls,afterFirstContent,"clean remote packets should reuse indexed source samples instead of rereading candidate files");
   files.set("src/auth/session.js",files.get("src/auth/session.js")+"export const changed = true;\n");versions.set("src/auth/session.js","v2");status=" M src/auth/session.js\n";
   const third=await engine.buildPacket({root,io,task:"refresh session",maxTokens:1800,maxFiles:8});
   assert.equal(third.stats.reparsed,1);assert.ok(third.stats.reused>=3);
+});
+
+test("context excerpts fall back to the full file when a relevant symbol is beyond the cached sample",async()=>{
+  const root="/srv/large",padding="// padding\n".repeat(7000),content=padding+"export function distantTarget() { return 42; }\n";
+  let fullReads=0;
+  const io={
+    root,cacheKey:"large-fixture",
+    discoverFiles:async()=>["src/large.js"],
+    metadata:async()=>new Map([["src/large.js",{size:Buffer.byteLength(content),version:"v1"}]]),
+    readMany:async()=>new Map([["src/large.js",content]]),
+    readText:async()=>{fullReads++;return content},
+    gitState:async()=>({isGit:true,changed:new Set(),status:"",diff:""}),
+    relativeFocus:path=>path,
+  };
+  const packet=await new ContextEngine().buildPacket({root,io,task:"Fix distantTarget",maxTokens:1600,maxFiles:4});
+  assert.equal(fullReads,1);
+  assert.match(packet.injection,/distantTarget/);
+  assert.ok(packet.items.some(item=>item.path==="src/large.js"));
 });

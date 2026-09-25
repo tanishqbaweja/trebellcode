@@ -275,6 +275,13 @@ function relevantExcerpt(content,entry,terms,maxChars=2600){
   return output.slice(0,maxChars).trimEnd();
 }
 
+function excerptNeedsFullSource(entry,terms){
+  if(!entry||Number(entry.size||0)<=String(entry.sample||"").length)return false;
+  const sampleLines=String(entry.sample||"").split(/\r?\n/).length;
+  const matching=entry.parsed?.definitions?.filter(definition=>terms.some(term=>definition.name.toLowerCase().includes(term)))||[];
+  return matching.some(definition=>Number(definition.line||0)>sampleLines);
+}
+
 function publicItem(entry,score,centrality,reasons,tokenCost){
   return {path:entry.relativePath,score:Number(score.toFixed(3)),centrality:Number(centrality.toFixed(6)),reasons,symbols:entry.parsed.definitions.slice(0,16),tokenEstimate:tokenCost};
 }
@@ -392,15 +399,15 @@ export class ContextEngine{
     }
     if(git.status){const block=`Current Git status:\n${git.status.trim()}${git.diff?`\n\nCurrent diff excerpt:\n${git.diff.trim()}`:""}`;const clipped=block.slice(0,12_000),cost=tokenEstimate(clipped);if(used+cost<budget*.55){sections.push(clipped);used+=cost}}
 
-    const candidatePaths=ranked.slice(0,Math.max(fileLimit*2,16)).map(candidate=>candidate.entry.relativePath);
-    const candidateContents=await contextIo.readMany(candidatePaths,this.maxFileBytes);
     const selected=[];
     for(const candidate of ranked){
       if(selected.length>=fileLimit)break;
       const {entry,rel,central,combined}=candidate;if(combined<=0&&selected.length>=Math.min(6,fileLimit))break;
-      let content=candidateContents.get(entry.relativePath);
-      if(typeof content!=="string"){try{content=await contextIo.readText(entry.relativePath)}catch{continue}}
-      const excerpt=relevantExcerpt(content,entry,terms),symbols=entry.parsed.definitions.slice(0,20).map(item=>`${item.kind} ${item.name} (L${item.line})`).join(", ");
+      let excerpt=relevantExcerpt(entry.sample,entry,terms);
+      if(excerptNeedsFullSource(entry,terms)){
+        try{excerpt=relevantExcerpt(await contextIo.readText(entry.relativePath),entry,terms)}catch{}
+      }
+      const symbols=entry.parsed.definitions.slice(0,20).map(item=>`${item.kind} ${item.name} (L${item.line})`).join(", ");
       const reasons=[...rel.reasons];if(central>1/Math.max(1,files.length)*1.35)reasons.push("structurally central in repository graph");
       const block=`### ${entry.relativePath}\nWhy selected: ${reasons.join("; ")||"repository structure"}\n${symbols?`Key symbols: ${symbols}\n`:""}${excerpt?`Relevant structure/excerpt:\n${excerpt}`:""}`.trim();
       const cost=tokenEstimate(block);if(used+cost>budget)continue;
