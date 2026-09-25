@@ -1,6 +1,7 @@
 import React,{useEffect,useState} from "react";
 import { CircleStop, RefreshCw, SquareTerminal } from "lucide-react";
 import { backgroundTerminalResourceText, listThreadBackgroundTerminals } from "../background-terminals.js";
+import { startVisibilityPoll } from "../visibility-poll.js";
 
 export default function AgentBackgroundTerminals({rpc,rpcStatus,threadId}){
   const [items,setItems]=useState([]);
@@ -19,8 +20,8 @@ export default function AgentBackgroundTerminals({rpc,rpcStatus,threadId}){
     if(!rpc||rpcStatus!=="connected"||!threadId){setItems([]);setError("");return}
     let disposed=false;
     const load=async()=>{try{const next=await listThreadBackgroundTerminals(rpc,threadId);if(!disposed){setItems(next);setError("")}}catch(err){if(!disposed)setError(err.message||String(err))}};
-    load();const timer=setInterval(load,4000);
-    return()=>{disposed=true;clearInterval(timer)};
+    const poll=startVisibilityPoll(load,{intervalMs:4000});
+    return()=>{disposed=true;poll.dispose()};
   },[rpc,rpcStatus,threadId]);
 
   async function terminate(processId){

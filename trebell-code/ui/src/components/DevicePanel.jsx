@@ -1,6 +1,7 @@
 import React,{useEffect,useMemo,useRef,useState} from "react";
 import { CircleStop, Download, Home, Keyboard, Moon, Play, RefreshCw, RotateCw, Smartphone, Sun, Undo2 } from "lucide-react";
 import { api } from "../api.js";
+import { startVisibilityPoll } from "../visibility-poll.js";
 
 export default function DevicePanel(){
   const [data,setData]=useState({capabilities:{android:{available:false},ios:{available:false}},devices:[],avds:[]});
@@ -20,8 +21,8 @@ export default function DevicePanel(){
     }catch(error){setMessage(error.message)}
   }
   async function refreshShot(){if(!selected)return;try{setShot(await api("/api/device/screenshot?id="+encodeURIComponent(selected)))}catch(error){setMessage(error.message)}}
-  useEffect(()=>{refresh();const timer=setInterval(refresh,5000);return()=>clearInterval(timer)},[]);
-  useEffect(()=>{setShot(null);if(!selected)return;refreshShot();const timer=setInterval(refreshShot,1200);return()=>clearInterval(timer)},[selected]);
+  useEffect(()=>{const poll=startVisibilityPoll(refresh,{intervalMs:5000});return()=>poll.dispose()},[]);
+  useEffect(()=>{setShot(null);if(!selected)return;const poll=startVisibilityPoll(refreshShot,{intervalMs:1200});return()=>poll.dispose()},[selected]);
 
   async function act(action,args={}){
     if(!selected)return false;setBusy(action);setMessage("");
