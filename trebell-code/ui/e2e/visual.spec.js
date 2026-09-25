@@ -362,6 +362,32 @@ test("auto-settle polling sleeps when there are no linked pull requests",async({
   }finally{await harness.close()}
 });
 
+test("rare overlays load on demand instead of inflating chat startup",async({page})=>{
+  test.setTimeout(30_000);
+  const thread={id:"lazy-overlay-thread",name:"Lazy overlay fixture",preview:"Deferred overlay coverage",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexRequestHarness(thread);
+  const assets=[];page.on("request",request=>{const url=request.url();if(url.includes("/assets/"))assets.push(url)});
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"lazy-overlay-fixture");
+    await page.goto("/");
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Lazy overlay fixture"]')});await expect(row).toBeVisible();
+    await page.waitForTimeout(200);
+    expect(assets.some(url=>url.includes("SnoozeDialog-"))).toBe(false);
+    expect(assets.some(url=>url.includes("CommandPalette-"))).toBe(false);
+    await row.hover();const actions=row.locator('summary[title="Thread actions"]');await expect(actions).toBeVisible();await actions.click();
+    await row.getByRole("button",{name:/Snooze/}).click();
+    const snooze=page.getByTestId("snooze-dialog");await expect(snooze).toBeVisible();
+    await expect.poll(()=>assets.some(url=>url.includes("SnoozeDialog-"))).toBe(true);
+    await page.setViewportSize({width:1280,height:800});
+    const snoozeMetrics=await snooze.locator(".snooze-dialog").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(snoozeMetrics.scroll).toBeLessThanOrEqual(snoozeMetrics.client+1);
+    await page.screenshot({path:auditDir+"snooze-dialog-lazy-1280x800.png",fullPage:true});
+    await snooze.getByRole("button",{name:"Close snooze dialog"}).click();await expect(snooze).toBeHidden();
+    await page.keyboard.press("Control+k");const palette=page.getByTestId("command-palette");await expect(palette).toBeVisible();
+    await expect.poll(()=>assets.some(url=>url.includes("CommandPalette-"))).toBe(true);
+    await page.keyboard.press("Escape");await expect(palette).toBeHidden();
+  }finally{await harness.close()}
+});
+
 test("settings loads provider and runtime catalogs only on relevant sections",async({page,request})=>{
   test.setTimeout(35_000);
   await prepare(page,request);

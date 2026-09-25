@@ -69,6 +69,7 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .command-palette-error{b
 .thread-sections h4{height:28px;margin:0;padding:0 8px;display:flex;align-items:center;gap:6px;text-transform:none;letter-spacing:0;font-size:10px;font-weight:600;color:#6f747b}
 .thread-sections h4 span{font-size:9px;font-weight:500;color:#555a60}
 .thread-row{min-height:40px;position:relative;display:flex;align-items:center;border-radius:7px;background:transparent;border:0;color:#b7bbc1;content-visibility:auto;contain-intrinsic-size:auto 42px}
+.thread-row:has(.thread-menu[open]){content-visibility:visible;z-index:20}
 .thread-row:hover{background:var(--t3-hover)}
 .thread-row.active{background:var(--t3-active);color:#f0f1f2}
 .thread-select{margin-left:6px;accent-color:var(--t3-accent)}

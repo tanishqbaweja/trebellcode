@@ -8,15 +8,10 @@ import {
 import { CodexRpcClient } from "./rpc.js";
 import { api } from "./api.js";
 import ThreadSidebar from "./components/ThreadSidebar.jsx";
-import QuestionModal from "./components/QuestionModal.jsx";
-import McpElicitationModal from "./components/McpElicitationModal.jsx";
 import AssistantSelectionToolbar from "./components/AssistantSelectionToolbar.jsx";
-import SnoozeDialog from "./components/SnoozeDialog.jsx";
 import RightPanel from "./components/RightPanel.jsx";
-import CommandPalette from "./components/CommandPalette.jsx";
 import AgentBackgroundTerminals from "./components/AgentBackgroundTerminals.jsx";
 import { contextCompactionSignal } from "./provider-session-status.js";
-import OnboardingModal from "./components/OnboardingModal.jsx";
 import OpenInPicker from "./components/OpenInPicker.jsx";
 import WorktreeSetupCard from "./components/WorktreeSetupCard.jsx";
 import { resolveKeybinding } from "./keybindings.js";
@@ -63,6 +58,11 @@ const UsagePage=lazy(()=>import("./components/UsagePage.jsx"));
 const LicensesPage=lazy(()=>import("./components/LicensesPage.jsx"));
 const ContextInspector=lazy(()=>import("./components/ContextInspector.jsx"));
 const RuntimeTrace=lazy(()=>import("./components/RuntimeTrace.jsx"));
+const QuestionModal=lazy(()=>import("./components/QuestionModal.jsx"));
+const McpElicitationModal=lazy(()=>import("./components/McpElicitationModal.jsx"));
+const SnoozeDialog=lazy(()=>import("./components/SnoozeDialog.jsx"));
+const CommandPalette=lazy(()=>import("./components/CommandPalette.jsx"));
+const OnboardingModal=lazy(()=>import("./components/OnboardingModal.jsx"));
 
 function DeferredSurface({children,label="Loading…",compact=false}){
   return <Suspense fallback={<div className={"surface-loading"+(compact?" compact":"")} role="status">{label}</div>}>{children}</Suspense>;
@@ -3331,11 +3331,11 @@ export default function App(){
       {actionError&&<div className={"app-action-error-toast"+(threadUndo?" with-thread-undo":"")+(section!=="chat"?" secondary-surface-error":"")} role="alert" aria-live="assertive" data-testid="app-action-error">{actionError}</div>}
     </div>
 
-    <McpElicitationModal key={elicitations[0]?.request?.id||"none"} request={elicitations[0]?.request} onResolve={resolveElicitation} onVerify={verifyMcpUser} verificationAvailable={!workspaceEnvironmentId}/>
-    {!elicitations.length&&<QuestionModal request={question?.request} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={pickFiles}/>}
-    <SnoozeDialog request={snoozeRequest} onSubmit={submitSnooze} onCancel={()=>setSnoozeRequest(null)}/>
+    {elicitations.length>0&&<Suspense fallback={null}><McpElicitationModal key={elicitations[0]?.request?.id||"none"} request={elicitations[0]?.request} onResolve={resolveElicitation} onVerify={verifyMcpUser} verificationAvailable={!workspaceEnvironmentId}/></Suspense>}
+    {!elicitations.length&&question?.request&&<Suspense fallback={null}><QuestionModal request={question.request} onSubmit={answerQuestion} onCancel={cancelQuestion} pickFiles={pickFiles}/></Suspense>}
+    {snoozeRequest&&<Suspense fallback={null}><SnoozeDialog request={snoozeRequest} onSubmit={submitSnooze} onCancel={()=>setSnoozeRequest(null)}/></Suspense>}
     {threadUndo&&<div className="thread-undo-toast" role="status" aria-live="polite" data-testid="thread-undo-toast"><span>{threadUndo.label}</span><button onClick={undoThreadAction}>Undo</button><em>5s</em></div>}
-    <CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} actions={paletteActions} projects={paletteProjects} threads={threads} environmentNames={paletteEnvironmentNames} dataError={paletteDataError} onOpenProject={project=>onProjectOpen(project.path,project.environmentId||null)} onOpenThread={openThread} onSearchThreadMessages={searchThreadMessages}/>
-    <OnboardingModal open={initialLoaded&&settings.onboardingComplete===false} projectPath={projectPath} onPickWorkspace={window.trebellDesktop?.pickDirectory?pickWorkspace:null} providerLabel={agentRuntime==="codex"?providerLabel:agentRuntimeLabel} providerReady={providerReady} permissionMode={permissionMode} onPermissionMode={setPermissionMode} onHistoryImported={historyImported} onFinish={finishOnboarding}/>
+    {paletteOpen&&<Suspense fallback={null}><CommandPalette open onClose={()=>setPaletteOpen(false)} actions={paletteActions} projects={paletteProjects} threads={threads} environmentNames={paletteEnvironmentNames} dataError={paletteDataError} onOpenProject={project=>onProjectOpen(project.path,project.environmentId||null)} onOpenThread={openThread} onSearchThreadMessages={searchThreadMessages}/></Suspense>}
+    {initialLoaded&&settings.onboardingComplete===false&&<Suspense fallback={null}><OnboardingModal open projectPath={projectPath} onPickWorkspace={window.trebellDesktop?.pickDirectory?pickWorkspace:null} providerLabel={agentRuntime==="codex"?providerLabel:agentRuntimeLabel} providerReady={providerReady} permissionMode={permissionMode} onPermissionMode={setPermissionMode} onHistoryImported={historyImported} onFinish={finishOnboarding}/></Suspense>}
   </div>;
 }
