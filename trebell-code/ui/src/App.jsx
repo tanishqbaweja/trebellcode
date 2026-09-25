@@ -33,6 +33,7 @@ import { collaborationModePayload, normalizeCollaborationModes } from "./collabo
 import { ensureCodexProject, sameWorkspacePath } from "./codex-projects.js";
 import { writeClipboardText } from "./clipboard.js";
 import { createKeyedTextFrameBuffer, createTextFrameBuffer } from "./text-frame-buffer.js";
+import { createLatestValueBuffer } from "./latest-value-buffer.js";
 import { autoCompactionDecision } from "./auto-compaction.js";
 import { hasAutoSettleCandidates } from "./auto-settle.js";
 import { sameConversationMessageRowProps } from "./conversation-row.js";
@@ -541,6 +542,24 @@ export default function App(){
       activityTimelineRef.current?.appendCommandOutputs(entries);
     },
   });
+  const diffEventBufferRef=useRef(null);
+  if(!diffEventBufferRef.current)diffEventBufferRef.current=createLatestValueBuffer({
+    schedule:callback=>setTimeout(callback,120),
+    cancel:handle=>clearTimeout(handle),
+    onFlush:entries=>setEvents(previous=>{
+      let next=previous,changed=false;
+      for(const [,event] of entries){
+        const index=next.findIndex(item=>item.id===event.id);
+        if(index>=0){
+          if(sameSnapshot(next[index],event))continue;
+          if(!changed)next=[...next];next[index]=event;changed=true;
+        }else{
+          if(!changed)next=[...next];next.push(event);changed=true;
+        }
+      }
+      return changed?next:previous;
+    }),
+  });
   const [historyPage,setHistoryPage]=useState({threadId:null,nextCursor:null,paginated:false,loading:false});
   const [threadHistory,setThreadHistory]=useState({runtime:null,items:[],nextCursor:null,loading:false,error:""});
   const [threadFind,setThreadFind]=useState({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});
@@ -576,9 +595,9 @@ export default function App(){
   const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
   const autoSettleCandidates=useMemo(()=>hasAutoSettleCandidates(threads,threadMeta),[threads,threadMeta]);
-  function resetAssistantStream(){assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();assistantTextRef.current="";commandOutputRef.current.clear();mcpProgressRef.current.clear();activityTimelineRef.current?.resetStreams()}
+  function resetAssistantStream(){assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();diffEventBufferRef.current?.reset();assistantTextRef.current="";commandOutputRef.current.clear();mcpProgressRef.current.clear();activityTimelineRef.current?.resetStreams()}
   function appendAssistantStream(value){assistantStreamBufferRef.current?.push(value)}
-  useEffect(()=>()=>{assistantStreamBufferRef.current?.dispose();commandStreamBufferRef.current?.dispose();for(const waiter of compactionWaitersRef.current.values()){clearTimeout(waiter.timer);waiter.reject?.(new Error("Trebell closed while context compaction was pending"))}compactionWaitersRef.current.clear()},[]);
+  useEffect(()=>()=>{assistantStreamBufferRef.current?.dispose();commandStreamBufferRef.current?.dispose();diffEventBufferRef.current?.dispose();for(const waiter of compactionWaitersRef.current.values()){clearTimeout(waiter.timer);waiter.reject?.(new Error("Trebell closed while context compaction was pending"))}compactionWaitersRef.current.clear()},[]);
   const navigationKey=location=>[location.section,location.threadId||"",location.rightPanelOpen?location.rightPanelTab||"files":""].join("|");
   useEffect(()=>{
     if(!initialLoaded)return;
@@ -1780,7 +1799,7 @@ export default function App(){
     }
     else if(message.method==="turn/diff/updated"&&isCurrent){
       const id="diff-"+String(p.turnId||activeTurnId||threadId||"current"),event={id,kind:"fileChange",title:"Workspace diff updated",status:"done",raw:p.diff||p};
-      setEvents(prev=>prev.some(item=>item.id===id)?prev.map(item=>item.id===id?event:item):[...prev,event]);
+      diffEventBufferRef.current?.push(id,event);
     }
     else if(message.method==="thread/tokenUsage/updated"){
       updateThreadTelemetry(threadId,{tokenUsage:p.tokenUsage||null,lastActivityAt:Date.now()});
