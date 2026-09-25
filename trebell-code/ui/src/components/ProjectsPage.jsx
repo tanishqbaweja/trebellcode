@@ -2,6 +2,7 @@ import React,{useEffect,useMemo,useRef,useState} from "react";
 import { Check, Download, ExternalLink, FolderCode, GitBranch, ImagePlus, Layers3, MessageSquareText, Pencil, Play, Plus, RefreshCw, Settings2, SquareTerminal, Trash2, X } from "lucide-react";
 import { api } from "../api.js";
 import { baseProjectRecord, enrichProjectRecords, summarizeProjectRefreshErrors } from "../project-enrichment.js";
+import { PROJECT_PAGE_SIZE, projectGroupCounts, projectGroupKey, projectWindow } from "../project-window.js";
 
 function blankScript(){
   return {id:null,name:"",command:"",previewUrl:"",autoOpenPreview:false,runOnWorktreeCreate:false,waitForSetup:false};
@@ -39,6 +40,8 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
   const [suggestionsOpen,setSuggestionsOpen]=useState({});
   const [identityOpen,setIdentityOpen]=useState({});
   const [iconDraft,setIconDraft]=useState({});
+  const [projectQuery,setProjectQuery]=useState("");
+  const [projectLimit,setProjectLimit]=useState(PROJECT_PAGE_SIZE);
   const projectsRef=useRef([]);
   const refreshInFlightRef=useRef(null);
   const refreshPendingRef=useRef(false);
@@ -104,6 +107,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     if(hasDesktopPicker||cloneEnvironmentId||!environmentData.profiles?.length)return;
     const first=environmentData.profiles[0];setCloneEnvironmentId(first.id);setCloneParent(first.cwd||"");
   },[hasDesktopPicker,cloneEnvironmentId,environmentData.profiles]);
+  useEffect(()=>setProjectLimit(PROJECT_PAGE_SIZE),[projectQuery]);
   const cloning=projects.some(project=>["running","cancelling"].includes(project.cloneJob?.status));
   useEffect(()=>{if(!cloning)return;const timer=setInterval(()=>refresh(),750);return()=>clearInterval(timer)},[cloning]);
 
@@ -279,24 +283,26 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     }catch(err){setError("Could not import project image: "+(err.message||String(err)))}
   }
 
+  const projectView=useMemo(()=>projectWindow(projects,{query:projectQuery,limit:projectLimit,currentPath,currentEnvironmentId}),[projects,projectQuery,projectLimit,currentPath,currentEnvironmentId]);
+  const groupTotals=useMemo(()=>projectGroupCounts(projectView.filtered),[projectView.filtered]);
   const groups=useMemo(()=>{
     const map=new Map();
-    for(const project of projects){
+    for(const project of projectView.visible){
       const environmentLabel=project.environment?.name||"Local machine";
-      const key=(project.environmentId||"local")+":"+(project.remote||project.path);
-      if(!map.has(key)) map.set(key,{key,label:project.remote||project.name,environmentLabel,projects:[]});
+      const key=projectGroupKey(project);
+      if(!map.has(key)) map.set(key,{key,label:project.remote||project.name,environmentLabel,projects:[],totalCount:groupTotals.get(key)||0});
       map.get(key).projects.push(project);
     }
     return [...map.values()];
-  },[projects]);
+  },[projectView.visible,groupTotals]);
 
   return <div className="projects-page">
-    <div className="page-actions">{hasDesktopPicker&&<button onClick={addLocal} disabled={busy}><Plus size={14}/> Add local project</button>}<button aria-label="Refresh projects" onClick={()=>refresh({reportErrors:true})} disabled={busy}><RefreshCw size={14}/></button></div>
+    <div className="page-actions project-page-actions"><input className="project-search" aria-label="Search projects" value={projectQuery} onChange={event=>setProjectQuery(event.target.value)} placeholder="Search projects"/><span className="project-window-count">{projectView.shown} / {projectView.total}</span>{hasDesktopPicker&&<button onClick={addLocal} disabled={busy}><Plus size={14}/> Add local project</button>}<button aria-label="Refresh projects" onClick={()=>refresh({reportErrors:true})} disabled={busy}><RefreshCw size={14}/></button></div>
     {error&&<p className="provider-status-error" role="alert">{error}</p>}
     <button className="general-chat-card" onClick={startGeneralChat} disabled={busy}><MessageSquareText size={22}/><span><strong>No project · General chat</strong><small>Plan, research, troubleshoot, or draft in a Trebell-managed scratch workspace.</small></span><em>{busy?"Starting…":"Start chat"}</em></button>
     {(hasDesktopPicker||(environmentData.profiles||[]).length>0)&&<div className="clone-card"><GitBranch size={20}/><div><strong>Clone repository</strong><span>Starts in the background</span></div><select aria-label="Clone environment" value={cloneEnvironmentId} onChange={e=>{const id=e.target.value;setCloneEnvironmentId(id);const profile=environmentData.profiles?.find(item=>item.id===id);setCloneParent(profile?.cwd||"")}}>{hasDesktopPicker&&<option value="local">Local machine</option>}{!hasDesktopPicker&&!cloneEnvironmentId&&<option value="" disabled>Select environment</option>}{(environmentData.profiles||[]).map(profile=><option key={profile.id} value={profile.id}>{profile.name} · {profile.type.toUpperCase()}</option>)}</select><div className={"clone-inputs "+(cloneEnvironmentId==="local"?"":"remote")}><input aria-label="Clone URL" value={cloneUrl} onChange={e=>setCloneUrl(e.target.value)} placeholder="https://github.com/owner/repo.git"/>{cloneEnvironmentId!=="local"&&<input aria-label="Clone parent directory" value={cloneParent} onChange={e=>setCloneParent(e.target.value)} placeholder="/srv/projects" title="Remote parent directory"/>}</div><button onClick={clone} disabled={busy||!cloneUrl.trim()||(!hasDesktopPicker&&!cloneEnvironmentId)}>{busy?"Starting…":"Clone"}</button></div>}
     <div className="project-groups">{groups.map(group=><section className="project-group" key={group.key}>
-      <div className="project-group-head"><Layers3 size={14}/><div><strong>{group.label}</strong><span>{group.environmentLabel} · {group.projects.length} checkout{group.projects.length===1?"":"s"}</span></div></div>
+      <div className="project-group-head"><Layers3 size={14}/><div><strong>{group.label}</strong><span>{group.environmentLabel} · {group.totalCount} checkout{group.totalCount===1?"":"s"}</span></div></div>
       <div className="project-grid">{group.projects.map(p=><div className={p.path===currentPath&&(p.environmentId||null)===(currentEnvironmentId||null)?"project-card active":"project-card"} key={p.id}>
         <button className="project-open" onClick={()=>openProject(p)}><ProjectIcon project={p}/><div><strong>{p.name}</strong><span>{p.environment?.name||"Local machine"} · {p.path}</span><small>{p.environment?.type!=="local"?"remote workspace · "+new Date(p.lastOpenedAt).toLocaleString():p.managedWorktree?.cleanedAt?"managed worktree cleaned · click to restore":(p.git?.branch||"not a Git checkout")+" · "+new Date(p.lastOpenedAt).toLocaleString()}</small></div></button>
         <button className="project-remove" aria-label={"Remove "+p.name} onClick={()=>removeProject(p)} disabled={busy}><Trash2 size={13}/></button>
@@ -336,5 +342,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
         </div>
       </div>)}</div>
     </section>)}</div>
+    {!projectView.total&&<div className="project-window-empty">{projectQuery?"No projects match this search.":"No projects yet."}</div>}
+    {projectView.hasMore&&<div className="project-window-footer"><button onClick={()=>setProjectLimit(limit=>limit+PROJECT_PAGE_SIZE)}>Show {Math.min(PROJECT_PAGE_SIZE,projectView.total-projectView.shown)} more</button><span>{projectView.shown} of {projectView.total} projects mounted</span></div>}
   </div>;
 }
