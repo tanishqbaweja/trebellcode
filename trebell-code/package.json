@@ -10,6 +10,7 @@
   },
   "scripts": {
     "test": "node --import tsx --test tests/*.test.mjs",
+    "bench:core": "node scripts/benchmark-core.mjs",
     "doctor": "node ./bin/trebell.mjs doctor",
     "smoke:bridge": "node --import tsx ./vendor/freebuff2api/src/index.ts --help",
     "ui:dev": "vite --config ui/vite.config.mjs",
