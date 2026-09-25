@@ -148,3 +148,21 @@ export function repositoryKnowledgeContext(entries=[],{limit=20}={}){
   }
   return lines.join("\n").slice(0,16_000);
 }
+
+function tokens(value){
+  return new Set(String(value||"").toLowerCase().match(/[a-z0-9_.-]{2,}/g)||[]);
+}
+export function selectRepositoryKnowledge(entries=[],{query="",limit=20,includeUnverified=true}={}){
+  const wanted=tokens(query),cap=Math.max(1,Math.min(100,Number(limit)||20));
+  return (Array.isArray(entries)?entries:[])
+    .filter(item=>item?.status!=="stale"&&(includeUnverified||item?.status==="verified"))
+    .map((item,index)=>{
+      const hay=tokens([item.category,item.scope,item.fact,...(item.evidence||[]).flatMap(evidence=>[evidence.path,evidence.symbol])].filter(Boolean).join(" "));
+      let overlap=0;for(const token of wanted)if(hay.has(token))overlap++;
+      const statusScore=item.status==="verified"?3:1,confidenceScore=item.confidence==null?0:Number(item.confidence)*2,recency=Math.min(2,Math.max(0,(Number(item.updatedAt)||0)/1e15));
+      return {item,index,score:wanted.size?overlap*10+statusScore+confidenceScore:statusScore+confidenceScore+recency};
+    })
+    .sort((a,b)=>b.score-a.score||Number(b.item.updatedAt||0)-Number(a.item.updatedAt||0)||a.index-b.index)
+    .slice(0,cap)
+    .map(entry=>entry.item);
+}
