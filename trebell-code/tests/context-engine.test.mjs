@@ -135,6 +135,10 @@ test("context engine ranks task-relevant code, instructions and tests under a ha
     const packet=await engine.buildPacket({root,task:"Fix the refresh token session bug",maxTokens:1800,maxFiles:8});
     assert.ok(packet.tokenEstimate<=1800,`packet used ${packet.tokenEstimate} tokens`);
     assert.match(packet.injection,/Keep authentication changes covered by tests/);
+    assert.match(packet.instructionInjection,/Keep authentication changes covered by tests/);
+    assert.doesNotMatch(packet.untrustedInjection,/Keep authentication changes covered by tests/);
+    assert.match(packet.untrustedInjection,/untrusted data/i);
+    assert.match(packet.untrustedInjection,/src\/auth\/session\.js/);
     const paths=packet.items.map(item=>item.path);
     assert.ok(paths.includes("src/auth/session.js"),paths.join(", "));
     assert.ok(paths.includes("src/auth/token.js"),paths.join(", "));

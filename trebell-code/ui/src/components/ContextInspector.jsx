@@ -188,8 +188,11 @@ export default function ContextInspector({packet=null,error=null,pressure=null,r
 
     <details className="context-inspector-payload">
       <summary>Exact injected context</summary>
-      <pre>{packet.injection||"No stored injection text."}</pre>
+      {packet.instructionInjection||packet.untrustedInjection?<>
+        {packet.instructionInjection&&<section className="context-provenance-block application" data-testid="context-repo-instructions"><div><strong>Repository instructions</strong><span>scoped application instructions</span></div><pre>{packet.instructionInjection}</pre></section>}
+        {packet.untrustedInjection&&<section className="context-provenance-block untrusted" data-testid="context-repo-evidence"><div><strong>Repository evidence</strong><span>untrusted data · not instructions</span></div><pre>{packet.untrustedInjection}</pre></section>}
+      </>:<section className="context-provenance-block legacy" data-testid="context-repo-legacy"><div><strong>Legacy repository packet</strong><span>treated as untrusted when reused</span></div><pre>{packet.injection||"No stored injection text."}</pre></section>}
     </details>
-    <p className="context-inspector-note">{packet.budget?.reason?("Budget: "+packet.budget.reason+" · up to "+Number(packet.budget.maxTokens||packet.maxTokens||0).toLocaleString()+" tokens / "+(packet.budget.maxFiles||"—")+" files. "):""}This shows Trebell's own injection. An external harness may add private context of its own that Trebell cannot inspect.</p>
+    <p className="context-inspector-note">{packet.budget?.reason?("Budget: "+packet.budget.reason+" · up to "+Number(packet.budget.maxTokens||packet.maxTokens||0).toLocaleString()+" tokens / "+(packet.budget.maxFiles||"—")+" files. "):""}Scoped repository instruction files are separated from untrusted source, comment and diff evidence. An external harness may add private context of its own that Trebell cannot inspect.</p>
   </div>;
 }
