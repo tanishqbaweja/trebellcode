@@ -141,6 +141,7 @@ html[data-mode="light"]:not([data-custom-theme="true"]) .command-palette-error{b
 .agent-heading .agent-star{width:18px;height:18px;border:0;background:none;color:#898f97;box-shadow:none}
 .timeline{margin:0;padding:0;border:0;display:grid;gap:3px}
 .tool-event{border:0;background:transparent;border-radius:6px;overflow:hidden}
+.timeline>.tool-event{content-visibility:auto;contain-intrinsic-size:auto 34px}
 .tool-event summary{min-height:30px;display:grid;grid-template-columns:20px minmax(0,1fr) auto;align-items:center;gap:6px;padding:0 7px;list-style:none;color:#858b93;cursor:pointer}
 .tool-event summary::-webkit-details-marker{display:none}
 .tool-event summary:hover{background:#151719;color:#c8ccd1}

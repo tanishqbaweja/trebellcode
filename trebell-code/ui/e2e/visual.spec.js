@@ -1171,6 +1171,7 @@ test("live command output survives page navigation without root-owned event chur
     await page.getByRole("button",{name:"Threads",exact:true}).click();
     const restoredEvent=page.locator(".tool-event").filter({hasText:"npm test"});
     await restoredEvent.locator("summary").click();
+    expect(await restoredEvent.evaluate(node=>getComputedStyle(node).contentVisibility)).toBe("auto");
     await expect(restoredEvent.locator(".tool-event-body")).toContainText("line one\nline two");
     harness.emit({method:"item/completed",params:{threadId:thread.id,turnId:"command-stream-turn",item:{id:"command-stream-item",type:"commandExecution",command:["npm","test"],status:"completed"}}});
     await expect(restoredEvent).toHaveClass(/status-done/);
