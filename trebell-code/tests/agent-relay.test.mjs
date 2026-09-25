@@ -264,12 +264,16 @@ test("agent relay broadcasts Codex-compatible archive, unarchive and delete life
     threadStore.finishTurn(thread.id,activeTurn.id);queue=await rpc("thread/queue/list",{threadId:thread.id,limit:10});assert.equal(queue.data.length,2,"failed queue start must not consume the draft");
     const deleted=await rpc("thread/queue/delete",{threadId:thread.id,queuedSubmissionId:q1.queuedSubmission.id});assert.equal(deleted.deleted,true);
     assert.equal((await rpc("thread/queue/list",{threadId:thread.id,limit:10})).data.length,1);
-    const goalSet=await rpc("thread/goal/set",{threadId:thread.id,objective:"Ship the fixture safely",completionConditions:["Lifecycle tests pass"],constraints:["Keep compatibility"],tokenBudget:5000,timeBudgetMinutes:30,toolCallBudget:1,unexpected:"ignored"});
-    assert.equal(goalSet.goal.objective,"Ship the fixture safely");assert.equal(goalSet.goal.tokenBudget,5000);assert.equal(goalSet.goal.tokensUsed,0);assert.equal(goalSet.goal.toolCallBudget,1);assert.equal(goalSet.goal.toolCallsUsed,0);assert.equal(goalSet.goal.tokenBudgetRemaining,5000);assert.equal(Object.prototype.hasOwnProperty.call(goalSet.goal,"unexpected"),false);
+    const goalSet=await rpc("thread/goal/set",{threadId:thread.id,objective:"Ship the fixture safely",completionConditions:["Lifecycle tests pass"],constraints:["Keep compatibility"],tokenBudget:5000,timeBudgetMinutes:30,toolCallBudget:1,childAgentBudget:1,unexpected:"ignored"});
+    assert.equal(goalSet.goal.objective,"Ship the fixture safely");assert.equal(goalSet.goal.tokenBudget,5000);assert.equal(goalSet.goal.tokensUsed,0);assert.equal(goalSet.goal.toolCallBudget,1);assert.equal(goalSet.goal.toolCallsUsed,0);assert.equal(goalSet.goal.childAgentBudget,1);assert.equal(goalSet.goal.tokenBudgetRemaining,5000);assert.equal(Object.prototype.hasOwnProperty.call(goalSet.goal,"unexpected"),false);
     const goalRead=await rpc("thread/goal/get",{threadId:thread.id});assert.equal(goalRead.goal.objective,"Ship the fixture safely");assert.deepEqual(goalRead.goal.completionConditions,["Lifecycle tests pass"]);
     const continuitySet=await rpc("thread/continuity/set",{threadId:thread.id,completedWork:["Implemented the fixture"],importantDecisions:["Keep compatibility"],pendingNextActions:["Run the final smoke test"]});
     assert.ok(continuitySet.continuity.meaningful);assert.ok(continuitySet.continuity.completedWork.includes("Implemented the fixture"));assert.ok(continuitySet.continuity.importantDecisions.includes("Keep compatibility"));
     const continuityRead=await rpc("thread/continuity/get",{threadId:thread.id});assert.ok(continuityRead.continuity.pendingNextActions.includes("Run the final smoke test"));
+    const occupiedChild=threadStore.create({runtime:"claude",cwd:home,providerSessionId:"child-session"});threadStore.update(occupiedChild.id,{parentThreadId:thread.id,agentRole:"delegate"});
+    const childLimited=await rpc("thread/goal/get",{threadId:thread.id});assert.equal(childLimited.goal.childAgentsUsed,1);assert.equal(childLimited.goal.childAgentBudgetRemaining,0);
+    await assert.rejects(rpc("thread/delegate",{threadId:thread.id,task:"Must not reach the runtime",isolation:"inherit"}),/child-agent budget exhausted/i);
+    threadStore.delete(occupiedChild.id);
     await assert.rejects(rpc("thread/goal/set",{threadId:thread.id,tokenBudget:-1}),/positive whole number/i);
     const toolTurn=threadStore.addTurn(thread.id,{inputText:"use one tool"});
     threadStore.addItem(thread.id,toolTurn.id,{id:"tool-budget-command",type:"commandExecution",status:"completed",command:["node","fixture.mjs"]});

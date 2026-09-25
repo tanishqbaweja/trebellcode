@@ -49,6 +49,8 @@ import { EventJournal } from "./event-journal.mjs";
 import { enrichGoal, goalAdditionalContext, goalBudgetGate, normalizeGoal } from "./goal-state.mjs";
 import { recordCodexBudgetEvidence, recordCodexChildAgentEvidence } from "./codex-budget-evidence.mjs";
 import { continuityAdditionalContext, continuitySnapshot, normalizeContinuityNotes } from "./continuity-state.mjs";
+import { delegationContextValue, delegationGoalPatch, delegationPolicies } from "./delegation-state.mjs";
+import { executeDelegation } from "./delegation-executor.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
   .then(text=>String(JSON.parse(text).version||"0.0.0"))
@@ -947,6 +949,99 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     const meta=state.threadMeta(threadId);
     eventJournal.record({runtime:"codex",provider:selectedProvider,environmentId:meta?.environmentId??state.settings().activeEnvironmentId??null,threadId,category:"budget",name:"goal.budget_blocked",status:"blocked",data:{goalStatus:goal?.status||null,tokenBudget:goal?.tokenBudget??null,tokensUsed:goal?.tokensUsed??0,timeBudgetMinutes:goal?.timeBudgetMinutes??null,timeUsedSeconds:goal?.timeUsedSeconds??0,turnBudget:goal?.turnBudget??null,turnsUsed:goal?.turnsUsed??0,toolCallBudget:goal?.toolCallBudget??null,toolCallsUsed:goal?.toolCallsUsed??0,toolCallTelemetryComplete:goal?.toolCallTelemetryComplete??true,childAgentBudget:goal?.childAgentBudget??null,childAgentsUsed:goal?.childAgentsUsed??null,childAgentTelemetryComplete:goal?.childAgentTelemetryComplete??false,costBudgetUsd:goal?.costBudgetUsd??null,costUsedUsd:goal?.costUsedUsd??null,costTelemetryComplete:goal?.costTelemetryComplete??true,tokenExhausted:gate.tokenExhausted,timeExhausted:gate.timeExhausted,turnExhausted:gate.turnExhausted,toolCallExhausted:gate.toolCallExhausted,childAgentExhausted:gate.childAgentExhausted,costExhausted:gate.costExhausted}});
     throw Object.assign(new Error(gate.reason),{code:-32001});
+  }
+  const pendingDelegations=new Map();
+  function reserveCodexDelegation(threadId){
+    const goal=durableCodexGoal(threadId);assertCodexGoalBudget(threadId);
+    const pending=Math.max(0,Number(pendingDelegations.get(threadId))||0);
+    if(goal?.childAgentBudget!=null&&goal.childAgentTelemetryComplete&&Number(goal.childAgentsUsed||0)+pending>=Number(goal.childAgentBudget)){
+      throw Object.assign(new Error(`Goal budget exhausted: child-agent budget exhausted (${Number(goal.childAgentsUsed||0)+pending}/${goal.childAgentBudget}). Increase the exhausted budget before delegating more work.`),{code:-32001});
+    }
+    pendingDelegations.set(threadId,pending+1);
+    return ()=>{const next=Math.max(0,(Number(pendingDelegations.get(threadId))||1)-1);if(next)pendingDelegations.set(threadId,next);else pendingDelegations.delete(threadId)};
+  }
+  async function prepareCodexDelegationWorkspace(parentThreadId,spec,parentThread=null){
+    const meta=state.threadMeta(parentThreadId),sourceCwd=String(meta?.cwd||parentThread?.cwd||"").trim();
+    if(!sourceCwd)throw new Error("Delegation requires a parent workspace");
+    if(spec.isolation==="inherit")return {cwd:sourceCwd,branch:meta?.branch||null,isolation:"inherit",worktree:false};
+    const environmentId=meta?.environmentId??parentThread?.providerMeta?.environmentId??null;
+    if(environmentId)throw new Error("Isolated delegation worktrees are currently supported only for local workspaces. Use isolation='inherit' for remote environments.");
+    const info=await gitInfo(sourceCwd);if(!info.isGit)throw new Error("Worktree delegation requires a Git workspace");if(!info.branch)throw new Error("Worktree delegation requires a checked-out base branch");
+    const label=spec.label||spec.model||spec.task.split(/\s+/).slice(0,4).join("-");
+    const slug=String(label||"agent").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,28)||"agent";
+    const stamp=Date.now().toString(36)+randomBytes(2).toString("hex");
+    const branch=`trebell/delegate-${slug}-${stamp}`,path=info.root+`-trebell-delegate-${slug}-${stamp}`;
+    const sourceProject=state.project(resolve(sourceCwd),null),scoped=sourceProject?state.projectSettings(sourceProject.path,null):{defaults:state.environmentDefaults(null),overrides:{}};
+    const submodules=scoped.overrides.worktreeSubmodules||scoped.defaults.worktreeSubmodules||"recursive";
+    let created=null;
+    try{
+      created=await createWorktree(sourceCwd,{branch,path,baseBranch:info.branch,submodules});
+      const inherited=sourceProject?{
+        defaultModel:sourceProject.defaultModel??null,permissionMode:sourceProject.permissionMode??null,workspaceMode:sourceProject.workspaceMode??null,
+        worktreeSubmodules:sourceProject.worktreeSubmodules??null,worktreeCleanup:sourceProject.worktreeCleanup??null,settingsOverrides:sourceProject.settingsOverrides||{},
+        icon:sourceProject.icon??null,scripts:sourceProject.scripts||[],preferredScriptId:sourceProject.preferredScriptId??null,
+      }:{};
+      state.touchProject(created.worktree,{...inherited,environmentId:null,managedWorktree:{root:created.info.root,branch,baseBranch:info.branch,submodules,createdAt:Date.now(),cleanedAt:null,cleanupReason:null}});
+      const setup=(sourceProject?.scripts||[]).find(script=>script.runOnWorktreeCreate);
+      let setupSession=null;
+      if(setup&&!mock&&terminals){
+        const shell=commandShellSpec(setup.command,env);
+        setupSession=await terminals.create({cwd:created.worktree,name:`${setup.name||"Setup"} · delegated setup`,cols:120,rows:32,shell:shell.shell,args:shell.args});
+        if(setup.waitForSetup){
+          const settled=await terminals.waitForExit(setupSession.id,{timeoutMs:30*60_000});
+          if(settled.timeout)throw new Error("Delegated worktree setup is still running after 30 minutes");
+          if(settled.exitCode!==0)throw new Error(`Delegated worktree setup failed with exit code ${settled.exitCode??"unknown"}`);
+        }
+      }
+      return {cwd:created.worktree,branch,isolation:"worktree",worktree:true,baseBranch:info.branch,setupSessionId:setupSession?.id||null};
+    }catch(error){
+      if(created?.worktree)await removeWorktree(sourceCwd,created.worktree,{force:true}).catch(()=>{});
+      throw error;
+    }
+  }
+  async function delegateCodexThread(params,requestUpstream){
+    const parentThreadId=String(params.threadId||params.parentThreadId||"").trim();if(!parentThreadId)throw Object.assign(new Error("threadId is required"),{code:-32602});
+    const parentMeta=state.threadMeta(parentThreadId);
+    return executeDelegation({
+      parentThreadId,request:params,
+      reserve:()=>reserveCodexDelegation(parentThreadId),
+      prepareWorkspace:({spec})=>prepareCodexDelegationWorkspace(parentThreadId,spec),
+      startThread:async({spec,workspace})=>{
+        const model=spec.model||codexThreadModels.get(parentThreadId)||null,policy=delegationPolicies(spec.permissions,workspace.cwd);
+        const startParams={cwd:workspace.cwd,modelProvider:selectedProvider,approvalPolicy:policy.approvalPolicy,sandbox:policy.sandbox,ephemeral:false,threadSource:"trebell-delegate",...(model?{model}:{})};
+        const started=await requestUpstream("thread/start",startParams,{routeMessage:{method:"thread/read",params:{threadId:parentThreadId}},timeoutMs:120_000});
+        return started?.thread||null;
+      },
+      configureChild:async({spec,workspace,childThread,delegationId})=>{
+        const childId=String(childThread.id),model=spec.model||codexThreadModels.get(parentThreadId)||childThread.model||null,goal=normalizeGoal({threadId:childId,patch:delegationGoalPatch(spec)});
+        state.updateThreadMeta(childId,{
+          cwd:workspace.cwd,branch:workspace.branch||null,runtime:"codex",runtimeInstanceId:parentMeta?.runtimeInstanceId||null,environmentId:parentMeta?.environmentId??null,
+          parentThreadId,delegation:{id:delegationId,parentThreadId,task:spec.task,permission:spec.permissions,requestedPermission:spec.permission,isolation:spec.isolation==="inherit"?"shared":"worktree",requestedIsolation:spec.requestedIsolation,ownership:spec.ownership,model,createdAt:Date.now(),status:"running"},
+          goal,goalBudgetBaselines:{toolCalls:0,childAgents:0,toolCallTelemetryComplete:true,childAgentTelemetryComplete:true},
+        });
+        const parentServerKey=codexThreadServerKeys.get(parentThreadId);if(parentServerKey)codexThreadServerKeys.set(childId,parentServerKey);
+        recordCodexChildAgentEvidence(state,{id:childId,parentThreadId});codexThreadModels.set(childId,model||null);
+      },
+      startTurn:async({spec,workspace,childThread})=>{
+        const model=spec.model||codexThreadModels.get(parentThreadId)||childThread.model||null,policy=delegationPolicies(spec.permissions,workspace.cwd);
+        const delegationContext=delegationContextValue({parentThreadId,spec});
+        const turnParams={threadId:String(childThread.id),cwd:workspace.cwd,approvalPolicy:policy.approvalPolicy,sandboxPolicy:policy.sandboxPolicy,input:[{type:"text",text:spec.task,textElements:[]}],additionalContext:{"trebell.delegation":{kind:"application",value:delegationContext}},...(model?{model}:{})};
+        const turnStarted=await requestUpstream("turn/start",turnParams,{routeMessage:{method:"thread/read",params:{threadId:String(childThread.id)}},timeoutMs:120_000});
+        state.updateThreadMeta(String(childThread.id),{delegation:{...state.threadMeta(String(childThread.id)).delegation,turnId:turnStarted?.turn?.id||null}});
+        return turnStarted?.turn||null;
+      },
+      cleanupWorkspace:async({workspace})=>{if(workspace?.worktree)await removeWorktree(parentMeta?.cwd||workspace.cwd,workspace.cwd,{force:true}).catch(()=>{})},
+      markFailed:async({childThread,error})=>{
+        const childId=String(childThread.id),meta=state.threadMeta(childId);
+        state.updateThreadMeta(childId,{delegation:{...(meta.delegation||{}),status:"failed",error:error.message||String(error),failedAt:Date.now()}});
+      },
+      onStarted:async result=>{
+        const childId=String(result.thread.id),publicThread={...result.thread,parentThreadId,agentRole:"delegate"};
+        eventJournal.record({runtime:"codex",provider:selectedProvider,environmentId:parentMeta?.environmentId??null,threadId:parentThreadId,turnId:result.turn?.id||null,category:"delegation",name:"delegation.started",status:"running",data:{delegationId:result.delegationId,childThreadId:childId,isolation:result.isolation,permissions:result.permission,branch:result.workspace?.branch||null}});
+        relay.broadcast("thread/delegated",{threadId:parentThreadId,delegationId:result.delegationId,childThreadId:childId,thread:publicThread,turn:result.turn||null,workspace:result.workspace});
+        result.thread=publicThread;
+      },
+    });
   }
   function withCodexGoalContext(message){
     if(message?.method!=="turn/start")return message;
@@ -2607,7 +2702,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     targetUrl:()=>appServer?.targetUrl||`ws://127.0.0.1:${appPort}`,
     resolveTarget:message=>codexRelayTarget(message),
     transformClientMessage:message=>withCodexGoalContext(message),
-    handleRequest:async message=>{
+    handleRequest:async (message,{requestUpstream})=>{
       const params=message.params||{},threadId=params.threadId?String(params.threadId):"";
       if(message.method==="thread/goal/get")return {handled:true,result:{goal:threadId?durableCodexGoal(threadId):null}};
       if(message.method==="thread/goal/set"){
@@ -2640,6 +2735,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         state.updateThreadMeta(threadId,{continuityNotes:undefined});const continuity=durableCodexContinuity(threadId);
         relay.broadcast("thread/continuity/updated",{threadId,continuity});return {handled:true,result:{ok:true,continuity}};
       }
+      if(message.method==="thread/delegate")return {handled:true,result:await delegateCodexThread(params,requestUpstream)};
       if(((message.method==="turn/start"&&params.turnTrigger!=="trebell-restart-continuation")||message.method==="thread/queue/start")&&threadId)assertCodexGoalBudget(threadId);
       if(message.method==="thread/runtimeInstances/list")return {handled:true,result:await codexThreadProfiles(message.params?.threadId)};
       if(message.method==="thread/runtimeInstance/set")return {handled:true,result:await setCodexThreadProfile(message.params?.threadId,message.params?.instanceId)};
@@ -2699,6 +2795,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"agent-relay",text:safeLogText(String(message)+"\n")}),
     onThreadDeleted:thread=>thread?.cwd?worktreeCleanup.sweep({reason:"thread-delete",path:thread.cwd}):null,
     journal:eventJournal,
+    prepareDelegationWorkspace:({parentThreadId,parentThread,spec})=>prepareCodexDelegationWorkspace(parentThreadId,spec,parentThread),
+    cleanupDelegationWorkspace:async({workspace,parentThread})=>{if(workspace?.worktree)await removeWorktree(parentThread?.cwd||workspace.cwd,workspace.cwd,{force:true}).catch(()=>{})},
   });
 
   await new Promise((resolve,reject)=>{

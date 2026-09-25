@@ -10,6 +10,8 @@ import { createRemoteContextIo } from "./context-engine.mjs";
 import { createClaudeRepositoryMcp } from "./claude-repository-tools.mjs";
 import { enrichGoal, goalAdditionalContext, goalBudgetGate, normalizeGoal } from "./goal-state.mjs";
 import { continuityAdditionalContext, continuitySnapshot, normalizeContinuityNotes } from "./continuity-state.mjs";
+import { delegationContextValue, delegationGoalPatch, delegationPolicies } from "./delegation-state.mjs";
+import { executeDelegation } from "./delegation-executor.mjs";
 
 const IMAGE_MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".bmp":"image/bmp"};
 const LIVE_TOOL_OUTPUT_LIMIT=256*1024;
@@ -450,12 +452,13 @@ function formQuestions(params){
   }));
 }
 
-export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,state,environments=null,contextEngine=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null,journal=null}={}){
+export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,state,environments=null,contextEngine=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null,journal=null,prepareDelegationWorkspace=null,cleanupDelegationWorkspace=null}={}){
   const wss=new WebSocketServer({noServer:true});
   const sessions=new Map();
   const socketContexts=new Set();
   const recoveryInFlight=new Set();
   const liveToolOutput=new Map();
+  const pendingDelegations=new Map();
   function clearLiveToolOutput(threadId){
     const prefix=String(threadId||"")+":";
     for(const key of liveToolOutput.keys())if(key.startsWith(prefix))liveToolOutput.delete(key);
@@ -464,7 +467,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     const raw=state?.threadMeta?.(threadId)?.goal;if(!raw)return null;
     const thread=threadStore.get(threadId),createdAt=Number(raw.createdAt)||(Number(thread?.createdAt)||Math.floor(Date.now()/1000))*1000;
     const goal=normalizeGoal({threadId,previous:{...raw,createdAt},patch:{},now:Number(raw.updatedAt)||Date.now()});
-    return enrichGoal(goal,{usage:state?.threadUsage?.(threadId,{since:goal.createdAt}),turns:thread?.turns||[]});
+    const childAgentsUsed=threadStore.list().filter(item=>item?.parentThreadId===threadId).length;
+    return enrichGoal(goal,{usage:state?.threadUsage?.(threadId,{since:goal.createdAt}),turns:thread?.turns||[],childAgentsUsed,childAgentTelemetryComplete:true});
   }
   function durableContinuity(threadId){
     const thread=threadStore.get(threadId),meta=state?.threadMeta?.(threadId)||{};
@@ -484,6 +488,15 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     const thread=threadStore.get(threadId),meta=thread?.providerMeta||{};
     journal?.record?.({runtime:thread?.runtime||runtimeManager.activeRuntime(),provider:meta.runtimeInstanceId||null,environmentId:meta.environmentId??state?.settings?.().activeEnvironmentId??null,threadId,category:"budget",name:"goal.budget_blocked",status:"blocked",data:{goalStatus:goal?.status||null,tokenBudget:goal?.tokenBudget??null,tokensUsed:goal?.tokensUsed??0,timeBudgetMinutes:goal?.timeBudgetMinutes??null,timeUsedSeconds:goal?.timeUsedSeconds??0,turnBudget:goal?.turnBudget??null,turnsUsed:goal?.turnsUsed??0,toolCallBudget:goal?.toolCallBudget??null,toolCallsUsed:goal?.toolCallsUsed??0,toolCallTelemetryComplete:goal?.toolCallTelemetryComplete??true,childAgentBudget:goal?.childAgentBudget??null,childAgentsUsed:goal?.childAgentsUsed??null,childAgentTelemetryComplete:goal?.childAgentTelemetryComplete??false,costBudgetUsd:goal?.costBudgetUsd??null,costUsedUsd:goal?.costUsedUsd??null,costTelemetryComplete:goal?.costTelemetryComplete??true,tokenExhausted:gate.tokenExhausted,timeExhausted:gate.timeExhausted,turnExhausted:gate.turnExhausted,toolCallExhausted:gate.toolCallExhausted,childAgentExhausted:gate.childAgentExhausted,costExhausted:gate.costExhausted}});
     throw Object.assign(new Error(gate.reason),{code:-32001});
+  }
+  function reserveDelegation(threadId){
+    const goal=durableGoal(threadId);assertGoalBudget(threadId);
+    const pending=Math.max(0,Number(pendingDelegations.get(threadId))||0);
+    if(goal?.childAgentBudget!=null&&Number(goal.childAgentsUsed||0)+pending>=Number(goal.childAgentBudget)){
+      throw Object.assign(new Error(`Goal budget exhausted: child-agent budget exhausted (${Number(goal.childAgentsUsed||0)+pending}/${goal.childAgentBudget}). Increase the exhausted budget before delegating more work.`),{code:-32001});
+    }
+    pendingDelegations.set(threadId,pending+1);
+    return ()=>{const next=Math.max(0,(Number(pendingDelegations.get(threadId))||1)-1);if(next)pendingDelegations.set(threadId,next);else pendingDelegations.delete(threadId)};
   }
 
   async function ensureSession(thread,context,{permissionMode="supervised",model=null}={}){
@@ -691,7 +704,11 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       return {thread:updated};
     }
     if(method==="thread/start"){
-      const instance=runtimeManager.activeInstance();const environmentId=state?.settings?.().activeEnvironmentId||null;const effectiveCwd=runtimeManager.runtimeCwd(params.cwd||process.cwd(),environmentId);const seed=threadStore.create({runtime,cwd:effectiveCwd,providerSessionId:"",model:params.model||null,agent:params.agent||null,providerMeta:{runtimeInstanceId:instance.id,environmentId}});
+      const instances=runtimeManager.instances(),requestedId=String(params.runtimeInstanceId||"").trim();
+      const instance=(requestedId?instances.find(item=>item.id===requestedId&&item.kind===runtime):null)||runtimeManager.activeInstance();
+      if(instance.kind!==runtime)throw new Error("Requested runtime profile does not match the active external runtime");
+      const environmentId=Object.prototype.hasOwnProperty.call(params,"environmentId")?(params.environmentId||null):(state?.settings?.().activeEnvironmentId||null);
+      const effectiveCwd=runtimeManager.runtimeCwd(params.cwd||process.cwd(),environmentId);const seed=threadStore.create({runtime,cwd:effectiveCwd,providerSessionId:"",model:params.model||null,agent:params.agent||null,providerMeta:{runtimeInstanceId:instance.id,environmentId}});
       threadStore.update(seed.id,{runtimeInstanceId:instance.id});
       const session=await ensureSession(threadStore.get(seed.id),context,{permissionMode:params.approvalPolicy==="never"?"full":"supervised",model:params.model||null});
       const thread=threadStore.update(seed.id,{providerSessionId:session.sessionId,model:params.model||session.sessionSetup?.models?.currentModelId||null});
@@ -748,6 +765,63 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       if(!threadStore.get(params.threadId))throw new Error("Thread not found");
       state.updateThreadMeta(params.threadId,{continuityNotes:undefined});const continuity=durableContinuity(params.threadId);
       emit("thread/continuity/updated",{threadId:params.threadId,continuity});return {ok:true,continuity};
+    }
+    if(method==="thread/delegate"){
+      const parent=threadStore.get(params.threadId||params.parentThreadId);if(!parent)throw new Error("Parent thread not found");
+      const result=await executeDelegation({
+        parentThreadId:parent.id,request:params,
+        reserve:()=>reserveDelegation(parent.id),
+        prepareWorkspace:async({spec,delegationId})=>{
+          if(prepareDelegationWorkspace)return prepareDelegationWorkspace({parentThreadId:parent.id,parentThread:parent,spec,delegationId});
+          if(spec.isolation==="inherit")return {cwd:parent.cwd,branch:null,isolation:"inherit",worktree:false};
+          throw new Error("This Trebell host does not expose isolated delegation workspaces");
+        },
+        startThread:async({spec,workspace})=>{
+          const policy=delegationPolicies(spec.permissions,workspace.cwd),model=spec.model||parent.model||null;
+          const started=await request(context,"thread/start",{
+            cwd:workspace.cwd,model,agent:parent.agent||null,approvalPolicy:policy.approvalPolicy,sandbox:policy.sandbox,
+            runtimeInstanceId:parent.runtimeInstanceId||parent.providerMeta?.runtimeInstanceId||null,
+            environmentId:parent.providerMeta?.environmentId??null,threadSource:"trebell-delegate",
+          });
+          return started?.thread||null;
+        },
+        configureChild:async({spec,workspace,childThread,delegationId})=>{
+          const childId=String(childThread.id),model=spec.model||parent.model||childThread.model||null;
+          const updated=threadStore.update(childId,{
+            parentThreadId:parent.id,agentRole:"delegate",name:spec.label||childThread.name||null,
+            providerMeta:{...(childThread.providerMeta||{}),delegationPermissionProfile:spec.permissions},
+          });
+          Object.assign(childThread,updated||{});
+          const goal=normalizeGoal({threadId:childId,patch:delegationGoalPatch(spec)});
+          state.updateThreadMeta(childId,{
+            cwd:workspace.cwd,branch:workspace.branch||null,runtime:parent.runtime,runtimeInstanceId:parent.runtimeInstanceId||parent.providerMeta?.runtimeInstanceId||null,
+            environmentId:parent.providerMeta?.environmentId??null,parentThreadId:parent.id,
+            delegation:{id:delegationId,parentThreadId:parent.id,task:spec.task,permission:spec.permissions,requestedPermission:spec.permission,isolation:spec.isolation==="inherit"?"shared":"worktree",requestedIsolation:spec.requestedIsolation,ownership:spec.ownership,model,createdAt:Date.now(),status:"running"},
+            goal,
+          });
+        },
+        startTurn:async({spec,workspace,childThread})=>{
+          const policy=delegationPolicies(spec.permissions,workspace.cwd),model=spec.model||parent.model||childThread.model||null;
+          const delegationContext=delegationContextValue({parentThreadId:parent.id,spec});
+          const started=await request(context,"turn/start",{
+            threadId:String(childThread.id),cwd:workspace.cwd,model,approvalPolicy:policy.approvalPolicy,sandboxPolicy:policy.sandboxPolicy,
+            input:[{type:"text",text:spec.task}],additionalContext:{"trebell.delegation":{kind:"application",value:delegationContext}},
+          });
+          state.updateThreadMeta(String(childThread.id),{delegation:{...state.threadMeta(String(childThread.id)).delegation,turnId:started?.turn?.id||null}});
+          return started?.turn||null;
+        },
+        cleanupWorkspace:async payload=>{if(cleanupDelegationWorkspace)await cleanupDelegationWorkspace({...payload,parentThread:parent})},
+        markFailed:async({childThread,error})=>{
+          const childId=String(childThread.id),meta=state.threadMeta(childId);
+          state.updateThreadMeta(childId,{delegation:{...(meta.delegation||{}),status:"failed",error:error.message||String(error),failedAt:Date.now()}});
+        },
+        onStarted:async result=>{
+          const child=threadStore.get(result.thread.id)||result.thread;result.thread=child;
+          journal?.record?.({runtime:parent.runtime,provider:parent.runtimeInstanceId||parent.providerMeta?.runtimeInstanceId||null,environmentId:parent.providerMeta?.environmentId??null,threadId:parent.id,turnId:result.turn?.id||null,category:"delegation",name:"delegation.started",status:"running",data:{delegationId:result.delegationId,childThreadId:child.id,isolation:result.isolation,permissions:result.permission,branch:result.workspace?.branch||null}});
+          emit("thread/delegated",{threadId:parent.id,delegationId:result.delegationId,childThreadId:child.id,thread:child,turn:result.turn||null,workspace:result.workspace});
+        },
+      });
+      return result;
     }
     if(method==="thread/attachment/list"){
       if(!threadStore.get(params.threadId))throw new Error("Thread not found");

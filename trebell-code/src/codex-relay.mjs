@@ -159,6 +159,23 @@ export function attachCodexRelay(httpServer, {
         if(context.primaryKey!==null&&record.key!==context.primaryKey)await initializeSecondary(record);
         return record;
       };
+      const requestUpstream=async(method,params={},options={})=>{
+        const routeMessage=options.routeMessage||{method,params};
+        const route=await routeFor(routeMessage),record=await ensureUpstream(route);
+        const id=`trebell-internal-${record.key}-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+        const result=new Promise((resolve,reject)=>{
+          const timeoutMs=Math.max(1000,Math.min(10*60_000,Number(options.timeoutMs)||60_000));
+          const timer=setTimeout(()=>{record.internalPending.delete(id);reject(new Error(`${method} timed out`))},timeoutMs);
+          record.internalPending.set(id,{resolve,reject,timer});
+        });
+        let outbound={id,method};if(params&&typeof params==="object"&&Object.keys(params).length)outbound.params=params;
+        if(transformClientMessage){
+          const transformed=await transformClientMessage(outbound,{request,primaryKey:context.primaryKey,resolveTarget:routeFor,internal:true});
+          if(transformed)outbound=transformed;
+        }
+        record.socket.send(JSON.stringify(outbound));
+        return result;
+      };
       const forward=async(message,raw,isBinary=false)=>{
         if(isBinary){const record=await ensureUpstream(await baseTarget());record.socket.send(raw,{binary:true});return}
         if(message&&Object.prototype.hasOwnProperty.call(message,"id")&&!message.method){
@@ -172,7 +189,7 @@ export function attachCodexRelay(httpServer, {
         try{onClientMessage(message,{primaryKey:context.primaryKey})}catch{}
         if(message?.method&&Object.prototype.hasOwnProperty.call(message,"id")&&handleRequest){
           try{
-            const handled=await handleRequest(message,{request,primaryKey:context.primaryKey,resolveTarget:routeFor});
+            const handled=await handleRequest(message,{request,primaryKey:context.primaryKey,resolveTarget:routeFor,requestUpstream});
             if(handled?.handled){
               if(handled.error)sendBrowser({id:message.id,error:handled.error});else sendBrowser({id:message.id,result:handled.result??null});
               return;

@@ -153,6 +153,28 @@ test("Codex relay broadcasts harness-owned notifications to every connected rend
   }
 });
 
+test("Codex relay custom handlers can issue routed upstream requests",async()=>{
+  const work=await routedUpstream("work");
+  const relayHttp=createServer((_req,res)=>{res.statusCode=404;res.end()});
+  const relay=attachCodexRelay(relayHttp,{
+    targetUrl:work.url,
+    handleRequest:async(message,{requestUpstream})=>{
+      if(message.method!=="trebell/test/upstream")return null;
+      const result=await requestUpstream("thread/read",{threadId:message.params.threadId});
+      return {handled:true,result};
+    },
+  });
+  await new Promise(resolve=>relayHttp.listen(0,"127.0.0.1",resolve));
+  let session;
+  try{
+    session=await relayClient(relayHttp);
+    await session.request("initialize",{clientInfo:{name:"relay-test"},capabilities:{experimentalApi:true}});session.client.send(JSON.stringify({method:"initialized",params:{}}));
+    const result=await session.request("trebell/test/upstream",{threadId:"child-route"});
+    assert.equal(result.method,"thread/read");assert.equal(result.name,"work");
+    assert.ok(work.received.some(message=>message.method==="thread/read"&&message.params?.threadId==="child-route"));
+  }finally{try{session?.client.close()}catch{}relay.close();await Promise.all([work.close(),new Promise(resolve=>relayHttp.close(resolve))])}
+});
+
 test("Codex relay namespaces server request ids and returns replies to the originating app-server",async()=>{
   const work=await routedUpstream("work"),personal=await routedUpstream("personal");
   const relayHttp=createServer((_req,res)=>{res.statusCode=404;res.end()});
