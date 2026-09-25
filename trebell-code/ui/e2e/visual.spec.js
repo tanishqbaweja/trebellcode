@@ -944,6 +944,8 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     await expect(inspector).toContainText("src/auth/session.js");
     await expect(inspector).toContainText("defines task-related symbol: RefreshSession");
     await expect(inspector).toContainText("138");
+    const statTops=await inspector.locator(".context-inspector-stats>div").evaluateAll(nodes=>nodes.map(node=>Math.round(node.getBoundingClientRect().top)));
+    expect(new Set(statTops).size).toBe(1);
     await page.setViewportSize({width:1280,height:800});
     const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
