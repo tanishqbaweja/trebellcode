@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { enrichGoal, normalizeGoal } from "../src/goal-state.mjs";
+import { enrichGoal, goalBudgetGate, normalizeGoal } from "../src/goal-state.mjs";
 
 test("durable goals normalize bounded structured fields and status transitions",()=>{
   const goal=normalizeGoal({threadId:"thread-1",now:1000,patch:{objective:" Ship reliable auth ",status:"active",completionConditions:["Tests pass","Login works"],constraints:"No schema change\nKeep compatibility",validationExpectations:["Run auth tests"],tokenBudget:12000,timeBudgetMinutes:90,unexpected:"ignored"}});
@@ -18,9 +18,20 @@ test("goal metrics reconstruct token and agent-work time from persisted evidence
     {startedAt:20,durationMs:null,status:"inProgress"},
   ]});
   assert.equal(enriched.tokensUsed,1200);assert.equal(enriched.timeUsedSeconds,35);assert.equal(enriched.tokenBudgetRemaining,0);assert.equal(enriched.budgetExceeded,true);
+  assert.equal(enriched.budgetExhausted,true);
 });
 
 test("goal budgets reject invalid values instead of silently inventing state",()=>{
   assert.throws(()=>normalizeGoal({threadId:"t",patch:{objective:"x",tokenBudget:-1}}),/positive whole number/i);
   assert.throws(()=>normalizeGoal({threadId:"t",patch:{objective:""}}),/objective is required/i);
+});
+
+test("goal budget gate blocks only new work after an active budget is exhausted",()=>{
+  assert.deepEqual(goalBudgetGate(null),{allowed:true,reason:null,tokenExhausted:false,timeExhausted:false});
+  assert.equal(goalBudgetGate({status:"paused",tokenBudget:100,tokensUsed:100}).allowed,true);
+  assert.equal(goalBudgetGate({status:"active",tokenBudget:100,tokensUsed:99}).allowed,true);
+  const exact=goalBudgetGate({status:"active",tokenBudget:100,tokensUsed:100,timeBudgetMinutes:10,timeUsedSeconds:30});
+  assert.equal(exact.allowed,false);assert.equal(exact.tokenExhausted,true);assert.equal(exact.timeExhausted,false);assert.match(exact.reason,/token budget exhausted/i);
+  const timed=goalBudgetGate({status:"active",timeBudgetMinutes:2,timeUsedSeconds:120});
+  assert.equal(timed.allowed,false);assert.equal(timed.timeExhausted,true);assert.match(timed.reason,/time budget exhausted/i);
 });

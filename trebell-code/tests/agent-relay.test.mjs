@@ -222,13 +222,14 @@ test("agent relay broadcasts Codex-compatible archive, unarchive and delete life
   const env={...process.env,TREBELL_HOME:home};const threadStore=new AgentThreadStore(env);
   const thread=threadStore.create({runtime:"claude",cwd:home,providerSessionId:"fixture-session"});
   const turn=threadStore.addTurn(thread.id,{inputText:"fixture question"});threadStore.addItem(thread.id,turn.id,{id:"fixture-answer",type:"agentMessage",text:"fixture answer"});threadStore.finishTurn(thread.id,turn.id);
-  const runtimeManager={instances:()=>[],activeInstance:()=>({id:"claude-default",kind:"claude"}),activeRuntime:()=>"claude"};
+  const runtimeManager={instances:()=>[],activeInstance:()=>({id:"claude-default",kind:"claude"}),activeRuntime:()=>"claude",probe:async()=>({available:false,message:"fixture runtime unavailable"})};
   const meta=new Map();const state={
     settings:()=>({activeEnvironmentId:null}),
     threadMeta:id=>meta.get(id)||{},
     updateThreadMeta:(id,patch)=>{const next={...(meta.get(id)||{}),...patch};meta.set(id,next);return next},
+    threadUsage:()=>({totalTokens:threadTokens}),
   };
-  const traces=[];const journal={recordProtocol:event=>traces.push(event)};
+  let threadTokens=0;const traces=[];const journal={recordProtocol:event=>traces.push(event),record:event=>traces.push(event)};
   const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,version:"test",journal});
   const port=await listen(server);const url="ws://127.0.0.1:"+port+"/api/agent/ws";const first=await connect(url),second=await connect(url);const rpc=request(first);const notifications=[];
   second.on("message",raw=>{const message=JSON.parse(String(raw));if(message.method&&message.id==null)notifications.push(message)});
@@ -267,6 +268,17 @@ test("agent relay broadcasts Codex-compatible archive, unarchive and delete life
     assert.equal(goalSet.goal.objective,"Ship the fixture safely");assert.equal(goalSet.goal.tokenBudget,5000);assert.equal(goalSet.goal.tokensUsed,0);assert.equal(goalSet.goal.tokenBudgetRemaining,5000);assert.equal(Object.prototype.hasOwnProperty.call(goalSet.goal,"unexpected"),false);
     const goalRead=await rpc("thread/goal/get",{threadId:thread.id});assert.equal(goalRead.goal.objective,"Ship the fixture safely");assert.deepEqual(goalRead.goal.completionConditions,["Lifecycle tests pass"]);
     await assert.rejects(rpc("thread/goal/set",{threadId:thread.id,tokenBudget:-1}),/positive whole number/i);
+    threadTokens=5000;
+    await assert.rejects(rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"blocked direct work"}]}),/Goal budget exhausted/i);
+    const queuedBeforeBudgetBlock=await rpc("thread/queue/list",{threadId:thread.id,limit:10});
+    await assert.rejects(rpc("thread/queue/start",{threadId:thread.id,queuedSubmissionId:q2.queuedSubmission.id}),/Goal budget exhausted/i);
+    const queuedAfterBudgetBlock=await rpc("thread/queue/list",{threadId:thread.id,limit:10});
+    assert.deepEqual(queuedAfterBudgetBlock.data,queuedBeforeBudgetBlock.data,"budget-blocked queue start must not consume the draft");
+    assert.ok(traces.some(event=>event.name==="goal.budget_blocked"&&event.category==="budget"&&event.status==="blocked"));
+    const raisedGoal=await rpc("thread/goal/set",{threadId:thread.id,tokenBudget:6000});assert.equal(raisedGoal.goal.budgetExhausted,false);
+    await assert.rejects(rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"allowed past budget gate"}]}),/fixture runtime unavailable/i);
+    await rpc("thread/goal/clear",{threadId:thread.id});
+    await assert.rejects(rpc("turn/start",{threadId:thread.id,input:[{type:"text",text:"allowed after clear"}]}),/fixture runtime unavailable/i);
     await rpc("thread/archive",{threadId:thread.id});
     await rpc("thread/unarchive",{threadId:thread.id});
     await rpc("thread/delete",{threadId:thread.id});

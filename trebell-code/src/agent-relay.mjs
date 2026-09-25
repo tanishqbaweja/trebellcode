@@ -8,7 +8,7 @@ import { ClaudeAgentSession } from "./claude-agent-session.mjs";
 import { acpMcpServersForSession, claudeMcpServersForSession } from "./mcp-registry.mjs";
 import { createRemoteContextIo } from "./context-engine.mjs";
 import { createClaudeRepositoryMcp } from "./claude-repository-tools.mjs";
-import { enrichGoal, normalizeGoal } from "./goal-state.mjs";
+import { enrichGoal, goalBudgetGate, normalizeGoal } from "./goal-state.mjs";
 
 const IMAGE_MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".bmp":"image/bmp"};
 const LIVE_TOOL_OUTPUT_LIMIT=256*1024;
@@ -465,6 +465,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     const goal=normalizeGoal({threadId,previous:{...raw,createdAt},patch:{},now:Number(raw.updatedAt)||Date.now()});
     return enrichGoal(goal,{usage:state?.threadUsage?.(threadId,{since:goal.createdAt}),turns:thread?.turns||[]});
   }
+  function assertGoalBudget(threadId){
+    const goal=durableGoal(threadId),gate=goalBudgetGate(goal);if(gate.allowed)return goal;
+    const thread=threadStore.get(threadId),meta=thread?.providerMeta||{};
+    journal?.record?.({runtime:thread?.runtime||runtimeManager.activeRuntime(),provider:meta.runtimeInstanceId||null,environmentId:meta.environmentId??state?.settings?.().activeEnvironmentId??null,threadId,category:"budget",name:"goal.budget_blocked",status:"blocked",data:{goalStatus:goal?.status||null,tokenBudget:goal?.tokenBudget??null,tokensUsed:goal?.tokensUsed??0,timeBudgetMinutes:goal?.timeBudgetMinutes??null,timeUsedSeconds:goal?.timeUsedSeconds??0,tokenExhausted:gate.tokenExhausted,timeExhausted:gate.timeExhausted}});
+    throw Object.assign(new Error(gate.reason),{code:-32001});
+  }
 
   async function ensureSession(thread,context,{permissionMode="supervised",model=null}={}){
     let session=sessions.get(thread.id);
@@ -787,7 +793,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       emit("thread/started",{thread:materialized.thread});return {thread:materialized.thread};
     }
     if(method==="turn/start"){
-      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");const session=await ensureSession(thread,context,{model:params.model||thread.model});
+      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");assertGoalBudget(thread.id);const session=await ensureSession(thread,context,{model:params.model||thread.model});
       if(params.model&&params.model!==thread.model){await session.setModel(params.model).catch(()=>{});threadStore.update(thread.id,{model:params.model})}
       const turn=threadStore.addTurn(thread.id,{inputText:textOfInput(params.input),status:"inProgress"});session.__assistant="";
       session.__usage=null;

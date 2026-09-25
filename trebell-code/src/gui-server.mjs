@@ -46,6 +46,7 @@ import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
 import { ContextEngine, createRemoteContextIo } from "./context-engine.mjs";
 import { EventJournal } from "./event-journal.mjs";
+import { enrichGoal, goalBudgetGate, normalizeGoal } from "./goal-state.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
   .then(text=>String(JSON.parse(text).version||"0.0.0"))
@@ -913,14 +914,34 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   function providerReady(providerId=selectedProvider){
     return providerId==="freebuff" ? (mock || isLoggedIn(env)) : (mock || providers.hasKey(providerId));
   }
+  function codexGoalTurns(meta={}){
+    const completed=Array.isArray(meta.codexTurnTimings)?meta.codexTurnTimings:[],recovery=meta.restartRecovery;
+    if(recovery?.runtime!=="codex"||recovery?.status!=="active"||!recovery.turnId||!Number(recovery.startedAt))return completed;
+    return [...completed,{id:String(recovery.turnId),startedAt:Math.floor(Number(recovery.startedAt)/1000),durationMs:null,status:"inProgress"}];
+  }
+  function durableCodexGoal(threadId){
+    const meta=state.threadMeta(threadId),raw=meta?.goal;if(!raw)return null;
+    const createdAt=Number(raw.createdAt)||Date.now(),goal=normalizeGoal({threadId,previous:{...raw,createdAt},patch:{},now:Number(raw.updatedAt)||Date.now()});
+    return enrichGoal(goal,{usage:state.threadUsage(threadId,{since:goal.createdAt}),turns:codexGoalTurns(meta)});
+  }
+  function assertCodexGoalBudget(threadId){
+    const goal=durableCodexGoal(threadId),gate=goalBudgetGate(goal);if(gate.allowed)return goal;
+    const meta=state.threadMeta(threadId);
+    eventJournal.record({runtime:"codex",provider:selectedProvider,environmentId:meta?.environmentId??state.settings().activeEnvironmentId??null,threadId,category:"budget",name:"goal.budget_blocked",status:"blocked",data:{goalStatus:goal?.status||null,tokenBudget:goal?.tokenBudget??null,tokensUsed:goal?.tokensUsed??0,timeBudgetMinutes:goal?.timeBudgetMinutes??null,timeUsedSeconds:goal?.timeUsedSeconds??0,tokenExhausted:gate.tokenExhausted,timeExhausted:gate.timeExhausted}});
+    throw Object.assign(new Error(gate.reason),{code:-32001});
+  }
   function markCodexTurnActive(threadId,turnId){
     if(!threadId||!turnId)return;
     state.updateThreadMeta(threadId,{active:true,restartRecovery:{runtime:"codex",bootId,threadId,turnId,status:"active",startedAt:Date.now()}});
   }
   function clearCodexRecovery(threadId,status="completed",message=null){
     if(!threadId)return;
-    const current=state.threadMeta(threadId)?.restartRecovery;
-    state.updateThreadMeta(threadId,{active:false,restartRecovery:current?{...current,bootId,status,finishedAt:Date.now(),...(message?{message}:{})}:undefined});
+    const meta=state.threadMeta(threadId),current=meta?.restartRecovery,finishedAt=Date.now();let codexTurnTimings=Array.isArray(meta?.codexTurnTimings)?meta.codexTurnTimings:[];
+    if(current?.runtime==="codex"&&current.turnId&&Number(current.startedAt)){
+      const timing={id:String(current.turnId),startedAt:Math.floor(Number(current.startedAt)/1000),durationMs:Math.max(0,finishedAt-Number(current.startedAt)),status};
+      codexTurnTimings=[...codexTurnTimings.filter(item=>String(item?.id||item?.turnId||"")!==timing.id),timing].slice(-500);
+    }
+    state.updateThreadMeta(threadId,{active:false,codexTurnTimings,restartRecovery:current?{...current,bootId,status,finishedAt,...(message?{message}:{})}:undefined});
   }
   function codexRecoverySnapshot(){
     const enabled=Boolean(state.settings().continueThreadsAfterRestart);
@@ -2557,6 +2578,18 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     targetUrl:()=>appServer?.targetUrl||`ws://127.0.0.1:${appPort}`,
     resolveTarget:message=>codexRelayTarget(message),
     handleRequest:async message=>{
+      const params=message.params||{},threadId=params.threadId?String(params.threadId):"";
+      if(message.method==="thread/goal/get")return {handled:true,result:{goal:threadId?durableCodexGoal(threadId):null}};
+      if(message.method==="thread/goal/set"){
+        if(!threadId)throw Object.assign(new Error("threadId is required"),{code:-32602});
+        const previous=state.threadMeta(threadId)?.goal||null,goal=normalizeGoal({threadId,previous,patch:params});
+        state.updateThreadMeta(threadId,{goal});return {handled:true,result:{goal:durableCodexGoal(threadId)}};
+      }
+      if(message.method==="thread/goal/clear"){
+        if(!threadId)throw Object.assign(new Error("threadId is required"),{code:-32602});
+        state.updateThreadMeta(threadId,{goal:null});return {handled:true,result:{ok:true}};
+      }
+      if((message.method==="turn/start"||message.method==="thread/queue/start")&&threadId)assertCodexGoalBudget(threadId);
       if(message.method==="thread/runtimeInstances/list")return {handled:true,result:await codexThreadProfiles(message.params?.threadId)};
       if(message.method==="thread/runtimeInstance/set")return {handled:true,result:await setCodexThreadProfile(message.params?.threadId,message.params?.instanceId)};
       return null;

@@ -42,5 +42,15 @@ export function enrichGoal(goal,{usage=null,turns=[],now=Date.now()}={}){
     tokenBudgetRemaining:tokenBudget==null?null:Math.max(0,tokenBudget-tokensUsed),
     timeBudgetRemainingMinutes:timeBudgetMinutes==null?null:Math.max(0,timeBudgetMinutes-timeUsedSeconds/60),
     budgetExceeded:Boolean((tokenBudget!=null&&tokensUsed>tokenBudget)||(timeBudgetMinutes!=null&&timeUsedSeconds>timeBudgetMinutes*60)),
+    budgetExhausted:Boolean((tokenBudget!=null&&tokensUsed>=tokenBudget)||(timeBudgetMinutes!=null&&timeUsedSeconds>=timeBudgetMinutes*60)),
   };
+}
+
+export function goalBudgetGate(goal){
+  if(!goal||goal.status!=="active")return {allowed:true,reason:null,tokenExhausted:false,timeExhausted:false};
+  const tokenBudget=Number(goal.tokenBudget)||null,timeBudgetMinutes=Number(goal.timeBudgetMinutes)||null,tokensUsed=Math.max(0,Number(goal.tokensUsed)||0),timeUsedSeconds=Math.max(0,Number(goal.timeUsedSeconds)||0);
+  const tokenExhausted=tokenBudget!=null&&tokensUsed>=tokenBudget,timeExhausted=timeBudgetMinutes!=null&&timeUsedSeconds>=timeBudgetMinutes*60;
+  if(!tokenExhausted&&!timeExhausted)return {allowed:true,reason:null,tokenExhausted:false,timeExhausted:false};
+  const reasons=[];if(tokenExhausted)reasons.push(`token budget exhausted (${tokensUsed}/${tokenBudget})`);if(timeExhausted)reasons.push(`time budget exhausted (${Math.ceil(timeUsedSeconds/60)}/${timeBudgetMinutes} min)`);
+  return {allowed:false,reason:`Goal budget exhausted: ${reasons.join("; ")}. Increase or clear the goal budget before starting another turn.`,tokenExhausted,timeExhausted};
 }
