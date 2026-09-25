@@ -2327,6 +2327,11 @@ test("thread history pages older threads without expanding the sidebar",async({p
   }));
   const thread=allThreads[0];let listCalls=0;
   const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
+    if(message.method==="thread/resume"){
+      const resumed=allThreads.find(item=>item.id===message.params?.threadId)||thread;
+      ws.send(JSON.stringify({id:message.id,result:{thread:resumed,itemsBackwardsCursor:null,turnsBackwardsCursor:null}}));
+      return true;
+    }
     if(message.method!=="thread/list")return false;
     listCalls++;
     const cursor=message.params?.cursor||null;
@@ -2335,7 +2340,8 @@ test("thread history pages older threads without expanding the sidebar",async({p
     return true;
   }});
   try{
-    await routeProjectlessCodexRequestFixture(page,harness,thread,"thread-history-pagination-fixture");
+    const threadMeta=Object.fromEntries(allThreads.map(item=>[item.id,{projectless:true,environmentId:null}]));
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"thread-history-pagination-fixture",{threadMeta});
     await page.goto("/");
     await expect(page.locator(".thread-row")).toHaveCount(100);
     await page.getByRole("button",{name:"History",exact:true}).click();
@@ -2347,7 +2353,15 @@ test("thread history pages older threads without expanding the sidebar",async({p
     await expect(page.locator(".history-thread-row")).toHaveCount(130);
     await expect(page.getByRole("button",{name:"Load older threads",exact:true})).toHaveCount(0);
     await expect(page.locator(".thread-row")).toHaveCount(100);
+    await page.locator(".history-thread-row").filter({hasText:"History thread 130"}).click();
+    await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","History thread 130");
+    await expect(page.locator(".thread-row")).toHaveCount(100);
     await page.setViewportSize({width:1280,height:800});
+    const chatMetrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(chatMetrics.scroll).toBeLessThanOrEqual(chatMetrics.client+1);
+    await page.screenshot({path:auditDir+"thread-history-old-thread-active-1280x800.png",fullPage:false});
+    await page.getByRole("button",{name:"History",exact:true}).click();
+    await expect(page.locator(".history-thread-row")).toHaveCount(100);
     const metrics=await page.locator(".history-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await page.screenshot({path:auditDir+"thread-history-pagination-1280x800.png",fullPage:false});
