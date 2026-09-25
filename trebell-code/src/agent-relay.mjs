@@ -5,7 +5,7 @@ import { WebSocketServer } from "ws";
 import { AcpAgentSession } from "./acp-agent-session.mjs";
 import { OpenCodeAgentSession } from "./opencode-agent-session.mjs";
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
-import { NativeAgentSession, nativeMessagesFromThread } from "./native-agent-session.mjs";
+import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread } from "./native-agent-session.mjs";
 import { createNativeBuiltins } from "./native-builtins.mjs";
 import { createNativeToolExecutor } from "./native-tool-executor.mjs";
 import { platformDynamicToolNamespaces } from "./platform-tool-catalog.mjs";
@@ -22,6 +22,7 @@ import { evaluatePolicy, POLICY_ALLOW, POLICY_CONFIRM, POLICY_REJECT } from "./p
 
 const IMAGE_MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".bmp":"image/bmp"};
 const LIVE_TOOL_OUTPUT_LIMIT=256*1024;
+function agentProviderIdentity(thread){return thread?.runtime==="native"?(thread?.providerMeta?.modelProvider||null):(thread?.providerMeta?.runtimeInstanceId||thread?.runtimeInstanceId||null)}
 
 function textOfInput(input=[]){return input.filter(item=>item?.type==="text").map(item=>item.text||"").join("\n")}
 export function agentPermissionModeFromStart(params={}){
@@ -603,11 +604,15 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         },
         onEvent:event=>journal?.record?.({runtime:"native",provider:thread.providerMeta?.modelProvider||null,environmentId,threadId:thread.id,category:"tool",name:event.name,status:event.status,data:event.data||{}}),
       });
+      const storedCompaction=thread.providerMeta?.nativeCompaction||null;
+      const compactionBoundary=storedCompaction?.throughTurnId&&thread.turns?.some(turn=>String(turn.id)===String(storedCompaction.throughTurnId))?storedCompaction:null;
+      const compactedMessage=compactionBoundary?nativeCompactionMessage(compactionBoundary.summary):null;
       const runtime=new NativeAgentSession({
         ...common,provider:thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model:model||thread.model||null,tools,executeTool,
         providerTurn:request=>nativeProviderTurn(request),initialMessages:[
           ...(thread.providerMeta?.developerInstructions?[{role:"developer",content:String(thread.providerMeta.developerInstructions)}]:[]),
-          ...nativeMessagesFromThread(thread),
+          ...(compactedMessage?[compactedMessage]:[]),
+          ...nativeMessagesFromThread(thread,{afterTurnId:compactionBoundary?.throughTurnId||null}),
         ],onEvent:event=>{
           const current=threadStore.get(thread.id)||thread,providerId=current?.providerMeta?.modelProvider||state?.settings?.().modelProvider||null;
           const category=String(event?.name||"").startsWith("native.model.")?"model":String(event?.name||"").startsWith("native.tool.")?"tool":"turn";
@@ -642,7 +647,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     const thread=params?.threadId?threadStore.get(params.threadId):null;
     journal?.recordProtocol?.({
       runtime:thread?.runtime||runtimeManager.activeRuntime(),
-      provider:thread?.providerMeta?.runtimeInstanceId||null,
+      provider:agentProviderIdentity(thread),
       environmentId:thread?.providerMeta?.environmentId??null,
       direction:"runtime",
       method,params,
@@ -653,7 +658,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
   function settlePrompt({thread,turn,session,promptPromise,model=null}){
     const persistUsage=result=>{
       const usage=usageFromPromptResult(result,session.__usage);if(!usage)return;const current=threadStore.get(thread.id)||thread;
-      state?.recordUsage?.({runtime:current.runtime||runtimeManager.activeRuntime(),provider:current.providerMeta?.runtimeInstanceId||null,model:current.model||model||null,environmentId:current.providerMeta?.environmentId??null,threadId:thread.id,turnId:turn.id,usage:usage.usage,cost:usage.cost,at:usage.at||Date.now()});
+      state?.recordUsage?.({runtime:current.runtime||runtimeManager.activeRuntime(),provider:agentProviderIdentity(current),model:current.model||model||null,environmentId:current.providerMeta?.environmentId??null,threadId:thread.id,turnId:turn.id,usage:usage.usage,cost:usage.cost,at:usage.at||Date.now()});
     };
     promptPromise.then(result=>{
       persistUsage(result);
@@ -768,7 +773,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     const target=params?.threadId?threadStore.get(params.threadId):null;
     journal?.recordProtocol?.({
       runtime:target?.runtime||runtime,
-      provider:target?.providerMeta?.runtimeInstanceId||null,
+      provider:agentProviderIdentity(target),
       environmentId:target?.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null,
       direction:"client",
       method,params,
@@ -958,7 +963,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         },
         onStarted:async result=>{
           const child=threadStore.get(result.thread.id)||result.thread;result.thread=child;
-          journal?.record?.({runtime:parent.runtime,provider:parent.runtimeInstanceId||parent.providerMeta?.runtimeInstanceId||null,environmentId:parent.providerMeta?.environmentId??null,threadId:parent.id,turnId:result.turn?.id||null,category:"delegation",name:"delegation.started",status:"running",data:{delegationId:result.delegationId,childThreadId:child.id,isolation:result.isolation,permissions:result.permission,branch:result.workspace?.branch||null}});
+          journal?.record?.({runtime:parent.runtime,provider:agentProviderIdentity(parent),environmentId:parent.providerMeta?.environmentId??null,threadId:parent.id,turnId:result.turn?.id||null,category:"delegation",name:"delegation.started",status:"running",data:{delegationId:result.delegationId,childThreadId:child.id,isolation:result.isolation,permissions:result.permission,branch:result.workspace?.branch||null}});
           emit("thread/delegated",{threadId:parent.id,delegationId:result.delegationId,childThreadId:child.id,thread:child,turn:result.turn||null,workspace:result.workspace});
         },
       });
@@ -1059,7 +1064,19 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     if(method==="turn/interrupt"){sessions.get(params.threadId)?.cancel();return {ok:true}}
     if(method==="turn/steer"){throw Object.assign(new Error(`${runtime} does not expose in-flight steering through ACP`),{code:-32601})}
     if(method==="thread/compact/start"){
-      const thread=threadStore.get(params.threadId);const session=thread&&(sessions.get(thread.id)||await ensureSession(thread,context,{}));if(session instanceof OpenCodeAgentSession||session instanceof ClaudeAgentSession){await session.compact();emit("thread/compacted",{threadId:thread.id});return {ok:true}}
+      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      const session=sessions.get(thread.id)||await ensureSession(thread,context,{});
+      if(session instanceof NativeAgentSession){
+        if(thread.status?.type==="active")throw new Error("Stop the running turn before compacting Native context.");
+        const throughTurn=thread.turns?.at(-1);if(!throughTurn)throw new Error("There is no Native conversation history to compact yet.");
+        const result=await session.compact({maxOutputTokens:params.maxOutputTokens||4096});
+        const compaction={id:`native-compact-${randomUUID()}`,summary:result.summary,throughTurnId:throughTurn.id,createdAt:Date.now(),model:result.model||thread.model||null,provider:result.provider||thread.providerMeta?.modelProvider||null,sourceMessageCount:result.sourceMessageCount||0};
+        const current=threadStore.get(thread.id)||thread;threadStore.update(thread.id,{providerMeta:{...(current.providerMeta||{}),nativeCompaction:compaction}});
+        if(result.usage)state?.recordUsage?.({id:`native:${thread.id}:compaction:${compaction.id}`,runtime:"native",provider:compaction.provider,model:compaction.model,environmentId:current.providerMeta?.environmentId??null,threadId:thread.id,turnId:`compaction:${compaction.id}`,usage:result.usage,at:compaction.createdAt});
+        journal?.record?.({runtime:"native",provider:compaction.provider,environmentId:current.providerMeta?.environmentId??null,threadId:thread.id,category:"context",name:"native.compaction.completed",status:"completed",data:{compactionId:compaction.id,throughTurnId:compaction.throughTurnId,sourceMessageCount:compaction.sourceMessageCount,summaryChars:compaction.summary.length}});
+        emit("thread/compacted",{threadId:thread.id,compaction:{id:compaction.id,throughTurnId:compaction.throughTurnId,createdAt:compaction.createdAt}});return {ok:true,compaction};
+      }
+      if(session instanceof OpenCodeAgentSession||session instanceof ClaudeAgentSession){await session.compact();emit("thread/compacted",{threadId:thread.id});return {ok:true}}
       throw Object.assign(new Error(`${runtime} does not expose a generic compaction RPC`),{code:-32601});
     }
     if(method==="thread/revert"){
@@ -1095,7 +1112,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         },
         async permission(thread,{params,options}){
           const current=threadStore.get(thread.id)||thread,turnId=current?.turns?.at(-1)?.id||null,traceData=agentPermissionTraceData({toolCall:params.toolCall,options});
-          const traceBase={runtime:current?.runtime||runtimeManager.activeRuntime(),provider:current?.providerMeta?.runtimeInstanceId||null,environmentId:current?.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null,threadId:thread.id,turnId,category:"policy"};
+          const traceBase={runtime:current?.runtime||runtimeManager.activeRuntime(),provider:agentProviderIdentity(current),environmentId:current?.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null,threadId:thread.id,turnId,category:"policy"};
           journal?.record?.({...traceBase,name:"permission.requested",status:"pending",data:traceData});
           const policy=agentPermissionPolicyDecision(current,{params,options},state?.settings?.()||{});
           const policyData={

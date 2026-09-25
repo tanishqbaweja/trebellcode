@@ -27,7 +27,7 @@ const BASE_RUNTIME_CAPABILITIES=Object.freeze({
 
 const RUNTIME_CAPABILITY_OVERRIDES=Object.freeze({
   native:Object.freeze({
-    dynamicTools:true,usageReporting:true,contextReporting:true,detachedTasks:true,multiModelFanout:true,nativeHistoryPagination:true,
+    compaction:true,dynamicTools:true,usageReporting:true,contextReporting:true,detachedTasks:true,multiModelFanout:true,nativeHistoryPagination:true,
   }),
   codex:Object.freeze({
     fork:true,rewind:true,compaction:true,systemPromptInjection:true,dynamicTools:true,nativeSandbox:true,

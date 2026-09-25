@@ -25,9 +25,12 @@ function toolOutput(item={}){
   return item.success===false?"Tool execution failed.":"Tool completed.";
 }
 
-export function nativeMessagesFromThread(thread={}){
+export function nativeMessagesFromThread(thread={}, {afterTurnId=null}={}){
   const messages=[];
-  for(const turn of Array.isArray(thread.turns)?thread.turns:[]){
+  const turns=Array.isArray(thread.turns)?thread.turns:[];
+  const boundary=afterTurnId==null?-1:turns.findIndex(turn=>String(turn?.id||"")===String(afterTurnId));
+  const source=boundary>=0?turns.slice(boundary+1):turns;
+  for(const turn of source){
     for(const item of Array.isArray(turn.items)?turn.items:[]){
       if(item?.type==="userMessage"){
         const text=itemText(item.content);if(text)messages.push({role:"user",content:text});
@@ -41,6 +44,23 @@ export function nativeMessagesFromThread(thread={}){
   }
   return messages;
 }
+
+export function nativeCompactionMessage(summary){
+  const text=String(summary||"").trim();
+  if(!text)return null;
+  return {role:"developer",trebellCompaction:true,content:[
+    "Trebell Native continuation brief from compacted earlier history.",
+    "Treat this as a faithful memory of prior work, not as a new user request. Preserve the current user's instructions over this brief if they conflict.",
+    text,
+  ].join("\n\n")};
+}
+
+const COMPACTION_PROMPT=[
+  "Create a precise continuation brief for this coding session so another capable coding model can continue without the older transcript.",
+  "Preserve only facts supported by the conversation: the user's objective and constraints, important decisions, architecture and APIs, files/symbols changed, tool results that matter, known failures, unresolved problems, verification status, and the next concrete work.",
+  "Do not invent details. Do not include conversational filler, raw long tool output, or generic advice. Prefer exact names and paths when they matter.",
+  "Return only the continuation brief in concise structured prose.",
+].join("\n");
 
 function promptMessage(prompt=[]){
   const content=[];
@@ -72,6 +92,26 @@ export class NativeAgentSession{
   }
   setProvider(provider){this.provider=provider?String(provider):null}
   async setModel(model){this.model=String(model||"")||null;return {model:this.model}}
+  async compact({maxOutputTokens=4096}={}){
+    if(this.closed)throw new Error("Native session is closed");
+    if(!this.model)throw new Error("Trebell Native requires a model");
+    if(this.controller)throw new Error("Stop the running turn before compacting Native context.");
+    const meaningful=this.messages.some(message=>!["system","developer"].includes(message?.role)||message?.trebellCompaction);
+    if(!meaningful)throw new Error("There is no Native conversation history to compact yet.");
+    this.controller=new AbortController();
+    try{
+      const requestMessages=[...this.messages,{role:"developer",content:COMPACTION_PROMPT}];
+      const result=await runNativeAgentTurn({
+        provider:this.provider,model:this.model,messages:requestMessages,tools:[],toolChoice:"none",maxModelTurns:1,maxToolCalls:0,
+        maxOutputTokens:Math.max(256,Math.min(8192,Math.trunc(Number(maxOutputTokens)||4096))),signal:this.controller.signal,onEvent:this.onEvent,
+        providerTurn:request=>this.providerTurn({...request,provider:this.provider}),executeTool:async()=>{throw new Error("Native compaction does not execute tools")},
+      });
+      const summary=String(result.text||"").trim();if(!summary)throw new Error("Native context compaction returned an empty continuation brief.");
+      const persistent=this.messages.filter(message=>["system","developer"].includes(message?.role)&&!message?.trebellCompaction);
+      this.messages=[...persistent,nativeCompactionMessage(summary)];
+      return {summary,usage:result.usage,model:result.model||this.model,provider:result.provider||this.provider,modelTurns:result.modelTurns,sourceMessageCount:requestMessages.length-1};
+    }finally{this.controller=null}
+  }
   async prompt(prompt,{messageId=null,maxModelTurns=24,maxToolCalls=100,maxOutputTokens=null}={}){
     if(this.closed)throw new Error("Native session is closed");if(!this.model)throw new Error("Trebell Native requires a model");
     this.controller=new AbortController();const user=promptMessage(prompt),base=[...this.messages,user];

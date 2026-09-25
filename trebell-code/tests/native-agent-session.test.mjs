@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { NativeAgentSession, nativeMessagesFromThread } from "../src/native-agent-session.mjs";
+import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread } from "../src/native-agent-session.mjs";
 import { agentToolLifecycle } from "../src/agent-relay.mjs";
 const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
 
@@ -49,6 +49,33 @@ test("Native persisted tool content reconstructs image observations when availab
     {type:"dynamicToolCall",id:"shot-1",namespace:"trebell_browser",tool:"screenshot",arguments:{},status:"completed",contentItems:[{type:"inputText",text:"screen metadata"},{type:"inputImage",imageUrl:IMAGE_DATA_URL}],success:true},
   ]}]};
   const messages=nativeMessagesFromThread(thread);assert.equal(messages.length,2);assert.equal(messages[1].role,"tool");assert.ok(Array.isArray(messages[1].content));assert.equal(messages[1].content[1].type,"image_url");assert.equal(messages[1].content[1].image_url.url,IMAGE_DATA_URL);
+});
+
+test("Native compaction replaces old provider context with a bounded continuation brief",async()=>{
+  const requests=[];let call=0;
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model",initialMessages:[{role:"developer",content:"Always preserve exact paths."},{role:"user",content:"OLD USER REQUEST"},{role:"assistant",content:"OLD ASSISTANT ANSWER"}],
+    providerTurn:async request=>{
+      requests.push(structuredClone({...request,signal:undefined}));call++;
+      if(call===1)return {id:"compact-1",provider:"fixture",model:"model",text:"Goal: preserve the parser fix.\nChanged: src/parser.js.\nNext: run parser tests.",toolCalls:[],usage:{inputTokens:30,outputTokens:12,totalTokens:42}};
+      return {id:"after-compact",provider:"fixture",model:"model",text:"continuing",toolCalls:[],usage:{}};
+    },executeTool:async()=>"",
+  });
+  await session.start({model:"model"});const compacted=await session.compact({maxOutputTokens:1024});
+  assert.match(compacted.summary,/src\/parser\.js/);assert.equal(compacted.usage.totalTokens,42);assert.equal(session.messages.length,2);assert.equal(session.messages[0].content,"Always preserve exact paths.");assert.equal(session.messages[1].trebellCompaction,true);
+  await session.prompt([{type:"text",text:"Continue now"}]);
+  const after=requests[1].messages;assert.equal(after.some(message=>String(message.content||"").includes("OLD USER REQUEST")),false);assert.equal(after.some(message=>String(message.content||"").includes("OLD ASSISTANT ANSWER")),false);assert.ok(after.some(message=>message.trebellCompaction&&String(message.content).includes("src/parser.js")));assert.equal(after.at(-1).content,"Continue now");
+});
+
+test("Native persisted history can resume strictly after a compaction turn boundary",()=>{
+  const thread={turns:[
+    {id:"turn-old",items:[{type:"userMessage",content:[{type:"text",text:"old request"}]},{type:"agentMessage",text:"old answer"}]},
+    {id:"turn-boundary",items:[{type:"userMessage",content:[{type:"text",text:"boundary request"}]},{type:"agentMessage",text:"boundary answer"}]},
+    {id:"turn-new",items:[{type:"userMessage",content:[{type:"text",text:"new request"}]},{type:"agentMessage",text:"new answer"}]},
+  ]};
+  const after=nativeMessagesFromThread(thread,{afterTurnId:"turn-boundary"});assert.deepEqual(after.map(message=>message.content),["new request","new answer"]);
+  const missing=nativeMessagesFromThread(thread,{afterTurnId:"missing-turn"});assert.equal(missing.some(message=>message.content==="old request"),true);
+  const compact=nativeCompactionMessage("summary");assert.equal(compact.role,"developer");assert.equal(compact.trebellCompaction,true);
 });
 
 test("Native session cancellation returns a cancelled stop reason",async()=>{

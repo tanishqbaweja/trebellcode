@@ -50,6 +50,7 @@ test("Trebell Native relay executes repository tools and switches inference prov
     const first=await rpc.request("turn/start",{threadId,model:"model-a",modelProvider:"agentrouter",approvalPolicy:"never",sandboxPolicy:{type:"readOnly"},input:[{type:"text",text:"Find SessionManager"}]});
     await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===first.turn.id);
     const firstUsage=state.threadUsage(threadId);assert.equal(firstUsage.totalTokens,16);assert.equal(firstUsage.inputTokens,12);assert.equal(firstUsage.outputTokens,4);
+    const firstUsageRecord=state.usage({days:1,limit:20}).records.find(record=>record.turnId===first.turn.id);assert.equal(firstUsageRecord.provider,"agentrouter");
     const afterFirst=(await rpc.request("thread/read",{threadId})).thread;assert.equal(afterFirst.id,threadId);assert.equal(afterFirst.turns.length,1);
     const items=afterFirst.turns[0].items;assert.ok(items.some(item=>item.type==="dynamicToolCall"&&item.namespace==="trebell_repo"&&item.tool==="search_symbols"));assert.ok(items.some(item=>item.type==="agentMessage"&&/Found SessionManager/.test(item.text)));
 
@@ -130,4 +131,40 @@ test("Trebell Native verification repair reuses the same thread and persisted fa
     assert.equal(providerRequests.length,1);const prompt=JSON.stringify(providerRequests[0].messages.at(-1)?.content||"");assert.match(prompt,/Repair the failed verification/i);assert.match(prompt,/Parser regression failed/);assert.doesNotMatch(prompt,/SHOULD_NOT_BE_IN_REPAIR_CONTEXT/);
     const persisted=(await rpc.request("thread/read",{threadId:thread.id})).thread;assert.equal(persisted.id,thread.id);assert.equal(persisted.turns.length,1);assert.ok(persisted.turns[0].items.some(item=>item.type==="agentMessage"&&/Repaired and rechecked/.test(item.text)));
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+});
+
+test("Trebell Native compaction keeps full transcript but restarts from the durable brief boundary",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-compact-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let phase="initial",requests=[];
+  const nativeProviderTurn=async request=>{
+    requests.push(structuredClone({...request,signal:undefined}));
+    if(phase==="initial")return {id:"initial-answer",provider:request.provider,model:request.model,text:"OLD ANSWER: parser lives in src/parser.js",toolCalls:[],finishReason:"stop",usage:{inputTokens:10,outputTokens:4,totalTokens:14}};
+    if(phase==="compact")return {id:"compact-summary",provider:request.provider,model:request.model,text:"Goal: keep the parser fix. Important file: src/parser.js. Next: verify parser tests.",toolCalls:[],finishReason:"stop",usage:{inputTokens:20,outputTokens:8,totalTokens:28}};
+    assert.equal(request.messages.some(message=>String(message.content||"").includes("OLD REQUEST: locate parser")),false);
+    assert.equal(request.messages.some(message=>String(message.content||"").includes("OLD ANSWER: parser lives")),false);
+    assert.ok(request.messages.some(message=>message.trebellCompaction&&String(message.content||"").includes("src/parser.js")));
+    assert.match(JSON.stringify(request.messages.at(-1).content),/POST COMPACT REQUEST/);
+    return {id:"post-compact-answer",provider:request.provider,model:request.model,text:"continued from compacted memory",toolCalls:[],finishReason:"stop",usage:{inputTokens:5,outputTokens:3,totalTokens:8}};
+  };
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});let relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});let rpc=client(ws);
+  let threadId;
+  try{
+    const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;threadId=thread.id;
+    const first=(await rpc.request("turn/start",{threadId,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",input:[{type:"text",text:"OLD REQUEST: locate parser"}]})).turn;
+    await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===first.id);
+    phase="compact";const compacted=await rpc.request("thread/compact/start",{threadId,maxOutputTokens:1024});assert.equal(compacted.ok,true);assert.equal(compacted.compaction.throughTurnId,first.id);assert.match(compacted.compaction.summary,/src\/parser\.js/);
+    const persisted=(await rpc.request("thread/read",{threadId})).thread;assert.equal(persisted.turns.length,1);assert.ok(persisted.turns[0].items.some(item=>item.type==="userMessage"&&JSON.stringify(item.content).includes("OLD REQUEST")));assert.equal(persisted.providerMeta.nativeCompaction.throughTurnId,first.id);
+    assert.equal(state.threadUsage(threadId).totalTokens,42);const compactUsage=state.usage({days:1,limit:20}).records.find(record=>String(record.turnId||"").startsWith("compaction:"));assert.equal(compactUsage.provider,"agentrouter");
+
+    ws.close();await relay.close();await new Promise(resolve=>server.close(()=>resolve()));
+    const restartedServer=createServer((_req,res)=>{res.writeHead(404);res.end()});phase="restart";requests=[];relay=attachAgentRelay(restartedServer,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+    const restartedPort=await listen(restartedServer),ws2=new WebSocket(`ws://127.0.0.1:${restartedPort}/api/agent/ws`);await new Promise((resolve,reject)=>{ws2.once("open",resolve);ws2.once("error",reject)});rpc=client(ws2);
+    const second=(await rpc.request("turn/start",{threadId,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",input:[{type:"text",text:"POST COMPACT REQUEST"}]})).turn;
+    await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===second.id);ws2.close();await relay.close();await new Promise(resolve=>restartedServer.close(()=>resolve()));relay=null;
+    const finalThread=threadStore.get(threadId);assert.equal(finalThread.turns.length,2);assert.ok(finalThread.turns[1].items.some(item=>item.type==="agentMessage"&&/continued from compacted memory/.test(item.text)));
+  }finally{
+    try{ws.close()}catch{}if(relay)await relay.close().catch(()=>{});if(server.listening)await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
+  }
 });
