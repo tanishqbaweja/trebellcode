@@ -137,6 +137,11 @@ function usageFromPromptResult(result,fallback=null){
     const input=Number(openCode.input||0),output=Number(openCode.output||0),reasoning=Number(openCode.reasoning||0),cached=Number(openCode.cache?.read||0),cacheWrite=Number(openCode.cache?.write||0);
     return {usage:{totalTokens:Number(openCode.total)||(input+output+reasoning+cached+cacheWrite),inputTokens:input,cachedInputTokens:cached,cacheWriteInputTokens:cacheWrite,outputTokens:output,reasoningOutputTokens:reasoning},cost:result.raw?.info?.cost!=null?{amount:Number(result.raw.info.cost),currency:"USD"}:null,at:Date.now()};
   }
+  const native=result?.raw?.usage;
+  if(native&&(Object.prototype.hasOwnProperty.call(native,"inputTokens")||Object.prototype.hasOwnProperty.call(native,"outputTokens")||Object.prototype.hasOwnProperty.call(native,"totalTokens"))){
+    const input=Number(native.inputTokens||0),output=Number(native.outputTokens||0),cached=Number(native.cachedInputTokens||0),cacheWrite=Number(native.cacheWriteInputTokens||0),reasoning=Number(native.reasoningOutputTokens||0);
+    return {usage:{totalTokens:Number(native.totalTokens)||(input+output+reasoning),inputTokens:input,cachedInputTokens:cached,cacheWriteInputTokens:cacheWrite,outputTokens:output,reasoningOutputTokens:reasoning},cost:null,at:Date.now()};
+  }
   const claude=result?.raw?.usage;
   if(claude){
     const input=Number(claude.input_tokens||0),output=Number(claude.output_tokens||0),cached=Number(claude.cache_read_input_tokens||0),cacheWrite=Number(claude.cache_creation_input_tokens||0);
@@ -603,7 +608,11 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         providerTurn:request=>nativeProviderTurn(request),initialMessages:[
           ...(thread.providerMeta?.developerInstructions?[{role:"developer",content:String(thread.providerMeta.developerInstructions)}]:[]),
           ...nativeMessagesFromThread(thread),
-        ],
+        ],onEvent:event=>{
+          const current=threadStore.get(thread.id)||thread,providerId=current?.providerMeta?.modelProvider||state?.settings?.().modelProvider||null;
+          const category=String(event?.name||"").startsWith("native.model.")?"model":String(event?.name||"").startsWith("native.tool.")?"tool":"turn";
+          journal?.record?.({runtime:"native",provider:providerId,environmentId:current?.providerMeta?.environmentId??null,threadId:thread.id,category,name:event.name,status:event.status,data:event.data||{}});
+        },
       });
       const started=await runtime.start({providerSessionId:thread.providerSessionId||null,model:model||thread.model||null});
       const discoveredMeta=threadStore.get(thread.id)?.providerMeta||{};
@@ -1028,7 +1037,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       emit("thread/started",{thread:materialized.thread});return {thread:materialized.thread};
     }
     if(method==="turn/start"){
-      let thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");assertGoalBudget(thread.id);
+      let thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");const turnGoal=assertGoalBudget(thread.id);
       const permissionPatch=agentPermissionProfilePatch(params);
       const providerPatch=runtime==="native"&&params.modelProvider?{modelProvider:String(params.modelProvider)}:{};
       if(Object.keys(permissionPatch).length||Object.keys(providerPatch).length)thread=threadStore.update(thread.id,{providerMeta:{...(thread.providerMeta||{}),...permissionPatch,...providerPatch}});
@@ -1041,7 +1050,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const prompt=await contextualAgentPrompt(params.input||[],await withDurableContext(thread.id,params.additionalContext||{},textOfInput(params.input||[])));
       const selectedAgent=Object.prototype.hasOwnProperty.call(params,"agent")?(params.agent||null):(thread.agent||null);
       if(selectedAgent!==thread.agent)threadStore.update(thread.id,{agent:selectedAgent});
-      settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,{messageId:randomUUID(),agent:selectedAgent}),model:params.model||thread.model||null});
+      const promptOptions={messageId:randomUUID(),agent:selectedAgent};
+      if(session instanceof NativeAgentSession&&turnGoal?.toolCallBudget!=null&&turnGoal.toolCallTelemetryComplete!==false)promptOptions.maxToolCalls=Math.max(0,Number(turnGoal.toolCallBudget)-Number(turnGoal.toolCallsUsed||0));
+      if(session instanceof NativeAgentSession&&turnGoal?.tokenBudgetRemaining!=null)promptOptions.maxOutputTokens=Math.max(1,Math.floor(Number(turnGoal.tokenBudgetRemaining)||1));
+      settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,promptOptions),model:params.model||thread.model||null});
       return {turn};
     }
     if(method==="turn/interrupt"){sessions.get(params.threadId)?.cancel();return {ok:true}}

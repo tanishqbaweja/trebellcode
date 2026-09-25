@@ -49,6 +49,7 @@ test("Trebell Native relay executes repository tools and switches inference prov
     const threadId=started.thread.id;assert.equal(started.thread.runtime,"native");assert.equal(started.thread.providerMeta.modelProvider,"agentrouter");assert.equal(started.thread.providerSessionId.startsWith("native_"),true);
     const first=await rpc.request("turn/start",{threadId,model:"model-a",modelProvider:"agentrouter",approvalPolicy:"never",sandboxPolicy:{type:"readOnly"},input:[{type:"text",text:"Find SessionManager"}]});
     await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===first.turn.id);
+    const firstUsage=state.threadUsage(threadId);assert.equal(firstUsage.totalTokens,16);assert.equal(firstUsage.inputTokens,12);assert.equal(firstUsage.outputTokens,4);
     const afterFirst=(await rpc.request("thread/read",{threadId})).thread;assert.equal(afterFirst.id,threadId);assert.equal(afterFirst.turns.length,1);
     const items=afterFirst.turns[0].items;assert.ok(items.some(item=>item.type==="dynamicToolCall"&&item.namespace==="trebell_repo"&&item.tool==="search_symbols"));assert.ok(items.some(item=>item.type==="agentMessage"&&/Found SessionManager/.test(item.text)));
 
@@ -59,6 +60,31 @@ test("Trebell Native relay executes repository tools and switches inference prov
   }finally{
     try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true});
   }
+});
+
+test("Trebell Native enforces the remaining goal tool budget inside an active turn",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-budget-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let seenMaxOutputTokens=null;
+  const nativeProviderTurn=async request=>{
+    seenMaxOutputTokens=request.maxOutputTokens;
+    return {id:"budget-tools",provider:request.provider,model:request.model,text:"",toolCalls:[
+      {id:"write-one",namespace:"trebell_workspace",name:"write_file",arguments:JSON.stringify({path:"one.txt",content:"one"})},
+      {id:"write-two",namespace:"trebell_workspace",name:"write_file",arguments:JSON.stringify({path:"two.txt",content:"two"})},
+    ],finishReason:"tool_calls",usage:{inputTokens:5,outputTokens:2,totalTokens:7}};
+  };
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
+  try{
+    const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;
+    await rpc.request("thread/goal/set",{threadId:thread.id,objective:"Make one bounded edit",toolCallBudget:1,tokenBudget:50});
+    const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",input:[{type:"text",text:"Create the bounded file"}]})).turn;
+    const completed=await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);assert.equal(completed.params.turn.status,"failed");assert.match(completed.params.turn.error?.message||"",/tool-call budget exhausted/i);
+    assert.equal(await (await import("node:fs/promises")).readFile(join(repo,"one.txt"),"utf8"),"one");
+    await assert.rejects((await import("node:fs/promises")).readFile(join(repo,"two.txt"),"utf8"),error=>error?.code==="ENOENT");
+    assert.equal(seenMaxOutputTokens,50);
+    const goal=(await rpc.request("thread/goal/get",{threadId:thread.id})).goal;assert.equal(goal.toolCallsUsed,1);assert.equal(goal.toolCallBudgetRemaining,0);assert.equal(goal.tokensUsed,7);
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
 });
 
 test("Trebell Native relay can edit workspace files and run bounded terminal commands through the same agent loop",async()=>{

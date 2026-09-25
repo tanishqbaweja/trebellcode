@@ -259,3 +259,11 @@ test("normalized Anthropic-compatible turns reuse the existing tool adapter",asy
   assert.equal(seen.url,"https://api.justwoker.icu/v1/messages");assert.equal(seen.body.tools[0].name,"trebell_repo__search_symbols");
   assert.deepEqual(result.toolCalls,[{id:"toolu-native",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Session"}'}]);assert.equal(result.finishReason,"tool_calls");
 });
+
+test("normalized provider turns expose retryability for transient HTTP failures only",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));let status=429;
+  const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root},fetchFn:async()=>new Response("try later",{status})});manager.setKey("hcnsec","hc-retry-key");
+  await assert.rejects(()=>manager.turn("hcnsec",{model:"glm-5.3",messages:[{role:"user",content:"hello"}]}),error=>error?.status===429&&error?.retryable===true);
+  status=401;
+  await assert.rejects(()=>manager.turn("hcnsec",{model:"glm-5.3",messages:[{role:"user",content:"hello"}]}),error=>error?.status===401&&error?.retryable===false);
+});

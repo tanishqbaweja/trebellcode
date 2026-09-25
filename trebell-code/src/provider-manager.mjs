@@ -296,7 +296,12 @@ export class ProviderManager {
       ?await this.forwardResponses(provider.id,providerTurnToResponses({...request,model}),{signal})
       :await this.forwardChat(provider.id,providerTurnToChat({...request,model}),{signal});
     const raw=await upstream.text();
-    if(!upstream.ok)throw new Error(`${provider.name} HTTP ${upstream.status}: ${raw.slice(0,1200)}`);
+    if(!upstream.ok){
+      const error=new Error(`${provider.name} HTTP ${upstream.status}: ${raw.slice(0,1200)}`);
+      error.status=upstream.status;
+      error.retryable=[408,409,425,429].includes(upstream.status)||(upstream.status>=500&&upstream.status<=599);
+      throw error;
+    }
     let parsed;try{parsed=raw?JSON.parse(raw):{}}catch{throw new Error(`${provider.name} returned invalid JSON for a provider turn.`)}
     return provider.wireApi==="responses"
       ?normalizeResponsesTurnResponse(parsed,provider.id,model)

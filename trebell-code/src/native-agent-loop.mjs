@@ -51,6 +51,28 @@ function emit(onEvent,event){
   try{onEvent?.({...event,at:Date.now()})}catch{}
 }
 
+export function nativeProviderRetryable(error){
+  if(!error||error?.name==="AbortError")return false;
+  if(typeof error.retryable==="boolean")return error.retryable;
+  const status=Number(error.status||error.statusCode||0);
+  if(status)return [408,409,425,429].includes(status)||(status>=500&&status<=599);
+  const code=String(error.code||"").toUpperCase();
+  if(["ETIMEDOUT","ESOCKETTIMEDOUT","ECONNRESET","ECONNREFUSED","EPIPE","EAI_AGAIN","ENETDOWN","ENETUNREACH","EHOSTUNREACH"].includes(code))return true;
+  const message=String(error.message||error).toLowerCase();
+  return /\b(?:timeout|timed out|fetch failed|network error|socket hang up|connection reset|temporar(?:y|ily) unavailable|rate limit(?:ed)?)\b/.test(message);
+}
+
+async function retryDelay(ms,signal){
+  if(ms<=0){throwIfAborted(signal);return}
+  await new Promise((resolve,reject)=>{
+    let settled=false;
+    const done=()=>{if(settled)return;settled=true;cleanup();resolve()};
+    const aborted=()=>{if(settled)return;settled=true;cleanup();reject(abortError(signal))};
+    const timer=setTimeout(done,ms),cleanup=()=>{clearTimeout(timer);signal?.removeEventListener?.("abort",aborted)};
+    if(signal?.aborted)return aborted();signal?.addEventListener?.("abort",aborted,{once:true});
+  });
+}
+
 export function nativeAgentBudget(options={}){
   return {
     maxModelTurns:boundedInteger(options.maxModelTurns,24,{min:1,max:500}),
@@ -61,7 +83,7 @@ export function nativeAgentBudget(options={}){
 export async function runNativeAgentTurn({
   providerTurn,executeTool,model,messages=[],tools=[],provider=null,toolChoice="auto",
   maxOutputTokens=null,temperature=null,parallelToolCalls=true,maxModelTurns=24,maxToolCalls=100,
-  signal=null,onEvent=null,metadata=null,
+  maxProviderAttempts=3,retryBaseDelayMs=250,signal=null,onEvent=null,metadata=null,
 }={}){
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
@@ -70,7 +92,7 @@ export async function runNativeAgentTurn({
   let modelTurns=0,toolCalls=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0},lastResponse=null;
   const startedAt=Date.now(),started=nowMs();
   emit(onEvent,{name:"native.turn.started",status:"running",model:String(model),provider:provider||null,data:{...metadata,maxModelTurns:budget.maxModelTurns,maxToolCalls:budget.maxToolCalls}});
-  for(;;){
+  try{for(;;){
     throwIfAborted(signal);
     if(modelTurns>=budget.maxModelTurns){
       const error=new Error(`Native agent model-turn budget exhausted (${modelTurns}/${budget.maxModelTurns}).`);error.code="native_model_turn_budget";
@@ -79,7 +101,19 @@ export async function runNativeAgentTurn({
     modelTurns++;
     const requestStarted=nowMs();
     emit(onEvent,{name:"native.model.requested",status:"running",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,messageCount:conversation.length,toolCount:Array.isArray(tools)?tools.length:0}});
-    const response=await providerTurn({model,provider,messages:conversation,tools,toolChoice,maxOutputTokens,temperature,parallelToolCalls,signal});
+    const providerAttempts=boundedInteger(maxProviderAttempts,3,{min:1,max:8});let response=null;
+    for(let attempt=1;attempt<=providerAttempts;attempt++){
+      try{
+        response=await providerTurn({model,provider,messages:conversation,tools,toolChoice,maxOutputTokens,temperature,parallelToolCalls,signal});break;
+      }catch(error){
+        if(signal?.aborted||error?.name==="AbortError")throw abortError(signal);
+        const retryable=nativeProviderRetryable(error),last=attempt>=providerAttempts;
+        if(!retryable||last)throw error;
+        const delay=Math.max(0,Math.min(10_000,Math.trunc(Number(retryBaseDelayMs)||0)*2**(attempt-1)));
+        emit(onEvent,{name:"native.model.retrying",status:"retrying",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,attempt,nextAttempt:attempt+1,maxAttempts:providerAttempts,delayMs:delay,status:Number(error.status||error.statusCode||0)||null,code:error.code||null,message:String(error.message||error).slice(0,500)}});
+        await retryDelay(delay,signal);
+      }
+    }
     throwIfAborted(signal);lastResponse=response||{};usage=aggregateUsage(usage,lastResponse.usage||{});
     const calls=Array.isArray(lastResponse.toolCalls)?lastResponse.toolCalls:[];
     emit(onEvent,{name:"native.model.completed",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,durationMs:duration(requestStarted),toolCallCount:calls.length,finishReason:lastResponse.finishReason||null,usage:lastResponse.usage||null}});
@@ -115,5 +149,10 @@ export async function runNativeAgentTurn({
       emit(onEvent,{name:"native.tool.completed",status:success?"completed":"failed",model:String(model),provider:provider||null,data:{toolCall:toolCalls,callId,namespace,name,durationMs:duration(toolStarted),success,error:errorMessage}});
       conversation.push({role:"tool",toolCallId:callId,content});
     }
+  }}catch(error){
+    if(error&&typeof error==="object"){
+      error.nativeUsage={...usage};error.nativeModelTurns=modelTurns;error.nativeToolCalls=toolCalls;
+    }
+    throw error;
   }
 }

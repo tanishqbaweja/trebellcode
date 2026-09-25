@@ -1383,7 +1383,13 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     if(!isLoggedIn(env))throw new Error("Sign in to Freebuff first.");await ensureBridge();
     const signals=[request.signal,AbortSignal.timeout(300000)].filter(Boolean),signal=signals.length>1?AbortSignal.any(signals):signals[0];
     const response=await fetchImpl(`http://127.0.0.1:${DEFAULT_PORT}/v1/chat/completions`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(providerTurnToChat(request)),signal});
-    const raw=await response.text();if(!response.ok)throw new Error(raw.slice(0,1200)||`Freebuff HTTP ${response.status}`);
+    const raw=await response.text();
+    if(!response.ok){
+      const error=new Error(raw.slice(0,1200)||`Freebuff HTTP ${response.status}`);
+      error.status=response.status;
+      error.retryable=[408,409,425,429].includes(response.status)||(response.status>=500&&response.status<=599);
+      throw error;
+    }
     let parsed;try{parsed=raw?JSON.parse(raw):{}}catch{throw new Error("Freebuff returned invalid JSON for a Native provider turn.")}
     return normalizeChatTurnResponse(parsed,"freebuff",model);
   }

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { nativeAgentBudget, runNativeAgentTurn } from "../src/native-agent-loop.mjs";
+import { nativeAgentBudget, nativeProviderRetryable, runNativeAgentTurn } from "../src/native-agent-loop.mjs";
 const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
 
 test("native agent completes a plain model turn without inventing tool work",async()=>{
@@ -93,6 +93,39 @@ test("native agent cancellation stops before provider or later tool work",async(
     executeTool:async()=>{executions++;during.abort();return "done"},
   }),error=>error?.name==="AbortError");
   assert.equal(executions,1);
+});
+
+test("native agent retries only transient provider inference failures",async()=>{
+  const events=[];let attempts=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"retry please"}],retryBaseDelayMs:0,onEvent:event=>events.push(event),
+    providerTurn:async()=>{
+      attempts++;
+      if(attempts===1){const error=new Error("rate limited");error.status=429;throw error}
+      if(attempts===2){const error=new Error("temporarily unavailable");error.status=503;throw error}
+      return {text:"recovered",toolCalls:[],usage:{inputTokens:2,outputTokens:1,totalTokens:3}};
+    },executeTool:async()=>"",
+  });
+  assert.equal(attempts,3);assert.equal(result.text,"recovered");assert.equal(events.filter(event=>event.name==="native.model.retrying").length,2);
+
+  let authAttempts=0;
+  await assert.rejects(()=>runNativeAgentTurn({
+    model:"test-model",messages:[],retryBaseDelayMs:0,
+    providerTurn:async()=>{authAttempts++;const error=new Error("unauthorized");error.status=401;throw error},executeTool:async()=>"",
+  }),/unauthorized/i);
+  assert.equal(authAttempts,1);
+  assert.equal(nativeProviderRetryable(Object.assign(new Error("reset"),{code:"ECONNRESET"})),true);
+  assert.equal(nativeProviderRetryable(Object.assign(new Error("bad request"),{status:400})),false);
+});
+
+test("native agent cancellation during provider retry backoff prevents the next request",async()=>{
+  const controller=new AbortController();let attempts=0;
+  const pending=runNativeAgentTurn({
+    model:"test-model",messages:[],signal:controller.signal,retryBaseDelayMs:500,
+    providerTurn:async()=>{attempts++;const error=new Error("service unavailable");error.status=503;throw error},executeTool:async()=>"",
+  });
+  setTimeout(()=>controller.abort(),20);
+  await assert.rejects(pending,error=>error?.name==="AbortError");assert.equal(attempts,1);
 });
 
 test("native agent budget normalization stays bounded",()=>{
