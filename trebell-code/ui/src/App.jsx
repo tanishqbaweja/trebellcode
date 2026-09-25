@@ -183,6 +183,30 @@ const TREBELL_REPO_TOOLS=[{
     {type:"function",name:"file_relations",description:"Inspect a source file's definitions, imports, importers, cross-file symbol references, and related tests.",inputSchema:{type:"object",properties:{path:{type:"string"}},required:["path"],additionalProperties:false}},
   ]
 }];
+const TREBELL_DELEGATION_TOOLS=[{
+  type:"namespace",
+  name:"trebell_delegate",
+  description:"Delegate a bounded child task through Trebell. Coding delegates use isolated Git worktrees by default so parallel agents do not edit the same checkout.",
+  tools:[{
+    type:"function",name:"delegate",description:"Start one bounded child task. Use delegation only when parallel or specialized work is genuinely useful; do not create swarms.",
+    inputSchema:{
+      type:"object",additionalProperties:false,required:["task"],
+      properties:{
+        task:{type:"string",description:"Concrete child objective."},
+        permissions:{type:"string",enum:["inherit","read-only","workspace-write","supervised","full"],description:"Child permission profile. inherit resolves to supervised for delegated workers."},
+        isolation:{type:"string",enum:["auto","worktree","inherit","shared"],description:"auto/worktree use an isolated Git worktree; inherit/shared reuse the parent workspace."},
+        model:{type:"string",description:"Optional model id; defaults to the parent's selected model."},
+        ownership:{type:"array",items:{type:"string"},maxItems:50,description:"Files or areas the child owns."},
+        context:{type:"string",description:"Additional bounded context that is not already in repository context."},
+        label:{type:"string",description:"Optional short label for the child task."},
+        budget:{type:"object",additionalProperties:false,properties:{
+          tokenBudget:{type:"integer",minimum:1},timeBudgetMinutes:{type:"integer",minimum:1},turnBudget:{type:"integer",minimum:1,maximum:500},
+          toolCallBudget:{type:"integer",minimum:1,maximum:1000},childAgentBudget:{type:"integer",minimum:1,maximum:100},costBudgetUsd:{type:"number",exclusiveMinimum:0},
+        }},
+      },
+    },
+  }],
+}];
 
 function titleOf(thread){return thread?.name||thread?.preview||"New Trebell task"}
 function modelLabel(id,freebuff){
@@ -1688,6 +1712,20 @@ export default function App(){
         })();
         return;
       }
+      if(p.namespace==="trebell_delegate"){
+        (async()=>{
+          try{
+            if(p.tool!=="delegate")throw new Error("Unknown Trebell delegation tool: "+p.tool);
+            if(!runtimeCapabilities.delegation||!runtimeCapabilities.dynamicTools)throw new Error("The active runtime cannot invoke Trebell delegation tools.");
+            const result=await delegateTask(p.arguments||{});
+            client.respond(message.id,{contentItems:[{type:"inputText",text:JSON.stringify({
+              started:true,parentThreadId:result.parentThreadId,threadId:result.thread?.id||null,turnId:result.turnId||null,
+              cwd:result.workspace?.cwd||null,branch:result.workspace?.branch||null,isolation:result.spec?.isolation||null,permissions:result.spec?.permissions||null,model:result.spec?.model||null,budget:result.spec?.budget||null,
+            })}],success:true});
+          }catch(error){client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false})}
+        })();
+        return;
+      }
       client.respond(message.id,{contentItems:[{type:"inputText",text:"No client-defined dynamic tool is registered for "+(p.namespace||"default")+"/"+p.tool}],success:false});
       return;
     }
@@ -1710,6 +1748,16 @@ export default function App(){
     else if(message.method==="thread/started"&&p.thread){
       setThreads(prev=>[p.thread,...prev.filter(t=>t.id!==p.thread.id)]);
       if(activeThreadRef.current?.id===p.thread.id)setActiveThread(p.thread);
+    }
+    else if(message.method==="thread/delegated"&&p.thread){
+      const child=p.thread,childId=String(p.childThreadId||child.id||"");
+      if(childId){
+        backgroundThreadsRef.current.add(childId);
+        setThreads(prev=>[child,...prev.filter(t=>t.id!==childId)]);
+        api("/api/thread-meta?threadId="+encodeURIComponent(childId)).then(meta=>setThreadMeta(prev=>({...prev,[childId]:meta}))).catch(()=>{});
+      }
+      if(p.threadId&&activeThreadRef.current?.id===p.threadId)rpcRef.current?.request("thread/goal/get",{threadId:p.threadId}).then(result=>setGoal(result?.goal||null)).catch(()=>{});
+      desktopNotify("Delegated task started",child.name||child.preview||"A child task is running in the background.");
     }
     else if(message.method==="thread/status/changed"&&threadId&&p.status){
       setThreads(prev=>prev.map(t=>t.id===threadId?{...t,status:p.status,updatedAt:Date.now()/1000}:t));
@@ -2378,8 +2426,8 @@ export default function App(){
   }
   async function createThreadFor(modelId,cwd,{projectless=projectlessMode}={}){
     const p=presetFor(permissionMode);
-    const dynamicTools=[...TREBELL_REPO_TOOLS,...TREBELL_BROWSER_TOOLS,...TREBELL_COMPUTER_TOOLS,...TREBELL_SOURCE_CONTROL_TOOLS,...(effectiveProjectSettings.agentDeviceAccess?TREBELL_DEVICE_TOOLS:[])];
-    const researchInstruction="Web research is available when useful. Use it when current or external information materially improves the task; use trebell_browser for interactive pages."+(runtimeCapabilities.dynamicTools?" Use trebell_repo for deterministic symbol and structural repository lookups when that is faster than manual exploration.":"");
+    const dynamicTools=[...TREBELL_REPO_TOOLS,...TREBELL_BROWSER_TOOLS,...TREBELL_COMPUTER_TOOLS,...TREBELL_SOURCE_CONTROL_TOOLS,...(runtimeCapabilities.delegation&&runtimeCapabilities.dynamicTools?TREBELL_DELEGATION_TOOLS:[]),...(effectiveProjectSettings.agentDeviceAccess?TREBELL_DEVICE_TOOLS:[])];
+    const researchInstruction="Web research is available when useful. Use it when current or external information materially improves the task; use trebell_browser for interactive pages."+(runtimeCapabilities.dynamicTools?" Use trebell_repo for deterministic symbol and structural repository lookups when that is faster than manual exploration.":"")+(runtimeCapabilities.dynamicTools&&runtimeCapabilities.delegation?" Trebell delegation is available for bounded parallel child tasks; use it only when parallelism materially helps, prefer explicit ownership and budgets, and do not create agent swarms.":"");
     const developerInstructions=projectless
       ?"This is a Trebell General chat with no attached project or repository. The working directory is an app-managed scratch workspace. Do not assume it is a codebase, repository, or user project. "+researchInstruction
       :researchInstruction;
@@ -2550,6 +2598,23 @@ export default function App(){
       if(mayHaveSucceeded&&(uncertainThread?.id||turnRequestStarted||verificationErrors.length))failure.trebellUncertain={threadId:uncertainThread?.id||null,cwd,model:modelId,phase:turnRequestStarted?"turn":"thread",verificationError:verificationErrors.at(-1)?.message||null};
       throw failure;
     }
+  }
+  async function delegateTask(rawSpec){
+    if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");
+    const parent=activeThreadRef.current;if(!parent?.id)throw new Error("Open a parent thread before delegating work.");
+    if(rawSpec?.model&&!models.includes(rawSpec.model))throw new Error("Delegation model is not available in the active runtime: "+rawSpec.model);
+    const result=await rpc.request("thread/delegate",{threadId:parent.id,...rawSpec});
+    if(result?.thread?.id){
+      backgroundThreadsRef.current.add(result.thread.id);
+      setThreads(previous=>[result.thread,...previous.filter(item=>item.id!==result.thread.id)]);
+      const meta=await api("/api/thread-meta?threadId="+encodeURIComponent(result.thread.id)).catch(()=>null);
+      if(meta)setThreadMeta(previous=>({...previous,[result.thread.id]:meta}));
+    }
+    try{
+      const refreshed=(await rpc.request("thread/goal/get",{threadId:parent.id}))?.goal||null;
+      if(activeThreadRef.current?.id===parent.id)setGoal(refreshed);
+    }catch{}
+    return result;
   }
   function restoreFailedDraft(draft){
     setPrompt(current=>{
@@ -3243,7 +3308,7 @@ export default function App(){
     if(rightPanelTab==="preview")return previewSurface;
     if(rightPanelTab==="source")return projectlessMode?<div className="empty-state">General chats are not attached to source control.</div>:<SourceControlPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} model={model} provider={provider} threadId={activeThread?.id||null} sourceControlSettings={currentProject?.effectiveSettings||effectiveProjectSettings} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} onLinkPrUrl={linkPullRequestUrl} onOpenLinkedThread={openLinkedThread} onSelectedPrChange={setSourceSelectedPr} onLinkedPullRequestsChanged={links=>activeThread?.id&&applyThreadPullRequestLinks(activeThread.id,links)} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
     if(rightPanelTab==="device")return <DevicePanel/>;
-    if(rightPanelTab==="agents"&&runtimeCapabilities.delegation)return <div className="panel-page"><AgentsPage threads={threads} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onRefreshThreads={()=>rpc?loadThreads(rpc,{strict:true}):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model} telemetry={threadTelemetry}/></div>;
+    if(rightPanelTab==="agents"&&runtimeCapabilities.delegation)return <div className="panel-page"><AgentsPage threads={threads} threadMeta={threadMeta} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onDelegate={delegateTask} onRefreshThreads={()=>rpc?loadThreads(rpc,{strict:true}):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model} telemetry={threadTelemetry} canModelDelegate={Boolean(runtimeCapabilities.dynamicTools&&runtimeCapabilities.delegation)}/></div>;
     if(rightPanelTab==="goal")return <GoalPanel rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={setGoal} continuity={continuity} onContinuity={setContinuity}/>;
     return <div className="runtime-surface">
       <section className="runtime-summary">

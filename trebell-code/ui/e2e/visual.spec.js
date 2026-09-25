@@ -2154,6 +2154,62 @@ test("Agents refresh failures preserve the last valid thread list",async({page})
   }finally{await harness.close()}
 });
 
+test("model delegation tool starts a bounded child and surfaces it in Agents",async({page})=>{
+  test.setTimeout(35_000);
+  const parent={id:"delegation-parent",name:"Delegation parent",preview:"Parent task",cwd:process.cwd(),status:{type:"idle"},model:"freebuff/test/coding-fast",createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
+  const child={id:"delegation-child",parentThreadId:parent.id,name:null,preview:"Delegated parser audit",agentRole:"delegate",cwd:process.cwd(),status:{type:"active",activeFlags:[]},model:"freebuff/test/coding-fast",createdAt:Date.now()/1000,updatedAt:Date.now()/1000,turns:[]};
+  const childMeta={parentThreadId:parent.id,delegation:{id:"delegation-1",parentThreadId:parent.id,task:"Audit the parser edge cases",permission:"read-only",requestedPermission:"read-only",isolation:"shared",requestedIsolation:"inherit",ownership:["src/parser.js","tests/parser.test.js"],model:child.model,status:"running",turnId:"delegated-turn"}};
+  let threads=[parent];const delegationRequests=[];
+  const harness=await startCodexRequestHarness(parent,{onRequest:async(message,ws)=>{
+    if(message.method==="thread/list"){ws.send(JSON.stringify({id:message.id,result:{data:threads,nextCursor:null}}));return true}
+    if(message.method==="thread/delegate"){
+      delegationRequests.push(message.params);threads=[child,parent];
+      ws.send(JSON.stringify({id:message.id,result:{delegationId:"delegation-1",parentThreadId:parent.id,thread:child,turn:{id:"delegated-turn"},workspace:{cwd:process.cwd(),branch:null,isolation:"inherit",worktree:false},spec:{task:message.params.task,permission:"read-only",permissions:"read-only",isolation:"inherit",requestedIsolation:"inherit",ownership:message.params.ownership||[],model:child.model,budget:message.params.budget||{}}}}));return true;
+    }
+    if(message.method==="thread/goal/get"){ws.send(JSON.stringify({id:message.id,result:{goal:null}}));return true}
+    return false;
+  }});
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,parent,"delegation-tool-fixture");
+    await page.route("**/api/thread-meta?threadId=delegation-child",route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(childMeta)}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const parentRow=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Delegation parent"]')});
+    await parentRow.locator(".thread-main").click();await expect(parentRow).toHaveClass(/active/);
+
+    const response=await harness.request("item/tool/call",{threadId:parent.id,namespace:"trebell_delegate",tool:"delegate",arguments:{task:"Audit the parser edge cases",permissions:"read-only",isolation:"inherit",ownership:["src/parser.js","tests/parser.test.js"],budget:{turnBudget:2,toolCallBudget:8}}});
+    expect(response.result?.success).toBe(true);
+    const toolResult=JSON.parse(response.result.contentItems[0].text);
+    expect(toolResult.threadId).toBe(child.id);expect(toolResult.permissions).toBe("read-only");expect(toolResult.isolation).toBe("inherit");
+    expect(delegationRequests[0]?.threadId).toBe(parent.id);expect(delegationRequests[0]?.budget?.turnBudget).toBe(2);expect(delegationRequests[0]?.ownership).toEqual(["src/parser.js","tests/parser.test.js"]);
+
+    await page.locator('.sidebar .sidebar-utility[aria-label="Agents"]').click();
+    const agents=page.locator(".agents-page");await expect(agents).toBeVisible();
+    await expect(agents).toContainText("Audit the parser edge cases");
+    await expect(agents).toContainText("shared");
+    await expect(agents).toContainText("Owns · src/parser.js, tests/parser.test.js");
+    await expect(agents).toContainText("The model can also invoke Trebell delegation");
+    await agents.getByRole("button",{name:"Delegate",exact:true}).click();
+    await expect(agents.getByLabel("Delegated task")).toBeVisible();
+    await expect(agents.getByLabel("Delegation permissions")).toHaveValue("supervised");
+    await expect(agents.getByLabel("Delegation isolation")).toHaveValue("inherit");
+    const metrics=await agents.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.setViewportSize({width:1280,height:800});
+    await page.screenshot({path:auditDir+"delegation-child-agent-dark-1280x800.png",fullPage:true});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    await expect.poll(()=>agents.locator(".delegate-card").evaluate(node=>getComputedStyle(node).backgroundColor)).toBe("rgb(255, 255, 255)");
+    await page.screenshot({path:auditDir+"delegation-child-agent-light-1280x800.png",fullPage:true});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+    await agents.getByLabel("Delegated task").fill("Run the manual smoke audit");
+    await agents.getByLabel("Delegation permissions").selectOption("workspace-write");
+    await agents.getByLabel("Delegation isolation").selectOption("inherit");
+    await agents.getByRole("button",{name:"Start child task",exact:true}).click();
+    await expect.poll(()=>delegationRequests.length).toBe(2);
+    expect(delegationRequests[1].task).toBe("Run the manual smoke audit");expect(delegationRequests[1].permissions).toBe("workspace-write");expect(delegationRequests[1].isolation).toBe("inherit");
+    await expect(agents.getByRole("button",{name:"Delegate",exact:true})).toBeVisible();
+  }finally{await harness.close()}
+});
+
 test("terminal failures keep backend and visible session state in sync",async({page,request})=>{
   test.setTimeout(30_000);
   await page.addInitScript(()=>{
