@@ -51,6 +51,26 @@ test("cancelling a clone job transitions to cancelled and clears its temp path",
   }finally{await Promise.all([rm(home,{recursive:true,force:true}),rm(parent,{recursive:true,force:true})])}
 });
 
+test("clone jobs never persist or surface credentials embedded in repository URLs",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-clone-redaction-home-")),parent=await mkdtemp(join(tmpdir(),"trebell-clone-redaction-dest-"));
+  const password=["odd","clone","credential"].join("-"),queryCredential=["query","clone","credential"].join("-");
+  const url=`https://runner:${password}@example.test/acme/widget.git?access_token=${queryCredential}`;let child=null,spawnArgs=null;const logs=[];
+  try{
+    const spawnProcess=(_command,args)=>{
+      spawnArgs=[...args];child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();child.kill=()=>true;
+      queueMicrotask(()=>{child.stderr.write(`fatal: unable to access '${url}': denied\n`);child.emit("close",128,null)});return child;
+    };
+    const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env),service=new CloneJobService({state,env,spawnProcess,log:message=>logs.push(message)}),destination=join(parent,"widget");
+    const started=await service.start({url,destination}),finished=await service.wait(started.id,{timeoutMs:2000});
+    assert.equal(spawnArgs[2],url,"git must receive the original authenticated URL for the live clone attempt");
+    assert.equal(finished.status,"failed");
+    for(const value of [JSON.stringify(finished),JSON.stringify(state.project(destination,null).cloneJob),logs.join("\n")]){
+      assert.doesNotMatch(value,new RegExp(password));assert.doesNotMatch(value,new RegExp(queryCredential));
+    }
+    assert.equal(state.project(destination,null).cloneJob.url,"https://example.test/acme/widget.git");
+  }finally{await Promise.all([rm(home,{recursive:true,force:true}),rm(parent,{recursive:true,force:true})])}
+});
+
 test("remote clone jobs run Git and finalization inside the selected environment",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-clone-remote-home-"));
   try{

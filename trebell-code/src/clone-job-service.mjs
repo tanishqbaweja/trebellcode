@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { posix } from "node:path";
+import { redactSecretText } from "./secret-redactor.mjs";
 
 const ACTIVE=new Set(["running","cancelling"]);
 
@@ -15,12 +16,21 @@ function projectNameFromUrl(url){
   const name=(raw.split(/[\\/:]/).filter(Boolean).pop()||"repository").replace(/\.git$/i,"");
   return name||"repository";
 }
-function publicJob(job){
+function persistentCloneUrl(value,environment){
+  const raw=String(value||"").trim();
+  try{
+    const parsed=new URL(raw);
+    parsed.username="";parsed.password="";
+    for(const key of [...parsed.searchParams.keys()])if(/(?:token|key|secret|password|credential|authorization)/i.test(key))parsed.searchParams.delete(key);
+    return redactSecretText(parsed.toString(),{environment});
+  }catch{return redactSecretText(raw,{environment})}
+}
+function publicJob(job,environment=process.env){
   if(!job)return null;
   return {
-    id:job.id,url:job.url,destination:job.destination,environmentId:job.environmentId||null,status:job.status,
-    progress:job.progress,phase:job.phase,error:job.error||null,startedAt:job.startedAt,completedAt:job.completedAt||null,
-    output:trim(job.output||"",8000),
+    id:job.id,url:persistentCloneUrl(job.url,environment),destination:job.destination,environmentId:job.environmentId||null,status:job.status,
+    progress:job.progress,phase:job.phase,error:job.error?redactSecretText(job.error,{environment}):null,startedAt:job.startedAt,completedAt:job.completedAt||null,
+    output:trim(redactSecretText(job.output||"",{environment}),8000),
   };
 }
 export function parseCloneProgress(text,current={progress:0,phase:"Cloning"}){
@@ -82,7 +92,7 @@ export class CloneJobService{
     const project=this.state.project(job.destination,job.environmentId||null);
     if(!project)return;
     this.state.setProjectCloneJob(job.destination,job.environmentId||null,{
-      id:job.id,url:job.url,status:job.status,progress:job.progress,phase:job.phase,error:job.error||null,
+      id:job.id,url:persistentCloneUrl(job.url,this.env),status:job.status,progress:job.progress,phase:job.phase,error:job.error?redactSecretText(job.error,{environment:this.env}):null,
       startedAt:job.startedAt,completedAt:job.completedAt||null,tempPath:job.tempPath,
     });
   }
@@ -99,16 +109,16 @@ export class CloneJobService{
   async finish(job,{code=1,signal=null,error=null}={}){
     if(job.settled)return;job.settled=true;
     if(job.cancelRequested){
-      await this.cleanupTemp(job.tempPath,job.environmentId);job.status="cancelled";job.phase="Cancelled";job.completedAt=Date.now();job.error=null;this.persist(job);job.resolve?.(publicJob(job));return;
+      await this.cleanupTemp(job.tempPath,job.environmentId);job.status="cancelled";job.phase="Cancelled";job.completedAt=Date.now();job.error=null;this.persist(job);job.resolve?.(publicJob(job,this.env));return;
     }
     if(error||Number(code)!==0){
       await this.cleanupTemp(job.tempPath,job.environmentId);job.status="failed";job.phase="Clone failed";job.completedAt=Date.now();
-      job.error=String(error?.message||trim(job.output||"",4000)||("git clone exited with code "+String(code)+(signal?" ("+signal+")":"")));this.persist(job);job.resolve?.(publicJob(job));return;
+      job.error=String(error?.message||trim(job.output||"",4000)||("git clone exited with code "+String(code)+(signal?" ("+signal+")":"")));this.persist(job);job.resolve?.(publicJob(job,this.env));return;
     }
     try{
-      await this.moveIntoPlace(job.tempPath,job.destination,job.environmentId);job.status="completed";job.progress=100;job.phase="Ready";job.completedAt=Date.now();job.error=null;this.persist(job);job.resolve?.(publicJob(job));
+      await this.moveIntoPlace(job.tempPath,job.destination,job.environmentId);job.status="completed";job.progress=100;job.phase="Ready";job.completedAt=Date.now();job.error=null;this.persist(job);job.resolve?.(publicJob(job,this.env));
     }catch(moveError){
-      await this.cleanupTemp(job.tempPath,job.environmentId);job.status="failed";job.phase="Clone failed";job.completedAt=Date.now();job.error=moveError.message||String(moveError);this.persist(job);job.resolve?.(publicJob(job));
+      await this.cleanupTemp(job.tempPath,job.environmentId);job.status="failed";job.phase="Clone failed";job.completedAt=Date.now();job.error=moveError.message||String(moveError);this.persist(job);job.resolve?.(publicJob(job,this.env));
     }
   }
   async start({url,destination,environmentId=null,name=null}={}){
@@ -116,11 +126,11 @@ export class CloneJobService{
     const envId=environmentId||null;if(envId&&!this.profile(envId))throw new Error("Environment profile was not found");
     const target=this.normalizeDestination(destination,envId);if(await this.pathExists(target,envId))throw new Error("Clone destination already exists");
     const active=[...this.jobs.values()].find(job=>job.destination===target&&(job.environmentId||null)===envId&&ACTIVE.has(job.status));
-    if(active)return publicJob(active);
+    if(active)return publicJob(active,this.env);
     await this.ensureParent(target,envId);
     const id=randomUUID();const tempPath=target+".trebell-clone-"+id.slice(0,8);
     await this.cleanupTemp(tempPath,envId);
-    this.state.touchProject(target,{environmentId:envId,name:name||projectNameFromUrl(remote),cloneJob:{id,url:remote,status:"running",progress:0,phase:"Starting clone",error:null,startedAt:Date.now(),completedAt:null,tempPath}});
+    this.state.touchProject(target,{environmentId:envId,name:name||projectNameFromUrl(remote),cloneJob:{id,url:persistentCloneUrl(remote,this.env),status:"running",progress:0,phase:"Starting clone",error:null,startedAt:Date.now(),completedAt:null,tempPath}});
     const job={id,url:remote,destination:target,environmentId:envId,tempPath,status:"running",progress:0,phase:"Starting clone",error:null,output:"",startedAt:Date.now(),completedAt:null,child:null,cancelRequested:false,settled:false};
     job.completion=new Promise(resolveJob=>{job.resolve=resolveJob});this.jobs.set(id,job);this.persist(job);
     try{
@@ -129,26 +139,26 @@ export class CloneJobService{
       child.once("error",err=>this.finish(job,{error:err}).catch(()=>{}));
       child.once("close",(code,signal)=>this.finish(job,{code,signal}).catch(()=>{}));
     }catch(error){await this.finish(job,{error})}
-    this.log("clone started "+remote+" -> "+target);return publicJob(job);
+    this.log(redactSecretText("clone started "+remote+" -> "+target,{environment:this.env}));return publicJob(job,this.env);
   }
   get(id){
-    const live=this.jobs.get(String(id||""));if(live)return publicJob(live);
+    const live=this.jobs.get(String(id||""));if(live)return publicJob(live,this.env);
     for(const project of this.state.projects())if(project.cloneJob?.id===id)return {...project.cloneJob,destination:project.path,environmentId:project.environmentId||null,output:""};
     return null;
   }
   list(){
     const byId=new Map();
     for(const project of this.state.projects())if(project.cloneJob?.id)byId.set(project.cloneJob.id,{...project.cloneJob,destination:project.path,environmentId:project.environmentId||null,output:""});
-    for(const job of this.jobs.values())byId.set(job.id,publicJob(job));
+    for(const job of this.jobs.values())byId.set(job.id,publicJob(job,this.env));
     return [...byId.values()].sort((a,b)=>(b.startedAt||0)-(a.startedAt||0));
   }
   async cancel(id){
     const job=this.jobs.get(String(id||""));if(!job)throw new Error("Clone job is not running");
-    if(!ACTIVE.has(job.status))return publicJob(job);
+    if(!ACTIVE.has(job.status))return publicJob(job,this.env);
     job.cancelRequested=true;job.status="cancelling";job.phase="Cancelling";this.persist(job);
     try{job.child?.kill("SIGTERM")}catch{}
     setTimeout(()=>{if(!job.settled){try{job.child?.kill("SIGKILL")}catch{}}},2500).unref?.();
-    return publicJob(job);
+    return publicJob(job,this.env);
   }
   async retry(id){
     const previous=this.get(id);if(!previous)throw new Error("Clone job was not found");
@@ -157,9 +167,9 @@ export class CloneJobService{
   }
   async wait(id,{timeoutMs=10*60_000}={}){
     const job=this.jobs.get(String(id||""));if(!job)return this.get(id);
-    if(!ACTIVE.has(job.status))return publicJob(job);
+    if(!ACTIVE.has(job.status))return publicJob(job,this.env);
     return new Promise(resolveWait=>{
-      const timer=setTimeout(()=>resolveWait(publicJob(job)),Math.max(1000,Number(timeoutMs)||10*60_000));timer.unref?.();
+      const timer=setTimeout(()=>resolveWait(publicJob(job,this.env)),Math.max(1000,Number(timeoutMs)||10*60_000));timer.unref?.();
       job.completion.then(result=>{clearTimeout(timer);resolveWait(result)});
     });
   }

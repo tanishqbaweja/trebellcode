@@ -11,11 +11,13 @@ test("secret redactor removes common credential formats and exact secret env val
     "token=ghp_abcdefghijklmnopqrstuvwxyz",
     "custom=odd-value-not-shaped-like-a-known-token",
     "https://localhost/pair#token=PAIRSECRET",
+    "https://runner:opaque-password@example.test/repository.git",
   ].join("\n"),{environment,redactHomes:true});
   assert.match(text,/path=~\/project/);
   assert.match(text,/Bearer \[redacted\]/);
   assert.match(text,/\[pairing-url\]/);
-  assert.doesNotMatch(text,/bearer-value|private-key|ghp_|odd-value-not-shaped|PAIRSECRET/);
+  assert.doesNotMatch(text,/bearer-value|private-key|ghp_|odd-value-not-shaped|PAIRSECRET|opaque-password/);
+  assert.match(text,/https:\/\/\[redacted\]@example\.test\/repository\.git/);
 });
 
 test("secret redactor recursively scrubs sensitive keys and CLI flag values",()=>{
