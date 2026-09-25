@@ -178,6 +178,21 @@ test("context engine exposes bounded code search, source ranges, and Git context
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
+test("context engine exposes honest bounded JavaScript and TypeScript syntax diagnostics",async()=>{
+  const root=await fixture();
+  try{
+    await writeFile(join(root,"src","broken.ts"),"export const broken: string = ;\n","utf8");
+    await writeFile(join(root,"src","tool.py"),"def tool():\n    return True\n","utf8");
+    const engine=new ContextEngine(),broken=await engine.diagnostics({root,path:"src/broken.ts"});
+    assert.equal(broken.supported,true);assert.equal(broken.engine,"babel-parser");assert.equal(broken.semantic,false);assert.ok(broken.diagnostics.length>=1);
+    assert.equal(broken.diagnostics[0].severity,"error");assert.ok(broken.diagnostics[0].line>=1);assert.ok(broken.diagnostics[0].column>=1);
+    const valid=await engine.diagnostics({root,path:"src/auth/session.js"});
+    assert.equal(valid.supported,true);assert.deepEqual(valid.diagnostics,[]);
+    const unsupported=await engine.diagnostics({root,path:"src/tool.py"});
+    assert.equal(unsupported.supported,false);assert.equal(unsupported.semantic,false);assert.deepEqual(unsupported.diagnostics,[]);assert.match(unsupported.reason,/no deterministic Trebell diagnostics adapter/i);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
 test("context engine exposes bounded Git history and blame",async()=>{
   const root=await fixture();
   try{
@@ -352,6 +367,8 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
   assert.deepEqual(remoteTests.data.map(item=>item.path),["tests/auth-refresh.test.js"]);
   const remoteCalls=await engine.callHierarchy({root,io,name:"RefreshSession"});
   assert.ok(remoteCalls.callers.some(item=>item.path==="src/server.js"&&item.caller==="startServer"));
+  const remoteDiagnostics=await engine.diagnostics({root,io,path:"src/auth/session.js"});
+  assert.equal(remoteDiagnostics.supported,true);assert.deepEqual(remoteDiagnostics.diagnostics,[]);
   const remoteSource=await engine.readSourceRange({root,io,path:"src/auth/session.js",startLine:1,endLine:2});
   assert.match(remoteSource.content,/rotateRefreshToken/);assert.equal(remoteSource.endLine,2);
   const remoteReferences=await engine.symbolReferences({root,io,name:"RefreshSession",limit:10});

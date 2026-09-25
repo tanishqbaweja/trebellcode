@@ -85,11 +85,15 @@ function bindingNames(node,out=[]){
   return out;
 }
 
-function parseJavaScriptSource(content,relativePath){
+function javascriptParserPlugins(relativePath){
   const extension=extname(relativePath).toLowerCase(),plugins=["decorators-legacy"];
   if(extension===".jsx"||extension===".tsx")plugins.push("jsx");
   if(extension===".ts"||extension===".tsx")plugins.push("typescript");
-  const ast=parseJavaScriptAst(String(content||""),{sourceType:"unambiguous",errorRecovery:true,plugins});
+  return plugins;
+}
+
+function parseJavaScriptSource(content,relativePath){
+  const ast=parseJavaScriptAst(String(content||""),{sourceType:"unambiguous",errorRecovery:true,plugins:javascriptParserPlugins(relativePath)});
   const lines=String(content||"").split(/\r?\n/),definitions=[],references=new Map(),imports=new Set(),seenDefinitions=new Set();
   const addDefinition=(name,kind,node)=>{
     const value=String(name||"");if(!value||definitions.length>=500)return;
@@ -125,10 +129,7 @@ function parseJavaScriptSource(content,relativePath){
 }
 
 function javascriptIdentifierLines(content,relativePath,name){
-  const extension=extname(relativePath).toLowerCase(),plugins=["decorators-legacy"],wanted=String(name||""),lines=new Set();
-  if(extension===".jsx"||extension===".tsx")plugins.push("jsx");
-  if(extension===".ts"||extension===".tsx")plugins.push("typescript");
-  const ast=parseJavaScriptAst(String(content||""),{sourceType:"unambiguous",errorRecovery:true,plugins});
+  const wanted=String(name||""),lines=new Set(),ast=parseJavaScriptAst(String(content||""),{sourceType:"unambiguous",errorRecovery:true,plugins:javascriptParserPlugins(relativePath)});
   const visit=node=>{
     if(!node||typeof node!=="object")return;
     if(node.type==="Identifier"&&node.name===wanted){const line=Number(node?.loc?.start?.line)||0;if(line>0)lines.add(line)}
@@ -142,10 +143,7 @@ function javascriptIdentifierLines(content,relativePath,name){
 }
 
 function javascriptCallSites(content,relativePath){
-  const extension=extname(relativePath).toLowerCase(),plugins=["decorators-legacy"],calls=[];
-  if(extension===".jsx"||extension===".tsx")plugins.push("jsx");
-  if(extension===".ts"||extension===".tsx")plugins.push("typescript");
-  const ast=parseJavaScriptAst(String(content||""),{sourceType:"unambiguous",errorRecovery:true,plugins});
+  const calls=[],ast=parseJavaScriptAst(String(content||""),{sourceType:"unambiguous",errorRecovery:true,plugins:javascriptParserPlugins(relativePath)});
   const keyName=node=>node?.type==="Identifier"?node.name:node?.type==="StringLiteral"?node.value:null;
   const calleeName=node=>{
     if(node?.type==="Identifier")return node.name;
@@ -171,6 +169,14 @@ function javascriptCallSites(content,relativePath){
     }
   };
   visit(ast.program);return calls.slice(0,4000);
+}
+
+function javascriptSyntaxDiagnostics(content,relativePath){
+  const normalize=error=>({severity:"error",message:String(error?.message||"JavaScript parser error").replace(/\s*\(\d+:\d+\)\s*$/,""),line:Number(error?.loc?.line)||1,column:Math.max(1,(Number(error?.loc?.column)||0)+1),code:error?.reasonCode||error?.code||null});
+  try{
+    const ast=parseJavaScriptAst(String(content||""),{sourceType:"unambiguous",errorRecovery:true,plugins:javascriptParserPlugins(relativePath)});
+    return (ast.errors||[]).map(normalize);
+  }catch(error){return [normalize(error)]}
 }
 
 function textualIdentifierLines(content,name){
@@ -756,6 +762,16 @@ export class ContextEngine{
       }
     }
     return {name:symbol,path:requested,definitions:definitions.slice(0,80),callers,callees,indexedFiles:index.files.size,supportedFiles:candidates.length,truncated:callers.length>=capped||callees.length>=capped,precision:"ast-lexical",semantic:false};
+  }
+
+  async diagnostics({root,path,limit=100,io=null}={}){
+    const {contextIo,index}=await this.#indexed(root,io),requested=contextIo.relativeFocus(path)||slash(String(path||"").replace(/^\.\//,""));
+    const entry=index.files.get(requested);if(!entry)throw new Error(`Context file is not indexed: ${path}`);
+    const extension=extname(requested).toLowerCase(),capped=Math.max(1,Math.min(200,Number(limit)||100));
+    if(!BABEL_SOURCE_EXTENSIONS.has(extension))return {path:requested,supported:false,engine:null,semantic:false,diagnostics:[],reason:`No deterministic Trebell diagnostics adapter is configured for ${extension||"this file type"}`};
+    const contents=await contextIo.readMany([requested]),content=contents.get(requested);if(typeof content!=="string")throw new Error(`Could not read context file: ${path}`);
+    const diagnostics=javascriptSyntaxDiagnostics(content,requested);
+    return {path:requested,supported:true,engine:"babel-parser",semantic:false,diagnostics:diagnostics.slice(0,capped),truncated:diagnostics.length>capped};
   }
 
   async fileRelations({root,path,io=null}={}){

@@ -144,6 +144,7 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     await mkdir(join(configProject,"tests"),{recursive:true});
     await writeFile(join(configProject,"AGENTS.md"),"Prefer deterministic repository context.\n");
     await writeFile(join(configProject,"src","session.js"),"export class RefreshSession { refresh(token) { return token; } }\n");
+    await writeFile(join(configProject,"src","broken.ts"),"export const broken: string = ;\n");
     await writeFile(join(configProject,"tests","session.test.js"),"import { RefreshSession } from \"../src/session.js\";\nexport function testSession() { return new RefreshSession().refresh(\"x\"); }\n");
     const contextPacketResponse=await fetch(gui.url+"/api/context/packet",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({path:configProject,task:"Fix refresh session",maxTokens:1200,maxFiles:6,environmentId:null})});
     assert.equal(contextPacketResponse.status,200);
@@ -178,6 +179,10 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     const callsResult=await callsResponse.json();
     assert.equal(callsResult.semantic,false);
     assert.ok(callsResult.callers.some(item=>item.path==="tests/session.test.js"&&item.caller==="testSession"&&item.kind==="construct"));
+    const diagnosticsResponse=await fetch(gui.url+"/api/context/diagnostics?"+new URLSearchParams({path:configProject,file:"src/broken.ts",limit:"10"}));
+    assert.equal(diagnosticsResponse.status,200);
+    const diagnosticsResult=await diagnosticsResponse.json();
+    assert.equal(diagnosticsResult.supported,true);assert.equal(diagnosticsResult.engine,"babel-parser");assert.equal(diagnosticsResult.semantic,false);assert.ok(diagnosticsResult.diagnostics.length>=1);
     const referencesResponse=await fetch(gui.url+"/api/context/references?"+new URLSearchParams({path:configProject,name:"RefreshSession",limit:"10"}));
     assert.equal(referencesResponse.status,200);
     const referencesResult=await referencesResponse.json();

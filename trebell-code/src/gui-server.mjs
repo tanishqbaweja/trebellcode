@@ -2124,6 +2124,13 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return json(res,200,await contextEngine.callHierarchy({root,name:url.searchParams.get("name")||"",path:url.searchParams.has("file")?url.searchParams.get("file"):null,limit:Number(url.searchParams.get("limit")||120),io:remote?createRemoteContextIo({environments,environmentId,root}):null}));
       }catch(error){return json(res,400,{error:error.message});}
     }
+    if(url.pathname==="/api/context/diagnostics"){
+      try{
+        const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
+        const root=environmentPath(url.searchParams.get("path")||process.cwd(),environmentId),remote=remoteEnvironmentProfile(environmentId);
+        return json(res,200,await contextEngine.diagnostics({root,path:url.searchParams.get("file")||"",limit:Number(url.searchParams.get("limit")||100),io:remote?createRemoteContextIo({environments,environmentId,root}):null}));
+      }catch(error){return json(res,400,{error:error.message});}
+    }
     if(url.pathname==="/api/context/references"){
       try{
         const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
