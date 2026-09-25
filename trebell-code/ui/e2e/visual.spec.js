@@ -2320,6 +2320,68 @@ test("successful history imports surface a failed thread-list refresh",async({pa
   }finally{await harness.close()}
 });
 
+test("non-Codex runtimes open long threads with bounded history and load older pages on demand",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"opencode-bounded-history",name:"OpenCode bounded history",preview:"130-message paging fixture",historyMode:"paginated",cwd:process.cwd(),createdAt:Date.now()/1000-100,updatedAt:Date.now()/1000,turns:[]};
+  const entries=[];
+  for(let index=0;index<65;index++){
+    const turnId="turn-"+String(index+1).padStart(3,"0");
+    entries.push({turnId,item:{id:"user-"+turnId,type:"userMessage",text:"User history "+(index+1)}});
+    entries.push({turnId,item:{id:"agent-"+turnId,type:"agentMessage",text:"Assistant history "+(index+1)}});
+  }
+  const descending=[...entries].reverse();
+  const requests=[];
+  const wsHttp=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
+  wsHttp.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  wss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",raw=>{
+      const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;
+      requests.push({method:message.method,params:message.params||{}});
+      let result={};
+      if(message.method==="initialize")result={userAgent:"opencode-history-fixture"};
+      else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
+      else if(message.method==="thread/resume")result={thread:{...thread,turns:[],historyMode:"paginated"},itemsBackwardsCursor:"latest",turnsBackwardsCursor:null};
+      else if(message.method==="thread/items/list"){
+        result=message.params?.cursor==="older"
+          ?{data:descending.slice(100),nextCursor:null,backwardsCursor:"older"}
+          :{data:descending.slice(0,100),nextCursor:"older",backwardsCursor:"latest"};
+      }else if(message.method==="threadSection/list"||message.method==="skills/list"||message.method==="collaborationMode/list")result={data:[]};
+      else if(message.method==="thread/goal/get")result={goal:null};
+      else if(message.method==="thread/attachment/list"||message.method==="thread/queue/list")result={data:[],nextCursor:null};
+      else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
+      ws.send(JSON.stringify({id:message.id,result}));
+    });
+  });
+  const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"opencode",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"opencode",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"bounded-history-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["opencode/test-model"],metadata:{provider:"opencode",models:[{id:"opencode/test-model",name:"Test model",provider:"opencode"}]}})}));
+    await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.goto("/");
+    await page.getByRole("button",{name:/OpenCode bounded history/}).click();
+    await expect(page.locator("[data-message-id]")).toHaveCount(100);
+    const resume=requests.find(item=>item.method==="thread/resume");
+    expect(resume?.params?.excludeTurns).toBe(true);
+    await expect(page.getByRole("button",{name:"Load earlier messages",exact:true})).toBeVisible();
+    await page.getByRole("button",{name:"Load earlier messages",exact:true}).click();
+    await expect(page.locator("[data-message-id]")).toHaveCount(130);
+    await expect(page.getByRole("button",{name:"Load earlier messages",exact:true})).toHaveCount(0);
+    expect(requests.filter(item=>item.method==="thread/items/list").map(item=>item.params.cursor)).toEqual(["latest","older"]);
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".conversation-history").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"opencode-bounded-history-1280x800.png",fullPage:true});
+  }finally{
+    for(const ws of sockets)try{ws.terminate()}catch{}
+    wss.close();await new Promise(resolve=>wsHttp.close(resolve));
+  }
+});
+
 test("automatic pull failures stay visible without blocking project open",async({page,request})=>{
   test.setTimeout(30_000);
   await prepare(page,request);

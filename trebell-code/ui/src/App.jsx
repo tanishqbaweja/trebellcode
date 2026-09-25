@@ -93,19 +93,19 @@ function useLatestCallback(callback){
 
 const MAX_COMPOSER_ATTACHMENTS=100;
 const MAX_COMPOSER_CHARS=120_000;
-const CODEX_HISTORY_ITEM_PAGE_LIMIT=100;
-const CODEX_HISTORY_ITEM_SCAN_PAGES=4;
-const CODEX_HISTORY_TURN_PAGE_LIMIT=40;
+const HISTORY_ITEM_PAGE_LIMIT=100;
+const HISTORY_ITEM_SCAN_PAGES=4;
+const HISTORY_TURN_PAGE_LIMIT=40;
 
 function visibleHistoryEntry(entry){
   const item=entry?.item;
   return item?.type==="userMessage"||item?.type==="agentMessage";
 }
 
-async function loadCodexItemHistoryPage(rpc,threadId,cursor){
+async function loadItemHistoryPage(rpc,threadId,cursor){
   let nextCursor=cursor||null,backwardsCursor=null;const data=[];
-  for(let pageIndex=0;nextCursor&&pageIndex<CODEX_HISTORY_ITEM_SCAN_PAGES;pageIndex++){
-    const page=await rpc.request("thread/items/list",{threadId,cursor:nextCursor,limit:CODEX_HISTORY_ITEM_PAGE_LIMIT,sortDirection:"desc"});
+  for(let pageIndex=0;nextCursor&&pageIndex<HISTORY_ITEM_SCAN_PAGES;pageIndex++){
+    const page=await rpc.request("thread/items/list",{threadId,cursor:nextCursor,limit:HISTORY_ITEM_PAGE_LIMIT,sortDirection:"desc"});
     if(pageIndex===0)backwardsCursor=page?.backwardsCursor||null;
     data.push(...(page?.data||[]));nextCursor=page?.nextCursor||null;
     if(data.some(visibleHistoryEntry)||!nextCursor)break;
@@ -113,17 +113,17 @@ async function loadCodexItemHistoryPage(rpc,threadId,cursor){
   return {data,nextCursor,backwardsCursor};
 }
 
-async function resumeCodexWithBoundedHistory(rpc,params){
+async function resumeWithBoundedHistory(rpc,params){
   try{
     const resumed=await rpc.request("thread/resume",{...params,excludeTurns:true});
     const itemCursor=resumed?.itemsBackwardsCursor||null;
     if(itemCursor){
-      try{return {...resumed,__trebellHistoryPage:{kind:"items",...await loadCodexItemHistoryPage(rpc,params.threadId,itemCursor)}}}catch{}
+      try{return {...resumed,__trebellHistoryPage:{kind:"items",...await loadItemHistoryPage(rpc,params.threadId,itemCursor)}}}catch{}
     }
     const turnCursor=resumed?.turnsBackwardsCursor||null;
     if(turnCursor){
       try{
-        const page=await rpc.request("thread/turns/list",{threadId:params.threadId,cursor:turnCursor,limit:CODEX_HISTORY_TURN_PAGE_LIMIT,sortDirection:"desc",itemsView:"full"});
+        const page=await rpc.request("thread/turns/list",{threadId:params.threadId,cursor:turnCursor,limit:HISTORY_TURN_PAGE_LIMIT,sortDirection:"desc",itemsView:"full"});
         return {...resumed,__trebellHistoryPage:{kind:"turns",...(page||{})}};
       }catch{}
     }
@@ -1921,9 +1921,7 @@ export default function App(){
     let resumed=null,cp=null,goalData=null,attachmentData=null;
     const persistentReadErrors=[];
     if(connectedClient){
-      const resumePromise=agentRuntime==="codex"
-        ?resumeCodexWithBoundedHistory(client,{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null})
-        :client.request("thread/resume",{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null,excludeTurns:false});
+      const resumePromise=resumeWithBoundedHistory(client,{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null});
       const checkpointPromise=api("/api/checkpoints?threadId="+encodeURIComponent(thread.id)).then(value=>({value,error:null}),error=>({value:null,error}));
       const goalPromise=client.request("thread/goal/get",{threadId:thread.id}).then(value=>({value,error:null}),error=>({value:null,error}));
       const attachmentPromise=client.request("thread/attachment/list",{threadId:thread.id,limit:100}).then(value=>({value,error:null}),error=>({value:null,error}));
@@ -1948,7 +1946,7 @@ export default function App(){
     if(resumed?.thread){
       activeThreadRef.current=resumed.thread;pendingThreadScrollRestoreRef.current=resumed.thread.id;setActiveThread(resumed.thread);
       if(agentRuntime==="codex"&&resumed.collaborationMode?.mode&&collaborationModes.some(item=>item.mode===resumed.collaborationMode.mode))setCollaborationMode(resumed.collaborationMode.mode);
-      if(agentRuntime==="codex"&&resumed.__trebellHistoryPage&&!resumed.__trebellFullHistoryFallback){
+      if(resumed.__trebellHistoryPage&&!resumed.__trebellFullHistoryFallback){
         const page=resumed.__trebellHistoryPage;
         const history=page.kind==="items"?historyFromItemEntries([...(page.data||[])].reverse(),map):historyFromTurns([...(page.data||[])].reverse(),map);
         setMessages(history);setHistoryPage({threadId:resumed.thread.id,nextCursor:page.nextCursor||null,paginated:true,itemPaging:page.kind==="items",loading:false});
@@ -2005,12 +2003,12 @@ export default function App(){
   }
   async function loadEarlierMessages(){
     const threadId=activeThreadRef.current?.id;const cursor=historyPage.threadId===threadId?historyPage.nextCursor:null;
-    if(agentRuntime!=="codex"||!rpc||rpcStatus!=="connected"||!threadId||!cursor||historyPage.loading)return;
+    if(!rpc||rpcStatus!=="connected"||!threadId||!cursor||historyPage.loading)return;
     const node=conversationScrollRef.current;setHistoryPage(current=>current.threadId===threadId?{...current,loading:true}:current);
     try{
       const page=historyPage.itemPaging
-        ?await loadCodexItemHistoryPage(rpc,threadId,cursor)
-        :await rpc.request("thread/turns/list",{threadId,cursor,limit:CODEX_HISTORY_TURN_PAGE_LIMIT,sortDirection:"desc",itemsView:"full"});
+        ?await loadItemHistoryPage(rpc,threadId,cursor)
+        :await rpc.request("thread/turns/list",{threadId,cursor,limit:HISTORY_TURN_PAGE_LIMIT,sortDirection:"desc",itemsView:"full"});
       if(activeThreadRef.current?.id!==threadId)return;
       const earlier=historyPage.itemPaging
         ?historyFromItemEntries([...(page?.data||[])].reverse(),checkpointByTurn)
@@ -2039,8 +2037,8 @@ export default function App(){
       if(historyPage.itemPaging){
         try{
           let cursor=null;
-          for(let pageIndex=0;pageIndex<CODEX_HISTORY_ITEM_SCAN_PAGES;pageIndex++){
-            const page=await rpc.request("thread/items/list",{threadId,turnId:occurrence.turnId,cursor,limit:CODEX_HISTORY_ITEM_PAGE_LIMIT,sortDirection:"asc"});
+          for(let pageIndex=0;pageIndex<HISTORY_ITEM_SCAN_PAGES;pageIndex++){
+            const page=await rpc.request("thread/items/list",{threadId,turnId:occurrence.turnId,cursor,limit:HISTORY_ITEM_PAGE_LIMIT,sortDirection:"asc"});
             found=mergeHistoryMessages(found,historyFromItemEntries(page?.data||[],checkpointByTurn));
             if(found.some(message=>String(message.id)===itemId)||!page?.nextCursor)break;
             cursor=page.nextCursor;
@@ -3140,7 +3138,7 @@ export default function App(){
           <div className="conversation-scroll" ref={conversationScrollRef} onScroll={conversationScrolled}>
             <div className="conversation-column">
               <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
-              <Conversation messages={messages} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={["codex","opencode","claude"].includes(agentRuntime)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={agentRuntime==="codex"&&historyPage.threadId===activeThread?.id&&Boolean(historyPage.nextCursor)} loadingEarlier={historyPage.loading} onLoadEarlier={conversationLoadEarlier} activeFindItemId={threadFind.activeItemId}/>
+              <Conversation messages={messages} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={["codex","opencode","claude"].includes(agentRuntime)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyPage.nextCursor)} loadingEarlier={historyPage.loading} onLoadEarlier={conversationLoadEarlier} activeFindItemId={threadFind.activeItemId}/>
               <ActivityTimeline events={events} assistantText={assistantText} onOpenPanel={activityOpenPanel}/>
               {guardianDenials.map(review=><div className="inline-approval" key={review.reviewId}><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div>)}
               {approvals[0]&&<div className="inline-approval"><ApprovalCard request={approvals[0]} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
