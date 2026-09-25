@@ -27,6 +27,7 @@ import { EnvironmentManager } from "./environment-manager.mjs";
 import { startRemoteAppServer } from "./environment-app-server.mjs";
 import { createRemoteControlServer } from "./remote-control.mjs";
 import { RemoteAuthStore } from "./remote-auth-store.mjs";
+import { RemoteAccessSecretStore } from "./remote-access-secret-store.mjs";
 import { DeviceService } from "./device-service.mjs";
 import { ProviderManager, normalizeProviderId } from "./provider-manager.mjs";
 import { startProviderBridge } from "./provider-bridge.mjs";
@@ -410,6 +411,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   const fetchImpl=offlineE2E?offlineE2eFetch(globalThis.fetch):globalThis.fetch;
   const bootId=randomUUID();
   const dist=String(env.TREBELL_UI_DIST||"").trim()?resolve(String(env.TREBELL_UI_DIST).trim()):resolve(packageRoot,"ui","dist");
+  const remoteAccessSecrets=new RemoteAccessSecretStore(env);remoteAccessSecrets.migrateLegacyUiState();
   const state=new TrebellStateStore(env);
   const eventJournal=new EventJournal(env);
   const remoteAuth=new RemoteAuthStore(env);
@@ -1022,10 +1024,10 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       if(remoteControl){await remoteControl.close().catch(()=>{});remoteControl=null}
       return remoteInfo();
     }
-    let token=settings.remoteAccessToken;
+    let token=remoteAccessSecrets.getToken();
     if(!token){
       token=newRemoteToken();
-      state.updateSettings({remoteAccessToken:token});
+      remoteAccessSecrets.setToken(token);
     }
     if(remoteControl){await remoteControl.close().catch(()=>{});remoteControl=null}
     const remotePort=Math.max(1024,Math.min(65535,Number(settings.remoteAccessPort)||3211));
@@ -1167,6 +1169,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       if(req.method==="POST"){
         try{
           const patch=await readJsonBody(req);
+          const remoteAccessTokenProvided=Object.prototype.hasOwnProperty.call(patch,"remoteAccessToken");
+          if(remoteAccessTokenProvided){remoteAccessSecrets.setToken(patch.remoteAccessToken);delete patch.remoteAccessToken}
           if("modelProvider" in patch) patch.modelProvider=normalizeProviderId(patch.modelProvider);
           if("agentRuntime" in patch) patch.agentRuntime=normalizeAgentRuntime(patch.agentRuntime);
           const previous=selectedProvider;
@@ -1185,7 +1189,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           const next=state.updateSettings(patch);
           if("modelProvider" in patch && patch.modelProvider!==previous) await restartAppServer(patch.modelProvider);
           if(runtimeSelection?.runtime==="codex"&&previous===selectedProvider&&(previousAgentRuntime!=="codex"||previousAgentInstanceId!==runtimeSelection.instance.id))await restartAppServer(selectedProvider);
-          if("remoteAccessEnabled" in patch||"remoteAccessPort" in patch||"remoteAccessToken" in patch) await syncRemoteControl();
+          if("remoteAccessEnabled" in patch||"remoteAccessPort" in patch||remoteAccessTokenProvided) await syncRemoteControl();
           return json(res,200,next);
         }catch(error){return json(res,400,{error:error.message});}
       }
@@ -1462,7 +1466,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
             if(!Number.isInteger(remotePort)||remotePort<1024||remotePort>65535) throw new Error("Remote access port must be between 1024 and 65535");
             patch.remoteAccessPort=remotePort;
           }
-          if(body.regenerateToken||(!state.settings().remoteAccessToken&&body.enabled)) patch.remoteAccessToken=newRemoteToken();
+          if(body.regenerateToken||(!remoteAccessSecrets.getToken()&&body.enabled)) remoteAccessSecrets.setToken(newRemoteToken());
           if(Object.keys(patch).length) state.updateSettings(patch);
           return json(res,200,await syncRemoteControl());
         }catch(error){return json(res,400,{error:error.message});}

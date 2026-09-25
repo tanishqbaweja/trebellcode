@@ -62,6 +62,18 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(boot.runtimeCapabilities.nativeSandbox,true);
     assert.equal(boot.runtimeCapabilities.dynamicTools,true);
 
+    const publicSettings=await fetch(gui.url+"/api/settings").then(r=>r.json());
+    const publicState=await fetch(gui.url+"/api/state").then(r=>r.json());
+    assert.equal(Object.prototype.hasOwnProperty.call(publicSettings,"remoteAccessToken"),false);
+    assert.equal(Object.prototype.hasOwnProperty.call(publicState.settings||{},"remoteAccessToken"),false);
+    const compatibilityToken=["older","client","remote","credential"].join("-");
+    const updatedSettings=await fetch(gui.url+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({remoteAccessToken:compatibilityToken})}).then(r=>r.json());
+    assert.equal(Object.prototype.hasOwnProperty.call(updatedSettings,"remoteAccessToken"),false);
+    const savedUiState=await readFile(join(home,"ui-state.json"),"utf8");
+    assert.doesNotMatch(savedUiState,new RegExp(compatibilityToken));
+    const savedRemoteSecret=JSON.parse(await readFile(join(home,"remote-access-secret.json"),"utf8"));
+    assert.equal(savedRemoteSecret.token,compatibilityToken);
+
     const models=await fetch(gui.url+"/api/models").then(r=>r.json());
     assert.ok(models.models.length>=1);
     const traces=await fetch(gui.url+"/api/traces?limit=20").then(r=>r.json());

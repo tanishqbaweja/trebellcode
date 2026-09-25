@@ -42,7 +42,6 @@ const DEFAULT_STATE = Object.freeze({
     environmentDefaults: {},
     remoteAccessEnabled: false,
     remoteAccessPort: 3211,
-    remoteAccessToken: "",
     agentRuntime: "codex",
     agentRuntimeInstanceId: "codex-default",
     agentRuntimeInstances: [],
@@ -156,6 +155,7 @@ export class TrebellStateStore {
         cloneJob:normalizeCloneJob(project?.cloneJob),
       })):[];
       const settings={...clone(DEFAULT_STATE.settings),...rawSettings};
+      delete settings.remoteAccessToken;
       settings.environmentDefaults=Object.fromEntries(Object.entries(rawSettings.environmentDefaults||{}).map(([id,value])=>[String(id),normalizeScopedObject(value)]));
       if(Number(parsed.version||1)<2&&rawSettings.appearanceMode==="system")settings.appearanceMode="dark";
       settings.worktreeCleanup=normalizeWorktreeCleanup(settings.worktreeCleanup);
@@ -245,6 +245,7 @@ export class TrebellStateStore {
     return {project:this.touchProject(path,mirror),...this.projectSettings(path,environmentId)};
   }
   updateSettings(patch={}){
+    if("remoteAccessToken" in patch){patch={...patch};delete patch.remoteAccessToken}
     if("worktreeSubmodules" in patch&&!['recursive','top-level','none'].includes(String(patch.worktreeSubmodules)))patch={...patch,worktreeSubmodules:'recursive'};
     if("worktreeCleanup" in patch)patch={...patch,worktreeCleanup:normalizeWorktreeCleanup(patch.worktreeCleanup)};
     if("storageCleanup" in patch)patch={...patch,storageCleanup:normalizeStorageCleanup(patch.storageCleanup)};
