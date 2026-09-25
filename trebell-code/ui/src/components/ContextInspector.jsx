@@ -66,8 +66,8 @@ function ContextExplorer({root,environmentId=null}){
     if(busy)return;if(view===next){setView(null);setViewData(null);return}
     setBusy("view");setError("");setView(next);setViewData(null);
     try{
-      const endpoint=next==="commands"?"/api/context/commands":"/api/context/map";
-      const extra=next==="commands"?{limit:"80"}:{q:query.trim(),limit:"24"};
+      const endpoint=next==="commands"?"/api/context/commands":next==="verification"?"/api/context/verification":"/api/context/map";
+      const extra=next==="commands"?{limit:"80"}:next==="verification"?{semantic:"true"}:{q:query.trim(),limit:"24"};
       setViewData(await api(endpoint+"?"+params(extra)));
     }catch(viewError){setError(viewError.message||String(viewError));setView(null)}
     finally{setBusy("")}
@@ -92,6 +92,7 @@ function ContextExplorer({root,environmentId=null}){
     <div className="context-explorer-actions" aria-label="Repository intelligence views">
       <button type="button" className={view==="architecture"?"active":""} onClick={()=>loadView("architecture")} disabled={Boolean(busy)}>Architecture</button>
       <button type="button" className={view==="commands"?"active":""} onClick={()=>loadView("commands")} disabled={Boolean(busy)}>Commands</button>
+      <button type="button" className={view==="verification"?"active":""} onClick={()=>loadView("verification")} disabled={Boolean(busy)}>Verification</button>
       <span>{busy==="view"?"Loading…":"on demand"}</span>
     </div>
     {error&&<p className="context-explorer-error" role="alert">{error}</p>}
@@ -109,6 +110,12 @@ function ContextExplorer({root,environmentId=null}){
       {(viewData.declared||[]).slice(0,12).map((item,index)=><article key={`declared:${item.path}:${item.command}:${index}`}><code>{item.command}</code><span>{item.kind} · declared in {item.path}</span></article>)}
       {(viewData.conventional||[]).slice(0,8).map((item,index)=><article key={`conventional:${item.path}:${item.command}:${index}`}><code>{item.command}</code><span>{item.kind} · convention · {item.reason}</span></article>)}
       {!(viewData.declared||[]).length&&!(viewData.conventional||[]).length&&<p className="context-explorer-empty">No build, test, lint, or run commands were discovered.</p>}
+    </div>}
+    {view==="verification"&&viewData&&<div className="context-explorer-view context-verification-view" data-testid="context-verification-view">
+      <div><strong>Verification plan</strong><span>{viewData.risk||"low"} risk · {(viewData.steps||[]).length} step{(viewData.steps||[]).length===1?"":"s"}</span></div>
+      {(viewData.reasons||[]).length>0&&<p className="context-verification-reasons">{viewData.reasons.slice(0,3).join(" ")}</p>}
+      {(viewData.steps||[]).map((step,index)=><article key={`${step.id||step.kind}:${index}`}><code>{step.command||step.id||step.kind}</code><span>{step.kind} · {step.scope} · {step.required?"required":"optional"} · {step.reason}</span>{(step.targets||[]).length>0&&<small>{step.targets.slice(0,4).join(" · ")}</small>}</article>)}
+      {!(viewData.steps||[]).length&&<p className="context-explorer-empty">No verification steps were planned for the current change set.</p>}
     </div>}
     {selected&&busy==="relations"&&<p className="context-explorer-empty">Tracing imports and references for {selected}…</p>}
     {relations&&<div className="context-explorer-relations" data-testid="context-file-relations">

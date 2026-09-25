@@ -1086,6 +1086,12 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
       {path:"package.json",name:"test",command:"npm run test",kind:"test",confidence:"declared",manager:"npm",script:"node --test"},
       {path:"package.json",name:"build",command:"npm run ui:build",kind:"build",confidence:"declared",manager:"npm",script:"vite build"},
     ],conventional:[{path:"Cargo.toml",name:"check",command:"cargo check",kind:"typecheck",confidence:"convention",reason:"Cargo.toml detected"}]})}));
+    await page.route(/\/api\/context\/verification\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({risk:"medium",paths:["ui/src/components/ContextInspector.jsx"],pathSource:"git",relatedTests:["ui/e2e/visual.spec.js"],reasons:["Frontend changes require interaction and visual evidence, not DOM assertions alone."],steps:[
+      {id:"diagnostics",kind:"diagnostics",scope:"changed",cost:"low",required:true,semantic:false,reason:"Catch syntax issues close to the edit."},
+      {id:"targeted_tests",kind:"tests",scope:"targeted",cost:"medium",required:true,command:"npm run ui:test:visual",source:"declared",targets:["ui/e2e/visual.spec.js"],reason:"Run tests structurally related to the changed code before broad suites."},
+      {id:"browser_interaction",kind:"browser",scope:"changed-flow",cost:"medium",required:true,reason:"Exercise the affected interaction in a real browser."},
+      {id:"visual",kind:"visual",scope:"changed-flow",cost:"medium",required:true,evidence:["screenshot","responsive-viewport"],reason:"Frontend behavior needs screenshot/visual verification."},
+    ],independentReview:false})}));
     await page.route(/\/api\/context\/diagnostics\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({path:"src/auth/session.js",supported:true,engine:"babel-parser",semantic:true,semanticEngine:"typescript",semanticInfo:{available:true,configured:true,version:"5.9.3"},diagnostics:[],semanticDiagnostics:[{path:"src/auth/session.js",line:8,column:14,severity:"error",code:"TS2322",message:"Type 'number' is not assignable to type 'string'."}]})}));
     await page.route(/\/api\/context\/code-actions\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({path:"src/auth/session.js",supported:true,engine:"typescript",semantic:true,diagnostics:[{code:"TS2322",line:8,column:14,severity:"error",message:"Type mismatch"}],actions:[{fixName:"fixRefresh",description:"Convert refresh token to string",requiresCommand:false,commands:[],changes:[{file:"src/auth/session.js",textChanges:[{path:"src/auth/session.js",line:8,column:14,length:5,newText:"String(token)",newTextTruncated:false}]}]}]})}));
     await page.route(/\/api\/context\/relations\?/,route=>{
@@ -1161,6 +1167,14 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     await expect(commands).toContainText("npm run ui:build");
     await expect(commands).toContainText("cargo check");
     await expect(commands).toContainText("declared in package.json");
+    await explorer.getByRole("button",{name:"Verification",exact:true}).click();
+    const verification=explorer.getByTestId("context-verification-view");
+    await expect(verification).toContainText("medium risk · 4 steps");
+    await expect(verification).toContainText("Frontend changes require interaction and visual evidence");
+    await expect(verification).toContainText("npm run ui:test:visual");
+    await expect(verification).toContainText("browser_interaction");
+    await expect(verification).toContainText("Frontend behavior needs screenshot/visual verification");
+    await page.screenshot({path:auditDir+"context-inspector-verification-1280x800.png",fullPage:true});
     const statTops=await inspector.locator(".context-inspector-stats>div").evaluateAll(nodes=>nodes.map(node=>Math.round(node.getBoundingClientRect().top)));
     expect(new Set(statTops).size).toBe(1);
     await page.setViewportSize({width:1280,height:800});
