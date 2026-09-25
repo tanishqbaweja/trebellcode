@@ -16,6 +16,11 @@ export function nativeQueueUnavailable(error){
   return /method not found|unknown method|user message queue is unavailable|queue is unavailable|experimental method/.test(message);
 }
 
+export function shouldUseRuntimeNativeQueue({agentRuntime="",nativeQueue=false,projectless=false}={}){
+  if(!nativeQueue)return false;
+  return String(agentRuntime||"").toLowerCase()==="native"||Boolean(projectless);
+}
+
 export function queuedSubmissionDraft(submission={}){
   const input=Array.isArray(submission.input)?submission.input:[];
   const textParts=input.filter(item=>item?.type==="text"&&typeof item.text==="string").map(item=>item.text).filter(Boolean);

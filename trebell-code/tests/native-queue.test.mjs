@@ -1,6 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, reorderQueue } from "../ui/src/native-queue.js";
+import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, reorderQueue, shouldUseRuntimeNativeQueue } from "../ui/src/native-queue.js";
+
+test("Trebell Native uses the durable runtime queue for project and General threads",()=>{
+  assert.equal(shouldUseRuntimeNativeQueue({agentRuntime:"native",nativeQueue:true,projectless:false}),true);
+  assert.equal(shouldUseRuntimeNativeQueue({agentRuntime:"native",nativeQueue:true,projectless:true}),true);
+  assert.equal(shouldUseRuntimeNativeQueue({agentRuntime:"codex",nativeQueue:true,projectless:true}),true);
+  assert.equal(shouldUseRuntimeNativeQueue({agentRuntime:"codex",nativeQueue:true,projectless:false}),false);
+  assert.equal(shouldUseRuntimeNativeQueue({agentRuntime:"native",nativeQueue:false,projectless:true}),false);
+});
 
 test("native queue submissions become Trebell drafts without losing local attachments",()=>{
   const draft=queuedSubmissionDraft({
