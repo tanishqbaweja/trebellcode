@@ -320,7 +320,7 @@ export class AgentRuntimeManager{
   acpArgs(instance,permissionMode="supervised",cwd=process.cwd()){
     if(instance.kind==="cursor"){
       if(permissionMode==="full")return ["--force","acp"];
-      if(permissionMode==="auto"||permissionMode==="edits")return ["--auto-review","acp"];
+      if(permissionMode==="auto")return ["--auto-review","acp"];
       return ["acp"];
     }
     if(instance.kind==="grok"){

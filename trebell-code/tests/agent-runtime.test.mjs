@@ -64,6 +64,19 @@ test("runtime capabilities describe adapter behavior without pretending unsuppor
   assert.equal(acp.rewind,false);
 });
 
+test("runtime launch flags preserve Trebell permission-mode boundaries",()=>{
+  const manager=new AgentRuntimeManager();
+  const cursor={kind:"cursor"},grok={kind:"grok"};
+  assert.deepEqual(manager.acpArgs(cursor,"supervised"),["acp"]);
+  assert.deepEqual(manager.acpArgs(cursor,"edits"),["acp"],"Cursor edits mode must stay under Trebell ACP approvals instead of enabling broad Auto-review");
+  assert.deepEqual(manager.acpArgs(cursor,"auto"),["--auto-review","acp"]);
+  assert.deepEqual(manager.acpArgs(cursor,"full"),["--force","acp"]);
+  assert.deepEqual(manager.acpArgs(grok,"supervised"),["--permission-mode","default","agent","stdio"]);
+  assert.deepEqual(manager.acpArgs(grok,"edits"),["--permission-mode","acceptEdits","agent","stdio"]);
+  assert.deepEqual(manager.acpArgs(grok,"auto"),["--permission-mode","auto","agent","stdio"]);
+  assert.deepEqual(manager.acpArgs(grok,"full"),["agent","--always-approve","stdio"]);
+});
+
 test("Claude runtime profiles validate and persist auto-compact thresholds",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-claude-compact-"));
   try{
