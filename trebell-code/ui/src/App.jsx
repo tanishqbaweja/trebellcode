@@ -42,6 +42,7 @@ import { autoCompactionDecision } from "./auto-compaction.js";
 import { hasAutoSettleCandidates } from "./auto-settle.js";
 import { sameConversationMessageRowProps } from "./conversation-row.js";
 import { nextSnoozeWakeAt } from "./thread-snooze.js";
+import { sharedRuntimeCapabilities } from "../../src/runtime-capabilities.mjs";
 
 const TerminalPanel=lazy(()=>import("./components/TerminalPanel.jsx"));
 const WorkspacePanel=lazy(()=>import("./components/WorkspacePanel.jsx"));
@@ -62,19 +63,6 @@ const RuntimeTrace=lazy(()=>import("./components/RuntimeTrace.jsx"));
 
 function DeferredSurface({children,label="Loading…",compact=false}){
   return <Suspense fallback={<div className={"surface-loading"+(compact?" compact":"")} role="status">{label}</div>}>{children}</Suspense>;
-}
-
-function fallbackRuntimeCapabilities(runtime){
-  const base={
-    queue:true,fork:false,rewind:false,compaction:false,mcpInjection:false,systemPromptInjection:false,dynamicTools:false,nativeLsp:false,nativeSandbox:false,
-    permissionInterception:true,clientFilesystem:false,clientTerminal:false,usageReporting:false,contextReporting:false,backgroundProcesses:false,delegation:false,
-    harnessTools:false,collaborationModes:false,nativeQueue:false,nativeHistoryPagination:false,steering:false,runtimeProfileSwitching:false,
-  };
-  if(runtime==="codex")return {...base,fork:true,rewind:true,compaction:true,systemPromptInjection:true,dynamicTools:true,nativeSandbox:true,usageReporting:true,backgroundProcesses:true,delegation:true,harnessTools:true,collaborationModes:true,nativeQueue:true,nativeHistoryPagination:true,steering:true,runtimeProfileSwitching:true};
-  if(runtime==="claude")return {...base,fork:true,rewind:true,compaction:true,usageReporting:true};
-  if(runtime==="opencode")return {...base,fork:true,rewind:true,compaction:true,nativeLsp:true,usageReporting:true};
-  if(["cursor","grok","antigravity"].includes(runtime))return {...base,fork:"runtime",clientFilesystem:true,clientTerminal:true};
-  return base;
 }
 
 function capabilityStatus(value){
@@ -813,7 +801,7 @@ export default function App(){
   const agentRuntime=settings.agentRuntime||bootstrap.agentRuntime||"codex";
   const runtimeCapabilities=useMemo(()=>bootstrap.agentRuntime===agentRuntime&&bootstrap.runtimeCapabilities
     ?bootstrap.runtimeCapabilities
-    :fallbackRuntimeCapabilities(agentRuntime),[bootstrap.agentRuntime,bootstrap.runtimeCapabilities,agentRuntime]);
+    :sharedRuntimeCapabilities(agentRuntime),[bootstrap.agentRuntime,bootstrap.runtimeCapabilities,agentRuntime]);
   const provider=settings.modelProvider||bootstrap.provider||"freebuff";
   useEffect(()=>{
     const next=agentRuntime+"\0"+provider;

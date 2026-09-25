@@ -5,6 +5,7 @@ import spawn from "cross-spawn";
 import { codexHome, trebellHome } from "./paths.mjs";
 import { resolveCodexHomeLayout } from "./codex-home-layout.mjs";
 import { readAgentRuntimeUsage } from "./agent-usage-limits.mjs";
+import { sharedRuntimeCapabilities } from "./runtime-capabilities.mjs";
 
 const RUNTIMES=Object.freeze({
   codex:{id:"codex",name:"Codex",protocol:"codex",command:null,multipleInstances:true},
@@ -15,56 +16,8 @@ const RUNTIMES=Object.freeze({
   antigravity:{id:"antigravity",name:"Antigravity",protocol:"acp",command:null,multipleInstances:true,managed:true},
 });
 
-const SHARED_CAPABILITIES=Object.freeze({
-  queue:true,
-  fork:false,
-  rewind:false,
-  compaction:false,
-  mcpInjection:false,
-  systemPromptInjection:false,
-  dynamicTools:false,
-  nativeLsp:false,
-  nativeSandbox:false,
-  permissionInterception:true,
-  clientFilesystem:false,
-  clientTerminal:false,
-  usageReporting:false,
-  contextReporting:false,
-  backgroundProcesses:false,
-  delegation:false,
-  harnessTools:false,
-  collaborationModes:false,
-  nativeQueue:false,
-  nativeHistoryPagination:false,
-  steering:false,
-  runtimeProfileSwitching:false,
-});
-
-const RUNTIME_CAPABILITIES=Object.freeze({
-  codex:Object.freeze({...SHARED_CAPABILITIES,
-    fork:true,rewind:true,compaction:true,systemPromptInjection:true,dynamicTools:true,nativeSandbox:true,
-    usageReporting:true,backgroundProcesses:true,delegation:true,harnessTools:true,collaborationModes:true,
-    nativeQueue:true,nativeHistoryPagination:true,steering:true,runtimeProfileSwitching:true,
-  }),
-  claude:Object.freeze({...SHARED_CAPABILITIES,
-    fork:true,rewind:true,compaction:true,usageReporting:true,
-  }),
-  opencode:Object.freeze({...SHARED_CAPABILITIES,
-    fork:true,rewind:true,compaction:true,nativeLsp:true,usageReporting:true,
-  }),
-  cursor:Object.freeze({...SHARED_CAPABILITIES,
-    fork:"runtime",clientFilesystem:true,clientTerminal:true,
-  }),
-  grok:Object.freeze({...SHARED_CAPABILITIES,
-    fork:"runtime",clientFilesystem:true,clientTerminal:true,
-  }),
-  antigravity:Object.freeze({...SHARED_CAPABILITIES,
-    fork:"runtime",clientFilesystem:true,clientTerminal:true,
-  }),
-});
-
 export function runtimeCapabilities(kind){
-  return {...(RUNTIME_CAPABILITIES[normalizeAgentRuntime(kind)]||SHARED_CAPABILITIES)};
+  return sharedRuntimeCapabilities(normalizeAgentRuntime(kind));
 }
 
 const INSTALLABLE_PACKAGES=Object.freeze({

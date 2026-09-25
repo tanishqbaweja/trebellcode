@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
 import { AgentRuntimeManager, parseCursorAboutResult, parseGrokModelsAuth, parseOpenCodeAuthList, runtimeCapabilities, runtimeCompatibility } from "../src/agent-runtime-manager.mjs";
+import { runtimeCapabilityKinds, sharedRuntimeCapabilities } from "../src/runtime-capabilities.mjs";
 import { AcpAgentSession } from "../src/acp-agent-session.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
 import { TerminalManager } from "../src/terminal-manager.mjs";
@@ -36,6 +37,8 @@ test("agent runtime registry exposes real harnesses and capability-gates configu
 });
 
 test("runtime capabilities describe adapter behavior without pretending unsupported features exist",()=>{
+  assert.deepEqual(new Set(runtimeCapabilityKinds),new Set(["codex","claude","opencode","cursor","grok","antigravity"]));
+  for(const runtime of runtimeCapabilityKinds)assert.deepEqual(runtimeCapabilities(runtime),sharedRuntimeCapabilities(runtime));
   const codex=runtimeCapabilities("codex");
   assert.equal(codex.dynamicTools,true);
   assert.equal(codex.nativeQueue,true);
