@@ -11,6 +11,7 @@ const execFileAsync=promisify(execFile);
 const SKIP=new Set([".git","node_modules","target","dist","build",".next",".cache","desktop-dist","coverage","vendor"]);
 const SOURCE_EXTENSIONS=new Set([".js",".jsx",".ts",".tsx",".mjs",".cjs",".py",".rs",".go",".java",".kt",".kts",".cs",".c",".h",".cc",".cpp",".cxx",".hpp",".hh",".rb",".php",".swift",".vue",".svelte"]);
 const BABEL_SOURCE_EXTENSIONS=new Set([".js",".jsx",".ts",".tsx",".mjs",".cjs"]);
+const PYTHON_SOURCE_EXTENSIONS=new Set([".py",".pyi"]);
 const RESOLVE_EXTENSIONS=[".js",".jsx",".ts",".tsx",".mjs",".cjs",".py",".rs",".go",".java",".kt",".cs"];
 const INSTRUCTION_NAMES=new Set(["AGENTS.md","CLAUDE.md"]);
 const STOP_WORDS=new Set(["the","and","for","with","that","this","from","into","when","where","what","which","while","your","trebell","code","make","need","should","would","could","have","has","had","are","was","were","will","fix","add","use","using","work","working"]);
@@ -29,6 +30,23 @@ try{
   const rows=all.map(diagnostic=>{const file=diagnostic.file?.fileName?path.resolve(diagnostic.file.fileName):null,position=file&&Number.isFinite(diagnostic.start)?diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start):null;return{path:file?path.relative(root,file).replace(/\\\\/g,"/"):null,line:position?position.line+1:null,column:position?position.character+1:null,severity:category(diagnostic.category),code:"TS"+diagnostic.code,message:ts.flattenDiagnosticMessageText(diagnostic.messageText,"\\n")}}),matching=rows.filter(row=>row.path===relativeRequested||row.path===null);
   out({available:true,configured:true,version:ts.version,configPath:path.relative(root,configPath).replace(/\\\\/g,"/"),included:Boolean(program.getSourceFile(requested)),projectDiagnosticCount:rows.length,diagnostics:matching.slice(0,limit),truncated:matching.length>limit});
 }catch(error){out({available:true,configured:false,failed:true,reason:String(error?.stack||error?.message||error)})}`;
+const PYTHON_DIAGNOSTICS_SCRIPT=`import ast, json, pathlib, sys, tokenize
+path = pathlib.Path(sys.argv[1])
+try:
+    with tokenize.open(path) as handle:
+        source = handle.read()
+    try:
+        ast.parse(source, filename=str(path), type_comments=True)
+        result = {"available": True, "version": sys.version.split()[0], "diagnostics": []}
+    except SyntaxError as error:
+        result = {"available": True, "version": sys.version.split()[0], "diagnostics": [{
+            "severity": "error", "code": "PY_SYNTAX", "message": str(error.msg or "Python syntax error"),
+            "line": int(error.lineno or 1), "column": max(1, int(error.offset or 1)),
+            "endLine": int(error.end_lineno or error.lineno or 1), "endColumn": max(1, int(error.end_offset or error.offset or 1))
+        }]}
+except Exception as error:
+    result = {"available": True, "failed": True, "reason": str(error)}
+print(json.dumps(result))`;
 const TYPESCRIPT_SYMBOL_SCRIPT=`const fs=require("fs"),path=require("path");
 const root=path.resolve(process.argv[1]||"."),requested=path.resolve(root,process.argv[2]||""),line=Math.max(1,Number(process.argv[3])||1),column=Math.max(1,Number(process.argv[4])||1),operation=String(process.argv[5]||"definition"),limit=Math.max(1,Math.min(300,Number(process.argv[6])||100));
 const out=value=>process.stdout.write(JSON.stringify(value)),tsPath=path.join(root,"node_modules","typescript","lib","typescript.js");
@@ -421,6 +439,25 @@ function parseTypeScriptDiagnosticsOutput(stdout){
   try{return JSON.parse(String(stdout||"{}"))}catch{return {available:false,configured:false,failed:true,reason:"TypeScript diagnostic adapter returned invalid output"}}
 }
 
+function parsePythonDiagnosticsOutput(stdout){
+  try{return JSON.parse(String(stdout||"{}"))}catch{return {available:false,failed:true,reason:"Python diagnostic adapter returned invalid output"}}
+}
+
+async function localPythonDiagnostics(root,{path,limit=100}={}){
+  const target=resolve(root,String(path||"")),commands=process.platform==="win32"?["python","python3"]:["python3","python"],failures=[];
+  for(const command of commands){
+    try{
+      const {stdout}=await execFileAsync(command,["-c",PYTHON_DIAGNOSTICS_SCRIPT,target],{cwd:resolve(root),windowsHide:true,maxBuffer:2*1024*1024,timeout:20_000});
+      const result=parsePythonDiagnosticsOutput(stdout),diagnostics=Array.isArray(result?.diagnostics)?result.diagnostics.slice(0,Math.max(1,Math.min(200,Number(limit)||100))):[];
+      return {...result,diagnostics,truncated:Array.isArray(result?.diagnostics)&&result.diagnostics.length>diagnostics.length,command};
+    }catch(error){
+      const parsed=parsePythonDiagnosticsOutput(error?.stdout);if(parsed?.available)return {...parsed,command};
+      failures.push(String(error?.stderr||error?.message||error).trim().slice(0,500));
+    }
+  }
+  return {available:false,failed:false,reason:"Python interpreter was not available for syntax diagnostics",details:failures.filter(Boolean).slice(0,2)};
+}
+
 async function localTypeScriptDiagnostics(root,{path,limit=100}={}){
   try{
     const {stdout}=await execFileAsync(process.execPath,["-e",TYPESCRIPT_DIAGNOSTICS_SCRIPT,resolve(root),String(path||""),String(Math.max(1,Math.min(300,Number(limit)||100)))],{cwd:resolve(root),windowsHide:true,maxBuffer:4*1024*1024,timeout:30_000});
@@ -500,6 +537,7 @@ function localContextIo(root){
     searchPaths:options=>localMatchingFiles(absolute,options),
     gitHistory:options=>localGitHistory(absolute,options),
     gitBlame:options=>localGitBlame(absolute,options),
+    pythonDiagnostics:options=>localPythonDiagnostics(absolute,options),
     typeScriptDiagnostics:options=>localTypeScriptDiagnostics(absolute,options),
     typeScriptSymbol:options=>localTypeScriptSymbol(absolute,options),
     typeScriptCodeActions:options=>localTypeScriptCodeActions(absolute,options),
@@ -591,6 +629,15 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     if(result.exitCode!==0)throw new Error(result.stderr||"Could not read remote Git blame");
     return parseGitBlame(result.stdout).slice(0,cap);
   };
+  const pythonDiagnostics=async({path,limit=100}={})=>{
+    const target=posix.join(absolute,String(path||"").replace(/^\.\//,"")),capped=Math.max(1,Math.min(200,Number(limit)||100)),failures=[];
+    for(const command of ["python3","python"]){
+      const result=await run({command,args:["-c",PYTHON_DIAGNOSTICS_SCRIPT,target],cwd:absolute,timeoutMs:25_000,maxOutput:2*1024*1024});
+      if(result.exitCode===0){const parsed=parsePythonDiagnosticsOutput(result.stdout),diagnostics=Array.isArray(parsed?.diagnostics)?parsed.diagnostics.slice(0,capped):[];return {...parsed,diagnostics,truncated:Array.isArray(parsed?.diagnostics)&&parsed.diagnostics.length>diagnostics.length,command}}
+      failures.push(String(result.stderr||result.stdout||`${command} exited with ${result.exitCode}`).trim().slice(0,500));
+    }
+    return {available:false,failed:false,reason:"Python interpreter was not available for syntax diagnostics",details:failures.filter(Boolean).slice(0,2)};
+  };
   const typeScriptDiagnostics=async({path,limit=100}={})=>{
     const result=await run({command:"node",args:["-e",TYPESCRIPT_DIAGNOSTICS_SCRIPT,absolute,String(path||""),String(Math.max(1,Math.min(300,Number(limit)||100)))],cwd:"",timeoutMs:35_000,maxOutput:4*1024*1024});
     if(result.exitCode!==0)return {available:false,configured:false,failed:true,reason:result.timedOut?"TypeScript diagnostics timed out":String(result.stderr||"Remote TypeScript diagnostics failed").slice(0,2000)};
@@ -625,6 +672,7 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     searchPaths,
     gitHistory,
     gitBlame,
+    pythonDiagnostics,
     typeScriptDiagnostics,
     typeScriptSymbol,
     typeScriptCodeActions,
@@ -1053,6 +1101,12 @@ export class ContextEngine{
     const {contextIo,index}=await this.#indexed(root,io),requested=contextIo.relativeFocus(path)||slash(String(path||"").replace(/^\.\//,""));
     const entry=index.files.get(requested);if(!entry)throw new Error(`Context file is not indexed: ${path}`);
     const extension=extname(requested).toLowerCase(),capped=Math.max(1,Math.min(200,Number(limit)||100));
+    if(PYTHON_SOURCE_EXTENSIONS.has(extension)){
+      if(typeof contextIo.pythonDiagnostics!=="function")return {path:requested,supported:false,engine:null,semantic:false,semanticRequested:Boolean(semantic),semanticDiagnostics:[],diagnostics:[],reason:"Python syntax diagnostics are unavailable for this workspace"};
+      let result;try{result=await contextIo.pythonDiagnostics({path:requested,limit:capped})}catch(error){result={available:false,failed:true,reason:String(error?.message||error)}}
+      const ready=Boolean(result?.available&&!result?.failed),diagnostics=Array.isArray(result?.diagnostics)?result.diagnostics.slice(0,capped):[];
+      return {path:requested,supported:ready,engine:ready?"python-ast":null,semantic:false,semanticRequested:Boolean(semantic),semanticEngine:null,semanticInfo:semantic?{available:false,configured:false,reason:"Python semantic diagnostics are not configured; syntax diagnostics use the Python AST parser."}:null,semanticDiagnostics:[],diagnostics,truncated:Boolean(result?.truncated),interpreter:result?.command||null,version:result?.version||null,reason:ready?null:(result?.reason||"Python syntax diagnostics are unavailable")};
+    }
     if(!BABEL_SOURCE_EXTENSIONS.has(extension))return {path:requested,supported:false,engine:null,semantic:false,semanticRequested:Boolean(semantic),semanticDiagnostics:[],diagnostics:[],reason:`No deterministic Trebell diagnostics adapter is configured for ${extension||"this file type"}`};
     const contents=await contextIo.readMany([requested]),content=contents.get(requested);if(typeof content!=="string")throw new Error(`Could not read context file: ${path}`);
     const diagnostics=javascriptSyntaxDiagnostics(content,requested);
