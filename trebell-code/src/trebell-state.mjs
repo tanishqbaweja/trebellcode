@@ -56,6 +56,7 @@ const DEFAULT_STATE = Object.freeze({
   stashes: [],
   checkpoints: [],
   usageRecords: [],
+  verificationRecords: [],
 });
 
 function clone(value){ return JSON.parse(JSON.stringify(value)); }
@@ -177,6 +178,7 @@ export class TrebellStateStore {
         stashes:Array.isArray(parsed.stashes)?parsed.stashes:[],
         checkpoints:Array.isArray(parsed.checkpoints)?parsed.checkpoints:[],
         usageRecords:Array.isArray(parsed.usageRecords)?parsed.usageRecords:[],
+        verificationRecords:Array.isArray(parsed.verificationRecords)?parsed.verificationRecords:[],
       };
     }catch{return clone(DEFAULT_STATE);}
   }
@@ -434,4 +436,22 @@ export class TrebellStateStore {
     return {days:horizon,total,models,runtimes,daily,environments,environmentIds:selected?[...selected]:null,records:clone(records)};
   }
   clearUsage(){const count=this.state.usageRecords.length;this.state.usageRecords=[];this.#save();return count}
+  recordVerification(entry={}){
+    const now=Number(entry.updatedAt)||Date.now(),environmentId=normalizeEnvironmentId(entry.environmentId),projectPath=entry.projectPath?String(entry.projectPath):null,threadId=entry.threadId?String(entry.threadId):null,turnId=entry.turnId?String(entry.turnId):null;
+    const fallbackId=threadId&&turnId?`verification:${environmentId||"local"}:${threadId}:${turnId}`:randomUUID(),id=String(entry.id||fallbackId).slice(0,300),index=this.state.verificationRecords.findIndex(item=>item.id===id),previous=index>=0?this.state.verificationRecords[index]:null;
+    const record={
+      id,environmentId,projectPath,threadId,turnId,
+      plan:entry.plan&&typeof entry.plan==="object"?clone(entry.plan):null,
+      evidence:Array.isArray(entry.evidence)?clone(entry.evidence.slice(0,300)):[],
+      assessment:entry.assessment&&typeof entry.assessment==="object"?clone(entry.assessment):null,
+      status:String(entry.assessment?.status||entry.status||"incomplete"),risk:String(entry.assessment?.risk||entry.plan?.risk||entry.risk||"unknown"),
+      createdAt:Number(previous?.createdAt)||Number(entry.createdAt)||now,updatedAt:now,
+    };
+    if(index>=0)this.state.verificationRecords[index]=record;else this.state.verificationRecords.unshift(record);
+    this.state.verificationRecords=this.state.verificationRecords.sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0)).slice(0,1000);this.#save();return clone(record);
+  }
+  verificationRecords(options={}){
+    const threadId=options.threadId==null?null:String(options.threadId),projectPath=options.projectPath==null?null:String(options.projectPath),hasEnvironment=Object.prototype.hasOwnProperty.call(options,"environmentId"),environmentId=normalizeEnvironmentId(options.environmentId),limit=Math.max(1,Math.min(1000,Number(options.limit)||100));
+    return clone(this.state.verificationRecords.filter(item=>(!threadId||item.threadId===threadId)&&(!projectPath||item.projectPath===projectPath)&&(!hasEnvironment||normalizeEnvironmentId(item.environmentId)===environmentId)).slice(0,limit));
+  }
 }

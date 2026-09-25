@@ -182,6 +182,14 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(assessmentResponse.status,200);
     const assessmentResult=await assessmentResponse.json();
     assert.equal(assessmentResult.status,"verified");assert.equal(assessmentResult.verified,true);assert.equal(assessmentResult.summary.passed,1);
+    const persistedVerificationResponse=await fetch(gui.url+"/api/verification-records",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({projectPath:configProject,threadId:"thread-verification",turnId:"turn-verification",plan:{risk:"medium",steps:[{id:"tests",kind:"tests",required:true}]},evidence:[{stepId:"tests",exitCode:0}]})});
+    assert.equal(persistedVerificationResponse.status,200);
+    const persistedVerification=(await persistedVerificationResponse.json()).record;
+    assert.equal(persistedVerification.status,"verified");assert.equal(persistedVerification.assessment.verified,true);assert.equal(persistedVerification.threadId,"thread-verification");
+    const verificationHistoryResponse=await fetch(gui.url+"/api/verification-records?"+new URLSearchParams({threadId:"thread-verification",projectPath:configProject}));
+    assert.equal(verificationHistoryResponse.status,200);
+    const verificationHistory=(await verificationHistoryResponse.json()).records;
+    assert.equal(verificationHistory.length,1);assert.equal(verificationHistory[0].id,persistedVerification.id);assert.equal(verificationHistory[0].status,"verified");
     const relationResponse=await fetch(gui.url+"/api/context/relations?"+new URLSearchParams({path:configProject,file:"src/session.js"}));
     assert.equal(relationResponse.status,200);
     const relationResult=await relationResponse.json();

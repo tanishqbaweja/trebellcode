@@ -155,6 +155,23 @@ test("usage records upsert streaming updates instead of double-counting a turn",
   }finally{await rm(home,{recursive:true,force:true});}
 });
 
+test("verification records persist, upsert by turn, and stay filterable",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-state-verification-")),env={...process.env,TREBELL_HOME:home};
+  try{
+    const state=new TrebellStateStore(env),plan={risk:"high",steps:[{id:"tests",kind:"tests",required:true}]};
+    const first=state.recordVerification({environmentId:"ssh-a",projectPath:"/srv/app",threadId:"thread-1",turnId:"turn-1",plan,evidence:[{stepId:"tests",exitCode:1}],assessment:{status:"failed",risk:"high",verified:false}});
+    assert.equal(first.id,"verification:ssh-a:thread-1:turn-1");assert.equal(first.status,"failed");assert.equal(first.risk,"high");
+    const updated=state.recordVerification({environmentId:"ssh-a",projectPath:"/srv/app",threadId:"thread-1",turnId:"turn-1",plan,evidence:[{stepId:"tests",exitCode:0}],assessment:{status:"verified",risk:"high",verified:true}});
+    assert.equal(updated.id,first.id);assert.equal(updated.createdAt,first.createdAt);assert.equal(updated.status,"verified");
+    state.recordVerification({environmentId:null,projectPath:"/local/app",threadId:"thread-2",turnId:"turn-2",plan:{risk:"low",steps:[]},evidence:[],assessment:{status:"verified",risk:"low",verified:true}});
+    const again=new TrebellStateStore(env);
+    assert.equal(again.verificationRecords().length,2);
+    assert.equal(again.verificationRecords({threadId:"thread-1"})[0].status,"verified");
+    assert.equal(again.verificationRecords({projectPath:"/srv/app",environmentId:"ssh-a"}).length,1);
+    assert.equal(again.verificationRecords({environmentId:null}).length,1);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 test("projects with the same remote path stay distinct across environments",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-state-project-env-"));
   const env={...process.env,TREBELL_HOME:home};
