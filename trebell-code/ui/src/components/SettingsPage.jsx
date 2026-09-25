@@ -1,5 +1,5 @@
 import React,{useEffect,useRef,useState} from "react";
-import { Activity, Bot, Download, FileText, HardDrive, Keyboard, MonitorCog, Palette, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal } from "lucide-react";
+import { Activity, Bot, Download, FileText, HardDrive, Keyboard, MonitorCog, Palette, PlugZap, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import { api } from "../api.js";
 import { KEYBINDING_COMMANDS, normalizeKeybindingRules } from "../keybindings.js";
 import { searchSettings } from "../settings-search.js";
@@ -38,6 +38,8 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   const [instanceDraft,setInstanceDraft]=useState(null);
   const [modelDraft,setModelDraft]=useState({id:"",name:"",effort:"",serviceTier:"",inputPrice:"",outputPrice:"",cacheReadPrice:"",cacheWritePrice:""});
   const [customModelEditorOpen,setCustomModelEditorOpen]=useState(false);
+  const [mcpDraft,setMcpDraft]=useState(null);
+  const [mcpMessage,setMcpMessage]=useState("");
   const [snapshotInfo,setSnapshotInfo]=useState({enabled:false,shortcut:"CommandOrControl+Shift+S",includeText:false,playSound:true,sound:"soft-pop",flash:true,animations:true,registered:false,pending:0});
   const [snapshotMessage,setSnapshotMessage]=useState("");
   const [browserImport,setBrowserImport]=useState({sources:[],platform:null});
@@ -170,6 +172,26 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     }
     if("customModels" in patch)await onProviderUpdated?.();
     return next;
+  }
+  function mcpArgs(value){return String(value||"").split(/\r?\n/).map(item=>item.trim()).filter(Boolean).slice(0,64)}
+  async function addMcpServer(){
+    if(!mcpDraft?.name?.trim()||!mcpDraft?.command?.trim())return;
+    const environmentId=settings.activeEnvironmentId||null;
+    const entry={id:`mcp-${crypto.randomUUID()}`,name:mcpDraft.name.trim(),runtime:selectedAgent,environmentId,enabled:true,type:"stdio",command:mcpDraft.command.trim(),args:mcpArgs(mcpDraft.argsText),env:[]};
+    try{
+      await save({mcpServers:[...(settings.mcpServers||[]),entry]});
+      setMcpDraft(null);setMcpMessage("MCP server saved. New or resumed sessions will receive it.");
+    }catch(error){setMcpMessage(error?.message||String(error))}
+  }
+  async function toggleMcpServer(server){
+    setMcpMessage("");
+    try{await save({mcpServers:(settings.mcpServers||[]).map(item=>item.id===server.id?{...item,enabled:item.enabled===false}:item)})}
+    catch(error){setMcpMessage(error?.message||String(error))}
+  }
+  async function removeMcpServer(server){
+    setMcpMessage("");
+    try{await save({mcpServers:(settings.mcpServers||[]).filter(item=>item.id!==server.id)});setMcpDraft(current=>current?.id===server.id?null:current)}
+    catch(error){setMcpMessage(error?.message||String(error))}
   }
   async function setBackgroundMode(enabled){
     const previous=Boolean(settings.backgroundMode);setSettingsError("");
@@ -432,6 +454,8 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   const selectedAgentStatus=agentInfo?.statuses?.find(item=>item.id===agentInfo?.selectedInstanceId)||agentInfo?.statuses?.find(item=>item.kind===selectedAgent);
   const selectedInstances=(agentInfo?.instances||[]).filter(item=>item.kind===selectedAgent);
   const customModels=(settings.customModels||[]).filter(item=>item.runtime===selectedAgent&&(selectedAgent!=="codex"||item.provider===selected));
+  const mcpEnvironmentId=settings.activeEnvironmentId||null;
+  const scopedMcpServers=(settings.mcpServers||[]).filter(item=>item.runtime===selectedAgent&&(item.environmentId||null)===mcpEnvironmentId);
   const desktopAvailable=Boolean(window.trebellDesktop);
   const settingsSections=[
     ["general",Settings2,"General","Everyday behavior, notifications and updates"],
@@ -573,6 +597,19 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
           <div className="custom-price-grid"><label>Input / 1M<input type="number" step="0.001" min="0" value={modelDraft.inputPrice} onChange={e=>setModelDraft({...modelDraft,inputPrice:e.target.value})}/></label><label>Output / 1M<input type="number" step="0.001" min="0" value={modelDraft.outputPrice} onChange={e=>setModelDraft({...modelDraft,outputPrice:e.target.value})}/></label><label>Cache read / 1M<input type="number" step="0.001" min="0" value={modelDraft.cacheReadPrice} onChange={e=>setModelDraft({...modelDraft,cacheReadPrice:e.target.value})}/></label><label>Cache write / 1M<input type="number" step="0.001" min="0" value={modelDraft.cacheWritePrice} onChange={e=>setModelDraft({...modelDraft,cacheWritePrice:e.target.value})}/></label></div>
           <div className="provider-key-actions"><button className="setting-action" onClick={addCustomModel} disabled={!modelDraft.id.trim()}>Save custom model</button><button onClick={()=>setCustomModelEditorOpen(false)}>Cancel</button></div>
         </div>}
+      </div>}
+      {settingsSection==="agents"&&["cursor","grok","antigravity"].includes(selectedAgent)&&<div className="settings-card custom-model-settings" {...targetProps("agents-mcp")}>
+        <h3><PlugZap size={14}/> ACP MCP servers</h3>
+        <p>Inject stdio MCP servers into new and resumed {selectedAgentStatus?.name||selectedAgent} sessions on <strong>{mcpEnvironmentId?"the active remote environment":"Local machine"}</strong>. The MCP process inherits the runtime environment; secret values do not need to be stored here.</p>
+        <div className="custom-model-list">{scopedMcpServers.map(server=><div key={server.id}><span><strong>{server.name}</strong><small>{server.command}{server.args?.length?" · "+server.args.join(" "):""}</small></span><button onClick={()=>toggleMcpServer(server)}>{server.enabled===false?"Enable":"Disable"}</button><button onClick={()=>removeMcpServer(server)}>Remove</button></div>)}</div>
+        {!mcpDraft?<button className="setting-action" onClick={()=>{setMcpDraft({name:"",command:"",argsText:""});setMcpMessage("")}}>Add MCP server</button>:<div className="custom-model-editor">
+          <label>Name<input aria-label="MCP server name" value={mcpDraft.name||""} onChange={e=>setMcpDraft({...mcpDraft,name:e.target.value})} placeholder="Workspace tools"/></label>
+          <label>Executable<input aria-label="MCP server executable" value={mcpDraft.command||""} onChange={e=>setMcpDraft({...mcpDraft,command:e.target.value})} placeholder={mcpEnvironmentId?"/usr/local/bin/my-mcp":"Absolute executable path"}/></label>
+          <label>Arguments · one per line<textarea aria-label="MCP server arguments" value={mcpDraft.argsText||""} onChange={e=>setMcpDraft({...mcpDraft,argsText:e.target.value})} placeholder={"--stdio\n--workspace"}/></label>
+          <div className="provider-key-actions"><button className="setting-action" onClick={addMcpServer} disabled={!mcpDraft.name?.trim()||!mcpDraft.command?.trim()}>Save MCP server</button><button onClick={()=>setMcpDraft(null)}>Cancel</button></div>
+        </div>}
+        {!scopedMcpServers.length&&!mcpDraft&&<p className="provider-note">No Trebell-managed MCP servers are configured for this runtime and environment.</p>}
+        {mcpMessage&&<p className={/failed|error/i.test(mcpMessage)?"provider-status-error":"provider-note"}>{mcpMessage}</p>}
       </div>}
       {settingsSection==="agents"&&<div className="settings-card" {...targetProps("agents-runtime")}><h3>Runtime</h3><p>Harness connection: <strong>{rpcStatus}</strong><br/>Agent: <strong>{selectedAgentStatus?.name||selectedAgent}</strong><br/>Agent runtime: <strong>{runtime?.agentRuntimeStatus?.available||selectedAgent==="codex"?"ready":"not ready"}</strong>{selectedAgent==="codex"&&<><br/>Codex app-server: <strong>{runtime?.appServerReady?"ready":"not ready"}</strong><br/>Inference: <strong>{PROVIDER_LABELS[runtime?.provider||selected]||runtime?.provider||selected}</strong>{(runtime?.provider||selected)==="freebuff"&&<><br/>Freebuff bridge: <strong>{runtime?.bridgeReady?"ready":"not ready"}</strong></>}</>}</p><button onClick={()=>refresh({reportErrors:true})} disabled={loading}><RefreshCw size={13}/> {loading?"Refreshing…":"Refresh diagnostics"}</button></div>}
       {settingsSection==="general"&&<div className="settings-card" {...targetProps("general-followups")}><h3>Follow-up behavior</h3>{selectedAgent==="codex"?<label>While the agent is working<select value={settings.followUpMode||"queue"} onChange={e=>save({followUpMode:e.target.value})}><option value="queue">Queue after current turn</option><option value="steer">Steer current turn immediately</option></select></label>:<p>Follow-ups are queued until the current {selectedAgentStatus?.name||selectedAgent} turn finishes. ACP does not define in-flight steering.</p>}</div>}

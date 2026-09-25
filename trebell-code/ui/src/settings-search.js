@@ -8,6 +8,7 @@ const BASE_SETTINGS_SEARCH_ITEMS=[
   {id:"agents-profiles",section:"agents",title:"Runtime profiles",terms:"profile account codex home claude config auto compact shadow home multi account"},
   {id:"agents-provider",section:"agents",title:"Model provider",terms:"provider freebuff agentrouter justworker hcnsec vyce api key inference"},
   {id:"agents-models",section:"agents",title:"Custom models",terms:"model reasoning effort service tier pricing custom model"},
+  {id:"agents-mcp",section:"agents",title:"ACP MCP servers",terms:"mcp model context protocol tools stdio cursor grok antigravity server executable"},
   {id:"agents-runtime",section:"agents",title:"Runtime diagnostics",terms:"runtime app server bridge inference status diagnostics"},
   {id:"workspace-defaults",section:"workspace",title:"Project & environment defaults",terms:"permissions merge method git text style git text model custom git instructions pr template auto pull worktree cleanup submodule source control"},
   {id:"workspace-storage",section:"workspace",title:"Storage cleanup",terms:"storage retention attachment cache terminal history worktree cleanup"},

@@ -34,6 +34,7 @@ test("agent runtime registry exposes real harnesses and capability-gates configu
     assert.equal(manager.capabilities("claude").detachedTasks,true);
     assert.equal(manager.capabilities("claude").runtimeProfileSwitching,true);
     assert.equal(manager.capabilities("cursor").fork,"runtime");
+    assert.equal(manager.capabilities("cursor").mcpInjection,true);
     assert.equal(manager.capabilities("cursor").clientFilesystem,true);
     assert.equal(manager.capabilities("cursor").nativeSandbox,false);
   }finally{
@@ -240,9 +241,11 @@ test("ACP agent session serves bounded filesystem and terminal capabilities end 
   const fixture=join(root,"fake-acp.mjs");
   const input=join(root,"input.txt");
   const output=join(root,"output.txt");
+  const mcpPayload=join(root,"mcp.json");
   await writeFile(input,"INPUT_OK","utf8");
   await writeFile(fixture,String.raw`
 import readline from "node:readline";
+import { writeFile } from "node:fs/promises";
 let next=1000; const pending=new Map(); let sessionId="fixture-session";
 function send(x){process.stdout.write(JSON.stringify(x)+"\n")}
 function request(method,params){const id="s"+(next++);send({jsonrpc:"2.0",id,method,params});return new Promise((resolve,reject)=>pending.set(id,{resolve,reject}))}
@@ -250,7 +253,7 @@ async function handle(m){
   if(m.id!=null&&!m.method&&pending.has(m.id)){const p=pending.get(m.id);pending.delete(m.id);m.error?p.reject(new Error(m.error.message)):p.resolve(m.result);return}
   if(!m.method||m.id==null)return;
   if(m.method==="initialize")return send({jsonrpc:"2.0",id:m.id,result:{protocolVersion:1,agentInfo:{name:"fixture",version:"1"},agentCapabilities:{loadSession:true,sessionCapabilities:{resume:{},close:{}}}}});
-  if(m.method==="session/new"||m.method==="session/resume"||m.method==="session/load")return send({jsonrpc:"2.0",id:m.id,result:{sessionId,models:{currentModelId:"fake-model",availableModels:[{modelId:"fake-model",name:"Fake"}]},configOptions:[],modes:{currentModeId:"build",availableModes:[]}}});
+  if(m.method==="session/new"||m.method==="session/resume"||m.method==="session/load"){await writeFile(${JSON.stringify(mcpPayload)},JSON.stringify(m.params.mcpServers||[]));return send({jsonrpc:"2.0",id:m.id,result:{sessionId,models:{currentModelId:"fake-model",availableModels:[{modelId:"fake-model",name:"Fake"}]},configOptions:[],modes:{currentModeId:"build",availableModes:[]}}})}
   if(m.method==="session/set_model")return send({jsonrpc:"2.0",id:m.id,result:{}});
   if(m.method==="session/close")return send({jsonrpc:"2.0",id:m.id,result:{}});
   if(m.method==="session/prompt"){
@@ -269,10 +272,11 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",lin
 `,"utf8");
   const terminals=new TerminalManager({persist:false});
   const updates=[];
-  const session=new AcpAgentSession({runtime:"fixture",command:process.execPath,args:[fixture],cwd:root,terminals,permissionMode:"full",onUpdate:update=>updates.push(update)});
+  const session=new AcpAgentSession({runtime:"fixture",command:process.execPath,args:[fixture],cwd:root,terminals,permissionMode:"full",onUpdate:update=>updates.push(update),mcpServers:[{name:"Fixture tools",command:"/opt/fixture-mcp",args:["--stdio"],env:[{name:"TOKEN",value:"secret"}]}]});
   try{
     const started=await session.start({model:"fake-model"});
     assert.equal(started.session.sessionId,"fixture-session");
+    assert.deepEqual(JSON.parse(await readFile(mcpPayload,"utf8")),[{name:"Fixture tools",command:"/opt/fixture-mcp",args:["--stdio"],env:[{name:"TOKEN",value:"secret"}]}]);
     const result=await session.prompt([{type:"text",text:"run"}]);
     assert.equal(result.stopReason,"end_turn");
     assert.equal(await readFile(output,"utf8"),"READ:INPUT_OK");

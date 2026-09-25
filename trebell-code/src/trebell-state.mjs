@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { trebellHome } from "./paths.mjs";
+import { normalizeMcpServers } from "./mcp-registry.mjs";
 
 const DEFAULT_STATE = Object.freeze({
   version: 2,
@@ -47,6 +48,7 @@ const DEFAULT_STATE = Object.freeze({
     agentRuntimeInstances: [],
     customModels: [],
     modelPrices: {},
+    mcpServers: [],
     modelProvider: "freebuff",
     onboardingComplete: false,
   },
@@ -162,6 +164,7 @@ export class TrebellStateStore {
       settings.sourceControlTextModel=normalizeScopedSetting("sourceControlTextModel",settings.sourceControlTextModel);
       settings.sourceControlCustomInstructions=normalizeScopedSetting("sourceControlCustomInstructions",settings.sourceControlCustomInstructions);
       settings.sourceControlFollowTemplates=normalizeScopedSetting("sourceControlFollowTemplates",settings.sourceControlFollowTemplates);
+      settings.mcpServers=normalizeMcpServers(settings.mcpServers);
       if(!Object.prototype.hasOwnProperty.call(rawSettings,"onboardingComplete")&&projects.length>0)settings.onboardingComplete=true;
       return {
         ...clone(DEFAULT_STATE),
@@ -248,6 +251,7 @@ export class TrebellStateStore {
     if("sourceControlTextModel" in patch)patch={...patch,sourceControlTextModel:normalizeScopedSetting("sourceControlTextModel",patch.sourceControlTextModel)};
     if("sourceControlCustomInstructions" in patch)patch={...patch,sourceControlCustomInstructions:normalizeScopedSetting("sourceControlCustomInstructions",patch.sourceControlCustomInstructions)};
     if("sourceControlFollowTemplates" in patch)patch={...patch,sourceControlFollowTemplates:normalizeScopedSetting("sourceControlFollowTemplates",patch.sourceControlFollowTemplates)};
+    if("mcpServers" in patch)patch={...patch,mcpServers:normalizeMcpServers(patch.mcpServers)};
     if("panelAnimationMs" in patch){const value=Math.round(Number(patch.panelAnimationMs)||0);patch={...patch,panelAnimationMs:Math.max(0,Math.min(400,value))}}
     this.state.settings={...this.state.settings,...patch};
     this.#save();

@@ -54,6 +54,20 @@ test("automatic context compaction defaults on and persists user preferences",as
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
+test("ACP MCP server settings are normalized and persist",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-state-mcp-"));const env={...process.env,TREBELL_HOME:home};
+  try{
+    const state=new TrebellStateStore(env);
+    state.updateSettings({mcpServers:[
+      {id:"cursor-remote",name:"Remote tools",runtime:"cursor",environmentId:"ssh-a",command:"/opt/remote-mcp",args:["--stdio"],env:[{name:"API_KEY",value:"secret"}]},
+      {id:"invalid",name:"Ignored",runtime:"claude",command:"claude-mcp"},
+    ]});
+    const saved=new TrebellStateStore(env).settings().mcpServers;
+    assert.equal(saved.length,1);
+    assert.deepEqual(saved[0],{id:"cursor-remote",name:"Remote tools",type:"stdio",runtime:"cursor",environmentId:"ssh-a",enabled:true,command:"/opt/remote-mcp",args:["--stdio"],env:[{name:"API_KEY",value:"secret"}]});
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 
 test("project actions persist, sanitize, inherit preference, and allow clearing overrides", async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-state-actions-"));

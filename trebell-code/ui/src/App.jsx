@@ -3236,6 +3236,7 @@ export default function App(){
             ["Fork",runtimeCapabilities.fork],
             ["Rewind",runtimeCapabilities.rewind],
             ["Compaction",runtimeCapabilities.compaction],
+            ["MCP injection",runtimeCapabilities.mcpInjection],
             ["LSP",runtimeCapabilities.nativeLsp],
             ["Sandbox",runtimeCapabilities.nativeSandbox],
             ["Detached tasks",runtimeCapabilities.detachedTasks],

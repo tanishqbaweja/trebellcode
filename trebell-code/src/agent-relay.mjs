@@ -5,6 +5,7 @@ import { WebSocketServer } from "ws";
 import { AcpAgentSession } from "./acp-agent-session.mjs";
 import { OpenCodeAgentSession } from "./opencode-agent-session.mjs";
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
+import { acpMcpServersForSession } from "./mcp-registry.mjs";
 
 const IMAGE_MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".bmp":"image/bmp"};
 const LIVE_TOOL_OUTPUT_LIMIT=256*1024;
@@ -456,13 +457,14 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     const status=await runtimeManager.probe(instance,{environmentId});if(!status.available)throw new Error(status.message||`${status.name} is unavailable`);
     const runtimeCwd=runtimeManager.runtimeCwd(thread.cwd,environmentId);const spawnProcess=runtimeManager.processSpawner(instance,environmentId);const remoteIo=runtimeManager.remoteIo(runtimeCwd,environmentId);
     const common={cwd:runtimeCwd,env:runtimeManager.childEnv(instance),permissionMode,onPermission:request=>context.permission(thread,request),onQuestion:request=>context.userQuestion(thread,request),onUpdate:params=>handleUpdate(thread.id,params),version};
+    const acpMcpServers=acpMcpServersForSession(state?.settings?.().mcpServers||[],{runtime:instance.kind,environmentId});
     const runtime=instance.kind==="claude"
       ?new ClaudeAgentSession({...common,command:runtimeManager.executable(instance),spawnProcess,autoCompactWindow:instance.autoCompactWindow||null,forkFromSessionId:thread.providerMeta?.claudeFork?.sourceSessionId||null,resumeSessionAt:thread.providerMeta?.claudeFork?.resumeSessionAt||null,resumeDropsTurn:thread.providerMeta?.claudeFork?.resumeDropsTurn||null})
       :instance.kind==="opencode"
       ?(remoteIo
-        ?new AcpAgentSession({...common,runtime:"opencode",command:runtimeManager.executable(instance),args:["acp"],terminals,spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request)})
+        ?new AcpAgentSession({...common,runtime:"opencode",command:runtimeManager.executable(instance),args:["acp"],terminals,spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers})
         :new OpenCodeAgentSession({...common,command:runtimeManager.executable(instance),serverUrl:instance.serverUrl||null}))
-      :new AcpAgentSession({...common,runtime:instance.kind,command:runtimeManager.executable(instance),args:runtimeManager.acpArgs(instance,permissionMode,runtimeCwd),terminals,spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request)});
+      :new AcpAgentSession({...common,runtime:instance.kind,command:runtimeManager.executable(instance),args:runtimeManager.acpArgs(instance,permissionMode,runtimeCwd),terminals,spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers});
     const started=await runtime.start({providerSessionId:thread.providerSessionId||null,model:model||thread.model||null});
     const discoveredMeta=threadStore.get(thread.id)?.providerMeta||{};
     threadStore.update(thread.id,{providerSessionId:started.session.sessionId,providerMeta:{...discoveredMeta,initialize:started.initialize,setup:started.session},model:model||started.session.models?.currentModelId||thread.model||null});
@@ -748,7 +750,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       else if(runtimeSession instanceof ClaudeAgentSession)fork=await runtimeSession.fork();
       else{
         const init=runtimeSession.initializeResult?.agentCapabilities?.sessionCapabilities||{};if(init.fork==null)throw Object.assign(new Error(`${runtime} does not advertise session forking`),{code:-32601});
-        fork=await runtimeSession.client.forkSession({sessionId:source.providerSessionId,cwd:source.cwd,mcpServers:[]});
+        fork=await runtimeSession.client.forkSession({sessionId:source.providerSessionId,cwd:source.cwd,mcpServers:runtimeSession.mcpServers||[]});
       }
       const providerSessionId=fork.sessionId||fork.id;
       const providerMeta={...(source.providerMeta||{}),setup:fork};

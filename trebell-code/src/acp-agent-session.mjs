@@ -28,10 +28,11 @@ function decisionChoice(options=[],decision="decline"){
 }
 
 export class AcpAgentSession{
-  constructor({runtime,command,args=[],cwd,env=process.env,terminals,permissionMode="supervised",onUpdate,onPermission,onElicitation,version="0.0.0",spawnProcess=null,remoteIo=null}={}){
+  constructor({runtime,command,args=[],cwd,env=process.env,terminals,permissionMode="supervised",onUpdate,onPermission,onElicitation,version="0.0.0",spawnProcess=null,remoteIo=null,mcpServers=[]}={}){
     this.runtime=runtime;this.command=command;this.args=args;this.cwd=remoteIo?String(cwd||remoteIo.root||"/"):resolve(cwd||process.cwd());this.env=env;this.terminals=terminals;
     this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onPermission=onPermission;this.onElicitation=onElicitation;this.version=version;
     this.spawnProcess=spawnProcess;this.remoteIo=remoteIo;
+    this.mcpServers=Array.isArray(mcpServers)?mcpServers.map(server=>({...server,args:[...(server.args||[])],env:(server.env||[]).map(item=>({...item}))})):[];
     this.client=null;this.sessionId=null;this.initializeResult=null;this.sessionSetup=null;this.terminalIds=new Set();
     this.remoteTerminals=new Map();
   }
@@ -50,10 +51,10 @@ export class AcpAgentSession{
     let setup;
     if(providerSessionId){
       const caps=this.initializeResult?.agentCapabilities?.sessionCapabilities||{};
-      if(caps.resume!=null) setup=await client.resumeSession({sessionId:providerSessionId,cwd:this.cwd,mcpServers:[]}).catch(()=>null);
-      if(!setup&&this.initializeResult?.agentCapabilities?.loadSession)setup=await client.loadSession({sessionId:providerSessionId,cwd:this.cwd,mcpServers:[]}).catch(()=>null);
+      if(caps.resume!=null) setup=await client.resumeSession({sessionId:providerSessionId,cwd:this.cwd,mcpServers:this.mcpServers}).catch(()=>null);
+      if(!setup&&this.initializeResult?.agentCapabilities?.loadSession)setup=await client.loadSession({sessionId:providerSessionId,cwd:this.cwd,mcpServers:this.mcpServers}).catch(()=>null);
     }
-    if(!setup)setup=await client.createSession({cwd:this.cwd,mcpServers:[]});
+    if(!setup)setup=await client.createSession({cwd:this.cwd,mcpServers:this.mcpServers});
     this.sessionSetup=setup;this.sessionId=setup.sessionId;
     if(model&&setup.models?.availableModels?.some(item=>item.modelId===model)&&setup.models.currentModelId!==model){
       await client.setModel(this.sessionId,model).catch(()=>{});

@@ -410,6 +410,45 @@ test("settings loads provider and runtime catalogs only on relevant sections",as
   expect(runtimeCalls).toBe(1);
 });
 
+test("ACP MCP settings persist runtime-scoped stdio servers",async({page})=>{
+  test.setTimeout(35_000);
+  let settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"cursor",agentRuntimeInstanceId:"cursor-default",modelProvider:"freebuff",activeEnvironmentId:null,mcpServers:[]};
+  const settingsPosts=[];
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"cursor",agentRuntimeReady:true,appServerReady:true,wsUrl:null,cwd:process.cwd(),platform:process.platform,version:"mcp-settings-fixture",runtimeCapabilities:{queue:true,fork:"runtime",mcpInjection:true,clientFilesystem:true,clientTerminal:true,detachedTasks:true,multiModelFanout:true}})}));
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{}})}));
+  await page.route(/\/api\/settings$/,route=>{
+    if(route.request().method()==="POST"){const patch=route.request().postDataJSON()||{};settingsPosts.push(patch);settings={...settings,...patch}}
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)});
+  });
+  await page.route(/\/api\/agent-runtimes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selectedRuntime:"cursor",selectedInstanceId:"cursor-default",definitions:[{id:"cursor",name:"Cursor",protocol:"acp",canAuthenticate:true,installable:false,capabilities:{mcpInjection:true}}],instances:[{id:"cursor-default",kind:"cursor",displayName:"Cursor",enabled:true}],statuses:[{id:"cursor-default",kind:"cursor",name:"Cursor",available:true,installed:true,authenticated:true,version:"fixture"}]})}));
+  await page.route(/\/api\/providers$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ready:true,providers:[]})}));
+  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["cursor-default"],metadata:{provider:"cursor",models:[{id:"cursor-default",name:"Cursor default"}]}})}));
+  await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+  await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+  await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+  await page.route(/\/api\/stats$/,route=>route.fulfill({status:200,contentType:"application/json",body:"{}"}));
+  await page.route(/\/api\/runtime$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({agentRuntime:"cursor",agentRuntimeStatus:{available:true}})}));
+
+  await page.goto("/");
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await page.locator(".settings-nav").getByRole("button",{name:/Agents & models/}).click();
+  const card=page.locator('[data-setting-target="agents-mcp"]');await expect(card).toBeVisible();
+  await card.getByRole("button",{name:"Add MCP server",exact:true}).click();
+  await card.getByLabel("MCP server name").fill("Workspace tools");
+  await card.getByLabel("MCP server executable").fill("workspace-mcp");
+  await card.getByLabel("MCP server arguments").fill("--stdio\n--workspace");
+  await card.getByRole("button",{name:"Save MCP server",exact:true}).click();
+  const saved=settingsPosts.at(-1)?.mcpServers?.[0];
+  expect(saved).toMatchObject({name:"Workspace tools",runtime:"cursor",environmentId:null,enabled:true,type:"stdio",command:"workspace-mcp",args:["--stdio","--workspace"],env:[]});
+  await expect(card).toContainText("Workspace tools");
+  await card.getByRole("button",{name:"Disable",exact:true}).click();
+  expect(settingsPosts.at(-1)?.mcpServers?.[0]?.enabled).toBe(false);
+  await expect(card.getByRole("button",{name:"Enable",exact:true})).toBeVisible();
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await page.locator(".settings-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"settings-acp-mcp-1280x800.png",fullPage:true});
+});
+
 test("composer file mentions search the workspace and attach the selected file",async({page,request})=>{
   test.setTimeout(30_000);
   await prepare(page,request);

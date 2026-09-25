@@ -33,9 +33,9 @@ const RUNTIME_CAPABILITY_OVERRIDES=Object.freeze({
   }),
   claude:Object.freeze({fork:true,rewind:true,compaction:true,usageReporting:true,runtimeProfileSwitching:true,detachedTasks:true,multiModelFanout:true}),
   opencode:Object.freeze({fork:true,rewind:true,compaction:true,nativeLsp:true,usageReporting:true,detachedTasks:true,multiModelFanout:true}),
-  cursor:Object.freeze({fork:"runtime",clientFilesystem:true,clientTerminal:true,detachedTasks:true,multiModelFanout:true}),
-  grok:Object.freeze({fork:"runtime",clientFilesystem:true,clientTerminal:true,detachedTasks:true,multiModelFanout:true}),
-  antigravity:Object.freeze({fork:"runtime",clientFilesystem:true,clientTerminal:true,detachedTasks:true,multiModelFanout:true}),
+  cursor:Object.freeze({fork:"runtime",mcpInjection:true,clientFilesystem:true,clientTerminal:true,detachedTasks:true,multiModelFanout:true}),
+  grok:Object.freeze({fork:"runtime",mcpInjection:true,clientFilesystem:true,clientTerminal:true,detachedTasks:true,multiModelFanout:true}),
+  antigravity:Object.freeze({fork:"runtime",mcpInjection:true,clientFilesystem:true,clientTerminal:true,detachedTasks:true,multiModelFanout:true}),
 });
 
 export function sharedRuntimeCapabilities(kind){
