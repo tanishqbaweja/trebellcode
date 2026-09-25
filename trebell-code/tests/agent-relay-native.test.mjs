@@ -40,6 +40,7 @@ test("Trebell Native relay executes repository tools and switches inference prov
   const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env),providers=[];let modelTurns=0;
   const nativeProviderTurn=async request=>{
     providers.push(request.provider);modelTurns++;
+    assert.equal(request.messages[0]?.role,"developer");assert.match(String(request.messages[0]?.content||""),/Use repository intelligence when useful/);
     if(modelTurns===1)return {id:"native-first",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"repo-call",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"SessionManager"}'}],finishReason:"tool_calls",usage:{inputTokens:4,outputTokens:1,totalTokens:5}};
     if(modelTurns===2){assert.equal(request.messages.at(-1).role,"tool");assert.match(request.messages.at(-1).content,/SessionManager/);return {id:"native-answer",provider:request.provider,model:request.model,text:"Found SessionManager.",toolCalls:[],finishReason:"stop",usage:{inputTokens:8,outputTokens:3,totalTokens:11}}}
     return {id:"native-second-provider",provider:request.provider,model:request.model,text:"Still the same Trebell thread.",toolCalls:[],finishReason:"stop",usage:{inputTokens:6,outputTokens:4,totalTokens:10}};
