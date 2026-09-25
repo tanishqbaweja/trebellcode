@@ -210,3 +210,30 @@ test("Trebell Native delegation preserves parent inference provider, tools, perm
     await assert.rejects(()=>rpc.request("thread/delegate",{threadId:parent.id,task:"Second child must be blocked",permissions:"read-only",isolation:"inherit"}),/child-agent budget exhausted/i);
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
 });
+
+test("Trebell Native fork clones Trebell history and rewind invalidates crossed compaction memory",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-fork-rewind-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let phase="turn1";
+  const nativeProviderTurn=async request=>{
+    if(phase==="turn1")return{id:"first-answer",provider:request.provider,model:request.model,text:"FIRST ANSWER",toolCalls:[],finishReason:"stop",usage:{}};
+    if(phase==="compact")return{id:"compact-answer",provider:request.provider,model:request.model,text:"Keep parser decision from turn one.",toolCalls:[],finishReason:"stop",usage:{}};
+    assert.ok(request.messages.some(message=>message.trebellCompaction&&String(message.content||"").includes("parser decision")));assert.equal(request.messages.some(message=>String(message.content||"").includes("FIRST REQUEST")),false);
+    return{id:"second-answer",provider:request.provider,model:request.model,text:"SECOND ANSWER",toolCalls:[],finishReason:"stop",usage:{}};
+  };
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
+  try{
+    const source=(await rpc.request("thread/start",{model:"model-a",modelProvider:"hcnsec",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[{type:"namespace",name:"trebell_browser"}]})).thread;
+    const first=(await rpc.request("turn/start",{threadId:source.id,model:"model-a",modelProvider:"hcnsec",permissionProfile:"auto",input:[{type:"text",text:"FIRST REQUEST"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===first.id);
+    phase="compact";await rpc.request("thread/compact/start",{threadId:source.id});
+    phase="turn2";const second=(await rpc.request("turn/start",{threadId:source.id,model:"model-a",modelProvider:"hcnsec",permissionProfile:"auto",input:[{type:"text",text:"SECOND REQUEST"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===second.id);
+
+    const forkedResponse=await rpc.request("thread/fork",{threadId:source.id,excludeTurns:true});assert.notEqual(forkedResponse.thread.id,source.id);assert.equal(forkedResponse.thread.turns.length,0);assert.notEqual(forkedResponse.thread.providerSessionId,source.providerSessionId);
+    const forked=threadStore.get(forkedResponse.thread.id);assert.equal(forked.forkedFromId,source.id);assert.equal(forked.turns.length,2);assert.equal(forked.providerMeta.modelProvider,"hcnsec");assert.deepEqual(forked.providerMeta.dynamicToolNamespaces,["trebell_browser"]);assert.equal(forked.providerMeta.nativeCompaction.throughTurnId,first.id);assert.equal(forked.providerMeta.nativeFork.sourceThreadId,source.id);
+
+    const retained=(await rpc.request("thread/revert",{threadId:source.id,beforeTurnId:second.id})).thread;assert.equal(retained.turns.length,1);assert.equal(retained.turns[0].id,first.id);assert.equal(retained.providerMeta.nativeCompaction.throughTurnId,first.id);
+    const emptied=(await rpc.request("thread/revert",{threadId:source.id,beforeTurnId:first.id})).thread;assert.equal(emptied.turns.length,0);assert.equal(Object.prototype.hasOwnProperty.call(emptied.providerMeta||{},"nativeCompaction"),false);
+    const forkStillIntact=threadStore.get(forked.id);assert.equal(forkStillIntact.turns.length,2);assert.equal(forkStillIntact.providerMeta.nativeCompaction.throughTurnId,first.id);
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+});

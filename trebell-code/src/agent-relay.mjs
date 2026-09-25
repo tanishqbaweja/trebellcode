@@ -1039,6 +1039,13 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     if(method==="thread/unarchive"){const thread=threadStore.update(params.threadId,{archived:false});if(!thread)throw new Error("Thread not found");emit("thread/unarchived",{threadId:params.threadId});return {thread}}
     if(method==="thread/fork"){
       const source=threadStore.get(params.threadId);if(!source)throw new Error("Thread not found");const runtimeSession=sessions.get(source.id)||await ensureSession(source,context,{});
+      if(runtimeSession instanceof NativeAgentSession){
+        if(source.status?.type==="active")throw new Error("Stop the running Native turn before forking this thread.");
+        const providerSessionId=`native_${randomUUID()}`;
+        const providerMeta={...(source.providerMeta||{}),nativeFork:{sourceThreadId:source.id,sourceSessionId:source.providerSessionId||null,createdAt:Date.now()}};
+        const materialized=materializeAgentFork(threadStore,source,{runtime:"native",providerSessionId,providerMeta,excludeTurns:Boolean(params.excludeTurns)});
+        emit("thread/started",{thread:materialized.thread});return {thread:materialized.thread};
+      }
       let fork;
       if(runtimeSession instanceof OpenCodeAgentSession)fork=await runtimeSession.fork();
       else if(runtimeSession instanceof ClaudeAgentSession)fork=await runtimeSession.fork();
@@ -1103,7 +1110,16 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       throw Object.assign(new Error(`${runtime} does not expose a generic compaction RPC`),{code:-32601});
     }
     if(method==="thread/revert"){
-      const thread=threadStore.get(params.threadId);const session=thread&&(sessions.get(thread.id)||await ensureSession(thread,context,{}));if(session instanceof OpenCodeAgentSession){
+      const thread=threadStore.get(params.threadId);const session=thread&&(sessions.get(thread.id)||await ensureSession(thread,context,{}));
+      if(session instanceof NativeAgentSession){
+        if(thread.status?.type==="active")throw new Error("Stop the running Native turn before rewinding this thread.");
+        const index=thread.turns.findIndex(item=>item.id===params.beforeTurnId);if(index<0)throw new Error("Native rewind target turn was not found.");
+        const retained=thread.turns.slice(0,index),currentMeta={...(thread.providerMeta||{})};
+        if(currentMeta.nativeCompaction&&!retained.some(turn=>String(turn.id)===String(currentMeta.nativeCompaction.throughTurnId)))delete currentMeta.nativeCompaction;
+        await session.close().catch(()=>{});sessions.delete(thread.id);
+        const updated=threadStore.update(thread.id,{turns:retained,status:{type:"idle"},providerMeta:currentMeta});emit("thread/reverted",{threadId:thread.id,thread:updated});return {thread:updated};
+      }
+      if(session instanceof OpenCodeAgentSession){
         const turn=thread.turns?.find(item=>item.id===params.beforeTurnId);const providerMessageId=turn?.providerMessageId||turn?.items?.find(item=>item.providerMessageId)?.providerMessageId;if(!providerMessageId)throw new Error("This OpenCode turn does not have a provider message checkpoint yet");
         await session.revert(providerMessageId);const index=thread.turns.findIndex(item=>item.id===params.beforeTurnId);threadStore.update(thread.id,{turns:index>=0?thread.turns.slice(0,index):thread.turns});emit("thread/reverted",{threadId:thread.id});return {thread:threadStore.get(thread.id)};
       }
