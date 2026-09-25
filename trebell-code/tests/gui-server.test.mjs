@@ -171,6 +171,13 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     const commandsResult=await commandsResponse.json();
     assert.ok(commandsResult.declared.some(item=>item.command==="pnpm run test"&&item.confidence==="declared"));
     assert.ok(commandsResult.declared.some(item=>item.command==="pnpm run build"));
+    const verificationResponse=await fetch(gui.url+"/api/context/verification?"+new URLSearchParams({path:configProject,file:"src/session.js",semantic:"true"}));
+    assert.equal(verificationResponse.status,200);
+    const verificationResult=await verificationResponse.json();
+    assert.equal(verificationResult.pathSource,"explicit");
+    assert.deepEqual(verificationResult.paths,["src/session.js"]);
+    assert.deepEqual(verificationResult.relatedTests,["tests/session.test.js"]);
+    assert.ok(verificationResult.steps.some(item=>item.id==="targeted_tests"&&item.command==="pnpm run test"));
     const relationResponse=await fetch(gui.url+"/api/context/relations?"+new URLSearchParams({path:configProject,file:"src/session.js"}));
     assert.equal(relationResponse.status,200);
     const relationResult=await relationResponse.json();

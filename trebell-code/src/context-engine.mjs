@@ -3,6 +3,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { basename, dirname, extname, join, posix, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { parse as parseJavaScriptAst } from "@babel/parser";
+import { planVerification } from "./verification-planner.mjs";
 
 const execFileAsync=promisify(execFile);
 const SKIP=new Set([".git","node_modules","target","dist","build",".next",".cache","desktop-dist","coverage","vendor"]);
@@ -909,6 +910,24 @@ export class ContextEngine{
       }
     }
     return {declared:declared.slice(0,capped),conventional:conventional.slice(0,capped),manifests:[...new Set(manifests)].sort(),indexedFiles:index.files.size,filesDiscovered:index.paths.length,truncated:declared.length>=capped||conventional.length>=capped};
+  }
+
+  async verificationPlan({root,paths=null,riskHints=[],capabilities={},io=null}={}){
+    const {contextIo,git,index}=await this.#indexed(root,io),available=new Set(index.files.keys()),explicit=Array.isArray(paths)&&paths.length>0;
+    const requested=(explicit?paths:[...(git.changed||[])]).map(path=>contextIo.relativeFocus(path)||slash(String(path||"").replace(/^\.\//,""))).filter(Boolean);
+    const changedPaths=[...new Set(requested.filter(path=>index.paths.includes(path)))].slice(0,200),sourceTargets=changedPaths.filter(path=>index.files.has(path)).slice(0,40),related=new Set();
+    const testLike=value=>/(^|\/)(test|tests|__tests__|spec)(\/|$)|\.(test|spec)\./i.test(value),targetNames=new Map(sourceTargets.map(target=>[target,new Set((index.files.get(target)?.parsed.definitions||[]).map(item=>item.name))]));
+    if(sourceTargets.length){
+      for(const candidate of index.files.values()){
+        if(!testLike(candidate.relativePath))continue;
+        for(const target of sourceTargets){
+          if((candidate.parsed.imports||[]).some(specifier=>resolveImport(candidate.relativePath,specifier,available)===target)){related.add(candidate.relativePath);break}
+          const names=targetNames.get(target);if(names?.size&&[...(candidate.parsed.references?.keys?.()||[])].some(name=>names.has(name))){related.add(candidate.relativePath);break}
+        }
+      }
+    }
+    const commands=await this.projectCommands({root,limit:160,io}),plan=planVerification({changedPaths,projectCommands:commands,relatedTests:[...related].sort(),riskHints,capabilities});
+    return {...plan,paths:changedPaths,pathSource:explicit?"explicit":"git",relatedTests:[...related].sort(),commands:{declared:commands.declared,conventional:commands.conventional},indexedFiles:index.files.size};
   }
 
   async relatedTests({root,path=null,name=null,limit=80,io=null}={}){

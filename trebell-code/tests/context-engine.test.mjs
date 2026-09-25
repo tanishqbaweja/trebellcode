@@ -165,6 +165,23 @@ test("context engine discovers repository-declared and conventional project comm
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
+test("context engine builds risk-aware verification plans from repo changes and related tests",async()=>{
+  const root=await fixture();
+  try{
+    await writeFile(join(root,"package.json"),JSON.stringify({packageManager:"pnpm@10.0.0",scripts:{test:"node --test",build:"vite build"}},null,2),"utf8");
+    const engine=new ContextEngine(),plan=await engine.verificationPlan({root,paths:["src/auth/session.js"]});
+    assert.equal(plan.pathSource,"explicit");
+    assert.deepEqual(plan.paths,["src/auth/session.js"]);
+    assert.equal(plan.risk,"high");
+    assert.equal(plan.categories.auth,true);
+    assert.deepEqual(plan.relatedTests,["tests/auth-refresh.test.js"]);
+    assert.ok(plan.steps.some(step=>step.id==="diagnostics"));
+    assert.ok(plan.steps.some(step=>step.id==="targeted_tests"&&step.command==="pnpm run test"));
+    assert.ok(plan.steps.some(step=>step.id==="build"&&step.command==="pnpm run build"));
+    assert.ok(plan.steps.some(step=>step.id==="integration"&&step.required===true));
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
 test("context engine exposes bounded code search, source ranges, and Git context",async()=>{
   const root=await fixture();
   try{
@@ -412,6 +429,10 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
   const remoteCommands=await engine.projectCommands({root,io});
   assert.ok(remoteCommands.declared.some(item=>item.command==="npm run test"&&item.confidence==="declared"));
   assert.ok(remoteCommands.declared.some(item=>item.command==="npm run build"));
+  const remoteVerification=await engine.verificationPlan({root,io,paths:["src/auth/session.js"]});
+  assert.equal(remoteVerification.risk,"high");assert.deepEqual(remoteVerification.relatedTests,["tests/auth-refresh.test.js"]);
+  assert.ok(remoteVerification.steps.some(item=>item.id==="targeted_tests"&&item.command==="npm run test"));
+  assert.ok(remoteVerification.steps.some(item=>item.id==="build"&&item.command==="npm run build"));
   const remoteTests=await engine.relatedTests({root,io,path:"src/auth/session.js"});
   assert.deepEqual(remoteTests.data.map(item=>item.path),["tests/auth-refresh.test.js"]);
   const remoteCalls=await engine.callHierarchy({root,io,name:"RefreshSession"});

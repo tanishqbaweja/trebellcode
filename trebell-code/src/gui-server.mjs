@@ -2103,6 +2103,13 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return json(res,200,await contextEngine.projectCommands({root,limit:Number(url.searchParams.get("limit")||120),io:remote?createRemoteContextIo({environments,environmentId,root}):null}));
       }catch(error){return json(res,400,{error:error.message});}
     }
+    if(url.pathname==="/api/context/verification"){
+      try{
+        const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
+        const root=environmentPath(url.searchParams.get("path")||process.cwd(),environmentId),remote=remoteEnvironmentProfile(environmentId),files=url.searchParams.getAll("file").filter(Boolean),riskHints=url.searchParams.getAll("risk").filter(Boolean);
+        return json(res,200,await contextEngine.verificationPlan({root,paths:files.length?files:null,riskHints,capabilities:{diagnostics:!['0','false','no'].includes(String(url.searchParams.get("diagnostics")||"").toLowerCase()),semanticDiagnostics:['1','true','yes'].includes(String(url.searchParams.get("semantic")||"").toLowerCase())},io:remote?createRemoteContextIo({environments,environmentId,root}):null}));
+      }catch(error){return json(res,400,{error:error.message});}
+    }
     if(url.pathname==="/api/context/symbols"){
       try{
         const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
