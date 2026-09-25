@@ -266,9 +266,10 @@ function EventIcon({event}){
   if(event.kind==="mcpToolCall")return <Zap size={13}/>;
   return <Sparkles size={13}/>;
 }
-const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,initialAssistantText="",initialCommandOutputs,onOpenPanel},ref){
+const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,initialAssistantText="",initialCommandOutputs,initialMcpProgress,onOpenPanel},ref){
   const [assistantText,setAssistantText]=useState(initialAssistantText);
   const [commandOutputs,setCommandOutputs]=useState(()=>new Map(initialCommandOutputs||[]));
+  const [mcpProgress,setMcpProgress]=useState(()=>new Map(initialMcpProgress||[]));
   const openPanelRef=useRef(onOpenPanel);openPanelRef.current=onOpenPanel;
   const openWorkspace=useCallback(()=>openPanelRef.current?.("workspace"),[]);
   useImperativeHandle(ref,()=>({
@@ -279,17 +280,25 @@ const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,initial
       return next;
     }),
     clearCommandOutput:key=>setCommandOutputs(previous=>{const id=String(key||"");if(!previous.has(id))return previous;const next=new Map(previous);next.delete(id);return next}),
-    resetStreams:()=>{setAssistantText("");setCommandOutputs(new Map())},
+    setMcpProgress:(key,progress)=>setMcpProgress(previous=>{const id=String(key||"");if(!id)return previous;const next=new Map(previous);next.set(id,progress);return next}),
+    clearMcpProgress:key=>setMcpProgress(previous=>{const id=String(key||"");if(!previous.has(id))return previous;const next=new Map(previous);next.delete(id);return next}),
+    resetStreams:()=>{setAssistantText("");setCommandOutputs(new Map());setMcpProgress(new Map())},
   }),[]);
   if(!events.length&&!assistantText)return null;
   return <div className="agent-block"><div className="agent-heading"><div className="agent-star"><Sparkles size={16}/></div><span>Trebell agent activity</span></div><div className="timeline">
-    {events.map(event=>{const streamedOutput=commandOutputs.get(String(event.id))||"";const rowEvent=!event.output&&streamedOutput?{...event,output:streamedOutput}:event;return <ActivityEventRow key={event.id} event={rowEvent} onInspectChanges={openWorkspace}/>})}
+    {events.map(event=>{
+      const id=String(event.id),streamedOutput=commandOutputs.get(id)||"",progress=mcpProgress.get(id);
+      let rowEvent=!event.output&&streamedOutput?{...event,output:streamedOutput}:event;
+      if(progress)rowEvent={...rowEvent,title:progress.title||rowEvent.title,raw:{...(rowEvent.raw||{}),progress:progress.raw||progress}};
+      return <ActivityEventRow key={event.id} event={rowEvent} onInspectChanges={openWorkspace}/>;
+    })}
   </div>{assistantText&&<div className="assistant-answer">{assistantText}</div>}</div>;
 }));
 
 const ActivityEventRow=React.memo(function ActivityEventRow({event,onInspectChanges}){
-  return <details className={"tool-event status-"+(event.kind==="error"?"error":event.status)+" kind-"+(event.kind||"event")}><summary><span className="timeline-marker"><EventIcon event={event}/></span><strong>{event.title}</strong><em>{event.kind==="error"?"error":event.status}</em></summary>
-    <div className="tool-event-body">{event.raw?.command&&<pre>{Array.isArray(event.raw.command)?event.raw.command.join(" "):event.raw.command}</pre>}{event.output&&<pre>{event.output}</pre>}{event.raw?.changes&&<button onClick={onInspectChanges}><FileDiff size={12}/> Inspect changes</button>}<pre className="tool-json">{event.kind==="reasoning"?"Reasoning activity":JSON.stringify(event.raw,null,2)}</pre></div>
+  const [expanded,setExpanded]=useState(false);
+  return <details className={"tool-event status-"+(event.kind==="error"?"error":event.status)+" kind-"+(event.kind||"event")} onToggle={toggle=>setExpanded(toggle.currentTarget.open)}><summary><span className="timeline-marker"><EventIcon event={event}/></span><strong>{event.title}</strong><em>{event.kind==="error"?"error":event.status}</em></summary>
+    {expanded&&<div className="tool-event-body">{event.raw?.command&&<pre>{Array.isArray(event.raw.command)?event.raw.command.join(" "):event.raw.command}</pre>}{event.output&&<pre>{event.output}</pre>}{event.raw?.changes&&<button onClick={onInspectChanges}><FileDiff size={12}/> Inspect changes</button>}<pre className="tool-json">{event.kind==="reasoning"?"Reasoning activity":JSON.stringify(event.raw,null,2)}</pre></div>}
   </details>;
 });
 function ThreadFindBar({state,inputRef,onQuery,onPrevious,onNext,onClose}){
@@ -524,7 +533,7 @@ export default function App(){
   const [threads,setThreads]=useState([]); const [sections,setSections]=useState({}); const [threadMeta,setThreadMeta]=useState({});
   const [activeThread,setActiveThread]=useState(null); const [activeTurnId,setActiveTurnId]=useState(null);
   const [messages,setMessages]=useState([]); const [events,setEvents]=useState([]);
-  const assistantTextRef=useRef("");const commandOutputRef=useRef(new Map());const activityTimelineRef=useRef(null);
+  const assistantTextRef=useRef("");const commandOutputRef=useRef(new Map());const mcpProgressRef=useRef(new Map());const activityTimelineRef=useRef(null);
   const assistantStreamBufferRef=useRef(null);
   if(!assistantStreamBufferRef.current)assistantStreamBufferRef.current=createTextFrameBuffer({
     schedule:callback=>requestAnimationFrame(callback),
@@ -568,13 +577,13 @@ export default function App(){
   const [snoozeRequest,setSnoozeRequest]=useState(null); const [threadUndo,setThreadUndo]=useState(null); const [actionError,setActionError]=useState("");
   const [goal,setGoal]=useState(null); const [linkedPullRequests,setLinkedPullRequests]=useState([]); const [sourceSelectedPr,setSourceSelectedPr]=useState(null);
   const [worktreeSetup,setWorktreeSetup]=useState(null);
-  const [threadTelemetry,setThreadTelemetry]=useState({});
+  const [threadTelemetry,setThreadTelemetry]=useState({});const threadTelemetryRef=useRef({});
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false); const [initialLoadError,setInitialLoadError]=useState(""); const [initialLoadRevision,setInitialLoadRevision]=useState(0);
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"}); const [paletteDataError,setPaletteDataError]=useState("");
   const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
   const autoSettleCandidates=useMemo(()=>hasAutoSettleCandidates(threads,threadMeta),[threads,threadMeta]);
-  function resetAssistantStream(){assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();assistantTextRef.current="";commandOutputRef.current.clear();activityTimelineRef.current?.resetStreams()}
+  function resetAssistantStream(){assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();assistantTextRef.current="";commandOutputRef.current.clear();mcpProgressRef.current.clear();activityTimelineRef.current?.resetStreams()}
   function appendAssistantStream(value){assistantStreamBufferRef.current?.push(value)}
   useEffect(()=>()=>{assistantStreamBufferRef.current?.dispose();commandStreamBufferRef.current?.dispose();for(const waiter of compactionWaitersRef.current.values()){clearTimeout(waiter.timer);waiter.reject?.(new Error("Trebell closed while context compaction was pending"))}compactionWaitersRef.current.clear()},[]);
   const navigationKey=location=>[location.section,location.threadId||"",location.rightPanelOpen?location.rightPanelTab||"files":""].join("|");
@@ -717,14 +726,14 @@ export default function App(){
     return()=>{cancelled=true};
   },[paletteOpen]);
 
-  function updateThreadTelemetry(threadId,patch){
+  function updateThreadTelemetry(threadId,patch,{render=true}={}){
     if(!threadId)return;
-    setThreadTelemetry(prev=>{
-      const current=prev[threadId]||{};
-      const next=typeof patch==="function"?patch(current):patch;
-      return {...prev,[threadId]:{...current,...next}};
-    });
+    const current=threadTelemetryRef.current[threadId]||{};
+    const delta=typeof patch==="function"?patch(current):patch;
+    const next={...current,...delta};threadTelemetryRef.current[threadId]=next;
+    if(render)setThreadTelemetry(prev=>({...prev,[threadId]:next}));
   }
+  useEffect(()=>{if(rightPanelOpen&&rightPanelTab==="agents")setThreadTelemetry({...threadTelemetryRef.current})},[rightPanelOpen,rightPanelTab]);
   function settleCompactionWaiter(threadId,error=null,result={ok:true}){
     const id=String(threadId||"");const waiter=compactionWaitersRef.current.get(id);if(!waiter)return false;
     compactionWaitersRef.current.delete(id);clearTimeout(waiter.timer);
@@ -843,7 +852,7 @@ export default function App(){
     },160);
     return()=>{disposed=true;clearTimeout(timer)};
   },[threadFind.open,threadFind.query,agentRuntime,activeThread?.id,rpc,rpcStatus]);
-  useEffect(()=>{setThreadTelemetry({})},[provider,agentRuntime]);
+  useEffect(()=>{threadTelemetryRef.current={};setThreadTelemetry({})},[provider,agentRuntime]);
   async function refreshFreebuff(modelOverride=model,{strict=false}={}){
     if(agentRuntime!=="codex"||provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;
     const params=new URLSearchParams({timezone}); if(modelOverride)params.set("model",modelOverride);
@@ -1677,6 +1686,10 @@ export default function App(){
         commandOutputRef.current.delete(commandId);
         activityTimelineRef.current?.clearCommandOutput(commandId);
       }
+      if(isCurrent&&p.item.type==="mcpToolCall"){
+        const itemId=String(p.item.id||"");
+        if(itemId){mcpProgressRef.current.delete(itemId);activityTimelineRef.current?.clearMcpProgress(itemId)}
+      }
       const item=normalizeItem({...p.item,status:"completed"});
       const completedAtMs=p.completedAtMs||Date.now();
       const isActivityItem=!["userMessage","agentMessage"].includes(p.item.type);
@@ -1723,8 +1736,11 @@ export default function App(){
     else if(message.method==="item/agentMessage/delta"&&isCurrent)appendAssistantStream(p.delta||p.text||"");
     else if(message.method==="item/commandExecution/outputDelta"&&isCurrent)commandStreamBufferRef.current?.push(p.itemId||"command",p.delta||"");
     else if(message.method==="item/mcpToolCall/progress"){
-      if(threadId)updateThreadTelemetry(threadId,current=>({currentActivity:current.currentActivity?{...current.currentActivity,title:p.message||current.currentActivity.title}:current.currentActivity,lastActivityAt:Date.now()}));
-      if(isCurrent)setEvents(prev=>[...prev,{id:"mcp-"+Date.now(),kind:"mcpToolCall",title:p.message||"MCP progress",status:"running",raw:p}]);
+      if(threadId)updateThreadTelemetry(threadId,current=>({currentActivity:current.currentActivity?{...current.currentActivity,title:p.message||current.currentActivity.title}:current.currentActivity,lastActivityAt:Date.now()}),{render:rightPanelOpen&&rightPanelTab==="agents"});
+      if(isCurrent&&p.itemId){
+        const id=String(p.itemId),progress={title:p.message||"MCP progress",raw:p};
+        mcpProgressRef.current.set(id,progress);activityTimelineRef.current?.setMcpProgress(id,progress);
+      }
     }
     else if(message.method==="turn/diff/updated"&&isCurrent)setEvents(prev=>[...prev,{id:"diff-"+Date.now(),kind:"fileChange",title:"Workspace diff updated",status:"done",raw:p.diff||p}]);
     else if(message.method==="thread/tokenUsage/updated"){
@@ -3204,7 +3220,7 @@ export default function App(){
             <div className="conversation-column">
               <WorktreeSetupCard setup={worktreeSetup} onOpenTerminal={()=>{setPanel("terminal");if(worktreeSetup?.sessionId)setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:worktreeSetup.sessionId})),0)}} onDismiss={()=>setWorktreeSetup(null)}/>
               <Conversation messages={messages} onEditFromHere={conversationEditFromHere} onCite={conversationCite} allowRevert={["codex","opencode","claude"].includes(agentRuntime)} projectPath={projectPath} environmentId={workspaceEnvironmentId} threadId={activeThread?.id||null} canLoadEarlier={historyPage.threadId===activeThread?.id&&Boolean(historyPage.nextCursor)} loadingEarlier={historyPage.loading} onLoadEarlier={conversationLoadEarlier} activeFindItemId={threadFind.activeItemId}/>
-              <ActivityTimeline ref={activityTimelineRef} events={events} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} onOpenPanel={activityOpenPanel}/>
+              <ActivityTimeline ref={activityTimelineRef} events={events} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel}/>
               {guardianDenials.map(review=><div className="inline-approval" key={review.reviewId}><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div>)}
               {approvals[0]&&<div className="inline-approval"><ApprovalCard request={approvals[0]} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
               {queued.map((item,index)=><div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span>{item.native?"Queued in Codex":item.autoStartFailed?"Queued · retry needed":"Queued"}{queuedEditId===item.id?" · editing":""}</span><p>{item.text}</p><div className="queued-message-actions"><button onClick={()=>runUserAction(()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={()=>editQueued(item)} disabled={queuedEditId===item.id||item.editable===false}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={index===0} onClick={()=>runUserAction(()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={index===queued.length-1} onClick={()=>runUserAction(()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button onClick={()=>runUserAction(()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>)}

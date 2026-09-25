@@ -1161,6 +1161,8 @@ test("live command output survives page navigation without root-owned event chur
     harness.emit({method:"item/started",params:{threadId:thread.id,turnId:"command-stream-turn",item:{id:"command-stream-item",type:"commandExecution",command:["npm","test"],status:"inProgress"}}});
     const commandEvent=page.locator(".tool-event").filter({hasText:"npm test"});
     await expect(commandEvent).toBeVisible();
+    await expect(commandEvent.locator(".tool-event-body")).toHaveCount(0);
+    await commandEvent.locator("summary").click();
     harness.emit({method:"item/commandExecution/outputDelta",params:{threadId:thread.id,turnId:"command-stream-turn",itemId:"command-stream-item",delta:"line one\n"}});
     await expect(commandEvent.locator(".tool-event-body")).toContainText("line one");
     await page.getByRole("button",{name:"Settings",exact:true}).click();
@@ -1168,15 +1170,50 @@ test("live command output survives page navigation without root-owned event chur
     harness.emit({method:"item/commandExecution/outputDelta",params:{threadId:thread.id,turnId:"command-stream-turn",itemId:"command-stream-item",delta:"line two\n"}});
     await page.getByRole("button",{name:"Threads",exact:true}).click();
     const restoredEvent=page.locator(".tool-event").filter({hasText:"npm test"});
+    await restoredEvent.locator("summary").click();
     await expect(restoredEvent.locator(".tool-event-body")).toContainText("line one\nline two");
     harness.emit({method:"item/completed",params:{threadId:thread.id,turnId:"command-stream-turn",item:{id:"command-stream-item",type:"commandExecution",command:["npm","test"],status:"completed"}}});
     await expect(restoredEvent).toHaveClass(/status-done/);
     await expect(restoredEvent.locator(".tool-event-body")).toContainText("line one\nline two");
-    await restoredEvent.locator("summary").click();
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await page.screenshot({path:auditDir+"command-stream-isolation-navigation-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
+test("MCP progress updates one live activity row and survives page navigation",async({page})=>{
+  test.setTimeout(30_000);
+  const thread={id:"mcp-progress-isolation-thread",name:"MCP progress isolation fixture",preview:"Bounded MCP progress coverage",historyMode:"paginated",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexRequestHarness(thread);
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"mcp-progress-isolation-fixture");
+    await page.goto("/");
+    await page.getByRole("button",{name:/MCP progress isolation fixture/}).click();
+    await expect(page.locator(".thread-row.active")).toContainText("MCP progress isolation fixture");
+    harness.emit({method:"turn/started",params:{threadId:thread.id,turn:{id:"mcp-progress-turn",status:"inProgress"}}});
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeVisible();
+    harness.emit({method:"item/started",params:{threadId:thread.id,turnId:"mcp-progress-turn",item:{id:"mcp-progress-item",type:"mcpToolCall",server:"browser",tool:"navigate",status:"inProgress"}}});
+    const mcpRows=page.locator(".tool-event.kind-mcpToolCall");
+    await expect(mcpRows).toHaveCount(1);
+    for(let index=1;index<=64;index++)harness.emit({method:"item/mcpToolCall/progress",params:{threadId:thread.id,turnId:"mcp-progress-turn",itemId:"mcp-progress-item",message:`Browser progress ${index}/128`}});
+    await expect(mcpRows).toHaveCount(1);
+    await expect(mcpRows.first().locator("summary")).toContainText("Browser progress 64/128");
+    await page.getByRole("button",{name:"Settings",exact:true}).click();
+    await expect(page.getByRole("heading",{name:"Settings"})).toBeVisible();
+    for(let index=65;index<=128;index++)harness.emit({method:"item/mcpToolCall/progress",params:{threadId:thread.id,turnId:"mcp-progress-turn",itemId:"mcp-progress-item",message:`Browser progress ${index}/128`}});
+    await page.getByRole("button",{name:"Threads",exact:true}).click();
+    const restoredRows=page.locator(".tool-event.kind-mcpToolCall");
+    await expect(restoredRows).toHaveCount(1);
+    await expect(restoredRows.first().locator("summary")).toContainText("Browser progress 128/128");
+    harness.emit({method:"item/completed",params:{threadId:thread.id,turnId:"mcp-progress-turn",item:{id:"mcp-progress-item",type:"mcpToolCall",server:"browser",tool:"navigate",status:"completed"}}});
+    await expect(restoredRows).toHaveCount(1);
+    await expect(restoredRows.first()).toHaveClass(/status-done/);
+    await expect(restoredRows.first().locator("summary")).toContainText("browser / navigate");
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"mcp-progress-isolation-navigation-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
