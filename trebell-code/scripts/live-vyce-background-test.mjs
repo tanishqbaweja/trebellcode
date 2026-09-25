@@ -7,9 +7,11 @@ import { WebSocket } from "ws";
 import { createGuiServer } from "../src/gui-server.mjs";
 import { git, gitInfo } from "../src/git-service.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
+import { createLiveSmokeGuard } from "../src/live-smoke-policy.mjs";
 
 const MODEL=process.env.VYCE_MODEL||"deepseek-v4.1";
 const PROOF="TREBELL_BACKGROUND_OK_9217";
+const liveGuard=createLiveSmokeGuard({provider:"vyceai",model:MODEL,runtime:"codex",maxTurns:1,timeoutMs:180_000});
 
 async function freePort(){
   const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port;
@@ -65,12 +67,13 @@ try{
   ws=new WebSocket(boot.wsUrl,{origin:gui.url});await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error("relay websocket timed out")),15000);ws.once("open",()=>{clearTimeout(timer);resolve()});ws.once("error",reject)});
   const rpc=new Rpc(ws);await rpc.request("initialize",{clientInfo:{name:"trebell-live-background",title:"Trebell Live Background",version:"1.2.0-test"},capabilities:{experimentalApi:true}});ws.send(JSON.stringify({method:"initialized",params:{}}));
   const thread=await rpc.request("thread/start",{model:MODEL,modelProvider:"vyceai",cwd:worktree,approvalPolicy:"never",sandbox:"danger-full-access",ephemeral:false,threadSource:"trebell-live-background"});assert.ok(thread.thread?.id);
-  const turn=await rpc.request("turn/start",{threadId:thread.thread.id,model:MODEL,cwd:worktree,approvalPolicy:"never",sandboxPolicy:{type:"dangerFullAccess"},input:[{type:"text",text:`Use your shell/file tools. Create background-proof.txt in the current workspace containing exactly ${PROOF} and nothing else. Read it back, verify it, then reply exactly BACKGROUND_DONE.`,text_elements:[]}]});assert.ok(turn.turn?.id);
+  liveGuard.consumeTurn("background agent turn");
+  const turn=await liveGuard.withTimeout(rpc.request("turn/start",{threadId:thread.thread.id,model:MODEL,cwd:worktree,approvalPolicy:"never",sandboxPolicy:{type:"dangerFullAccess"},input:[{type:"text",text:`Use your shell/file tools. Create background-proof.txt in the current workspace containing exactly ${PROOF} and nothing else. Read it back, verify it, then reply exactly BACKGROUND_DONE.`,text_elements:[]}]}),"background agent turn");assert.ok(turn.turn?.id);
   const completed=await rpc.waitFor(msg=>msg.method==="turn/completed"&&(msg.params?.turn?.id===turn.turn.id||msg.params?.turnId===turn.turn.id));
   assert.equal(completed.params?.turn?.status||completed.params?.status,"completed");
   assert.equal(decodeText(await readFile(join(worktree,"background-proof.txt"))).trim(),PROOF);
   await assert.rejects(()=>readFile(join(repo,"background-proof.txt"),"utf8"),/ENOENT|no such file/i);
-  console.log(JSON.stringify({ok:true,provider:"vyceai",model:MODEL,isolatedWorktree:true,branch:"trebell/live-background",proof:PROOF,turnStatus:"completed"},null,2));
+  console.log(JSON.stringify({ok:true,provider:"vyceai",model:MODEL,isolatedWorktree:true,branch:"trebell/live-background",proof:PROOF,turnStatus:"completed",fingerprint:liveGuard.fingerprint()},null,2));
 }finally{
   try{ws?.close()}catch{};if(gui)await gui.close().catch(()=>{});await rm(root,{recursive:true,force:true,maxRetries:30,retryDelay:100});
 }

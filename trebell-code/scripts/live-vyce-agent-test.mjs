@@ -7,9 +7,11 @@ import { chromium } from "@playwright/test";
 import { ProviderManager } from "../src/provider-manager.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
 import { createGuiServer } from "../src/gui-server.mjs";
+import { createLiveSmokeGuard } from "../src/live-smoke-policy.mjs";
 
 const MODEL = process.env.VYCE_MODEL || "deepseek-v4.1";
 const PROOF = "TREBELL_BROWSER_PROOF_7842";
+const liveGuard=createLiveSmokeGuard({provider:"vyceai",model:MODEL,runtime:"codex",maxTurns:2,timeoutMs:240_000});
 const startedAt = Date.now();
 let report = { ok: false, phase: "boot", model: MODEL, startedAt: new Date(startedAt).toISOString() };
 
@@ -144,10 +146,11 @@ async function run() {
   report.modelCatalogCount = catalog.models.length;
 
   report.phase = "vyce-direct-inference";
-  const direct = await manager.directChat("vyceai", {
+  liveGuard.consumeTurn("Vyce direct inference");
+  const direct = await liveGuard.withTimeout(manager.directChat("vyceai", {
     model: MODEL,
     prompt: "Answer this validation question concisely: what is 3 + 4?",
-  });
+  }),"Vyce direct inference");
   if (!String(direct.text || "").trim()) throw new Error("Vyce direct inference returned an empty response");
   report.directInference = { ok: true, responseChars: String(direct.text).trim().length, usage: direct.raw?.usage || null };
 
@@ -286,14 +289,15 @@ async function run() {
       "7. Reply with only the token.",
     ].join("\n");
 
-    const turn = await rpc.request("turn/start", {
+    liveGuard.consumeTurn("Vyce agent browser/tool turn");
+    const turn = await liveGuard.withTimeout(rpc.request("turn/start", {
       threadId,
       model: MODEL,
       cwd: workspace,
       approvalPolicy: "never",
       sandboxPolicy: { type: "dangerFullAccess" },
       input: [{ type: "text", text: prompt, text_elements: [] }],
-    });
+    }),"Vyce agent browser/tool turn");
     const turnId = turn.turn?.id;
     if (!turnId) throw new Error("turn/start did not return a turn id");
 
@@ -318,6 +322,7 @@ async function run() {
       proof,
       assistantContainsProof: true,
       turnStatus: completed.params?.turn?.status || completed.params?.status || "completed",
+      fingerprint:liveGuard.fingerprint(),
       durationMs: Date.now() - startedAt,
       completedAt: new Date().toISOString(),
     };
