@@ -486,6 +486,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
   const runtimeProfileItems=runtimeProfiles?.items||[];
   const currentRuntimeProfile=runtimeProfileItems.find(item=>item.id===runtimeProfiles?.currentInstanceId)||null;
   const runtimeProfileLabel=runtimeProfiles?.label||`${agentRuntimeLabel} profile`;
+  const steerFollowUps=Boolean(runtimeCapabilities.steering)&&settings.followUpMode==="steer";
   function pickModel(event,id){
     const next=nextModelSelection(chosenModels,id,{shiftKey:event.shiftKey,allowMulti:allowMultiModel});
     onSelectedModels?.(next);if(!next.includes(model))setModel(next[0]||id);
@@ -496,7 +497,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
     {activeMention&&mentionItems.length>0&&<div className="file-mention-menu" data-testid="file-mention-menu">{mentionItems.map((item,index)=><button key={item.path||item.relativePath||index} className={index===mentionIndex?"active":""} disabled={mentionBusy} onMouseDown={event=>{event.preventDefault();chooseMention(item)}}><FileCode2 size={13}/><span><strong>{item.name||String(item.path||"").split(/[\\/]/).pop()}</strong><small>{item.relativePath||item.path}</small></span></button>)}</div>}
     {(contextChips||[]).length>0&&<div className="context-chip-row" data-testid="context-chips">{contextChips.map(chip=><span className={"context-chip kind-"+(chip.kind||"context")} data-testid="context-chip" key={chip.id||chip.path} title={chip.path}><Link2 size={11}/><strong>{chip.label||"Context"}</strong>{chip.detail&&<small>{chip.detail}</small>}<button onClick={()=>onRemoveContext(chip.path)} title="Remove context"><X size={10}/></button></span>)}</div>}
     <div className="attachment-shelf">{attachments.filter(path=>!contextPaths.has(path)).map(path=><span key={path} title={attachmentDisplayName(path)}><Paperclip size={11}/>{attachmentDisplayName(path)}<button onClick={()=>onRemoveAttachment(path)}><X size={10}/></button></span>)}</div>
-    <textarea ref={composerRef} data-testid="composer" value={prompt} onChange={e=>{onPromptEdit?.();setPrompt(e.target.value);setCaret(e.target.selectionStart)}} onClick={e=>setCaret(e.currentTarget.selectionStart)} onKeyUp={e=>setCaret(e.currentTarget.selectionStart)} onKeyDown={keyDown} onPaste={onPaste} placeholder={submitting?"Sending…":providerReady?(running?(runtimeCapabilities.steering&&settings.followUpMode==="steer"?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…"):(agentRuntime!=="codex"?`Configure ${agentRuntimeLabel} in Settings…`:provider==="freebuff"?"Sign in to Freebuff to start…":"Configure the selected provider in Settings…")} disabled={!providerReady||submitting}/>
+    <textarea ref={composerRef} data-testid="composer" value={prompt} onChange={e=>{onPromptEdit?.();setPrompt(e.target.value);setCaret(e.target.selectionStart)}} onClick={e=>setCaret(e.currentTarget.selectionStart)} onKeyUp={e=>setCaret(e.currentTarget.selectionStart)} onKeyDown={keyDown} onPaste={onPaste} placeholder={submitting?"Sending…":providerReady?(running?(steerFollowUps?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…"):(agentRuntime!=="codex"?`Configure ${agentRuntimeLabel} in Settings…`:provider==="freebuff"?"Sign in to Freebuff to start…":"Configure the selected provider in Settings…")} disabled={!providerReady||submitting}/>
     <div className="composer-bar"><div className="composer-left">
       <button className="circle-btn" onClick={onPickFiles} title="Attach files" aria-label="Attach files"><Plus size={18}/></button>
       {window.trebellDesktop?.captureScreen&&<button className="circle-btn" onClick={onCaptureScreen} title="Capture desktop screenshot" aria-label="Capture desktop screenshot"><Camera size={15}/></button>}
@@ -509,9 +510,9 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
         <div className="model-picker-wrap"><button data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onClick={()=>setModelOpen(value=>!value)} title={!providerReady?"Provider reconnecting":running&&agentRuntime==="codex"?"Select model · applies live when Codex step model switching is enabled":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}><span className="model-picker-current"><strong>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||compactModelLabel(model,freebuff)||modelError||"No models")}</strong>{runtimeProfileItems.length>1&&currentRuntimeProfile&&<small>{currentRuntimeProfile.displayName}</small>}</span><ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu">{runtimeProfileItems.length>1&&<div className="model-runtime-profiles"><p>{runtimeProfileLabel}</p>{runtimeProfileItems.map(item=><button key={item.id} className={item.id===runtimeProfiles.currentInstanceId?"selected":""} disabled={!item.available||item.authenticated===false||Boolean(runtimeProfileBusy)||running} onClick={async()=>{const switched=await onRuntimeProfile?.(item.id);if(switched!==false)setModelOpen(false)}}><span>{item.id===runtimeProfiles.currentInstanceId?<Check size={11}/>:<i/>}<strong>{item.displayName}</strong></span><small>{runtimeProfileBusy===item.id?"Switching…":item.available?(item.authenticated===false?"Sign-in required":item.version||"Ready"):item.message||"Unavailable"}</small></button>)}</div>}{models.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id,freebuff)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.agent||""}</small></button>})}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
       </>}
       <button className={"mic-btn "+(listening?"active":"")} onClick={dictate} disabled={!speechSupported} title={speechSupported?(listening?"Listening…":"Voice dictation"):"Voice dictation is unavailable on this platform"}><Mic size={15}/></button>
-      <button data-testid="send" className="send-btn" onClick={onSend} disabled={!providerReady||submitting||!prompt.trim()||promptTooLong}>{running&&settings.followUpMode==="queue"?<Plus size={16}/>:<Send size={16}/>}</button>
+      <button data-testid="send" className="send-btn" onClick={onSend} disabled={!providerReady||submitting||!prompt.trim()||promptTooLong}>{running&&!steerFollowUps?<Plus size={16}/>:<Send size={16}/>}</button>
     </div></div>
-    <div className={"composer-status"+(modelError||promptTooLong?" error":"")}><span>{promptTooLong?`Draft is ${prompt.length.toLocaleString()} characters · maximum ${MAX_COMPOSER_CHARS.toLocaleString()}`:modelError||<>{tokenLabel(tokenUsage,priceConfig)}{canCompact&&!running&&<button className="context-compact-btn" type="button" onClick={onCompact} title="Compact conversation context">Compact</button>}</>}</span><span>{prompt.length.toLocaleString()}/{MAX_COMPOSER_CHARS.toLocaleString()} · {canBackground?"Ctrl/Cmd+Enter background · ":""}{settings.followUpMode==="steer"?"Steer":"Queue"} follow-ups</span></div>
+    <div className={"composer-status"+(modelError||promptTooLong?" error":"")}><span>{promptTooLong?`Draft is ${prompt.length.toLocaleString()} characters · maximum ${MAX_COMPOSER_CHARS.toLocaleString()}`:modelError||<>{tokenLabel(tokenUsage,priceConfig)}{canCompact&&!running&&<button className="context-compact-btn" type="button" onClick={onCompact} title="Compact conversation context">Compact</button>}</>}</span><span>{prompt.length.toLocaleString()}/{MAX_COMPOSER_CHARS.toLocaleString()} · {canBackground?"Ctrl/Cmd+Enter background · ":""}{steerFollowUps?"Steer":"Queue"} follow-ups</span></div>
   </div>;
 });
 
@@ -876,7 +877,7 @@ export default function App(){
     setModelMeta(Object.fromEntries((d?.metadata?.models||[]).map(item=>[item.id,item])));
     const next=ids.includes(model)?model:(ids[0]||"");
     setModels(ids);setModel(next);setSelectedModels(next?[next]:[]);
-    if(resetThread){activeThreadRef.current=null;setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);resetAssistantStream();setQueued([]);setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null)}
+    if(resetThread){activeThreadRef.current=null;setActiveThread(null);setActiveTurnId(null);setMessages([]);setEvents([]);resetAssistantStream();setQueued([]);setQueueMode(runtimeCapabilities.nativeQueue?"unknown":"local");setQueuedEditId(null)}
     if(targetRuntime==="codex"&&targetProvider==="freebuff"&&next){
       const params=new URLSearchParams({timezone,model:next});
       api("/api/freebuff/overview?"+params).then(data=>{if(seq===modelRefreshSeqRef.current&&data)setFreebuff(data)}).catch(error=>showActionError(error,"Models refreshed, but Freebuff account state could not refresh"));
@@ -1528,7 +1529,7 @@ export default function App(){
     return()=>window.removeEventListener("keydown",key);
   },[settings,prompt,attachments,section,panel,paletteOpen,question,elicitations.length,approvals.length,snoozeRequest,threadUndo,projectPath,projectlessMode,activeThread,running,rightPanelOpen,rightPanelTab,sourceSelectedPr,linkedPullRequests,queued,sidebarOpen,displayThreads,modelPickerOpen,currentProject,agentRuntime]);
   useEffect(()=>{
-    if(agentRuntime==="codex"&&(queueMode==="native"||queued[0]?.native))return;
+    if(runtimeCapabilities.nativeQueue&&(queueMode==="native"||queued[0]?.native))return;
     if(running||!queued.length)return;
     const next=queued[0];if(next?.autoStartFailed||localQueueStartRef.current===next.id)return;
     localQueueStartRef.current=next.id;
@@ -1540,8 +1541,8 @@ export default function App(){
       setQueued(prev=>prev.map(item=>item.id===next.id?{...item,autoStartFailed:true}:item));
       setEvents(prev=>[...prev,{id:"queue-error-"+Date.now(),kind:"error",title:"Could not start queued follow-up: "+(error?.message||String(error)),status:"done"}]);
     });
-  },[running,queued,queueMode,agentRuntime]);
-  useEffect(()=>{setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null)},[agentRuntime]);
+  },[running,queued,queueMode,runtimeCapabilities.nativeQueue]);
+  useEffect(()=>{setQueueMode(runtimeCapabilities.nativeQueue?"unknown":"local");setQueuedEditId(null)},[agentRuntime,runtimeCapabilities.nativeQueue]);
 
   function handleServerRequest(client,message){
     if(message.method==="item/tool/requestUserInput"){setQuestion({client,request:message});desktopNotify("Trebell Code needs input","The running agent asked you a question.");return}
@@ -1995,7 +1996,7 @@ export default function App(){
     if(agentRuntime!=="codex"||!threadId||running||!rpc||rpcStatus!=="connected")return;
     rpc.request("thread/unsubscribe",{threadId}).catch(()=>{});
   }
-  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(agentRuntime==="codex"?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
+  async function newChat(){rememberConversationPosition();releaseInactiveCodexThread(activeThreadRef.current?.id);activeThreadRef.current=null;pendingThreadScrollRestoreRef.current=null;pendingHistoryPrependRef.current=null;followConversationEndRef.current=true;setSection("chat");setActiveThread(null);setActiveTurnId(null);setMessages([]);setHistoryPage({threadId:null,nextCursor:null,paginated:false,loading:false});setThreadFind({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});setEvents([]);setGuardianDenials([]);setGuardianBusy("");resetAssistantStream();setQueued([]);setQueueMode(runtimeCapabilities.nativeQueue?"unknown":"local");setQueuedEditId(null);setPrompt("");setAttachments([]);setContextChips([]);setTokenUsage(null);setCheckpointByTurn({});setGoal(null);setLinkedPullRequests([]);setWorktreeSetup(null);setProviderAgent("");setCollaborationMode(collaborationModes.some(item=>item.mode==="default")?"default":collaborationModes[0]?.mode||"default");if(agentRuntime!=="codex"){setSkills([]);setProviderCommands([]);setProviderAgents([])}}
   async function newGeneralChat(){
     const environmentId=workspaceEnvironmentId;
     const scratch=await api("/api/general-workspace",{method:"POST",body:{environmentId}});
@@ -2085,7 +2086,7 @@ export default function App(){
           showActionError(error,"Could not restore latest activity timeline");
         });
     }
-    if(agentRuntime==="codex")await loadNativeQueue(client,thread.id).catch(error=>setEvents(prev=>[...prev,{id:"queue-load-error-"+Date.now(),kind:"error",title:"Could not load queued follow-ups: "+(error.message||String(error)),status:"done",raw:{}}]));else{setQueueMode("local");setQueued([])}
+    if(runtimeCapabilities.nativeQueue)await loadNativeQueue(client,thread.id).catch(error=>setEvents(prev=>[...prev,{id:"queue-load-error-"+Date.now(),kind:"error",title:"Could not load queued follow-ups: "+(error.message||String(error)),status:"done",raw:{}}]));else{setQueueMode("local");setQueued([])}
     const meta=threadMeta[thread.id]||{};setReviewedFiles(meta.reviewedFiles||[]);
     if(goalData)setGoal(goalData?.goal||null);
     if(attachmentData){
@@ -2330,7 +2331,7 @@ export default function App(){
   }
   function inputsFor(text,paths){return [{type:"text",text,textElements:[]},...(paths||[]).map(path=>{const lower=String(path).toLowerCase();if(/\.(png|jpe?g|gif|webp|bmp)$/.test(lower))return{type:"localImage",path};if(/\.(mp3|wav|m4a|ogg|flac)$/.test(lower))return{type:"localAudio",path};return{type:"mention",name:String(path).split(/[\\/]/).pop(),path}})]}
   async function loadNativeQueue(client=rpcRef.current,threadId=activeThreadRef.current?.id){
-    if(agentRuntime!=="codex"||!client||!threadId)return false;
+    if(!runtimeCapabilities.nativeQueue||!client||!threadId)return false;
     try{
       let cursor=null;const submissions=[];
       do{
@@ -2345,7 +2346,7 @@ export default function App(){
     }
   }
   async function saveNativeQueuedFollowup(text,paths,chips,{queuedId=null}={}){
-    if(agentRuntime!=="codex"||!rpc||!activeThread?.id||queueMode==="local")return false;
+    if(!runtimeCapabilities.nativeQueue||!rpc||!activeThread?.id||queueMode==="local")return false;
     await validateAttachmentPaths(paths||[]);
     try{
       const input=inputsFor(text,paths);
@@ -2583,7 +2584,7 @@ export default function App(){
     if(prompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"prompt-too-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{length:prompt.length}}]);return}
     if(text.startsWith("/")){const special=await handleSpecial(text);if(special===true){setPrompt("");return}}
     if(agentRuntime==="antigravity"&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:"Antigravity does not accept video attachments",status:"done",raw:{}}]);return}
-    if(agentRuntime==="codex"&&queuedEditId&&rpc&&activeThread&&queueMode!=="local"){
+    if(runtimeCapabilities.nativeQueue&&queuedEditId&&rpc&&activeThread&&queueMode!=="local"){
       const draft={text,attachments:[...attachments],contextChips:[...contextChips]};setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);
       try{
         if(await saveNativeQueuedFollowup(draft.text,draft.attachments,draft.contextChips,{queuedId:queuedEditId}))return;
@@ -2592,8 +2593,8 @@ export default function App(){
     }
     if(running){
       const draft={text,attachments:[...attachments],contextChips:[...contextChips],model};setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);
-      if(agentRuntime==="codex"&&settings.followUpMode==="steer"&&rpc&&activeThread&&activeTurnId){try{await validateAttachmentPaths(draft.attachments);await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(draft.text,draft.attachments)});setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:draft.text,turnId:activeTurnId}])}catch(error){setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);throw error}return}
-      if(agentRuntime==="codex"&&rpc&&activeThread&&queueMode!=="local"){
+      if(runtimeCapabilities.steering&&settings.followUpMode==="steer"&&rpc&&activeThread&&activeTurnId){try{await validateAttachmentPaths(draft.attachments);await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(draft.text,draft.attachments)});setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:draft.text,turnId:activeTurnId}])}catch(error){setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);throw error}return}
+      if(runtimeCapabilities.nativeQueue&&rpc&&activeThread&&queueMode!=="local"){
         try{if(await saveNativeQueuedFollowup(draft.text,draft.attachments,draft.contextChips))return;setQueued(prev=>[...prev,{id:crypto.randomUUID(),...draft}]);return}
         catch(error){setPrompt(current=>current||draft.text);setAttachments(current=>current.length?current:draft.attachments);setContextChips(current=>current.length?current:draft.contextChips);setEvents(prev=>[...prev,{id:"queue-add-error-"+Date.now(),kind:"error",title:"Could not queue follow-up: "+(error.message||String(error)),status:"done",raw:{}}]);return}
       }
@@ -2663,8 +2664,8 @@ export default function App(){
     });
   }
   async function sendQueuedNow(item){
-    if(item?.native&&agentRuntime==="codex"&&rpc&&activeThread?.id){
-      if(running&&activeTurnId){
+    if(item?.native&&runtimeCapabilities.nativeQueue&&rpc&&activeThread?.id){
+      if(running&&activeTurnId&&runtimeCapabilities.steering){
         const originalInput=item.input?.length?item.input:inputsFor(item.draftText||item.text,item.attachments);const originalClientId=item.clientUserMessageId||("trebell-queue-"+crypto.randomUUID());
         try{
           await rpc.request("thread/queue/delete",{threadId:activeThread.id,queuedSubmissionId:item.id});
@@ -2686,12 +2687,13 @@ export default function App(){
           throw error;
         }
       }
+      if(running)return;
       const result=await rpc.request("thread/queue/start",{threadId:activeThread.id,queuedSubmissionId:item.id});const turnId=result?.turn?.id||null;
       setRunning(Boolean(turnId));setActiveTurnId(turnId);setQueued(prev=>prev.filter(q=>q.id!==item.id));
       if(turnId)setMessages(prev=>[...prev,{id:item.clientUserMessageId||("queue-start-"+item.id),role:"user",text:item.draftText||item.text,turnId}]);return;
     }
     await validateAttachmentPaths(item.attachments||[]);
-    if(agentRuntime==="codex"&&running&&rpc&&activeThread&&activeTurnId){
+    if(runtimeCapabilities.steering&&running&&rpc&&activeThread&&activeTurnId){
       await rpc.request("turn/steer",{threadId:activeThread.id,expectedTurnId:activeTurnId,input:inputsFor(item.text,item.attachments)});
       setQueued(prev=>prev.filter(q=>q.id!==item.id));setMessages(prev=>[...prev,{id:"steer-"+Date.now(),role:"user",text:item.text,turnId:activeTurnId}]);return;
     }
@@ -2714,7 +2716,7 @@ export default function App(){
   }
   async function stop(){
     if(rpc&&activeThread?.id&&activeTurnId)await rpc.request("turn/interrupt",{threadId:activeThread.id,turnId:activeTurnId});
-    if(agentRuntime==="codex"&&queueMode==="native"){setRunning(false);setActiveTurnId(null);await loadNativeQueue(rpc,activeThread?.id);return}
+    if(runtimeCapabilities.nativeQueue&&queueMode==="native"){setRunning(false);setActiveTurnId(null);await loadNativeQueue(rpc,activeThread?.id);return}
     const restored=restoreQueuedDraft({prompt,attachments,contextChips,queued,maxAttachments:MAX_COMPOSER_ATTACHMENTS});
     setPrompt(restored.prompt);setAttachments(restored.attachments);setContextChips(restored.contextChips);
     setQueued([]);setRunning(false);
@@ -3255,7 +3257,7 @@ export default function App(){
               <ActivityTimeline ref={activityTimelineRef} events={events} initialAssistantText={assistantTextRef.current} initialCommandOutputs={commandOutputRef.current} initialMcpProgress={mcpProgressRef.current} onOpenPanel={activityOpenPanel}/>
               {guardianDenials.map(review=><div className="inline-approval" key={review.reviewId}><GuardianDenialCard review={review} busy={guardianBusy===String(review.reviewId)} onApprove={approveGuardianDenial} onDismiss={dismissGuardianDenial}/></div>)}
               {approvals[0]&&<div className="inline-approval"><ApprovalCard request={approvals[0]} onResolve={(request,decision)=>runUserAction(()=>resolveApproval(request,decision),"Could not answer approval request")}/></div>}
-              {queued.map((item,index)=><div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span>{item.native?"Queued in Codex":item.autoStartFailed?"Queued · retry needed":"Queued"}{queuedEditId===item.id?" · editing":""}</span><p>{item.text}</p><div className="queued-message-actions"><button onClick={()=>runUserAction(()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={()=>editQueued(item)} disabled={queuedEditId===item.id||item.editable===false}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={index===0} onClick={()=>runUserAction(()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={index===queued.length-1} onClick={()=>runUserAction(()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button onClick={()=>runUserAction(()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>)}
+              {queued.map((item,index)=><div className={"queued-message"+(queuedEditId===item.id?" editing":"")} key={item.id}><span>{item.native?`Queued in ${agentRuntimeLabel}`:item.autoStartFailed?"Queued · retry needed":"Queued"}{queuedEditId===item.id?" · editing":""}</span><p>{item.text}</p><div className="queued-message-actions"><button disabled={running&&!runtimeCapabilities.steering} onClick={()=>runUserAction(()=>sendQueuedNow(item),"Could not send queued follow-up")}>Send now</button><button onClick={()=>editQueued(item)} disabled={queuedEditId===item.id||item.editable===false}>{queuedEditId===item.id?"Editing…":"Edit"}</button><button aria-label="Move queued follow-up up" title="Move up" disabled={index===0} onClick={()=>runUserAction(()=>moveQueued(item,-1),"Could not reorder queued follow-up")}>↑</button><button aria-label="Move queued follow-up down" title="Move down" disabled={index===queued.length-1} onClick={()=>runUserAction(()=>moveQueued(item,1),"Could not reorder queued follow-up")}>↓</button><button onClick={()=>runUserAction(()=>removeQueued(item),"Could not remove queued follow-up")}>Remove</button></div></div>)}
               {!messages.length&&!events.length&&!guardianDenials.length&&!approvals.length&&!queued.length&&!worktreeSetup&&<div className="welcome">
                 <div className="welcome-mark"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/></div>
                 <h1>{projectlessMode?"What do you want to think through?":"What do you want to build?"}</h1>

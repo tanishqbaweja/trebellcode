@@ -2651,7 +2651,7 @@ test("non-Codex runtimes open long threads with bounded history and load older p
     });
   });
   const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"opencode",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"opencode",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",followUpMode:"steer"};
   try{
     await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"opencode",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"bounded-history-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}})}));
@@ -2670,6 +2670,17 @@ test("non-Codex runtimes open long threads with bounded history and load older p
     await expect(page.getByRole("button",{name:"Load earlier messages",exact:true})).toBeVisible();
     await page.getByRole("button",{name:"Load earlier messages",exact:true}).click();
     await expect(page.locator("[data-message-id]")).toHaveCount(130);
+    for(const ws of sockets)ws.send(JSON.stringify({method:"turn/started",params:{threadId:thread.id,turn:{id:"opencode-running-turn",status:"inProgress"}}}));
+    const composer=page.getByTestId("composer");
+    await expect(composer).toHaveAttribute("placeholder","Queue a follow-up…");
+    await expect(page.locator(".composer-status")).toContainText("Queue follow-ups");
+    await composer.fill("Queue this while OpenCode is busy");
+    await composer.press("Enter");
+    const queued=page.locator(".queued-message").filter({hasText:"Queue this while OpenCode is busy"});
+    await expect(queued).toBeVisible();
+    await expect(queued.getByRole("button",{name:"Send now",exact:true})).toBeDisabled();
+    expect(requests.some(item=>item.method==="turn/steer")).toBe(false);
+    await page.screenshot({path:auditDir+"opencode-queue-fallback-1280x800.png",fullPage:true});
     await expect(page.getByRole("button",{name:"Load earlier messages",exact:true})).toHaveCount(0);
     expect(requests.filter(item=>item.method==="thread/items/list").map(item=>item.params.cursor)).toEqual(["latest","older"]);
     await page.setViewportSize({width:1280,height:800});
