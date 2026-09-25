@@ -57,6 +57,7 @@ const DEFAULT_STATE = Object.freeze({
   checkpoints: [],
   usageRecords: [],
   verificationRecords: [],
+  repositoryKnowledge: [],
 });
 
 function clone(value){ return JSON.parse(JSON.stringify(value)); }
@@ -191,6 +192,7 @@ export class TrebellStateStore {
         checkpoints:Array.isArray(parsed.checkpoints)?parsed.checkpoints:[],
         usageRecords:Array.isArray(parsed.usageRecords)?parsed.usageRecords:[],
         verificationRecords:Array.isArray(parsed.verificationRecords)?parsed.verificationRecords:[],
+        repositoryKnowledge:Array.isArray(parsed.repositoryKnowledge)?parsed.repositoryKnowledge:[],
       };
     }catch{return clone(DEFAULT_STATE);}
   }
@@ -475,5 +477,35 @@ export class TrebellStateStore {
   verificationRecords(options={}){
     const threadId=options.threadId==null?null:String(options.threadId),projectPath=options.projectPath==null?null:String(options.projectPath),hasEnvironment=Object.prototype.hasOwnProperty.call(options,"environmentId"),environmentId=normalizeEnvironmentId(options.environmentId),limit=Math.max(1,Math.min(1000,Number(options.limit)||100));
     return clone(this.state.verificationRecords.filter(item=>(!threadId||item.threadId===threadId)&&(!projectPath||item.projectPath===projectPath)&&(!hasEnvironment||normalizeEnvironmentId(item.environmentId)===environmentId)).slice(0,limit));
+  }
+  upsertRepositoryKnowledge(entry={}){
+    const now=Number(entry.updatedAt)||Date.now(),id=String(entry.id||randomUUID()).slice(0,300),index=this.state.repositoryKnowledge.findIndex(item=>item.id===id),previous=index>=0?this.state.repositoryKnowledge[index]:null;
+    const record={
+      id,
+      projectPath:String(entry.projectPath||previous?.projectPath||"").slice(0,4000),
+      environmentId:normalizeEnvironmentId(entry.environmentId??previous?.environmentId),
+      category:String(entry.category||previous?.category||"other").slice(0,120),
+      fact:String(entry.fact||previous?.fact||"").slice(0,8000),
+      scope:String(entry.scope||previous?.scope||"repository").slice(0,1000),
+      source:String(entry.source||previous?.source||"explicit").slice(0,120),
+      confidence:entry.confidence==null?(previous?.confidence??null):Math.max(0,Math.min(1,Number(entry.confidence)||0)),
+      status:["verified","stale","unverified"].includes(String(entry.status||previous?.status))?String(entry.status||previous?.status):"unverified",
+      evidence:Array.isArray(entry.evidence)?clone(entry.evidence.slice(0,80)):clone(previous?.evidence||[]),
+      lastVerifiedRevision:entry.lastVerifiedRevision==null?(previous?.lastVerifiedRevision||null):String(entry.lastVerifiedRevision||"").slice(0,200)||null,
+      staleReason:entry.staleReason==null?(previous?.staleReason||null):String(entry.staleReason||"").slice(0,2000)||null,
+      verifiedAt:entry.verifiedAt==null?(previous?.verifiedAt||null):(Number(entry.verifiedAt)||null),
+      createdAt:Number(previous?.createdAt)||Number(entry.createdAt)||now,updatedAt:now,
+    };
+    if(!record.projectPath||!record.fact)throw new Error("Repository knowledge requires projectPath and fact.");
+    if(index>=0)this.state.repositoryKnowledge[index]=record;else this.state.repositoryKnowledge.unshift(record);
+    this.state.repositoryKnowledge=this.state.repositoryKnowledge.sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0)).slice(0,5000);this.#save();return clone(record);
+  }
+  repositoryKnowledge(options={}){
+    const projectPath=options.projectPath==null?null:String(options.projectPath),hasEnvironment=Object.prototype.hasOwnProperty.call(options,"environmentId"),environmentId=normalizeEnvironmentId(options.environmentId),status=options.status==null?null:String(options.status),limit=Math.max(1,Math.min(5000,Number(options.limit)||200));
+    return clone(this.state.repositoryKnowledge.filter(item=>(!projectPath||item.projectPath===projectPath)&&(!hasEnvironment||normalizeEnvironmentId(item.environmentId)===environmentId)&&(!status||item.status===status)).slice(0,limit));
+  }
+  removeRepositoryKnowledge(id){
+    const key=String(id||""),before=this.state.repositoryKnowledge.length;this.state.repositoryKnowledge=this.state.repositoryKnowledge.filter(item=>item.id!==key);
+    if(this.state.repositoryKnowledge.length!==before)this.#save();return before!==this.state.repositoryKnowledge.length;
   }
 }
