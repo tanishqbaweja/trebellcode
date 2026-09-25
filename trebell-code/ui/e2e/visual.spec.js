@@ -1694,15 +1694,17 @@ test("goal budget panel exposes durable guardrails, exhaustion, and a clear reco
   let goal={
     threadId:thread.id,objective:"Ship the durable goal controller",status:"active",
     completionConditions:["Targeted tests pass"],constraints:["Preserve provider-independent thread state"],validationExpectations:["Inspect the goal panel screenshots"],
-    tokenBudget:12_000,timeBudgetMinutes:90,createdAt:Date.now()-300_000,updatedAt:Date.now(),
-    tokensUsed:12_000,timeUsedSeconds:3_000,tokenBudgetRemaining:0,timeBudgetRemainingMinutes:40,budgetExceeded:false,budgetExhausted:true,
+    tokenBudget:12_000,timeBudgetMinutes:90,turnBudget:5,costBudgetUsd:5,createdAt:Date.now()-300_000,updatedAt:Date.now(),
+    tokensUsed:12_000,timeUsedSeconds:3_000,turnsUsed:2,costUsedUsd:1.5,costTelemetryComplete:false,tokenBudgetRemaining:0,timeBudgetRemainingMinutes:40,turnBudgetRemaining:3,costBudgetRemainingUsd:3.5,budgetExceeded:false,budgetExhausted:true,
   };
   const recalc=patch=>{
     goal={...goal,...patch,threadId:thread.id,updatedAt:Date.now()};
     goal.tokenBudgetRemaining=goal.tokenBudget==null?null:Math.max(0,Number(goal.tokenBudget)-Number(goal.tokensUsed||0));
     goal.timeBudgetRemainingMinutes=goal.timeBudgetMinutes==null?null:Math.max(0,Number(goal.timeBudgetMinutes)-Number(goal.timeUsedSeconds||0)/60);
-    goal.budgetExceeded=Boolean((goal.tokenBudget!=null&&goal.tokensUsed>goal.tokenBudget)||(goal.timeBudgetMinutes!=null&&goal.timeUsedSeconds>goal.timeBudgetMinutes*60));
-    goal.budgetExhausted=Boolean((goal.tokenBudget!=null&&goal.tokensUsed>=goal.tokenBudget)||(goal.timeBudgetMinutes!=null&&goal.timeUsedSeconds>=goal.timeBudgetMinutes*60));
+    goal.turnBudgetRemaining=goal.turnBudget==null?null:Math.max(0,Number(goal.turnBudget)-Number(goal.turnsUsed||0));
+    goal.costBudgetRemainingUsd=goal.costBudgetUsd==null||goal.costUsedUsd==null?null:Math.max(0,Number(goal.costBudgetUsd)-Number(goal.costUsedUsd||0));
+    goal.budgetExceeded=Boolean((goal.tokenBudget!=null&&goal.tokensUsed>goal.tokenBudget)||(goal.timeBudgetMinutes!=null&&goal.timeUsedSeconds>goal.timeBudgetMinutes*60)||(goal.turnBudget!=null&&goal.turnsUsed>goal.turnBudget)||(goal.costBudgetUsd!=null&&goal.costTelemetryComplete&&goal.costUsedUsd>goal.costBudgetUsd));
+    goal.budgetExhausted=Boolean((goal.tokenBudget!=null&&goal.tokensUsed>=goal.tokenBudget)||(goal.timeBudgetMinutes!=null&&goal.timeUsedSeconds>=goal.timeBudgetMinutes*60)||(goal.turnBudget!=null&&goal.turnsUsed>=goal.turnBudget)||(goal.costBudgetUsd!=null&&goal.costTelemetryComplete&&goal.costUsedUsd>=goal.costBudgetUsd));
     return goal;
   };
   const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
@@ -1725,6 +1727,12 @@ test("goal budget panel exposes durable guardrails, exhaustion, and a clear reco
     await expect(panel.getByText("0 remaining",{exact:true})).toBeVisible();
     await expect(panel.getByText("50m / 1h 30m")).toBeVisible();
     await expect(panel.getByText("40m remaining")).toBeVisible();
+    await expect(panel.getByLabel("Turn budget")).toHaveValue("5");
+    await expect(panel.getByLabel("Cost budget")).toHaveValue("5");
+    await expect(panel.getByText("2 / 5")).toBeVisible();
+    await expect(panel.getByText("3 remaining",{exact:true})).toBeVisible();
+    await expect(panel.getByText("$1.50 / $5.00")).toBeVisible();
+    await expect(panel.getByText("Cost telemetry incomplete · not enforced")).toBeVisible();
     await expect(panel.getByText("3 saved guidance items")).toBeVisible();
     const metrics=await panel.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await page.setViewportSize({width:1280,height:800});

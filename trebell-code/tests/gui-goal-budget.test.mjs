@@ -17,12 +17,12 @@ test("Codex relay owns durable goal RPCs and blocks exhausted direct or queued w
   try{
     await fetch(gui.url+"/api/thread-meta",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId,patch:{runtime:"codex",runtimeInstanceId:"codex-default",environmentId:null,cwd:home}})});
     ws=await connect(gui.url.replace(/^http/,"ws")+"/api/codex/ws");const rpc=request(ws);
-    const set=await rpc("thread/goal/set",{threadId,objective:"Finish the Codex fixture",completionConditions:["Budget gate works"],constraints:["Do not forward exhausted work"],validationExpectations:["Trace the block"],tokenBudget:1000,timeBudgetMinutes:1,unexpected:"ignored"});
-    assert.equal(set.goal.objective,"Finish the Codex fixture");assert.equal(set.goal.timeBudgetMinutes,1);assert.equal(set.goal.timeUsedSeconds,0);assert.equal(Object.prototype.hasOwnProperty.call(set.goal,"unexpected"),false);
+    const set=await rpc("thread/goal/set",{threadId,objective:"Finish the Codex fixture",completionConditions:["Budget gate works"],constraints:["Do not forward exhausted work"],validationExpectations:["Trace the block"],tokenBudget:1000,timeBudgetMinutes:1,turnBudget:2,costBudgetUsd:10,unexpected:"ignored"});
+    assert.equal(set.goal.objective,"Finish the Codex fixture");assert.equal(set.goal.timeBudgetMinutes,1);assert.equal(set.goal.turnBudget,2);assert.equal(set.goal.costBudgetUsd,10);assert.equal(set.goal.timeUsedSeconds,0);assert.equal(Object.prototype.hasOwnProperty.call(set.goal,"unexpected"),false);
     const startedAt=Date.now()-61_000;
     await fetch(gui.url+"/api/thread-meta",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId,patch:{goal:{...set.goal,createdAt:startedAt-1_000},active:true,restartRecovery:{runtime:"codex",bootId:"fixture-boot",threadId,turnId:"turn-1",status:"active",startedAt}}})});
     const recovery=await fetch(gui.url+"/api/recovery",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId,action:"completed"})});assert.equal(recovery.status,200);
-    const exhausted=(await rpc("thread/goal/get",{threadId})).goal;assert.ok(exhausted.timeUsedSeconds>=60);assert.equal(exhausted.budgetExhausted,true);assert.equal(exhausted.timeBudgetRemainingMinutes,0);
+    const exhausted=(await rpc("thread/goal/get",{threadId})).goal;assert.ok(exhausted.timeUsedSeconds>=60);assert.equal(exhausted.turnsUsed,1);assert.equal(exhausted.turnBudgetRemaining,1);assert.equal(exhausted.costUsedUsd,null);assert.equal(exhausted.costTelemetryComplete,false);assert.equal(exhausted.budgetExhausted,true);assert.equal(exhausted.timeBudgetRemainingMinutes,0);
     await assert.rejects(rpc("turn/start",{threadId,input:[{type:"text",text:"must not reach Codex"}]}),error=>error.code===-32001&&/Goal budget exhausted/i.test(error.message));
     await assert.rejects(rpc("thread/queue/start",{threadId,queuedSubmissionId:"queued-1"}),error=>error.code===-32001&&/Goal budget exhausted/i.test(error.message));
     const traces=await fetch(gui.url+"/api/traces?threadId="+encodeURIComponent(threadId)+"&limit=20").then(response=>response.json());

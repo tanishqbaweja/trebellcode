@@ -188,9 +188,9 @@ test("thread usage reconstructs goal token totals from persisted turn usage",asy
   try{
     const state=new TrebellStateStore(env);
     state.recordUsage({runtime:"claude",threadId:"thread-a",turnId:"turn-1",at:1000,usage:{totalTokens:120,inputTokens:80,outputTokens:40}});
-    state.recordUsage({runtime:"claude",threadId:"thread-a",turnId:"turn-2",at:2000,usage:{totalTokens:230,inputTokens:180,outputTokens:50}});
+    state.recordUsage({runtime:"claude",threadId:"thread-a",turnId:"turn-2",at:2000,usage:{totalTokens:230,inputTokens:180,outputTokens:50},cost:{amount:0.25,currency:"USD"}});
     state.recordUsage({runtime:"claude",threadId:"thread-b",turnId:"turn-3",at:3000,usage:{totalTokens:999}});
-    assert.deepEqual(state.threadUsage("thread-a",{since:1500}),{totalTokens:230,inputTokens:180,cachedInputTokens:0,cacheWriteInputTokens:0,outputTokens:50,reasoningOutputTokens:0,turns:1});
+    assert.deepEqual(state.threadUsage("thread-a",{since:1500}),{totalTokens:230,inputTokens:180,cachedInputTokens:0,cacheWriteInputTokens:0,outputTokens:50,reasoningOutputTokens:0,costUsd:0.25,costKnown:1,turns:1,records:1});
   }finally{await rm(home,{recursive:true,force:true})}
 });
 

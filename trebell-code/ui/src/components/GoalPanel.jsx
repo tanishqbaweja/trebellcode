@@ -8,6 +8,11 @@ function wholeNumber(value,label){
   const number=Number(raw);if(!Number.isInteger(number)||number<=0)throw new Error(label+" must be a positive whole number.");
   return number;
 }
+function positiveNumber(value,label){
+  const raw=String(value||"").trim();if(!raw)return null;
+  const number=Number(raw);if(!Number.isFinite(number)||number<=0)throw new Error(label+" must be a positive number.");
+  return number;
+}
 function durationLabel(seconds){
   const value=Math.max(0,Number(seconds)||0);
   if(value<60)return Math.round(value)+"s";
@@ -18,11 +23,16 @@ function durationLabel(seconds){
 function remainingTimeLabel(minutes){
   const value=Math.max(0,Number(minutes)||0);return durationLabel(value*60)+" remaining";
 }
+function moneyLabel(value){
+  return "$"+Math.max(0,Number(value)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:4});
+}
 
 export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal}){
   const [objective,setObjective]=useState("");
   const [tokenBudget,setTokenBudget]=useState("");
   const [timeBudget,setTimeBudget]=useState("");
+  const [turnBudget,setTurnBudget]=useState("");
+  const [costBudgetUsd,setCostBudgetUsd]=useState("");
   const [completionConditions,setCompletionConditions]=useState("");
   const [constraints,setConstraints]=useState("");
   const [validationExpectations,setValidationExpectations]=useState("");
@@ -33,10 +43,12 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal}){
     setObjective(goal?.objective||"");
     setTokenBudget(goal?.tokenBudget==null?"":String(goal.tokenBudget));
     setTimeBudget(goal?.timeBudgetMinutes==null?"":String(goal.timeBudgetMinutes));
+    setTurnBudget(goal?.turnBudget==null?"":String(goal.turnBudget));
+    setCostBudgetUsd(goal?.costBudgetUsd==null?"":String(goal.costBudgetUsd));
     setCompletionConditions(lines(goal?.completionConditions));
     setConstraints(lines(goal?.constraints));
     setValidationExpectations(lines(goal?.validationExpectations));
-  },[goal?.threadId,goal?.objective,goal?.tokenBudget,goal?.timeBudgetMinutes,goal?.completionConditions,goal?.constraints,goal?.validationExpectations]);
+  },[goal?.threadId,goal?.objective,goal?.tokenBudget,goal?.timeBudgetMinutes,goal?.turnBudget,goal?.costBudgetUsd,goal?.completionConditions,goal?.constraints,goal?.validationExpectations]);
   useEffect(()=>setDetailsOpen(false),[thread?.id]);
   if(!thread?.id)return <div className="empty-state"><Target size={28}/><strong>No active thread</strong><span>Start or open a thread before setting a durable goal.</span></div>;
   if(rpcStatus!=="connected")return <div className="empty-state"><Target size={28}/><strong>Agent harness is reconnecting</strong><span>This thread's durable goal will be available again when the active harness reconnects.</span></div>;
@@ -47,11 +59,14 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal}){
   }
   async function save(){
     const text=objective.trim();if(!text){setError("Enter an objective first.");return}
-    let nextTokenBudget,nextTimeBudget;
-    try{nextTokenBudget=wholeNumber(tokenBudget,"Token budget");nextTimeBudget=wholeNumber(timeBudget,"Time budget")}
+    let nextTokenBudget,nextTimeBudget,nextTurnBudget,nextCostBudgetUsd;
+    try{
+      nextTokenBudget=wholeNumber(tokenBudget,"Token budget");nextTimeBudget=wholeNumber(timeBudget,"Time budget");
+      nextTurnBudget=wholeNumber(turnBudget,"Turn budget");nextCostBudgetUsd=positiveNumber(costBudgetUsd,"Cost budget");
+    }
     catch(e){setError(e.message||String(e));return}
     await setGoal({
-      objective:text,status:goal?.status||"active",tokenBudget:nextTokenBudget,timeBudgetMinutes:nextTimeBudget,
+      objective:text,status:goal?.status||"active",tokenBudget:nextTokenBudget,timeBudgetMinutes:nextTimeBudget,turnBudget:nextTurnBudget,costBudgetUsd:nextCostBudgetUsd,
       completionConditions:parseLines(completionConditions),constraints:parseLines(constraints),validationExpectations:parseLines(validationExpectations),
     });
   }
@@ -59,7 +74,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal}){
     if(!rpc||!confirm("Clear this thread goal?"))return;setBusy("clear");setError("");
     try{
       await rpc.request("thread/goal/clear",{threadId:thread.id});onGoal?.(null);
-      setObjective("");setTokenBudget("");setTimeBudget("");setCompletionConditions("");setConstraints("");setValidationExpectations("");setDetailsOpen(false);
+      setObjective("");setTokenBudget("");setTimeBudget("");setTurnBudget("");setCostBudgetUsd("");setCompletionConditions("");setConstraints("");setValidationExpectations("");setDetailsOpen(false);
     }
     catch(e){setError(e.message||String(e))}finally{setBusy("")}
   }
@@ -75,10 +90,14 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal}){
     <div className="goal-budget-grid">
       <label>Token budget <span>(optional)</span><input aria-label="Token budget" type="number" min="1" step="1" value={tokenBudget} onChange={e=>setTokenBudget(e.target.value)} placeholder="No token cap"/></label>
       <label>Time budget <span>(minutes, optional)</span><input aria-label="Time budget" type="number" min="1" step="1" value={timeBudget} onChange={e=>setTimeBudget(e.target.value)} placeholder="No time cap"/></label>
+      <label>Turn budget <span>(optional)</span><input aria-label="Turn budget" type="number" min="1" max="500" step="1" value={turnBudget} onChange={e=>setTurnBudget(e.target.value)} placeholder="No turn cap"/></label>
+      <label>Cost budget <span>(USD, optional)</span><input aria-label="Cost budget" type="number" min="0.0001" step="0.01" value={costBudgetUsd} onChange={e=>setCostBudgetUsd(e.target.value)} placeholder="No cost cap"/></label>
     </div>
     {goal&&<div className="goal-metrics">
       <div className={goal.tokenBudgetRemaining===0?"exhausted":""}><span>Tokens used</span><strong>{tokensUsed.toLocaleString()}{goal.tokenBudget!=null?" / "+Number(goal.tokenBudget).toLocaleString():""}</strong><small>{goal.tokenBudgetRemaining==null?"No token cap":Number(goal.tokenBudgetRemaining).toLocaleString()+" remaining"}</small></div>
       <div className={goal.timeBudgetRemainingMinutes===0?"exhausted":""}><span>Agent work time</span><strong>{durationLabel(timeUsedSeconds)}{goal.timeBudgetMinutes!=null?" / "+durationLabel(Number(goal.timeBudgetMinutes)*60):""}</strong><small>{goal.timeBudgetRemainingMinutes==null?"No time cap":remainingTimeLabel(goal.timeBudgetRemainingMinutes)}</small></div>
+      <div className={goal.turnBudgetRemaining===0?"exhausted":""}><span>Model turns</span><strong>{Number(goal.turnsUsed||0).toLocaleString()}{goal.turnBudget!=null?" / "+Number(goal.turnBudget).toLocaleString():""}</strong><small>{goal.turnBudgetRemaining==null?"No turn cap":Number(goal.turnBudgetRemaining).toLocaleString()+" remaining"}</small></div>
+      <div className={goal.costBudgetUsd!=null&&goal.costTelemetryComplete&&Number(goal.costBudgetRemainingUsd)===0?"exhausted":""}><span>Known cost</span><strong>{goal.costUsedUsd==null?"Unavailable":moneyLabel(goal.costUsedUsd)+(goal.costBudgetUsd!=null?" / "+moneyLabel(goal.costBudgetUsd):"")}</strong><small>{goal.costBudgetUsd==null?"No cost cap":!goal.costTelemetryComplete?"Cost telemetry incomplete · not enforced":goal.costBudgetRemainingUsd==null?"Waiting for cost telemetry":moneyLabel(goal.costBudgetRemainingUsd)+" remaining"}</small></div>
     </div>}
     <details className="goal-details" open={detailsOpen} onToggle={e=>setDetailsOpen(e.currentTarget.open)}>
       <summary><span><strong>Completion & guardrails</strong><small>{guidanceCount?guidanceCount+" saved guidance item"+(guidanceCount===1?"":"s"):"Optional durable guidance for long-running work."}</small></span><ChevronDown size={14}/></summary>
