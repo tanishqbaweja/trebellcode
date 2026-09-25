@@ -1095,7 +1095,7 @@ export default function App(){
     }finally{setCollaborationModeBusy(false)}
   }
   async function loadThreadRuntimeProfiles(client=rpc,threadId=activeThreadRef.current?.id){
-    if(!["codex","claude"].includes(agentRuntime)||!client||rpcStatus!=="connected"||!threadId){
+    if(!runtimeCapabilities.runtimeProfileSwitching||!client||rpcStatus!=="connected"||!threadId){
       setThreadRuntimeProfiles({threadId:null,supported:false,currentInstanceId:null,items:[]});return {threadId:null,supported:false,currentInstanceId:null,items:[]};
     }
     try{
@@ -1110,7 +1110,7 @@ export default function App(){
     }
   }
   async function switchThreadRuntimeProfile(instanceId){
-    const threadId=activeThreadRef.current?.id;if(!["codex","claude"].includes(agentRuntime)||!rpc||rpcStatus!=="connected"||!threadId||!instanceId)return false;
+    const threadId=activeThreadRef.current?.id;if(!runtimeCapabilities.runtimeProfileSwitching||!rpc||rpcStatus!=="connected"||!threadId||!instanceId)return false;
     setThreadRuntimeProfileBusy(instanceId);
     try{
       const result=await rpc.request("thread/runtimeInstance/set",{threadId,instanceId});
@@ -3187,6 +3187,7 @@ export default function App(){
             ["Delegation",runtimeCapabilities.delegation],
             ["Harness tools",runtimeCapabilities.harnessTools],
             ["Steering",runtimeCapabilities.steering],
+            ["Runtime profiles",runtimeCapabilities.runtimeProfileSwitching],
           ].map(([label,value])=><div key={label} className={value?"available":"unavailable"}><span>{label}</span><strong>{capabilityStatus(value)}</strong></div>)}
         </div>
       </section>

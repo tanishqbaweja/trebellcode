@@ -3110,6 +3110,7 @@ test("Diff review actions roll back and stay visible when persistence fails",asy
     await expect(capabilities.locator(".runtime-capability-grid>div").filter({hasText:"LSP"})).toContainText("available");
     await expect(capabilities.locator(".runtime-capability-grid>div").filter({hasText:"Sandbox"})).toContainText("not exposed");
     await expect(capabilities.locator(".runtime-capability-grid>div").filter({hasText:"Delegation"})).toContainText("not exposed");
+    await expect(capabilities.locator(".runtime-capability-grid>div").filter({hasText:"Runtime profiles"})).toContainText("not exposed");
     await expect(panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Agents",exact:true})).toHaveCount(0);
     const trace=panel.getByTestId("runtime-trace");
     await expect(trace).toContainText("Execution trace");
@@ -5404,6 +5405,13 @@ test("Claude thread can switch compatible account profiles from the model picker
     const compact=await page.locator(".composer-bar").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(compact.scroll).toBeLessThanOrEqual(compact.client+1);
     await page.screenshot({path:auditDir+"chat-claude-profile-switched-1280x800.png",fullPage:true});
+    await picker.click();
+    await page.getByTestId("right-panel-toggle").click();
+    const panel=page.getByTestId("right-panel");
+    await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Runtime",exact:true}).click();
+    const capabilities=panel.getByTestId("runtime-capabilities");
+    await expect(capabilities.locator(".runtime-capability-grid>div").filter({hasText:"Runtime profiles"})).toContainText("available");
+    await page.screenshot({path:auditDir+"runtime-capability-matrix-claude-1280x800.png",fullPage:true});
   }finally{
     await relay.close();
     await new Promise(resolve=>relayServer.close(()=>resolve()));

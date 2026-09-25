@@ -28,6 +28,7 @@ test("agent runtime registry exposes real harnesses and capability-gates configu
     assert.equal(manager.capabilities("codex").nativeSandbox,true);
     assert.equal(manager.capabilities("opencode").nativeLsp,true);
     assert.equal(manager.capabilities("claude").rewind,true);
+    assert.equal(manager.capabilities("claude").runtimeProfileSwitching,true);
     assert.equal(manager.capabilities("cursor").fork,"runtime");
     assert.equal(manager.capabilities("cursor").clientFilesystem,true);
     assert.equal(manager.capabilities("cursor").nativeSandbox,false);
@@ -47,6 +48,7 @@ test("runtime capabilities describe adapter behavior without pretending unsuppor
   assert.equal(openCode.compaction,true);
   assert.equal(openCode.nativeLsp,true);
   assert.equal(openCode.mcpInjection,false);
+  assert.equal(runtimeCapabilities("claude").runtimeProfileSwitching,true);
   const acp=runtimeCapabilities("grok");
   assert.equal(acp.queue,true,"Trebell supplies the queue for external runtimes");
   assert.equal(acp.fork,"runtime","ACP forking must stay conditional on what the connected runtime advertises");
