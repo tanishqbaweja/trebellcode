@@ -884,7 +884,7 @@ export default function App(){
   },[threadFind.open,threadFind.query,runtimeCapabilities.threadSearch,activeThread?.id,rpc,rpcStatus]);
   useEffect(()=>{threadTelemetryRef.current={};setThreadTelemetry({})},[provider,agentRuntime]);
   async function refreshFreebuff(modelOverride=model,{strict=false}={}){
-    if(agentRuntime!=="codex"||provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;
+    if(!["native","codex"].includes(agentRuntime)||provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;
     const params=new URLSearchParams({timezone}); if(modelOverride)params.set("model",modelOverride);
     try{
       const data=await api("/api/freebuff/overview?"+params);if(data)setFreebuff(data);return data;
@@ -1395,10 +1395,10 @@ export default function App(){
   },[section,rightPanelOpen,rightPanelTab]);
   useEffect(()=>{
     const visible=section==="chat"||section==="freebuff"||(rightPanelOpen&&rightPanelTab==="runtime");
-    if(!visible||agentRuntime!=="codex"||provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;
+    if(!visible||!["native","codex"].includes(agentRuntime)||provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;
     const poll=startVisibilityPoll(()=>refreshFreebuff(model),{intervalMs:15000});return()=>poll.dispose();
   },[section,rightPanelOpen,rightPanelTab,agentRuntime,provider,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
-  useEffect(()=>{if(agentRuntime!=="codex"||provider!=="freebuff"||!running||!(bootstrap.loggedIn||bootstrap.mock))return;const ping=()=>{const p=new URLSearchParams({timezone});if(model)p.set("model",model);fetch("/api/freebuff/heartbeat?"+p,{method:"POST"}).catch(()=>{})};ping();const timer=setInterval(ping,45000);return()=>clearInterval(timer)},[agentRuntime,provider,running,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
+  useEffect(()=>{if(!["native","codex"].includes(agentRuntime)||provider!=="freebuff"||!running||!(bootstrap.loggedIn||bootstrap.mock))return;const ping=()=>{const p=new URLSearchParams({timezone});if(model)p.set("model",model);fetch("/api/freebuff/heartbeat?"+p,{method:"POST"}).catch(()=>{})};ping();const timer=setInterval(ping,45000);return()=>clearInterval(timer)},[agentRuntime,provider,running,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
 
   useEffect(()=>{
     if(!rpc||rpcStatus!=="connected")return;
@@ -2781,7 +2781,7 @@ export default function App(){
       catch(error){setEvents(prev=>[...prev,{id:"background-stop-error-"+Date.now(),kind:"error",title:"Could not stop background processes: "+(error.message||String(error)),status:"done",raw:{}}])}
       return true
     }
-    if(command==="/model"){setSection(provider==="freebuff"?"freebuff":"settings");return true}
+    if(command==="/model"){setSection(["native","codex"].includes(agentRuntime)&&provider==="freebuff"?"freebuff":"settings");return true}
     if(command==="/terminal"){setPanel("terminal");return true}
     if(command==="/diff"){openRightPanel("diff");return true}
     if(command==="/git"){openRightPanel("source");return true}
@@ -3442,7 +3442,7 @@ export default function App(){
       </section>
       {runtimeCapabilities.backgroundProcesses&&activeThread?.id&&<AgentBackgroundTerminals rpc={rpc} rpcStatus={rpcStatus} threadId={activeThread.id}/>}
       <RuntimeTrace threadId={activeThread?.id||null}/>
-      {agentRuntime==="codex"&&provider==="freebuff"&&<FreebuffMini freebuff={freebuff} model={model} onOpen={()=>setSection("freebuff")}/>}
+      {["native","codex"].includes(agentRuntime)&&provider==="freebuff"&&<FreebuffMini freebuff={freebuff} model={model} onOpen={()=>setSection("freebuff")}/>}
       <section className="runtime-activity"><strong>Latest activity</strong><p>{events.find(event=>event.status==="running")?.title||events.at(-1)?.title||"Waiting for a task"}</p></section>
     </div>;
   }
@@ -3528,7 +3528,7 @@ export default function App(){
         </div>}
 
         {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><DeferredSurface label="Loading projects…"><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onProjectUpdated={project=>{if(project?.path===projectPath&&(project?.environmentId||null)===(workspaceEnvironmentId||null))setCurrentProject(project)}} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></DeferredSurface></div>}
-        {section==="freebuff"&&agentRuntime==="codex"&&provider==="freebuff"&&<div className="secondary-page"><div className="page-header"><div><h1>Freebuff</h1><p>Account, balance, model pricing and session state.</p></div></div><DeferredSurface label="Loading Freebuff…"><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model,{strict:true})}/></DeferredSurface></div>}
+        {section==="freebuff"&&["native","codex"].includes(agentRuntime)&&provider==="freebuff"&&<div className="secondary-page"><div className="page-header"><div><h1>Freebuff</h1><p>Account, balance, model pricing and session state.</p></div></div><DeferredSurface label="Loading Freebuff…"><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model,{strict:true})}/></DeferredSurface></div>}
         {section==="tools"&&runtimeCapabilities.harnessTools&&<div className="secondary-page full"><DeferredSurface label="Loading harness capabilities…"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} onHistoryImported={historyImported} onSkillsRefresh={refreshSkillsAfterMutation} platform={bootstrap.platform}/></DeferredSurface></div>}
         {section==="environments"&&<div className="secondary-page full"><DeferredSurface label="Loading environments…"><EnvironmentsPage/></DeferredSurface></div>}
       {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}
