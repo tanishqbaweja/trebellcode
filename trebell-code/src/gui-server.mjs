@@ -2922,7 +2922,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         stopCodexAppServers(),
         stopChildProcess(bridge?.child),
         providerBridge?.close(),
-        eventJournal.flush(),
+        eventJournal.close(),
       ]);
       remoteControl=null;
       await new Promise(resolve=>server.close(resolve));
