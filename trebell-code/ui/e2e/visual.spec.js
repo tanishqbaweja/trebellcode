@@ -1655,7 +1655,7 @@ test("opening a thread surfaces persistent-state read failures without leaking t
     await expect(firstRow).toHaveClass(/active/);
     await expect(page.locator(".header-pr").filter({hasText:"#91"})).toBeVisible();
     await page.locator(".workspace-header").getByRole("button",{name:"Thread goal",exact:true}).click();
-    const objective=page.locator(".goal-panel textarea");
+    const objective=page.getByTestId("goal-panel").getByLabel("Objective",{exact:true});
     await expect(objective).toHaveValue("Do not leak this goal");
 
     failFirstPersistentReads=true;
@@ -1685,6 +1685,70 @@ test("opening a thread surfaces persistent-state read failures without leaking t
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await page.screenshot({path:auditDir+"thread-persistent-read-error-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
+test("goal budget panel exposes durable guardrails, exhaustion, and a clear recovery path",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"goal-budget-visual-thread",name:"Goal budget visual fixture",preview:"Durable goal budget state",cwd:process.cwd(),createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
+  let goal={
+    threadId:thread.id,objective:"Ship the durable goal controller",status:"active",
+    completionConditions:["Targeted tests pass"],constraints:["Preserve provider-independent thread state"],validationExpectations:["Inspect the goal panel screenshots"],
+    tokenBudget:12_000,timeBudgetMinutes:90,createdAt:Date.now()-300_000,updatedAt:Date.now(),
+    tokensUsed:12_000,timeUsedSeconds:3_000,tokenBudgetRemaining:0,timeBudgetRemainingMinutes:40,budgetExceeded:false,budgetExhausted:true,
+  };
+  const recalc=patch=>{
+    goal={...goal,...patch,threadId:thread.id,updatedAt:Date.now()};
+    goal.tokenBudgetRemaining=goal.tokenBudget==null?null:Math.max(0,Number(goal.tokenBudget)-Number(goal.tokensUsed||0));
+    goal.timeBudgetRemainingMinutes=goal.timeBudgetMinutes==null?null:Math.max(0,Number(goal.timeBudgetMinutes)-Number(goal.timeUsedSeconds||0)/60);
+    goal.budgetExceeded=Boolean((goal.tokenBudget!=null&&goal.tokensUsed>goal.tokenBudget)||(goal.timeBudgetMinutes!=null&&goal.timeUsedSeconds>goal.timeBudgetMinutes*60));
+    goal.budgetExhausted=Boolean((goal.tokenBudget!=null&&goal.tokensUsed>=goal.tokenBudget)||(goal.timeBudgetMinutes!=null&&goal.timeUsedSeconds>=goal.timeBudgetMinutes*60));
+    return goal;
+  };
+  const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
+    if(message.method==="thread/goal/get"){ws.send(JSON.stringify({id:message.id,result:{goal}}));return true}
+    if(message.method==="thread/goal/set"){ws.send(JSON.stringify({id:message.id,result:{goal:recalc(message.params||{})}}));return true}
+    if(message.method==="thread/goal/clear"){goal=null;ws.send(JSON.stringify({id:message.id,result:{ok:true}}));return true}
+    return false;
+  }});
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"goal-budget-visual-fixture");
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Goal budget visual fixture"]')});
+    await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
+    await page.locator(".workspace-header").getByRole("button",{name:"Thread goal",exact:true}).click();
+    const panel=page.getByTestId("goal-panel");await expect(panel).toBeVisible();
+    await expect(panel.getByLabel("Objective",{exact:true})).toHaveValue("Ship the durable goal controller");
+    await expect(panel.getByTestId("goal-budget-alert")).toContainText("New turns are blocked");
+    await expect(panel.getByText("12,000 / 12,000")).toBeVisible();
+    await expect(panel.getByText("0 remaining",{exact:true})).toBeVisible();
+    await expect(panel.getByText("50m / 1h 30m")).toBeVisible();
+    await expect(panel.getByText("40m remaining")).toBeVisible();
+    await expect(panel.getByText("3 saved guidance items")).toBeVisible();
+    const metrics=await panel.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.setViewportSize({width:1280,height:800});
+    await page.screenshot({path:auditDir+"goal-budget-exhausted-dark-1280x800.png",fullPage:true});
+
+    await panel.locator(".goal-details>summary").click();
+    await expect(panel.getByLabel("Completion conditions",{exact:true})).toHaveValue("Targeted tests pass");
+    await expect(panel.getByLabel("Constraints",{exact:true})).toHaveValue("Preserve provider-independent thread state");
+    const validationField=panel.getByLabel("Validation expectations",{exact:true});await expect(validationField).toHaveValue("Inspect the goal panel screenshots");
+    const expandedMetrics=await panel.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(expandedMetrics.scroll).toBeLessThanOrEqual(expandedMetrics.client+1);
+    const detailMetrics=await panel.locator(".goal-details").evaluate(node=>({client:node.clientHeight,scroll:node.scrollHeight}));expect(detailMetrics.scroll).toBeLessThanOrEqual(detailMetrics.client+1);
+    await validationField.scrollIntoViewIfNeeded();
+    await page.screenshot({path:auditDir+"goal-budget-guardrails-dark-1280x800.png",fullPage:true});
+
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
+    await expect.poll(()=>panel.getByLabel("Objective",{exact:true}).evaluate(node=>getComputedStyle(node).backgroundColor)).toBe("rgb(255, 255, 255)");
+    await page.screenshot({path:auditDir+"goal-budget-guardrails-light-1280x800.png",fullPage:true});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
+
+    await panel.getByRole("spinbutton",{name:/Token budget/}).fill("15000");
+    await panel.getByRole("button",{name:"Update goal",exact:true}).click();
+    await expect(panel.getByTestId("goal-budget-alert")).toHaveCount(0);
+    await expect(panel.getByText("3,000 remaining")).toBeVisible();
+    await page.screenshot({path:auditDir+"goal-budget-recovered-dark-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
