@@ -24,9 +24,12 @@ function compactProtocolData(method,params={}){
     id:item.id||null,type:item.type||null,status:item.status||null,
     command:Array.isArray(item.command)?item.command.slice(0,20).map((part,index,array)=>/^(?:--api-key|--token|--password|--secret)$/i.test(String(array[index-1]||""))?"[redacted]":part):undefined,
     tool:item.tool||item.name||undefined,server:item.server||undefined,
+    exitCode:item.exitCode??null,durationMs:item.durationMs??null,success:item.success??null,
   };
   if(params.status&&!data.status)data.status=params.status?.type||params.status;
   if(params.reason)data.reason=String(params.reason).slice(0,1000);
+  if(params.message)data.message=String(params.message).slice(0,2000);
+  if(params.checkpointId)data.checkpointId=String(params.checkpointId).slice(0,200);
   if(/requestApproval|Approval$/i.test(method))data.approvalKind=method;
   return data;
 }

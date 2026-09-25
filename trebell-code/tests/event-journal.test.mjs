@@ -40,3 +40,17 @@ test("event journal keeps its in-memory trace ring bounded",async()=>{
     assert.equal(items.at(-1).name,"event-40");
   }finally{await rm(home,{recursive:true,force:true})}
 });
+
+test("event journal keeps compact tool completion and surfaced error evidence",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-events-evidence-"));
+  try{
+    const journal=new EventJournal({TREBELL_HOME:home},{maxRecords:100,maxBytes:256*1024});
+    journal.recordProtocol({runtime:"claude",method:"item/completed",params:{threadId:"thread-2",turnId:"turn-2",checkpointId:"checkpoint-2",item:{id:"cmd-2",type:"commandExecution",status:"completed",command:["npm","test"],exitCode:0,durationMs:123,success:true}}});
+    journal.recordProtocol({runtime:"claude",method:"error",params:{threadId:"thread-2",turnId:"turn-2",message:"Provider command failed visibly"}});
+    await journal.flush();
+    const items=journal.list({threadId:"thread-2"});
+    assert.equal(items.length,2);
+    assert.equal(items[0].name,"error");assert.equal(items[0].data.message,"Provider command failed visibly");
+    assert.equal(items[1].name,"item/completed");assert.equal(items[1].data.item.exitCode,0);assert.equal(items[1].data.item.durationMs,123);assert.equal(items[1].data.item.success,true);assert.equal(items[1].data.checkpointId,"checkpoint-2");
+  }finally{await rm(home,{recursive:true,force:true})}
+});
