@@ -126,6 +126,36 @@ test("context engine exposes deterministic symbol and file relationship queries"
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
+test("context engine exposes bounded code search, source ranges, and Git context",async()=>{
+  const root=await fixture();
+  try{
+    const padding="// filler line\n".repeat(5200),marker="export const DistantNeedle = 42;\n";
+    await writeFile(join(root,"src","large.js"),padding+marker,"utf8");
+    await execFileAsync("git",["add","src/large.js"],{cwd:root});
+    const engine=new ContextEngine();
+    const literal=await engine.searchCode({root,query:"distantneedle",limit:10});
+    assert.equal(literal.source,"git-grep");
+    assert.equal(literal.data.length,1);
+    assert.equal(literal.data[0].path,"src/large.js");
+    assert.ok(literal.data[0].line>5000,"search must inspect the full indexed file, not only the 64 KB cache sample");
+    const regex=await engine.searchCode({root,query:"DistantNeedle\\s*=\\s*42",regex:true,caseSensitive:true,limit:10});
+    assert.equal(regex.data[0].line,literal.data[0].line);
+
+    const source=await engine.readSourceRange({root,path:"src/large.js",startLine:literal.data[0].line,endLine:literal.data[0].line+20,maxLines:4});
+    assert.equal(source.startLine,literal.data[0].line);
+    assert.ok(source.endLine-source.startLine<4);
+    assert.match(source.content,/DistantNeedle = 42/);
+    await assert.rejects(()=>engine.readSourceRange({root,path:"../outside.js",startLine:1}),/not indexed/i);
+
+    await writeFile(join(root,"src","auth","session.js"),`import { rotateRefreshToken } from "./token.js";\nexport class RefreshSession { refresh(token) { return rotateRefreshToken(token); } }\nexport const gitContextMarker = true;\n`,"utf8");
+    const git=await engine.gitContext({root});
+    assert.equal(git.isGit,true);
+    assert.ok(git.changed.includes("src/auth/session.js"));
+    assert.match(git.status,/src\/auth\/session\.js/);
+    assert.match(git.diff,/gitContextMarker/);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
 test("large scoped repository instructions are bounded without dropping nested guidance",async()=>{
   const root=await fixture();
   try{
@@ -231,6 +261,11 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
   const environments={
     async executeArgv(_id,{command,args=[]}){
       if(command==="git"&&args.includes("ls-files"))return ok([...files.keys()].join("\0")+"\0");
+      if(command==="git"&&args.includes("grep")){
+        const pattern=String(args[args.indexOf("-e")+1]||"").toLowerCase();
+        const matches=[...files].filter(([,content])=>String(content).toLowerCase().includes(pattern)).map(([path])=>path);
+        return matches.length?ok(matches.join("\0")+"\0"):{exitCode:1,stdout:"",stderr:"",timedOut:false};
+      }
       if(command==="git"&&args.includes("status"))return ok(status);
       if(command==="git"&&args.includes("diff"))return ok(status?"diff --git a/src/auth/session.js b/src/auth/session.js\n":"");
       if(command==="git"&&args.includes("rev-parse"))return ok("remote-head-1\n");
@@ -268,9 +303,14 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
   assert.equal(second.stats.reparsed,0);assert.ok(second.stats.reused>=4);
   assert.equal(metadataCalls,afterFirstMetadata,"clean Git state should not restat cached remote source files");
   assert.equal(contentCalls,afterFirstContent,"clean remote packets should reuse indexed source samples instead of rereading candidate files");
+  const remoteSearch=await engine.searchCode({root,io,query:"rotateRefreshToken",limit:10});
+  assert.equal(remoteSearch.source,"git-grep");assert.ok(remoteSearch.data.some(item=>item.path==="src/auth/session.js"));
+  const remoteSource=await engine.readSourceRange({root,io,path:"src/auth/session.js",startLine:1,endLine:2});
+  assert.match(remoteSource.content,/rotateRefreshToken/);assert.equal(remoteSource.endLine,2);
   files.set("src/auth/session.js",files.get("src/auth/session.js")+"export const changed = true;\n");versions.set("src/auth/session.js","v2");status=" M src/auth/session.js\n";
   const third=await engine.buildPacket({root,io,task:"refresh session",maxTokens:1800,maxFiles:8});
   assert.equal(third.stats.reparsed,1);assert.ok(third.stats.reused>=3);
+  const remoteGit=await engine.gitContext({root,io});assert.equal(remoteGit.isGit,true);assert.ok(remoteGit.changed.includes("src/auth/session.js"));
 });
 
 test("context excerpts fall back to the full file when a relevant symbol is beyond the cached sample",async()=>{

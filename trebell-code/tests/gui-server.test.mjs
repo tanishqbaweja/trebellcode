@@ -159,6 +159,16 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     const relationResult=await relationResponse.json();
     assert.equal(relationResult.path,"src/session.js");
     assert.ok(relationResult.definitions.some(item=>item.name==="RefreshSession"));
+    const codeSearchResponse=await fetch(gui.url+"/api/context/search?"+new URLSearchParams({path:configProject,q:"RefreshSession",limit:"10"}));
+    assert.equal(codeSearchResponse.status,200);
+    const codeSearch=await codeSearchResponse.json();
+    assert.ok(codeSearch.data.some(item=>item.path==="src/session.js"&&item.line===1));
+    const sourceResponse=await fetch(gui.url+"/api/context/source?"+new URLSearchParams({path:configProject,file:"src/session.js",startLine:"1",endLine:"1"}));
+    assert.equal(sourceResponse.status,200);
+    const sourceRange=await sourceResponse.json();
+    assert.equal(sourceRange.path,"src/session.js");assert.equal(sourceRange.startLine,1);assert.equal(sourceRange.endLine,1);assert.match(sourceRange.content,/RefreshSession/);
+    const gitContextResponse=await fetch(gui.url+"/api/context/git?"+new URLSearchParams({path:configProject}));
+    assert.equal(gitContextResponse.status,200);assert.equal((await gitContextResponse.json()).isGit,false);
     const missingRelationResponse=await fetch(gui.url+"/api/context/relations?"+new URLSearchParams({path:configProject,file:"../outside.js"}));
     assert.equal(missingRelationResponse.status,400);
     const remoteContextResponse=await fetch(gui.url+"/api/context/packet",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({path:"/srv/app",task:"remote task",environmentId:"ssh-test"})});

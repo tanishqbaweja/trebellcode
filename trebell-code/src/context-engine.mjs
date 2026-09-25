@@ -170,6 +170,18 @@ async function gitState(root){
   }catch{return {isGit:false,head:null,changed:new Set(),status:"",diff:""}}
 }
 
+async function localMatchingFiles(root,{query,regex=false,caseSensitive=false,limit=120}={}){
+  const args=["-C",root,"grep","-l","-z","-I","--untracked","--exclude-standard"];
+  if(!caseSensitive)args.push("-i");args.push(regex?"-E":"-F","-e",String(query||""),"--");
+  try{
+    const {stdout}=await execFileAsync("git",args,{windowsHide:true,maxBuffer:4*1024*1024,timeout:20_000});
+    return String(stdout||"").split("\0").filter(Boolean).map(slash).filter(indexablePath).slice(0,Math.max(1,Math.min(500,Number(limit)||120)));
+  }catch(error){
+    if(Number(error?.code)===1)return [];
+    throw error;
+  }
+}
+
 async function localMetadata(root,paths){
   const pairs=await mapLimit(paths,64,async relativePath=>{
     try{
@@ -196,6 +208,7 @@ function localContextIo(root){
     metadata:paths=>localMetadata(absolute,paths),
     readMany:paths=>localReadMany(absolute,paths),
     readText:path=>readFile(resolve(absolute,path),"utf8"),
+    searchPaths:options=>localMatchingFiles(absolute,options),
     gitState:()=>gitState(absolute),
     changedSince:async(fromHead,toHead)=>{
       if(!fromHead||!toHead||fromHead===toHead)return new Set();
@@ -260,12 +273,21 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     const changed=new Set(String(status.stdout||"").split(/\r?\n/).filter(Boolean).map(line=>line.slice(3).replace(/^.* -> /,"").replace(/\\/g,"/")));
     return {isGit:true,head:head.exitCode===0?String(head.stdout||"").trim()||null:null,changed,status:String(status.stdout||"").slice(0,12_000),diff:diff.exitCode===0?String(diff.stdout||"").slice(0,16_000):""};
   };
+  const searchPaths=async({query,regex=false,caseSensitive=false,limit=120}={})=>{
+    const args=["-C",absolute,"grep","-l","-z","-I","--untracked","--exclude-standard"];
+    if(!caseSensitive)args.push("-i");args.push(regex?"-E":"-F","-e",String(query||""),"--");
+    const result=await run({command:"git",args,cwd:"",timeoutMs:25_000,maxOutput:4*1024*1024});
+    if(result.exitCode===1)return [];
+    if(result.exitCode!==0)throw new Error(result.stderr||"Could not search remote repository text");
+    return String(result.stdout||"").split("\0").filter(Boolean).map(path=>path.replace(/\\/g,"/")).filter(indexablePath).slice(0,Math.max(1,Math.min(500,Number(limit)||120)));
+  };
   return {
     cacheKey:"remote:"+environmentId+":"+absolute,
     root:absolute,
     discoverFiles,
     metadata,
     readMany,
+    searchPaths,
     readText:async relativePath=>{
       const target=posix.join(absolute,String(relativePath||"").replace(/^\.\//,""));
       if(target!==absolute&&!target.startsWith(absolute.endsWith("/")?absolute:absolute+"/"))throw new Error("Context file is outside the remote workspace");
@@ -577,6 +599,65 @@ export class ContextEngine{
       path:entry.relativePath,parser:entry.parsed.parser||"regex",definitions:(entry.parsed.definitions||[]).slice(0,200),
       imports:imports.slice(0,200),importers:importers.slice(0,200),referencedSymbols:referencedSymbols.sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name)).slice(0,200),
       referencedBy:referencedBy.sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name)).slice(0,200),relatedTests,indexedFiles:index.files.size,
+    };
+  }
+
+  async searchCode({root,query="",regex=false,caseSensitive=false,limit=80,io=null}={}){
+    const needle=String(query||"");if(!needle.trim())throw new Error("Code search requires a query");
+    if(needle.length>1000)throw new Error("Code search query is too long");
+    let expression=null;
+    if(regex){try{expression=new RegExp(needle,caseSensitive?"":"i")}catch(error){throw new Error("Invalid code search regular expression: "+error.message)}}
+    const {contextIo,index}=await this.#indexed(root,io),resultLimit=Math.max(1,Math.min(200,Number(limit)||80)),candidateLimit=Math.max(40,Math.min(240,resultLimit*3));
+    const foldedNeedle=caseSensitive?needle:needle.toLowerCase();
+    const matchesLine=line=>regex?expression.test(line):(caseSensitive?line.includes(needle):line.toLowerCase().includes(foldedNeedle));
+    let candidates=[],source="index-sample",complete=false;
+    if(typeof contextIo.searchPaths==="function"){
+      try{
+        const found=await contextIo.searchPaths({query:needle,regex:Boolean(regex),caseSensitive:Boolean(caseSensitive),limit:candidateLimit+1});
+        complete=found.length<=candidateLimit;candidates=found.slice(0,candidateLimit).filter(path=>index.files.has(path));source="git-grep";
+      }catch{}
+    }
+    if(source!=="git-grep")candidates=[...index.files.values()].filter(entry=>String(entry.sample||"").split(/\r?\n/).some(matchesLine)).map(entry=>entry.relativePath).slice(0,candidateLimit);
+    const contents=await contextIo.readMany(candidates),data=[];let matchedFiles=0;
+    for(const path of candidates){
+      const content=contents.get(path);if(typeof content!=="string")continue;
+      const lines=content.split(/\r?\n/);let fileMatches=0;
+      for(let lineIndex=0;lineIndex<lines.length;lineIndex++){
+        if(!matchesLine(lines[lineIndex]))continue;
+        if(fileMatches++===0)matchedFiles++;
+        data.push({path,line:lineIndex+1,text:lines[lineIndex].slice(0,600)});
+        if(fileMatches>=20||data.length>=resultLimit)break;
+      }
+      if(data.length>=resultLimit)break;
+    }
+    return {query:needle,regex:Boolean(regex),caseSensitive:Boolean(caseSensitive),data,indexedFiles:index.files.size,matchedFiles,source,complete:complete&&data.length<resultLimit,truncated:!complete||data.length>=resultLimit};
+  }
+
+  async readSourceRange({root,path,startLine=1,endLine=null,maxLines=200,io=null}={}){
+    const {contextIo,index}=await this.#indexed(root,io),requested=contextIo.relativeFocus(path)||slash(String(path||"").replace(/^\.\//,""));
+    if(!index.files.has(requested))throw new Error(`Context file is not indexed: ${path}`);
+    const contents=await contextIo.readMany([requested]),content=contents.get(requested);if(typeof content!=="string")throw new Error(`Could not read context file: ${path}`);
+    const lines=content.split(/\r?\n/),start=Math.max(1,Math.trunc(Number(startLine)||1)),lineCap=Math.max(1,Math.min(400,Math.trunc(Number(maxLines)||200)));
+    if(start>Math.max(1,lines.length))throw new Error(`Source range starts after the end of ${requested}`);
+    const requestedEnd=endLine==null?start+lineCap-1:Math.max(start,Math.trunc(Number(endLine)||start));let end=Math.min(lines.length,requestedEnd,start+lineCap-1);
+    const selected=[];let chars=0,truncated=false;
+    for(let line=start;line<=end;line++){
+      const value=lines[line-1]??"",cost=value.length+(selected.length?1:0);
+      if(chars+cost>32_000){truncated=true;break}
+      selected.push(value);chars+=cost;
+    }
+    if(selected.length)end=start+selected.length-1;else end=start-1;
+    if(end<Math.min(lines.length,requestedEnd))truncated=true;
+    return {path:requested,startLine:start,endLine:end,totalLines:lines.length,content:selected.join("\n"),truncated};
+  }
+
+  async gitContext({root,io=null,maxStatusChars=12_000,maxDiffChars=16_000}={}){
+    if(!root)throw new Error("Context Engine requires a workspace path");
+    const contextIo=io||localContextIo(root),git=await contextIo.gitState();
+    return {
+      root:contextIo.root,isGit:Boolean(git?.isGit),head:git?.head||null,changed:[...(git?.changed||[])].slice(0,300),
+      status:String(git?.status||"").slice(0,Math.max(0,Math.min(32_000,Number(maxStatusChars)||12_000))),
+      diff:String(git?.diff||"").slice(0,Math.max(0,Math.min(64_000,Number(maxDiffChars)||16_000))),
     };
   }
 }

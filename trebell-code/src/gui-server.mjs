@@ -2096,6 +2096,27 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return json(res,200,await contextEngine.fileRelations({root,path:url.searchParams.get("file")||"",io:remote?createRemoteContextIo({environments,environmentId,root}):null}));
       }catch(error){return json(res,400,{error:error.message});}
     }
+    if(url.pathname==="/api/context/search"){
+      try{
+        const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
+        const root=environmentPath(url.searchParams.get("path")||process.cwd(),environmentId),remote=remoteEnvironmentProfile(environmentId);
+        return json(res,200,await contextEngine.searchCode({root,query:url.searchParams.get("q")||"",regex:["1","true"].includes(url.searchParams.get("regex")),caseSensitive:["1","true"].includes(url.searchParams.get("caseSensitive")),limit:Number(url.searchParams.get("limit")||80),io:remote?createRemoteContextIo({environments,environmentId,root}):null}));
+      }catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/context/source"){
+      try{
+        const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
+        const root=environmentPath(url.searchParams.get("path")||process.cwd(),environmentId),remote=remoteEnvironmentProfile(environmentId);
+        return json(res,200,await contextEngine.readSourceRange({root,path:url.searchParams.get("file")||"",startLine:Number(url.searchParams.get("startLine")||1),endLine:url.searchParams.has("endLine")?Number(url.searchParams.get("endLine")):null,maxLines:Number(url.searchParams.get("maxLines")||200),io:remote?createRemoteContextIo({environments,environmentId,root}):null}));
+      }catch(error){return json(res,400,{error:error.message});}
+    }
+    if(url.pathname==="/api/context/git"){
+      try{
+        const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
+        const root=environmentPath(url.searchParams.get("path")||process.cwd(),environmentId),remote=remoteEnvironmentProfile(environmentId);
+        return json(res,200,await contextEngine.gitContext({root,io:remote?createRemoteContextIo({environments,environmentId,root}):null}));
+      }catch(error){return json(res,400,{error:error.message});}
+    }
     if(url.pathname==="/api/context/packet"&&req.method==="POST"){
       try{
         const body=await readJsonBody(req);
