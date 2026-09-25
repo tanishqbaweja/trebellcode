@@ -189,3 +189,24 @@ test("Trebell Native turn steering interrupts inference and persists the redirec
     await assert.rejects(()=>rpc.request("turn/steer",{threadId:thread.id,expectedTurnId:turn.id,input:[{type:"text",text:"too late"}]}),/no active turn/i);
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
 });
+
+test("Trebell Native delegation preserves parent inference provider, tools, permissions and child budget",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-delegate-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env),requests=[];
+  const nativeProviderTurn=async request=>{requests.push(structuredClone({...request,signal:undefined}));return{id:"child-answer",provider:request.provider,model:request.model,text:"Delegated parser inspection complete.",toolCalls:[],finishReason:"stop",usage:{inputTokens:5,outputTokens:3,totalTokens:8}}};
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
+  try{
+    const parent=(await rpc.request("thread/start",{model:"model-child",modelProvider:"hcnsec",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[{type:"namespace",name:"trebell_browser"},{type:"namespace",name:"trebell_delegate"}]})).thread;
+    await rpc.request("thread/goal/set",{threadId:parent.id,objective:"Finish parser work",childAgentBudget:1});
+    const delegated=await rpc.request("thread/delegate",{threadId:parent.id,task:"Inspect parser behavior and report findings",permissions:"read-only",isolation:"inherit",budget:{turnBudget:2},label:"Parser inspector"});
+    assert.equal(delegated.parentThreadId,parent.id);assert.ok(delegated.thread?.id);assert.ok(delegated.turn?.id);
+    await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.threadId===delegated.thread.id&&message.params?.turn?.id===delegated.turn.id);
+    const child=(await rpc.request("thread/read",{threadId:delegated.thread.id})).thread;assert.equal(child.parentThreadId,parent.id);assert.equal(child.providerMeta.modelProvider,"hcnsec");assert.equal(child.providerMeta.permissionProfile,"read-only");assert.deepEqual(child.providerMeta.dynamicToolNamespaces,["trebell_browser"]);assert.equal(child.model,"model-child");
+    assert.equal(requests.length,1);assert.equal(requests[0].provider,"hcnsec");assert.ok((requests[0].tools||[]).some(tool=>tool.name==="trebell_browser"));assert.match(JSON.stringify(requests[0].messages.at(-1).content),/Inspect parser behavior and report findings/);
+    const parentGoal=(await rpc.request("thread/goal/get",{threadId:parent.id})).goal;assert.equal(parentGoal.childAgentsUsed,1);assert.equal(parentGoal.childAgentBudgetRemaining,0);
+    const childGoal=(await rpc.request("thread/goal/get",{threadId:child.id})).goal;assert.equal(childGoal.objective,"Inspect parser behavior and report findings");assert.equal(childGoal.turnBudget,2);
+    await assert.rejects(()=>rpc.request("thread/delegate",{threadId:parent.id,task:"Second child must be blocked",permissions:"read-only",isolation:"inherit"}),/child-agent budget exhausted/i);
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+});

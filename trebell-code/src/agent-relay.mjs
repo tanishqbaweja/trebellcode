@@ -925,10 +925,20 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         },
         startThread:async({spec,workspace})=>{
           const policy=delegationPolicies(spec.permissions,workspace.cwd),model=spec.model||parent.model||null;
+          const parentNamespaces=Array.isArray(parent.providerMeta?.dynamicToolNamespaces)?parent.providerMeta.dynamicToolNamespaces:[];
+          const childNamespaces=parent.runtime==="native"&&!(Number(spec.budget?.childAgentBudget)>0)
+            ?parentNamespaces.filter(name=>name!=="trebell_delegate")
+            :parentNamespaces;
           const started=await request(context,"thread/start",{
             cwd:workspace.cwd,model,agent:parent.agent||null,approvalPolicy:policy.approvalPolicy,sandbox:policy.sandbox,
             runtimeInstanceId:parent.runtimeInstanceId||parent.providerMeta?.runtimeInstanceId||null,
             environmentId:parent.providerMeta?.environmentId??null,threadSource:"trebell-delegate",
+            ...(parent.runtime==="native"?{
+              modelProvider:parent.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,
+              projectless:Boolean(parent.providerMeta?.projectless),
+              dynamicTools:childNamespaces.map(name=>({type:"namespace",name})),
+              developerInstructions:String(parent.providerMeta?.developerInstructions||""),
+            }:{}),
           });
           return started?.thread||null;
         },
@@ -951,7 +961,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
           const policy=delegationPolicies(spec.permissions,workspace.cwd),model=spec.model||parent.model||childThread.model||null;
           const delegationContext=delegationContextValue({parentThreadId:parent.id,spec});
           const started=await request(context,"turn/start",{
-            threadId:String(childThread.id),cwd:workspace.cwd,model,approvalPolicy:policy.approvalPolicy,sandboxPolicy:policy.sandboxPolicy,
+            threadId:String(childThread.id),cwd:workspace.cwd,model,...(parent.runtime==="native"&&parent.providerMeta?.modelProvider?{modelProvider:parent.providerMeta.modelProvider}:{}),approvalPolicy:policy.approvalPolicy,sandboxPolicy:policy.sandboxPolicy,
             input:[{type:"text",text:spec.task}],additionalContext:{"trebell.delegation":{kind:"application",value:delegationContext}},
           });
           state.updateThreadMeta(String(childThread.id),{delegation:{...state.threadMeta(String(childThread.id)).delegation,turnId:started?.turn?.id||null}});

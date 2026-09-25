@@ -34,7 +34,7 @@ test("agent runtime registry exposes real harnesses and capability-gates configu
     assert.equal(manager.capabilities("native").dynamicTools,true);
     assert.equal(manager.capabilities("native").nativeSandbox,false);
     assert.equal(manager.capabilities("native").mcpInjection,false);
-    assert.equal(manager.capabilities("native").delegation,false);
+    assert.equal(manager.capabilities("native").delegation,true);
     assert.equal(manager.capabilities("opencode").nativeLsp,true);
     assert.equal(manager.capabilities("opencode").detachedTasks,true);
     assert.equal(manager.capabilities("opencode").multiModelFanout,true);
@@ -63,7 +63,7 @@ test("runtime capabilities describe adapter behavior without pretending unsuppor
   assert.equal(codex.mcpInjection,false);
   const native=runtimeCapabilities("native");
   assert.equal(native.dynamicTools,true);assert.equal(native.contextReporting,true);assert.equal(native.nativeHistoryPagination,true);
-  assert.equal(native.mcpInjection,false);assert.equal(native.compaction,true);assert.equal(native.delegation,false);assert.equal(native.steering,true);
+  assert.equal(native.mcpInjection,false);assert.equal(native.compaction,true);assert.equal(native.delegation,true);assert.equal(native.steering,true);
   const openCode=runtimeCapabilities("opencode");
   assert.equal(openCode.compaction,true);
   assert.equal(openCode.nativeLsp,true);
