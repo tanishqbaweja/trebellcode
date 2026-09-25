@@ -37,7 +37,7 @@ export class ClaudeAgentSession{
   constructor({command="claude",cwd=process.cwd(),env=process.env,permissionMode:mode="supervised",onUpdate,onPermission,onQuestion,version="0.0.0",spawnProcess=null,autoCompactWindow=null,forkFromSessionId=null,resumeSessionAt=null,resumeDropsTurn=null,mcpServers={},sdk=null}={}){
     this.command=command;this.cwd=cwd;this.env=env;this.permissionMode=mode;this.onUpdate=onUpdate;this.onPermission=onPermission;this.onQuestion=onQuestion;this.version=version;this.spawnProcess=spawnProcess;
     this.autoCompactWindow=Number.isInteger(Number(autoCompactWindow))&&Number(autoCompactWindow)>=100_000&&Number(autoCompactWindow)<=1_000_000?Number(autoCompactWindow):null;
-    this.mcpServers=mcpServers&&typeof mcpServers==="object"?structuredClone(mcpServers):{};
+    this.mcpServers=mcpServers&&typeof mcpServers==="object"?{...mcpServers}:{};
     this.sdk=sdk||{query,getSessionInfo,forkSession,renameSession,getSessionMessages,deleteSession};
     this.helperSharesRuntime=!this.spawnProcess&&String(this.env.CLAUDE_CONFIG_DIR||"")===String(process.env.CLAUDE_CONFIG_DIR||"");
     this.sessionId=null;this.model="sonnet";this.currentQuery=null;this.currentAbort=null;this.closed=false;this.startedOnce=false;this.lastSystem=null;

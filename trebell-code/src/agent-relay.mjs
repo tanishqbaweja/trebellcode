@@ -6,6 +6,8 @@ import { AcpAgentSession } from "./acp-agent-session.mjs";
 import { OpenCodeAgentSession } from "./opencode-agent-session.mjs";
 import { ClaudeAgentSession } from "./claude-agent-session.mjs";
 import { acpMcpServersForSession, claudeMcpServersForSession } from "./mcp-registry.mjs";
+import { createRemoteContextIo } from "./context-engine.mjs";
+import { createClaudeRepositoryMcp } from "./claude-repository-tools.mjs";
 
 const IMAGE_MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".bmp":"image/bmp"};
 const LIVE_TOOL_OUTPUT_LIMIT=256*1024;
@@ -436,7 +438,7 @@ function formQuestions(params){
   }));
 }
 
-export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,state,environments=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null,journal=null}={}){
+export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,state,environments=null,contextEngine=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null,journal=null}={}){
   const wss=new WebSocketServer({noServer:true});
   const sessions=new Map();
   const socketContexts=new Set();
@@ -459,6 +461,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     const common={cwd:runtimeCwd,env:runtimeManager.childEnv(instance),permissionMode,onPermission:request=>context.permission(thread,request),onQuestion:request=>context.userQuestion(thread,request),onUpdate:params=>handleUpdate(thread.id,params),version};
     const acpMcpServers=acpMcpServersForSession(state?.settings?.().mcpServers||[],{runtime:instance.kind,environmentId});
     const claudeMcpServers=claudeMcpServersForSession(state?.settings?.().mcpServers||[],{environmentId});
+    if(instance.kind==="claude"&&contextEngine){
+      const repoIo=environmentId&&environments?createRemoteContextIo({environments,environmentId,root:runtimeCwd}):null;
+      claudeMcpServers.trebell_repository=createClaudeRepositoryMcp({contextEngine,root:runtimeCwd,io:repoIo,version});
+    }
     const runtime=instance.kind==="claude"
       ?new ClaudeAgentSession({...common,command:runtimeManager.executable(instance),spawnProcess,autoCompactWindow:instance.autoCompactWindow||null,forkFromSessionId:thread.providerMeta?.claudeFork?.sourceSessionId||null,resumeSessionAt:thread.providerMeta?.claudeFork?.resumeSessionAt||null,resumeDropsTurn:thread.providerMeta?.claudeFork?.resumeDropsTurn||null,mcpServers:claudeMcpServers})
       :instance.kind==="opencode"

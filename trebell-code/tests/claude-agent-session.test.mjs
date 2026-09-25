@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ClaudeAgentSession } from "../src/claude-agent-session.mjs";
+import { createClaudeRepositoryMcp } from "../src/claude-repository-tools.mjs";
 
 function fakeQueryCapture(calls){
   return ({prompt,options})=>{
@@ -48,6 +49,15 @@ test("Claude MCP servers are forwarded to every SDK query",async()=>{
   await session.start();
   await session.prompt([{type:"text",text:"use repository tools"}]);
   assert.deepEqual(calls.at(-1).options.mcpServers,mcpServers);
+});
+
+test("Claude preserves live SDK-hosted MCP server instances",async()=>{
+  const calls=[],contextEngine={searchSymbols:async()=>({data:[]}),fileRelations:async()=>({})};
+  const sdk={query:fakeQueryCapture(calls),getSessionInfo:async()=>({}),renameSession:async()=>{},getSessionMessages:async()=>[],deleteSession:async()=>{}};
+  const repository=createClaudeRepositoryMcp({contextEngine,root:"/repo",version:"fixture"});
+  const session=new ClaudeAgentSession({cwd:"/repo",sdk,mcpServers:{trebell_repository:repository}});
+  await session.start();await session.prompt([{type:"text",text:"inspect symbols"}]);
+  assert.equal(calls.at(-1).options.mcpServers.trebell_repository.instance,repository.instance);
 });
 
 test("Claude manual compact sends the native compact command through the active session",async()=>{
