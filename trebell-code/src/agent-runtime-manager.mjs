@@ -255,7 +255,7 @@ export class AgentRuntimeManager{
         const result=await this.environments.executeArgv(profile.id,{command:"sh",args:["-lc",script,"trebell",encoded,candidate],cwd:"",timeoutMs:30_000});
         if(result.exitCode!==0)throw new Error(result.stderr||`Could not write remote file ${candidate}`);
       },
-      spawn:({command,args=[],cwd:spawnCwd=null})=>this.environments.spawnArgv(profile.id,{command,args,cwd:spawnCwd||root,stdio:["pipe","pipe","pipe"]}),
+      spawn:({command,args=[],cwd:spawnCwd=null})=>this.environments.spawnArgv(profile.id,{command,args,cwd:pathFor(spawnCwd||root),stdio:["pipe","pipe","pipe"]}),
       profile,
       root,
     };

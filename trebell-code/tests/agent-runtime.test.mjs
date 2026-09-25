@@ -77,6 +77,18 @@ test("runtime launch flags preserve Trebell permission-mode boundaries",()=>{
   assert.deepEqual(manager.acpArgs(grok,"full"),["agent","--always-approve","stdio"]);
 });
 
+test("remote runtime process spawning cannot escape the active workspace cwd",()=>{
+  const calls=[],state={settings:()=>({activeEnvironmentId:"ssh-fixture"})},profile={id:"ssh-fixture",type:"ssh",cwd:"/srv/app"};
+  const environments={get:id=>id===profile.id?profile:null,spawnArgv:(id,options)=>{calls.push({id,options});return {pid:123}}};
+  const manager=new AgentRuntimeManager({state,environments}),io=manager.remoteIo("/srv/app","ssh-fixture");
+  assert.ok(io);
+  io.spawn({command:"node",args:["script.js"],cwd:"subdir"});
+  assert.equal(calls[0].options.cwd,"/srv/app/subdir");
+  assert.throws(()=>io.spawn({command:"node",args:[],cwd:"/tmp/outside"}),/outside the active remote workspace/i);
+  assert.throws(()=>io.spawn({command:"node",args:[],cwd:"../outside"}),/outside the active remote workspace/i);
+  assert.equal(calls.length,1,"rejected remote cwd values must never reach the environment spawner");
+});
+
 test("Claude runtime profiles validate and persist auto-compact thresholds",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-claude-compact-"));
   try{
