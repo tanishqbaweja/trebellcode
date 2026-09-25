@@ -13,6 +13,7 @@ const BASE_RUNTIME_CAPABILITIES=Object.freeze({
   clientTerminal:false,
   usageReporting:false,
   contextReporting:false,
+  detachedTasks:false,
   backgroundProcesses:false,
   delegation:false,
   harnessTools:false,
@@ -26,14 +27,14 @@ const BASE_RUNTIME_CAPABILITIES=Object.freeze({
 const RUNTIME_CAPABILITY_OVERRIDES=Object.freeze({
   codex:Object.freeze({
     fork:true,rewind:true,compaction:true,systemPromptInjection:true,dynamicTools:true,nativeSandbox:true,
-    usageReporting:true,backgroundProcesses:true,delegation:true,harnessTools:true,collaborationModes:true,
+    usageReporting:true,detachedTasks:true,backgroundProcesses:true,delegation:true,harnessTools:true,collaborationModes:true,
     nativeQueue:true,nativeHistoryPagination:true,steering:true,runtimeProfileSwitching:true,
   }),
-  claude:Object.freeze({fork:true,rewind:true,compaction:true,usageReporting:true,runtimeProfileSwitching:true}),
-  opencode:Object.freeze({fork:true,rewind:true,compaction:true,nativeLsp:true,usageReporting:true}),
-  cursor:Object.freeze({fork:"runtime",clientFilesystem:true,clientTerminal:true}),
-  grok:Object.freeze({fork:"runtime",clientFilesystem:true,clientTerminal:true}),
-  antigravity:Object.freeze({fork:"runtime",clientFilesystem:true,clientTerminal:true}),
+  claude:Object.freeze({fork:true,rewind:true,compaction:true,usageReporting:true,runtimeProfileSwitching:true,detachedTasks:true}),
+  opencode:Object.freeze({fork:true,rewind:true,compaction:true,nativeLsp:true,usageReporting:true,detachedTasks:true}),
+  cursor:Object.freeze({fork:"runtime",clientFilesystem:true,clientTerminal:true,detachedTasks:true}),
+  grok:Object.freeze({fork:"runtime",clientFilesystem:true,clientTerminal:true,detachedTasks:true}),
+  antigravity:Object.freeze({fork:"runtime",clientFilesystem:true,clientTerminal:true,detachedTasks:true}),
 });
 
 export function sharedRuntimeCapabilities(kind){
