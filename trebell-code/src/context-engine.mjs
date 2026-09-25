@@ -39,6 +39,15 @@ try{
   if(operation==="definition"){const definitions=service.getDefinitionAtPosition(requested,position)||[];out({available:true,configured:true,version:ts.version,included:true,operation,data:definitions.slice(0,limit).map(item=>location(item.fileName,item.textSpan,{name:item.name||null,kind:item.kind||null,containerName:item.containerName||null})),truncated:definitions.length>limit});process.exit(0)}
   if(operation==="references"){const groups=service.findReferences(requested,position)||[],rows=[],total=groups.reduce((sum,group)=>sum+(group.references||[]).length,0);for(const group of groups)for(const item of group.references||[]){if(rows.length>=limit)break;rows.push(location(item.fileName,item.textSpan,{isDefinition:Boolean(item.isDefinition),isWriteAccess:Boolean(item.isWriteAccess)}))}out({available:true,configured:true,version:ts.version,included:true,operation,data:rows,truncated:total>rows.length});process.exit(0)}
   if(operation==="quick_info"){const info=service.getQuickInfoAtPosition(requested,position),display=value=>ts.displayPartsToString?ts.displayPartsToString(value||[]):(value||[]).map(part=>part.text||"").join("");out({available:true,configured:true,version:ts.version,included:true,operation,data:info?{kind:info.kind||null,kindModifiers:info.kindModifiers||null,display:display(info.displayParts),documentation:display(info.documentation)}:null});process.exit(0)}
+  const hierarchyItem=item=>{if(!item)return null;const base=location(item.file,item.selectionSpan||item.span,{name:item.name||null,kind:item.kind||null,kindModifiers:item.kindModifiers||null,containerName:item.containerName||null});return{...base,spanLength:Number(item.span?.length)||0,selectionLength:Number(item.selectionSpan?.length)||0}};
+  if(operation==="callers"){
+    if(typeof service.provideCallHierarchyIncomingCalls!=="function"){out({available:true,configured:true,version:ts.version,included:true,operation,unsupported:true,reason:"Project TypeScript does not expose call hierarchy"});process.exit(0)}
+    const calls=service.provideCallHierarchyIncomingCalls(requested,position)||[],rows=calls.slice(0,limit).map(call=>({from:hierarchyItem(call.from),fromSpans:(call.fromSpans||[]).slice(0,40).map(span=>location(call.from.file,span))}));out({available:true,configured:true,version:ts.version,included:true,operation,data:rows,truncated:calls.length>limit});process.exit(0)
+  }
+  if(operation==="callees"){
+    if(typeof service.provideCallHierarchyOutgoingCalls!=="function"){out({available:true,configured:true,version:ts.version,included:true,operation,unsupported:true,reason:"Project TypeScript does not expose call hierarchy"});process.exit(0)}
+    const calls=service.provideCallHierarchyOutgoingCalls(requested,position)||[],rows=calls.slice(0,limit).map(call=>({to:hierarchyItem(call.to),fromSpans:(call.fromSpans||[]).slice(0,40).map(span=>location(requested,span))}));out({available:true,configured:true,version:ts.version,included:true,operation,data:rows,truncated:calls.length>limit});process.exit(0)
+  }
   out({available:true,configured:true,version:ts.version,failed:true,reason:"Unsupported language symbol operation"});
 }catch(error){out({available:true,configured:false,failed:true,reason:String(error?.stack||error?.message||error)})}`;
 
@@ -849,14 +858,14 @@ export class ContextEngine{
   }
 
   async languageSymbol({root,path,line=1,column=1,operation="definition",limit=100,io=null}={}){
-    const allowed=new Set(["definition","references","quick_info"]),mode=String(operation||"definition");if(!allowed.has(mode))throw new Error(`Unsupported language symbol operation: ${mode}`);
+    const allowed=new Set(["definition","references","quick_info","callers","callees"]),mode=String(operation||"definition");if(!allowed.has(mode))throw new Error(`Unsupported language symbol operation: ${mode}`);
     const {contextIo,index}=await this.#indexed(root,io),requested=contextIo.relativeFocus(path)||slash(String(path||"").replace(/^\.\//,""));
     const entry=index.files.get(requested);if(!entry)throw new Error(`Context file is not indexed: ${path}`);
     const extension=extname(requested).toLowerCase();if(!BABEL_SOURCE_EXTENSIONS.has(extension))return {path:requested,line:Number(line)||1,column:Number(column)||1,operation:mode,supported:false,engine:null,semantic:false,data:[],reason:`No semantic Trebell language adapter is configured for ${extension||"this file type"}`};
     if(typeof contextIo.typeScriptSymbol!=="function")return {path:requested,line:Number(line)||1,column:Number(column)||1,operation:mode,supported:false,engine:null,semantic:false,data:[],reason:"TypeScript language queries are unavailable for this workspace"};
     const row=Math.max(1,Math.trunc(Number(line)||1)),col=Math.max(1,Math.trunc(Number(column)||1)),capped=Math.max(1,Math.min(200,Number(limit)||100));let result;
     try{result=await contextIo.typeScriptSymbol({path:requested,line:row,column:col,operation:mode,limit:capped})}catch(error){result={available:false,configured:false,failed:true,reason:String(error?.message||error)}}
-    const ready=Boolean(result?.available&&result?.configured&&!result?.failed);
+    const ready=Boolean(result?.available&&result?.configured&&!result?.failed&&!result?.unsupported);
     return {path:requested,line:row,column:col,operation:mode,supported:ready,engine:ready?"typescript":null,semantic:ready,version:result?.version||null,included:result?.included??null,data:result?.data??(mode==="quick_info"?null:[]),truncated:Boolean(result?.truncated),info:result,reason:ready?null:(result?.reason||"Project-local TypeScript language service is unavailable")};
   }
 
