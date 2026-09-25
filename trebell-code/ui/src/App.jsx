@@ -726,7 +726,7 @@ export default function App(){
     return()=>{cancelled=true};
   },[paletteOpen]);
 
-  function updateThreadTelemetry(threadId,patch,{render=true}={}){
+  function updateThreadTelemetry(threadId,patch,{render=rightPanelOpen&&rightPanelTab==="agents"}={}){
     if(!threadId)return;
     const current=threadTelemetryRef.current[threadId]||{};
     const delta=typeof patch==="function"?patch(current):patch;
@@ -1742,7 +1742,10 @@ export default function App(){
         mcpProgressRef.current.set(id,progress);activityTimelineRef.current?.setMcpProgress(id,progress);
       }
     }
-    else if(message.method==="turn/diff/updated"&&isCurrent)setEvents(prev=>[...prev,{id:"diff-"+Date.now(),kind:"fileChange",title:"Workspace diff updated",status:"done",raw:p.diff||p}]);
+    else if(message.method==="turn/diff/updated"&&isCurrent){
+      const id="diff-"+String(p.turnId||activeTurnId||threadId||"current"),event={id,kind:"fileChange",title:"Workspace diff updated",status:"done",raw:p.diff||p};
+      setEvents(prev=>prev.some(item=>item.id===id)?prev.map(item=>item.id===id?event:item):[...prev,event]);
+    }
     else if(message.method==="thread/tokenUsage/updated"){
       updateThreadTelemetry(threadId,{tokenUsage:p.tokenUsage||null,lastActivityAt:Date.now()});
       if(isCurrent)setTokenUsage(p.tokenUsage||null);
@@ -2341,7 +2344,7 @@ export default function App(){
   }
   async function maybeAutoCompactBeforeTurn(thread){
     if(!thread?.id||!runtimeCapabilities.compaction||rpcStatus!=="connected")return {attempted:false,compacted:false,decision:null,error:null};
-    const usage=threadTelemetry[thread.id]?.tokenUsage||(activeThread?.id===thread.id?tokenUsage:null);
+    const usage=threadTelemetryRef.current[thread.id]?.tokenUsage||(activeThread?.id===thread.id?tokenUsage:null);
     const decision=autoCompactionDecision(usage,{enabled:settings.autoCompactContext===true,thresholdPercent:settings.autoCompactThresholdPercent??85});
     if(!decision.shouldCompact)return {attempted:false,compacted:false,decision,error:null};
     try{
@@ -2355,7 +2358,7 @@ export default function App(){
   }
   async function prepareTurnContext(thread,cwd,text,paths,{projectless=projectlessMode,background=false,ignoreUsage=false}={}){
     if(projectless||bootstrap.mock||!thread?.id||!cwd)return null;
-    const usage=ignoreUsage?null:(threadTelemetry[thread.id]?.tokenUsage||(activeThread?.id===thread.id?tokenUsage:null));
+    const usage=ignoreUsage?null:(threadTelemetryRef.current[thread.id]?.tokenUsage||(activeThread?.id===thread.id?tokenUsage:null));
     try{
       const packet=await api("/api/context/packet",{method:"POST",body:{
         path:cwd,task:text,focusPaths:paths||[],environmentId:workspaceEnvironmentId||null,

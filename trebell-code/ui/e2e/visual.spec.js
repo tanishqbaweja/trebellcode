@@ -1217,6 +1217,30 @@ test("MCP progress updates one live activity row and survives page navigation",a
   }finally{await harness.close()}
 });
 
+test("repeated turn diff updates replace one activity row instead of growing the timeline",async({page})=>{
+  test.setTimeout(30_000);
+  const thread={id:"diff-update-isolation-thread",name:"Diff update isolation fixture",preview:"Bounded diff activity coverage",historyMode:"paginated",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const harness=await startCodexRequestHarness(thread);
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"diff-update-isolation-fixture");
+    await page.goto("/");
+    await page.getByRole("button",{name:/Diff update isolation fixture/}).click();
+    await expect(page.locator(".thread-row.active")).toContainText("Diff update isolation fixture");
+    harness.emit({method:"turn/started",params:{threadId:thread.id,turn:{id:"diff-update-turn",status:"inProgress"}}});
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toBeVisible();
+    for(let index=1;index<=64;index++)harness.emit({method:"turn/diff/updated",params:{threadId:thread.id,turnId:"diff-update-turn",diff:`diff update ${index}/64`}});
+    const diffRows=page.locator(".tool-event.kind-fileChange");
+    await expect(diffRows).toHaveCount(1);
+    await expect(diffRows.first().locator(".tool-event-body")).toHaveCount(0);
+    await diffRows.first().locator("summary").click();
+    await expect(diffRows.first().locator(".tool-event-body")).toContainText("diff update 64/64");
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"diff-update-isolation-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
 test("direct fallback never drops attachments or failed text sends",async({page,request})=>{
   test.setTimeout(35_000);
   const baseBootstrap=await (await request.get("/api/bootstrap")).json();
