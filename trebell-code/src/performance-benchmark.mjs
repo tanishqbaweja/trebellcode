@@ -1,4 +1,8 @@
 import { performance } from "node:perf_hooks";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ContextEngine } from "./context-engine.mjs";
 import { EventJournal } from "./event-journal.mjs";
 import { createReplayFixture, replayEventFixture } from "./event-replay.mjs";
 
@@ -56,11 +60,57 @@ export async function benchmarkEventStore({env,eventCount=10_000,queryCount=200}
   }finally{await journal.close()}
 }
 
-export async function runCoreBenchmark({env=process.env,threads=1000,eventsPerThread=20,eventCount=10_000,queryCount=200}={}){
-  const startedAt=new Date().toISOString(),started=performance.now(),replay=benchmarkReplay({threads,eventsPerThread}),eventStore=await benchmarkEventStore({env,eventCount,queryCount});
+async function writeSyntheticRepository(root,fileCount){
+  const source=join(root,"src");await mkdir(source,{recursive:true});
+  await writeFile(join(root,"package.json"),JSON.stringify({name:"trebell-context-benchmark",private:true,scripts:{test:"node --test"}},null,2));
+  const width=String(Math.max(0,fileCount-1)).length;
+  for(let start=0;start<fileCount;start+=100){
+    const writes=[];
+    for(let index=start;index<Math.min(fileCount,start+100);index++){
+      const id=String(index).padStart(width,"0"),previous=String(Math.max(0,index-1)).padStart(width,"0");
+      const imported=index?'import { value'+(index-1)+' } from "./module-'+previous+'.js";\n':"",inherited=index?'value'+(index-1):"0";
+      const content=imported+'export const value'+index+' = '+inherited+' + 1;\nexport function feature'+index+'(input){ return input + value'+index+'; }\n';
+      writes.push(writeFile(join(source,"module-"+id+".js"),content));
+    }
+    await Promise.all(writes);
+  }
+  return {source,width};
+}
+
+function indexEvidence(packet,elapsedMs){
+  const stats=packet?.stats||{};
   return {
-    version:1,startedAt,durationMs:Number((performance.now()-started).toFixed(3)),
+    elapsedMs:Number(elapsedMs.toFixed(3)),indexDurationMs:Number(Number(stats.durationMs||0).toFixed(3)),
+    filesIndexed:Number(stats.filesIndexed)||0,reparsed:Number(stats.reparsed)||0,reused:Number(stats.reused)||0,
+    inspected:Number(stats.inspected)||0,skipped:Number(stats.skipped)||0,graphEdges:Number(stats.graphEdges)||0,
+  };
+}
+
+export async function benchmarkRepositoryIndex({fileCount=1000}={}){
+  const count=integer(fileCount,1000,10,10_000),root=await mkdtemp(join(tmpdir(),"trebell-repository-benchmark-"));
+  try{
+    const fixture=await writeSyntheticRepository(root,count),engine=new ContextEngine(),before=memory();let started=performance.now();
+    const firstPacket=await engine.buildPacket({root,task:"Trace feature dependencies and identify related tests.",maxTokens:3200,maxFiles:24});
+    const first=indexEvidence(firstPacket,performance.now()-started);started=performance.now();
+    const unchangedPacket=await engine.buildPacket({root,task:"Trace feature dependencies and identify related tests.",maxTokens:3200,maxFiles:24});
+    const unchanged=indexEvidence(unchangedPacket,performance.now()-started),edited=String(Math.floor(count/2)).padStart(fixture.width,"0");
+    await appendFile(join(fixture.source,"module-"+edited+".js"),"\nexport const benchmarkEdit = true;\n");started=performance.now();
+    const incrementalPacket=await engine.buildPacket({root,task:"Trace feature dependencies and identify related tests.",maxTokens:3200,maxFiles:24});
+    const incremental=indexEvidence(incrementalPacket,performance.now()-started),after=memory();
+    return {
+      files:count,editedFile:"src/module-"+edited+".js",first,unchanged,incremental,
+      unchangedReuseRatio:unchanged.filesIndexed?Number((unchanged.reused/unchanged.filesIndexed).toFixed(4)):0,
+      incrementalReparseRatio:incremental.filesIndexed?Number((incremental.reparsed/incremental.filesIndexed).toFixed(4)):0,
+      memoryDeltaBytes:delta(after,before),
+    };
+  }finally{await rm(root,{recursive:true,force:true})}
+}
+
+export async function runCoreBenchmark({env=process.env,threads=1000,eventsPerThread=20,eventCount=10_000,queryCount=200,repoFiles=1000}={}){
+  const startedAt=new Date().toISOString(),started=performance.now(),replay=benchmarkReplay({threads,eventsPerThread}),eventStore=await benchmarkEventStore({env,eventCount,queryCount}),repositoryIndex=await benchmarkRepositoryIndex({fileCount:repoFiles});
+  return {
+    version:2,startedAt,durationMs:Number((performance.now()-started).toFixed(3)),
     environment:{node:process.version,platform:process.platform,arch:process.arch},
-    replay,eventStore,
+    replay,eventStore,repositoryIndex,
   };
 }
