@@ -3994,10 +3994,13 @@ test("delegated agent open failures stay visible in the Agents panel",async({pag
     await page.goto("/");
     await page.locator('.thread-main[title="Agent parent fixture"]').click();
     await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","Agent parent fixture");
+    for(const ws of sockets)ws.send(JSON.stringify({method:"item/started",params:{threadId:child.id,turnId:"child-turn",item:{id:"child-command",type:"commandExecution",command:["npm","test"],status:"inProgress"}}}));
+    await page.waitForTimeout(100);
     await page.locator('.sidebar .sidebar-utility[aria-label="Agents"]').click();
     const panel=page.getByTestId("right-panel");
     const agentButton=panel.locator(".agent-open").filter({hasText:"Failing delegated agent"});
     await expect(agentButton).toBeVisible();
+    await expect(agentButton).toContainText("npm test");
     await agentButton.click();
     await expect(panel.getByRole("alert")).toContainText("Deliberate delegated agent open failure");
     await expect(agentButton).toBeVisible();
