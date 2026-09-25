@@ -317,6 +317,36 @@ test("branch review polling sleeps on secondary pages and refreshes when chat re
   expect(branchReviewCalls).toBe(pausedCalls);
 });
 
+test("snoozed threads use the next deadline instead of a permanent polling loop",async({page})=>{
+  test.setTimeout(30_000);
+  const wakeAt=Date.now()+1_200;
+  const thread={id:"snooze-deadline-thread",name:"Snooze deadline fixture",preview:"Wake without permanent polling",cwd:process.cwd(),section:{id:"snoozed",name:"Snoozed"},createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const moves=[];
+  const harness=await startCodexRequestHarness(thread,{onRequest:async message=>{
+    if(message.method==="thread/section/move")moves.push(message.params||{});
+    return false;
+  }});
+  let meta={projectless:true,environmentId:null,sectionName:"Snoozed",snoozedUntil:wakeAt};
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"snooze-deadline-fixture",{threadMeta:{[thread.id]:meta}});
+    await page.route(/\/api\/thread-meta$/,async route=>{
+      const body=route.request().postDataJSON?.()||{};
+      if(route.request().method()==="POST"&&body.threadId===thread.id)meta={...meta,...(body.patch||{})};
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(meta)});
+    });
+    await page.goto("/");
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Snooze deadline fixture"]')});
+    await expect(row).toBeVisible();
+    await expect.poll(()=>moves.length,{timeout:5_000}).toBe(1);
+    await expect.poll(()=>meta.snoozedUntil).toBeNull();
+    await expect(row).not.toContainText("Wakes");
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"snooze-deadline-wake-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
 test("settings loads provider and runtime catalogs only on relevant sections",async({page,request})=>{
   test.setTimeout(35_000);
   await prepare(page,request);

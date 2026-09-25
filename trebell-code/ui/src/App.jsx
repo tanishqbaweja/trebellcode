@@ -40,6 +40,7 @@ import { writeClipboardText } from "./clipboard.js";
 import { createKeyedTextFrameBuffer, createTextFrameBuffer } from "./text-frame-buffer.js";
 import { autoCompactionDecision } from "./auto-compaction.js";
 import { sameConversationMessageRowProps } from "./conversation-row.js";
+import { nextSnoozeWakeAt } from "./thread-snooze.js";
 
 const TerminalPanel=lazy(()=>import("./components/TerminalPanel.jsx"));
 const WorkspacePanel=lazy(()=>import("./components/WorkspacePanel.jsx"));
@@ -1282,7 +1283,25 @@ export default function App(){
   },[section,rightPanelOpen,rightPanelTab,agentRuntime,provider,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
   useEffect(()=>{if(agentRuntime!=="codex"||provider!=="freebuff"||!running||!(bootstrap.loggedIn||bootstrap.mock))return;const ping=()=>{const p=new URLSearchParams({timezone});if(model)p.set("model",model);fetch("/api/freebuff/heartbeat?"+p,{method:"POST"}).catch(()=>{})};ping();const timer=setInterval(ping,45000);return()=>clearInterval(timer)},[agentRuntime,provider,running,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
 
-  useEffect(()=>{const timer=setInterval(async()=>{if(!rpc||rpcStatus!=="connected")return;const now=Date.now();for(const thread of threads){const meta=threadMeta[thread.id];if(thread.section?.name==="Snoozed"&&meta?.snoozedUntil&&meta.snoozedUntil<=now){await moveThread(thread,"active");await updateThreadMeta(thread.id,{snoozedUntil:null})}}},30000);return()=>clearInterval(timer)},[rpc,rpcStatus,threads,threadMeta,sections]);
+  useEffect(()=>{
+    if(!rpc||rpcStatus!=="connected")return;
+    const wakeAt=nextSnoozeWakeAt(threads,threadMeta);if(wakeAt==null)return;
+    let disposed=false,timer=null;
+    const wake=async()=>{
+      if(disposed)return;
+      const remaining=wakeAt-Date.now();
+      if(remaining>0){timer=setTimeout(wake,Math.min(remaining,2_000_000_000));return}
+      const now=Date.now();
+      try{
+        for(const thread of threads){
+          const meta=threadMeta[thread.id];
+          if(thread.section?.name==="Snoozed"&&Number(meta?.snoozedUntil)>0&&Number(meta.snoozedUntil)<=now){await moveThread(thread,"active");await updateThreadMeta(thread.id,{snoozedUntil:null})}
+        }
+      }catch(error){if(!disposed)showActionError(error,"Could not wake snoozed thread")}
+    };
+    wake();
+    return()=>{disposed=true;if(timer!=null)clearTimeout(timer)};
+  },[rpc,rpcStatus,threads,threadMeta,sections]);
   useEffect(()=>{
     if(!settings.autoSettleMergedThreads||!rpc||rpcStatus!=="connected")return;
     let disposed=false,busy=false;
