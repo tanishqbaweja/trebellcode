@@ -1483,8 +1483,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       return json(res,200,{items:eventJournal.list({
         threadId:url.searchParams.get("threadId")||null,
         turnId:url.searchParams.get("turnId")||null,
+        runtime:url.searchParams.get("runtime")||null,
+        category:url.searchParams.get("category")||null,
         limit:Number(url.searchParams.get("limit")||200),
         before:url.searchParams.get("before")||null,
+        after:url.searchParams.get("after")||null,
       }),journal:eventJournal.status()});
     }
     if(url.pathname==="/api/device/screenshot"&&req.method==="GET"){

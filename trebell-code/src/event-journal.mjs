@@ -80,13 +80,17 @@ export class EventJournal{
     return this.record({runtime,provider,environmentId,threadId,turnId,category:direction,name:method,status,data:compactProtocolData(method,params)});
   }
 
-  list({threadId=null,turnId=null,limit=200,before=null}={}){
-    const max=Math.max(1,Math.min(1000,Math.trunc(Number(limit)||200)));const cutoff=before==null?Infinity:Number(before)||Infinity;
+  list({threadId=null,turnId=null,runtime=null,category=null,limit=200,before=null,after=null}={}){
+    const max=Math.max(1,Math.min(1000,Math.trunc(Number(limit)||200)));
+    const beforeValue=before==null?Infinity:Number(before),afterValue=after==null?-Infinity:Number(after);
+    const beforeCutoff=Number.isFinite(beforeValue)?beforeValue:Infinity,afterCutoff=Number.isFinite(afterValue)?afterValue:-Infinity;
     const items=[];
     for(let index=this.recent.length-1;index>=0&&items.length<max;index--){
-      const item=this.recent[index];if(item.at>=cutoff)continue;
+      const item=this.recent[index];if(item.at>=beforeCutoff||item.at<afterCutoff)continue;
       if(threadId&&item.threadId!==String(threadId))continue;
       if(turnId&&item.turnId!==String(turnId))continue;
+      if(runtime&&item.runtime!==String(runtime))continue;
+      if(category&&item.category!==String(category))continue;
       items.push(item);
     }
     return clone(items);

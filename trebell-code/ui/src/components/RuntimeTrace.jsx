@@ -11,19 +11,30 @@ export default function RuntimeTrace({threadId=null}){
   const [items,setItems]=useState([]);
   const [error,setError]=useState("");
   const [loading,setLoading]=useState(false);
+  const [runtimeFilter,setRuntimeFilter]=useState("");
+  const [categoryFilter,setCategoryFilter]=useState("");
+  const [timeWindow,setTimeWindow]=useState("all");
+  const [runtimeOptions,setRuntimeOptions]=useState([]);
   const load=useCallback(async({silent=false}={})=>{
     if(!silent)setLoading(true);
     try{
       const params=new URLSearchParams({limit:"40"});if(threadId)params.set("threadId",threadId);
+      if(runtimeFilter)params.set("runtime",runtimeFilter);
+      if(categoryFilter)params.set("category",categoryFilter);
+      const windowMs=timeWindow==="15m"?15*60_000:timeWindow==="1h"?60*60_000:timeWindow==="24h"?24*60*60_000:0;
+      if(windowMs)params.set("after",String(Date.now()-windowMs));
       const result=await api("/api/traces?"+params.toString());
-      setItems(Array.isArray(result.items)?result.items:[]);
+      const next=Array.isArray(result.items)?result.items:[];setItems(next);
+      setRuntimeOptions(previous=>Array.from(new Set([...previous,...next.map(item=>item.runtime).filter(Boolean)])).sort());
       setError(result.journal?.lastError?.message||"");
       return true;
     }catch(loadError){
       setError(loadError?.message||String(loadError)||"Could not refresh runtime trace.");
       return false;
     }finally{if(!silent)setLoading(false)}
-  },[threadId]);
+  },[threadId,runtimeFilter,categoryFilter,timeWindow]);
+
+  useEffect(()=>{setRuntimeFilter("");setCategoryFilter("");setTimeWindow("all");setRuntimeOptions([])},[threadId]);
 
   useEffect(()=>{
     let disposed=false,busy=false;
@@ -38,6 +49,18 @@ export default function RuntimeTrace({threadId=null}){
     <div className="runtime-trace-head">
       <div><strong>Execution trace</strong><span>Bounded, redacted lifecycle events. Token/output deltas are intentionally excluded.</span></div>
       <button type="button" onClick={()=>load()} disabled={loading} aria-label="Refresh execution trace" title="Refresh execution trace"><RefreshCw size={11}/></button>
+    </div>
+    <div className="runtime-trace-filters">
+      <select aria-label="Trace runtime" value={runtimeFilter} onChange={event=>setRuntimeFilter(event.target.value)}>
+        <option value="">All runtimes</option>{runtimeOptions.map(runtime=><option key={runtime} value={runtime}>{runtime}</option>)}
+      </select>
+      <select aria-label="Trace category" value={categoryFilter} onChange={event=>setCategoryFilter(event.target.value)}>
+        <option value="">All categories</option>
+        {["runtime","client","policy","checkpoint","source-control","verification","budget"].map(category=><option key={category} value={category}>{category}</option>)}
+      </select>
+      <select aria-label="Trace time window" value={timeWindow} onChange={event=>setTimeWindow(event.target.value)}>
+        <option value="all">All time</option><option value="15m">Last 15m</option><option value="1h">Last hour</option><option value="24h">Last 24h</option>
+      </select>
     </div>
     {error&&<div className="runtime-trace-error" role="alert"><strong>Trace refresh failed.</strong><span>{error}{items.length?" Last valid trace is kept below.":""}</span></div>}
     <div className="runtime-trace-list">

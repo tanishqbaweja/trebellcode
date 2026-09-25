@@ -3398,11 +3398,19 @@ test("Diff review actions roll back and stay visible when persistence fails",asy
   });
   const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
   const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"opencode",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
-  let failTrace=false;
+  let failTrace=false;const traceNow=Date.now();
+  const traceItems=[
+    {id:"trace-runtime",at:traceNow,runtime:"opencode",provider:"opencode-default",threadId:thread.id,turnId:"turn-fixture",category:"runtime",name:"item/completed",status:"done",data:{item:{type:"commandExecution"}}},
+    {id:"trace-budget",at:traceNow-30_000,runtime:"codex",provider:"codex-default",threadId:thread.id,turnId:"turn-budget",category:"budget",name:"goal.budget_blocked",status:"blocked",data:{tokenExhausted:true}},
+    {id:"trace-checkpoint",at:traceNow-2*60*60_000,runtime:"opencode",provider:"opencode-default",threadId:thread.id,turnId:"turn-old",category:"checkpoint",name:"checkpoint.created",status:"completed",data:{checkpointId:"checkpoint-old"}},
+  ];
   try{
-    await page.route("**/api/traces?*",route=>failTrace
-      ?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate trace refresh failure"})})
-      :route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items:[{id:"trace-fixture",at:Date.now(),runtime:"opencode",provider:"opencode-default",threadId:thread.id,turnId:"turn-fixture",category:"runtime",name:"item/completed",status:"done",data:{item:{type:"commandExecution"}}}]})}));
+    await page.route("**/api/traces?*",route=>{
+      if(failTrace)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate trace refresh failure"})});
+      const url=new URL(route.request().url()),runtime=url.searchParams.get("runtime"),category=url.searchParams.get("category"),after=Number(url.searchParams.get("after")||0);
+      const items=traceItems.filter(item=>(!runtime||item.runtime===runtime)&&(!category||item.category===category)&&(!after||item.at>=after));
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({items,journal:{lastError:null}})});
+    });
     await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"opencode",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[thread.id]:{projectless:false,environmentId:null,reviewedFiles:[]}}})}));
     await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
@@ -3459,6 +3467,15 @@ test("Diff review actions roll back and stay visible when persistence fails",asy
     await expect(trace).toContainText("Execution trace");
     await expect(trace).toContainText("item/completed");
     await expect(trace).toContainText("opencode");
+    const traceRuntime=trace.getByLabel("Trace runtime"),traceCategory=trace.getByLabel("Trace category"),traceWindow=trace.getByLabel("Trace time window");
+    await expect(traceRuntime.locator('option[value="codex"]')).toHaveCount(1);
+    await traceRuntime.selectOption("codex");
+    await expect(trace).toContainText("goal.budget_blocked");await expect(trace).not.toContainText("item/completed");
+    await traceRuntime.selectOption("");await traceCategory.selectOption("checkpoint");
+    await expect(trace).toContainText("checkpoint.created");await expect(trace).not.toContainText("goal.budget_blocked");
+    await traceCategory.selectOption("");await traceWindow.selectOption("15m");
+    await expect(trace).toContainText("item/completed");await expect(trace).toContainText("goal.budget_blocked");await expect(trace).not.toContainText("checkpoint.created");
+    await traceWindow.selectOption("all");await expect(trace).toContainText("checkpoint.created");
     failTrace=true;
     await trace.getByRole("button",{name:"Refresh execution trace",exact:true}).click();
     await expect(trace.getByRole("alert")).toContainText("Deliberate trace refresh failure");

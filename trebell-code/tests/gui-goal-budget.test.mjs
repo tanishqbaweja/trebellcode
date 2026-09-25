@@ -27,6 +27,10 @@ test("Codex relay owns durable goal RPCs and blocks exhausted direct or queued w
     await assert.rejects(rpc("thread/queue/start",{threadId,queuedSubmissionId:"queued-1"}),error=>error.code===-32001&&/Goal budget exhausted/i.test(error.message));
     const traces=await fetch(gui.url+"/api/traces?threadId="+encodeURIComponent(threadId)+"&limit=20").then(response=>response.json());
     assert.ok(traces.items.filter(item=>item.name==="goal.budget_blocked").length>=2);assert.ok(traces.items.filter(item=>item.name==="goal.budget_blocked").every(item=>item.data?.timeExhausted===true));
+    const filteredTraces=await fetch(gui.url+"/api/traces?threadId="+encodeURIComponent(threadId)+"&runtime=codex&category=budget&after="+(Date.now()-60_000)+"&limit=20").then(response=>response.json());
+    assert.ok(filteredTraces.items.length>=2);assert.ok(filteredTraces.items.every(item=>item.runtime==="codex"&&item.category==="budget"));
+    const futureTraces=await fetch(gui.url+"/api/traces?threadId="+encodeURIComponent(threadId)+"&after="+(Date.now()+60_000)+"&limit=20").then(response=>response.json());
+    assert.equal(futureTraces.items.length,0);
     const raised=(await rpc("thread/goal/set",{threadId,timeBudgetMinutes:2})).goal;assert.equal(raised.budgetExhausted,false);assert.ok(raised.timeBudgetRemainingMinutes>0);
     await assert.rejects(rpc("turn/start",{threadId,input:[{type:"text",text:"gate now allows forwarding"}]}),error=>error.code!==-32001&&!/Goal budget exhausted/i.test(error.message));
     const paused=(await rpc("thread/goal/set",{threadId,status:"paused",timeBudgetMinutes:1})).goal;assert.equal(paused.status,"paused");assert.equal(paused.budgetExhausted,true);
