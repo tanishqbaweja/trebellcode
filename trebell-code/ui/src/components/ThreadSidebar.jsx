@@ -18,7 +18,13 @@ function relativeTime(epoch){
   return Math.floor(d/86400)+"d";
 }
 
-const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,onOpen,onSelect,onAction,onMove,runAction,agentRuntime="codex"}){
+function threadCanFork(thread,runtimeCapabilities={}){
+  if(runtimeCapabilities.fork===true)return true;
+  if(runtimeCapabilities.fork!=="runtime")return false;
+  return thread?.providerMeta?.initialize?.agentCapabilities?.sessionCapabilities?.fork!=null;
+}
+
+const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,onOpen,onSelect,onAction,onMove,runAction,agentRuntime="codex",runtimeCapabilities={}}){
   const section=thread.section?.name||"Active";
   const linked=Array.isArray(meta?.linkedPullRequests)
     ?meta.linkedPullRequests
@@ -46,7 +52,7 @@ const ThreadRow=memo(function ThreadRow({thread,meta,active,selected,bulk,onOpen
         <button onClick={()=>runAction(()=>onAction(thread,section==="Pinned"?"active":"pin"))}>{section==="Pinned"?"Unpin":"Pin"}</button>
         <button onClick={()=>runAction(()=>onAction(thread,section==="Snoozed"?"active":"snooze"))}>{section==="Snoozed"?"Wake thread":"Snooze…"}</button>
         <button onClick={()=>runAction(()=>onAction(thread,section==="Settled"?"active":"settle"))}>{section==="Settled"?"Un-settle":"Settle"}</button>
-        {(agentRuntime==="codex"||agentRuntime==="opencode"||thread.providerMeta?.initialize?.agentCapabilities?.sessionCapabilities?.fork!=null)&&<button onClick={()=>runAction(()=>onAction(thread,"fork"))}>Fork thread</button>}
+        {threadCanFork(thread,runtimeCapabilities)&&<button onClick={()=>runAction(()=>onAction(thread,"fork"))}>Fork thread</button>}
         <button onClick={()=>runAction(()=>onMove(thread,-1))}>Move up</button>
         <button onClick={()=>runAction(()=>onMove(thread,1))}>Move down</button>
         <button onClick={()=>runAction(()=>copy(references.threadId))}>Copy thread ID</button>
@@ -119,7 +125,7 @@ const ThreadSidebar=memo(function ThreadSidebar({
     <div className="thread-sections">
       {THREAD_GROUP_NAMES.map(name=>{const items=groups[name];return items.length>0&&<section key={name}>
         <h4>{name}<span>{items.length}</span></h4>
-        {items.map(t=><ThreadRow key={t.id} thread={t} meta={threadMeta[t.id]||null} active={t.id===activeThreadId} bulk={bulk} selected={selectedIds.has(t.id)} onOpen={onOpen} onSelect={toggle} onAction={onThreadAction} onMove={onMove} runAction={runAction} agentRuntime={agentRuntime}/>)}
+        {items.map(t=><ThreadRow key={t.id} thread={t} meta={threadMeta[t.id]||null} active={t.id===activeThreadId} bulk={bulk} selected={selectedIds.has(t.id)} onOpen={onOpen} onSelect={toggle} onAction={onThreadAction} onMove={onMove} runAction={runAction} agentRuntime={agentRuntime} runtimeCapabilities={runtimeCapabilities}/>)}
       </section>})}
       {!threads.length&&<div className="sidebar-empty">{query?"No matching threads.":<>No threads yet.<br/>Start a task to create one.</>}</div>}
     </div>

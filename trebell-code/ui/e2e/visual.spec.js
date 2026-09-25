@@ -5354,8 +5354,14 @@ test("Claude thread can switch compatible account profiles from the model picker
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
     await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
     await page.goto("/");
-    await expect(page.getByRole("button",{name:/Claude profile switch fixture/})).toBeVisible({timeout:10_000});
-    await page.getByRole("button",{name:/Claude profile switch fixture/}).click();
+    const claudeRow=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Claude profile switch fixture"]')});
+    await expect(claudeRow).toBeVisible({timeout:10_000});
+    await claudeRow.hover();
+    await claudeRow.locator(".thread-menu summary").click();
+    await expect(claudeRow.getByRole("button",{name:"Fork thread",exact:true})).toBeVisible();
+    await page.screenshot({path:auditDir+"claude-thread-fork-menu-1600x980.png",fullPage:true});
+    await claudeRow.locator("details").evaluate(node=>{node.open=false});
+    await claudeRow.locator(".thread-main").click();
     const picker=page.getByTestId("model-picker");
     await expect(picker).toBeEnabled();
     await expect(picker).toContainText("Claude Work");
