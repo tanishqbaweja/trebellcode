@@ -2316,6 +2316,44 @@ test("major workspace surfaces render their real destinations without horizontal
   await page.screenshot({path:auditDir+"agents-panel-1280x800.png",fullPage:true});
 });
 
+test("thread history pages older threads without expanding the sidebar",async({page})=>{
+  test.setTimeout(35_000);
+  const now=Date.now()/1000;
+  const allThreads=Array.from({length:130},(_,index)=>({
+    id:`history-thread-${String(index+1).padStart(3,"0")}`,
+    name:`History thread ${String(index+1).padStart(3,"0")}`,
+    preview:`History preview ${index+1}`,
+    cwd:process.cwd(),createdAt:now-index-100,updatedAt:now-index,turns:[],
+  }));
+  const thread=allThreads[0];let listCalls=0;
+  const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
+    if(message.method!=="thread/list")return false;
+    listCalls++;
+    const cursor=message.params?.cursor||null;
+    const data=cursor==="history-page-2"?allThreads.slice(100):allThreads.slice(0,100);
+    ws.send(JSON.stringify({id:message.id,result:{data,nextCursor:cursor?null:"history-page-2"}}));
+    return true;
+  }});
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"thread-history-pagination-fixture");
+    await page.goto("/");
+    await expect(page.locator(".thread-row")).toHaveCount(100);
+    await page.getByRole("button",{name:"History",exact:true}).click();
+    await expect(page.getByRole("heading",{name:"Thread history",level:1})).toBeVisible();
+    await expect(page.locator(".history-thread-row")).toHaveCount(100);
+    await expect(page.getByRole("button",{name:"Load older threads",exact:true})).toBeVisible();
+    expect(listCalls).toBeGreaterThanOrEqual(2);
+    await page.getByRole("button",{name:"Load older threads",exact:true}).click();
+    await expect(page.locator(".history-thread-row")).toHaveCount(130);
+    await expect(page.getByRole("button",{name:"Load older threads",exact:true})).toHaveCount(0);
+    await expect(page.locator(".thread-row")).toHaveCount(100);
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".history-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"thread-history-pagination-1280x800.png",fullPage:false});
+  }finally{await harness.close()}
+});
+
 test("project and environment configuration forms stay readable when expanded",async({page,request})=>{
   test.setTimeout(50_000);
   await prepare(page,request);

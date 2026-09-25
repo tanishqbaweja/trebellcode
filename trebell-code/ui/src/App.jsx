@@ -550,6 +550,7 @@ export default function App(){
     },
   });
   const [historyPage,setHistoryPage]=useState({threadId:null,nextCursor:null,paginated:false,loading:false});
+  const [threadHistory,setThreadHistory]=useState({runtime:null,items:[],nextCursor:null,loading:false,error:""});
   const [threadFind,setThreadFind]=useState({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});
   const [running,setRunning]=useState(false); const [submitting,setSubmitting]=useState(false); const [queued,setQueued]=useState([]); const [queueMode,setQueueMode]=useState("unknown"); const [queuedEditId,setQueuedEditId]=useState(null);
   const localQueueStartRef=useRef(null);
@@ -1043,6 +1044,38 @@ export default function App(){
     }catch(error){
       if(strict)throw error;
       return null;
+    }
+  }
+  useEffect(()=>{
+    if(section!=="history")return;
+    let cancelled=false;
+    if(!rpc||rpcStatus!=="connected"){
+      setThreadHistory({runtime:agentRuntime,items:threads,nextCursor:null,loading:false,error:""});
+      return;
+    }
+    setThreadHistory(current=>current.runtime===agentRuntime?{...current,loading:true,error:""}:{runtime:agentRuntime,items:[],nextCursor:null,loading:true,error:""});
+    rpc.request("thread/list",threadListParams(100)).then(result=>{
+      if(cancelled)return;
+      setThreadHistory({runtime:agentRuntime,items:result?.data||[],nextCursor:result?.nextCursor||null,loading:false,error:""});
+    }).catch(error=>{
+      if(cancelled)return;
+      setThreadHistory(current=>current.runtime===agentRuntime?{...current,loading:false,error:error?.message||String(error)}:{runtime:agentRuntime,items:[],nextCursor:null,loading:false,error:error?.message||String(error)});
+    });
+    return()=>{cancelled=true};
+  },[section,rpc,rpcStatus,agentRuntime]);
+  async function loadOlderThreadHistory(){
+    const cursor=threadHistory.nextCursor;if(!cursor||threadHistory.loading||!rpc||rpcStatus!=="connected")return;
+    setThreadHistory(current=>({...current,loading:true,error:""}));
+    try{
+      const result=await rpc.request("thread/list",{...threadListParams(100),cursor});
+      setThreadHistory(current=>{
+        if(current.runtime!==agentRuntime)return current;
+        const seen=new Set(current.items.map(item=>item.id));
+        const additions=(result?.data||[]).filter(item=>item?.id&&!seen.has(item.id));
+        return {...current,items:[...current.items,...additions],nextCursor:result?.nextCursor||null,loading:false,error:""};
+      });
+    }catch(error){
+      setThreadHistory(current=>({...current,loading:false,error:error?.message||String(error)}));
     }
   }
   async function loadCollaborationModes(client=rpcRef.current){
@@ -3259,7 +3292,11 @@ export default function App(){
       {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}
         {section==="licenses"&&<div className="secondary-page full"><div className="page-header"><div><h1>Open source licenses</h1><p>Installed third-party software, versions and license notices.</p></div></div><DeferredSurface label="Loading licenses…"><LicensesPage/></DeferredSurface></div>}
       {section==="settings"&&<div className="secondary-page full"><div className="page-header"><div><h1>Settings</h1><p>{window.trebellDesktop?"Agent harnesses, model providers, permissions and desktop behavior.":"Agent harnesses, model providers, permissions and workspace behavior."}</p></div></div><DeferredSurface label="Loading settings…"><SettingsPage settings={settings} onSettings={setSettings} onProviderChanging={nextProvider=>{modelRefreshSeqRef.current++;modelCatalogScopeRef.current=agentRuntime+"\0"+nextProvider;setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("")}} onProviderUpdated={(options={})=>{setProviderRevision(v=>v+1);return refreshProviderModels({...options,resetThread:options.resetThread??false})}} runtime={runtime} rpcStatus={rpcStatus} loggedIn={bootstrap.loggedIn||bootstrap.mock} login={login} logout={logout} projectPath={projectlessMode?null:projectPath} runtimeEnvironmentId={workspaceEnvironmentId} onOpenRuntimeAuthTerminal={session=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:session?.id||null})),0)}} projectScripts={projectlessMode?[]:currentProject?.scripts||[]} modelError={modelError} onOpenLicenses={()=>setSection("licenses")} models={models} onScopedSettingsChanged={onScopedSettingsChanged} environmentThemeCatalog={environmentThemeCatalog} environmentThemes={environmentThemes} onRefreshEnvironmentThemes={refreshEnvironmentThemes}/></DeferredSurface></div>}
-        {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Every unarchived {agentRuntimeLabel} thread stored by Trebell on this machine.</p></div></div><div className="history-page">{threads.length?threads.map(t=><button key={t.id} onClick={()=>runUserAction(()=>openThread(t),"Could not open thread")}><FileCode2 size={15}/><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><time>{new Date(t.updatedAt*1000).toLocaleString()}</time></button>):<div className="history-empty"><History size={22}/><strong>No thread history yet</strong><span>Start a task or General chat and it will appear here.</span><button onClick={()=>runUserAction(newChat,"Could not start a new thread")}>Start a new task</button></div>}</div></div>}
+        {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Unarchived {agentRuntimeLabel} threads are loaded 100 at a time so old work stays reachable without slowing the sidebar.</p></div></div><div className="history-page">
+          {threadHistory.error&&<div className="history-load-error provider-status-error" role="alert">Could not load thread history: {threadHistory.error}</div>}
+          {threadHistory.items.length?threadHistory.items.map(t=><button className="history-thread-row" key={t.id} onClick={()=>runUserAction(()=>openThread(t),"Could not open thread")}><FileCode2 size={15}/><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><time>{new Date(t.updatedAt*1000).toLocaleString()}</time></button>):<div className="history-empty"><History size={22}/><strong>{threadHistory.loading?"Loading thread history…":"No thread history yet"}</strong><span>{threadHistory.loading?"Fetching the newest threads from the active agent runtime.":"Start a task or General chat and it will appear here."}</span>{!threadHistory.loading&&<button onClick={()=>runUserAction(newChat,"Could not start a new thread")}>Start a new task</button>}</div>}
+          {threadHistory.items.length>0&&threadHistory.nextCursor&&<div className="history-page-control history-load-more"><button type="button" disabled={threadHistory.loading} onClick={()=>loadOlderThreadHistory()}>{threadHistory.loading?"Loading older threads…":"Load older threads"}</button></div>}
+        </div></div>}
       </main>
 
       {rightPanelOpen&&!rightPanelMaximized&&<div className="layout-resizer right-panel-resizer" data-testid="right-panel-resizer" role="separator" aria-label="Resize workspace panel" aria-orientation="vertical" onPointerDown={event=>beginLayoutResize("right",event)}/>}
