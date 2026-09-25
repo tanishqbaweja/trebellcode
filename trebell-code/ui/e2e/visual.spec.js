@@ -1066,6 +1066,17 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
         ?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate context refresh failure"})})
         :route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(packet)});
     });
+    await page.route(/\/api\/context\/symbols\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({query:"RefreshSession",indexedFiles:138,data:[
+      {path:"src/auth/session.js",name:"RefreshSession",kind:"class",line:8,signature:"export class RefreshSession",parser:"babel",score:100},
+      {path:"tests/auth-refresh.test.js",name:"refreshesExpiredSession",kind:"function",line:6,signature:"export function refreshesExpiredSession()",parser:"babel",score:45},
+    ]})}));
+    await page.route(/\/api\/context\/relations\?/,route=>{
+      const file=new URL(route.request().url()).searchParams.get("file")||"";
+      const body=file==="src/auth/session.js"
+        ?{path:file,parser:"babel",definitions:[{name:"RefreshSession",kind:"class",line:8}],imports:[{specifier:"./token.js",target:"src/auth/token.js"}],importers:[{path:"src/server.js",specifier:"./auth/session.js"},{path:"tests/auth-refresh.test.js",specifier:"../src/auth/session.js"}],referencedSymbols:[{name:"rotateRefreshToken",target:"src/auth/token.js",count:1}],referencedBy:[{name:"RefreshSession",path:"src/server.js",count:1},{name:"RefreshSession",path:"tests/auth-refresh.test.js",count:2}],relatedTests:["tests/auth-refresh.test.js"],indexedFiles:138}
+        :{path:file,parser:"babel",definitions:[],imports:[],importers:[],referencedSymbols:[],referencedBy:[],relatedTests:[],indexedFiles:138};
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(body)});
+    });
     await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,root:project.path,branch:"main",branches:["main"],upstream:"origin/main",status:[],remotes:[],worktrees:[{path:project.path,branch:"main"}]})}));
     await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(route.request().method()==="GET"?{checkpoints:[]}:{supported:false})}));
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
@@ -1092,11 +1103,23 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     await expect(inspector).toContainText("138");
     await expect(inspector).toContainText("focused");
     await expect(inspector).toContainText("short/focused task");
+    const explorer=inspector.getByTestId("context-explorer");
+    await expect(explorer).toBeVisible();
+    await explorer.getByLabel("Search repository symbols").fill("RefreshSession");
+    await explorer.getByRole("button",{name:"Search",exact:true}).click();
+    const refreshResult=explorer.getByRole("button",{name:/RefreshSession/}).first();
+    await expect(refreshResult).toContainText("src/auth/session.js:8");
+    await refreshResult.click();
+    const relations=explorer.getByTestId("context-file-relations");
+    await expect(relations).toContainText("2 importers");
+    await expect(relations).toContainText("tests/auth-refresh.test.js");
+    await expect(relations).toContainText("src/auth/token.js");
     const statTops=await inspector.locator(".context-inspector-stats>div").evaluateAll(nodes=>nodes.map(node=>Math.round(node.getBoundingClientRect().top)));
     expect(new Set(statTops).size).toBe(1);
     await page.setViewportSize({width:1280,height:800});
     const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"context-inspector-explorer-1280x800.png",fullPage:true});
     await page.screenshot({path:auditDir+"context-inspector-1280x800.png",fullPage:true});
 
     harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"context-engine-turn-1",status:"completed"}}});

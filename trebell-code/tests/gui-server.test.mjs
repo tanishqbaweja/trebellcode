@@ -149,6 +149,18 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.ok(contextPacket.items.some(item=>item.path==="src/session.js"));
     assert.match(contextPacket.injection,/Prefer deterministic repository context/);
     assert.ok(contextPacket.tokenEstimate<=1200);
+    const symbolResponse=await fetch(gui.url+"/api/context/symbols?"+new URLSearchParams({path:configProject,q:"RefreshSession"}));
+    assert.equal(symbolResponse.status,200);
+    const symbolResult=await symbolResponse.json();
+    assert.equal(symbolResult.data[0].name,"RefreshSession");
+    assert.equal(symbolResult.data[0].path,"src/session.js");
+    const relationResponse=await fetch(gui.url+"/api/context/relations?"+new URLSearchParams({path:configProject,file:"src/session.js"}));
+    assert.equal(relationResponse.status,200);
+    const relationResult=await relationResponse.json();
+    assert.equal(relationResult.path,"src/session.js");
+    assert.ok(relationResult.definitions.some(item=>item.name==="RefreshSession"));
+    const missingRelationResponse=await fetch(gui.url+"/api/context/relations?"+new URLSearchParams({path:configProject,file:"../outside.js"}));
+    assert.equal(missingRelationResponse.status,400);
     const remoteContextResponse=await fetch(gui.url+"/api/context/packet",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({path:"/srv/app",task:"remote task",environmentId:"ssh-test"})});
     assert.equal(remoteContextResponse.status,400);
     assert.doesNotMatch((await remoteContextResponse.json()).error,/local workspaces only/i);
