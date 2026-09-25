@@ -11,6 +11,7 @@ import {
   isMcpToolApproval,
   isAcpElicitation,
   mcpElicitationKind,
+  userVerificationAvailability,
 } from "../ui/src/mcp-elicitation.js";
 
 function approvalRequest(){
@@ -63,6 +64,14 @@ test("user verification responses require a signed native proof",()=>{
     action:"accept",content:{credentialId:"cred-1",signature:"sig-1"},_meta:null,
   });
   assert.throws(()=>buildUserVerificationResponse({credentialId:"cred-1"}),/valid verification proof/);
+});
+
+test("device-backed user verification is exposed only where the Codex proof protocol is real",()=>{
+  assert.deepEqual(userVerificationAvailability({runtime:"codex",remote:false}),{available:true,reason:""});
+  assert.match(userVerificationAvailability({runtime:"native",remote:false}).reason,/only through Codex/i);
+  assert.equal(userVerificationAvailability({runtime:"native",remote:false}).available,false);
+  assert.match(userVerificationAvailability({runtime:"codex",remote:true}).reason,/remote workspaces/i);
+  assert.equal(userVerificationAvailability({runtime:"codex",remote:true}).available,false);
 });
 
 test("generic MCP form elicitations expose typed fields and validated content",()=>{

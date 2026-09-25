@@ -17,7 +17,7 @@ function pretty(value){
   try{return JSON.stringify(value)}catch{return String(value)}
 }
 
-export default function McpElicitationModal({request,onResolve,onVerify,verificationAvailable=true}){
+export default function McpElicitationModal({request,onResolve,onVerify,verificationAvailable=true,verificationUnavailableReason=""}){
   const kind=mcpElicitationKind(request);
   const params=request?.params||{};
   const acp=isAcpElicitation(request);
@@ -101,7 +101,7 @@ export default function McpElicitationModal({request,onResolve,onVerify,verifica
     {kind==="verification"&&<>
       <p className="mcp-elicitation-message">{params.title||message||"This request requires device-backed verification."}</p>
       {params.description&&<p className="mcp-approval-note">{params.description}</p>}
-      {!verificationAvailable&&<div className="inline-error">Device verification is unavailable for remote workspaces.</div>}
+      {!verificationAvailable&&<div className="inline-error">{verificationUnavailableReason||"Device verification is unavailable for this runtime or workspace."}</div>}
       {verificationAvailable&&!onVerify&&<div className="inline-error">This Trebell runtime cannot request a native verification proof.</div>}
       <div className="modal-actions"><span>{params.serverName||"MCP server"}</span><button disabled={verificationBusy||resolveBusy} onClick={()=>resolve(buildMcpApprovalResponse("cancel"))}>Cancel request</button>{verificationAvailable&&onVerify&&<button className="primary" disabled={verificationBusy||resolveBusy} onClick={verify}>{verificationBusy?"Verifying…":"Verify with device"}</button>}</div>
     </>}

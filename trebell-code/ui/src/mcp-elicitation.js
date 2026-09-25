@@ -77,6 +77,12 @@ export function buildUserVerificationResponse(proof){
   return {action:"accept",content:{credentialId,signature},_meta:null};
 }
 
+export function userVerificationAvailability({runtime="",remote=false}={}){
+  if(String(runtime||"").toLowerCase()!=="codex")return {available:false,reason:"Device-backed user verification is currently available only through Codex."};
+  if(remote)return {available:false,reason:"Device verification is unavailable for remote workspaces."};
+  return {available:true,reason:""};
+}
+
 function enumOptions(schema){
   if(Array.isArray(schema?.enum))return schema.enum.map(value=>({value,label:String(value)}));
   for(const key of ["oneOf","anyOf"]){
