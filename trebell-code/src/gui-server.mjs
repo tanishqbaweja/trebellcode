@@ -49,6 +49,7 @@ import { EventJournal } from "./event-journal.mjs";
 import { enrichGoal, goalAdditionalContext, goalBudgetGate, normalizeGoal } from "./goal-state.mjs";
 import { recordCodexBudgetEvidence, recordCodexChildAgentEvidence } from "./codex-budget-evidence.mjs";
 import { continuityAdditionalContext, continuitySnapshot, normalizeContinuityNotes } from "./continuity-state.mjs";
+import { verificationRepairContext, verificationRepairPrompt, verificationRepairState } from "./verification-repair.mjs";
 import { delegationContextValue, delegationGoalPatch, delegationPolicies } from "./delegation-state.mjs";
 import { executeDelegation } from "./delegation-executor.mjs";
 
@@ -943,6 +944,31 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       checkpoints:state.checkpoints(threadId),
       traces:eventJournal.list({threadId,limit:80}),
     });
+  }
+  function codexVerificationState(threadId,recordId=null){
+    const records=state.verificationRecords({threadId,limit:50});
+    if(!records.length)return {record:null,nextAction:null};
+    return verificationRepairState(records,recordId);
+  }
+  async function repairCodexVerification(threadId,params,requestUpstream){
+    const meta=state.threadMeta(threadId);if(meta.active)throw new Error("Stop the running turn before starting verification repair.");
+    assertCodexGoalBudget(threadId);
+    const {record,nextAction}=codexVerificationState(threadId,params.recordId||null);
+    if(!record)throw new Error("No persisted verification record is available for this thread.");
+    if(nextAction.action!=="repair")throw new Error("Latest verification does not require repair (next action: "+nextAction.action+").");
+    const repairContext=verificationRepairContext({record,nextAction});
+    const withGoal=goalAdditionalContext({},durableCodexGoal(threadId));
+    const withContinuity=continuityAdditionalContext(withGoal,durableCodexContinuity(threadId));
+    const additionalContext={...(withContinuity||{}),"trebell.verification_repair":{kind:"application",value:repairContext}};
+    const model=codexThreadModels.get(threadId)||null;
+    const turnParams={
+      threadId,cwd:meta?.cwd||undefined,approvalPolicy:params.approvalPolicy,sandboxPolicy:params.sandboxPolicy,
+      input:[{type:"text",text:verificationRepairPrompt(),textElements:[]}],additionalContext,...(model?{model}:{}),
+    };
+    for(const key of Object.keys(turnParams))if(turnParams[key]===undefined)delete turnParams[key];
+    const started=await requestUpstream("turn/start",turnParams,{routeMessage:{method:"thread/read",params:{threadId}},timeoutMs:120_000});
+    eventJournal.record({runtime:"codex",provider:selectedProvider,environmentId:meta?.environmentId??null,threadId,turnId:started?.turn?.id||null,category:"verification",name:"verification.repair_started",status:"running",data:{recordId:record.id,nextAction:nextAction.action,failedSteps:nextAction.failedSteps||[]}});
+    return {record,nextAction,turn:started?.turn||null};
   }
   function assertCodexGoalBudget(threadId){
     const goal=durableCodexGoal(threadId),gate=goalBudgetGate(goal);if(gate.allowed)return goal;
@@ -2311,6 +2337,14 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return json(res,200,contextEngine.nextVerificationAction({plan:body.plan,evidence:Array.isArray(body.evidence)?body.evidence:[]}));
       }catch(error){return json(res,400,{error:error.message});}
     }
+    if(url.pathname==="/api/verification-records/repair-context"&&req.method==="POST"){
+      try{
+        const body=await readJsonBody(req,512*1024),threadId=String(body.threadId||"").trim();if(!threadId)throw new Error("threadId is required");
+        const prepared=codexVerificationState(threadId,body.recordId||null);if(!prepared.record)throw new Error("No persisted verification record is available for this thread.");
+        if(prepared.nextAction.action!=="repair")throw new Error("Latest verification does not require repair (next action: "+prepared.nextAction.action+").");
+        return json(res,200,{record:prepared.record,nextAction:prepared.nextAction,prompt:verificationRepairPrompt(),context:verificationRepairContext(prepared)});
+      }catch(error){return json(res,400,{error:error.message});}
+    }
     if(url.pathname==="/api/verification-records"){
       if(req.method==="GET"){
         const options={limit:Number(url.searchParams.get("limit")||100)};
@@ -2734,6 +2768,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         if(!threadId)throw Object.assign(new Error("threadId is required"),{code:-32602});
         state.updateThreadMeta(threadId,{continuityNotes:undefined});const continuity=durableCodexContinuity(threadId);
         relay.broadcast("thread/continuity/updated",{threadId,continuity});return {handled:true,result:{ok:true,continuity}};
+      }
+      if(message.method==="thread/verification/get")return {handled:true,result:threadId?codexVerificationState(threadId,params.recordId||null):{record:null,nextAction:null}};
+      if(message.method==="thread/verification/repair"){
+        if(!threadId)throw Object.assign(new Error("threadId is required"),{code:-32602});
+        return {handled:true,result:await repairCodexVerification(threadId,params,requestUpstream)};
       }
       if(message.method==="thread/delegate")return {handled:true,result:await delegateCodexThread(params,requestUpstream)};
       if(((message.method==="turn/start"&&params.turnTrigger!=="trebell-restart-continuation")||message.method==="thread/queue/start")&&threadId)assertCodexGoalBudget(threadId);

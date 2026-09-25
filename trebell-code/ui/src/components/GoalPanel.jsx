@@ -1,5 +1,6 @@
 import React,{useEffect,useState} from "react";
 import { AlertTriangle, CheckCircle2, ChevronDown, Pause, Play, RefreshCw, Target, Trash2 } from "lucide-react";
+import { startSameThreadVerificationRepair } from "../verification-repair.js";
 
 function lines(value){return (Array.isArray(value)?value:[]).join("\n")}
 function parseLines(value){return String(value||"").split(/\r?\n/).map(item=>item.trim()).filter(Boolean)}
@@ -46,6 +47,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   const [importantDecisions,setImportantDecisions]=useState("");
   const [artifactsCreated,setArtifactsCreated]=useState("");
   const [pendingNextActions,setPendingNextActions]=useState("");
+  const [repairStatus,setRepairStatus]=useState("");
   const [busy,setBusy]=useState("");
   const [error,setError]=useState("");
   useEffect(()=>{
@@ -67,7 +69,7 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
     setArtifactsCreated(lines(continuity?.notes?.artifactsCreated));
     setPendingNextActions(lines(continuity?.notes?.pendingNextActions));
   },[continuity?.notes?.completedWork,continuity?.notes?.unresolvedFailures,continuity?.notes?.importantDecisions,continuity?.notes?.artifactsCreated,continuity?.notes?.pendingNextActions]);
-  useEffect(()=>{setDetailsOpen(false);setAdvancedBudgetOpen(false);setContinuityOpen(false)},[thread?.id]);
+  useEffect(()=>{setDetailsOpen(false);setAdvancedBudgetOpen(false);setContinuityOpen(false);setRepairStatus("")},[thread?.id]);
   if(!thread?.id)return <div className="empty-state"><Target size={28}/><strong>No active thread</strong><span>Start or open a thread before setting a durable goal.</span></div>;
   if(rpcStatus!=="connected")return <div className="empty-state"><Target size={28}/><strong>Agent harness is reconnecting</strong><span>This thread's durable goal will be available again when the active harness reconnects.</span></div>;
   async function setGoal(patch){
@@ -113,6 +115,13 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
     try{
       const result=await rpc.request("thread/continuity/clear",{threadId:thread.id});onContinuity?.(result?.continuity||null);
       setCompletedWork("");setUnresolvedFailures("");setImportantDecisions("");setArtifactsCreated("");setPendingNextActions("");
+    }catch(e){setError(e.message||String(e))}finally{setBusy("")}
+  }
+  async function repairVerification(){
+    if(!rpc)return;setBusy("verification-repair");setError("");setRepairStatus("");
+    try{
+      const result=await startSameThreadVerificationRepair({rpc,thread});
+      setRepairStatus(result?.turn?.id?"Repair turn started on this thread.":"Repair request started.");
     }catch(e){setError(e.message||String(e))}finally{setBusy("")}
   }
   const status=goal?.status||"not set";
@@ -169,6 +178,8 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
           <div><span>Completed turns</span><strong>{Number(continuity?.completedTurnIds?.length||0)}</strong></div>
           <div><span>Unresolved / recent failures</span><strong>{Number(continuity?.unresolvedFailures?.length||0)+Number(continuity?.recentFailures?.length||0)}</strong></div>
         </div>
+        {continuity?.verification?.status==="failed"&&<div className="verification-repair-card" data-testid="verification-repair-card"><div><strong>Verification needs repair</strong><span>Start a same-thread repair turn with the persisted failed-step evidence. No second reviewer model is spawned.</span></div><button type="button" onClick={repairVerification} disabled={!!busy}>{busy==="verification-repair"?"Starting…":"Repair failed verification"}</button></div>}
+        {repairStatus&&<div className="verification-repair-status">{repairStatus}</div>}
         <label>Completed work <span>(one per line)</span><textarea aria-label="Completed work" value={completedWork} onChange={e=>setCompletedWork(e.target.value)} placeholder={"Implemented the parser\nAdded regression tests"}/></label>
         <label>Unresolved failures <span>(one per line)</span><textarea aria-label="Unresolved failures" value={unresolvedFailures} onChange={e=>setUnresolvedFailures(e.target.value)} placeholder={"Preview still fails on Windows"}/></label>
         <label>Important decisions <span>(one per line)</span><textarea aria-label="Important decisions" value={importantDecisions} onChange={e=>setImportantDecisions(e.target.value)} placeholder={"Keep the public API backward compatible"}/></label>
