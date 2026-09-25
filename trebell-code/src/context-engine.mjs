@@ -197,6 +197,11 @@ function localContextIo(root){
     readMany:paths=>localReadMany(absolute,paths),
     readText:path=>readFile(resolve(absolute,path),"utf8"),
     gitState:()=>gitState(absolute),
+    changedSince:async(fromHead,toHead)=>{
+      if(!fromHead||!toHead||fromHead===toHead)return new Set();
+      const {stdout}=await execFileAsync("git",["-C",absolute,"diff","--name-only","-z",fromHead,toHead,"--"],{windowsHide:true,maxBuffer:16*1024*1024,timeout:20_000});
+      return new Set(String(stdout||"").split("\0").filter(Boolean).map(slash));
+    },
     relativeFocus:path=>slash(relative(absolute,resolve(absolute,path))).replace(/^\.\//,""),
   };
 }
@@ -269,6 +274,12 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
       return String(result.stdout||"");
     },
     gitState:remoteGitState,
+    changedSince:async(fromHead,toHead)=>{
+      if(!fromHead||!toHead||fromHead===toHead)return new Set();
+      const result=await run({command:"git",args:["-C",absolute,"diff","--name-only","-z",String(fromHead),String(toHead),"--"],cwd:"",timeoutMs:25_000,maxOutput:16*1024*1024});
+      if(result.exitCode!==0)throw new Error(result.stderr||"Could not compare remote Git revisions for context indexing");
+      return new Set(String(result.stdout||"").split("\0").filter(Boolean).map(path=>path.replace(/\\/g,"/")));
+    },
     relativeFocus:path=>{
       const raw=String(path||"");const target=raw.startsWith("/")?posix.normalize(raw):posix.normalize(posix.join(absolute,raw));
       const rel=posix.relative(absolute,target);return rel.startsWith("../")||posix.isAbsolute(rel)?"":rel;
@@ -421,9 +432,13 @@ export class ContextEngine{
     const revisionChanged=Boolean(previous.size&&git?.isGit&&currentHead&&previousHead&&currentHead!==previousHead);
     const revisionUnknown=Boolean(previous.size&&git?.isGit&&(!currentHead||!previousHead));
     const dirtyPaths=new Set([...(git?.changed||[]),...(previousGit?.changed||[])]);
-    const inspect=(!previous.size||!git?.isGit||revisionChanged||revisionUnknown)
+    let revisionPaths=null;
+    if(revisionChanged&&typeof io.changedSince==="function"){
+      try{revisionPaths=await io.changedSince(previousHead,currentHead)}catch{}
+    }
+    const inspect=(!previous.size||!git?.isGit||revisionUnknown||(revisionChanged&&!revisionPaths))
       ?sourcePaths
-      :sourcePaths.filter(relativePath=>!previous.has(relativePath)||previous.get(relativePath)?.parserVersion!==parserVersion(relativePath)||dirtyPaths.has(relativePath));
+      :sourcePaths.filter(relativePath=>!previous.has(relativePath)||previous.get(relativePath)?.parserVersion!==parserVersion(relativePath)||dirtyPaths.has(relativePath)||(revisionChanged&&revisionPaths.has(relativePath)));
     const inspectSet=new Set(inspect);
     const metadata=await io.metadata(inspect);
     const toRead=[];
@@ -443,7 +458,7 @@ export class ContextEngine{
       next.set(relativePath,{relativePath,size:info.size,version:info.version,parserVersion:parserVersion(relativePath),sample:content.slice(0,64_000),parsed:parseSource(content,relativePath)});reparsed++;
     }
     this.roots.set(cacheKey,next);this.gitStates.set(cacheKey,{head:currentHead,changed:new Set(git?.changed||[])});
-    return {root:absolute,files:next,paths,reparsed,reused,skipped,inspected:inspect.length,durationMs:Date.now()-started,cacheKey,revisionChanged,revisionUnknown};
+    return {root:absolute,files:next,paths,reparsed,reused,skipped,inspected:inspect.length,durationMs:Date.now()-started,cacheKey,revisionChanged,revisionUnknown,revisionDiffUsed:Boolean(revisionChanged&&revisionPaths)};
   }
 
   async buildPacket({root,task="",focusPaths=[],maxTokens=null,maxFiles=null,tokensUsed=null,contextWindow=null,io=null}={}){
@@ -507,7 +522,7 @@ export class ContextEngine{
       id:`ctx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`,
       root:index.root,task:String(task||""),generatedAt:Date.now(),tokenEstimate:tokenEstimate(injection),maxTokens:budget,
       items:selected,injection,budget:budgetPlan,
-      stats:{filesIndexed:files.length,reparsed:index.reparsed,reused:index.reused,skipped:index.skipped,inspected:index.inspected,graphEdges:[...edges.values()].reduce((sum,row)=>sum+row.size,0),durationMs:index.durationMs,remote:Boolean(io),revisionChanged:index.revisionChanged,revisionUnknown:index.revisionUnknown},
+      stats:{filesIndexed:files.length,reparsed:index.reparsed,reused:index.reused,skipped:index.skipped,inspected:index.inspected,graphEdges:[...edges.values()].reduce((sum,row)=>sum+row.size,0),durationMs:index.durationMs,remote:Boolean(io),revisionChanged:index.revisionChanged,revisionUnknown:index.revisionUnknown,revisionDiffUsed:index.revisionDiffUsed},
     };
   }
 }

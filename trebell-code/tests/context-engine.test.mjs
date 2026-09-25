@@ -163,7 +163,8 @@ test("context cache invalidates clean tracked files when Git HEAD changes",async
     await execFileAsync("git",["-c","user.name=Trebell Test","-c","user.email=trebell@example.test","commit","-m","second","-q"],{cwd:root});
     const second=await engine.buildPacket({root,task:"refresh session revisionMarker",maxTokens:1800,maxFiles:8});
     assert.equal(second.stats.revisionChanged,true);
-    assert.ok(second.stats.inspected>=4,"a clean revision change must invalidate the cached index");
+    assert.equal(second.stats.revisionDiffUsed,true);
+    assert.equal(second.stats.inspected,1,"a clean one-file revision change should only inspect the changed source path");
     assert.equal(second.stats.reparsed,1);
     assert.match(second.injection,/HEAD_TWO_MARKER/);
   }finally{await rm(root,{recursive:true,force:true})}
