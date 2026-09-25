@@ -45,6 +45,7 @@ import { contextTaskAnchor, contextTaskText } from "./context-task.js";
 import { requestTurnVerificationPlan, verificationPlanEvent } from "./turn-verification.js";
 import { catalogMetaPatch, mergeThreadCatalog, sameCatalogSnapshot, threadCatalogRuntime, threadsFromCatalogMeta } from "./thread-catalog.js";
 import { conversationChunkIndexForMessage, conversationVirtualChunks, shouldVirtualizeConversation } from "./conversation-virtualization.js";
+import { activityWindow, nextActivityWindowEnd, previousActivityWindowEnd } from "./activity-window.js";
 
 const TerminalPanel=lazy(()=>import("./components/TerminalPanel.jsx"));
 const WorkspacePanel=lazy(()=>import("./components/WorkspacePanel.jsx"));
@@ -298,6 +299,7 @@ const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,initial
   const [assistantText,setAssistantText]=useState(initialAssistantText);
   const [commandOutputs,setCommandOutputs]=useState(()=>new Map(initialCommandOutputs||[]));
   const [mcpProgress,setMcpProgress]=useState(()=>new Map(initialMcpProgress||[]));
+  const [windowEnd,setWindowEnd]=useState(null);
   const openPanelRef=useRef(onOpenPanel);openPanelRef.current=onOpenPanel;
   const openWorkspace=useCallback(()=>openPanelRef.current?.("workspace"),[]);
   useImperativeHandle(ref,()=>({
@@ -312,9 +314,16 @@ const ActivityTimeline=memo(forwardRef(function ActivityTimeline({events,initial
     clearMcpProgress:key=>setMcpProgress(previous=>{const id=String(key||"");if(!previous.has(id))return previous;const next=new Map(previous);next.delete(id);return next}),
     resetStreams:()=>{setAssistantText("");setCommandOutputs(new Map());setMcpProgress(new Map())},
   }),[]);
+  useEffect(()=>{
+    if(windowEnd==null)return;
+    if(!events.length){setWindowEnd(null);return}
+    if(windowEnd>events.length)setWindowEnd(events.length);
+  },[events.length,windowEnd]);
   if(!events.length&&!assistantText)return null;
+  const visible=activityWindow(events,{end:windowEnd});
   return <div className="agent-block"><div className="agent-heading"><div className="agent-star"><Sparkles size={16}/></div><span>Trebell agent activity</span></div><div className="timeline">
-    {events.map(event=>{
+    {events.length>visible.size&&<div className="timeline-window-controls"><span>{visible.start+1}–{visible.end} of {visible.total}</span><div><button disabled={!visible.hasOlder} onClick={()=>setWindowEnd(previousActivityWindowEnd(visible))}>Earlier</button><button disabled={!visible.hasNewer} onClick={()=>setWindowEnd(nextActivityWindowEnd(visible))}>Newer</button>{!visible.latest&&<button onClick={()=>setWindowEnd(null)}>Latest</button>}</div></div>}
+    {visible.items.map(event=>{
       const id=String(event.id),streamedOutput=commandOutputs.get(id)||"",progress=mcpProgress.get(id);
       let rowEvent=!event.output&&streamedOutput?{...event,output:streamedOutput}:event;
       if(progress)rowEvent={...rowEvent,title:progress.title||rowEvent.title,raw:{...(rowEvent.raw||{}),progress:progress.raw||progress}};
