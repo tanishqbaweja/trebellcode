@@ -11,6 +11,11 @@ function positiveInteger(value,{max=1_000_000_000}={}){
   const number=Number(value);if(!Number.isInteger(number)||number<=0)throw new Error("Goal budget must be a positive whole number");
   return Math.min(max,number);
 }
+function nonNegativeInteger(value,{max=1_000_000_000}={}){
+  if(value==null||value==="")return null;
+  const number=Number(value);if(!Number.isInteger(number)||number<0)throw new Error("Goal budget must be a non-negative whole number");
+  return Math.min(max,number);
+}
 function positiveNumber(value,{max=1_000_000}={}){
   if(value==null||value==="")return null;
   const number=Number(value);if(!Number.isFinite(number)||number<=0)throw new Error("Goal cost budget must be a positive number");
@@ -81,7 +86,7 @@ export function normalizeGoal({threadId,previous=null,patch={},now=Date.now()}={
     timeBudgetMinutes:Object.prototype.hasOwnProperty.call(patch,"timeBudgetMinutes")?positiveInteger(patch.timeBudgetMinutes,{max:525_600}):positiveInteger(prior.timeBudgetMinutes,{max:525_600}),
     turnBudget:Object.prototype.hasOwnProperty.call(patch,"turnBudget")?positiveInteger(patch.turnBudget,{max:500}):positiveInteger(prior.turnBudget,{max:500}),
     toolCallBudget:Object.prototype.hasOwnProperty.call(patch,"toolCallBudget")?positiveInteger(patch.toolCallBudget,{max:1000}):positiveInteger(prior.toolCallBudget,{max:1000}),
-    childAgentBudget:Object.prototype.hasOwnProperty.call(patch,"childAgentBudget")?positiveInteger(patch.childAgentBudget,{max:100}):positiveInteger(prior.childAgentBudget,{max:100}),
+    childAgentBudget:Object.prototype.hasOwnProperty.call(patch,"childAgentBudget")?nonNegativeInteger(patch.childAgentBudget,{max:100}):nonNegativeInteger(prior.childAgentBudget,{max:100}),
     costBudgetUsd:Object.prototype.hasOwnProperty.call(patch,"costBudgetUsd")?positiveNumber(patch.costBudgetUsd):positiveNumber(prior.costBudgetUsd),
     createdAt,updatedAt:now,
     ...(status==="complete"?{completedAt:Number(prior.completedAt)||now}:{completedAt:null}),
@@ -100,7 +105,7 @@ export function enrichGoal(goal,{usage=null,turns=[],toolCallsUsed=null,toolCall
   },0);
   const tokensUsed=Math.max(0,Number(usage?.totalTokens)||0),timeUsedSeconds=Math.floor(timeMs/1000),turnsUsed=relevantTurns.length;
   const derivedToolCalls=toolCallsFromTurns(relevantTurns),resolvedToolCalls=toolCallsUsed==null?derivedToolCalls:Math.max(0,Number(toolCallsUsed)||0),resolvedChildAgents=childAgentsUsed==null?null:Math.max(0,Number(childAgentsUsed)||0);
-  const tokenBudget=Number(goal.tokenBudget)||null,timeBudgetMinutes=Number(goal.timeBudgetMinutes)||null,turnBudget=Number(goal.turnBudget)||null,toolCallBudget=Number(goal.toolCallBudget)||null,childAgentBudget=Number(goal.childAgentBudget)||null,costBudgetUsd=Number(goal.costBudgetUsd)||null;
+  const tokenBudget=Number(goal.tokenBudget)||null,timeBudgetMinutes=Number(goal.timeBudgetMinutes)||null,turnBudget=Number(goal.turnBudget)||null,toolCallBudget=Number(goal.toolCallBudget)||null,childAgentBudget=goal.childAgentBudget==null?null:Number(goal.childAgentBudget),costBudgetUsd=Number(goal.costBudgetUsd)||null;
   const usageRecords=Math.max(0,Number(usage?.records??usage?.turns)||0),costKnown=Math.max(0,Number(usage?.costKnown)||0),knownCost=Math.max(0,Number(usage?.costUsd)||0);
   const costUsedUsd=costKnown>0?knownCost:null,costTelemetryComplete=turnsUsed===0||(usageRecords>=turnsUsed&&costKnown>=turnsUsed);
   const tokenExhausted=tokenBudget!=null&&tokensUsed>=tokenBudget,timeExhausted=timeBudgetMinutes!=null&&timeUsedSeconds>=timeBudgetMinutes*60,turnExhausted=turnBudget!=null&&turnsUsed>=turnBudget;
@@ -119,20 +124,20 @@ export function enrichGoal(goal,{usage=null,turns=[],toolCallsUsed=null,toolCall
   };
 }
 
-export function goalBudgetGate(goal){
+export function goalBudgetGate(goal,{includeChildAgents=true}={}){
   const allowedResult={allowed:true,reason:null,tokenExhausted:false,timeExhausted:false,turnExhausted:false,toolCallExhausted:false,childAgentExhausted:false,costExhausted:false,toolCallTelemetryComplete:goal?.toolCallTelemetryComplete!==false,childAgentTelemetryComplete:goal?.childAgentTelemetryComplete===true,costTelemetryComplete:goal?.costTelemetryComplete!==false};
   if(!goal||goal.status!=="active")return allowedResult;
-  const tokenBudget=Number(goal.tokenBudget)||null,timeBudgetMinutes=Number(goal.timeBudgetMinutes)||null,turnBudget=Number(goal.turnBudget)||null,toolCallBudget=Number(goal.toolCallBudget)||null,childAgentBudget=Number(goal.childAgentBudget)||null,costBudgetUsd=Number(goal.costBudgetUsd)||null;
+  const tokenBudget=Number(goal.tokenBudget)||null,timeBudgetMinutes=Number(goal.timeBudgetMinutes)||null,turnBudget=Number(goal.turnBudget)||null,toolCallBudget=Number(goal.toolCallBudget)||null,childAgentBudget=goal.childAgentBudget==null?null:Number(goal.childAgentBudget),costBudgetUsd=Number(goal.costBudgetUsd)||null;
   const tokensUsed=Math.max(0,Number(goal.tokensUsed)||0),timeUsedSeconds=Math.max(0,Number(goal.timeUsedSeconds)||0),turnsUsed=Math.max(0,Number(goal.turnsUsed)||0),toolCallsUsed=Math.max(0,Number(goal.toolCallsUsed)||0),childAgentsUsed=goal.childAgentsUsed==null?null:Math.max(0,Number(goal.childAgentsUsed)||0),costUsedUsd=goal.costUsedUsd==null?null:Math.max(0,Number(goal.costUsedUsd)||0);
   const toolCallTelemetryComplete=goal.toolCallTelemetryComplete!==false,childAgentTelemetryComplete=goal.childAgentTelemetryComplete===true,costTelemetryComplete=goal.costTelemetryComplete!==false;
   const tokenExhausted=tokenBudget!=null&&tokensUsed>=tokenBudget,timeExhausted=timeBudgetMinutes!=null&&timeUsedSeconds>=timeBudgetMinutes*60,turnExhausted=turnBudget!=null&&turnsUsed>=turnBudget,toolCallExhausted=toolCallBudget!=null&&toolCallTelemetryComplete&&toolCallsUsed>=toolCallBudget,childAgentExhausted=childAgentBudget!=null&&childAgentTelemetryComplete&&childAgentsUsed!=null&&childAgentsUsed>=childAgentBudget,costExhausted=costBudgetUsd!=null&&costTelemetryComplete&&costUsedUsd!=null&&costUsedUsd>=costBudgetUsd;
-  if(!tokenExhausted&&!timeExhausted&&!turnExhausted&&!toolCallExhausted&&!childAgentExhausted&&!costExhausted)return {...allowedResult,toolCallTelemetryComplete,childAgentTelemetryComplete,costTelemetryComplete};
+  if(!tokenExhausted&&!timeExhausted&&!turnExhausted&&!toolCallExhausted&&!(includeChildAgents&&childAgentExhausted)&&!costExhausted)return {...allowedResult,childAgentExhausted,toolCallTelemetryComplete,childAgentTelemetryComplete,costTelemetryComplete};
   const reasons=[];
   if(tokenExhausted)reasons.push(`token budget exhausted (${tokensUsed}/${tokenBudget})`);
   if(timeExhausted)reasons.push(`time budget exhausted (${Math.ceil(timeUsedSeconds/60)}/${timeBudgetMinutes} min)`);
   if(turnExhausted)reasons.push(`turn budget exhausted (${turnsUsed}/${turnBudget})`);
   if(toolCallExhausted)reasons.push(`tool-call budget exhausted (${toolCallsUsed}/${toolCallBudget})`);
-  if(childAgentExhausted)reasons.push(`child-agent budget exhausted (${childAgentsUsed}/${childAgentBudget})`);
+  if(includeChildAgents&&childAgentExhausted)reasons.push(`child-agent budget exhausted (${childAgentsUsed}/${childAgentBudget})`);
   if(costExhausted)reasons.push(`cost budget exhausted ($${costUsedUsd.toFixed(4)}/$${costBudgetUsd.toFixed(4)})`);
   return {allowed:false,reason:`Goal budget exhausted: ${reasons.join("; ")}. Increase the exhausted budget or pause, complete, or clear the goal before starting another turn.`,tokenExhausted,timeExhausted,turnExhausted,toolCallExhausted,childAgentExhausted,costExhausted,toolCallTelemetryComplete,childAgentTelemetryComplete,costTelemetryComplete};
 }

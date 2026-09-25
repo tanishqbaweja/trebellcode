@@ -981,18 +981,18 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     return {record,nextAction,turn:started?.turn||null};
   }
   function assertCodexGoalBudget(threadId){
-    const goal=durableCodexGoal(threadId),gate=goalBudgetGate(goal);if(gate.allowed)return goal;
+    const goal=durableCodexGoal(threadId),gate=goalBudgetGate(goal,{includeChildAgents:false});if(gate.allowed)return goal;
     const meta=state.threadMeta(threadId);
     eventJournal.record({runtime:"codex",provider:selectedProvider,environmentId:meta?.environmentId??state.settings().activeEnvironmentId??null,threadId,category:"budget",name:"goal.budget_blocked",status:"blocked",data:{goalStatus:goal?.status||null,tokenBudget:goal?.tokenBudget??null,tokensUsed:goal?.tokensUsed??0,timeBudgetMinutes:goal?.timeBudgetMinutes??null,timeUsedSeconds:goal?.timeUsedSeconds??0,turnBudget:goal?.turnBudget??null,turnsUsed:goal?.turnsUsed??0,toolCallBudget:goal?.toolCallBudget??null,toolCallsUsed:goal?.toolCallsUsed??0,toolCallTelemetryComplete:goal?.toolCallTelemetryComplete??true,childAgentBudget:goal?.childAgentBudget??null,childAgentsUsed:goal?.childAgentsUsed??null,childAgentTelemetryComplete:goal?.childAgentTelemetryComplete??false,costBudgetUsd:goal?.costBudgetUsd??null,costUsedUsd:goal?.costUsedUsd??null,costTelemetryComplete:goal?.costTelemetryComplete??true,tokenExhausted:gate.tokenExhausted,timeExhausted:gate.timeExhausted,turnExhausted:gate.turnExhausted,toolCallExhausted:gate.toolCallExhausted,childAgentExhausted:gate.childAgentExhausted,costExhausted:gate.costExhausted}});
     throw Object.assign(new Error(gate.reason),{code:-32001});
   }
   const pendingDelegations=new Map();
   function reserveCodexDelegation(threadId){
-    const goal=durableCodexGoal(threadId);assertCodexGoalBudget(threadId);
-    const pending=Math.max(0,Number(pendingDelegations.get(threadId))||0);
+    const goal=durableCodexGoal(threadId),pending=Math.max(0,Number(pendingDelegations.get(threadId))||0);
     if(goal?.childAgentBudget!=null&&goal.childAgentTelemetryComplete&&Number(goal.childAgentsUsed||0)+pending>=Number(goal.childAgentBudget)){
       throw Object.assign(new Error(`Goal budget exhausted: child-agent budget exhausted (${Number(goal.childAgentsUsed||0)+pending}/${goal.childAgentBudget}). Increase the exhausted budget before delegating more work.`),{code:-32001});
     }
+    assertCodexGoalBudget(threadId);
     pendingDelegations.set(threadId,pending+1);
     return ()=>{const next=Math.max(0,(Number(pendingDelegations.get(threadId))||1)-1);if(next)pendingDelegations.set(threadId,next);else pendingDelegations.delete(threadId)};
   }

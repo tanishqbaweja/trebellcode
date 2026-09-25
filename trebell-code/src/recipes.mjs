@@ -77,6 +77,6 @@ export function recipeGoalPatch(recipe,{input=""}={}){
     objective:normalized.objective+(suffix?" — "+suffix:""),
     status:"active",
     validationExpectations:normalized.validation,
-    ...(normalized.maxChildren>0?{childAgentBudget:normalized.maxChildren}:{}),
+    childAgentBudget:normalized.maxChildren,
   };
 }

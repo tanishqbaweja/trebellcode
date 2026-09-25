@@ -27,6 +27,15 @@ test("goal budgets reject invalid values instead of silently inventing state",()
   assert.throws(()=>normalizeGoal({threadId:"t",patch:{objective:""}}),/objective is required/i);
 });
 
+test("zero child-agent budget blocks delegation without blocking primary work",()=>{
+  const goal=normalizeGoal({threadId:"thread-1",patch:{objective:"Stay single-agent",childAgentBudget:0}});
+  assert.equal(goal.childAgentBudget,0);
+  const enriched=enrichGoal(goal,{childAgentsUsed:0,childAgentTelemetryComplete:true});
+  assert.equal(enriched.childAgentBudget,0);assert.equal(enriched.childAgentBudgetRemaining,0);assert.equal(enriched.budgetExhausted,true);
+  const allWork=goalBudgetGate(enriched);assert.equal(allWork.allowed,false);assert.equal(allWork.childAgentExhausted,true);
+  const primary=goalBudgetGate(enriched,{includeChildAgents:false});assert.equal(primary.allowed,true);assert.equal(primary.childAgentExhausted,true);
+});
+
 test("goal budget gate blocks only new work after an active budget is exhausted",()=>{
   assert.equal(goalBudgetGate(null).allowed,true);
   assert.equal(goalBudgetGate({status:"paused",tokenBudget:100,tokensUsed:100}).allowed,true);

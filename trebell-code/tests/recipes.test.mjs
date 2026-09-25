@@ -23,6 +23,7 @@ test("recipes default to supervised with zero hidden child agents and deduplicat
   const recipe=normalizeRecipe({name:"security review",objective:"Review the requested scope for security issues."});
   assert.equal(recipe.permission,"supervised");assert.equal(recipe.maxChildren,0);
   assert.match(recipeRunContext(recipe),/Delegation limit: 0 child agents/);
+  assert.equal(recipeGoalPatch(recipe).childAgentBudget,0);
   const normalized=normalizeRecipes([{name:"release",objective:"Prepare release."},{name:"release",objective:"Duplicate."},{name:"",objective:"Fallback."},{name:"broken"}]);
   assert.equal(normalized.length,2);assert.equal(normalized[0].name,"/release");
 });
