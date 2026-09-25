@@ -39,6 +39,7 @@ import { ensureCodexProject, sameWorkspacePath } from "./codex-projects.js";
 import { writeClipboardText } from "./clipboard.js";
 import { createKeyedTextFrameBuffer, createTextFrameBuffer } from "./text-frame-buffer.js";
 import { autoCompactionDecision } from "./auto-compaction.js";
+import { sameConversationMessageRowProps } from "./conversation-row.js";
 
 const TerminalPanel=lazy(()=>import("./components/TerminalPanel.jsx"));
 const WorkspacePanel=lazy(()=>import("./components/WorkspacePanel.jsx"));
@@ -290,17 +291,27 @@ function ThreadFindBar({state,inputRef,onQuery,onPrevious,onNext,onClose}){
   </div>;
 }
 
+const ConversationMessageRow=memo(function ConversationMessageRow({message,activeFind,allowRevert,projectPath,environmentId,threadId,onEditFromHere}){
+  const parsed=useMemo(()=>message.role==="user"?null:parseVisualizationMessage(message.text),[message.role,message.text]);
+  if(message.role==="user")return <div className={"user-row"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="user-bubble"><p>{message.text}</p>{allowRevert&&message.turnId&&<button className="message-action" onClick={()=>onEditFromHere(message)}>Edit from here</button>}</div></div>;
+  return <div className={"history-assistant"+(activeFind?" find-active":"")} data-message-id={message.id}><div className="agent-star small"><Sparkles size={12}/></div><div>{parsed?.text&&<div className="assistant-message-text" data-assistant-citation-source={message.id}>{parsed.text}</div>}{(parsed?.visualizations||[]).map((visualization,index)=>{
+    const label=String(visualization.path||visualization.file||"Visualization").split(/[\\/]/).pop();
+    return <div className={"inline-visualization-card "+(visualization.mode==="wide"?"wide":"")} key={label+":"+index}><div className="inline-visualization-head"><strong>{label}</strong><span>Interactive visualization</span></div><iframe title={label} src={visualizationUrl(visualization,{projectPath,environmentId,threadId})} sandbox="allow-scripts" referrerPolicy="no-referrer"/></div>;
+  })}</div></div>;
+},sameConversationMessageRowProps);
+
 const Conversation=memo(function Conversation({messages,onEditFromHere,onCite,allowRevert=true,projectPath,environmentId,threadId,canLoadEarlier=false,loadingEarlier=false,onLoadEarlier,activeFindItemId=null}){
   const historyRef=useRef(null);
-  return <div className="conversation-history" ref={historyRef}>{canLoadEarlier&&<div className="history-page-control"><button type="button" disabled={loadingEarlier} onClick={onLoadEarlier}>{loadingEarlier?"Loading earlier messages…":"Load earlier messages"}</button></div>}{messages.map(m=>{
-    const activeFind=String(m.id)===String(activeFindItemId||"");
-    if(m.role==="user")return <div className={"user-row"+(activeFind?" find-active":"")} data-message-id={m.id} key={m.id}><div className="user-bubble"><p>{m.text}</p>{allowRevert&&m.turnId&&<button className="message-action" onClick={()=>onEditFromHere(m)}>Edit from here</button>}</div></div>;
-    const parsed=parseVisualizationMessage(m.text);
-    return <div className={"history-assistant"+(activeFind?" find-active":"")} data-message-id={m.id} key={m.id}><div className="agent-star small"><Sparkles size={12}/></div><div>{parsed.text&&<div className="assistant-message-text" data-assistant-citation-source={m.id}>{parsed.text}</div>}{parsed.visualizations.map((visualization,index)=>{
-      const label=String(visualization.path||visualization.file||"Visualization").split(/[\\/]/).pop();
-      return <div className={"inline-visualization-card "+(visualization.mode==="wide"?"wide":"")} key={label+":"+index}><div className="inline-visualization-head"><strong>{label}</strong><span>Interactive visualization</span></div><iframe title={label} src={visualizationUrl(visualization,{projectPath,environmentId,threadId})} sandbox="allow-scripts" referrerPolicy="no-referrer"/></div>;
-    })}</div></div>;
-  })}<AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></div>;
+  return <div className="conversation-history" ref={historyRef}>{canLoadEarlier&&<div className="history-page-control"><button type="button" disabled={loadingEarlier} onClick={onLoadEarlier}>{loadingEarlier?"Loading earlier messages…":"Load earlier messages"}</button></div>}{messages.map(message=><ConversationMessageRow
+    key={message.id}
+    message={message}
+    activeFind={String(message.id)===String(activeFindItemId||"")}
+    allowRevert={allowRevert}
+    projectPath={projectPath}
+    environmentId={environmentId}
+    threadId={threadId}
+    onEditFromHere={onEditFromHere}
+  />)}<AssistantSelectionToolbar containerRef={historyRef} onCite={({messageId,text})=>{const message=messages.find(item=>String(item.id)===String(messageId));return message?onCite?.(message,text):false}}/></div>;
 });
 function ApprovalCard({request,onResolve}){
   if(!request)return null;
