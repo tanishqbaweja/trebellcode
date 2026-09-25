@@ -2247,12 +2247,21 @@ export default function App(){
   }
   async function prepareTurnContext(thread,cwd,text,paths,{projectless=projectlessMode,background=false}={}){
     if(projectless||bootstrap.mock||!thread?.id||!cwd)return null;
+    const usage=threadTelemetry[thread.id]?.tokenUsage||(activeThread?.id===thread.id?tokenUsage:null);
     try{
       const packet=await api("/api/context/packet",{method:"POST",body:{
-        path:cwd,task:text,focusPaths:paths||[],environmentId:workspaceEnvironmentId||null,maxTokens:7000,maxFiles:24,
+        path:cwd,task:text,focusPaths:paths||[],environmentId:workspaceEnvironmentId||null,
+        tokensUsed:usage?.last?.inputTokens??null,contextWindow:usage?.modelContextWindow??null,
       }});
+      if(packet.skipped){
+        const pressure={...(packet.budget||{}),at:Date.now(),skipped:true};
+        try{await updateThreadMeta(thread.id,{trebellContextPressure:pressure,trebellContextError:null},{strict:true})}
+        catch(error){showActionError(error,"Repository context was skipped but its inspector state could not be saved")}
+        if(!background)setEvents(prev=>[...prev,{id:"context-pressure-"+packet.id,kind:"context",title:"Trebell context skipped · preserving "+Number(pressure.reserveTokens||0).toLocaleString()+" tokens for the response",status:"done",raw:{contextId:packet.id,budget:packet.budget}}]);
+        return packet;
+      }
       const stored={...packet,runtime:agentRuntime,delivery:agentRuntime==="codex"?"additionalContext":"promptPreamble"};
-      try{await updateThreadMeta(thread.id,{trebellContext:stored,trebellContextError:null},{strict:true})}
+      try{await updateThreadMeta(thread.id,{trebellContext:stored,trebellContextError:null,trebellContextPressure:null},{strict:true})}
       catch(error){showActionError(error,"Repository context was injected but its inspector state could not be saved")}
       if(!background)setEvents(prev=>[...prev,{id:"context-"+packet.id,kind:"context",title:`Trebell context · ${packet.items?.length||0} files · ~${packet.tokenEstimate||0} tokens`,status:"done",raw:{contextId:packet.id,items:packet.items?.length||0,tokenEstimate:packet.tokenEstimate||0}}]);
       return packet;
@@ -2983,7 +2992,7 @@ export default function App(){
 
   function rightPanelContent(){
     if(rightPanelTab==="files"||rightPanelTab==="diff")return <WorkspacePanel key={rightPanelTab+":"+(workspaceEnvironmentId||"local")} defaultTab={rightPanelTab==="diff"&&!projectlessMode?"diff":"files"} allowDiff={!projectlessMode} projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} activeThreadId={activeThread?.id} reviewedFiles={reviewedFiles} onReviewedChange={toggleReviewed} onAttachPath={path=>addFiles([path])} onReviewComment={attachReviewComment}/>;
-    if(rightPanelTab==="context")return <ContextInspector packet={activeThread?.id?threadMeta[activeThread.id]?.trebellContext||null:null} error={activeThread?.id?threadMeta[activeThread.id]?.trebellContextError||null:null} remote={workspaceRemote}/>;
+    if(rightPanelTab==="context")return <ContextInspector packet={activeThread?.id?threadMeta[activeThread.id]?.trebellContext||null:null} error={activeThread?.id?threadMeta[activeThread.id]?.trebellContextError||null:null} pressure={activeThread?.id?threadMeta[activeThread.id]?.trebellContextPressure||null:null} remote={workspaceRemote}/>;
     if(rightPanelTab==="preview")return previewSurface;
     if(rightPanelTab==="source")return projectlessMode?<div className="empty-state">General chats are not attached to source control.</div>:<SourceControlPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} model={model} provider={provider} threadId={activeThread?.id||null} sourceControlSettings={currentProject?.effectiveSettings||effectiveProjectSettings} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} onLinkPrUrl={linkPullRequestUrl} onOpenLinkedThread={openLinkedThread} onSelectedPrChange={setSourceSelectedPr} onLinkedPullRequestsChanged={links=>activeThread?.id&&applyThreadPullRequestLinks(activeThread.id,links)} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
     if(rightPanelTab==="device")return <DevicePanel/>;

@@ -889,6 +889,7 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
   const injection="Trebell repository context\nTask: Fix refresh token session bug\n\n### src/auth/session.js\nWhy selected: defines task-related symbol: RefreshSession\nKey symbols: class RefreshSession (L8)";
   const packet={
     id:"ctx-visual-fixture",root:project.path,task:"Fix refresh token session bug",generatedAt:Date.now(),tokenEstimate:428,maxTokens:7000,injection,
+    budget:{mode:"focused",complexity:"focused",pressure:"normal",maxTokens:2800,maxFiles:12,utilization:null,utilizationPercent:null,reason:"short/focused task"},
     items:[
       {path:"src/auth/session.js",score:82.2,centrality:.19,reasons:["defines task-related symbol: RefreshSession","structurally central in repository graph"],symbols:[{name:"RefreshSession",kind:"class",line:8}],tokenEstimate:190},
       {path:"src/auth/token.js",score:56.1,centrality:.14,reasons:["path matches task: token","contains task terms: refresh, token"],symbols:[{name:"rotateRefreshToken",kind:"function",line:12}],tokenEstimate:142},
@@ -897,7 +898,7 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     stats:{filesIndexed:138,reparsed:3,reused:135,skipped:2,graphEdges:412,durationMs:24},
   };
   const turnContexts=[];
-  let failContext=false;
+  let failContext=false,contextCalls=0;
   let meta={projectless:false,environmentId:null};
   const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
     if(message.method==="turn/start"){
@@ -917,9 +918,18 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
       if(route.request().method()==="POST"){const body=route.request().postDataJSON();meta={...meta,...(body.patch||{})};return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(meta)})}
       return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(meta)});
     });
-    await page.route(/\/api\/context\/packet$/,route=>failContext
-      ?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate context refresh failure"})})
-      :route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(packet)}));
+    await page.route(/\/api\/context\/packet$/,route=>{
+      contextCalls++;const body=route.request().postDataJSON();
+      if(Number(body?.tokensUsed)>=93_000){
+        return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+        id:"ctx-pressure-fixture",root:project.path,task:body.task||"",generatedAt:Date.now(),tokenEstimate:0,maxTokens:0,items:[],injection:"",skipped:true,
+        budget:{mode:"exhausted",pressure:"exhausted",maxTokens:0,maxFiles:0,skip:true,utilization:.93,utilizationPercent:93,remainingTokens:7000,reserveTokens:8000,reason:"context window only has the response safety reserve left"},
+        stats:{filesIndexed:0,reparsed:0,reused:0,skipped:0,inspected:0,graphEdges:0,durationMs:0,remote:false,skippedByPressure:true},
+      })})}
+      return failContext
+        ?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate context refresh failure"})})
+        :route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(packet)});
+    });
     await page.route(/\/api\/git\/info\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,root:project.path,branch:"main",branches:["main"],upstream:"origin/main",status:[],remotes:[],worktrees:[{path:project.path,branch:"main"}]})}));
     await page.route(/\/api\/checkpoints(?:\?.*)?$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(route.request().method()==="GET"?{checkpoints:[]}:{supported:false})}));
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
@@ -944,6 +954,8 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     await expect(inspector).toContainText("src/auth/session.js");
     await expect(inspector).toContainText("defines task-related symbol: RefreshSession");
     await expect(inspector).toContainText("138");
+    await expect(inspector).toContainText("focused");
+    await expect(inspector).toContainText("short/focused task");
     const statTops=await inspector.locator(".context-inspector-stats>div").evaluateAll(nodes=>nodes.map(node=>Math.round(node.getBoundingClientRect().top)));
     expect(new Set(statTops).size).toBe(1);
     await page.setViewportSize({width:1280,height:800});
@@ -963,6 +975,24 @@ test("Trebell repository context is injected and inspectable",async({page})=>{
     await expect(inspector.getByRole("alert")).toContainText("The last successful packet is shown below");
     await expect(inspector).toContainText("src/auth/session.js");
     await page.screenshot({path:auditDir+"context-inspector-refresh-error-1280x800.png",fullPage:true});
+
+    harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"context-engine-turn-2",status:"completed"}}});
+    await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);
+    harness.emit({method:"thread/tokenUsage/updated",params:{threadId:thread.id,tokenUsage:{modelContextWindow:100000,last:{inputTokens:93000},total:{totalTokens:118000}}}});
+    await expect(page.getByText(/Context 93%/)).toBeVisible();
+    failContext=false;
+    await composer.fill("Continue without crowding the remaining context window");
+    await page.getByTestId("send").click();
+    await expect.poll(()=>turnContexts.length).toBe(3);
+    expect(turnContexts[2]).toBeNull();
+    expect(contextCalls).toBe(3);
+    await expect(page.locator(".tool-event").filter({hasText:"Trebell context skipped"})).toContainText("8,000");
+    await expect(inspector.getByRole("status")).toContainText("Latest turn preserved response space");
+    await expect(inspector.getByRole("status")).toContainText("7,000 context tokens remained");
+    await expect(inspector).toContainText("src/auth/session.js");
+    const pressureMetrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+    expect(pressureMetrics.scroll).toBeLessThanOrEqual(pressureMetrics.client+1);
+    await page.screenshot({path:auditDir+"context-inspector-pressure-skip-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 

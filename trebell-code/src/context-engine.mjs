@@ -279,6 +279,47 @@ function publicItem(entry,score,centrality,reasons,tokenCost){
   return {path:entry.relativePath,score:Number(score.toFixed(3)),centrality:Number(centrality.toFixed(6)),reasons,symbols:entry.parsed.definitions.slice(0,16),tokenEstimate:tokenCost};
 }
 
+export function planContextBudget({task="",focusPaths=[],tokensUsed=null,contextWindow=null,maxTokens=null,maxFiles=null}={}){
+  const text=String(task||"").trim(),terms=taskTerms(text),focusCount=Array.isArray(focusPaths)?focusPaths.length:0;
+  const broadIntent=/\b(?:architecture|architectural|across|codebase|repo(?:sitory)?|refactor|redesign|migrate|parity|end[- ]to[- ]end|integrat(?:e|ion)|system[- ]wide|all files|everywhere)\b/i.test(text);
+  let complexityScore=0;
+  if(text.length>220)complexityScore++;if(text.length>700)complexityScore++;
+  if(terms.length>14)complexityScore++;if(terms.length>24)complexityScore++;
+  if(focusCount>=2)complexityScore++;if(focusCount>=5)complexityScore++;
+  if(broadIntent)complexityScore++;
+  const complexity=complexityScore<=1?"focused":complexityScore>=3?"broad":"normal";
+  const defaults=complexity==="focused"?{maxTokens:2800,maxFiles:12}:complexity==="broad"?{maxTokens:7000,maxFiles:24}:{maxTokens:5200,maxFiles:20};
+  const used=Number(tokensUsed),windowSize=Number(contextWindow);
+  const utilization=Number.isFinite(used)&&used>=0&&Number.isFinite(windowSize)&&windowSize>0?Math.max(0,Math.min(1,used/windowSize)):null;
+  const remainingTokens=utilization==null?null:Math.max(0,windowSize-used);
+  const reserveTokens=utilization==null?null:Math.max(4000,Math.min(16_000,Math.round(windowSize*.08)));
+  let pressure="normal",tokenCap=defaults.maxTokens,fileCap=defaults.maxFiles,reason=complexity==="focused"?"short/focused task":complexity==="broad"?"broad cross-file task":"normal repository task";
+  if(utilization!=null&&utilization>=0.85){pressure="critical";tokenCap=Math.min(tokenCap,1600);fileCap=Math.min(fileCap,8);reason="context window is at least 85% full"}
+  else if(utilization!=null&&utilization>=0.70){pressure="tight";tokenCap=Math.min(tokenCap,2800);fileCap=Math.min(fileCap,12);reason="context window is at least 70% full"}
+  else if(utilization!=null&&utilization>=0.40){pressure="balanced";tokenCap=Math.min(tokenCap,4400);fileCap=Math.min(fileCap,18);reason="context window is at least 40% full"}
+  const explicitTokens=maxTokens!=null&&String(maxTokens)!=="",explicitFiles=maxFiles!=null&&String(maxFiles)!=="";
+  const callerSkip=explicitTokens&&Number(maxTokens)<=0;
+  const skip=callerSkip||(remainingTokens!=null&&reserveTokens!=null&&remainingTokens<reserveTokens+800);
+  if(skip){pressure="exhausted";reason=callerSkip?"caller requested no repository injection":"context window only has the response safety reserve left"}
+  const requestedTokenCap=explicitTokens&&Number(maxTokens)>0?boundedNumber(maxTokens,tokenCap,800,20_000):null;
+  const requestedFileCap=explicitFiles&&Number(maxFiles)>0?boundedNumber(maxFiles,fileCap,4,80):null;
+  const plannedTokens=skip?0:Math.round(requestedTokenCap==null?tokenCap:Math.min(tokenCap,requestedTokenCap));
+  const plannedFiles=skip?0:Math.round(requestedFileCap==null?fileCap:Math.min(fileCap,requestedFileCap));
+  return {
+    mode:pressure==="normal"?complexity:pressure,skip,
+    complexity,
+    pressure,
+    maxTokens:plannedTokens,
+    maxFiles:plannedFiles,
+    utilization:utilization==null?null:Number(utilization.toFixed(4)),
+    utilizationPercent:utilization==null?null:Math.round(utilization*100),
+    remainingTokens:remainingTokens==null?null:Math.round(remainingTokens),
+    reserveTokens:reserveTokens==null?null:Math.round(reserveTokens),
+    reason,
+    cappedByCaller:Boolean(!skip&&((requestedTokenCap!=null&&requestedTokenCap<tokenCap)||(requestedFileCap!=null&&requestedFileCap<fileCap))),
+  };
+}
+
 export class ContextEngine{
   constructor({maxFileBytes=256_000}={}){this.maxFileBytes=maxFileBytes;this.roots=new Map()}
 
@@ -310,10 +351,17 @@ export class ContextEngine{
     return {root:absolute,files:next,paths,reparsed,reused,skipped,inspected:inspect.length,durationMs:Date.now()-started,cacheKey};
   }
 
-  async buildPacket({root,task="",focusPaths=[],maxTokens=7000,maxFiles=24,io=null}={}){
+  async buildPacket({root,task="",focusPaths=[],maxTokens=null,maxFiles=null,tokensUsed=null,contextWindow=null,io=null}={}){
     if(!root)throw new Error("Context Engine requires a workspace path");
     const contextIo=io||localContextIo(root);
-    const budget=Math.round(boundedNumber(maxTokens,7000,800,20_000)),fileLimit=Math.round(boundedNumber(maxFiles,24,4,80));
+    const budgetPlan=planContextBudget({task,focusPaths,tokensUsed,contextWindow,maxTokens,maxFiles});
+    if(budgetPlan.skip)return {
+      id:`ctx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`,
+      root:contextIo.root,task:String(task||""),generatedAt:Date.now(),tokenEstimate:0,maxTokens:0,
+      items:[],injection:"",budget:budgetPlan,skipped:true,
+      stats:{filesIndexed:0,reparsed:0,reused:0,skipped:0,inspected:0,graphEdges:0,durationMs:0,remote:Boolean(io),skippedByPressure:true},
+    };
+    const budget=budgetPlan.maxTokens,fileLimit=budgetPlan.maxFiles;
     const git=await contextIo.gitState();
     const index=await this.#index(root,contextIo,git);const terms=taskTerms(task),files=[...index.files.values()],available=new Set(index.files.keys());
     const definitionIndex=new Map();for(const entry of files)for(const definition of entry.parsed.definitions){let owners=definitionIndex.get(definition.name);if(!owners){owners=[];definitionIndex.set(definition.name,owners)}owners.push(entry.relativePath)}
@@ -363,7 +411,7 @@ export class ContextEngine{
     return {
       id:`ctx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`,
       root:index.root,task:String(task||""),generatedAt:Date.now(),tokenEstimate:tokenEstimate(injection),maxTokens:budget,
-      items:selected,injection,
+      items:selected,injection,budget:budgetPlan,
       stats:{filesIndexed:files.length,reparsed:index.reparsed,reused:index.reused,skipped:index.skipped,inspected:index.inspected,graphEdges:[...edges.values()].reduce((sum,row)=>sum+row.size,0),durationMs:index.durationMs,remote:Boolean(io)},
     };
   }

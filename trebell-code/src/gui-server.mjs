@@ -2096,6 +2096,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           focusPaths:Array.isArray(body.focusPaths)?body.focusPaths:[],
           maxTokens:body.maxTokens,
           maxFiles:body.maxFiles,
+          tokensUsed:body.tokensUsed,
+          contextWindow:body.contextWindow,
           io:remote?createRemoteContextIo({environments,environmentId,root}):null,
         });
         return json(res,200,packet);

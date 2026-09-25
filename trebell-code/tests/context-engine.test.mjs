@@ -5,7 +5,41 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { ContextEngine, createRemoteContextIo, pageRank } from "../src/context-engine.mjs";
+import { ContextEngine, createRemoteContextIo, pageRank, planContextBudget } from "../src/context-engine.mjs";
+
+test("context budgeting is deterministic and shrinks repository injection as the active context fills",()=>{
+  const focused=planContextBudget({task:"Rename the save button"});
+  assert.equal(focused.mode,"focused");assert.equal(focused.maxTokens,2800);assert.equal(focused.maxFiles,12);
+  const broad=planContextBudget({task:"Refactor the repository architecture end-to-end across the codebase, integrations, tests, and runtime adapters so the system-wide context flow is consistent.",focusPaths:["a.js","b.js","c.js","d.js","e.js"]});
+  assert.equal(broad.mode,"broad");assert.equal(broad.maxTokens,7000);assert.equal(broad.maxFiles,24);
+  const tight=planContextBudget({task:"Continue the refactor",tokensUsed:75_000,contextWindow:100_000});
+  assert.equal(tight.mode,"tight");assert.equal(tight.maxTokens,2800);assert.equal(tight.maxFiles,12);assert.equal(tight.utilizationPercent,75);
+  const critical=planContextBudget({task:"Continue",tokensUsed:90_000,contextWindow:100_000});
+  assert.equal(critical.mode,"critical");assert.equal(critical.maxTokens,1600);assert.equal(critical.maxFiles,8);assert.equal(critical.skip,false);
+  const exhausted=planContextBudget({task:"Continue",tokensUsed:93_000,contextWindow:100_000});
+  assert.equal(exhausted.mode,"exhausted");assert.equal(exhausted.maxTokens,0);assert.equal(exhausted.maxFiles,0);assert.equal(exhausted.skip,true);
+  assert.equal(exhausted.remainingTokens,7000);assert.equal(exhausted.reserveTokens,8000);
+  const explicit=planContextBudget({task:"Continue",tokensUsed:90_000,contextWindow:100_000,maxTokens:1900,maxFiles:9});
+  assert.equal(explicit.maxTokens,1600);assert.equal(explicit.maxFiles,8);assert.equal(explicit.cappedByCaller,false);
+  const capped=planContextBudget({task:"Refactor repository architecture",maxTokens:1200,maxFiles:6});
+  assert.equal(capped.maxTokens,1200);assert.equal(capped.maxFiles,6);assert.equal(capped.cappedByCaller,true);
+});
+
+test("exhausted context budget skips repository I/O entirely",async()=>{
+  const engine=new ContextEngine();let touched=false;
+  const io={
+    root:"/srv/app",cacheKey:"fixture:/srv/app",
+    discoverFiles:async()=>{touched=true;return []},
+    metadata:async()=>{touched=true;return new Map()},
+    readMany:async()=>{touched=true;return new Map()},
+    readText:async()=>{touched=true;return ""},
+    gitState:async()=>{touched=true;return {isGit:true,changed:new Set(),status:"",diff:""}},
+    relativeFocus:path=>path,
+  };
+  const packet=await engine.buildPacket({root:"/srv/app",io,task:"Continue",tokensUsed:93_000,contextWindow:100_000});
+  assert.equal(packet.skipped,true);assert.equal(packet.injection,"");assert.equal(packet.tokenEstimate,0);
+  assert.equal(packet.stats.skippedByPressure,true);assert.equal(touched,false);
+});
 
 const execFileAsync=promisify(execFile);
 

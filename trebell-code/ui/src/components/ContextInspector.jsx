@@ -14,18 +14,21 @@ function scoreLabel(item,highest){
   return "supporting";
 }
 
-export default function ContextInspector({packet=null,error=null,remote=false}){
+export default function ContextInspector({packet=null,error=null,pressure=null,remote=false}){
   if(!packet)return <div className="context-inspector empty">
     <section className="context-inspector-hero">
       <span>Trebell Context Engine</span>
       <strong>No repository context has been injected for this thread yet.</strong>
-      <p>{error?.message||"Send a repository task and Trebell will build a bounded structural context packet before the model starts."}</p>
+      <p>{error?.message||(pressure?.skipped
+        ?"The latest turn skipped repository injection to preserve about "+Number(pressure.reserveTokens||0).toLocaleString()+" tokens for the model response."
+        :"Send a repository task and Trebell will build a bounded structural context packet before the model starts.")}</p>
     </section>
   </div>;
 
   const items=Array.isArray(packet.items)?packet.items:[],highest=Math.max(0,...items.map(item=>Number(item.score)||0));
   return <div className="context-inspector">
     {error?.message&&<div className="context-inspector-warning" role="alert"><strong>Latest context refresh failed.</strong><span>{error.message} The last successful packet is shown below.</span></div>}
+    {pressure?.skipped&&<div className="context-inspector-pressure" role="status"><strong>Latest turn preserved response space.</strong><span>Trebell skipped repository injection because only about {Number(pressure.remainingTokens||0).toLocaleString()} context tokens remained. About {Number(pressure.reserveTokens||0).toLocaleString()} were reserved for the response and harness overhead. The last successful packet is shown below.</span></div>}
     <section className="context-inspector-hero">
       <div className="context-inspector-kicker"><span>Trebell Context Engine</span><em>{deliveryLabel(packet)}</em></div>
       <strong>{items.length} selected file{items.length===1?"":"s"} · ~{Number(packet.tokenEstimate||0).toLocaleString()} tokens</strong>
@@ -36,6 +39,7 @@ export default function ContextInspector({packet=null,error=null,remote=false}){
         <div><span>Reparsed</span><strong>{packet.stats?.reparsed??"—"}</strong></div>
         <div><span>Relations</span><strong>{packet.stats?.graphEdges??"—"}</strong></div>
         <div><span>Workspace</span><strong>{packet.stats?.remote||remote?"Remote":"Local"}</strong></div>
+        <div><span>Budget</span><strong>{packet.budget?.mode||"Fixed"}</strong></div>
       </div>
     </section>
 
@@ -56,6 +60,6 @@ export default function ContextInspector({packet=null,error=null,remote=false}){
       <summary>Exact injected context</summary>
       <pre>{packet.injection||"No stored injection text."}</pre>
     </details>
-    <p className="context-inspector-note">This shows Trebell's own injection. An external harness may add private context of its own that Trebell cannot inspect.</p>
+    <p className="context-inspector-note">{packet.budget?.reason?("Budget: "+packet.budget.reason+" · up to "+Number(packet.budget.maxTokens||packet.maxTokens||0).toLocaleString()+" tokens / "+(packet.budget.maxFiles||"—")+" files. "):""}This shows Trebell's own injection. An external harness may add private context of its own that Trebell cannot inspect.</p>
   </div>;
 }
