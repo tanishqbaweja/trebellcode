@@ -28,6 +28,7 @@ test("agent runtime registry exposes real harnesses and capability-gates configu
     assert.equal(manager.capabilities("codex").nativeSandbox,true);
     assert.equal(manager.capabilities("opencode").nativeLsp,true);
     assert.equal(manager.capabilities("opencode").detachedTasks,true);
+    assert.equal(manager.capabilities("opencode").multiModelFanout,true);
     assert.equal(manager.capabilities("opencode").backgroundProcesses,false);
     assert.equal(manager.capabilities("claude").rewind,true);
     assert.equal(manager.capabilities("claude").detachedTasks,true);
@@ -52,6 +53,7 @@ test("runtime capabilities describe adapter behavior without pretending unsuppor
   assert.equal(openCode.nativeLsp,true);
   assert.equal(openCode.mcpInjection,false);
   assert.equal(openCode.detachedTasks,true);
+  assert.equal(openCode.multiModelFanout,true);
   assert.equal(openCode.backgroundProcesses,false);
   assert.equal(runtimeCapabilities("claude").runtimeProfileSwitching,true);
   const acp=runtimeCapabilities("grok");

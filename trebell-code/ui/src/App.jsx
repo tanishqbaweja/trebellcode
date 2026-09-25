@@ -1312,15 +1312,16 @@ export default function App(){
       if(disposed||busy||document.hidden)return;busy=true;
       try{
         if(projectlessMode){setGitInfo(current=>current==null?current:null);return}
-        if(!projectPath||workspaceRemote)return;
-        const next=await api("/api/git/info?path="+encodeURIComponent(projectPath)).catch(()=>null);
+        if(!projectPath)return;
+        const params=new URLSearchParams({path:projectPath});if(workspaceEnvironmentId)params.set("environmentId",workspaceEnvironmentId);
+        const next=await api("/api/git/info?"+params).catch(()=>null);
         if(next&&!disposed)setGitInfo(current=>sameSnapshot(current,next)?current:next);
       }finally{busy=false}
     };
-    poll();const timer=setInterval(poll,3500);
+    poll();const timer=setInterval(poll,workspaceRemote?15_000:3500);
     const visible=()=>{if(!document.hidden)poll()};document.addEventListener("visibilitychange",visible);
     return()=>{disposed=true;clearInterval(timer);document.removeEventListener("visibilitychange",visible)};
-  },[section,projectPath,workspaceRemote,projectlessMode]);
+  },[section,projectPath,workspaceEnvironmentId,workspaceRemote,projectlessMode]);
   useEffect(()=>{
     const shouldPoll=section==="settings"||(rightPanelOpen&&rightPanelTab==="runtime");
     if(!shouldPoll)return;
@@ -2331,13 +2332,14 @@ export default function App(){
       throw error;
     }
   }
-  async function prepareDetachedWorktree(basePath,modelId,{force=false}={}){
+  async function prepareDetachedWorktree(basePath,modelId,{force=false,environmentId=workspaceEnvironmentId}={}){
     if(!force&&workspaceMode!=="worktree")return basePath;
-    const info=await api("/api/git/info?path="+encodeURIComponent(basePath));if(!info.isGit)throw new Error("Background worktree mode requires a Git project.");if(!info.branch)throw new Error("Background worktrees require a checked-out base branch; detached HEAD is not supported.");
+    const infoParams=new URLSearchParams({path:String(basePath)});if(environmentId)infoParams.set("environmentId",environmentId);
+    const info=await api("/api/git/info?"+infoParams);if(!info.isGit)throw new Error("Background worktree mode requires a Git project.");if(!info.branch)throw new Error("Background worktrees require a checked-out base branch; detached HEAD is not supported.");
     const slug=String(modelId||"model").replace(/[^a-zA-Z0-9]+/g,"-").replace(/^-|-$/g,"").slice(-24)||"agent";const stamp=Date.now().toString(36)+Math.random().toString(36).slice(2,5);
     const branch="trebell/"+slug+"-"+stamp;const path=info.root+"-trebell-"+slug+"-"+stamp;
-    const response=await api("/api/git/action",{method:"POST",body:{action:"worktree-create",cwd:info.root,branch,path,baseBranch:info.branch}});const worktree=response.result?.worktree||path;
-    try{await api("/api/projects",{method:"POST",body:{path:worktree}})}
+    const response=await api("/api/git/action",{method:"POST",body:{action:"worktree-create",cwd:info.root,branch,path,baseBranch:info.branch,environmentId:environmentId||null}});const worktree=response.result?.worktree||path;
+    try{await api("/api/projects",{method:"POST",body:{path:worktree,environmentId:environmentId||null}})}
     catch(error){showActionError(error,"Could not register background worktree")}
     const setup=response.result?.setup||null;
     if(setup?.session?.id&&setup.waitForSetup){const settled=await waitForDetachedSetup(setup.session.id);if(settled.timeout)throw new Error("Background worktree setup is still running after 30 minutes.");if(settled.exitCode!==0)throw new Error(`Background worktree setup failed with exit code ${settled.exitCode??"unknown"}.`)}
@@ -2481,7 +2483,7 @@ export default function App(){
   }
   async function startDetachedTurn(text,paths,modelId=model,{forceWorktree=false,basePath=null,projectless=projectlessMode,focusPaths=null}={}){
     await validateAttachmentPaths(paths||[]);if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");
-    let cwd=basePath||projectPath||bootstrap.cwd;if(!cwd)throw new Error(projectless?"Could not prepare the General chat workspace.":"Choose a project before starting background work.");if(!projectless)cwd=await prepareDetachedWorktree(cwd,modelId,{force:forceWorktree});
+    let cwd=basePath||projectPath||bootstrap.cwd;if(!cwd)throw new Error(projectless?"Could not prepare the General chat workspace.":"Choose a project before starting background work.");if(!projectless)cwd=await prepareDetachedWorktree(cwd,modelId,{force:forceWorktree,environmentId:workspaceEnvironmentId});
     let thread=null;let turnRequestStarted=false;
     try{
       thread=await createThreadFor(modelId,cwd,{projectless});if(!thread?.id)throw new Error("Agent harness did not create a background thread");
@@ -2541,7 +2543,7 @@ export default function App(){
   }
   async function sendModelFanout(text){
     const fanout=[...new Set(selectedModels.filter(id=>models.includes(id)))];if(activeThread?.id||running||fanout.length<2)return false;
-    if(!runtimeCapabilities.backgroundProcesses)return false;
+    if(!runtimeCapabilities.multiModelFanout)return false;
     const workspaceError=fanoutWorkspaceError(gitInfo);if(workspaceError){setEvents(prev=>[...prev,{id:"fanout-workspace-"+Date.now(),kind:"error",title:workspaceError,status:"done",raw:{}}]);return true}
     if(prompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"fanout-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{}}]);return true}
     if(agentRuntime==="antigravity"&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"fanout-video-"+Date.now(),kind:"error",title:"Antigravity does not accept video attachments",status:"done",raw:{}}]);return true}
@@ -3237,6 +3239,7 @@ export default function App(){
             ["LSP",runtimeCapabilities.nativeLsp],
             ["Sandbox",runtimeCapabilities.nativeSandbox],
             ["Detached tasks",runtimeCapabilities.detachedTasks],
+            ["Multi-model fan-out",runtimeCapabilities.multiModelFanout],
             ["Background processes",runtimeCapabilities.backgroundProcesses],
             ["Delegation",runtimeCapabilities.delegation],
             ["Harness tools",runtimeCapabilities.harnessTools],
@@ -3323,7 +3326,7 @@ export default function App(){
           </div>
 
           {currentProject?.cloneJob&&currentProject.cloneJob.status!=="completed"&&<div className={"clone-banner "+currentProject.cloneJob.status} data-testid="clone-banner"><div><strong>{currentProject.cloneJob.phase||"Cloning repository"}</strong><span>{currentProject.cloneJob.status==="failed"?(currentProject.cloneJob.error||"Clone failed"):currentProject.cloneJob.status==="cancelled"?"Clone cancelled":"You can keep writing. Send waits until the repository is ready."}</span>{cloneRefreshError&&<span className="clone-refresh-error" role="alert">{cloneRefreshError}</span>}</div>{["running","cancelling"].includes(currentProject.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(currentProject.cloneJob.progress)||0)+"%"}}/></i>}<em>{Math.round(currentProject.cloneJob.progress||0)}%</em>{currentProject.cloneJob.status==="running"&&<button onClick={()=>runUserAction(()=>cloneProjectAction("cancel"),"Could not cancel clone")}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(currentProject.cloneJob.status)&&<button onClick={()=>runUserAction(()=>cloneProjectAction("retry"),"Could not retry clone")}>Retry clone</button>}</div>}
-          <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={composerPromptEdit} historyIndex={promptHistoryIndex} onSend={composerSend} onBackgroundSend={composerBackgroundSend} canBackground={Boolean(runtimeCapabilities.detachedTasks)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} runtimeCapabilities={runtimeCapabilities} login={composerLogin} onConfigureProvider={composerConfigureProvider} models={models} modelMeta={modelMeta} model={model} setModel={composerSetModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={Boolean(runtimeCapabilities.backgroundProcesses)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={composerRemoveAttachment} onRemoveContext={composerRemoveContext} onPickFiles={composerPickFiles} onCaptureScreen={composerCaptureScreen} onPaste={composerPaste} onDrop={composerDrop} onFileMentionSearch={composerFileMentionSearch} onFileMentionAttach={composerFileMentionAttach} permissionMode={permissionMode} setPermissionMode={setPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={composerCollaborationMode} collaborationModeBusy={collaborationModeBusy} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={composerProviderAgent} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&runtimeCapabilities.compaction)} onCompact={composerCompact} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={composerRuntimeProfile} onModelPickerOpenChange={setModelPickerOpen}/>
+          <Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={composerPromptEdit} historyIndex={promptHistoryIndex} onSend={composerSend} onBackgroundSend={composerBackgroundSend} canBackground={Boolean(runtimeCapabilities.detachedTasks)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} runtimeCapabilities={runtimeCapabilities} login={composerLogin} onConfigureProvider={composerConfigureProvider} models={models} modelMeta={modelMeta} model={model} setModel={composerSetModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={Boolean(runtimeCapabilities.multiModelFanout)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={composerRemoveAttachment} onRemoveContext={composerRemoveContext} onPickFiles={composerPickFiles} onCaptureScreen={composerCaptureScreen} onPaste={composerPaste} onDrop={composerDrop} onFileMentionSearch={composerFileMentionSearch} onFileMentionAttach={composerFileMentionAttach} permissionMode={permissionMode} setPermissionMode={setPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={composerCollaborationMode} collaborationModeBusy={collaborationModeBusy} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={composerProviderAgent} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&runtimeCapabilities.compaction)} onCompact={composerCompact} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={composerRuntimeProfile} onModelPickerOpenChange={setModelPickerOpen}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="layout-resizer terminal-resizer" data-testid="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" onPointerDown={event=>beginLayoutResize("terminal",event)}/>

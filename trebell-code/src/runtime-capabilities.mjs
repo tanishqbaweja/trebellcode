@@ -14,6 +14,7 @@ const BASE_RUNTIME_CAPABILITIES=Object.freeze({
   usageReporting:false,
   contextReporting:false,
   detachedTasks:false,
+  multiModelFanout:false,
   backgroundProcesses:false,
   delegation:false,
   harnessTools:false,
@@ -27,14 +28,14 @@ const BASE_RUNTIME_CAPABILITIES=Object.freeze({
 const RUNTIME_CAPABILITY_OVERRIDES=Object.freeze({
   codex:Object.freeze({
     fork:true,rewind:true,compaction:true,systemPromptInjection:true,dynamicTools:true,nativeSandbox:true,
-    usageReporting:true,detachedTasks:true,backgroundProcesses:true,delegation:true,harnessTools:true,collaborationModes:true,
+    usageReporting:true,detachedTasks:true,multiModelFanout:true,backgroundProcesses:true,delegation:true,harnessTools:true,collaborationModes:true,
     nativeQueue:true,nativeHistoryPagination:true,steering:true,runtimeProfileSwitching:true,
   }),
-  claude:Object.freeze({fork:true,rewind:true,compaction:true,usageReporting:true,runtimeProfileSwitching:true,detachedTasks:true}),
-  opencode:Object.freeze({fork:true,rewind:true,compaction:true,nativeLsp:true,usageReporting:true,detachedTasks:true}),
-  cursor:Object.freeze({fork:"runtime",clientFilesystem:true,clientTerminal:true,detachedTasks:true}),
-  grok:Object.freeze({fork:"runtime",clientFilesystem:true,clientTerminal:true,detachedTasks:true}),
-  antigravity:Object.freeze({fork:"runtime",clientFilesystem:true,clientTerminal:true,detachedTasks:true}),
+  claude:Object.freeze({fork:true,rewind:true,compaction:true,usageReporting:true,runtimeProfileSwitching:true,detachedTasks:true,multiModelFanout:true}),
+  opencode:Object.freeze({fork:true,rewind:true,compaction:true,nativeLsp:true,usageReporting:true,detachedTasks:true,multiModelFanout:true}),
+  cursor:Object.freeze({fork:"runtime",clientFilesystem:true,clientTerminal:true,detachedTasks:true,multiModelFanout:true}),
+  grok:Object.freeze({fork:"runtime",clientFilesystem:true,clientTerminal:true,detachedTasks:true,multiModelFanout:true}),
+  antigravity:Object.freeze({fork:"runtime",clientFilesystem:true,clientTerminal:true,detachedTasks:true,multiModelFanout:true}),
 });
 
 export function sharedRuntimeCapabilities(kind){

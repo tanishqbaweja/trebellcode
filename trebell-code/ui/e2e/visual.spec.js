@@ -2742,6 +2742,72 @@ test("non-Codex runtimes open long threads with bounded history and load older p
   }
 });
 
+test("OpenCode multi-model fan-out keeps remote worktrees in the active environment",async({page})=>{
+  test.setTimeout(40_000);
+  const environmentId="ssh-fixture",root="/srv/trebell-fanout";
+  const project={id:"remote-fanout-project",name:"Remote fan-out fixture",path:root,environmentId,environment:{id:environmentId,name:"SSH fixture",type:"ssh"},effectiveSettings:{defaultWorkspaceMode:"current"}};
+  const rpcCalls=[],createdThreads=[],gitActions=[],projectPosts=[],metaByThread={};
+  const wsHttp=createServer();const wss=new WebSocketServer({noServer:true});const sockets=new Set();
+  wsHttp.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+  wss.on("connection",ws=>{
+    sockets.add(ws);ws.on("close",()=>sockets.delete(ws));
+    ws.on("message",raw=>{
+      const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;rpcCalls.push(message);let result={};
+      if(message.method==="initialize")result={userAgent:"opencode-remote-fanout-fixture"};
+      else if(message.method==="thread/list")result={data:createdThreads,nextCursor:null};
+      else if(message.method==="threadSection/list"||message.method==="skills/list"||message.method==="collaborationMode/list")result={data:[]};
+      else if(message.method==="thread/start"){
+        const thread={id:"remote-fanout-thread-"+(createdThreads.length+1),name:"Remote fan-out "+(createdThreads.length+1),cwd:message.params.cwd,model:message.params.model,providerMeta:{environmentId},createdAt:Date.now()/1000,updatedAt:Date.now()/1000,turns:[]};
+        createdThreads.push(thread);result={thread};
+      }else if(message.method==="turn/start")result={turn:{id:"remote-fanout-turn-"+rpcCalls.filter(item=>item.method==="turn/start").length,status:"inProgress"}};
+      else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
+      ws.send(JSON.stringify({id:message.id,result}));
+    });
+  });
+  const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"opencode",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeEnvironmentId:environmentId,activeProjectId:project.id};
+  try{
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"opencode",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:root,platform:process.platform,version:"remote-fanout-fixture",activeEnvironmentId:environmentId,activeEnvironment:project.environment})}));
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{}})}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["opencode/model-a","opencode/model-b"],metadata:{provider:"opencode",models:[{id:"opencode/model-a",name:"Model A",provider:"opencode"},{id:"opencode/model-b",name:"Model B",provider:"opencode"}]}})}));
+    await page.route(/\/api\/projects$/,route=>{
+      if(route.request().method()==="POST"){const body=route.request().postDataJSON();projectPosts.push(body);return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({project:{...project,path:body.path,environmentId:body.environmentId||null}})})}
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[project],project})});
+    });
+    await page.route(/\/api\/git\/info\?/,route=>{
+      const url=new URL(route.request().url());expect(url.searchParams.get("environmentId")).toBe(environmentId);
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({isGit:true,root,branch:"main",upstream:"origin/main",status:[],remotes:[],worktrees:[{path:root,branch:"main"}],environmentId,environmentType:"ssh"})});
+    });
+    await page.route(/\/api\/git\/action$/,route=>{
+      const body=route.request().postDataJSON();gitActions.push(body);
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,result:{worktree:body.path,info:{root,branch:"main"}}})});
+    });
+    await page.route(/\/api\/thread-meta$/,route=>{
+      const body=route.request().postDataJSON();metaByThread[body.threadId]={...(metaByThread[body.threadId]||{}),...(body.patch||{})};
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(metaByThread[body.threadId])});
+    });
+    await page.route(/\/api\/context\/packet$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({id:"remote-fanout-context",skipped:true,budget:{mode:"skip",pressure:"normal",reserveTokens:4096,maxTokens:0,maxFiles:0}})}));
+    await page.route(/\/api\/checkpoints$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({supported:false})}));
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:environmentId,environmentName:"SSH fixture",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.goto("/");
+    await expect(page.locator(".branch-control")).toContainText("main");
+    const picker=page.getByTestId("model-picker");await picker.click();
+    const menu=page.locator(".model-picker-menu");await expect(menu).toContainText("Shift-click to select multiple models");
+    await menu.getByRole("button",{name:/Model B/}).click({modifiers:["Shift"]});
+    await expect(picker).toContainText("2 models");
+    const composer=page.getByTestId("composer");await composer.fill("Run both models remotely");await page.getByTestId("send").click();
+    await expect.poll(()=>gitActions.length).toBe(2);
+    await expect.poll(()=>rpcCalls.filter(item=>item.method==="thread/start").length).toBe(2);
+    await expect.poll(()=>rpcCalls.filter(item=>item.method==="turn/start").length).toBe(2);
+    expect(gitActions.every(body=>body.action==="worktree-create"&&body.environmentId===environmentId&&body.cwd===root)).toBe(true);
+    expect(projectPosts.filter(body=>body.path!==root).every(body=>body.environmentId===environmentId)).toBe(true);
+    expect(rpcCalls.filter(item=>item.method==="thread/start").every(item=>item.params.cwd.startsWith(root+"-trebell-"))).toBe(true);
+    await expect(page.getByRole("button",{name:/Remote fan-out 1/})).toBeVisible();await expect(page.getByRole("button",{name:/Remote fan-out 2/})).toBeVisible();
+    await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"opencode-remote-multimodel-fanout-1280x800.png",fullPage:true});
+  }finally{for(const ws of sockets)try{ws.terminate()}catch{}wss.close();await new Promise(resolve=>wsHttp.close(resolve))}
+});
+
 test("automatic pull failures stay visible without blocking project open",async({page,request})=>{
   test.setTimeout(30_000);
   await prepare(page,request);
