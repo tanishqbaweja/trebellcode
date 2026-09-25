@@ -1,5 +1,6 @@
 const PERMISSIONS=new Set(["read-only","workspace-write","supervised","auto","full","isolated"]);
 const RUNTIMES=new Set(["codex","claude","opencode","cursor","grok","antigravity"]);
+const PERMISSION_RANK=new Map([["read-only",0],["supervised",1],["edits",2],["workspace-write",2],["auto",3],["full",4]]);
 
 function text(value,max=4000){return String(value??"").trim().slice(0,max)}
 function list(value,{limit=50,max=1000}={}){
@@ -76,7 +77,39 @@ export function recipeGoalPatch(recipe,{input=""}={}){
   return {
     objective:normalized.objective+(suffix?" — "+suffix:""),
     status:"active",
+    completionConditions:normalized.expectedArtifacts,
+    constraints:[],
     validationExpectations:normalized.validation,
     childAgentBudget:normalized.maxChildren,
+  };
+}
+
+function effectivePermission(recipePermission,currentPermission,{environmentIsolated=false}={}){
+  const current=PERMISSION_RANK.has(String(currentPermission))?String(currentPermission):"supervised";
+  if(recipePermission==="isolated"){
+    if(!environmentIsolated)throw new Error("This recipe requires an isolated environment, but the current project is not running in one.");
+    return current;
+  }
+  const requested=recipePermission==="workspace-write"?"edits":recipePermission;
+  return (PERMISSION_RANK.get(requested)??1)<=(PERMISSION_RANK.get(current)??1)?requested:current;
+}
+
+export function resolveRecipeExecution(recipe,{
+  projectPath=null,input="",currentPermission="supervised",runtime=null,availableModels=null,
+  toolPolicyEnforced=false,environmentIsolated=false,
+}={}){
+  const normalized=normalizeRecipe(recipe);
+  if(normalized.runtime&&runtime&&normalized.runtime!==runtime)throw new Error(`Recipe ${normalized.name} requires the ${normalized.runtime} runtime; the active runtime is ${runtime}.`);
+  if(normalized.model&&Array.isArray(availableModels)&&!availableModels.includes(normalized.model))throw new Error(`Recipe ${normalized.name} requires model ${normalized.model}, which is not available in the active runtime.`);
+  const permissionMode=effectivePermission(normalized.permission,currentPermission,{environmentIsolated});
+  const context=recipeRunContext(normalized,{projectPath,input,toolPolicyEnforced,currentPermission:permissionMode});
+  return {
+    recipe:normalized,
+    turnInput:recipeTurnInput(normalized,{input}),
+    context,
+    goalPatch:recipeGoalPatch(normalized,{input}),
+    permissionMode,
+    model:normalized.model||null,
+    runtime:normalized.runtime||runtime||null,
   };
 }

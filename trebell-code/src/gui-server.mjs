@@ -55,6 +55,7 @@ import { verificationRepairContext, verificationRepairPrompt, verificationRepair
 import { delegationContextValue, delegationGoalPatch, delegationPolicies } from "./delegation-state.mjs";
 import { executeDelegation } from "./delegation-executor.mjs";
 import { resolveCodexApprovalByPolicy } from "./codex-policy-adapter.mjs";
+import { resolveRecipeExecution } from "./recipes.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
   .then(text=>String(JSON.parse(text).version||"0.0.0"))
@@ -1777,6 +1778,23 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const id=url.searchParams.get("id"); if(id) state.removeProject(id);
         return json(res,200,{ok:true});
       }
+    }
+    if(url.pathname==="/api/project-recipe/resolve"&&req.method==="POST"){
+      try{
+        const body=await readJsonBody(req);
+        const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);
+        const projectPath=environmentPath(body.path||"",environmentId);if(!projectPath)throw new Error("Project path is required");
+        const project=state.project(projectPath,environmentId);if(!project)return json(res,404,{error:"Project was not found"});
+        const key=String(body.recipe||"").trim().toLowerCase();
+        const recipe=(project.recipes||[]).find(item=>String(item.id||"").toLowerCase()===key||String(item.name||"").toLowerCase()===key);
+        if(!recipe)return json(res,404,{error:"Project recipe was not found"});
+        const runtime=normalizeAgentRuntime(body.runtime||selectedAgentRuntime);
+        const execution=resolveRecipeExecution(recipe,{
+          projectPath,input:body.input||"",currentPermission:body.currentPermission||"supervised",runtime,
+          toolPolicyEnforced:false,environmentIsolated:false,
+        });
+        return json(res,200,{execution});
+      }catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/clone-jobs"){
       if(req.method==="GET"){

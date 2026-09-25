@@ -4,7 +4,7 @@ import { mkdtemp,rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
-import { normalizeRecipe, normalizeRecipes, recipeGoalPatch, recipeRunContext, recipeTurnInput } from "../src/recipes.mjs";
+import { normalizeRecipe, normalizeRecipes, recipeGoalPatch, recipeRunContext, recipeTurnInput, resolveRecipeExecution } from "../src/recipes.mjs";
 
 test("recipes normalize slash names, permissions, declared tools, validation and child caps",()=>{
   const recipe=normalizeRecipe({
@@ -40,4 +40,20 @@ test("project state persists recipes separately from direct terminal actions",as
     assert.equal(project.scripts.length,1);assert.equal(project.recipes.length,1);assert.equal(project.recipes[0].name,"/add-tests");assert.ok(project.recipes[0].id);
     const reloaded=new TrebellStateStore({home}).project("C:/repo",null);assert.equal(reloaded.recipes[0].objective,"Add regression coverage.");
   }finally{await rm(home,{recursive:true,force:true})}
+});
+
+test("recipe execution never elevates the active permission profile",()=>{
+  const readOnly=resolveRecipeExecution({name:"inspect",objective:"Inspect the issue.",permission:"full"},{currentPermission:"read-only",runtime:"codex"});
+  assert.equal(readOnly.permissionMode,"read-only");
+  const stricter=resolveRecipeExecution({name:"safe-fix",objective:"Fix it.",permission:"workspace-write"},{currentPermission:"full",runtime:"codex"});
+  assert.equal(stricter.permissionMode,"edits");
+  assert.equal(stricter.goalPatch.childAgentBudget,0);
+  assert.match(stricter.context,/does not silently elevate/i);
+});
+
+test("recipe execution validates runtime, model, isolation, and enforceable tool constraints",()=>{
+  assert.throws(()=>resolveRecipeExecution({name:"claude-only",objective:"Do it.",runtime:"claude"},{runtime:"codex"}),/requires the claude runtime/i);
+  assert.throws(()=>resolveRecipeExecution({name:"model-only",objective:"Do it.",model:"missing"},{runtime:"codex",availableModels:["available"]}),/not available/i);
+  assert.throws(()=>resolveRecipeExecution({name:"isolated",objective:"Do it.",permission:"isolated"},{runtime:"codex"}),/requires an isolated environment/i);
+  assert.throws(()=>resolveRecipeExecution({name:"bounded",objective:"Do it.",allowedTools:["repo"]},{runtime:"codex",toolPolicyEnforced:false}),/cannot prove recipe tool-policy enforcement/i);
 });
