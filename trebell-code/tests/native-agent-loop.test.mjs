@@ -129,6 +129,8 @@ test("native agent retries only transient provider inference failures",async()=>
   }),/unauthorized/i);
   assert.equal(authAttempts,1);
   assert.equal(nativeProviderRetryable(Object.assign(new Error("reset"),{code:"ECONNRESET"})),true);
+  assert.equal(nativeProviderRetryable(new DOMException("The operation was aborted due to timeout","TimeoutError")),true);
+  assert.equal(nativeProviderRetryable(new DOMException("cancelled by caller","AbortError")),false);
   assert.equal(nativeProviderRetryable(Object.assign(new Error("bad request"),{status:400})),false);
 });
 
