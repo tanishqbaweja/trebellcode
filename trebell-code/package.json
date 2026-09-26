@@ -17,7 +17,7 @@
     "ui:build": "vite build --config ui/vite.config.mjs",
     "gui:server": "node src/gui-server.mjs",
     "gui": "npm run ui:build && node src/gui-server.mjs --open",
-    "ui:test": "npm run ui:build && playwright test -c ui/playwright.config.mjs",
+    "ui:test": "playwright test -c ui/playwright.config.mjs",
     "ui:test:workspace": "playwright test -c ui/playwright.config.mjs ui/e2e/harness.spec.js ui/e2e/history-pagination.spec.js ui/e2e/live-turn-settings.spec.js ui/e2e/queue.spec.js",
     "ui:test:capabilities": "playwright test -c ui/playwright.config.mjs ui/e2e/collaboration-mode.spec.js ui/e2e/external-import.spec.js ui/e2e/guardian.spec.js ui/e2e/memory.spec.js ui/e2e/plugins.spec.js ui/e2e/project-identity.spec.js ui/e2e/skills.spec.js ui/e2e/usage-live.spec.js ui/e2e/windows-sandbox.spec.js",
     "ui:test:visual": "playwright test -c ui/playwright.config.mjs ui/e2e/visual.spec.js",

@@ -1,4 +1,5 @@
 import { defineConfig } from "@playwright/test";
+import { execFileSync } from "node:child_process";
 import { randomInt } from "node:crypto";
 import { cpSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -16,8 +17,12 @@ const localBaseUrl="http://127.0.0.1:"+localPort;
 const localTestHome=e2eHome();
 const localTestUiDist=join(localTestHome,"ui-dist");
 const workerProcess=process.env.TEST_WORKER_INDEX!=null;
+const repoRoot=fileURLToPath(new URL("../",import.meta.url));
+const viteBin=fileURLToPath(new URL("../node_modules/vite/bin/vite.js",import.meta.url));
+const viteConfig=fileURLToPath(new URL("./vite.config.mjs",import.meta.url));
 if(process.platform==="win32"&&process.env.COMSPEC) process.env.COMSPEC=process.env.COMSPEC.trim();
 if(!hostedBaseUrl&&!workerProcess){
+  execFileSync(process.execPath,[viteBin,"build","--config",viteConfig],{cwd:repoRoot,env:process.env,stdio:"inherit",windowsHide:true});
   rmSync(localTestHome,{recursive:true,force:true});
   mkdirSync(localTestHome,{recursive:true});
   cpSync(fileURLToPath(new URL("./dist/",import.meta.url)),localTestUiDist,{recursive:true});
@@ -38,7 +43,7 @@ export default defineConfig({
   },
   webServer: hostedBaseUrl?undefined:{
     command: "node src/gui-server.mjs --port "+localPort,
-    cwd: fileURLToPath(new URL("../", import.meta.url)),
+    cwd: repoRoot,
     env:{
       ...process.env,
       TREBELL_GUI_MOCK:"1",
