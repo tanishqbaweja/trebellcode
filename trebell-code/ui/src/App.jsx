@@ -1726,6 +1726,10 @@ export default function App(){
               const shot=await api("/api/device/screenshot?id="+encodeURIComponent(args.id||""));
               client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_device",[{type:"inputImage",imageUrl:shot.dataUrl},{type:"inputText",text:JSON.stringify({id:shot.id,platform:shot.platform,width:shot.width,height:shot.height})}]),success:true});return;
             }
+            if(p.tool==="logs"){
+              const logs=await api("/api/device/logs?id="+encodeURIComponent(args.id||"")+"&lines="+encodeURIComponent(args.lines||200)+"&minutes="+encodeURIComponent(args.minutes||5));
+              client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_device",[{type:"inputText",text:JSON.stringify(logs)}]),success:true});return;
+            }
             let result;
             if(p.tool==="boot"||p.tool==="poweroff")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:p.tool,args:{}}});
             else if(p.tool==="tap")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"tap",args:{x:args.x,y:args.y}}});

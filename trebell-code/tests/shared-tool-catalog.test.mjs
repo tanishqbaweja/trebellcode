@@ -33,6 +33,7 @@ test("shared Trebell tool catalog owns unique schemas and policy metadata",()=>{
   const reload=sharedToolDefinition("trebell_browser","reload");assert.equal(reload.policy.kind,"fetch");assert.equal(reload.policy.idempotent,true);
   const iosBoot=sharedToolDefinition("trebell_device","boot");assert.equal(iosBoot.policy.kind,"execute");assert.equal(iosBoot.policy.idempotent,true);assert.equal(iosBoot.requirements.deviceAccess,true);
   const iosPoweroff=sharedToolDefinition("trebell_device","poweroff");assert.equal(iosPoweroff.policy.reversibility,"full");assert.match(sharedToolDefinition("trebell_device","tap").description,/Android emulator/i);
+  const logs=sharedToolDefinition("trebell_device","logs");assert.equal(logs.policy.kind,"read");assert.equal(logs.policy.idempotent,true);assert.equal(logs.requirements.deviceAccess,true);assert.equal(logs.inputSchema.properties.lines.maximum,2000);
   const terminal=sharedToolDefinition("trebell_terminal","run");assert.equal(terminal.policy.kind,"execute");assert.equal(terminal.policy.classifyFromInput,true);assert.equal(terminal.requirements.workspace,true);
   const background=sharedToolDefinition("trebell_terminal","start_background");assert.equal(background.policy.kind,"execute");assert.equal(background.policy.classifyFromInput,true);
   assert.equal(sharedToolDefinition("trebell_terminal","background_status").policy.kind,"read");assert.equal(sharedToolDefinition("trebell_terminal","stop_background").policy.kind,"execute");
