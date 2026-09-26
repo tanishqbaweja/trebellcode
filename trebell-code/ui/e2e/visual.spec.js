@@ -553,6 +553,36 @@ test("ACP MCP settings persist runtime-scoped stdio servers",async({page})=>{
   await page.screenshot({path:auditDir+"settings-acp-mcp-1280x800.png",fullPage:true});
 });
 
+test("Trebell Native HTTP MCP settings persist only a bearer environment reference",async({page})=>{
+  test.setTimeout(35_000);
+  let settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"freebuff",activeEnvironmentId:null,mcpServers:[]};
+  const settingsPosts=[];
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:true,wsUrl:null,cwd:process.cwd(),platform:process.platform,version:"native-http-mcp-fixture",runtimeCapabilities:{queue:true,fork:true,rewind:true,compaction:true,mcpInjection:true,dynamicTools:true,languageIntelligence:true,clientFilesystem:true,clientTerminal:true,usageReporting:true,contextReporting:true,detachedTasks:true,multiModelFanout:true,backgroundProcesses:true,nativeQueue:true,nativeHistoryPagination:true,steering:true,delegation:true}})}));
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{}})}));
+  await page.route(/\/api\/settings$/,route=>{
+    if(route.request().method()==="POST"){const patch=route.request().postDataJSON()||{};settingsPosts.push(patch);settings={...settings,...patch}}
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)});
+  });
+  await page.route(/\/api\/agent-runtimes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selectedRuntime:"native",selectedInstanceId:"native-default",definitions:[{id:"native",name:"Trebell Native",protocol:"native",canAuthenticate:false,installable:false,capabilities:{mcpInjection:true,dynamicTools:true}}],instances:[{id:"native-default",kind:"native",displayName:"Trebell Native",enabled:true,approvedEnvironmentKeys:["MCP_ACCESS_TOKEN"]}],statuses:[{id:"native-default",kind:"native",name:"Trebell Native",available:true,installed:true,authenticated:true,version:"built-in"}]})}));
+  await page.route(/\/api\/providers$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ready:true,providers:[{id:"freebuff",name:"Freebuff",ready:true}]})}));
+  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["gpt-5.6"],metadata:{provider:"freebuff",models:[{id:"gpt-5.6",name:"GPT-5.6"}]}})}));
+  await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+  await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+  await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+  await page.route(/\/api\/stats$/,route=>route.fulfill({status:200,contentType:"application/json",body:"{}"}));
+  await page.route(/\/api\/runtime$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({agentRuntime:"native",agentRuntimeStatus:{available:true}})}));
+
+  await page.goto("/");await page.getByRole("button",{name:"Settings",exact:true}).click();await page.locator(".settings-nav").getByRole("button",{name:/Agents & models/}).click();
+  const card=page.locator('[data-setting-target="agents-mcp"]');await expect(card).toBeVisible();await expect(card).toContainText("local stdio or Streamable HTTP MCP servers");
+  await card.getByRole("button",{name:"Add MCP server",exact:true}).click();await card.getByLabel("MCP server name").fill("Remote docs");await card.getByLabel("MCP server transport").selectOption("http");
+  await card.getByLabel("MCP server URL").fill("https://mcp.example.test/mcp");await card.getByLabel("MCP bearer token environment variable").fill("MCP_ACCESS_TOKEN");
+  await expect(card).toContainText("stores only the variable name");await page.setViewportSize({width:1280,height:800});await card.screenshot({path:auditDir+"settings-native-http-mcp-editor-dark-1280x800.png"});
+  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await card.screenshot({path:auditDir+"settings-native-http-mcp-editor-light-1280x800.png"});
+  await card.getByRole("button",{name:"Save MCP server",exact:true}).click();const saved=settingsPosts.at(-1)?.mcpServers?.[0];
+  expect(saved).toMatchObject({name:"Remote docs",runtime:"native",environmentId:null,enabled:true,type:"http",url:"https://mcp.example.test/mcp",bearerTokenEnv:"MCP_ACCESS_TOKEN"});expect(saved).not.toHaveProperty("token");expect(saved).not.toHaveProperty("bearerToken");expect(JSON.stringify(settingsPosts)).not.toContain("fixture-http-secret");
+  await expect(card).toContainText("Remote docs");await expect(card).toContainText("bearer from MCP_ACCESS_TOKEN");
+});
+
 test("composer file mentions search the workspace and attach the selected file",async({page,request})=>{
   test.setTimeout(30_000);
   await prepare(page,request);
@@ -2868,7 +2898,7 @@ test("Trebell Native is a built-in provider-backed runtime in Settings",async({p
   await expect(runtimeCard).toContainText("AgentRouter");
   const mcpCard=page.locator('[data-setting-target="agents-mcp"]');
   await expect(mcpCard).toBeVisible();
-  await expect(mcpCard).toContainText("Connect stdio MCP servers directly to Trebell Native");
+  await expect(mcpCard).toContainText("Connect local stdio or Streamable HTTP MCP servers directly to Trebell Native");
   await mcpCard.getByRole("button",{name:"Add MCP server",exact:true}).click();
   await mcpCard.getByLabel("MCP server name").fill("Native fixture MCP");
   await mcpCard.getByLabel("MCP server executable").fill("native-fixture-mcp");
