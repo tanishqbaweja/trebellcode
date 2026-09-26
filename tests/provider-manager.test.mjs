@@ -214,7 +214,26 @@ test("official OpenAI Responses flattens Trebell namespaces into standard functi
   });
   assert.equal(seen.url,"https://api.openai.com/v1/responses");
   assert.deepEqual(seen.body.tools,[{type:"function",name:"trebell_repo__search_symbols",description:"Search symbols",parameters:{type:"object",properties:{query:{type:"string"}},required:["query"]}}]);
+  assert.match(seen.body.prompt_cache_key,/^trebell-[a-f0-9]{32}$/);
   assert.deepEqual(result.toolCalls,[{id:"call-1",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Session"}'}]);
+});
+
+test("official OpenAI prompt cache key stays stable as later history grows but separates different task prefixes",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-")),bodies=[];
+  const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{
+    const body=JSON.parse(init.body||"{}");bodies.push(body);
+    return Response.json({id:"resp-cache",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"ok"}]}],usage:{input_tokens:1,output_tokens:1,total_tokens:2}});
+  }});
+  manager.setKey("openai","oa-key");
+  const tools=[{type:"namespace",name:"trebell_workspace",tools:[{type:"function",name:"read_file",description:"Read file",inputSchema:{type:"object",properties:{path:{type:"string"}},required:["path"]}}]}];
+  const base=[{role:"system",content:"Stable coding instructions"},{role:"user",content:"Fix the parser"}];
+  await manager.turn("openai",{model:"gpt-5.6",messages:base,tools});
+  await manager.turn("openai",{model:"gpt-5.6",messages:[...base,{role:"assistant",content:"working"},{role:"user",content:"continue"}],tools});
+  await manager.turn("openai",{model:"gpt-5.6",messages:[{role:"system",content:"Stable coding instructions"},{role:"user",content:"Fix the renderer"}],tools});
+  await manager.turn("openai",{model:"gpt-5.6",messages:base,tools:[{...tools[0],tools:[{...tools[0].tools[0],description:"Read one file"}]}]});
+  assert.equal(bodies[0].prompt_cache_key,bodies[1].prompt_cache_key);
+  assert.notEqual(bodies[0].prompt_cache_key,bodies[2].prompt_cache_key);
+  assert.notEqual(bodies[0].prompt_cache_key,bodies[3].prompt_cache_key);
 });
 
 

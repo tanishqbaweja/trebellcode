@@ -1,6 +1,7 @@
 import { TREBELL_USER_AGENT } from "./version.mjs";
 import { adaptAnthropicResponse, chatToAnthropic } from "./anthropic-chat-adapter.mjs";
 import { normalizeChatTurnResponse, normalizeResponsesTurnResponse, providerTurnToChat, providerTurnToResponses } from "./provider-turn.mjs";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { trebellHome } from "./paths.mjs";
@@ -130,6 +131,16 @@ function agentRouterHeaders(key, { accept = "application/json" } = {}) {
 }
 
 function officialResponsesToolName(namespace,name){return namespace?String(namespace)+"__"+String(name||"tool"):String(name||"tool")}
+function officialOpenAiPromptCacheKey(body={}){
+  const firstUser=(Array.isArray(body.input)?body.input:[]).find(item=>item?.type==="message"&&item.role==="user")||null;
+  const seed=JSON.stringify({
+    model:String(body.model||""),
+    instructions:String(body.instructions||""),
+    tools:Array.isArray(body.tools)?body.tools:[],
+    firstUser:firstUser?firstUser.content||[]:[],
+  });
+  return "trebell-"+createHash("sha256").update(seed).digest("hex").slice(0,32);
+}
 function officialOpenAiResponsesBody(request={}){
   const body=providerTurnToResponses(request),tools=[];
   for(const entry of Array.isArray(request.tools)?request.tools:[]){
@@ -150,6 +161,7 @@ function officialOpenAiResponsesBody(request={}){
     if(item?.type!=="function_call"||!item.namespace)return item;
     const next={...item,name:officialResponsesToolName(item.namespace,item.name)};delete next.namespace;return next;
   });
+  body.prompt_cache_key=officialOpenAiPromptCacheKey(body);
   return body;
 }
 
