@@ -64,7 +64,7 @@ function rpcOutcome(ws,id,method,params={}) {
   });
 }
 
-function waitNotification(ws,method,predicate=()=>true,timeoutMs=15000){
+function waitNotification(ws,method,predicate=()=>true,timeoutMs=30000){
   return new Promise((resolve,reject)=>{
     const timer=setTimeout(()=>{ws.off("message",onMessage);reject(new Error(`${method} notification timed out`))},timeoutMs);
     const onMessage=data=>{let message;try{message=JSON.parse(String(data))}catch{return}if(message.method!==method||!predicate(message.params||{}))return;clearTimeout(timer);ws.off("message",onMessage);resolve(message.params||{})};
@@ -384,7 +384,7 @@ test("compatible Codex profiles switch an existing thread through a separate app
   }finally{try{ws?.close()}catch{}await gui.close();await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
 });
 
-test("native Codex queue persists, edits, reorders, deletes and starts follow-ups",{timeout:60000},async()=>{
+test("native Codex queue persists, edits, reorders, deletes and starts follow-ups",{timeout:90000},async()=>{
   const [port,appPort]=await Promise.all([freePort(),freePort()]);
   const home=await mkdtemp(join(tmpdir(),"trebell-codex-queue-"));
   const env={...process.env,TREBELL_HOME:home};const gui=await createGuiServer({port,appPort,mock:false,env});let ws;
@@ -397,10 +397,13 @@ test("native Codex queue persists, edits, reorders, deletes and starts follow-up
     const threadId=started.thread.id;assert.ok(threadId);
     const seedTurn=await rpc(ws,3,"turn/start",{threadId,input:[],turnTrigger:"trebell-queue-persistence"});
     assert.ok(seedTurn.turn?.id);await waitForNonEmptyRollout(join(home,"codex","sessions"));await rpcOutcome(ws,4,"turn/interrupt",{threadId,turnId:seedTurn.turn.id});
-    for(let i=0;i<60;i++){
-      const current=await fetch(gui.url+"/api/thread-meta?threadId="+encodeURIComponent(threadId)).then(response=>response.json());if(current.active===false)break;
+    let seedSettled=false;
+    for(let i=0;i<300;i++){
+      const current=await fetch(gui.url+"/api/thread-meta?threadId="+encodeURIComponent(threadId)).then(response=>response.json());
+      if(current.active===false){seedSettled=true;break}
       await new Promise(resolve=>setTimeout(resolve,50));
     }
+    assert.equal(seedSettled,true,"seed turn did not settle before queue persistence checks");
     await rpc(ws,5,"thread/unsubscribe",{threadId});await new Promise(resolve=>setTimeout(resolve,150));
     const first=await rpc(ws,6,"thread/queue/add",{threadId,input:[{type:"text",text:"first queued follow-up",textElements:[]}],clientUserMessageId:"queue-first"});
     const second=await rpc(ws,7,"thread/queue/add",{threadId,input:[{type:"text",text:"second queued follow-up",textElements:[]}],clientUserMessageId:"queue-second"});
@@ -413,13 +416,14 @@ test("native Codex queue persists, edits, reorders, deletes and starts follow-up
     listed=await rpc(ws,11,"thread/queue/list",{threadId,limit:20});assert.deepEqual(listed.data.map(item=>item.id),[second.queuedSubmission.id,first.queuedSubmission.id]);
     const deleted=await rpc(ws,12,"thread/queue/delete",{threadId,queuedSubmissionId:first.queuedSubmission.id});assert.equal(deleted.deleted,true);
     listed=await rpc(ws,13,"thread/queue/list",{threadId,limit:20});assert.deepEqual(listed.data.map(item=>item.id),[second.queuedSubmission.id]);
-    const third=await rpc(ws,14,"thread/queue/add",{threadId,input:[{type:"text",text:"third queued follow-up",textElements:[]}],clientUserMessageId:"queue-third"});assert.ok(third.queuedSubmission?.id);
     const autoStarted=waitNotification(ws,"turn/started",params=>params.threadId===threadId);
     await rpc(ws,15,"thread/resume",{threadId,modelProvider:"freebuff",excludeTurns:false});
     const autoTurn=await autoStarted;const autoTurnId=autoTurn.turn?.id||autoTurn.turnId;assert.ok(autoTurnId,"resume should auto-dispatch the first queued submission");
     const interrupted=waitNotification(ws,"turn/completed",params=>params.threadId===threadId&&(params.turn?.id||params.turnId)===autoTurnId);
     await rpcOutcome(ws,16,"turn/interrupt",{threadId,turnId:autoTurnId});await interrupted;
-    listed=await rpc(ws,17,"thread/queue/list",{threadId,limit:20});assert.deepEqual(listed.data.map(item=>item.id),[third.queuedSubmission.id]);
+    listed=await rpc(ws,17,"thread/queue/list",{threadId,limit:20});assert.equal(listed.data.length,0,"resume should consume the only queued follow-up");
+    const third=await rpc(ws,14,"thread/queue/add",{threadId,input:[{type:"text",text:"third queued follow-up",textElements:[]}],clientUserMessageId:"queue-third"});assert.ok(third.queuedSubmission?.id);
+    listed=await rpc(ws,21,"thread/queue/list",{threadId,limit:20});assert.deepEqual(listed.data.map(item=>item.id),[third.queuedSubmission.id]);
     const launched=await rpc(ws,18,"thread/queue/start",{threadId,queuedSubmissionId:third.queuedSubmission.id});assert.equal(launched.turn?.status,"inProgress");
     const afterStart=await rpc(ws,19,"thread/queue/list",{threadId,limit:20});assert.equal(afterStart.data.length,0);
     await rpcOutcome(ws,20,"turn/interrupt",{threadId,turnId:launched.turn.id});

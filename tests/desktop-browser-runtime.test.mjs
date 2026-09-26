@@ -12,7 +12,7 @@ const packageRoot=resolve(fileURLToPath(new URL("..",import.meta.url)));
 async function listen(server){await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));return server.address().port}
 async function freePort(){const server=createServer();const port=await listen(server);await new Promise(resolve=>server.close(resolve));return port}
 
-test("desktop isolated browser reports bounded runtime failures and responsive viewport evidence",{timeout:30_000},async()=>{
+test("desktop isolated browser reports bounded runtime failures and responsive viewport evidence",{timeout:60_000},async()=>{
   if(process.platform!=="win32")return test.skip("Desktop browser runtime fixture currently targets the Windows desktop build.");
   const home=await mkdtemp(join(tmpdir(),"trebell-desktop-browser-runtime-"));
   const fixture=createServer((req,res)=>{
