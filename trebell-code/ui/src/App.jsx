@@ -425,7 +425,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
     },120);
     return()=>{disposed=true;clearTimeout(timer)};
   },[activeMention?.query,onFileMentionSearch]);
-  const priceConfig=(settings.customModels||[]).find(item=>item.id===model&&item.runtime===agentRuntime&&(!["native","codex"].includes(agentRuntime)||item.provider===provider))||null;
+  const priceConfig=(settings.customModels||[]).find(item=>item.id===model&&item.runtime===agentRuntime&&(!runtimeCapabilities.managedInference||item.provider===provider))||null;
   function dictate(){
     if(!speechSupported||listening)return;
     const Recognition=window.SpeechRecognition||window.webkitSpeechRecognition;
@@ -504,7 +504,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
   const currentRuntimeProfile=runtimeProfileItems.find(item=>item.id===runtimeProfiles?.currentInstanceId)||null;
   const runtimeProfileLabel=runtimeProfiles?.label||`${agentRuntimeLabel} profile`;
   const steerFollowUps=Boolean(runtimeCapabilities.steering)&&settings.followUpMode==="steer";
-  const modelProviderRuntime=["native","codex"].includes(agentRuntime),freebuffInference=modelProviderRuntime&&provider==="freebuff";
+  const modelProviderRuntime=Boolean(runtimeCapabilities.managedInference),freebuffInference=modelProviderRuntime&&provider==="freebuff";
   const modelProviderLabel=({freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider||"provider");
   function pickModel(event,id){
     const next=nextModelSelection(chosenModels,id,{shiftKey:event.shiftKey,allowMulti:allowMultiModel});
@@ -851,6 +851,7 @@ export default function App(){
   const runtimeCapabilities=useMemo(()=>bootstrap.agentRuntime===agentRuntime&&bootstrap.runtimeCapabilities
     ?bootstrap.runtimeCapabilities
     :sharedRuntimeCapabilities(agentRuntime),[bootstrap.agentRuntime,bootstrap.runtimeCapabilities,agentRuntime]);
+  const managedInference=Boolean(runtimeCapabilities.managedInference);
   const provider=settings.modelProvider||bootstrap.provider||"freebuff";
   useEffect(()=>{
     const next=agentRuntime+"\0"+provider;
@@ -870,7 +871,7 @@ export default function App(){
   };
   const workspaceEnvironmentType=currentProject?.environment?.type||(workspaceEnvironmentId&&(workspaceEnvironmentId===settings.activeEnvironmentId)?bootstrap.activeEnvironment?.type:null)||(workspaceEnvironmentId?"remote":"local");
   const workspaceRemote=Boolean(workspaceEnvironmentId&&workspaceEnvironmentType!=="local");
-  const providerReady=bootstrap.mock||(["native","codex"].includes(agentRuntime)?(provider==="freebuff"?Boolean(bootstrap.loggedIn):Boolean(bootstrap.providerReady)):Boolean(bootstrap.agentRuntimeReady));
+  const providerReady=bootstrap.mock||(managedInference?(provider==="freebuff"?Boolean(bootstrap.loggedIn):Boolean(bootstrap.providerReady)):Boolean(bootstrap.agentRuntimeReady));
   useEffect(()=>{
     if(!threadFind.open)return;
     const term=threadFind.query.trim();
@@ -897,7 +898,7 @@ export default function App(){
   },[threadFind.open,threadFind.query,runtimeCapabilities.threadSearch,activeThread?.id,rpc,rpcStatus]);
   useEffect(()=>{threadTelemetryRef.current={};setThreadTelemetry({})},[provider,agentRuntime]);
   async function refreshFreebuff(modelOverride=model,{strict=false}={}){
-    if(!["native","codex"].includes(agentRuntime)||provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;
+    if(!managedInference||provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;
     const params=new URLSearchParams({timezone}); if(modelOverride)params.set("model",modelOverride);
     try{
       const data=await api("/api/freebuff/overview?"+params);if(data)setFreebuff(data);return data;
@@ -1401,7 +1402,7 @@ export default function App(){
   },[bootstrap.wsUrl,bootstrap.mock,provider,agentRuntime,providerRevision]);
   useEffect(()=>{if(rpcStatus==="connected"&&rpc)loadSkills(rpc,projectPath)},[projectPath,rpcStatus]);
   useEffect(()=>{
-    if(["codex","claude"].includes(agentRuntime)&&rpcStatus==="connected"&&rpc&&activeThread?.id){loadThreadRuntimeProfiles(rpc,activeThread.id);return}
+    if(runtimeCapabilities.runtimeProfileSwitching&&rpcStatus==="connected"&&rpc&&activeThread?.id){loadThreadRuntimeProfiles(rpc,activeThread.id);return}
     setThreadRuntimeProfiles({threadId:null,supported:false,currentInstanceId:null,items:[]});setThreadRuntimeProfileBusy("");
   },[agentRuntime,rpc,rpcStatus,activeThread?.id]);
 
@@ -1440,10 +1441,10 @@ export default function App(){
   },[section,rightPanelOpen,rightPanelTab]);
   useEffect(()=>{
     const visible=section==="chat"||section==="freebuff"||(rightPanelOpen&&rightPanelTab==="runtime");
-    if(!visible||!["native","codex"].includes(agentRuntime)||provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;
+    if(!visible||!managedInference||provider!=="freebuff"||!(bootstrap.loggedIn||bootstrap.mock))return;
     const poll=startVisibilityPoll(()=>refreshFreebuff(model),{intervalMs:15000});return()=>poll.dispose();
   },[section,rightPanelOpen,rightPanelTab,agentRuntime,provider,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
-  useEffect(()=>{if(!["native","codex"].includes(agentRuntime)||provider!=="freebuff"||!running||!(bootstrap.loggedIn||bootstrap.mock))return;const ping=()=>{const p=new URLSearchParams({timezone});if(model)p.set("model",model);fetch("/api/freebuff/heartbeat?"+p,{method:"POST"}).catch(()=>{})};ping();const timer=setInterval(ping,45000);return()=>clearInterval(timer)},[agentRuntime,provider,running,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
+  useEffect(()=>{if(!managedInference||provider!=="freebuff"||!running||!(bootstrap.loggedIn||bootstrap.mock))return;const ping=()=>{const p=new URLSearchParams({timezone});if(model)p.set("model",model);fetch("/api/freebuff/heartbeat?"+p,{method:"POST"}).catch(()=>{})};ping();const timer=setInterval(ping,45000);return()=>clearInterval(timer)},[managedInference,provider,running,bootstrap.loggedIn,bootstrap.mock,model,timezone]);
 
   useEffect(()=>{
     if(!rpc||rpcStatus!=="connected")return;
@@ -2693,7 +2694,7 @@ export default function App(){
       }
       const p=presetFor(permissionModeOverride||permissionMode);
       const sandboxPolicy=p.sandbox==="danger-full-access"?{type:"dangerFullAccess"}:p.sandbox==="read-only"?{type:"readOnly",networkAccess:false}:{type:"workspaceWrite",writableRoots:[cwd],networkAccess:true,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
-      const custom=(settings.customModels||[]).find(item=>item.id===modelId&&item.runtime===agentRuntime&&(!["native","codex"].includes(agentRuntime)||item.provider===provider));
+      const custom=(settings.customModels||[]).find(item=>item.id===modelId&&item.runtime===agentRuntime&&(!managedInference||item.provider===provider));
       const collaboration=selectedCollaborationMode(modelId);
       const contextPacket=await prepareTurnContext(thread,cwd,text,focusPathsOverride||repositoryFocusPaths(paths,contextChips),{projectless:projectlessMode,ignoreUsage:autoCompaction.compacted});
       const turnContext={...repositoryContextEntries(contextPacket),...(additionalContext||{})};
@@ -2720,7 +2721,7 @@ export default function App(){
       }
       const p=presetFor(permissionMode);
       const sandboxPolicy=p.sandbox==="danger-full-access"?{type:"dangerFullAccess"}:p.sandbox==="read-only"?{type:"readOnly",networkAccess:false}:{type:"workspaceWrite",writableRoots:[cwd],networkAccess:true,excludeTmpdirEnvVar:false,excludeSlashTmp:false};
-      const custom=(settings.customModels||[]).find(item=>item.id===modelId&&item.runtime===agentRuntime&&(!["native","codex"].includes(agentRuntime)||item.provider===provider));
+      const custom=(settings.customModels||[]).find(item=>item.id===modelId&&item.runtime===agentRuntime&&(!managedInference||item.provider===provider));
       turnRequestStarted=true;
       const collaboration=selectedCollaborationMode(modelId);
       const contextPacket=await prepareTurnContext(thread,cwd,text,focusPaths||repositoryFocusPaths(paths,contextChips),{projectless,background:true}),contextEntries=repositoryContextEntries(contextPacket);
@@ -2849,7 +2850,7 @@ export default function App(){
       catch(error){setEvents(prev=>[...prev,{id:"background-stop-error-"+Date.now(),kind:"error",title:"Could not stop background processes: "+(error.message||String(error)),status:"done",raw:{}}])}
       return true
     }
-    if(command==="/model"){setSection(["native","codex"].includes(agentRuntime)&&provider==="freebuff"?"freebuff":"settings");return true}
+    if(command==="/model"){setSection(managedInference&&provider==="freebuff"?"freebuff":"settings");return true}
     if(command==="/terminal"){setPanel("terminal");return true}
     if(command==="/diff"){openRightPanel("diff");return true}
     if(command==="/git"){openRightPanel("source");return true}
@@ -3510,7 +3511,7 @@ export default function App(){
       </section>
       {runtimeCapabilities.backgroundProcesses&&activeThread?.id&&<AgentBackgroundTerminals rpc={rpc} rpcStatus={rpcStatus} threadId={activeThread.id}/>}
       <RuntimeTrace threadId={activeThread?.id||null}/>
-      {["native","codex"].includes(agentRuntime)&&provider==="freebuff"&&<FreebuffMini freebuff={freebuff} model={model} onOpen={()=>setSection("freebuff")}/>}
+      {managedInference&&provider==="freebuff"&&<FreebuffMini freebuff={freebuff} model={model} onOpen={()=>setSection("freebuff")}/>}
       <section className="runtime-activity"><strong>Latest activity</strong><p>{events.find(event=>event.status==="running")?.title||events.at(-1)?.title||"Waiting for a task"}</p></section>
     </div>;
   }
@@ -3579,7 +3580,7 @@ export default function App(){
               {!messages.length&&!events.length&&!guardianDenials.length&&!approvals.length&&!queued.length&&!worktreeSetup&&<div className="welcome">
                 <div className="welcome-mark"><img src="/trebell-code-icon.svg" alt="" aria-hidden="true"/></div>
                 <h1>{projectlessMode?"What do you want to think through?":"What do you want to build?"}</h1>
-                <p>{projectlessMode?"This is a General chat with no attached project. Files and terminal commands stay inside a Trebell-managed scratch workspace.":<>{["native","codex"].includes(agentRuntime)?`${providerLabel} supplies inference to ${agentRuntimeLabel}.`:`${agentRuntimeLabel} is the active coding-agent harness.`} Trebell keeps files, terminal, Git, worktrees, previews and project actions in one workspace.</>}</p>
+                <p>{projectlessMode?"This is a General chat with no attached project. Files and terminal commands stay inside a Trebell-managed scratch workspace.":<>{managedInference?`${providerLabel} supplies inference to ${agentRuntimeLabel}.`:`${agentRuntimeLabel} is the active coding-agent harness.`} Trebell keeps files, terminal, Git, worktrees, previews and project actions in one workspace.</>}</p>
                 <div className="suggestions">{projectlessMode?<><button onClick={()=>setPrompt("Help me plan the architecture for this idea before I choose a repository.")}>Plan an idea</button><button onClick={()=>setPrompt("Research this technical question and give me a practical recommendation: ")}>Research a topic</button><button onClick={()=>setPrompt("Turn this rough idea into a clear technical specification: ")}>Draft a spec</button></>:<><button onClick={()=>setPrompt("Inspect this project and explain the architecture.")}>Explain codebase</button><button onClick={()=>setPrompt("Find a useful bug, fix it, and run the relevant tests.")}>Fix a bug</button><button onClick={()=>setPrompt("Implement the next missing feature and validate it end-to-end.")}>Ship a feature</button></>}</div>
               </div>}
             </div>
@@ -3596,7 +3597,7 @@ export default function App(){
         </div>}
 
         {section==="projects"&&<div className="secondary-page"><div className="page-header"><div><h1>Projects</h1><p>Repositories and workspaces across local, WSL and SSH environments.</p></div></div><DeferredSurface label="Loading projects…"><ProjectsPage currentPath={projectlessMode?null:projectPath} currentEnvironmentId={workspaceEnvironmentId} onOpen={onProjectOpen} onGeneralChat={newGeneralChat} models={models} onProjectUpdated={project=>{if(project?.path===projectPath&&(project?.environmentId||null)===(workspaceEnvironmentId||null))setCurrentProject(project)}} onRunScript={result=>{setSection("chat");setPanel("terminal");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:terminal-refresh",{detail:result?.session?.id||null})),0)}} onOpenPreview={previewUrl=>{openRightPanel("preview");setTimeout(()=>window.dispatchEvent(new CustomEvent("trebell:preview-open",{detail:previewUrl})),0)}}/></DeferredSurface></div>}
-        {section==="freebuff"&&["native","codex"].includes(agentRuntime)&&provider==="freebuff"&&<div className="secondary-page"><div className="page-header"><div><h1>Freebuff</h1><p>Account, balance, model pricing and session state.</p></div></div><DeferredSurface label="Loading Freebuff…"><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model,{strict:true})}/></DeferredSurface></div>}
+        {section==="freebuff"&&managedInference&&provider==="freebuff"&&<div className="secondary-page"><div className="page-header"><div><h1>Freebuff</h1><p>Account, balance, model pricing and session state.</p></div></div><DeferredSurface label="Loading Freebuff…"><FreebuffPage freebuff={freebuff} model={model} modelMeta={modelMeta} onRefresh={()=>refreshFreebuff(model,{strict:true})}/></DeferredSurface></div>}
         {section==="tools"&&runtimeCapabilities.harnessTools&&<div className="secondary-page full"><DeferredSurface label="Loading harness capabilities…"><HarnessToolsPage rpc={rpc} rpcStatus={rpcStatus} projectPath={projectPath} activeThread={activeThread} skills={skills} onHistoryImported={historyImported} onSkillsRefresh={refreshSkillsAfterMutation} platform={bootstrap.platform}/></DeferredSurface></div>}
         {section==="environments"&&<div className="secondary-page full"><DeferredSurface label="Loading environments…"><EnvironmentsPage/></DeferredSurface></div>}
       {section==="usage"&&<div className="secondary-page full"><DeferredSurface label="Loading usage…"><UsagePage settings={settings} rpc={rpc} rpcStatus={rpcStatus} activeThread={activeThread} agentRuntime={agentRuntime}/></DeferredSurface></div>}
@@ -3619,6 +3620,6 @@ export default function App(){
     {snoozeRequest&&<Suspense fallback={null}><SnoozeDialog request={snoozeRequest} onSubmit={submitSnooze} onCancel={()=>setSnoozeRequest(null)}/></Suspense>}
     {threadUndo&&<div className="thread-undo-toast" role="status" aria-live="polite" data-testid="thread-undo-toast"><span>{threadUndo.label}</span><button onClick={undoThreadAction}>Undo</button><em>5s</em></div>}
     {paletteOpen&&<Suspense fallback={null}><CommandPalette open onClose={()=>setPaletteOpen(false)} actions={paletteActions} projects={paletteProjects} threads={threads} environmentNames={paletteEnvironmentNames} dataError={paletteDataError} onOpenProject={project=>onProjectOpen(project.path,project.environmentId||null)} onOpenThread={openThread} onSearchThreadMessages={searchThreadMessages}/></Suspense>}
-    {initialLoaded&&settings.onboardingComplete===false&&<Suspense fallback={null}><OnboardingModal open projectPath={projectPath} onPickWorkspace={window.trebellDesktop?.pickDirectory?pickWorkspace:null} providerLabel={["native","codex"].includes(agentRuntime)?providerLabel:agentRuntimeLabel} providerReady={providerReady} permissionMode={permissionMode} onPermissionMode={setPermissionMode} onHistoryImported={historyImported} onFinish={finishOnboarding}/></Suspense>}
+    {initialLoaded&&settings.onboardingComplete===false&&<Suspense fallback={null}><OnboardingModal open projectPath={projectPath} onPickWorkspace={window.trebellDesktop?.pickDirectory?pickWorkspace:null} providerLabel={managedInference?providerLabel:agentRuntimeLabel} providerReady={providerReady} permissionMode={permissionMode} onPermissionMode={setPermissionMode} onHistoryImported={historyImported} onFinish={finishOnboarding}/></Suspense>}
   </div>;
 }

@@ -65,11 +65,12 @@ test("runtime capabilities describe adapter behavior without pretending unsuppor
   assert.equal(codex.dynamicToolExpansion,false);
   assert.equal(codex.nativeQueue,true);
   assert.equal(codex.mcpInjection,false);
+  assert.equal(codex.managedInference,true);
   assert.equal(codex.backgroundProcesses,false,"Codex does not implement Trebell's thread/backgroundTerminals RPC surface");
   const native=runtimeCapabilities("native");
   assert.equal(native.projectOwnership,false);
   assert.equal(native.dynamicTools,true);assert.equal(native.dynamicToolExpansion,true);assert.equal(native.contextReporting,true);assert.equal(native.nativeQueue,true);assert.equal(native.nativeHistoryPagination,true);assert.equal(native.threadSearch,true);assert.equal(native.languageIntelligence,true);assert.equal(native.nativeLsp,false);assert.equal(native.clientFilesystem,true);assert.equal(native.clientTerminal,true);assert.equal(native.fork,true);assert.equal(native.rewind,true);
-  assert.equal(native.mcpInjection,true);assert.equal(native.systemPromptInjection,true);assert.equal(native.compaction,true);assert.equal(native.delegation,true);assert.equal(native.steering,true);assert.equal(native.backgroundProcesses,true);
+  assert.equal(native.mcpInjection,true);assert.equal(native.systemPromptInjection,true);assert.equal(native.compaction,true);assert.equal(native.delegation,true);assert.equal(native.steering,true);assert.equal(native.backgroundProcesses,true);assert.equal(native.managedInference,true);
   const openCode=runtimeCapabilities("opencode");
   assert.equal(openCode.compaction,true);
   assert.equal(openCode.nativeLsp,true);
@@ -78,6 +79,7 @@ test("runtime capabilities describe adapter behavior without pretending unsuppor
   assert.equal(openCode.detachedTasks,true);
   assert.equal(openCode.multiModelFanout,true);
   assert.equal(openCode.delegation,true,"Trebell supplies provider-neutral child-task delegation");
+  assert.equal(openCode.managedInference,false);
   assert.equal(openCode.backgroundProcesses,false);
   assert.equal(runtimeCapabilities("claude").runtimeProfileSwitching,true);
   assert.equal(runtimeCapabilities("claude").delegation,true);
