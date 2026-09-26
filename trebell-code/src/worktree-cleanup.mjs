@@ -50,7 +50,10 @@ export class WorktreeCleanupService{
     if(current)worktrees.push(current);return {isGit:true,cwd,root,branch:branchRes.stdout.trim()||null,status:statusLines.slice(1).map(line=>({code:line.slice(0,2),path:line.slice(3)})),statusHeader:statusLines[0]||"",worktrees};
   }
   #ops(project){
-    const remote=Boolean(project?.environmentId&&this.environments?.get?.(project.environmentId));if(!remote)return LOCAL_OPS;
+    if(!project?.environmentId)return LOCAL_OPS;
+    const profile=this.environments?.get?.(project.environmentId);
+    if(!profile)throw new Error("Pinned worktree environment could not be found");
+    if(profile.type==="local")return LOCAL_OPS;
     return {
       key:remoteKey,
       git:(cwd,args,options={})=>this.#remoteGit(project,cwd,args,options),
@@ -59,7 +62,7 @@ export class WorktreeCleanupService{
       restoreWorktree:async(root,{branch,path,submodules="recursive"}={})=>{await this.#remoteGit(project,root,["worktree","add",path,branch],{timeoutMs:180000});if(submodules!=="none"){const args=["submodule","update","--init"];if(submodules!=="top-level")args.push("--recursive");await this.#remoteGit(project,path,args,{timeoutMs:300000})}return {worktree:path,submodules,info:await this.#remoteGitInfo(project,root)}},
     };
   }
-  #pathKey(path,environmentId=null){return environmentId&&this.environments?.get?.(environmentId)?remoteKey(path):key(path)}
+  #pathKey(path,environmentId=null){const profile=environmentId?this.environments?.get?.(environmentId):null;return environmentId&&profile?.type!=="local"?remoteKey(path):key(path)}
   async inspect(project,options={}){const usage=this.getUsage();const scoped=this.state.projectSettings(project.path,project.environmentId||null);return inspectManagedWorktreeWithOps(project,{settings:{...this.state.settings(),worktreeCleanup:scoped.effective.worktreeCleanup},...usage,...options},this.#ops(project))}
   async cleanupProject(project,{reason=null,now=Date.now()}={}){
     const inspection=await this.inspect(project,{reason,now});if(!inspection.eligible)return {removed:false,projectId:project.id,path:project.path,...inspection};
