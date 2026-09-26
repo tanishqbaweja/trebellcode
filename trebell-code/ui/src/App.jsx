@@ -578,6 +578,7 @@ export default function App(){
   });
   const [historyPage,setHistoryPage]=useState({threadId:null,nextCursor:null,paginated:false,loading:false});
   const [threadHistory,setThreadHistory]=useState({runtime:null,items:[],nextCursor:null,loading:false,error:""});
+  const [threadCatalogCursor,setThreadCatalogCursor]=useState(null);
   const [threadFind,setThreadFind]=useState({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});
   const [running,setRunning]=useState(false); const [submitting,setSubmitting]=useState(false); const [queued,setQueued]=useState([]); const [queueMode,setQueueMode]=useState("unknown"); const [queuedEditId,setQueuedEditId]=useState(null);
   const localQueueStartRef=useRef(null);
@@ -1017,7 +1018,7 @@ export default function App(){
       const modelData=modelResult.status==="fulfilled"?modelResult.value:{models:[],error:modelResult.reason?.message||String(modelResult.reason)};
       const themeCatalog=themeResult.status==="fulfilled"?themeResult.value:environmentThemeCatalog;
       const projectData=projectResult.status==="fulfilled"?projectResult.value:{projects:state.projects||[]};
-      if(cancelled)return; setBootstrap(boot); setSettings(prev=>({...prev,...(state.settings||{})})); setPermissionMode(state.settings?.defaultPermissionMode||"supervised"); setThreadMeta(state.threadMeta||{});setThreads(threadsFromCatalogMeta(state.threadMeta||{}));
+      if(cancelled)return; setBootstrap(boot); setSettings(prev=>({...prev,...(state.settings||{})})); setPermissionMode(state.settings?.defaultPermissionMode||"supervised"); setThreadMeta(state.threadMeta||{});setThreads(threadsFromCatalogMeta(state.threadMeta||{}));setThreadCatalogCursor(state.threadMetaNextCursor||null);
       setEnvironmentThemeCatalog(themeCatalog);
       const activeEnvironmentId=state.settings?.activeEnvironmentId||null;
       const projectsForEnvironment=(projectData.projects||state.projects||[]).filter(project=>(project.environmentId||null)===activeEnvironmentId);
@@ -1118,10 +1119,10 @@ export default function App(){
     if(section!=="history")return;
     let cancelled=false;
     if(!rpc||rpcStatus!=="connected"){
-      setThreadHistory({runtime:"all",items:threads,nextCursor:null,loading:false,error:""});
+      setThreadHistory(current=>({...current,runtime:"all",items:threads,nextCursor:null,loading:false,error:""}));
       return;
     }
-    setThreadHistory(current=>({runtime:"all",items:mergeThreadCatalog(current.items?.length?current.items:threads,[],{threadMeta}),nextCursor:current.nextCursor||null,loading:true,error:""}));
+    setThreadHistory(current=>({...current,runtime:"all",items:mergeThreadCatalog(current.items?.length?current.items:threads,[],{threadMeta}),nextCursor:current.nextCursor||null,loading:true,error:""}));
     rpc.request("thread/list",threadListParams(100)).then(result=>{
       if(cancelled)return;
       const incoming=result?.data||[];rememberThreadCatalog(incoming);
@@ -1138,16 +1139,20 @@ export default function App(){
     setThreadHistory(current=>({...current,runtime:"all",items:mergeThreadCatalog(current.items,threads,{threadMeta})}));
   },[section,threads,threadMeta]);
   async function loadOlderThreadHistory(){
-    const cursor=threadHistory.nextCursor;if(!cursor||threadHistory.loading||!rpc||rpcStatus!=="connected")return;
+    const runtimeCursor=threadHistory.nextCursor,catalogCursor=threadCatalogCursor;if((!runtimeCursor&&!catalogCursor)||threadHistory.loading)return;
     setThreadHistory(current=>({...current,loading:true,error:""}));
-    try{
-      const result=await rpc.request("thread/list",{...threadListParams(100),cursor});
-      const incoming=result?.data||[];rememberThreadCatalog(incoming);
-      setThreads(previous=>mergeThreadCatalog(previous,incoming,{runtime:agentRuntime,provider,threadMeta}));
-      setThreadHistory(current=>({...current,runtime:"all",items:mergeThreadCatalog(current.items,incoming,{runtime:agentRuntime,provider,threadMeta}),nextCursor:result?.nextCursor||null,loading:false,error:""}));
-    }catch(error){
-      setThreadHistory(current=>({...current,loading:false,error:error?.message||String(error)}));
-    }
+    const nativeRequest=runtimeCursor&&rpc&&rpcStatus==="connected"?rpc.request("thread/list",{...threadListParams(100),cursor:runtimeCursor}):Promise.resolve(null);
+    const catalogRequest=catalogCursor?api("/api/thread-meta?"+new URLSearchParams({view:"catalog",limit:"100",cursor:catalogCursor})):Promise.resolve(null);
+    const [nativeResult,catalogResult]=await Promise.allSettled([nativeRequest,catalogRequest]);
+    const errors=[];let nativePage=null,catalogPage=null;
+    if(nativeResult.status==="fulfilled")nativePage=nativeResult.value;else errors.push("runtime history: "+(nativeResult.reason?.message||String(nativeResult.reason)));
+    if(catalogResult.status==="fulfilled")catalogPage=catalogResult.value;else errors.push("Trebell catalog: "+(catalogResult.reason?.message||String(catalogResult.reason)));
+    const incoming=nativePage?.data||[],catalogMeta=catalogPage?.threadMeta||{},catalogThreads=threadsFromCatalogMeta(catalogMeta),mergedMeta={...threadMeta,...catalogMeta};
+    if(incoming.length)rememberThreadCatalog(incoming);
+    if(Object.keys(catalogMeta).length)setThreadMeta(previous=>({...previous,...catalogMeta}));
+    if(incoming.length||catalogThreads.length)setThreads(previous=>mergeThreadCatalog(previous,[...incoming,...catalogThreads],{runtime:agentRuntime,provider,threadMeta:mergedMeta}));
+    if(catalogCursor&&catalogResult.status==="fulfilled")setThreadCatalogCursor(catalogPage?.nextCursor||null);
+    setThreadHistory(current=>({...current,runtime:"all",items:mergeThreadCatalog(current.items,[...incoming,...catalogThreads],{runtime:agentRuntime,provider,threadMeta:mergedMeta}),nextCursor:runtimeCursor?(nativeResult.status==="fulfilled"?(nativePage?.nextCursor||null):runtimeCursor):current.nextCursor,loading:false,error:errors.join(" · ")}));
   }
   async function loadCollaborationModes(client=rpcRef.current){
     if(!runtimeCapabilities.collaborationModes||!client){
@@ -3613,7 +3618,7 @@ export default function App(){
         {section==="history"&&<div className="secondary-page"><div className="page-header"><div><h1>Thread history</h1><p>Saved Trebell threads stay visible across agent runtimes. The active {agentRuntimeLabel} history is paged in 100 at a time.</p></div></div><div className="history-page">
           {threadHistory.error&&<div className="history-load-error provider-status-error" role="alert">Could not load thread history: {threadHistory.error}</div>}
           {threadHistory.items.length?threadHistory.items.map(t=><button className="history-thread-row" key={t.id} onClick={()=>runUserAction(()=>openThread(t),"Could not open thread")}><FileCode2 size={15}/><div><strong>{titleOf(t)}</strong><span>{t.preview||t.cwd}</span></div><time>{new Date(t.updatedAt*1000).toLocaleString()}</time></button>):<div className="history-empty"><History size={22}/><strong>{threadHistory.loading?"Loading thread history…":"No thread history yet"}</strong><span>{threadHistory.loading?"Fetching the newest threads from the active agent runtime.":"Start a task or General chat and it will appear here."}</span>{!threadHistory.loading&&<button onClick={()=>runUserAction(newChat,"Could not start a new thread")}>Start a new task</button>}</div>}
-          {threadHistory.items.length>0&&threadHistory.nextCursor&&<div className="history-page-control history-load-more"><button type="button" disabled={threadHistory.loading} onClick={()=>loadOlderThreadHistory()}>{threadHistory.loading?"Loading older threads…":"Load older threads"}</button></div>}
+          {(threadHistory.nextCursor||threadCatalogCursor)&&<div className="history-page-control history-load-more"><button type="button" disabled={threadHistory.loading} onClick={()=>loadOlderThreadHistory()}>{threadHistory.loading?"Loading older threads…":"Load older threads"}</button></div>}
         </div></div>}
       </main>
 

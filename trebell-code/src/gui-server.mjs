@@ -1563,7 +1563,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   const server=createServer(async(req,res)=>{
     const url=new URL(req.url || "/",`http://127.0.0.1:${port}`);
 
-    if(url.pathname==="/api/state" && req.method==="GET") return json(res,200,state.snapshot({includeCollections:false,threadMetaView:"catalog"}));
+    if(url.pathname==="/api/state" && req.method==="GET") return json(res,200,state.snapshot({includeCollections:false,threadMetaView:"catalog",threadMetaLimit:250}));
     if(url.pathname==="/api/recovery"){
       if(req.method==="GET")return json(res,200,codexRecoverySnapshot());
       if(req.method==="POST"){
@@ -2056,7 +2056,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     }
     if(url.pathname==="/api/thread-meta"){
       const id=url.searchParams.get("threadId");
-      if(req.method==="GET") return json(res,200,id?state.threadMeta(id):state.listThreadMeta());
+      if(req.method==="GET"){
+        if(id)return json(res,200,state.threadMeta(id));
+        if(url.searchParams.get("view")==="catalog")return json(res,200,state.threadMetaCatalogPage({limit:url.searchParams.get("limit")||100,cursor:url.searchParams.get("cursor")||null}));
+        return json(res,200,state.listThreadMeta());
+      }
       if(req.method==="POST"){
         try{
           const body=await readJsonBody(req);
@@ -3108,9 +3112,9 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         state.updateThreadMeta(startedThread.id,{cwd:startedThread.cwd||null,runtime:"codex",runtimeInstanceId:routedServer?.runtimeInstanceId||agentRuntimes.activeInstance().id,environmentId:routedServer?.environmentId??state.settings().activeEnvironmentId??null,deletedAt:null,active:false,...codexPermissionProfilePatch(route?.requestParams||{})});
       }
       if(message?.method==="thread/deleted"&&params.threadId){
-        codexThreadModels.delete(params.threadId);const meta=state.threadMeta(params.threadId);state.updateThreadMeta(params.threadId,{deletedAt:Date.now(),active:false});
+        codexThreadModels.delete(params.threadId);const meta=state.threadMeta(params.threadId);state.removeThreadMeta(params.threadId);
         setTimeout(()=>releaseCodexThreadServer(params.threadId).catch(()=>{}),0);
-      if(meta?.cwd)worktreeCleanup.sweep({reason:"thread-delete",path:meta.cwd}).catch(error=>cleanupLogs.push({at:Date.now(),stream:"cleanup",text:safeLogText(error.message+"\n")}));
+        if(meta?.cwd)worktreeCleanup.sweep({reason:"thread-delete",path:meta.cwd}).catch(error=>cleanupLogs.push({at:Date.now(),stream:"cleanup",text:safeLogText(error.message+"\n")}));
       }
       if(message?.method==="thread/archived"&&params.threadId)setTimeout(()=>releaseCodexThreadServer(params.threadId).catch(()=>{}),0);
       if(route?.requestMethod==="thread/unsubscribe"&&!message?.error&&route.requestParams?.threadId){

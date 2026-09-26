@@ -216,8 +216,12 @@ export class TrebellStateStore {
     writeFileSync(tmp,JSON.stringify(persisted,null,2),{encoding:"utf8",mode:0o600});
     renameSync(tmp,this.path);
   }
-  snapshot({includeCollections=true,threadMetaView="full"}={}){
-    const out=clone(this.state);if(this.collections)out.threadMeta=threadMetaView==="catalog"?this.collections.threadMetaCatalogMap():this.collections.threadMetaMap();else if(threadMetaView==="catalog")out.threadMeta=Object.fromEntries(Object.entries(out.threadMeta||{}).map(([threadId,item])=>[threadId,threadMetaCatalogProjection(item)]));if(!includeCollections){delete out.checkpoints;delete out.usageRecords;delete out.verificationRecords;delete out.repositoryKnowledge;return out}if(!this.collections)return out;
+  snapshot({includeCollections=true,threadMetaView="full",threadMetaLimit=null}={}){
+    const out=clone(this.state);
+    if(threadMetaView==="catalog"&&threadMetaLimit!=null){const page=this.threadMetaCatalogPage({limit:threadMetaLimit});out.threadMeta=page.threadMeta;out.threadMetaNextCursor=page.nextCursor}
+    else if(this.collections)out.threadMeta=threadMetaView==="catalog"?this.collections.threadMetaCatalogMap():this.collections.threadMetaMap();
+    else if(threadMetaView==="catalog")out.threadMeta=Object.fromEntries(Object.entries(out.threadMeta||{}).map(([threadId,item])=>[threadId,threadMetaCatalogProjection(item)]));
+    if(!includeCollections){delete out.checkpoints;delete out.usageRecords;delete out.verificationRecords;delete out.repositoryKnowledge;return out}if(!this.collections)return out;
     out.checkpoints=this.collections.checkpoints();out.usageRecords=this.collections.usage({since:0,limit:5000});out.verificationRecords=this.collections.verificationRecords({limit:1000});out.repositoryKnowledge=this.collections.knowledge({limit:5000});return out;
   }
   settings(){ return clone(this.state.settings); }
@@ -409,6 +413,18 @@ export class TrebellStateStore {
     return clone(next);
   }
   listThreadMeta(){ return clone(this.collections?this.collections.threadMetaMap():this.state.threadMeta); }
+  threadMetaCatalogPage({limit=100,cursor=null}={}){
+    if(this.collections)return clone(this.collections.threadMetaCatalogPage({limit,cursor}));
+    const capped=Math.max(1,Math.min(1000,Number(limit)||100)),offset=String(cursor||"").startsWith("legacy:")?Math.max(0,Number(String(cursor).slice(7))||0):0;
+    const rows=Object.entries(this.state.threadMeta||{}).map(([threadId,item])=>[threadId,threadMetaCatalogProjection(item)]).sort((left,right)=>(Number(right[1]?.updatedAt)||0)-(Number(left[1]?.updatedAt)||0)||String(right[0]).localeCompare(String(left[0])));
+    const page=rows.slice(offset,offset+capped),nextOffset=offset+page.length;
+    return {threadMeta:clone(Object.fromEntries(page)),nextCursor:nextOffset<rows.length?"legacy:"+nextOffset:null};
+  }
+  removeThreadMeta(threadId){
+    if(this.collections)return this.collections.removeThreadMeta(threadId);
+    if(!Object.prototype.hasOwnProperty.call(this.state.threadMeta,threadId))return false;
+    delete this.state.threadMeta[threadId];this.#save();return true;
+  }
   addStash({text="",attachments=[],contextChips=[],projectPath=null}={}){
     const stash={id:randomUUID(),text,attachments,contextChips,projectPath,createdAt:Date.now()};
     this.state.stashes.unshift(stash);

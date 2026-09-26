@@ -9,6 +9,14 @@ const LIMITS=Object.freeze({checkpoints:200,usage:5000,verification:1000,knowled
 function databaseSync(){try{return require("node:sqlite").DatabaseSync}catch{return null}}
 function payload(row){if(!row)return null;try{return JSON.parse(row.payload_json||"null")}catch{return null}}
 function normalizedEnvironment(value){const text=String(value??"").trim();return text||null}
+function catalogCursor(updatedAt,threadId){return Buffer.from(JSON.stringify([Number(updatedAt)||0,String(threadId||"")]),"utf8").toString("base64url")}
+function parseCatalogCursor(value){
+  if(!value)return null;
+  try{
+    const [updatedAt,threadId]=JSON.parse(Buffer.from(String(value),"base64url").toString("utf8"));
+    const at=Number(updatedAt),id=String(threadId||"");return Number.isFinite(at)&&id?{updatedAt:at,threadId:id}:null;
+  }catch{return null}
+}
 function boundedText(value,max=1000){const text=String(value??"").trim();return text?text.slice(0,max):null}
 function compactPullRequest(value){
   if(!value||typeof value!=="object")return null;
@@ -52,6 +60,7 @@ export class SqliteStateCollections{
           thread_id TEXT PRIMARY KEY, runtime TEXT, environment_id TEXT, updated_at INTEGER NOT NULL, catalog_json TEXT NOT NULL DEFAULT '{}', payload_json TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS state_thread_meta_updated_idx ON state_thread_meta(updated_at DESC);
+        CREATE INDEX IF NOT EXISTS state_thread_meta_catalog_page_idx ON state_thread_meta(updated_at DESC,thread_id DESC);
         CREATE INDEX IF NOT EXISTS state_thread_meta_runtime_idx ON state_thread_meta(runtime,updated_at DESC);
         CREATE INDEX IF NOT EXISTS state_thread_meta_environment_idx ON state_thread_meta(environment_id,updated_at DESC);
         CREATE TABLE IF NOT EXISTS state_checkpoints (
@@ -113,8 +122,20 @@ export class SqliteStateCollections{
   }
   threadMeta(threadId){return this.#withDb(db=>payload(db.prepare("SELECT payload_json FROM state_thread_meta WHERE thread_id=?").get(String(threadId))))}
   putThreadMeta(threadId,item){return this.#withDb(db=>{db.prepare("INSERT INTO state_thread_meta(thread_id,runtime,environment_id,updated_at,catalog_json,payload_json) VALUES(?,?,?,?,?,?) ON CONFLICT(thread_id) DO UPDATE SET runtime=excluded.runtime,environment_id=excluded.environment_id,updated_at=excluded.updated_at,catalog_json=excluded.catalog_json,payload_json=excluded.payload_json").run(String(threadId),item?.runtime||null,normalizedEnvironment(item?.environmentId),Number(item?.updatedAt)||Date.now(),JSON.stringify(threadMetaCatalogProjection(item||{})),JSON.stringify(item||{}));return item},{write:true})}
+  removeThreadMeta(threadId){return this.#withDb(db=>Number(db.prepare("DELETE FROM state_thread_meta WHERE thread_id=?").run(String(threadId))?.changes)||0,{write:true})>0}
   threadMetaMap(){return this.#withDb(db=>Object.fromEntries(db.prepare("SELECT thread_id,payload_json FROM state_thread_meta ORDER BY updated_at DESC").all().map(row=>[String(row.thread_id),payload(row)||{}])))}
   threadMetaCatalogMap(){return this.#withDb(db=>Object.fromEntries(db.prepare("SELECT thread_id,catalog_json FROM state_thread_meta ORDER BY updated_at DESC").all().map(row=>{let item={};try{item=JSON.parse(row.catalog_json||"{}")}catch{}return [String(row.thread_id),item]})))}
+  threadMetaCatalogPage({limit=100,cursor=null}={}){
+    const capped=Math.max(1,Math.min(1000,Number(limit)||100)),decoded=parseCatalogCursor(cursor);
+    return this.#withDb(db=>{
+      const rows=decoded
+        ?db.prepare("SELECT thread_id,updated_at,catalog_json FROM state_thread_meta WHERE updated_at < ? OR (updated_at = ? AND thread_id < ?) ORDER BY updated_at DESC,thread_id DESC LIMIT ?").all(decoded.updatedAt,decoded.updatedAt,decoded.threadId,capped+1)
+        :db.prepare("SELECT thread_id,updated_at,catalog_json FROM state_thread_meta ORDER BY updated_at DESC,thread_id DESC LIMIT ?").all(capped+1);
+      const page=rows.slice(0,capped),threadMeta={};
+      for(const row of page){let item={};try{item=JSON.parse(row.catalog_json||"{}")}catch{}threadMeta[String(row.thread_id)]=item}
+      return {threadMeta,nextCursor:rows.length>capped&&page.length?catalogCursor(page.at(-1).updated_at,page.at(-1).thread_id):null};
+    });
+  }
   checkpoint(id){return this.#withDb(db=>payload(db.prepare("SELECT payload_json FROM state_checkpoints WHERE id=?").get(String(id))))}
   putCheckpoint(item){return this.#withDb(db=>{db.prepare("INSERT INTO state_checkpoints(id,thread_id,created_at,payload_json) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET thread_id=excluded.thread_id,created_at=excluded.created_at,payload_json=excluded.payload_json").run(String(item.id),item.threadId?String(item.threadId):null,Number(item.createdAt)||Date.now(),JSON.stringify(item));this.#prune(db,"state_checkpoints","created_at",LIMITS.checkpoints);return item},{write:true})}
   checkpoints(threadId=null){return this.#withDb(db=>{const rows=threadId?db.prepare("SELECT payload_json FROM state_checkpoints WHERE thread_id=? ORDER BY created_at DESC LIMIT ?").all(String(threadId),LIMITS.checkpoints):db.prepare("SELECT payload_json FROM state_checkpoints ORDER BY created_at DESC LIMIT ?").all(LIMITS.checkpoints);return rows.map(payload).filter(Boolean)})}
