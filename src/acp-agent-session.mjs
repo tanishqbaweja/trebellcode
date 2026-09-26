@@ -36,6 +36,7 @@ export class AcpAgentSession{
     this.spawnProcess=spawnProcess;this.remoteIo=remoteIo;this.processCwd=processCwd?resolve(processCwd):null;
     this.mcpServers=Array.isArray(mcpServers)?mcpServers.map(server=>({...server,args:[...(server.args||[])],env:(server.env||[]).map(item=>({...item}))})):[];
     this.client=null;this.sessionId=null;this.initializeResult=null;this.sessionSetup=null;this.terminalIds=new Set();this.model=null;
+    this.runtimeContextSent=false;
     this.remoteTerminals=new Map();
   }
 
@@ -58,6 +59,7 @@ export class AcpAgentSession{
     }
     if(!setup)setup=await client.createSession({cwd:this.cwd,mcpServers:this.mcpServers});
     this.sessionSetup=setup;this.sessionId=setup.sessionId;this.model=model||setup.models?.currentModelId||null;
+    this.runtimeContextSent=false;
     if(model&&setup.models?.availableModels?.some(item=>item.modelId===model)&&setup.models.currentModelId!==model){
       await client.setModel(this.sessionId,model).catch(()=>{});
     }
@@ -66,8 +68,11 @@ export class AcpAgentSession{
 
   async prompt(content,{messageId=null}={}){
     if(!this.client||!this.sessionId)throw new Error("ACP session is not started");
-    const runtimeContext={type:"text",text:runtimeInstructions({harness:runtimeHarnessLabel(this.runtime),model:this.model})};
-    return this.client.prompt(this.sessionId,[...(Array.isArray(content)?content:[]),runtimeContext],{messageId});
+    const parts=[...(Array.isArray(content)?content:[])];
+    if(!this.runtimeContextSent)parts.push({type:"text",text:runtimeInstructions({harness:runtimeHarnessLabel(this.runtime),model:this.model})});
+    const result=await this.client.prompt(this.sessionId,parts,{messageId});
+    this.runtimeContextSent=true;
+    return result;
   }
   cancel(){if(this.client&&this.sessionId)this.client.cancel(this.sessionId)}
   async setModel(model){const result=await this.client?.setModel(this.sessionId,model);if(model)this.model=model;return result}
