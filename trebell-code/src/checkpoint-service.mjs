@@ -3,9 +3,11 @@ import { isAbsolute, join, posix, relative, sep } from "node:path";
 import { mkdir, realpath, rm, stat } from "node:fs/promises";
 import { trebellHome } from "./paths.mjs";
 import { git, gitInfo } from "./git-service.mjs";
+import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
 
 const CHECKPOINT_NESTED_REPO_MAX_CANDIDATES=64;
 const NESTED_GIT_ENV_KEYS=["GIT_DIR","GIT_WORK_TREE","GIT_COMMON_DIR","GIT_INDEX_FILE","GIT_OBJECT_DIRECTORY","GIT_ALTERNATE_OBJECT_DIRECTORIES"];
+const CHECKPOINT_GIT_ENV_KEYS=["EMAIL","GIT_AUTHOR_NAME","GIT_AUTHOR_EMAIL","GIT_COMMITTER_NAME","GIT_COMMITTER_EMAIL","GIT_CONFIG_GLOBAL","GIT_CONFIG_SYSTEM","GIT_CONFIG_NOSYSTEM","GIT_CEILING_DIRECTORIES","GIT_DISCOVERY_ACROSS_FILESYSTEM"];
 const CHECKPOINT_DURABLE_WRITE=["-c","core.fsync=objects,reference","-c","core.fsyncMethod=fsync"];
 
 export function isTransientCheckpointGitError(error){
@@ -31,6 +33,7 @@ export class CheckpointService{
     throw lastError;
   }
   #durable(args){return [...CHECKPOINT_DURABLE_WRITE,...args]}
+  #localGitEnv(overrides={}){return {...buildRuntimeEnvironment("native",{parent:this.env,approved:CHECKPOINT_GIT_ENV_KEYS}),...overrides}}
   #remoteProfile(environmentId){return environmentId?this.environments?.get?.(environmentId)||null:null}
   #usesRemoteIo(environmentId){return Boolean(environmentId&&this.#remoteProfile(environmentId)?.type!=="local")}
   async #remoteExec(environmentId,{command,args=[],cwd=null,allowFailure=false,timeoutMs=120000,maxOutput=8*1024*1024}={}){
@@ -68,7 +71,7 @@ export class CheckpointService{
     const untracked=await this.#captureGit(root,["ls-files","--others","--exclude-standard","-z","--","."],{env:childEnv});
     const candidates=String(untracked.stdout||"").split("\0").filter(entry=>entry.endsWith("/"));
     if(candidates.length>CHECKPOINT_NESTED_REPO_MAX_CANDIDATES)throw stageError;
-    const nestedEnv={...process.env};for(const key of NESTED_GIT_ENV_KEYS)delete nestedEnv[key];
+    const nestedEnv=this.#localGitEnv();for(const key of NESTED_GIT_ENV_KEYS)delete nestedEnv[key];
     const exclusions=[];
     for(const entry of candidates){
       const nestedCwd=join(root,entry);
@@ -114,15 +117,15 @@ export class CheckpointService{
   async create({cwd,threadId=null,label=null,environmentId=null}){
     if(environmentId&&!this.#remoteProfile(environmentId))throw new Error("Checkpoint environment is unavailable");
     if(this.#usesRemoteIo(environmentId))return this.#createRemote({cwd,threadId,label,environmentId});
-    const info=await this.gitInfoFn(cwd);
+    const baseEnv=this.#localGitEnv(),info=await this.gitInfoFn(cwd,{env:baseEnv});
     if(!info.isGit) return {supported:false,reason:"not_git"};
     const id=randomUUID();
     const tmpDir=join(trebellHome(this.env),"checkpoints");
     await mkdir(tmpDir,{recursive:true});
     const indexPath=join(tmpDir,`index-${id}`);
-    const childEnv={...process.env,GIT_INDEX_FILE:indexPath};
+    const childEnv={...baseEnv,GIT_INDEX_FILE:indexPath};
     try{
-      const head=await this.gitFn(info.root,["rev-parse","HEAD"],{allowFailure:true});
+      const head=await this.gitFn(info.root,["rev-parse","HEAD"],{allowFailure:true,env:baseEnv});
       if(head.ok) await this.#captureGit(info.root,["read-tree","HEAD"],{env:childEnv}); else await this.#captureGit(info.root,["read-tree","--empty"],{env:childEnv});
       await this.#stageCheckpoint(info.root,childEnv);
       const tree=(await this.#captureGit(info.root,this.#durable(["write-tree"]),{env:childEnv})).stdout.trim();
@@ -130,7 +133,7 @@ export class CheckpointService{
       if(head.ok) args.push("-p",head.stdout.trim());
       const commit=(await this.#captureGit(info.root,this.#durable(args),{env:childEnv})).stdout.trim();
       const ref=`refs/trebell/checkpoints/${id}`;
-      await this.#captureGit(info.root,this.#durable(["update-ref",ref,commit]));
+      await this.#captureGit(info.root,this.#durable(["update-ref",ref,commit]),{env:baseEnv});
       const item=this.state.addCheckpoint({id,threadId,root:info.root,commit,ref,label:label||null,environmentId:environmentId||null});
       return {supported:true,...item};
     }finally{
@@ -159,12 +162,12 @@ export class CheckpointService{
     if(!cp)throw new Error("Checkpoint not found");
     if(threadId&&cp.threadId!==threadId)throw new Error("Checkpoint change inspection is allowed only from the thread that created this checkpoint.");
     if(this.#usesRemoteIo(cp.environmentId))return this.#changedPathsRemote(cp);
-    const info=await this.gitInfoFn(cp.root);
+    const baseEnv=this.#localGitEnv(),info=await this.gitInfoFn(cp.root,{env:baseEnv});
     if(!info.isGit)throw new Error("Checkpoint repository is unavailable");
     const tmpDir=join(trebellHome(this.env),"checkpoints");
     await mkdir(tmpDir,{recursive:true});
     const indexPath=join(tmpDir,`compare-index-${randomUUID()}`);
-    const childEnv={...process.env,GIT_INDEX_FILE:indexPath};
+    const childEnv={...baseEnv,GIT_INDEX_FILE:indexPath};
     try{
       await this.#captureGit(info.root,["read-tree",cp.commit],{env:childEnv});
       await this.gitFn(info.root,["update-index","--refresh"],{env:childEnv,allowFailure:true});
@@ -237,12 +240,12 @@ export class CheckpointService{
     if(!cp) throw new Error("Checkpoint not found");
     if(this.#usesRemoteIo(cp.environmentId))return this.#restoreRemote(cp,threadId);
     await this.#assertRestoreIsolation(cp,threadId);
-    const info=await this.gitInfoFn(cp.root);
+    const baseEnv=this.#localGitEnv(),info=await this.gitInfoFn(cp.root,{env:baseEnv});
     if(!info.isGit) throw new Error("Checkpoint repository is unavailable");
-    await this.gitFn(cp.root,["restore","--source",cp.commit,"--staged","--worktree","--","."]);
-    const trackedAtCheckpoint=new Set((await this.gitFn(cp.root,["ls-tree","-r","--name-only",cp.commit])).stdout.split(/\r?\n/).filter(Boolean));
-    const untracked=(await this.gitFn(cp.root,["ls-files","--others","--exclude-standard"])).stdout.split(/\r?\n/).filter(Boolean);
+    await this.gitFn(cp.root,["restore","--source",cp.commit,"--staged","--worktree","--","."],{env:baseEnv});
+    const trackedAtCheckpoint=new Set((await this.gitFn(cp.root,["ls-tree","-r","--name-only",cp.commit],{env:baseEnv})).stdout.split(/\r?\n/).filter(Boolean));
+    const untracked=(await this.gitFn(cp.root,["ls-files","--others","--exclude-standard"],{env:baseEnv})).stdout.split(/\r?\n/).filter(Boolean);
     for(const rel of untracked){if(!trackedAtCheckpoint.has(rel))await rm(join(cp.root,rel),{recursive:true,force:true}).catch(()=>{});}
-    return {ok:true,checkpoint:cp,info:await this.gitInfoFn(cp.root)};
+    return {ok:true,checkpoint:cp,info:await this.gitInfoFn(cp.root,{env:baseEnv})};
   }
 }

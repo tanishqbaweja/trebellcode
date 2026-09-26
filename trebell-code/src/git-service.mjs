@@ -16,18 +16,18 @@ async function run(command,args,{cwd,env=process.env,timeout=120000,maxBuffer=8*
 }
 export async function git(cwd,args,opts={}){ return run("git",args,{cwd,...opts}); }
 
-export async function gitInfo(cwd){
+export async function gitInfo(cwd,opts={}){
   const base=resolve(cwd);
-  const rootRes=await git(base,["rev-parse","--show-toplevel"],{allowFailure:true});
+  const rootRes=await git(base,["rev-parse","--show-toplevel"],{...opts,allowFailure:true});
   if(!rootRes.ok) return {isGit:false,cwd:base,root:null,branch:null,branches:[],status:[],remotes:[],worktrees:[]};
   const root=rootRes.stdout.trim();
   const [branchRes,branchesRes,statusRes,remoteRes,worktreeRes,upstreamRes]=await Promise.all([
-    git(root,["branch","--show-current"],{allowFailure:true}),
-    git(root,["for-each-ref","--format=%(refname:short)","refs/heads"],{allowFailure:true}),
-    git(root,["status","--porcelain=v1","-b"],{allowFailure:true}),
-    git(root,["remote","-v"],{allowFailure:true}),
-    git(root,["worktree","list","--porcelain"],{allowFailure:true}),
-    git(root,["rev-parse","--abbrev-ref","--symbolic-full-name","@{u}"],{allowFailure:true}),
+    git(root,["branch","--show-current"],{...opts,allowFailure:true}),
+    git(root,["for-each-ref","--format=%(refname:short)","refs/heads"],{...opts,allowFailure:true}),
+    git(root,["status","--porcelain=v1","-b"],{...opts,allowFailure:true}),
+    git(root,["remote","-v"],{...opts,allowFailure:true}),
+    git(root,["worktree","list","--porcelain"],{...opts,allowFailure:true}),
+    git(root,["rev-parse","--abbrev-ref","--symbolic-full-name","@{u}"],{...opts,allowFailure:true}),
   ]);
   const statusLines=statusRes.stdout.split(/\r?\n/).filter(Boolean);
   const remotes=remoteRes.stdout.split(/\r?\n/).filter(Boolean).map(line=>{

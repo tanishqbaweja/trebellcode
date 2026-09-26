@@ -55,6 +55,39 @@ test("checkpoint capture retries a transient Git failure without restarting the 
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
+test("local checkpoint Git processes receive a bounded environment instead of unrelated parent secrets",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-checkpoint-env-")),gitEnvironments=[],infoEnvironments=[];
+  const parentEnv={
+    PATH:process.env.PATH||"/usr/bin",HOME:home,USERPROFILE:home,TREBELL_HOME:home,
+    CHECKPOINT_PRIVATE_TOKEN:"must-not-reach-git",
+    GIT_AUTHOR_NAME:"Checkpoint Author",GIT_AUTHOR_EMAIL:"checkpoint@example.test",
+  };
+  const state={addCheckpoint:item=>({...item,createdAt:1}),checkpoints:()=>[],updateCheckpoint:()=>null};
+  const gitFn=async(_cwd,args,options={})=>{
+    gitEnvironments.push(options.env||null);const command=gitCommand(args);
+    if(command==="rev-parse")return {ok:true,stdout:"head123\n",stderr:""};
+    if(command==="read-tree"||command==="add"||command==="update-ref")return {ok:true,stdout:"",stderr:""};
+    if(command==="write-tree")return {ok:true,stdout:"tree123\n",stderr:""};
+    if(command==="commit-tree")return {ok:true,stdout:"commit123\n",stderr:""};
+    throw new Error("unexpected git "+args.join(" "));
+  };
+  const service=new CheckpointService({
+    state,env:parentEnv,gitFn,
+    gitInfoFn:async(_cwd,options={})=>{infoEnvironments.push(options.env||null);return {isGit:true,root:"/repo"}},
+  });
+  try{
+    const checkpoint=await service.create({cwd:"/repo",threadId:"thread-safe-env"});
+    assert.equal(checkpoint.supported,true);assert.equal(infoEnvironments.length,1);
+    for(const environment of [...infoEnvironments,...gitEnvironments]){
+      assert.ok(environment);assert.equal(environment.CHECKPOINT_PRIVATE_TOKEN,undefined);
+      assert.equal(environment.PATH,parentEnv.PATH);assert.equal(environment.HOME,home);
+      assert.equal(environment.GIT_AUTHOR_NAME,"Checkpoint Author");assert.equal(environment.GIT_AUTHOR_EMAIL,"checkpoint@example.test");
+    }
+    assert.ok(gitEnvironments.some(environment=>typeof environment.GIT_INDEX_FILE==="string"&&environment.GIT_INDEX_FILE.includes("index-")));
+    assert.ok(gitEnvironments.some(environment=>environment.GIT_INDEX_FILE===undefined));
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 test("checkpoint capture does not retry non-transient Git failures",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-checkpoint-fail-"));let addAttempts=0,sleepCalls=0;
   const service=new CheckpointService({
