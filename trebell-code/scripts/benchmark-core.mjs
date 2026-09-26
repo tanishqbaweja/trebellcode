@@ -13,6 +13,7 @@ try{
     env:{...process.env,TREBELL_HOME:home},
     threads:arg("threads",1000),eventsPerThread:arg("events-per-thread",20),
     eventCount:arg("store-events",10000),queryCount:arg("queries",200),
+    stateRecords:arg("state-records",500),
     repoFiles:arg("repo-files",1000),
   });
   console.log(JSON.stringify(result,null,2));

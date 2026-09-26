@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp,rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { benchmarkReplay, benchmarkRepositoryIndex, runCoreBenchmark, syntheticEventHistory } from "../src/performance-benchmark.mjs";
+import { benchmarkDurableState, benchmarkReplay, benchmarkRepositoryIndex, runCoreBenchmark, syntheticEventHistory } from "../src/performance-benchmark.mjs";
 
 test("synthetic performance fixture is deterministic and bounded",()=>{
   const a=syntheticEventHistory({threads:3,eventsPerThread:4}),b=syntheticEventHistory({threads:3,eventsPerThread:4});
@@ -23,11 +23,21 @@ test("repository benchmark proves unchanged reuse and one-file incremental repar
   assert.ok(result.first.elapsedMs>=0);assert.ok(result.unchanged.elapsedMs>=0);assert.ok(result.incremental.elapsedMs>=0);
 });
 
+test("durable state benchmark measures indexed writes queries and lean general-state payloads",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-state-benchmark-test-"));
+  try{
+    const result=await benchmarkDurableState({env:{TREBELL_HOME:home,HOME:home},recordCount:40,queryCount:5});
+    assert.equal(result.records,40);assert.equal(result.queries,5);assert.equal(result.persisted.usage,40);assert.equal(result.persisted.verification,4);assert.equal(result.persisted.knowledge,2);assert.equal(result.persisted.checkpoints,2);
+    assert.ok(result.writeMs>=0);assert.ok(result.queryMs>=0);assert.ok(result.avgWriteUs>=0);assert.ok(result.avgQueryBatchUs>=0);assert.ok(result.compatSnapshotBytes>result.leanSnapshotBytes);assert.ok(result.uiStateFileBytes<result.compatSnapshotBytes);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 test("core benchmark exercises SQLite event storage without a hard machine-speed threshold",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-benchmark-test-"));
   try{
-    const result=await runCoreBenchmark({env:{TREBELL_HOME:home,HOME:home},threads:10,eventsPerThread:6,eventCount:200,queryCount:10,repoFiles:30});
+    const result=await runCoreBenchmark({env:{TREBELL_HOME:home,HOME:home},threads:10,eventsPerThread:6,eventCount:200,queryCount:10,stateRecords:30,repoFiles:30});
     assert.equal(result.replay.events,60);assert.equal(result.eventStore.events,200);assert.equal(result.eventStore.queries,10);assert.ok(["sqlite","jsonl"].includes(result.eventStore.backend));
+    assert.equal(result.durableState.records,30);assert.ok(result.durableState.compatSnapshotBytes>result.durableState.leanSnapshotBytes);
     assert.equal(result.repositoryIndex.files,30);assert.equal(result.repositoryIndex.unchanged.reparsed,0);assert.equal(result.repositoryIndex.incremental.reparsed,1);
     assert.ok(result.durationMs>=0);assert.ok(result.eventStore.avgInsertUs>=0);assert.ok(result.eventStore.avgQueryUs>=0);
   }finally{await rm(home,{recursive:true,force:true})}

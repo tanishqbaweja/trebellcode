@@ -1,10 +1,11 @@
 import { performance } from "node:perf_hooks";
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ContextEngine } from "./context-engine.mjs";
 import { EventJournal } from "./event-journal.mjs";
 import { createReplayFixture, replayEventFixture } from "./event-replay.mjs";
+import { TrebellStateStore } from "./trebell-state.mjs";
 
 function integer(value,fallback,min,max){
   const number=Math.trunc(Number(value));return Number.isFinite(number)?Math.max(min,Math.min(max,number)):fallback;
@@ -60,6 +61,29 @@ export async function benchmarkEventStore({env,eventCount=10_000,queryCount=200}
   }finally{await journal.close()}
 }
 
+export async function benchmarkDurableState({env,recordCount=500,queryCount=100}={}){
+  const count=integer(recordCount,500,20,5000),queries=integer(queryCount,100,1,2000),state=new TrebellStateStore(env),before=memory(),writeStart=performance.now();
+  for(let index=0;index<count;index++){
+    const threadId="state-thread-"+(index%100),turnId=threadId+"-turn-"+index,at=Date.now()-count+index;
+    state.recordUsage({runtime:index%2?"native":"codex",provider:index%3?"provider-a":"provider-b",model:"bench-model-"+(index%4),environmentId:index%5?null:"ssh-bench",threadId,turnId,at,usage:{totalTokens:100+index,inputTokens:70+index,outputTokens:30},cost:index%7===0?{amount:0.001,currency:"USD"}:null});
+    if(index%10===0)state.recordVerification({id:"bench-verification-"+index,environmentId:index%5?null:"ssh-bench",projectPath:"/bench/project-"+(index%8),threadId,turnId,plan:{risk:"low",steps:[]},evidence:[],assessment:{status:"verified",risk:"low",verified:true},updatedAt:at});
+    if(index%20===0)state.upsertRepositoryKnowledge({id:"bench-knowledge-"+index,projectPath:"/bench/project-"+(index%8),environmentId:index%5?null:"ssh-bench",category:"benchmark",fact:"Synthetic benchmark fact "+index,status:"verified",updatedAt:at});
+    if(index%25===0)state.addCheckpoint({id:"bench-checkpoint-"+index,threadId,root:"/bench/project-"+(index%8),commit:"deadbeef"+index,createdAt:at});
+  }
+  const writeMs=performance.now()-writeStart,queryStart=performance.now();let returned=0;
+  for(let index=0;index<queries;index++){
+    const threadId="state-thread-"+(index%100);returned+=state.usage({days:1,limit:50,environmentIds:index%2?[null]:["ssh-bench"]}).records.length;
+    returned+=state.verificationRecords({threadId,limit:20}).length;returned+=state.repositoryKnowledge({projectPath:"/bench/project-"+(index%8),limit:20}).length;returned+=state.checkpoints(threadId).length;
+  }
+  const queryMs=performance.now()-queryStart,after=memory(),lean=state.snapshot({includeCollections:false}),compat=state.snapshot(),uiState=await readFile(state.path,"utf8").catch(()=>"");
+  return {
+    records:count,queries,returned,
+    writeMs:Number(writeMs.toFixed(3)),queryMs:Number(queryMs.toFixed(3)),avgWriteUs:Number((writeMs*1000/count).toFixed(3)),avgQueryBatchUs:Number((queryMs*1000/queries).toFixed(3)),
+    memoryDeltaBytes:delta(after,before),leanSnapshotBytes:Buffer.byteLength(JSON.stringify(lean)),compatSnapshotBytes:Buffer.byteLength(JSON.stringify(compat)),uiStateFileBytes:Buffer.byteLength(uiState),
+    persisted:{usage:compat.usageRecords.length,verification:compat.verificationRecords.length,knowledge:compat.repositoryKnowledge.length,checkpoints:compat.checkpoints.length},
+  };
+}
+
 async function writeSyntheticRepository(root,fileCount){
   const source=join(root,"src");await mkdir(source,{recursive:true});
   await writeFile(join(root,"package.json"),JSON.stringify({name:"trebell-context-benchmark",private:true,scripts:{test:"node --test"}},null,2));
@@ -106,11 +130,11 @@ export async function benchmarkRepositoryIndex({fileCount=1000}={}){
   }finally{await rm(root,{recursive:true,force:true})}
 }
 
-export async function runCoreBenchmark({env=process.env,threads=1000,eventsPerThread=20,eventCount=10_000,queryCount=200,repoFiles=1000}={}){
-  const startedAt=new Date().toISOString(),started=performance.now(),replay=benchmarkReplay({threads,eventsPerThread}),eventStore=await benchmarkEventStore({env,eventCount,queryCount}),repositoryIndex=await benchmarkRepositoryIndex({fileCount:repoFiles});
+export async function runCoreBenchmark({env=process.env,threads=1000,eventsPerThread=20,eventCount=10_000,queryCount=200,stateRecords=500,repoFiles=1000}={}){
+  const startedAt=new Date().toISOString(),started=performance.now(),replay=benchmarkReplay({threads,eventsPerThread}),eventStore=await benchmarkEventStore({env,eventCount,queryCount}),durableState=await benchmarkDurableState({env,recordCount:stateRecords,queryCount}),repositoryIndex=await benchmarkRepositoryIndex({fileCount:repoFiles});
   return {
-    version:2,startedAt,durationMs:Number((performance.now()-started).toFixed(3)),
+    version:3,startedAt,durationMs:Number((performance.now()-started).toFixed(3)),
     environment:{node:process.version,platform:process.platform,arch:process.arch},
-    replay,eventStore,repositoryIndex,
+    replay,eventStore,durableState,repositoryIndex,
   };
 }
