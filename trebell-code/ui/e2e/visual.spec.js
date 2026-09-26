@@ -4485,10 +4485,11 @@ test("light mode stays visually coherent across workspace and panels",async({pag
   await page.getByRole("button",{name:"Threads",exact:true}).click();
   await page.getByRole("button",{name:"History",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Thread history",level:1})).toBeVisible();
-  const historyButton=page.locator(".history-page > button").first();
-  if(await historyButton.count())expect(await historyButton.evaluate(node=>getComputedStyle(node).backgroundColor)).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
-  const historyEmptyButton=page.locator(".history-empty button");
-  if(await historyEmptyButton.count())expect(await historyEmptyButton.evaluate(node=>getComputedStyle(node).backgroundColor)).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
+  const historyButtonColors=await page.evaluate(()=>[
+    document.querySelector(".history-page > button"),
+    document.querySelector(".history-empty button"),
+  ].filter(Boolean).map(node=>getComputedStyle(node).backgroundColor));
+  for(const value of historyButtonColors)expect(value).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
   await page.screenshot({path:auditDir+"light-history-1600x980.png",fullPage:true});
 });
 
