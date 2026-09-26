@@ -1818,6 +1818,21 @@ test("goal budget panel exposes durable guardrails, exhaustion, and a clear reco
     verification:{status:"verified",risk:"medium",verified:true,summary:"Targeted goal-panel browser flow passed",updatedAt:Date.now()},
     completedTurnIds:["turn-1","turn-2"],unresolvedFailures:["One provider smoke test is still pending"],recentFailures:["Earlier provider disconnect"],artifactsCreated:["Goal budget regression suite"],pendingNextActions:["Run release smoke test"],completedWork:["Implemented durable goal RPCs"],importantDecisions:["Keep continuity provider-neutral"],meaningful:true,updatedAt:Date.now(),
   };
+  const verificationResult={record:{
+    id:"goal-verification-fixture",threadId:thread.id,turnId:"turn-2",status:"verified",risk:"medium",updatedAt:continuity.verification.updatedAt,
+    plan:{risk:"medium",steps:[
+      {id:"diagnostics",kind:"diagnostics",scope:"changed",required:true,reason:"Catch syntax issues before broader checks."},
+      {id:"project_tests",kind:"tests",scope:"project",required:true,reason:"Run the project regression suite.",command:"npm test -- --token TOP_SECRET_COMMAND"},
+    ]},
+    evidence:[
+      {stepId:"diagnostics",status:"passed",source:"harness-diagnostics",errorCount:0,coveredPaths:["src/goal.js"],engines:["babel-parser"],rawOutput:"TOP_SECRET_OUTPUT"},
+      {stepId:"project_tests",status:"passed",source:"runtime-trace",exitCode:0,toolCallId:"tests-1",stderr:"PRIVATE_STDERR"},
+    ],
+    assessment:{status:"verified",verified:true,risk:"medium",summary:{required:2,passed:2,failed:0,blocked:0,missing:0},results:[
+      {id:"diagnostics",kind:"diagnostics",required:true,status:"passed",reason:"Diagnostics reported no errors.",evidence:{rawOutput:"TOP_SECRET_ASSESSMENT"}},
+      {id:"project_tests",kind:"tests",required:true,status:"passed",reason:"Command exited successfully."},
+    ]},
+  },nextAction:{action:"complete",nextStep:null,remainingSteps:[]}};
   const recalcContinuity=patch=>{
     const notes={...continuity.notes};
     for(const key of ["completedWork","unresolvedFailures","importantDecisions","artifactsCreated","pendingNextActions"])if(Object.prototype.hasOwnProperty.call(patch,key))notes[key]=patch[key];
@@ -1841,6 +1856,7 @@ test("goal budget panel exposes durable guardrails, exhaustion, and a clear reco
     if(message.method==="thread/goal/set"){ws.send(JSON.stringify({id:message.id,result:{goal:recalc(message.params||{})}}));return true}
     if(message.method==="thread/goal/clear"){goal=null;ws.send(JSON.stringify({id:message.id,result:{ok:true}}));return true}
     if(message.method==="thread/continuity/get"){ws.send(JSON.stringify({id:message.id,result:{continuity}}));return true}
+    if(message.method==="thread/verification/get"){ws.send(JSON.stringify({id:message.id,result:verificationResult}));return true}
     if(message.method==="thread/continuity/set"){ws.send(JSON.stringify({id:message.id,result:{continuity:recalcContinuity(message.params||{})}}));return true}
     if(message.method==="thread/continuity/clear"){continuity=recalcContinuity({completedWork:[],unresolvedFailures:[],importantDecisions:[],artifactsCreated:[],pendingNextActions:[]});ws.send(JSON.stringify({id:message.id,result:{ok:true,continuity}}));return true}
     return false;
@@ -1904,6 +1920,11 @@ test("goal budget panel exposes durable guardrails, exhaustion, and a clear reco
     await panel.locator(".goal-continuity-details>summary").click();
     await expect(panel.getByTestId("continuity-derived")).toContainText("feature/durable-goals");
     await expect(panel.getByTestId("continuity-derived")).toContainText("verified · medium");
+    const verification=panel.getByTestId("verification-evidence");await expect(verification).toContainText("2/2 required checks passed · verified");await verification.locator("summary").click();
+    await expect(verification).toContainText("diagnostics");await expect(verification).toContainText("project_tests");await expect(verification).toContainText("harness-diagnostics");await expect(verification).toContainText("runtime-trace · exit 0");await expect(verification).toContainText("1 path");await expect(verification).not.toContainText("TOP_SECRET_OUTPUT");await expect(verification).not.toContainText("PRIVATE_STDERR");await expect(verification).not.toContainText("TOP_SECRET_COMMAND");await expect(verification).not.toContainText("TOP_SECRET_ASSESSMENT");
+    const evidenceMetrics=await verification.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(evidenceMetrics.scroll).toBeLessThanOrEqual(evidenceMetrics.client+1);
+    await verification.scrollIntoViewIfNeeded();await page.screenshot({path:auditDir+"goal-verification-evidence-dark-1280x800.png",fullPage:true});
+    await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await expect.poll(()=>verification.evaluate(node=>getComputedStyle(node).backgroundColor)).toBe("rgb(255, 255, 255)");await page.screenshot({path:auditDir+"goal-verification-evidence-light-1280x800.png",fullPage:true});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
     await expect(panel.getByLabel("Completed work",{exact:true})).toHaveValue("Implemented durable goal RPCs");
     await expect(panel.getByLabel("Important decisions",{exact:true})).toHaveValue("Keep continuity provider-neutral");
     await expect(panel.getByLabel("Pending next actions",{exact:true})).toHaveValue("Run release smoke test");

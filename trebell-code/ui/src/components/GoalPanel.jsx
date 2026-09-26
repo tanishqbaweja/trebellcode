@@ -1,6 +1,7 @@
 import React,{useEffect,useState} from "react";
 import { AlertTriangle, CheckCircle2, ChevronDown, Pause, Play, RefreshCw, Target, Trash2 } from "lucide-react";
 import { startSameThreadVerificationRepair } from "../verification-repair.js";
+import { verificationEvidenceMeta, verificationEvidenceSummary, verificationEvidenceView } from "../verification-evidence-view.js";
 
 function lines(value){return (Array.isArray(value)?value:[]).join("\n")}
 function parseLines(value){return String(value||"").split(/\r?\n/).map(item=>item.trim()).filter(Boolean)}
@@ -42,6 +43,10 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
   const [detailsOpen,setDetailsOpen]=useState(false);
   const [advancedBudgetOpen,setAdvancedBudgetOpen]=useState(false);
   const [continuityOpen,setContinuityOpen]=useState(false);
+  const [verificationOpen,setVerificationOpen]=useState(false);
+  const [verificationEvidence,setVerificationEvidence]=useState(null);
+  const [verificationEvidenceLoading,setVerificationEvidenceLoading]=useState(false);
+  const [verificationEvidenceError,setVerificationEvidenceError]=useState("");
   const [completedWork,setCompletedWork]=useState("");
   const [unresolvedFailures,setUnresolvedFailures]=useState("");
   const [importantDecisions,setImportantDecisions]=useState("");
@@ -69,7 +74,13 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
     setArtifactsCreated(lines(continuity?.notes?.artifactsCreated));
     setPendingNextActions(lines(continuity?.notes?.pendingNextActions));
   },[continuity?.notes?.completedWork,continuity?.notes?.unresolvedFailures,continuity?.notes?.importantDecisions,continuity?.notes?.artifactsCreated,continuity?.notes?.pendingNextActions]);
-  useEffect(()=>{setDetailsOpen(false);setAdvancedBudgetOpen(false);setContinuityOpen(false);setRepairStatus("")},[thread?.id]);
+  useEffect(()=>{setDetailsOpen(false);setAdvancedBudgetOpen(false);setContinuityOpen(false);setVerificationOpen(false);setVerificationEvidence(null);setVerificationEvidenceError("");setRepairStatus("")},[thread?.id]);
+  useEffect(()=>{
+    if(!rpc||rpcStatus!=="connected"||!thread?.id){setVerificationEvidence(null);setVerificationEvidenceLoading(false);return}
+    let disposed=false;setVerificationEvidenceLoading(true);setVerificationEvidenceError("");
+    rpc.request("thread/verification/get",{threadId:thread.id}).then(result=>{if(!disposed)setVerificationEvidence(verificationEvidenceView(result))}).catch(error=>{if(!disposed){setVerificationEvidence(null);setVerificationEvidenceError(String(error?.message||error||"Unknown error").slice(0,300))}}).finally(()=>{if(!disposed)setVerificationEvidenceLoading(false)});
+    return()=>{disposed=true};
+  },[rpc,rpcStatus,thread?.id,continuity?.verification?.updatedAt]);
   if(!thread?.id)return <div className="empty-state"><Target size={28}/><strong>No active thread</strong><span>Start or open a thread before setting a durable goal.</span></div>;
   if(rpcStatus!=="connected")return <div className="empty-state"><Target size={28}/><strong>Agent harness is reconnecting</strong><span>This thread's durable goal will be available again when the active harness reconnects.</span></div>;
   async function setGoal(patch){
@@ -178,6 +189,21 @@ export default function GoalPanel({rpc,rpcStatus,thread,goal,onGoal,continuity,o
           <div><span>Completed turns</span><strong>{Number(continuity?.completedTurnIds?.length||0)}</strong></div>
           <div><span>Unresolved / recent failures</span><strong>{Number(continuity?.unresolvedFailures?.length||0)+Number(continuity?.recentFailures?.length||0)}</strong></div>
         </div>
+        <details className="verification-evidence-details" open={verificationOpen} onToggle={event=>setVerificationOpen(event.currentTarget.open)} data-testid="verification-evidence">
+          <summary><span><strong>Verification evidence</strong><small>{verificationEvidenceLoading?"Loading persisted evidence…":verificationEvidence?verificationEvidenceSummary(verificationEvidence):verificationEvidenceError?"Persisted evidence could not be loaded":"No persisted verification record"}</small></span><ChevronDown size={13}/></summary>
+          <div className="verification-evidence-body">
+            {verificationEvidenceError&&<div className="verification-evidence-error">Evidence unavailable: {verificationEvidenceError}</div>}
+            {!verificationEvidenceLoading&&!verificationEvidenceError&&!verificationEvidence&&<div className="verification-evidence-empty">No verification steps have been recorded for this thread yet.</div>}
+            {verificationEvidence&&<>
+              <div className="verification-evidence-overview"><span className={"status "+verificationEvidence.status}>{verificationEvidence.status}</span><span>{verificationEvidence.risk} risk</span>{verificationEvidence.nextAction&&<span>next {verificationEvidence.nextStepId||verificationEvidence.nextAction}</span>}</div>
+              <div className="verification-evidence-rows">{verificationEvidence.rows.map(row=>{
+                const meta=verificationEvidenceMeta(row);return <div key={row.id} className={"verification-evidence-row status-"+row.status}>
+                  <span className="verification-evidence-icon">{row.status==="passed"?<CheckCircle2 size={13}/>:row.status==="failed"||row.status==="blocked"?<AlertTriangle size={13}/>:<Target size={13}/>}</span>
+                  <div className="verification-evidence-main"><div><strong>{row.id}</strong><em>{row.kind}</em><b>{row.status}</b></div>{row.reason&&<p>{row.reason}</p>}{meta&&<small>{meta}</small>}</div>
+                </div>})}</div>
+            </>}
+          </div>
+        </details>
         {continuity?.verification?.status==="failed"&&<div className="verification-repair-card" data-testid="verification-repair-card"><div><strong>Verification needs repair</strong><span>Start a same-thread repair turn with the persisted failed-step evidence. No second reviewer model is spawned.</span></div><button type="button" onClick={repairVerification} disabled={!!busy}>{busy==="verification-repair"?"Starting…":"Repair failed verification"}</button></div>}
         {repairStatus&&<div className="verification-repair-status">{repairStatus}</div>}
         <label>Completed work <span>(one per line)</span><textarea aria-label="Completed work" value={completedWork} onChange={e=>setCompletedWork(e.target.value)} placeholder={"Implemented the parser\nAdded regression tests"}/></label>
