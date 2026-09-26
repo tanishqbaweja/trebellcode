@@ -55,6 +55,7 @@ import { recordCodexBudgetEvidence, recordCodexChildAgentEvidence } from "./code
 import { recordCodexRecoveryItemEvidence, staleCodexRecoveryState } from "./codex-recovery-evidence.mjs";
 import { continuityAdditionalContext, continuitySnapshot, normalizeContinuityNotes } from "./continuity-state.mjs";
 import { verificationRepairContext, verificationRepairPrompt, verificationRepairState } from "./verification-repair.mjs";
+import { collectVerificationEvidence } from "./verification-evidence-collector.mjs";
 import { delegationContextValue, delegationGoalPatch, delegationPolicies } from "./delegation-state.mjs";
 import { executeDelegation } from "./delegation-executor.mjs";
 import { resolveCodexApprovalByPolicy } from "./codex-policy-adapter.mjs";
@@ -2512,10 +2513,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         }
         const meta=state.threadMeta(threadId),riskHints=Array.isArray(body.riskHints)?body.riskHints.map(String).filter(Boolean).slice(0,20):[];
         const plan=await contextEngine.verificationPlan({root:changed.root,paths:changed.paths,riskHints,capabilities:{diagnostics:body.diagnostics!==false,semanticDiagnostics:Boolean(body.semanticDiagnostics)}});
-        const evidence=[],assessment=contextEngine.assessVerification({plan,evidence});
+        const agentTurn=agentThreads.get(threadId)?.turns?.find(turn=>String(turn?.id||"")===turnId)||null;
+        const traces=eventJournal.list({threadId,turnId,limit:500}),evidence=collectVerificationEvidence({plan,turnItems:agentTurn?.items||[],traces}),assessment=contextEngine.assessVerification({plan,evidence});
         const record=state.recordVerification({environmentId:meta?.environmentId??null,projectPath:changed.root,threadId,turnId,plan,evidence,assessment});
         const nextAction=contextEngine.nextVerificationAction({plan:record.plan,evidence:record.evidence});
-        eventJournal.record({environmentId:meta?.environmentId??null,threadId,turnId,category:"verification",name:"verification.planned",status:assessment.status,data:{recordId:record.id,checkpointId:checkpoint.id,projectPath:changed.root,risk:assessment.risk,changedPathCount:changed.paths.length,changedPaths:changed.paths.slice(0,100),nextAction:nextAction.action,nextStepId:nextAction.nextStep?.id||null}});
+        eventJournal.record({environmentId:meta?.environmentId??null,threadId,turnId,category:"verification",name:"verification.planned",status:assessment.status,data:{recordId:record.id,checkpointId:checkpoint.id,projectPath:changed.root,risk:assessment.risk,changedPathCount:changed.paths.length,changedPaths:changed.paths.slice(0,100),evidenceCount:evidence.length,nextAction:nextAction.action,nextStepId:nextAction.nextStep?.id||null}});
         return json(res,200,{supported:true,checkpointId:checkpoint.id,threadId,turnId,changedPaths:changed.paths,record,nextAction});
       }catch(error){return json(res,400,{error:error.message});}
     }
