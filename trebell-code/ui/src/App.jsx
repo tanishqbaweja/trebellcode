@@ -1287,7 +1287,12 @@ export default function App(){
     let recovery;
     try{recovery=await api("/api/recovery")}
     catch(error){showActionError(error,"Could not check restart recovery");return}
-    if(!recovery?.enabled||!recovery.items?.length)return;
+    if(!recovery?.enabled)return;
+    for(const item of recovery.blocked||[]){
+      const error=new Error(item.message||"Automatic restart continuation was blocked because an interrupted tool or action may already have completed. Inspect its real-world state before continuing.");
+      showActionError(error,"Restart recovery needs inspection");
+    }
+    if(!recovery.items?.length)return;
     for(const item of recovery.items){
       try{
         await client.request("thread/resume",{threadId:item.threadId,modelProvider:provider,excludeTurns:true});

@@ -30,3 +30,13 @@ test("Codex stale active markers are not auto-recoverable when continuation is d
     const persisted=new TrebellStateStore(env).threadMeta("thread-old").restartRecovery;assert.equal(persisted.status,"interrupted");assert.match(persisted.message,/interrupted by a Trebell restart/i);
   }finally{await gui.close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:100})}
 });
+
+test("Codex stale active markers with unresolved tool actions are blocked instead of auto-continued",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-codex-uncertain-recovery-"));const env={...process.env,TREBELL_HOME:home};
+  const state=new TrebellStateStore(env);state.updateSettings({continueThreadsAfterRestart:true});state.updateThreadMeta("thread-old",{restartRecovery:{runtime:"codex",bootId:"previous-boot",threadId:"thread-old",turnId:"turn-old",status:"active",startedAt:123,uncertainTools:[{id:"cmd-1",type:"commandExecution",turnId:"turn-old",status:"inProgress"}]}});
+  const gui=await createGuiServer({port:await freePort(),appPort:await freePort(),mock:true,env});
+  try{
+    const recovery=await fetch(gui.url+"/api/recovery").then(r=>r.json());assert.equal(recovery.enabled,true);assert.deepEqual(recovery.items,[]);assert.equal(recovery.blocked.length,1);assert.equal(recovery.blocked[0].threadId,"thread-old");assert.equal(recovery.blocked[0].uncertainTools[0].id,"cmd-1");
+    const persisted=new TrebellStateStore(env).threadMeta("thread-old").restartRecovery;assert.equal(persisted.status,"blocked");assert.equal(persisted.reason,"uncertain_tool_action");
+  }finally{await gui.close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:100})}
+});

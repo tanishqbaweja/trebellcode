@@ -52,6 +52,7 @@ import { REPOSITORY_TOOL_DEFINITIONS, invokeRepositoryTool, parseRepositoryToolA
 import { EventJournal } from "./event-journal.mjs";
 import { enrichGoal, goalAdditionalContext, goalBudgetGate, normalizeGoal } from "./goal-state.mjs";
 import { recordCodexBudgetEvidence, recordCodexChildAgentEvidence } from "./codex-budget-evidence.mjs";
+import { recordCodexRecoveryItemEvidence, staleCodexRecoveryState } from "./codex-recovery-evidence.mjs";
 import { continuityAdditionalContext, continuitySnapshot, normalizeContinuityNotes } from "./continuity-state.mjs";
 import { verificationRepairContext, verificationRepairPrompt, verificationRepairState } from "./verification-repair.mjs";
 import { delegationContextValue, delegationGoalPatch, delegationPolicies } from "./delegation-state.mjs";
@@ -481,9 +482,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   for(const [threadId,meta] of Object.entries(state.listThreadMeta())){
     const recovery=meta?.restartRecovery;
     if(recovery?.runtime!=="codex"||recovery?.status!=="active"||!recovery.turnId||recovery.bootId===bootId)continue;
-    state.updateThreadMeta(threadId,{restartRecovery:Boolean(state.settings().continueThreadsAfterRestart)
-      ?{...recovery,status:"pending",detectedAt:Date.now()}
-      :{...recovery,status:"interrupted",detectedAt:Date.now(),message:"Codex work was interrupted by a Trebell restart. Send a new message to continue."}});
+    state.updateThreadMeta(threadId,{restartRecovery:staleCodexRecoveryState(recovery,{continueAfterRestart:Boolean(state.settings().continueThreadsAfterRestart)})});
   }
   let selectedAgentRuntime=normalizeAgentRuntime(state.settings().agentRuntime);
   if(state.settings().agentRuntime!==selectedAgentRuntime) state.updateSettings({agentRuntime:selectedAgentRuntime,agentRuntimeInstanceId:`${selectedAgentRuntime}-default`});
@@ -983,8 +982,12 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   }
   function durableCodexContinuity(threadId){
     const meta=state.threadMeta(threadId);
+    const restart=meta?.restartRecovery,status=String(restart?.status||"");
+    const recovery=restart?.runtime==="codex"&&["pending","blocked","interrupted","error"].includes(status)?{
+      pending:status==="pending",blocked:status==="blocked",turnId:restart.turnId||null,reason:restart.reason||null,message:restart.message||null,uncertainTools:Array.isArray(restart.uncertainTools)?restart.uncertainTools:[],
+    }:null;
     return continuitySnapshot({
-      threadId,thread:{id:threadId,cwd:meta?.cwd||null,runtime:"codex",runtimeInstanceId:meta?.runtimeInstanceId||null,turns:codexGoalTurns(meta)},meta,goal:durableCodexGoal(threadId),
+      threadId,thread:{id:threadId,cwd:meta?.cwd||null,runtime:"codex",runtimeInstanceId:meta?.runtimeInstanceId||null,turns:codexGoalTurns(meta),recovery},meta,goal:durableCodexGoal(threadId),
       verificationRecords:state.verificationRecords({threadId,limit:10}),
       checkpoints:state.checkpoints(threadId),
       traces:eventJournal.list({threadId,limit:80}),
@@ -1195,7 +1198,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   }
   function markCodexTurnActive(threadId,turnId){
     if(!threadId||!turnId)return;
-    state.updateThreadMeta(threadId,{active:true,restartRecovery:{runtime:"codex",bootId,threadId,turnId,status:"active",startedAt:Date.now()}});
+    state.updateThreadMeta(threadId,{active:true,restartRecovery:{runtime:"codex",bootId,threadId,turnId,status:"active",startedAt:Date.now(),uncertainTools:[]}});
   }
   function clearCodexRecovery(threadId,status="completed",message=null){
     if(!threadId)return;
@@ -1208,12 +1211,13 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   }
   function codexRecoverySnapshot(){
     const enabled=Boolean(state.settings().continueThreadsAfterRestart);
-    const items=[];
+    const items=[],blocked=[];
     for(const [threadId,meta] of Object.entries(state.listThreadMeta())){
       const recovery=meta?.restartRecovery;
       if(recovery?.runtime==="codex"&&recovery?.status==="pending"&&recovery.bootId!==bootId&&recovery.turnId)items.push({threadId,turnId:recovery.turnId,startedAt:recovery.startedAt||null});
+      if(recovery?.runtime==="codex"&&recovery?.status==="blocked"&&recovery.bootId!==bootId&&recovery.turnId)blocked.push({threadId,turnId:recovery.turnId,startedAt:recovery.startedAt||null,message:recovery.message||null,uncertainTools:Array.isArray(recovery.uncertainTools)?recovery.uncertainTools:[]});
     }
-    return {enabled,bootId,items};
+    return {enabled,bootId,items,blocked};
   }
 
   async function restartAppServer(providerId=selectedProvider){
@@ -2984,6 +2988,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     onServerMessage:(message,route)=>{
       const params=message?.params||{};
       recordCodexBudgetEvidence(state,message);
+      recordCodexRecoveryItemEvidence(state,message);
       const traceThreadId=params.threadId||params.thread?.id||null;const traceMeta=traceThreadId?state.threadMeta(traceThreadId):null;
       eventJournal.recordProtocol({runtime:"codex",provider:selectedProvider,environmentId:traceMeta?.environmentId??state.settings().activeEnvironmentId??null,direction:"runtime",method:message?.method||route?.requestMethod||"",params});
       const startedThread=message?.method==="thread/started"?params.thread:(route?.requestMethod==="thread/start"?message?.result?.thread:null);

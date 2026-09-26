@@ -1864,6 +1864,29 @@ test("restart recovery never continues an unverified interrupted turn",async({pa
   }finally{await harness.close()}
 });
 
+test("restart recovery surfaces uncertain tool state without automatic continuation",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"restart-recovery-uncertain-thread",name:"Uncertain recovery fixture",preview:"Blocked duplicate side effect",cwd:process.cwd(),createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
+  let continuationStarts=0;
+  const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
+    if(message.method==="turn/start"){continuationStarts++;ws.send(JSON.stringify({id:message.id,result:{turn:{id:"should-not-start"}}}));return true}
+    return false;
+  }});
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"restart-recovery-uncertain-fixture");
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:true,items:[],blocked:[{threadId:thread.id,turnId:"turn-uncertain",message:"Automatic Codex restart continuation was blocked because a tool or action was still unresolved when Trebell stopped. Inspect its real-world state before repeating it.",uncertainTools:[{id:"cmd-1",type:"commandExecution",turnId:"turn-uncertain",status:"inProgress"}]}]})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const error=page.getByTestId("app-action-error");
+    await expect(error).toContainText("Restart recovery needs inspection");
+    await expect(error).toContainText("Inspect its real-world state before repeating it");
+    expect(continuationStarts).toBe(0);
+    await page.setViewportSize({width:1280,height:800});
+    const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"restart-recovery-uncertain-tool-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
 test("restart recovery catalog failures stay visible without blocking the harness",async({page})=>{
   test.setTimeout(35_000);
   const thread={id:"restart-recovery-read-thread",name:"Recovery catalog failure fixture",preview:"Recovery read error",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
