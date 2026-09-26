@@ -83,8 +83,20 @@ function Reset-ReleaseOutput {
   Remove-GeneratedPath (Join-Path $Root "desktop-dist")
 }
 
+function New-IsolatedPackagingOutput([string]$Prefix) {
+  $Base = [IO.Path]::GetTempPath()
+  New-Item -ItemType Directory -Path $Base -Force | Out-Null
+  $Output = Join-Path $Base ($Prefix + [Guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Path $Output -Force | Out-Null
+  return $Output
+}
+
 function Invoke-UnpackedWindowsBuild([string]$ElectronDist) {
-  $Output = Join-Path ([IO.Path]::GetTempPath()) ("trebell-release-unpacked-" + [Guid]::NewGuid().ToString("N"))
+  # Keep the unpacked smoke build in a unique temp directory so it is isolated
+  # from workspace cleanup and concurrent builders. Using the already installed
+  # Electron distribution also avoids the archive-extraction race we observed
+  # when electron.exe disappeared during an immediate rename/check.
+  $Output = New-IsolatedPackagingOutput "trebell-release-unpacked-"
   $UnpackedExe = Join-Path $Output "win-unpacked\Trebell Code.exe"
   Reset-ReleaseOutput
   try {
@@ -95,6 +107,21 @@ function Invoke-UnpackedWindowsBuild([string]$ElectronDist) {
     )
     if (-not (Test-Path $UnpackedExe)) { throw "Unpacked desktop build was not produced: $UnpackedExe" }
     return [pscustomobject]@{ Output = $Output; Exe = $UnpackedExe }
+  } catch {
+    Remove-GeneratedPath $Output
+    throw
+  }
+}
+
+function Invoke-WindowsInstallerBuild([string]$ElectronDist) {
+  $Output = New-IsolatedPackagingOutput "trebell-release-installer-"
+  try {
+    Invoke-Native "npx" @(
+      "electron-builder","--win","nsis","--x64",
+      "--config.electronDist=$ElectronDist",
+      "--config.directories.output=$Output"
+    )
+    return [pscustomobject]@{ Output = $Output }
   } catch {
     Remove-GeneratedPath $Output
     throw
@@ -251,16 +278,26 @@ try {
 
 Write-Host "`n[7/8] Building Windows x64 NSIS installer..." -ForegroundColor Cyan
 Reset-ReleaseOutput
-Invoke-Native "npx" @("electron-builder","--win","nsis","--x64","--config.electronDist=$ElectronDist")
+$InstallerBuild = Invoke-WindowsInstallerBuild $ElectronDist
 
 $InstallerName = "Trebell-Code-Setup-$Version.exe"
-$Installer = Join-Path $Root "desktop-dist\$InstallerName"
-if (-not (Test-Path $Installer)) { throw "Build completed without producing $Installer" }
-$AppUpdateYml = Join-Path $Root "desktop-dist\win-unpacked\resources\app-update.yml"
+$BuiltInstaller = Join-Path $InstallerBuild.Output $InstallerName
+if (-not (Test-Path $BuiltInstaller)) { throw "Build completed without producing $BuiltInstaller" }
+$AppUpdateYml = Join-Path $InstallerBuild.Output "win-unpacked\resources\app-update.yml"
 if (-not (Test-Path $AppUpdateYml)) { throw "NSIS build is missing resources\app-update.yml required by electron-updater." }
-$LatestYml = Join-Path $Root "desktop-dist\latest.yml"
-if (-not (Test-Path $LatestYml)) { throw "Build completed without producing latest.yml required by the in-app updater." }
+$BuiltLatestYml = Join-Path $InstallerBuild.Output "latest.yml"
+if (-not (Test-Path $BuiltLatestYml)) { throw "Build completed without producing latest.yml required by the in-app updater." }
+$BuiltBlockmap = "$BuiltInstaller.blockmap"
+
+$ReleaseOutput = Join-Path $Root "desktop-dist"
+New-Item -ItemType Directory -Path $ReleaseOutput -Force | Out-Null
+$Installer = Join-Path $ReleaseOutput $InstallerName
+$LatestYml = Join-Path $ReleaseOutput "latest.yml"
 $Blockmap = "$Installer.blockmap"
+Copy-Item -LiteralPath $BuiltInstaller -Destination $Installer -Force
+Copy-Item -LiteralPath $BuiltLatestYml -Destination $LatestYml -Force
+if (Test-Path $BuiltBlockmap) { Copy-Item -LiteralPath $BuiltBlockmap -Destination $Blockmap -Force }
+Remove-GeneratedPath $InstallerBuild.Output
 
 $Hash = (Get-FileHash -Algorithm SHA256 $Installer).Hash.ToLowerInvariant()
 $Size = (Get-Item $Installer).Length
