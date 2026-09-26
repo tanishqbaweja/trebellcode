@@ -78,9 +78,11 @@ test("agent device validation routes logs and app lifecycle through bounded devi
     expect(packages.result?.success).toBe(true);expect(packages.result.contentItems[0].text).toContain("untrusted external tool data");
     const launched=await harness.request("item/tool/call",{threadId:thread.id,namespace:"trebell_device",tool:"launch",arguments:{id:"android:emulator-5554",app:"com.example.demo"}});
     const stopped=await harness.request("item/tool/call",{threadId:thread.id,namespace:"trebell_device",tool:"stop",arguments:{id:"android:emulator-5554",app:"com.example.demo"}});
-    expect(launched.result?.success).toBe(true);expect(stopped.result?.success).toBe(true);
+    const swiped=await harness.request("item/tool/call",{threadId:thread.id,namespace:"trebell_device",tool:"swipe",arguments:{id:"android:emulator-5554",x1:10,y1:20,x2:30,y2:40,duration:350}});
+    expect(launched.result?.success).toBe(true);expect(stopped.result?.success).toBe(true);expect(swiped.result?.success).toBe(true);
     expect(deviceActions.some(item=>item.action==="packages")).toBe(true);
     expect(deviceActions.some(item=>item.action==="launch"&&item.args?.app==="com.example.demo")).toBe(true);
     expect(deviceActions.some(item=>item.action==="stop"&&item.args?.app==="com.example.demo")).toBe(true);
+    expect(deviceActions.some(item=>item.action==="swipe"&&item.args?.x1===10&&item.args?.y2===40&&item.args?.duration===350)).toBe(true);
   }finally{await harness.close()}
 });

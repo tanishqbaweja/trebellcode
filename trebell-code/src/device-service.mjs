@@ -76,6 +76,15 @@ function encodedInput(value){return String(value??"").replace(/%/g,"%25").replac
 function safeAppId(value){
   const id=String(value||"").trim();if(!/^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/.test(id))throw new Error("App package/bundle id is invalid.");return id;
 }
+function safeIosUdid(value){const id=String(value||"").trim();if(!/^[A-F0-9-]{8,64}$/i.test(id))throw new Error("iOS Simulator UDID is invalid.");return id}
+function safeCoordinate(value,name="coordinate"){const number=Number(value);if(!Number.isFinite(number)||number<0||number>20000)throw new Error("Simulator "+name+" is invalid.");return Math.round(number)}
+function parseIdbScreenSize(raw=""){
+  try{
+    const parsed=JSON.parse(String(raw||"")),first=Array.isArray(parsed)?parsed[0]:parsed,frame=first?.frame;
+    const width=Number(frame?.width),height=Number(frame?.height);
+    return Number.isFinite(width)&&width>0&&Number.isFinite(height)&&height>0?{width,height}:{width:null,height:null};
+  }catch{return {width:null,height:null}}
+}
 function boundedDeviceLogText(value,{lines=200,maxChars=128*1024}={}){
   const lineLimit=Math.max(10,Math.min(2000,Math.trunc(Number(lines)||200))),charLimit=Math.max(1024,Math.min(512*1024,Math.trunc(Number(maxChars)||128*1024)));
   const rows=String(value??"").replaceAll("\0","").split(/\r?\n/);if(rows.at(-1)==="")rows.pop();
@@ -105,12 +114,13 @@ function parseSdkManagerUpdates(raw=""){
 }
 
 export class DeviceService{
-  constructor({env=process.env,platform=process.platform,runTextFn=runText,findCommandFn=findCommand}={}){this.env=env;this.platform=platform;this.runTextFn=runTextFn;this.findCommandFn=findCommandFn;this.adbPath=null;this.emulatorPath=null;this.sdkManagerPath=null;this.detectedAt=0}
+  constructor({env=process.env,platform=process.platform,runTextFn=runText,runBufferFn=runBuffer,findCommandFn=findCommand}={}){this.env=env;this.platform=platform;this.runTextFn=runTextFn;this.runBufferFn=runBufferFn;this.findCommandFn=findCommandFn;this.adbPath=null;this.emulatorPath=null;this.sdkManagerPath=null;this.idbPath=null;this.detectedAt=0}
   async #detect(){
     if(Date.now()-this.detectedAt<15_000)return;this.detectedAt=Date.now();
     this.adbPath=await this.findCommandFn("adb",androidCandidates("adb",{env:this.env,platform:this.platform}),{platform:this.platform,env:this.env});
     this.emulatorPath=await this.findCommandFn("emulator",androidCandidates("emulator",{env:this.env,platform:this.platform}),{platform:this.platform,env:this.env});
     this.sdkManagerPath=await this.findCommandFn("sdkmanager",androidCandidates("sdkmanager",{env:this.env,platform:this.platform}),{platform:this.platform,env:this.env});
+    this.idbPath=this.platform==="darwin"?await this.findCommandFn("idb",[],{platform:this.platform,env:this.env}):null;
   }
   async capabilities(){
     await this.#detect();let androidVersion=null,adbRevision=null,emulatorVersion=null,sdkManagerVersion=null;
@@ -126,7 +136,7 @@ export class DeviceService{
         {id:"emulator",label:"Android Emulator",installed:Boolean(this.emulatorPath),version:emulatorVersion},
         {id:"sdkmanager",label:"Android SDK Manager",installed:Boolean(this.sdkManagerPath),version:sdkManagerVersion},
       ],
-    },ios:{available:iosAvailable,reason:this.platform!=="darwin"?"iOS Simulator requires macOS with Xcode.":iosAvailable?null:"Xcode simctl was not found."}};
+    },ios:{available:iosAvailable,inputAvailable:Boolean(iosAvailable&&this.idbPath),inputTool:this.idbPath?"idb":null,reason:this.platform!=="darwin"?"iOS Simulator requires macOS with Xcode.":iosAvailable?null:"Xcode simctl was not found.",inputReason:iosAvailable&&!this.idbPath?"Install Meta IDB to enable iOS Simulator tap, swipe and typing controls.":null}};
   }
   async updates(){
     await this.#detect();
@@ -154,6 +164,8 @@ export class DeviceService{
   }
   #androidSerial(id){const [platform,serial]=String(id||"").split(":",2);if(platform!=="android"||!serial?.startsWith("emulator-"))throw new Error("Only Android emulators are supported by Trebell device control.");return serial}
   async #adb(id,args,{allowFailure=false,timeout=20_000}={}){await this.#detect();if(!this.adbPath)throw new Error("Android Platform-Tools (adb) are not installed. Install them or set ANDROID_HOME.");return this.runTextFn(this.adbPath,["-s",this.#androidSerial(id),...args],{allowFailure,timeout,env:this.env})}
+  #iosSerial(id){const [platform,serial]=String(id||"").split(":",2);if(platform!=="ios")throw new Error("An iOS Simulator is required.");return safeIosUdid(serial)}
+  async #idb(id,args=[],{allowFailure=false,timeout=20_000,positional=[]}={}){await this.#detect();if(this.platform!=="darwin")throw new Error("iOS Simulator interaction requires macOS.");if(!this.idbPath)throw new Error("iOS Simulator interaction requires Meta IDB. Install IDB and make the idb command available on PATH.");const commandArgs=[...args,"--udid",this.#iosSerial(id),...(positional.length?["--",...positional.map(String)]:[])];return this.runTextFn(this.idbPath,commandArgs,{allowFailure,timeout,env:this.env})}
   async logs(id,{lines=200,minutes=5}={}){
     const [platform,serial]=String(id||"").split(":",2),lineLimit=Math.max(10,Math.min(2000,Math.trunc(Number(lines)||200)));let result,windowMinutes=null;
     if(platform==="android")result=await this.#adb(id,["logcat","-d","-t",String(lineLimit)],{allowFailure:true,timeout:20_000});
@@ -168,8 +180,13 @@ export class DeviceService{
   }
   async screenshot(id){
     const [platform,serial]=String(id||"").split(":",2);let data;
-    if(platform==="android"){await this.#detect();if(!this.adbPath)throw new Error("Android Platform-Tools (adb) are not installed.");this.#androidSerial(id);data=await runBuffer(this.adbPath,["-s",serial,"exec-out","screencap","-p"])}
-    else if(platform==="ios"){if(this.platform!=="darwin")throw new Error("iOS Simulator control requires macOS.");data=await runBuffer("xcrun",["simctl","io",serial,"screenshot","-"])}
+    if(platform==="android"){await this.#detect();if(!this.adbPath)throw new Error("Android Platform-Tools (adb) are not installed.");this.#androidSerial(id);data=await this.runBufferFn(this.adbPath,["-s",serial,"exec-out","screencap","-p"])}
+    else if(platform==="ios"){
+      if(this.platform!=="darwin")throw new Error("iOS Simulator control requires macOS.");await this.#detect();this.#iosSerial(id);data=await this.runBufferFn("xcrun",["simctl","io",serial,"screenshot","-"]);
+      let inputSize={width:null,height:null};
+      if(this.idbPath){const described=await this.#idb(id,["ui","describe-all","--json","--nested"],{allowFailure:true,timeout:10_000});if(described.ok)inputSize=parseIdbScreenSize(described.stdout)}
+      return {id,platform,dataUrl:"data:image/png;base64,"+data.toString("base64"),...pngSize(data),inputWidth:inputSize.width,inputHeight:inputSize.height,inputCoordinateSpace:inputSize.width&&inputSize.height?"points":null};
+    }
     else throw new Error("Unsupported simulator platform");
     return {id,platform,dataUrl:"data:image/png;base64,"+data.toString("base64"),...pngSize(data)};
   }
@@ -199,10 +216,31 @@ export class DeviceService{
     }
     if(platform==="ios"){
       if(this.platform!=="darwin")throw new Error("iOS Simulator control requires macOS.");
-      if(action==="boot"){await this.runTextFn("xcrun",["simctl","boot",serial],{allowFailure:true,env:this.env});return {ok:true,id,action}}
-      if(action==="poweroff"){await this.runTextFn("xcrun",["simctl","shutdown",serial],{allowFailure:true,env:this.env});return {ok:true,id,action}}
-      if(action==="launch"){const app=safeAppId(args.app),result=await this.runTextFn("xcrun",["simctl","launch",serial,app],{allowFailure:true,env:this.env});if(!result.ok)throw new Error(String(result.stderr||result.stdout||("Could not launch "+app)).trim());return {ok:true,id,action,app}}
-      if(action==="stop"){const app=safeAppId(args.app),result=await this.runTextFn("xcrun",["simctl","terminate",serial,app],{allowFailure:true,env:this.env});if(!result.ok)throw new Error(String(result.stderr||result.stdout||("Could not terminate "+app)).trim());return {ok:true,id,action,app}}
+      const iosSerial=this.#iosSerial(id);
+      if(action==="boot"){await this.runTextFn("xcrun",["simctl","boot",iosSerial],{allowFailure:true,env:this.env});return {ok:true,id,action}}
+      if(action==="poweroff"){await this.runTextFn("xcrun",["simctl","shutdown",iosSerial],{allowFailure:true,env:this.env});return {ok:true,id,action}}
+      if(action==="launch"){const app=safeAppId(args.app),result=await this.runTextFn("xcrun",["simctl","launch",iosSerial,app],{allowFailure:true,env:this.env});if(!result.ok)throw new Error(String(result.stderr||result.stdout||("Could not launch "+app)).trim());return {ok:true,id,action,app}}
+      if(action==="stop"){const app=safeAppId(args.app),result=await this.runTextFn("xcrun",["simctl","terminate",iosSerial,app],{allowFailure:true,env:this.env});if(!result.ok)throw new Error(String(result.stderr||result.stdout||("Could not terminate "+app)).trim());return {ok:true,id,action,app}}
+      if(action==="tap"){
+        const x=safeCoordinate(args.x,"x coordinate"),y=safeCoordinate(args.y,"y coordinate"),result=await this.#idb(id,["ui","tap","--json"],{allowFailure:true,positional:[x,y]});
+        if(!result.ok)throw new Error(String(result.stderr||result.stdout||"Could not tap the iOS Simulator").trim().slice(-2000));return {ok:true,id,action,x,y,coordinateSpace:"points"};
+      }
+      if(action==="swipe"){
+        const x1=safeCoordinate(args.x1,"start x coordinate"),y1=safeCoordinate(args.y1,"start y coordinate"),x2=safeCoordinate(args.x2,"end x coordinate"),y2=safeCoordinate(args.y2,"end y coordinate"),durationMs=Math.max(50,Math.min(5000,Math.round(Number(args.duration)||300))),durationSeconds=(durationMs/1000).toFixed(3).replace(/0+$/,"").replace(/\.$/,"");
+        const result=await this.#idb(id,["ui","swipe","--duration",durationSeconds,"--json"],{allowFailure:true,positional:[x1,y1,x2,y2]});
+        if(!result.ok)throw new Error(String(result.stderr||result.stdout||"Could not swipe the iOS Simulator").trim().slice(-2000));return {ok:true,id,action,x1,y1,x2,y2,duration:durationMs,coordinateSpace:"points"};
+      }
+      if(action==="type"){
+        const text=String(args.text??"");if(!text||text.length>4000)throw new Error("iOS Simulator text must contain 1 to 4000 characters.");
+        const result=await this.#idb(id,["ui","text"],{allowFailure:true,positional:[text]});if(!result.ok)throw new Error(String(result.stderr||result.stdout||"Could not type into the iOS Simulator").trim().slice(-2000));return {ok:true,id,action};
+      }
+      if(action==="key"){
+        const key=String(args.key||"").toLowerCase();let result;
+        if(key==="home")result=await this.#idb(id,["ui","button"],{allowFailure:true,positional:["HOME"]});
+        else if(key==="enter")result=await this.#idb(id,["ui","key"],{allowFailure:true,positional:["40"]});
+        else throw new Error("iOS Simulator key control supports Home and Enter through IDB.");
+        if(!result.ok)throw new Error(String(result.stderr||result.stdout||"Could not send the iOS Simulator key").trim().slice(-2000));return {ok:true,id,action,key};
+      }
       throw new Error("This iOS simulator action requires the dedicated simulator helper: "+action);
     }
     throw new Error("Unsupported simulator platform");
@@ -210,4 +248,4 @@ export class DeviceService{
   async startAndroid(avd){await this.#detect();if(!this.emulatorPath)throw new Error("Android Emulator is not installed or not on PATH.");const name=String(avd||"").trim();if(!name)throw new Error("AVD name is required");const child=spawn(this.emulatorPath,["-avd",name],{detached:true,stdio:"ignore",windowsHide:true,env:this.env});child.unref();return {ok:true,avd:name,pid:child.pid}}
 }
 
-export { androidCandidates, boundedDeviceLogText, parseAdbEmulators, parseAdbVersion, parseEmulatorVersion, parseSdkManagerUpdates, parseSdkManagerVersion, pngSize, safeAppId };
+export { androidCandidates, boundedDeviceLogText, parseAdbEmulators, parseAdbVersion, parseEmulatorVersion, parseIdbScreenSize, parseSdkManagerUpdates, parseSdkManagerVersion, pngSize, safeAppId, safeIosUdid };

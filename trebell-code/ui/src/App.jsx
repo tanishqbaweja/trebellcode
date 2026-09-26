@@ -1724,7 +1724,7 @@ export default function App(){
             }
             if(p.tool==="screenshot"){
               const shot=await api("/api/device/screenshot?id="+encodeURIComponent(args.id||""));
-              client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_device",[{type:"inputImage",imageUrl:shot.dataUrl},{type:"inputText",text:JSON.stringify({id:shot.id,platform:shot.platform,width:shot.width,height:shot.height})}]),success:true});return;
+              client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_device",[{type:"inputImage",imageUrl:shot.dataUrl},{type:"inputText",text:JSON.stringify({id:shot.id,platform:shot.platform,width:shot.width,height:shot.height,inputWidth:shot.inputWidth??shot.width,inputHeight:shot.inputHeight??shot.height,inputCoordinateSpace:shot.inputCoordinateSpace||"pixels"})}]),success:true});return;
             }
             if(p.tool==="logs"){
               const logs=await api("/api/device/logs?id="+encodeURIComponent(args.id||"")+"&lines="+encodeURIComponent(args.lines||200)+"&minutes="+encodeURIComponent(args.minutes||5));
@@ -1735,6 +1735,7 @@ export default function App(){
             else if(p.tool==="packages")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"packages",args:{}}});
             else if(p.tool==="launch"||p.tool==="stop")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:p.tool,args:{app:args.app}}});
             else if(p.tool==="tap")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"tap",args:{x:args.x,y:args.y}}});
+            else if(p.tool==="swipe")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"swipe",args:{x1:args.x1,y1:args.y1,x2:args.x2,y2:args.y2,duration:args.duration}}});
             else if(p.tool==="type")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"type",args:{text:args.text}}});
             else if(p.tool==="key")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"key",args:{key:args.key}}});
             else if(p.tool==="foreground")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"foreground",args:{}}});

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { win32 } from "node:path";
-import { androidCandidates, boundedDeviceLogText, parseAdbEmulators, parseAdbVersion, parseEmulatorVersion, parseSdkManagerUpdates, parseSdkManagerVersion, pngSize, safeAppId } from "../src/device-service.mjs";
+import { androidCandidates, boundedDeviceLogText, parseAdbEmulators, parseAdbVersion, parseEmulatorVersion, parseIdbScreenSize, parseSdkManagerUpdates, parseSdkManagerVersion, pngSize, safeAppId, safeIosUdid } from "../src/device-service.mjs";
 
 test("device discovery accepts Android emulators and excludes physical devices",()=>{
   const parsed=parseAdbEmulators(`List of devices attached\nemulator-5554 device product:sdk_gphone64_x86_64 model:sdk_gphone64_x86_64 device:emu64xa transport_id:1\nR5CT1234ABC device product:b0qxxx model:SM_S908B device:b0q transport_id:2\nemulator-5556 offline product:sdk_gphone64_arm64 model:Pixel_8_API_35 device:emu64a transport_id:3\n`);
@@ -15,6 +15,13 @@ test("device screenshot metadata reads PNG dimensions",()=>{
   const buffer=Buffer.alloc(24);buffer.writeUInt8(0x89,0);buffer.write("PNG",1,"ascii");buffer.writeUInt32BE(1080,16);buffer.writeUInt32BE(2400,20);
   assert.deepEqual(pngSize(buffer),{width:1080,height:2400});
   assert.deepEqual(pngSize(Buffer.from("not-png")),{width:null,height:null});
+});
+
+test("IDB accessibility frames expose the iOS Simulator input point-space",()=>{
+  assert.deepEqual(parseIdbScreenSize(JSON.stringify([{frame:{x:0,y:0,width:393,height:852}}])),{width:393,height:852});
+  assert.deepEqual(parseIdbScreenSize("not-json"),{width:null,height:null});
+  assert.equal(safeIosUdid("12345678-1234-1234-1234-123456789ABC"),"12345678-1234-1234-1234-123456789ABC");
+  assert.throws(()=>safeIosUdid("--help"),/invalid/i);
 });
 
 test("device logs stay line and character bounded",()=>{
@@ -56,9 +63,40 @@ test("Android app validation lists bounded packages and uses argv-safe launch an
 test("iOS Simulator app lifecycle uses simctl argv without a shell",async()=>{
   const calls=[];const {DeviceService}=await import("../src/device-service.mjs");
   const service=new DeviceService({platform:"darwin",env:{},findCommandFn:async()=>null,runTextFn:async(command,args)=>{calls.push({command,args});return {ok:true,stdout:"",stderr:""}}});
-  await service.action("ios:fixture-udid","launch",{app:"com.example.demo"});await service.action("ios:fixture-udid","stop",{app:"com.example.demo"});
-  assert.deepEqual(calls[0],{command:"xcrun",args:["simctl","launch","fixture-udid","com.example.demo"]});
-  assert.deepEqual(calls[1],{command:"xcrun",args:["simctl","terminate","fixture-udid","com.example.demo"]});
+  const udid="12345678-1234-1234-1234-123456789ABC";
+  await service.action("ios:"+udid,"launch",{app:"com.example.demo"});await service.action("ios:"+udid,"stop",{app:"com.example.demo"});
+  assert.deepEqual(calls[0],{command:"xcrun",args:["simctl","launch",udid,"com.example.demo"]});
+  assert.deepEqual(calls[1],{command:"xcrun",args:["simctl","terminate",udid,"com.example.demo"]});
+});
+
+test("iOS Simulator IDB input uses argv-safe point coordinates, text, swipe and supported keys",async()=>{
+  const calls=[],udid="12345678-1234-1234-1234-123456789ABC";const {DeviceService}=await import("../src/device-service.mjs");
+  const service=new DeviceService({
+    platform:"darwin",env:{},findCommandFn:async name=>name==="idb"?"/fixture/idb":null,
+    runTextFn:async(command,args)=>{calls.push({command,args});return {ok:true,stdout:"",stderr:""}},
+  });
+  await service.action("ios:"+udid,"tap",{x:101.4,y:202.6});
+  await service.action("ios:"+udid,"swipe",{x1:10,y1:20,x2:30,y2:40,duration:350});
+  await service.action("ios:"+udid,"type",{text:"hello --still-one-argv"});
+  await service.action("ios:"+udid,"key",{key:"home"});await service.action("ios:"+udid,"key",{key:"enter"});
+  assert.deepEqual(calls[0],{command:"/fixture/idb",args:["ui","tap","--json","--udid",udid,"--","101","203"]});
+  assert.deepEqual(calls[1],{command:"/fixture/idb",args:["ui","swipe","--duration","0.35","--json","--udid",udid,"--","10","20","30","40"]});
+  assert.deepEqual(calls[2],{command:"/fixture/idb",args:["ui","text","--udid",udid,"--","hello --still-one-argv"]});
+  assert.deepEqual(calls[3],{command:"/fixture/idb",args:["ui","button","--udid",udid,"--","HOME"]});
+  assert.deepEqual(calls[4],{command:"/fixture/idb",args:["ui","key","--udid",udid,"--","40"]});
+  await assert.rejects(()=>service.action("ios:"+udid,"key",{key:"back"}),/Home and Enter/i);
+});
+
+test("iOS screenshots expose IDB point-space alongside Retina pixel dimensions",async()=>{
+  const udid="12345678-1234-1234-1234-123456789ABC",buffer=Buffer.alloc(24);buffer.writeUInt8(0x89,0);buffer.write("PNG",1,"ascii");buffer.writeUInt32BE(1179,16);buffer.writeUInt32BE(2556,20);
+  const {DeviceService}=await import("../src/device-service.mjs");
+  const service=new DeviceService({
+    platform:"darwin",env:{},findCommandFn:async name=>name==="idb"?"/fixture/idb":null,
+    runBufferFn:async()=>buffer,
+    runTextFn:async(command,args)=>args.includes("describe-all")?{ok:true,stdout:JSON.stringify([{frame:{x:0,y:0,width:393,height:852}}]),stderr:""}:{ok:true,stdout:"",stderr:""},
+  });
+  const shot=await service.screenshot("ios:"+udid);
+  assert.equal(shot.width,1179);assert.equal(shot.height,2556);assert.equal(shot.inputWidth,393);assert.equal(shot.inputHeight,852);assert.equal(shot.inputCoordinateSpace,"points");
 });
 
 test("Android tool versions are parsed from their native CLI output",()=>{
