@@ -6,6 +6,7 @@ import { parse as parseJavaScriptAst } from "@babel/parser";
 import { planVerification } from "./verification-planner.mjs";
 import { assessVerification } from "./verification-assessor.mjs";
 import { nextVerificationAction } from "./verification-loop.mjs";
+import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
 
 const execFileAsync=promisify(execFile);
 const SKIP=new Set([".git","node_modules","target","dist","build",".next",".cache","desktop-dist","coverage","vendor"]);
@@ -379,22 +380,22 @@ async function fallbackFiles(root,{signal=null}={}){
   await walk(root);return files;
 }
 
-async function discoverFiles(root,{signal=null}={}){
+async function discoverFiles(root,{signal=null,environment=process.env}={}){
   throwIfContextAborted(signal);
   try{
-    const {stdout}=await execFileAsync("git",["-C",root,"ls-files","-co","--exclude-standard","-z"],{windowsHide:true,maxBuffer:32*1024*1024,timeout:15_000,...(signal?{signal}:{})});
+    const {stdout}=await execFileAsync("git",["-C",root,"ls-files","-co","--exclude-standard","-z"],{env:environment,windowsHide:true,maxBuffer:32*1024*1024,timeout:15_000,...(signal?{signal}:{})});
     throwIfContextAborted(signal);
     return String(stdout||"").split("\0").filter(Boolean).map(slash).filter(indexablePath);
   }catch(error){if(signal?.aborted||error?.name==="AbortError")throw contextAbortError(signal);return fallbackFiles(root,{signal})}
 }
 
-async function gitState(root,{signal=null}={}){
+async function gitState(root,{signal=null,environment=process.env}={}){
   throwIfContextAborted(signal);
   try{
     const [{stdout:status},{stdout:diff},headResult]=await Promise.all([
-      execFileAsync("git",["-C",root,"status","--short"],{windowsHide:true,maxBuffer:1024*1024,timeout:12_000,...(signal?{signal}:{})}),
-      execFileAsync("git",["-C",root,"diff","--no-ext-diff","--no-color","--unified=1"],{windowsHide:true,maxBuffer:2*1024*1024,timeout:15_000,...(signal?{signal}:{})}),
-      execFileAsync("git",["-C",root,"rev-parse","HEAD"],{windowsHide:true,maxBuffer:64*1024,timeout:8_000,...(signal?{signal}:{})}).catch(error=>{if(signal?.aborted||error?.name==="AbortError")throw error;return {stdout:""}}),
+      execFileAsync("git",["-C",root,"status","--short"],{env:environment,windowsHide:true,maxBuffer:1024*1024,timeout:12_000,...(signal?{signal}:{})}),
+      execFileAsync("git",["-C",root,"diff","--no-ext-diff","--no-color","--unified=1"],{env:environment,windowsHide:true,maxBuffer:2*1024*1024,timeout:15_000,...(signal?{signal}:{})}),
+      execFileAsync("git",["-C",root,"rev-parse","HEAD"],{env:environment,windowsHide:true,maxBuffer:64*1024,timeout:8_000,...(signal?{signal}:{})}).catch(error=>{if(signal?.aborted||error?.name==="AbortError")throw error;return {stdout:""}}),
     ]);
     throwIfContextAborted(signal);
     const changed=new Set(String(status||"").split(/\r?\n/).filter(Boolean).map(line=>slash(line.slice(3).replace(/^.* -> /,""))));
@@ -402,11 +403,11 @@ async function gitState(root,{signal=null}={}){
   }catch(error){if(signal?.aborted||error?.name==="AbortError")throw contextAbortError(signal);return {isGit:false,head:null,changed:new Set(),status:"",diff:""}}
 }
 
-async function localMatchingFiles(root,{query,regex=false,caseSensitive=false,limit=120}={}){
+async function localMatchingFiles(root,{query,regex=false,caseSensitive=false,limit=120,environment=process.env}={}){
   const args=["-C",root,"grep","-l","-z","-I","--untracked","--exclude-standard"];
   if(!caseSensitive)args.push("-i");args.push(regex?"-E":"-F","-e",String(query||""),"--");
   try{
-    const {stdout}=await execFileAsync("git",args,{windowsHide:true,maxBuffer:4*1024*1024,timeout:20_000});
+    const {stdout}=await execFileAsync("git",args,{env:environment,windowsHide:true,maxBuffer:4*1024*1024,timeout:20_000});
     return String(stdout||"").split("\0").filter(Boolean).map(slash).filter(indexablePath).slice(0,Math.max(1,Math.min(500,Number(limit)||120)));
   }catch(error){
     if(Number(error?.code)===1)return [];
@@ -439,11 +440,11 @@ function parseGitBlame(output){
   return data;
 }
 
-async function localGitHistory(root,{path="",limit=20}={}){
+async function localGitHistory(root,{path="",limit=20,environment=process.env}={}){
   const capped=Math.max(1,Math.min(100,Number(limit)||20)),args=["-C",root,"log","--no-decorate","-n"+capped,"--format=%x1e%H%x1f%an%x1f%ae%x1f%at%x1f%s"];
   if(path)args.push("--",path);
   try{
-    const {stdout}=await execFileAsync("git",args,{windowsHide:true,maxBuffer:2*1024*1024,timeout:20_000});
+    const {stdout}=await execFileAsync("git",args,{env:environment,windowsHide:true,maxBuffer:2*1024*1024,timeout:20_000});
     return parseGitHistory(stdout).slice(0,capped);
   }catch(error){
     if(Number(error?.code)===128)return [];
@@ -451,9 +452,9 @@ async function localGitHistory(root,{path="",limit=20}={}){
   }
 }
 
-async function localGitBlame(root,{path,startLine=1,endLine=null,maxLines=120}={}){
+async function localGitBlame(root,{path,startLine=1,endLine=null,maxLines=120,environment=process.env}={}){
   const start=Math.max(1,Math.trunc(Number(startLine)||1)),cap=Math.max(1,Math.min(200,Math.trunc(Number(maxLines)||120))),end=Math.max(start,Math.min(start+cap-1,Math.trunc(Number(endLine)||start+cap-1)));
-  const {stdout}=await execFileAsync("git",["-C",root,"blame","--line-porcelain","-L"+start+","+end,"--",path],{windowsHide:true,maxBuffer:4*1024*1024,timeout:20_000});
+  const {stdout}=await execFileAsync("git",["-C",root,"blame","--line-porcelain","-L"+start+","+end,"--",path],{env:environment,windowsHide:true,maxBuffer:4*1024*1024,timeout:20_000});
   return parseGitBlame(stdout).slice(0,cap);
 }
 
@@ -474,10 +475,10 @@ function parseGofmtDiagnostics(stderr,{limit=100}={}){
   return rows;
 }
 
-async function localGoDiagnostics(root,{path,limit=100}={}){
+async function localGoDiagnostics(root,{path,limit=100,environment=process.env}={}){
   const target=resolve(root,String(path||""));
   try{
-    await execFileAsync("gofmt",[target],{cwd:resolve(root),windowsHide:true,maxBuffer:2*1024*1024,timeout:20_000});
+    await execFileAsync("gofmt",[target],{cwd:resolve(root),env:environment,windowsHide:true,maxBuffer:2*1024*1024,timeout:20_000});
     return {available:true,diagnostics:[],truncated:false};
   }catch(error){
     if(error?.code==="ENOENT")return {available:false,failed:false,reason:"gofmt was not available for Go syntax diagnostics"};
@@ -486,11 +487,11 @@ async function localGoDiagnostics(root,{path,limit=100}={}){
   }
 }
 
-async function localPythonDiagnostics(root,{path,limit=100}={}){
+async function localPythonDiagnostics(root,{path,limit=100,environment=process.env}={}){
   const target=resolve(root,String(path||"")),commands=process.platform==="win32"?["python","python3"]:["python3","python"],failures=[];
   for(const command of commands){
     try{
-      const {stdout}=await execFileAsync(command,["-c",PYTHON_DIAGNOSTICS_SCRIPT,target],{cwd:resolve(root),windowsHide:true,maxBuffer:2*1024*1024,timeout:20_000});
+      const {stdout}=await execFileAsync(command,["-c",PYTHON_DIAGNOSTICS_SCRIPT,target],{cwd:resolve(root),env:environment,windowsHide:true,maxBuffer:2*1024*1024,timeout:20_000});
       const result=parsePythonDiagnosticsOutput(stdout),diagnostics=Array.isArray(result?.diagnostics)?result.diagnostics.slice(0,Math.max(1,Math.min(200,Number(limit)||100))):[];
       return {...result,diagnostics,truncated:Array.isArray(result?.diagnostics)&&result.diagnostics.length>diagnostics.length,command};
     }catch(error){
@@ -501,9 +502,9 @@ async function localPythonDiagnostics(root,{path,limit=100}={}){
   return {available:false,failed:false,reason:"Python interpreter was not available for syntax diagnostics",details:failures.filter(Boolean).slice(0,2)};
 }
 
-async function localPyrightDiagnostics(root,{path,limit=100}={}){
+async function localPyrightDiagnostics(root,{path,limit=100,environment=process.env}={}){
   try{
-    const {stdout}=await execFileAsync(process.execPath,["-e",PYRIGHT_DIAGNOSTICS_SCRIPT,resolve(root),String(path||""),String(Math.max(1,Math.min(300,Number(limit)||100)))],{cwd:resolve(root),windowsHide:true,maxBuffer:8*1024*1024,timeout:35_000});
+    const {stdout}=await execFileAsync(process.execPath,["-e",PYRIGHT_DIAGNOSTICS_SCRIPT,resolve(root),String(path||""),String(Math.max(1,Math.min(300,Number(limit)||100)))],{cwd:resolve(root),env:environment,windowsHide:true,maxBuffer:8*1024*1024,timeout:35_000});
     return parsePythonDiagnosticsOutput(stdout);
   }catch(error){
     const parsed=parsePythonDiagnosticsOutput(error?.stdout);if(parsed?.available)return parsed;
@@ -511,9 +512,9 @@ async function localPyrightDiagnostics(root,{path,limit=100}={}){
   }
 }
 
-async function localTypeScriptDiagnostics(root,{path,limit=100}={}){
+async function localTypeScriptDiagnostics(root,{path,limit=100,environment=process.env}={}){
   try{
-    const {stdout}=await execFileAsync(process.execPath,["-e",TYPESCRIPT_DIAGNOSTICS_SCRIPT,resolve(root),String(path||""),String(Math.max(1,Math.min(300,Number(limit)||100)))],{cwd:resolve(root),windowsHide:true,maxBuffer:4*1024*1024,timeout:30_000});
+    const {stdout}=await execFileAsync(process.execPath,["-e",TYPESCRIPT_DIAGNOSTICS_SCRIPT,resolve(root),String(path||""),String(Math.max(1,Math.min(300,Number(limit)||100)))],{cwd:resolve(root),env:environment,windowsHide:true,maxBuffer:4*1024*1024,timeout:30_000});
     return parseTypeScriptDiagnosticsOutput(stdout);
   }catch(error){
     const parsed=parseTypeScriptDiagnosticsOutput(error?.stdout);if(parsed?.available||parsed?.reason!=="TypeScript diagnostic adapter returned invalid output")return parsed;
@@ -521,9 +522,9 @@ async function localTypeScriptDiagnostics(root,{path,limit=100}={}){
   }
 }
 
-async function localTypeScriptSymbol(root,{path,line=1,column=1,operation="definition",limit=100}={}){
+async function localTypeScriptSymbol(root,{path,line=1,column=1,operation="definition",limit=100,environment=process.env}={}){
   try{
-    const {stdout}=await execFileAsync(process.execPath,["-e",TYPESCRIPT_SYMBOL_SCRIPT,resolve(root),String(path||""),String(line),String(column),String(operation),String(Math.max(1,Math.min(300,Number(limit)||100)))],{cwd:resolve(root),windowsHide:true,maxBuffer:4*1024*1024,timeout:30_000});
+    const {stdout}=await execFileAsync(process.execPath,["-e",TYPESCRIPT_SYMBOL_SCRIPT,resolve(root),String(path||""),String(line),String(column),String(operation),String(Math.max(1,Math.min(300,Number(limit)||100)))],{cwd:resolve(root),env:environment,windowsHide:true,maxBuffer:4*1024*1024,timeout:30_000});
     return parseTypeScriptDiagnosticsOutput(stdout);
   }catch(error){
     const parsed=parseTypeScriptDiagnosticsOutput(error?.stdout);if(parsed?.available||parsed?.reason!=="TypeScript diagnostic adapter returned invalid output")return parsed;
@@ -531,9 +532,9 @@ async function localTypeScriptSymbol(root,{path,line=1,column=1,operation="defin
   }
 }
 
-async function localTypeScriptCodeActions(root,{path,line=1,column=1,limit=20,codes=[]}={}){
+async function localTypeScriptCodeActions(root,{path,line=1,column=1,limit=20,codes=[],environment=process.env}={}){
   try{
-    const codeList=Array.from(codes||[]).map(Number).filter(Number.isFinite).slice(0,50).join(","),{stdout}=await execFileAsync(process.execPath,["-e",TYPESCRIPT_CODE_ACTIONS_SCRIPT,resolve(root),String(path||""),String(line),String(column),String(Math.max(1,Math.min(100,Number(limit)||20))),codeList],{cwd:resolve(root),windowsHide:true,maxBuffer:6*1024*1024,timeout:30_000});
+    const codeList=Array.from(codes||[]).map(Number).filter(Number.isFinite).slice(0,50).join(","),{stdout}=await execFileAsync(process.execPath,["-e",TYPESCRIPT_CODE_ACTIONS_SCRIPT,resolve(root),String(path||""),String(line),String(column),String(Math.max(1,Math.min(100,Number(limit)||20))),codeList],{cwd:resolve(root),env:environment,windowsHide:true,maxBuffer:6*1024*1024,timeout:30_000});
     return parseTypeScriptDiagnosticsOutput(stdout);
   }catch(error){
     const parsed=parseTypeScriptDiagnosticsOutput(error?.stdout);if(parsed?.available||parsed?.reason!=="TypeScript diagnostic adapter returned invalid output")return parsed;
@@ -541,9 +542,9 @@ async function localTypeScriptCodeActions(root,{path,line=1,column=1,limit=20,co
   }
 }
 
-async function localTypeScriptOrganizeImports(root,{path,limit=200}={}){
+async function localTypeScriptOrganizeImports(root,{path,limit=200,environment=process.env}={}){
   try{
-    const {stdout}=await execFileAsync(process.execPath,["-e",TYPESCRIPT_ORGANIZE_IMPORTS_SCRIPT,resolve(root),String(path||""),String(Math.max(1,Math.min(500,Number(limit)||200)))],{cwd:resolve(root),windowsHide:true,maxBuffer:8*1024*1024,timeout:30_000});
+    const {stdout}=await execFileAsync(process.execPath,["-e",TYPESCRIPT_ORGANIZE_IMPORTS_SCRIPT,resolve(root),String(path||""),String(Math.max(1,Math.min(500,Number(limit)||200)))],{cwd:resolve(root),env:environment,windowsHide:true,maxBuffer:8*1024*1024,timeout:30_000});
     return parseTypeScriptDiagnosticsOutput(stdout);
   }catch(error){
     const parsed=parseTypeScriptDiagnosticsOutput(error?.stdout);if(parsed?.available||parsed?.reason!=="TypeScript diagnostic adapter returned invalid output")return parsed;
@@ -551,9 +552,9 @@ async function localTypeScriptOrganizeImports(root,{path,limit=200}={}){
   }
 }
 
-async function localTypeScriptRename(root,{path,line=1,column=1,newName="",limit=200}={}){
+async function localTypeScriptRename(root,{path,line=1,column=1,newName="",limit=200,environment=process.env}={}){
   try{
-    const {stdout}=await execFileAsync(process.execPath,["-e",TYPESCRIPT_RENAME_SCRIPT,resolve(root),String(path||""),String(line),String(column),String(newName||""),String(Math.max(1,Math.min(500,Number(limit)||200)))],{cwd:resolve(root),windowsHide:true,maxBuffer:6*1024*1024,timeout:30_000});
+    const {stdout}=await execFileAsync(process.execPath,["-e",TYPESCRIPT_RENAME_SCRIPT,resolve(root),String(path||""),String(line),String(column),String(newName||""),String(Math.max(1,Math.min(500,Number(limit)||200)))],{cwd:resolve(root),env:environment,windowsHide:true,maxBuffer:6*1024*1024,timeout:30_000});
     return parseTypeScriptDiagnosticsOutput(stdout);
   }catch(error){
     const parsed=parseTypeScriptDiagnosticsOutput(error?.stdout);if(parsed?.available||parsed?.reason!=="TypeScript diagnostic adapter returned invalid output")return parsed;
@@ -581,31 +582,31 @@ async function localReadMany(root,paths,{signal=null}={}){
   return new Map(pairs.filter(Boolean));
 }
 
-function localContextIo(root){
+function localContextIo(root,{environment=process.env}={}){
   const absolute=resolve(root);
   return {
     cacheKey:"local:"+absolute,
     root:absolute,
-    discoverFiles:options=>discoverFiles(absolute,options),
+    discoverFiles:options=>discoverFiles(absolute,{...(options||{}),environment}),
     metadata:(paths,options)=>localMetadata(absolute,paths,options),
     readMany:(paths,_maxBytes,options)=>localReadMany(absolute,paths,options),
     readText:(path,options)=>readFile(resolve(absolute,path),{encoding:"utf8",...(options?.signal?{signal:options.signal}:{})}),
-    searchPaths:options=>localMatchingFiles(absolute,options),
-    gitHistory:options=>localGitHistory(absolute,options),
-    gitBlame:options=>localGitBlame(absolute,options),
-    goDiagnostics:options=>localGoDiagnostics(absolute,options),
-    pythonDiagnostics:options=>localPythonDiagnostics(absolute,options),
-    pyrightDiagnostics:options=>localPyrightDiagnostics(absolute,options),
-    typeScriptDiagnostics:options=>localTypeScriptDiagnostics(absolute,options),
-    typeScriptSymbol:options=>localTypeScriptSymbol(absolute,options),
-    typeScriptCodeActions:options=>localTypeScriptCodeActions(absolute,options),
-    typeScriptOrganizeImports:options=>localTypeScriptOrganizeImports(absolute,options),
-    typeScriptRename:options=>localTypeScriptRename(absolute,options),
-    gitState:options=>gitState(absolute,options),
+    searchPaths:options=>localMatchingFiles(absolute,{...(options||{}),environment}),
+    gitHistory:options=>localGitHistory(absolute,{...(options||{}),environment}),
+    gitBlame:options=>localGitBlame(absolute,{...(options||{}),environment}),
+    goDiagnostics:options=>localGoDiagnostics(absolute,{...(options||{}),environment}),
+    pythonDiagnostics:options=>localPythonDiagnostics(absolute,{...(options||{}),environment}),
+    pyrightDiagnostics:options=>localPyrightDiagnostics(absolute,{...(options||{}),environment}),
+    typeScriptDiagnostics:options=>localTypeScriptDiagnostics(absolute,{...(options||{}),environment}),
+    typeScriptSymbol:options=>localTypeScriptSymbol(absolute,{...(options||{}),environment}),
+    typeScriptCodeActions:options=>localTypeScriptCodeActions(absolute,{...(options||{}),environment}),
+    typeScriptOrganizeImports:options=>localTypeScriptOrganizeImports(absolute,{...(options||{}),environment}),
+    typeScriptRename:options=>localTypeScriptRename(absolute,{...(options||{}),environment}),
+    gitState:options=>gitState(absolute,{...(options||{}),environment}),
     changedSince:async(fromHead,toHead,{signal=null}={})=>{
       throwIfContextAborted(signal);
       if(!fromHead||!toHead||fromHead===toHead)return new Set();
-      const {stdout}=await execFileAsync("git",["-C",absolute,"diff","--name-only","-z",fromHead,toHead,"--"],{windowsHide:true,maxBuffer:16*1024*1024,timeout:20_000,...(signal?{signal}:{})});
+      const {stdout}=await execFileAsync("git",["-C",absolute,"diff","--name-only","-z",fromHead,toHead,"--"],{env:environment,windowsHide:true,maxBuffer:16*1024*1024,timeout:20_000,...(signal?{signal}:{})});
       throwIfContextAborted(signal);
       return new Set(String(stdout||"").split("\0").filter(Boolean).map(slash));
     },
@@ -936,19 +937,21 @@ export function planContextBudget({task="",focusPaths=[],tokensUsed=null,context
 }
 
 export class ContextEngine{
-  constructor({maxFileBytes=256_000}={}){this.maxFileBytes=maxFileBytes;this.roots=new Map();this.gitStates=new Map()}
+  constructor({maxFileBytes=256_000,env=process.env,platform=process.platform}={}){
+    this.maxFileBytes=maxFileBytes;this.environment=buildRuntimeEnvironment("native",{parent:env,platform});this.roots=new Map();this.gitStates=new Map();
+  }
 
   async #indexed(root,io=null,signal=null){
     if(!root)throw new Error("Context Engine requires a workspace path");
     throwIfContextAborted(signal);
-    const contextIo=io||localContextIo(root),git=await contextIo.gitState({signal});throwIfContextAborted(signal);
+    const contextIo=io||localContextIo(root,{environment:this.environment}),git=await contextIo.gitState({signal});throwIfContextAborted(signal);
     const index=await this.#index(root,contextIo,git,signal);
     return {contextIo,git,index};
   }
 
   async #index(root,contextIo,git,signal=null){
     throwIfContextAborted(signal);
-    const started=Date.now(),io=contextIo||localContextIo(root),absolute=io.root,cacheKey=io.cacheKey||absolute;
+    const started=Date.now(),io=contextIo||localContextIo(root,{environment:this.environment}),absolute=io.root,cacheKey=io.cacheKey||absolute;
     const paths=(await io.discoverFiles({signal})).slice(0,20_000);throwIfContextAborted(signal);
     const previous=this.roots.get(cacheKey)||new Map(),previousGit=this.gitStates.get(cacheKey)||null,next=new Map();let reparsed=0,reused=0,skipped=0;
     const sourcePaths=paths.filter(relativePath=>SOURCE_EXTENSIONS.has(extname(relativePath).toLowerCase()));
@@ -992,7 +995,7 @@ export class ContextEngine{
   async buildPacket({root,task="",focusPaths=[],maxTokens=null,maxFiles=null,tokensUsed=null,contextWindow=null,io=null,signal=null}={}){
     if(!root)throw new Error("Context Engine requires a workspace path");
     throwIfContextAborted(signal);
-    const contextIo=io||localContextIo(root);
+    const contextIo=io||localContextIo(root,{environment:this.environment});
     const budgetPlan=planContextBudget({task,focusPaths,tokensUsed,contextWindow,maxTokens,maxFiles});
     if(budgetPlan.skip)return {
       id:`ctx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`,
@@ -1409,7 +1412,7 @@ export class ContextEngine{
 
   async gitContext({root,io=null,maxStatusChars=12_000,maxDiffChars=16_000}={}){
     if(!root)throw new Error("Context Engine requires a workspace path");
-    const contextIo=io||localContextIo(root),git=await contextIo.gitState();
+    const contextIo=io||localContextIo(root,{environment:this.environment}),git=await contextIo.gitState();
     return {
       root:contextIo.root,isGit:Boolean(git?.isGit),head:git?.head||null,changed:[...(git?.changed||[])].slice(0,300),
       status:String(git?.status||"").slice(0,Math.max(0,Math.min(32_000,Number(maxStatusChars)||12_000))),

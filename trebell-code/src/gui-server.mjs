@@ -604,7 +604,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       throw error;
     }
   }
-  const contextEngine=new ContextEngine();
+  const contextEngine=new ContextEngine({env});
   const repositoryKnowledge=new RepositoryKnowledgeService({
     state,
     ioFactory:async({projectPath,environmentId})=>{

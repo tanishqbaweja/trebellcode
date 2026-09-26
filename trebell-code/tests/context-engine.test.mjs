@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -313,6 +313,22 @@ module.exports={version:"fixture-ts",sys:{fileExists:fs.existsSync,readFile:p=>f
     assert.equal(organized.supported,true);assert.equal(organized.semantic,true);assert.equal(organized.engine,"typescript");assert.equal(organized.editCount,1);
     assert.equal(organized.changes[0].file,"src/typed.ts");assert.equal(organized.changes[0].textChanges[0].newText,"import { helper } from './helper.js';\n");
     await assert.rejects(()=>engine.renamePreview({root,path:"src/typed.ts",line:1,column:14,newName:""}),/requires a new name/i);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("project-local diagnostic tooling cannot read unrelated Trebell parent secrets",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-context-env-")),secret="context-private-"+Date.now(),leakPath=join(root,"leaked-secret.txt");
+  try{
+    await mkdir(join(root,"src"),{recursive:true});await mkdir(join(root,"node_modules","typescript","lib"),{recursive:true});
+    await writeFile(join(root,"src","typed.ts"),"export const typed: string = 'safe';\n","utf8");
+    await writeFile(join(root,"tsconfig.json"),"{}\n","utf8");
+    await writeFile(join(root,"node_modules","typescript","lib","typescript.js"),
+      "const fs=require('fs');if(process.env.CONTEXT_PRIVATE_SECRET)fs.writeFileSync("+JSON.stringify(leakPath)+",process.env.CONTEXT_PRIVATE_SECRET);throw new Error('fixture stop');\n","utf8");
+    const engine=new ContextEngine({env:{...process.env,CONTEXT_PRIVATE_SECRET:secret}});
+    const result=await engine.diagnostics({root,path:"src/typed.ts",semantic:true});
+    assert.equal(result.supported,true);assert.equal(result.semantic,false);
+    const leaked=await readFile(leakPath,"utf8").catch(error=>error?.code==="ENOENT"?null:Promise.reject(error));
+    assert.equal(leaked,null,"project-local diagnostic code must not inherit unrelated parent secrets");
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
