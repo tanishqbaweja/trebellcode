@@ -10,6 +10,7 @@ test("continuity notes normalize bounded explicit state",()=>{
 test("continuity snapshot merges explicit notes with factual verification, queue, checkpoints, and failures",()=>{
   const snapshot=continuitySnapshot({
     threadId:"thread-1",
+    goal:{threadId:"thread-1",status:"active",objective:"Preserve the public API while fixing the parser."},
     thread:{id:"thread-1",runtime:"claude",cwd:"/repo",turns:[{id:"turn-1",status:"completed"},{id:"turn-2",status:"failed"}]},
     meta:{branch:"feature/x",continuityNotes:{completedWork:["Implemented parser"],unresolvedFailures:["Known flaky test"],importantDecisions:["Keep public API"],artifactsCreated:[],pendingNextActions:["Run smoke test"],updatedAt:1000},queuedSubmissions:[{input:[{type:"text",text:"Publish the package"}]}]},
     verificationRecords:[{status:"failed",risk:"high",assessment:{verified:false,summary:"Browser flow still fails"},updatedAt:2000}],
@@ -19,9 +20,19 @@ test("continuity snapshot merges explicit notes with factual verification, queue
   assert.equal(snapshot.workspace.branch,"feature/x");assert.equal(snapshot.verification.status,"failed");assert.deepEqual(snapshot.completedTurnIds,["turn-1"]);
   assert.deepEqual(snapshot.unresolvedFailures,["Known flaky test"]);assert.ok(snapshot.recentFailures.includes("Provider disconnected"));
   assert.ok(snapshot.artifactsCreated.some(item=>item.includes("before fix")));assert.ok(snapshot.pendingNextActions.includes("Publish the package"));assert.equal(snapshot.meaningful,true);
-  const value=continuityContextValue(snapshot);assert.match(value,/Persistent Trebell continuity state/);assert.match(value,/Browser flow still fails/);assert.match(value,/Keep public API/);
+  const value=continuityContextValue(snapshot);assert.match(value,/Persistent Trebell continuity state/);assert.match(value,/Active goal: Preserve the public API while fixing the parser/);assert.match(value,/Browser flow still fails/);assert.match(value,/Keep public API/);
   assert.match(value,/Recent failure evidence/);assert.match(value,/Provider disconnected/);
   const merged=continuityAdditionalContext({"trebell.goal":{kind:"application",value:"goal"}},snapshot);assert.equal(merged["trebell.goal"].value,"goal");assert.match(merged["trebell.continuity"].value,/Implemented parser/);
+});
+
+test("continuity preserves an explicit active goal without inventing one when absent",()=>{
+  const snapshot=continuitySnapshot({
+    threadId:"thread-goal",
+    thread:{id:"thread-goal",cwd:"/repo",turns:[]},
+    goal:{status:"active",objective:"Keep the parser API stable while fixing incremental invalidation."},
+  });
+  assert.equal(snapshot.objective,"Keep the parser API stable while fixing incremental invalidation.");
+  assert.match(continuityContextValue(snapshot),/Active goal: Keep the parser API stable while fixing incremental invalidation/);
 });
 
 test("derived-only continuity does not invent an explicit-note update timestamp",()=>{

@@ -73,3 +73,15 @@ test("Anthropic JSON converts to OpenAI chat completion",()=>{
   assert.equal(result.choices[0].finish_reason,"stop");
   assert.equal(result.usage.total_tokens,5);
 });
+
+test("Anthropic cached input usage is retained in normalized prompt accounting",()=>{
+  const result=anthropicMessageToChatCompletion({
+    id:"msg_cache",model:"claude-test",role:"assistant",content:[{type:"text",text:"ok"}],stop_reason:"end_turn",
+    usage:{input_tokens:10,cache_read_input_tokens:7,cache_creation_input_tokens:3,output_tokens:2},
+  },"claude-test");
+  assert.equal(result.usage.prompt_tokens,20);
+  assert.equal(result.usage.completion_tokens,2);
+  assert.equal(result.usage.total_tokens,22);
+  assert.equal(result.usage.prompt_tokens_details.cached_tokens,7);
+  assert.equal(result.usage.prompt_tokens_details.cache_write_tokens,3);
+});

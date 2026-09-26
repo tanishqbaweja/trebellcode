@@ -43,7 +43,8 @@ test("Trebell Native relay executes repository tools and switches inference prov
   const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env),providers=[],contextLookups=[];let modelTurns=0;
   const nativeProviderTurn=async request=>{
     providers.push(request.provider);modelTurns++;
-    assert.equal(request.messages[0]?.role,"developer");assert.match(String(request.messages[0]?.content||""),/Use repository intelligence when useful/);
+    assert.equal(request.messages[0]?.role,"system");assert.match(String(request.messages[0]?.content||""),/You are Trebell Native/);assert.match(String(request.messages[0]?.content||""),/Use the exposed repository tools/i);
+    assert.equal(request.messages[1]?.role,"developer");assert.match(String(request.messages[1]?.content||""),/Use repository intelligence when useful/);
     if(modelTurns===1)return {id:"native-first",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"repo-call",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"SessionManager"}'}],finishReason:"tool_calls",usage:{inputTokens:4,outputTokens:1,totalTokens:5,reasoningOutputTokens:1}};
     if(modelTurns===2){assert.equal(request.messages.at(-1).role,"tool");assert.match(request.messages.at(-1).content,/SessionManager/);return {id:"native-answer",provider:request.provider,model:request.model,text:"Found SessionManager.",toolCalls:[],finishReason:"stop",usage:{inputTokens:8,outputTokens:3,totalTokens:11,reasoningOutputTokens:2}}}
     return {id:"native-second-provider",provider:request.provider,model:request.model,text:"Still the same Trebell thread.",toolCalls:[],finishReason:"stop",usage:{inputTokens:6,outputTokens:4,totalTokens:10}};
@@ -117,10 +118,19 @@ test("Trebell Native exposes Trebell semantic language intelligence directly to 
 const fileName=()=>path.join(base,"src","typed.ts"),file=()=>({fileName:fileName(),getPositionOfLineAndCharacter:(_line,column)=>column,getLineAndCharacterOfPosition:position=>({line:0,character:position})});
 module.exports={version:"fixture-ts-native",sys:{fileExists:fs.existsSync,readFile:p=>fs.readFileSync(p,"utf8"),readDirectory:()=>[],directoryExists:fs.existsSync,getDirectories:()=>[],useCaseSensitiveFileNames:true,newLine:"\\n"},ScriptSnapshot:{fromString:text=>({text})},findConfigFile:root=>{base=root;return path.join(root,"tsconfig.json")},readConfigFile:()=>({config:{}}),parseJsonConfigFileContent:(_config,_sys,nextBase)=>{base=nextBase;return{fileNames:[fileName()],options:{},errors:[],projectReferences:[]}},getDefaultLibFilePath:()=>"",createDocumentRegistry:()=>({}),createLanguageService:()=>{const source=file(),program={getSourceFile:value=>path.resolve(value)===path.resolve(source.fileName)?source:undefined};return{getProgram:()=>program,getDefinitionAtPosition:()=>[{fileName:source.fileName,textSpan:{start:13,length:5},name:"typed",kind:"const",containerName:""}]}}};\n`,"utf8");
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
-  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let calls=0;
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let calls=0,stableManifest=null;
   const nativeProviderTurn=async request=>{
-    calls++;const repoTools=(request.tools||[]).find(item=>item.name==="trebell_repo");assert.ok(repoTools);assert.ok(repoTools.tools.some(tool=>tool.name==="language_symbol"));assert.ok(repoTools.tools.some(tool=>tool.name==="code_actions"));assert.ok(repoTools.tools.some(tool=>tool.name==="rename_preview"));
-    if(calls===1)return{id:"language-call",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"language-1",namespace:"trebell_repo",name:"language_symbol",arguments:JSON.stringify({path:"src/typed.ts",line:1,column:14,operation:"definition"})}],finishReason:"tool_calls",usage:{}};
+    calls++;const repoTools=(request.tools||[]).find(item=>item.name==="trebell_repo");assert.ok(repoTools);
+    const manifest=JSON.stringify(request.tools||[]);if(stableManifest==null)stableManifest=manifest;else assert.equal(manifest,stableManifest,"repository discovery must not mutate the provider-visible tool manifest");
+    if(calls===1){
+      assert.ok(repoTools.tools.some(tool=>tool.name==="discover"));assert.ok(repoTools.tools.some(tool=>tool.name==="invoke"));assert.equal(repoTools.tools.some(tool=>tool.name==="language_symbol"),false);
+      return{id:"language-discover",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"language-discovery-1",namespace:"trebell_repo",name:"discover",arguments:JSON.stringify({query:"semantic definition rename typescript code action",limit:6})}],finishReason:"tool_calls",usage:{}};
+    }
+    assert.equal(repoTools.tools.some(tool=>tool.name==="language_symbol"),false);assert.ok(repoTools.tools.some(tool=>tool.name==="invoke"));
+    if(calls===2){
+      const discoveryObservation=request.messages.at(-1);assert.equal(discoveryObservation.role,"tool");assert.match(String(discoveryObservation.content||""),/language_symbol/);assert.match(String(discoveryObservation.content||""),/inputSchema/);
+      return{id:"language-call",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"language-1",namespace:"trebell_repo",name:"invoke",arguments:JSON.stringify({name:"language_symbol",arguments:{path:"src/typed.ts",line:1,column:14,operation:"definition"}})}],finishReason:"tool_calls",usage:{}};
+    }
     const observation=request.messages.at(-1);assert.equal(observation.role,"tool");assert.match(observation.content,/\"supported\":true/);assert.match(observation.content,/\"semantic\":true/);assert.match(observation.content,/\"name\":\"typed\"/);
     return{id:"language-done",provider:request.provider,model:request.model,text:"Semantic definition resolved.",toolCalls:[],finishReason:"stop",usage:{}};
   };
@@ -129,8 +139,8 @@ module.exports={version:"fixture-ts-native",sys:{fileExists:fs.existsSync,readFi
   try{
     const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"read-only",dynamicTools:[]})).thread;
     const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"read-only",input:[{type:"text",text:"Resolve the semantic definition of typed"}]})).turn;
-    await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);assert.equal(calls,2);
-    const persisted=threadStore.get(thread.id);assert.ok(persisted.turns[0].items.some(item=>item.type==="dynamicToolCall"&&item.namespace==="trebell_repo"&&item.tool==="language_symbol"));
+    await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);assert.equal(calls,3);
+    const persisted=threadStore.get(thread.id);assert.ok(persisted.turns[0].items.some(item=>item.type==="dynamicToolCall"&&item.namespace==="trebell_repo"&&item.tool==="discover"));assert.ok(persisted.turns[0].items.some(item=>item.type==="dynamicToolCall"&&item.namespace==="trebell_repo"&&item.tool==="invoke"&&item.arguments?.name==="language_symbol"));
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });
 
@@ -140,12 +150,12 @@ test("Trebell Native progressively discovers configured MCP tools inside the sam
     agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null,
     mcpServers:[{id:"relay-native",name:"Relay Native MCP",runtime:"native",enabled:true,type:"stdio",command:process.execPath,args:[nativeMcpFixture],env:[{name:"FIXTURE_VISIBLE",value:"relay"},{name:"API_KEY",value:"must-not-leak"}]}],
   });
-  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let calls=0,seenNamespace=null;
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let calls=0,seenNamespace="mcp_relay-native",stableManifest=null;
   const nativeProviderTurn=async request=>{
-    calls++;const discovery=(request.tools||[]).find(item=>item.name==="trebell_mcp"),namespace=(request.tools||[]).find(item=>item.name?.startsWith("mcp_"));assert.ok(discovery);assert.ok(discovery.tools.some(tool=>tool.name==="discover"));
-    if(calls===1){assert.equal(namespace,undefined);return {id:"mcp-discover",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"mcp-discovery-1",namespace:"trebell_mcp",name:"discover",arguments:'{"query":"echo read"}'}],finishReason:"tool_calls",usage:{}}}
-    assert.ok(namespace);assert.ok(namespace.tools.some(tool=>tool.name==="echo-read"));seenNamespace=namespace.name;
-    if(calls===2){const discoveryObservation=request.messages.at(-1);assert.equal(discoveryObservation.role,"tool");assert.match(JSON.stringify(discoveryObservation.content),/echo-read/);return {id:"mcp-call",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"mcp-1",namespace:namespace.name,name:"echo-read",arguments:'{"text":"from-model"}'}],finishReason:"tool_calls",usage:{}}}
+    calls++;const discovery=(request.tools||[]).find(item=>item.name==="trebell_mcp"),namespace=(request.tools||[]).find(item=>item.name?.startsWith("mcp_"));assert.ok(discovery);assert.ok(discovery.tools.some(tool=>tool.name==="discover"));assert.ok(discovery.tools.some(tool=>tool.name==="call"));assert.equal(namespace,undefined);
+    const manifest=JSON.stringify(request.tools||[]);if(stableManifest==null)stableManifest=manifest;else assert.equal(manifest,stableManifest,"MCP discovery must not mutate provider-visible tools");
+    if(calls===1)return {id:"mcp-discover",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"mcp-discovery-1",namespace:"trebell_mcp",name:"discover",arguments:'{"query":"echo read"}'}],finishReason:"tool_calls",usage:{}};
+    if(calls===2){const discoveryObservation=request.messages.at(-1);assert.equal(discoveryObservation.role,"tool");const text=JSON.stringify(discoveryObservation.content);assert.match(text,/echo-read/);assert.match(text,/inputSchema/);assert.match(text,/mcp_relay-native/);return {id:"mcp-call",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"mcp-1",namespace:"trebell_mcp",name:"call",arguments:JSON.stringify({namespace:seenNamespace,name:"echo-read",arguments:{text:"from-model"}})}],finishReason:"tool_calls",usage:{}}}
     const observation=request.messages.at(-1);assert.equal(observation.role,"tool");assert.match(JSON.stringify(observation.content),/echo:from-model:env=relay:secret=\[redacted\]/);
     return {id:"mcp-done",provider:request.provider,model:request.model,text:"MCP completed.",toolCalls:[],finishReason:"stop",usage:{}};
   };
@@ -155,7 +165,7 @@ test("Trebell Native progressively discovers configured MCP tools inside the sam
     const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"read-only",dynamicTools:[]})).thread;
     const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"read-only",input:[{type:"text",text:"Use the configured MCP echo tool"}]})).turn;
     const completed=await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);assert.equal(completed.params.turn.status,"completed",JSON.stringify(completed.params.turn.error||null));assert.equal(calls,3);
-    const persisted=(await rpc.request("thread/read",{threadId:thread.id})).thread;assert.deepEqual(persisted.providerMeta.nativeMcp.failures,[]);assert.deepEqual(persisted.providerMeta.nativeMcp.namespaces,[seenNamespace]);assert.ok(persisted.turns[0].items.some(item=>item.type==="dynamicToolCall"&&item.namespace===seenNamespace&&item.tool==="echo-read"&&item.success===true));
+    const persisted=(await rpc.request("thread/read",{threadId:thread.id})).thread;assert.deepEqual(persisted.providerMeta.nativeMcp.failures,[]);assert.deepEqual(persisted.providerMeta.nativeMcp.namespaces,[seenNamespace]);assert.ok(persisted.turns[0].items.some(item=>item.type==="dynamicToolCall"&&item.namespace==="trebell_mcp"&&item.tool==="call"&&item.arguments?.name==="echo-read"&&item.success===true));
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
 });
 
@@ -163,12 +173,11 @@ test("Trebell Native reloads changed MCP settings on the next turn of the same t
   const root=await mkdtemp(join(tmpdir(),"trebell-native-mcp-reload-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   const serverConfig=value=>[{id:"reload-native",name:"Reload Native MCP",runtime:"native",enabled:true,type:"stdio",command:process.execPath,args:[nativeMcpFixture],env:[{name:"FIXTURE_VISIBLE",value}]}];
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null,mcpServers:serverConfig("before")});
-  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let call=0,namespaceName=null;
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let call=0,namespaceName="mcp_reload-native";
   const nativeProviderTurn=async request=>{
-    call++;const discovery=(request.tools||[]).find(item=>item.name==="trebell_mcp"),namespace=(request.tools||[]).find(item=>item.name?.startsWith("mcp_"));assert.ok(discovery);
-    if(call===1||call===4){assert.equal(namespace,undefined);return{id:`reload-discover-${call}`,provider:request.provider,model:request.model,text:"",toolCalls:[{id:`reload-discover-tool-${call}`,namespace:"trebell_mcp",name:"discover",arguments:JSON.stringify({query:"echo read"})}],finishReason:"tool_calls",usage:{}}}
-    assert.ok(namespace);namespaceName=namespace.name;
-    if(call===2||call===5)return{id:`reload-call-${call}`,provider:request.provider,model:request.model,text:"",toolCalls:[{id:`reload-tool-${call}`,namespace:namespace.name,name:"echo-read",arguments:JSON.stringify({text:call===2?"first":"second"})}],finishReason:"tool_calls",usage:{}};
+    call++;const discovery=(request.tools||[]).find(item=>item.name==="trebell_mcp"),namespace=(request.tools||[]).find(item=>item.name?.startsWith("mcp_"));assert.ok(discovery);assert.equal(namespace,undefined);
+    if(call===1||call===4)return{id:`reload-discover-${call}`,provider:request.provider,model:request.model,text:"",toolCalls:[{id:`reload-discover-tool-${call}`,namespace:"trebell_mcp",name:"discover",arguments:JSON.stringify({query:"echo read"})}],finishReason:"tool_calls",usage:{}};
+    if(call===2||call===5)return{id:`reload-call-${call}`,provider:request.provider,model:request.model,text:"",toolCalls:[{id:`reload-tool-${call}`,namespace:"trebell_mcp",name:"call",arguments:JSON.stringify({namespace:namespaceName,name:"echo-read",arguments:{text:call===2?"first":"second"}})}],finishReason:"tool_calls",usage:{}};
     const observation=String(request.messages.at(-1)?.content||"");
     if(call===3){assert.match(observation,/echo:first:env=before/);return{id:"reload-done-before",provider:request.provider,model:request.model,text:"First MCP config used.",toolCalls:[],finishReason:"stop",usage:{}}}
     assert.equal(call,6);assert.match(observation,/echo:second:env=after/);return{id:"reload-done-after",provider:request.provider,model:request.model,text:"Reloaded MCP config used.",toolCalls:[],finishReason:"stop",usage:{}};
@@ -334,6 +343,34 @@ test("Trebell Native compaction keeps full transcript but restarts from the dura
   }
 });
 
+test("Trebell Native compaction keeps the last two turns hot across restart",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-hot-compact-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let phase="turns",turnNumber=0,compactionRequest=null,restartRequest=null;
+  const nativeProviderTurn=async request=>{
+    if(phase==="turns"){turnNumber++;return{id:"answer-"+turnNumber,provider:request.provider,model:request.model,text:"ANSWER_"+turnNumber,toolCalls:[],finishReason:"stop",usage:{inputTokens:4,outputTokens:2,totalTokens:6}}}
+    if(phase==="compact"){compactionRequest=structuredClone({...request,signal:undefined});return{id:"compact-hot",provider:request.provider,model:request.model,text:"Summary of the oldest turn only.",toolCalls:[],finishReason:"stop",usage:{inputTokens:9,outputTokens:4,totalTokens:13}}}
+    restartRequest=structuredClone({...request,signal:undefined});return{id:"after-restart",provider:request.provider,model:request.model,text:"resumed",toolCalls:[],finishReason:"stop",usage:{inputTokens:5,outputTokens:2,totalTokens:7}};
+  };
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});let relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});let rpc=client(ws),threadId=null,turnIds=[];
+  try{
+    const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;threadId=thread.id;
+    await rpc.request("thread/goal/set",{threadId,objective:"PRESERVE THIS EXACT ACTIVE GOAL"});
+    for(let index=1;index<=3;index++){const turn=(await rpc.request("turn/start",{threadId,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",input:[{type:"text",text:"REQUEST_"+index}]})).turn;turnIds.push(turn.id);await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id)}
+    phase="compact";const compacted=await rpc.request("thread/compact/start",{threadId,maxOutputTokens:1024});
+    assert.equal(compacted.compaction.throughTurnId,turnIds[0]);assert.deepEqual(compacted.compaction.retainedTurnIds,turnIds.slice(1));assert.match(compacted.compaction.summary,/PRESERVE THIS EXACT ACTIVE GOAL/);
+    assert.match(JSON.stringify(compactionRequest.messages),/REQUEST_1/);assert.doesNotMatch(JSON.stringify(compactionRequest.messages),/REQUEST_2|REQUEST_3/);
+    ws.close();await relay.close();await new Promise(resolve=>server.close(()=>resolve()));
+
+    const restarted=createServer((_req,res)=>{res.writeHead(404);res.end()});phase="restart";relay=attachAgentRelay(restarted,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+    const restartedPort=await listen(restarted),ws2=new WebSocket(`ws://127.0.0.1:${restartedPort}/api/agent/ws`);await new Promise((resolve,reject)=>{ws2.once("open",resolve);ws2.once("error",reject)});rpc=client(ws2);
+    const next=(await rpc.request("turn/start",{threadId,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",input:[{type:"text",text:"REQUEST_4"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===next.id);
+    const serialized=JSON.stringify(restartRequest.messages);assert.doesNotMatch(serialized,/REQUEST_1/);assert.match(serialized,/PRESERVE THIS EXACT ACTIVE GOAL/);assert.match(serialized,/REQUEST_2/);assert.match(serialized,/ANSWER_2/);assert.match(serialized,/REQUEST_3/);assert.match(serialized,/ANSWER_3/);assert.match(serialized,/REQUEST_4/);
+    ws2.close();await relay.close();await new Promise(resolve=>restarted.close(()=>resolve()));relay=null;
+  }finally{try{ws.close()}catch{}if(relay)await relay.close().catch(()=>{});if(server.listening)await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+});
+
 test("Trebell Native turn steering interrupts inference and persists the redirect inside the active turn",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-steer-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
@@ -475,14 +512,15 @@ test("Trebell Native background processes outlive the turn and stay thread-owned
   const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let calls=0;
   const nativeProviderTurn=async request=>{
     calls++;
-    if(calls===1)return{id:"background-tool",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"background-1",namespace:"trebell_terminal",name:"start_background",arguments:JSON.stringify({command:process.execPath,args:["-e","process.stdout.write(process.env.NATIVE_BACKGROUND_RELAY_SECRET||'SAFE');setInterval(()=>{},1000)"],cwd:".",max_output_bytes:8192})}],finishReason:"tool_calls",usage:{}};
+    const processTools=request.tools.find(item=>item.name==="trebell_process");assert.ok(processTools);assert.ok(processTools.tools.some(item=>item.name==="start"));
+    if(calls===1)return{id:"background-tool",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"background-1",namespace:"trebell_process",name:"start",arguments:JSON.stringify({command:process.execPath,args:["-e","process.stdout.write(process.env.NATIVE_BACKGROUND_RELAY_SECRET||'SAFE');setInterval(()=>{},1000)"],cwd:".",max_output_bytes:8192})}],finishReason:"tool_calls",usage:{}};
     assert.equal(request.messages.at(-1).role,"tool");assert.match(request.messages.at(-1).content,/processId/);return{id:"background-answer",provider:request.provider,model:request.model,text:"Server is running in the background.",toolCalls:[],finishReason:"stop",usage:{}};
   };
   const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
   const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
   try{
     const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;
-    const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",input:[{type:"text",text:"Start the dev server in the background"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);
+    const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",dynamicToolNamespaces:["trebell_process"],input:[{type:"text",text:"Start the dev server in the background"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);
     const listed=await rpc.request("thread/backgroundTerminals/list",{threadId:thread.id,limit:10});assert.equal(listed.data.length,1);const processItem=listed.data[0];assert.equal(processItem.running,true);assert.match(processItem.command,/node|electron/i);assert.equal(processItem.cwd,repo);
     const sibling=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;
     assert.equal((await rpc.request("thread/backgroundTerminals/list",{threadId:sibling.id,limit:10})).data.length,0);await assert.rejects(()=>rpc.request("thread/backgroundTerminals/terminate",{threadId:sibling.id,processId:processItem.processId}),/not found/i);

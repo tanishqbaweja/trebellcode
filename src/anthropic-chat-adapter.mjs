@@ -217,7 +217,8 @@ export function anthropicMessageToChatCompletion(message={},fallbackModel=""){
       });
     }
   }
-  const prompt=Number(message.usage?.input_tokens||0)||0;
+  const fresh=Number(message.usage?.input_tokens||0)||0,cacheRead=Number(message.usage?.cache_read_input_tokens||0)||0,cacheWrite=Number(message.usage?.cache_creation_input_tokens||0)||0;
+  const prompt=fresh+cacheRead+cacheWrite;
   const completion=Number(message.usage?.output_tokens||0)||0;
   return {
     id:message.id||`chatcmpl_${randomUUID()}`,
@@ -229,7 +230,7 @@ export function anthropicMessageToChatCompletion(message={},fallbackModel=""){
       message:{role:"assistant",content:content.join(""),...(tool_calls.length?{tool_calls}:{})},
       finish_reason:mapStopReason(message.stop_reason)||"stop",
     }],
-    usage:{prompt_tokens:prompt,completion_tokens:completion,total_tokens:prompt+completion},
+    usage:{prompt_tokens:prompt,completion_tokens:completion,total_tokens:prompt+completion,prompt_tokens_details:{cached_tokens:cacheRead,cache_write_tokens:cacheWrite}},
   };
 }
 

@@ -12,13 +12,24 @@ const MAX_TOTAL_RESOURCES=200;
 const MAX_RESOURCE_TEXT=256*1024;
 const DISCOVERY_NAMESPACE="trebell_mcp";
 const DISCOVERY_TOOL="discover";
+const CALL_TOOL="call";
 const DISCOVERY_RESOURCES_TOOL="discover_resources";
 const READ_RESOURCE_TOOL="read_resource";
 const DISCOVERY_DEFINITION=Object.freeze({
-  namespace:DISCOVERY_NAMESPACE,name:DISCOVERY_TOOL,description:"Search configured MCP capabilities and expose only matching tool schemas for the next model step.",source:"mcp-discovery",
+  namespace:DISCOVERY_NAMESPACE,name:DISCOVERY_TOOL,description:"Search configured MCP capabilities and return matching tool metadata/schemas without changing the model tool manifest.",source:"mcp-discovery",
   inputSchema:{type:"object",properties:{query:{type:"string",description:"What capability or action is needed."},limit:{type:"integer",minimum:1,maximum:20}},required:["query"],additionalProperties:false},
   policy:{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,externalSideEffect:false,asyncSafe:true},
   requirements:{desktop:false,workspace:false,project:false,fullAccess:false,delegation:false},rawDefinition:{discovery:true},
+});
+const CALL_DEFINITION=Object.freeze({
+  namespace:DISCOVERY_NAMESPACE,name:CALL_TOOL,description:"Invoke one MCP tool returned by trebell_mcp/discover without changing the provider-visible tool manifest.",source:"mcp-invoke",
+  inputSchema:{type:"object",properties:{
+    namespace:{type:"string",description:"MCP server namespace returned by discover."},
+    name:{type:"string",description:"MCP tool name returned by discover."},
+    arguments:{type:"object",description:"Arguments matching the inputSchema returned by discover."},
+  },required:["namespace","name","arguments"],additionalProperties:false},
+  policy:{kind:"other",riskLevel:"high",reversibility:"partial",idempotent:false,externalSideEffect:true,asyncSafe:false},
+  requirements:{desktop:false,workspace:false,project:false,fullAccess:false,delegation:false},rawDefinition:{invoke:true},
 });
 const RESOURCE_DISCOVERY_DEFINITION=Object.freeze({
   namespace:DISCOVERY_NAMESPACE,name:DISCOVERY_RESOURCES_TOOL,description:"Search configured MCP resource metadata and templates without reading resource bodies.",source:"mcp-discovery",
@@ -199,7 +210,10 @@ export class NativeMcpBroker{
   }
   discoveryNamespace(){
     if(!this.definitions.size&&!this.entries.some(entry=>entry.client&&entry.client.getServerCapabilities()?.resources))return null;
-    const tools=[];if(this.definitions.size)tools.push({type:"function",name:DISCOVERY_TOOL,description:DISCOVERY_DEFINITION.description,inputSchema:DISCOVERY_DEFINITION.inputSchema});
+    const tools=[];if(this.definitions.size)tools.push(
+      {type:"function",name:DISCOVERY_TOOL,description:DISCOVERY_DEFINITION.description,inputSchema:DISCOVERY_DEFINITION.inputSchema},
+      {type:"function",name:CALL_TOOL,description:CALL_DEFINITION.description,inputSchema:CALL_DEFINITION.inputSchema},
+    );
     if(this.entries.some(entry=>entry.client&&entry.client.getServerCapabilities()?.resources))tools.push({type:"function",name:DISCOVERY_RESOURCES_TOOL,description:RESOURCE_DISCOVERY_DEFINITION.description,inputSchema:RESOURCE_DISCOVERY_DEFINITION.inputSchema},{type:"function",name:READ_RESOURCE_TOOL,description:READ_RESOURCE_DEFINITION.description,inputSchema:READ_RESOURCE_DEFINITION.inputSchema});
     return {type:"namespace",name:DISCOVERY_NAMESPACE,description:"Discover configured MCP tools and resources on demand instead of loading every capability into each model request.",tools};
   }
@@ -234,11 +248,17 @@ export class NativeMcpBroker{
     for(const match of selected){const list=grouped.get(match.entry.namespace)||[];list.push(match.toolEntry);grouped.set(match.entry.namespace,list)}
     const namespaces=[];
     for(const [namespace,tools] of grouped){const entry=selected.find(item=>item.entry.namespace===namespace)?.entry;if(!entry)continue;namespaces.push({type:"namespace",name:namespace,description:`MCP server: ${entry.server.name}`,tools:tools.map(item=>({type:"function",name:item.safeName,description:item.tool.description||item.tool.title||item.originalName,inputSchema:item.tool.inputSchema||{type:"object",properties:{}}}))})}
-    const publicMatches=selected.map(({entry,toolEntry})=>({namespace:entry.namespace,name:toolEntry.safeName,originalName:toolEntry.originalName,server:entry.server.name,description:String(toolEntry.tool.description||toolEntry.tool.title||"").slice(0,500)}));
+    const publicMatches=selected.map(({entry,toolEntry})=>({namespace:entry.namespace,name:toolEntry.safeName,originalName:toolEntry.originalName,server:entry.server.name,description:String(toolEntry.tool.description||toolEntry.tool.title||"").slice(0,500),inputSchema:toolEntry.tool.inputSchema||{type:"object",properties:{}}}));
     return {query:String(query||""),matches:publicMatches,namespaces};
+  }
+  invocationDefinition(namespace,name,args={}){
+    if(String(namespace||"")!==DISCOVERY_NAMESPACE||String(name||"")!==CALL_TOOL)return null;
+    const target=this.definitions.get(String(args?.namespace||"")+"\0"+String(args?.name||""));if(!target)return null;
+    return {...CALL_DEFINITION,policy:{...(target.policy||CALL_DEFINITION.policy)},requirements:{...(target.requirements||CALL_DEFINITION.requirements)},rawDefinition:{invoke:true,target}};
   }
   toolDefinition(namespace,name){
     if(String(namespace||"")===DISCOVERY_NAMESPACE&&String(name||"")===DISCOVERY_TOOL&&this.definitions.size)return DISCOVERY_DEFINITION;
+    if(String(namespace||"")===DISCOVERY_NAMESPACE&&String(name||"")===CALL_TOOL&&this.definitions.size)return CALL_DEFINITION;
     if(String(namespace||"")===DISCOVERY_NAMESPACE&&String(name||"")===DISCOVERY_RESOURCES_TOOL&&this.entries.some(entry=>entry.client&&entry.client.getServerCapabilities()?.resources))return RESOURCE_DISCOVERY_DEFINITION;
     if(String(namespace||"")===DISCOVERY_NAMESPACE&&String(name||"")===READ_RESOURCE_TOOL&&this.entries.some(entry=>entry.client&&entry.client.getServerCapabilities()?.resources))return READ_RESOURCE_DEFINITION;
     return this.definitions.get(String(namespace||"")+"\0"+String(name||""))||null;
@@ -246,9 +266,14 @@ export class NativeMcpBroker{
   hasTool(namespace,name){return Boolean(this.toolDefinition(namespace,name))}
   async call({namespace,name,arguments:args={},signal=null}={}){
     if(String(namespace||"")===DISCOVERY_NAMESPACE&&String(name||"")===DISCOVERY_TOOL){
-      const result=this.discover(args||{});try{this.onToolsDiscovered?.(result.namespaces)}catch{}
+      const result=this.discover(args||{});
       this.event("native.mcp.progressive_discovery","completed",{query:String(args?.query||"").slice(0,500),matchCount:result.matches.length,namespaces:result.namespaces.map(item=>item.name)});
-      return {success:true,contentItems:[{type:"inputText",text:JSON.stringify({query:result.query,tools:result.matches,note:result.matches.length?"Matching MCP tool schemas are now available for the next model step.":"No configured MCP tools matched this query."})}]};
+      return {success:true,contentItems:[{type:"inputText",text:JSON.stringify({query:result.query,tools:result.matches,note:result.matches.length?"Call trebell_mcp/call with the returned namespace, name, and arguments matching inputSchema. The provider-visible tool manifest remains stable.":"No configured MCP tools matched this query."})}]};
+    }
+    if(String(namespace||"")===DISCOVERY_NAMESPACE&&String(name||"")===CALL_TOOL){
+      const targetNamespace=String(args?.namespace||""),targetName=String(args?.name||""),targetArgs=args?.arguments&&typeof args.arguments==="object"&&!Array.isArray(args.arguments)?args.arguments:{};
+      const definition=this.definitions.get(targetNamespace+"\0"+targetName);if(!definition)throw new Error("Unknown discovered Native MCP tool: "+targetNamespace+"/"+targetName);
+      return await this.call({namespace:targetNamespace,name:targetName,arguments:targetArgs,signal});
     }
     if(String(namespace||"")===DISCOVERY_NAMESPACE&&String(name||"")===DISCOVERY_RESOURCES_TOOL){
       const result=await this.discoverResources(args||{});this.event("native.mcp.resource_discovery","completed",{query:String(args?.query||"").slice(0,500),matchCount:result.resources.length});

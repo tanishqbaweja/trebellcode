@@ -35,17 +35,23 @@ function namespace(name,description,tools,requirements={},options={}){
 const emptyObjectSchema=freeze({type:"object",properties:{},additionalProperties:false});
 
 export const SHARED_TOOL_NAMESPACE_CATALOG=freeze([
+  namespace("trebell_output","Inspect full redacted content that Trebell moved out of hot model context after a large tool result.",[
+    tool("read","Read an exact bounded line range from a virtualized tool output handle.",{type:"object",properties:{handle:{type:"string"},start_line:{type:"integer",minimum:1},end_line:{type:"integer",minimum:1},max_chars:{type:"integer",minimum:1000,maximum:48000}},required:["handle"],additionalProperties:false},{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,asyncSafe:true}),
+    tool("search","Search a virtualized tool output and return bounded matching line excerpts.",{type:"object",properties:{handle:{type:"string"},query:{type:"string",minLength:1,maxLength:1000},regex:{type:"boolean"},case_sensitive:{type:"boolean"},limit:{type:"integer",minimum:1,maximum:100},context_lines:{type:"integer",minimum:0,maximum:8}},required:["handle","query"],additionalProperties:false},{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,asyncSafe:true}),
+  ]),
   namespace("trebell_workspace","Read and modify files inside the active Trebell workspace boundary.",[
     tool("list","List a bounded workspace subtree.",{type:"object",properties:{path:{type:"string",description:"Workspace-relative directory. Defaults to the workspace root."},depth:{type:"integer",minimum:1,maximum:8},limit:{type:"integer",minimum:1,maximum:1000}},additionalProperties:false},{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,asyncSafe:true},{workspace:true}),
     tool("read_file","Read one bounded UTF-8 text file inside the workspace.",{type:"object",properties:{path:{type:"string"},max_bytes:{type:"integer",minimum:1,maximum:1048576}},required:["path"],additionalProperties:false},{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,asyncSafe:true},{workspace:true}),
     tool("write_file","Create or replace one UTF-8 text file inside the workspace. Prefer replace_text for small surgical edits.",{type:"object",properties:{path:{type:"string"},content:{type:"string"}},required:["path","content"],additionalProperties:false},{kind:"edit",riskLevel:"medium",reversibility:"partial"},{workspace:true}),
     tool("replace_text","Replace an exact text fragment inside one UTF-8 workspace file. By default the fragment must occur exactly once.",{type:"object",properties:{path:{type:"string"},old_text:{type:"string"},new_text:{type:"string"},expected_replacements:{type:"integer",minimum:1,maximum:100}},required:["path","old_text","new_text"],additionalProperties:false},{kind:"edit",riskLevel:"medium",reversibility:"partial"},{workspace:true}),
   ],{workspace:true}),
-  namespace("trebell_terminal","Run bounded argv-based commands inside the active workspace. Shell pipelines require explicitly invoking a shell such as sh -lc or PowerShell.",[
-    tool("run","Run one bounded command in the active workspace and return exit code, stdout, stderr, timeout state, and duration.",{type:"object",properties:{command:{type:"string"},args:{type:"array",items:{type:"string"},maxItems:256},cwd:{type:"string",description:"Workspace-relative working directory. Defaults to the workspace root."},timeout_ms:{type:"integer",minimum:1000,maximum:300000},max_output_bytes:{type:"integer",minimum:1024,maximum:2097152}},required:["command"],additionalProperties:false},{kind:"execute",classifyFromInput:true},{workspace:true}),
-    tool("start_background","Start one long-running argv-based process without tying its lifetime to the current agent turn. Returns a process id that can be inspected or stopped later.",{type:"object",properties:{command:{type:"string"},args:{type:"array",items:{type:"string"},maxItems:256},cwd:{type:"string",description:"Workspace-relative working directory. Defaults to the workspace root."},max_output_bytes:{type:"integer",minimum:1024,maximum:2097152}},required:["command"],additionalProperties:false},{kind:"execute",classifyFromInput:true},{workspace:true}),
-    tool("background_status","Read the current state and bounded output of a Native background process owned by this thread.",{type:"object",properties:{process_id:{type:"string"}},required:["process_id"],additionalProperties:false},{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,asyncSafe:true},{workspace:true}),
-    tool("stop_background","Stop one Native background process owned by this thread.",{type:"object",properties:{process_id:{type:"string"}},required:["process_id"],additionalProperties:false},{kind:"execute",riskLevel:"medium",reversibility:"partial"},{workspace:true}),
+  namespace("trebell_terminal","Run bounded argv commands in the workspace. Use an explicit shell executable for shell syntax.",[
+    tool("run","Run one command and return exit code, stdout, stderr, timeout state, and duration.",{type:"object",properties:{command:{type:"string",description:"Executable only."},args:{type:"array",items:{type:"string"},maxItems:256,description:"Argument vector."},cwd:{type:"string",description:"Workspace-relative; defaults to root."},timeout_ms:{type:"integer",minimum:1000,maximum:300000},max_output_bytes:{type:"integer",minimum:1024,maximum:2097152}},required:["command"],additionalProperties:false},{kind:"execute",classifyFromInput:true},{workspace:true}),
+  ],{workspace:true}),
+  namespace("trebell_process","Manage long-running Native processes only when the task needs a server, watcher, daemon, or other background command.",[
+    tool("start","Start a long-running argv command and return its thread-owned process id.",{type:"object",properties:{command:{type:"string",description:"Executable only."},args:{type:"array",items:{type:"string"},maxItems:256,description:"Argument vector."},cwd:{type:"string",description:"Workspace-relative; defaults to root."},max_output_bytes:{type:"integer",minimum:1024,maximum:2097152}},required:["command"],additionalProperties:false},{kind:"execute",classifyFromInput:true},{workspace:true}),
+    tool("status","Read current state and bounded output for one thread-owned background process.",{type:"object",properties:{process_id:{type:"string"}},required:["process_id"],additionalProperties:false},{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,asyncSafe:true},{workspace:true}),
+    tool("stop","Stop one thread-owned background process.",{type:"object",properties:{process_id:{type:"string"}},required:["process_id"],additionalProperties:false},{kind:"execute",riskLevel:"medium",reversibility:"partial"},{workspace:true}),
   ],{workspace:true}),
   namespace("trebell_browser","Control Trebell Code's isolated desktop browser session for web research and testing.",[
     tool("open","Navigate the Trebell browser to a URL.",{type:"object",properties:{url:{type:"string"}},required:["url"],additionalProperties:false},{kind:"fetch",riskLevel:"low",reversibility:"full"},{desktop:true}),
@@ -112,7 +118,14 @@ export function sharedToolResponseContent(namespaceName,contentItems=[]){
 }
 
 export function sharedToolDefinition(namespaceName,toolName){
-  return sharedToolNamespace(namespaceName)?.tools.find(item=>item.name===String(toolName||""))||null;
+  const namespace=String(namespaceName||""),name=String(toolName||"");
+  const direct=sharedToolNamespace(namespace)?.tools.find(item=>item.name===name);if(direct)return direct;
+  const legacyProcess=namespace==="trebell_terminal"?{start_background:"start",background_status:"status",stop_background:"stop"}[name]:null;
+  if(legacyProcess){
+    const definition=sharedToolNamespace("trebell_process")?.tools.find(item=>item.name===legacyProcess);
+    return definition?{...definition,name}:null;
+  }
+  return null;
 }
 
 export function dynamicToolNamespace(namespaceDefinition){
@@ -125,10 +138,12 @@ export function dynamicToolNamespace(namespaceDefinition){
   };
 }
 
-export function sharedDynamicToolNamespaces({workspaceTools=false,terminal=false,browser=false,computer=false,sourceControl=true,delegation=false}={}){
+export function sharedDynamicToolNamespaces({output=false,workspaceTools=false,terminal=false,process=false,browser=false,computer=false,sourceControl=true,delegation=false}={}){
   const enabled=new Set([
+    ...(output?["trebell_output"]:[]),
     ...(workspaceTools?["trebell_workspace"]:[]),
     ...(terminal?["trebell_terminal"]:[]),
+    ...(process?["trebell_process"]:[]),
     ...(browser?["trebell_browser"]:[]),
     ...(computer?["trebell_computer"]:[]),
     ...(sourceControl?["trebell_source_control"]:[]),

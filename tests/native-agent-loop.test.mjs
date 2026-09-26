@@ -13,6 +13,36 @@ test("native agent completes a plain model turn without inventing tool work",asy
   assert.equal(requests.length,1);assert.equal(result.text,"hello back");assert.equal(result.modelTurns,1);assert.equal(result.toolCalls,0);
   assert.deepEqual(result.usage,{inputTokens:3,outputTokens:2,totalTokens:5,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0});
   assert.deepEqual(events.map(event=>event.name),["native.turn.started","native.model.requested","native.model.completed","native.turn.completed"]);
+  const requested=events.find(event=>event.name==="native.model.requested"),completed=events.find(event=>event.name==="native.model.completed");
+  assert.equal(requested.data.inferenceId,"native:inference:1");assert.equal(completed.data.inferenceId,requested.data.inferenceId);
+  assert.equal(typeof requested.data.requestMetrics.toolSchemaHash,"string");assert.equal(typeof requested.data.requestMetrics.stablePrefixHash,"string");
+});
+
+test("native agent gives one bounded recovery chance to an empty terminal provider response",async()=>{
+  const requests=[],events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"finish the task"}],onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));
+      if(requests.length===1)return {model:"test-model",provider:"fixture",text:"",toolCalls:[],finishReason:"stop",usage:{}};
+      assert.equal(request.messages.at(-1).role,"developer");
+      assert.match(request.messages.at(-1).content,/no user-visible assistant text/i);
+      return {model:"test-model",provider:"fixture",text:"Done.",toolCalls:[],finishReason:"stop",usage:{}};
+    },
+    executeTool:async()=>{throw new Error("tool executor should not run")},
+  });
+  assert.equal(result.text,"Done.");assert.equal(result.modelTurns,2);
+  assert.equal(events.filter(event=>event.name==="native.model.empty_completion").length,1);
+});
+
+test("native agent fails visibly when the bounded empty-completion recovery is also empty",async()=>{
+  let turns=0;
+  await assert.rejects(()=>runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"finish the task"}],
+    providerTurn:async()=>{turns++;return {model:"test-model",provider:"fixture",text:"",toolCalls:[],finishReason:"stop",usage:{}}},
+    executeTool:async()=>"",
+  }),error=>error?.code==="native_empty_completion");
+  assert.equal(turns,2);
 });
 
 test("native agent feeds namespaced tool observations back into the same model loop",async()=>{

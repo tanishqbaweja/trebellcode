@@ -17,6 +17,8 @@ test("Native workspace built-ins read, list, write, and replace exact text insid
     const read=await execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/app.js"}});assert.equal(read.content,"const value = 1;\n");
     const replaced=await execute({namespace:"trebell_workspace",name:"replace_text",arguments:{path:"src/app.js",old_text:"value = 1",new_text:"value = 2"}});assert.equal(replaced.replacements,1);assert.equal(await readFile(join(root,"src","app.js"),"utf8"),"const value = 2;\n");
     const written=await execute({namespace:"trebell_workspace",name:"write_file",arguments:{path:"src/new.js",content:"export const ready = true;\n"}});assert.equal(written.createdOrReplaced,true);assert.equal(await readFile(join(root,"src","new.js"),"utf8"),"export const ready = true;\n");
+    const rooted=await execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"/src/app.js"}});assert.equal(rooted.content,"const value = 2;\n");
+    const rootList=await execute({namespace:"trebell_workspace",name:"list",arguments:{path:"/",depth:2,limit:20}});assert.ok(rootList.entries.some(item=>item.name==="src"));
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
@@ -28,6 +30,8 @@ test("Native exact replacement fails closed and workspace paths cannot escape",a
     assert.equal(await readFile(join(root,"src","app.js"),"utf8"),"const value = 1;\n");
     await assert.rejects(()=>execute({namespace:"trebell_workspace",name:"write_file",arguments:{path:"../"+outside.split(/[\\/]/).pop(),content:"escape"}}),/outside the active workspace/i);
     await assert.rejects(()=>execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"../does-not-belong.txt"}}),/outside the active workspace/i);
+    await writeFile(outside,"outside","utf8");
+    await assert.rejects(()=>execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:outside}}),/outside the active workspace/i);
   }finally{await rm(root,{recursive:true,force:true});await rm(outside,{force:true}).catch(()=>{})}
 });
 

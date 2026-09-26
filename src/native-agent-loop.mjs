@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { nativeRequestMetrics } from "./native-request-metrics.mjs";
 
 function abortError(signal){
   const reason=signal?.reason;if(reason?.name==="AbortError")return reason;
@@ -104,7 +105,7 @@ export async function runNativeAgentTurn({
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
   const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])];
-  let modelTurns=0,toolCalls=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
+  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
   const startedAt=Date.now(),started=nowMs(),wallController=budget.maxWallTimeMs!=null?new AbortController():null,deadlineAt=budget.maxWallTimeMs==null?null:Date.now()+budget.maxWallTimeMs;
   let wallTimer=null;
   const armWallTimer=()=>{
@@ -143,7 +144,9 @@ export async function runNativeAgentTurn({
     }
     modelTurns++;
     const requestStarted=nowMs();
-    emit(onEvent,{name:"native.model.requested",status:"running",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,messageCount:conversation.length,toolCount:Array.isArray(tools)?tools.length:0}});
+    const requestMetrics=nativeRequestMetrics(conversation,tools);
+    const inferenceId=(metadata?.sessionId?String(metadata.sessionId):"native")+":inference:"+modelTurns;
+    emit(onEvent,{name:"native.model.requested",status:"running",model:String(model),provider:provider||null,data:{inferenceId,modelTurn:modelTurns,messageCount:conversation.length,toolCount:Array.isArray(tools)?tools.length:0,sessionId:metadata?.sessionId||null,compaction:Boolean(metadata?.compaction),requestMetrics}});
     const providerAttempts=boundedInteger(maxProviderAttempts,3,{min:1,max:8});let response=null;
     for(let attempt=1;attempt<=providerAttempts;attempt++){
       try{
@@ -168,13 +171,32 @@ export async function runNativeAgentTurn({
     if(response==null)continue;
     throwIfAborted(turnSignal);lastResponse=response||{};usage=aggregateUsage(usage,lastResponse.usage||{});
     const calls=Array.isArray(lastResponse.toolCalls)?lastResponse.toolCalls:[];
-    emit(onEvent,{name:"native.model.completed",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,durationMs:duration(requestStarted),toolCallCount:calls.length,finishReason:lastResponse.finishReason||null,usage:lastResponse.usage||null}});
+    const providerTelemetry=lastResponse.telemetry||null,turnUsage=lastResponse.usage||{},inputTokens=Number(turnUsage.inputTokens||0),cachedTokens=Number(turnUsage.cachedInputTokens||0),contextWindow=Number(metadata?.contextWindow||0);
+    emit(onEvent,{name:"native.model.completed",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{
+      inferenceId,modelTurn:modelTurns,durationMs:duration(requestStarted),toolCallCount:calls.length,finishReason:lastResponse.finishReason||null,usage:turnUsage,
+      requestMetrics,providerTelemetry,
+      cacheHitPercent:inputTokens>0?Number(((cachedTokens/inputTokens)*100).toFixed(2)):0,
+      contextWindowUtilizationPercent:contextWindow>0&&inputTokens>0?Number(((inputTokens/contextWindow)*100).toFixed(2)):null,
+      sessionId:metadata?.sessionId||null,compaction:Boolean(metadata?.compaction),
+    }});
     if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"after_model"}))continue;
-    conversation.push({role:"assistant",content:String(lastResponse.text||""),toolCalls:calls});
+    const responseText=String(lastResponse.text||"");
+    if(!calls.length&&!responseText.trim()){
+      if(emptyCompletionRecoveries<1&&modelTurns<budget.maxModelTurns){
+        emptyCompletionRecoveries++;
+        conversation.push({role:"developer",content:"The previous provider response contained no tool calls and no user-visible assistant text. Complete the user's task with a concise final answer now. Do not repeat completed tool calls unless they are genuinely needed for accuracy."});
+        emit(onEvent,{name:"native.model.empty_completion",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,recoveryAttempt:emptyCompletionRecoveries}});
+        continue;
+      }
+      const error=new Error("Native provider returned an empty terminal response after the bounded final-answer recovery attempt.");error.code="native_empty_completion";
+      emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{reason:error.code,modelTurns,toolCalls}});
+      throw error;
+    }
+    conversation.push({role:"assistant",content:responseText,toolCalls:calls});
     if(!calls.length){
       if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_completion"}))continue;
       const result={
-        text:String(lastResponse.text||""),model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,
+        text:responseText,model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,
         messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse,
       };
       emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage}});

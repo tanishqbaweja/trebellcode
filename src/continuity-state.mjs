@@ -97,7 +97,7 @@ export function continuitySnapshot({
     updatedAt:Math.max(Number(notes.updatedAt)||0,Number(latestVerification?.updatedAt)||0,...failedTrace.map(item=>Number(item.at)||0),...((checkpoints||[]).map(item=>Number(item.createdAt)||0))),
   };
   snapshot.meaningful=Boolean(
-    snapshot.completedWork.length||snapshot.unresolvedFailures.length||snapshot.recentFailures.length||snapshot.importantDecisions.length||
+    snapshot.objective||snapshot.completedWork.length||snapshot.unresolvedFailures.length||snapshot.recentFailures.length||snapshot.importantDecisions.length||
     snapshot.artifactsCreated.length||snapshot.pendingNextActions.length||snapshot.verification||snapshot.recovery||snapshot.completedTurnIds.length
   );
   return snapshot;
@@ -113,6 +113,7 @@ export function continuityContextValue(snapshot){
   const sections=[
     "Persistent Trebell continuity state",
     "This is durable working state reconstructed from Trebell metadata, explicit notes, verification, checkpoints, queue state, and bounded failure traces. The user's current message has priority over stale continuity.",
+    snapshot.objective&&("Active goal: "+snapshot.objective),
     snapshot.workspace?.cwd&&("Workspace: "+snapshot.workspace.cwd+(snapshot.workspace.branch?" · branch "+snapshot.workspace.branch:"")),
     snapshot.verification&&("Latest verification: "+[snapshot.verification.status,snapshot.verification.risk,snapshot.verification.summary].filter(Boolean).join(" · ")),
     snapshot.verification&&listBlock("Verification still required",snapshot.verification.missing),

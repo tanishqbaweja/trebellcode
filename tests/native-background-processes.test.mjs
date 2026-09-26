@@ -18,13 +18,13 @@ test("Native background processes outlive the tool call, keep bounded output, an
   try{
     const execute=createNativeBuiltins({root,environment,backgroundProcesses:manager,threadId:"thread-a"});
     const script="process.stdout.write(JSON.stringify({secret:process.env.NATIVE_BACKGROUND_SECRET||null}));setInterval(()=>{},1000)";
-    const started=await execute({namespace:"trebell_terminal",name:"start_background",arguments:{command:process.execPath,args:["-e",script,environment.NATIVE_BACKGROUND_SECRET],cwd:"src",max_output_bytes:4096}});
+    const started=await execute({namespace:"trebell_process",name:"start",arguments:{command:process.execPath,args:["-e",script,environment.NATIVE_BACKGROUND_SECRET],cwd:"src",max_output_bytes:4096}});
     assert.equal(started.running,true);assert.ok(started.processId);assert.equal(started.cwd,join(root,"src"));
     assert.doesNotMatch(started.command,/do-not-leak/);assert.match(started.command,/\[redacted\]/);
-    const status=await waitFor(()=>{const current=execute({namespace:"trebell_terminal",name:"background_status",arguments:{process_id:started.processId}});return current.then(item=>item.stdout?item:null)});
+    const status=await waitFor(()=>{const current=execute({namespace:"trebell_process",name:"status",arguments:{process_id:started.processId}});return current.then(item=>item.stdout?item:null)});
     assert.deepEqual(JSON.parse(status.stdout),{secret:null});assert.equal(manager.list("thread-a").data.length,1);assert.equal(manager.list("thread-b").data.length,0);
-    await assert.rejects(()=>execute({namespace:"trebell_terminal",name:"background_status",arguments:{process_id:"missing"}}),/not found/i);
-    const stopped=await execute({namespace:"trebell_terminal",name:"stop_background",arguments:{process_id:started.processId}});assert.equal(stopped.running,false);assert.equal(manager.list("thread-a").data.length,0);
+    await assert.rejects(()=>execute({namespace:"trebell_process",name:"status",arguments:{process_id:"missing"}}),/not found/i);
+    const stopped=await execute({namespace:"trebell_process",name:"stop",arguments:{process_id:started.processId}});assert.equal(stopped.running,false);assert.equal(manager.list("thread-a").data.length,0);
     assert.ok(events.some(event=>event.name==="native.background.started"));assert.ok(events.some(event=>event.name==="native.background.terminated"));
   }finally{await manager.closeAll();await rm(root,{recursive:true,force:true})}
 });

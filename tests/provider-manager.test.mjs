@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProviderManager } from "../src/provider-manager.mjs";
@@ -244,6 +244,8 @@ test("normalized AgentRouter turns keep the Responses transport and namespaced t
   assert.equal(seen.url,"https://agentrouter.org/v1/responses");assert.equal(seen.headers.originator,"codex_cli_rs");assert.equal(seen.body.tools[0].name,"trebell_repo");
   assert.deepEqual(result.toolCalls,[{id:"call-native",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Session"}'}]);
   assert.equal(result.usage.totalTokens,13);
+  assert.equal(result.telemetry.endpoint,"https://agentrouter.org/v1/responses");assert.equal(result.telemetry.wireApi,"openai-responses");
+  assert.ok(result.telemetry.requestBytes>0);assert.ok(result.telemetry.responseBytes>0);assert.equal(result.telemetry.streaming,false);assert.equal(result.telemetry.timeToFirstTokenMs,null);
 });
 
 test("normalized Chat turns flatten namespaces and recover them from tool calls",async()=>{
@@ -259,6 +261,7 @@ test("normalized Chat turns flatten namespaces and recover them from tool calls"
   });
   assert.equal(seen.url,"https://api.hcnsec.cn/v1/chat/completions");assert.equal(seen.body.tools[0].function.name,"trebell_repo__search_symbols");
   assert.deepEqual(result.toolCalls,[{id:"call-chat",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Session"}'}]);assert.equal(result.finishReason,"tool_calls");
+  assert.equal(result.telemetry.wireApi,"openai-chat-completions");assert.ok(result.telemetry.requestBytes>0);
 });
 
 test("normalized Anthropic-compatible turns reuse the existing tool adapter",async()=>{
@@ -274,6 +277,7 @@ test("normalized Anthropic-compatible turns reuse the existing tool adapter",asy
   });
   assert.equal(seen.url,"https://api.justwoker.icu/v1/messages");assert.equal(seen.body.tools[0].name,"trebell_repo__search_symbols");
   assert.deepEqual(result.toolCalls,[{id:"toolu-native",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Session"}'}]);assert.equal(result.finishReason,"tool_calls");
+  assert.equal(result.telemetry.wireApi,"anthropic-messages");assert.ok(result.telemetry.requestBytes>0);
 });
 
 test("normalized provider turns expose retryability for transient HTTP failures only",async()=>{
@@ -282,6 +286,31 @@ test("normalized provider turns expose retryability for transient HTTP failures 
   await assert.rejects(()=>manager.turn("hcnsec",{model:"glm-5.3",messages:[{role:"user",content:"hello"}]}),error=>error?.status===429&&error?.retryable===true);
   status=401;
   await assert.rejects(()=>manager.turn("hcnsec",{model:"glm-5.3",messages:[{role:"user",content:"hello"}]}),error=>error?.status===401&&error?.retryable===false);
+});
+
+test("provider turns expose bounded wire telemetry without including provider secrets",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-telemetry-"));
+  const secret="hc-telemetry-secret";
+  try{
+    let capturedBody="";
+    const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root,HCNSEC_API_KEY:secret},fetchFn:async(url,init)=>{
+      capturedBody=String(init?.body||"");
+      return new Response(JSON.stringify({
+        id:"chatcmpl-telemetry",model:"glm-5.3",
+        choices:[{message:{role:"assistant",content:"done"},finish_reason:"stop"}],
+        usage:{prompt_tokens:12,completion_tokens:3,total_tokens:15},
+      }),{status:200,headers:{"content-type":"application/json"}});
+    }});
+    const result=await manager.turn("hcnsec",{model:"glm-5.3",messages:[{role:"user",content:"hello"}],tools:[]});
+    assert.equal(result.text,"done");assert.equal(result.telemetry.wireApi,"openai-chat-completions");
+    assert.match(result.telemetry.endpoint,/\/chat\/completions$/);
+    assert.ok(result.telemetry.requestBytes>0);assert.ok(result.telemetry.responseBytes>0);
+    assert.ok(result.telemetry.totalLatencyMs>=result.telemetry.responseHeadersLatencyMs);
+    assert.equal(result.telemetry.streaming,false);
+    assert.equal(result.telemetry.providerResponseId,"chatcmpl-telemetry");
+    assert.doesNotMatch(JSON.stringify(result.telemetry),new RegExp(secret));
+    assert.doesNotMatch(capturedBody,new RegExp(secret));
+  }finally{rmSync(root,{recursive:true,force:true})}
 });
 
 test("provider error bodies redact stored keys and parent environment secrets",async()=>{

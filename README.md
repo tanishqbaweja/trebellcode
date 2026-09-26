@@ -2,7 +2,7 @@
 
 > **A desktop coding harness that gives AI agents a real engineering workspace — projects, terminals, Git/worktrees, browser verification, durable context, source control, recovery, and multiple agent runtimes in one place.**
 
-**Version:** 1.3.2 · **Runtime:** Node.js 22+ · **License:** Apache-2.0 · **Desktop:** Windows / macOS / Linux packaging targets
+**Version:** 1.3.3 · **Runtime:** Node.js 22+ · **License:** Apache-2.0 · **Desktop:** Windows / macOS / Linux packaging targets
 
 Trebell Code is not a chat box with a terminal glued beside it. It is a **desktop agent harness** designed around the boring-but-important parts of software engineering that make autonomous coding workflows trustworthy:
 
@@ -476,10 +476,12 @@ Provider API keys for normal product use belong in **Settings**, not repository 
 npm test
 ~~~
 
-At the v1.3.2 housekeeping audit checkpoint:
+At the v1.3.3 Native-harness release checkpoint:
 
-- **782 / 782 deterministic tests passed**
-- **138 / 138 visual/screenshot tests passed**
+- **808 / 808 deterministic tests passed**
+- **138 / 138** full visual/screenshot tests passed
+- **2 / 2** targeted Native UI E2E tests passed (compact context seed + thread-owned background process/runtime UI)
+- the real `test:vyce:native` coding gate passed with VyceAi + `deepseek-v4.1`
 
 ### UI / Playwright
 
@@ -498,13 +500,53 @@ The harness is offline by default. Live-provider tests are opt-in.
 
 ~~~bash
 npm run test:vyce
-npm run test:vyce:agent
+npm run test:vyce:native
+npm run test:vyce:codex
+npm run test:vyce:cache
+npm run bench:vyce:native
 npm run test:vyce:background
 npm run test:vyce:fanout
 npm run test:runtime-profiles:live
 ~~~
 
 These may optionally read an ignored root **.env** containing test credentials only.
+
+### Real Trebell Native live gate
+
+The dedicated Native live test is:
+
+~~~bash
+npm run test:vyce:native
+~~~
+
+It does **not** start the Codex app-server. The test wires `attachAgentRelay` directly to `ProviderManager.turn`, sends a real request to VyceAi, and requires the real model to:
+
+- receive the Trebell Native system prompt;
+- see the real `trebell_repo`, `trebell_workspace`, and `trebell_terminal` namespaces;
+- use Native repository/workspace tooling as appropriate to the task;
+- read and edit a broken source file through Native tools;
+- run verification through the Native terminal tool;
+- produce a non-empty final assistant response;
+- leave a file that an independent Node process verifies afterward.
+
+The v1.3.3 Native audit run passed with `deepseek-v4.1` and explicitly reported `codexAppServerStarted: false`.
+
+That live test also drove concrete Native efficiency work. Advanced repository and MCP capabilities use stable discovery/invocation manifests instead of injecting every specialized schema on every model step. On the latest audit fixture:
+
+- baseline tool functions dropped from **31 to 11**;
+- first-request tool-schema JSON dropped from roughly **14.3 KB to 5.1 KB**;
+- the first real model request used roughly **2.66k provider input tokens**;
+- the complete small coding task finished in **4 model turns / 12,006 input tokens**, down from the first measured run of roughly **40.4k input tokens**;
+- all four requests kept one stable prefix and one stable tool-schema hash;
+- the model batched three independent reads, made one surgical edit, ran one verification command, and passed independent post-turn verification.
+
+The exact token count varies by model behavior and conversation history, so these are audit measurements rather than a promised fixed cost.
+
+The Native system prompt itself is intentionally compact: the latest live trace measured roughly **527 estimated tokens**. The larger recurring costs are tool schemas and accumulated conversation/tool evidence, so Native progressively exposes advanced capabilities, deduplicates byte-identical file observations, virtualizes large tool output behind searchable handles, and uses a compact repository seed in the UI instead of replaying full source excerpts on every model/tool round trip.
+
+The controlled `test:vyce:cache` experiment sent repeated stable ~9k-token prefixes and observed **0 cached input tokens** from the current Vyce Chat Completions route. Trebell therefore records provider cache/state capabilities explicitly and does not assume that an OpenAI-compatible endpoint also implements prompt caching or stateful Responses continuation.
+
+For broader real-model regression work, `npm run bench:vyce:native` exercises disposable repositories covering multi-file refactoring, failing-test repair, and large noisy tool output with independent verification and per-scenario token/latency/tool metrics.
 
 ---
 

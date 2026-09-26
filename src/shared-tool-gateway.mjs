@@ -2,9 +2,90 @@ import { performance } from "node:perf_hooks";
 import { evaluatePolicy, normalizePolicyProfile, POLICY_ALLOW, POLICY_CONFIRM, POLICY_REJECT } from "./policy-engine.mjs";
 import { redactSecretValue } from "./secret-redactor.mjs";
 import { platformToolDefinition } from "./platform-tool-catalog.mjs";
+import { nativeCommandSemanticError, normalizeNativeCommandArguments } from "./native-command-argv.mjs";
+import { normalizeRepositoryWorkspacePath } from "./native-workspace-path.mjs";
 
 function callName(call={}){return {namespace:String(call.namespace||""),name:String(call.name||call.tool||"")}}
 function objectArguments(value){return value&&typeof value==="object"&&!Array.isArray(value)?value:{}}
+function normalizedPlatformArguments(namespace,name,value){
+  const args=objectArguments(value);
+  if((namespace==="trebell_terminal"&&["run","start_background"].includes(name))||(namespace==="trebell_process"&&name==="start"))return normalizeNativeCommandArguments(args);
+  return args;
+}
+
+function normalizedWorkspaceArguments(namespace,name,value,context={}){
+  const args={...normalizedPlatformArguments(namespace,name,value)},workspace=context?.workspace;
+  if(!workspace)return args;
+  if(["trebell_workspace","trebell_repo"].includes(namespace)&&typeof args.path==="string")args.path=normalizeRepositoryWorkspacePath(workspace,args.path);
+  if(namespace==="trebell_repo"&&name==="invoke"&&args.arguments&&typeof args.arguments==="object"&&!Array.isArray(args.arguments)&&typeof args.arguments.path==="string"){
+    args.arguments={...args.arguments,path:normalizeRepositoryWorkspacePath(workspace,args.arguments.path)};
+  }
+  if((namespace==="trebell_terminal"||namespace==="trebell_process")&&typeof args.cwd==="string")args.cwd=normalizeRepositoryWorkspacePath(workspace,args.cwd);
+  return args;
+}
+
+function schemaType(value){
+  if(Array.isArray(value))return "array";
+  if(value===null)return "null";
+  if(Number.isInteger(value))return "integer";
+  if(typeof value==="number")return "number";
+  return typeof value;
+}
+
+function validateSchemaValue(schema,value,path="$"){
+  if(!schema||typeof schema!=="object")return null;
+  const expected=schema.type;
+  if(expected==="object"){
+    if(!value||typeof value!=="object"||Array.isArray(value))return path+" must be an object";
+    const properties=schema.properties&&typeof schema.properties==="object"?schema.properties:{};
+    for(const required of Array.isArray(schema.required)?schema.required:[])if(!Object.prototype.hasOwnProperty.call(value,required))return path+"."+required+" is required";
+    if(schema.additionalProperties===false){
+      const unknown=Object.keys(value).find(key=>!Object.prototype.hasOwnProperty.call(properties,key));
+      if(unknown)return path+"."+unknown+" is not allowed";
+    }
+    for(const [key,child] of Object.entries(properties)){
+      if(!Object.prototype.hasOwnProperty.call(value,key))continue;
+      const error=validateSchemaValue(child,value[key],path+"."+key);if(error)return error;
+    }
+    return null;
+  }
+  if(expected==="array"){
+    if(!Array.isArray(value))return path+" must be an array";
+    if(Number.isFinite(Number(schema.minItems))&&value.length<Number(schema.minItems))return path+" must contain at least "+schema.minItems+" items";
+    if(Number.isFinite(Number(schema.maxItems))&&value.length>Number(schema.maxItems))return path+" must contain at most "+schema.maxItems+" items";
+    for(let index=0;index<value.length;index++){const error=validateSchemaValue(schema.items,value[index],path+"["+index+"]");if(error)return error}
+    return null;
+  }
+  if(expected==="string"&&typeof value!=="string")return path+" must be a string";
+  if(expected==="boolean"&&typeof value!=="boolean")return path+" must be a boolean";
+  if(expected==="integer"&&!Number.isInteger(value))return path+" must be an integer";
+  if(expected==="number"&&(typeof value!=="number"||!Number.isFinite(value)))return path+" must be a number";
+  if(Array.isArray(schema.enum)&&!schema.enum.some(item=>Object.is(item,value)))return path+" must be one of: "+schema.enum.join(", ");
+  if(typeof value==="string"){
+    if(Number.isFinite(Number(schema.minLength))&&value.length<Number(schema.minLength))return path+" must be at least "+schema.minLength+" characters";
+    if(Number.isFinite(Number(schema.maxLength))&&value.length>Number(schema.maxLength))return path+" must be at most "+schema.maxLength+" characters";
+  }
+  if(typeof value==="number"&&Number.isFinite(value)){
+    if(Number.isFinite(Number(schema.minimum))&&value<Number(schema.minimum))return path+" must be >= "+schema.minimum;
+    if(Number.isFinite(Number(schema.maximum))&&value>Number(schema.maximum))return path+" must be <= "+schema.maximum;
+    if(Number.isFinite(Number(schema.exclusiveMinimum))&&value<=Number(schema.exclusiveMinimum))return path+" must be > "+schema.exclusiveMinimum;
+  }
+  return null;
+}
+
+function toolArgumentValidation(definition,args){
+  if(!definition||!["shared","repository-discovery","repository-invoke","mcp-invoke"].includes(definition.source))return null;
+  if((definition.namespace==="trebell_terminal"&&["run","start_background"].includes(definition.name))||(definition.namespace==="trebell_process"&&definition.name==="start")){
+    const semantic=nativeCommandSemanticError(args);if(semantic)return semantic;
+  }
+  const schema=definition.inputSchema||definition.rawDefinition?.inputSchema;
+  const wrapperError=validateSchemaValue(schema,args);if(wrapperError)return wrapperError;
+  if(definition.source==="mcp-invoke"&&definition.rawDefinition?.target?.inputSchema){
+    const targetError=validateSchemaValue(definition.rawDefinition.target.inputSchema,args?.arguments||{});
+    if(targetError)return "$.arguments"+String(targetError).replace(/^\$/,"");
+  }
+  return null;
+}
 
 function normalizedToolAllowlist(value){
   if(!Array.isArray(value))return null;
@@ -14,7 +95,7 @@ function normalizedToolAllowlist(value){
 
 const TOOL_ALLOWLIST_ALIASES=Object.freeze({
   repo:"trebell_repo",repository:"trebell_repo",workspace:"trebell_workspace",terminal:"trebell_terminal",browser:"trebell_browser",computer:"trebell_computer",
-  source_control:"trebell_source_control","source-control":"trebell_source_control",git:"trebell_source_control",delegate:"trebell_delegate",delegation:"trebell_delegate",
+  process:"trebell_process",background:"trebell_process",source_control:"trebell_source_control","source-control":"trebell_source_control",git:"trebell_source_control",delegate:"trebell_delegate",delegation:"trebell_delegate",
 });
 function canonicalToolPattern(value){
   const raw=String(value||"").trim().toLowerCase();if(!raw||raw==="*")return raw;
@@ -45,11 +126,13 @@ function requirementDecision(definition,context={}){
 }
 
 export function authorizePlatformToolCall(call={},context={},resolveDefinition=platformToolDefinition){
-  const {namespace,name}=callName(call),definition=(typeof resolveDefinition==="function"?resolveDefinition(namespace,name):null)||null;
+  const {namespace,name}=callName(call),definition=(typeof resolveDefinition==="function"?resolveDefinition(namespace,name,call):null)||null;
   if(!namespace||!name||!definition)return rejection(`Unknown Trebell tool: ${namespace||"default"}/${name||"unknown"}.`,definition);
+  const args=normalizedWorkspaceArguments(namespace,name,call.arguments,context),validationError=toolArgumentValidation(definition,args);
+  if(validationError)return rejection(`Invalid arguments for ${namespace}/${name}: ${validationError}.`,definition);
   if(!toolAllowedByAllowlist(namespace,name,context.toolAllowlist))return rejection(`Tool ${namespace}/${name} is not allowed by the active recipe.`,definition);
   const requirement=requirementDecision(definition,{...context,namespace});if(requirement)return requirement;
-  const args=objectArguments(call.arguments),policy=definition.policy||{};
+  const policy=definition.policy||{};
   const policyMetadata=policy.classifyFromInput?{}:{
     externalSideEffect:policy.externalSideEffect,
     riskLevel:policy.riskLevel,
@@ -73,7 +156,7 @@ export function authorizePlatformToolCall(call={},context={},resolveDefinition=p
       requestedPermissionEscalation:false,
       rules:context.rules||[],
     }),
-    definition,
+    definition,arguments:args,
     requirementFailed:false,
   };
 }
@@ -132,7 +215,7 @@ export function createSharedToolGateway({execute,confirm=null,environment=proces
       const started=performance.now();
       try{
         const raw=await execute({
-          ...call,namespace:names.namespace,name:names.name,arguments:objectArguments(call.arguments),definition:authorization.definition,authorization,context:resolvedContext,
+          ...call,namespace:names.namespace,name:names.name,arguments:authorization.arguments||normalizedWorkspaceArguments(names.namespace,names.name,call.arguments,resolvedContext),definition:authorization.definition,authorization,context:resolvedContext,
         });
         const result=redactSecretValue(raw,{environment,maxDepth:12,maxArray:500,maxFields:1000});
         const success=result?.success!==false;

@@ -24,6 +24,33 @@ test("Native repository tools execute in-process through Context Engine and shar
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
+test("Native repository paths accept workspace-root-style leading slashes",async()=>{
+  const root=await fixture();
+  try{
+    const executor=createNativeToolExecutor({contextEngine:new ContextEngine(),root,policyContext:{permissionProfile:"read-only",runtime:"native"}});
+    const result=await executor({namespace:"trebell_repo",name:"read_source",arguments:{path:"/src/session.js"}});
+    assert.equal(result.path,"src/session.js");assert.match(result.content,/SessionManager/);
+    const escaped=await executor({namespace:"trebell_repo",name:"read_source",arguments:{path:"../outside.js"}});
+    assert.equal(escaped.success,false);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("Native advanced repository capabilities use the stable discover/invoke interface",async()=>{
+  const root=await fixture();
+  try{
+    const executor=createNativeToolExecutor({
+      contextEngine:new ContextEngine(),root,policyContext:{permissionProfile:"read-only",runtime:"native"},
+      discoverRepositoryTools:()=>({success:true,capabilities:[{name:"git_history"}]}),
+    });
+    const direct=await executor({namespace:"trebell_repo",name:"git_history",arguments:{limit:2}});
+    assert.equal(direct.success,false);assert.match(direct.error,/trebell_repo\/invoke/i);
+    const invoked=await executor({namespace:"trebell_repo",name:"invoke",arguments:{name:"git_history",arguments:{limit:2}}});
+    assert.ok(invoked&&typeof invoked==="object");
+    const invalid=await executor({namespace:"trebell_repo",name:"invoke",arguments:{name:"git_history",arguments:{limit:1000}}});
+    assert.equal(invalid.success,false);assert.match(invalid.error,/100|less than or equal|too big/i);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
 test("Native shared tools stay delegated but still pass through gateway requirements",async()=>{
   const calls=[];
   const executor=createNativeToolExecutor({

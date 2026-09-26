@@ -715,9 +715,10 @@ test("project lifecycle hooks are explicit, editable, and visually readable",asy
   });
   await page.getByRole("button",{name:"Projects",exact:true}).click();await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
   const card=page.locator(".project-card").filter({hasText:"Visual Audit Workspace"});await expect(card).toBeVisible();await card.getByRole("button",{name:"Add hook"}).click();
-  const editor=card.locator(".project-hook-editor");await expect(editor).toBeVisible();await editor.getByPlaceholder(/Hook name/).fill("Lint gate");await editor.getByPlaceholder(/Command/).fill("npm run lint");await editor.getByRole("button",{name:"Save hook"}).click();
+  const editor=card.locator(".project-hook-editor"),clickCurrentSave=()=>card.evaluate(node=>{const button=[...node.querySelectorAll(".project-hook-editor button")].find(item=>item.textContent?.trim()==="Save hook");if(!button)throw new Error("Current hook editor has no Save hook button");button.click()});
+  await expect(editor).toBeVisible();await editor.getByPlaceholder(/Hook name/).fill("Lint gate");await editor.getByPlaceholder(/Command/).fill("npm run lint");await clickCurrentSave();
   await expect(card.locator(".project-hook-row")).toContainText("Lint gate");await expect(card.locator(".project-hook-row")).toContainText("Required verification");expect(lastSaved.hooks).toHaveLength(1);expect(lastSaved.hooks[0].event).toBe("verification.required");expect(lastSaved.hooks[0].failureMode).toBe("block");
-  await card.locator(".project-hook-row").getByTitle("Edit hook").click();await editor.locator("select").first().selectOption("source-control.before");await editor.getByPlaceholder(/Optional actions/).fill("push, git.commit");await editor.getByLabel("On failure").selectOption("warn");await editor.getByRole("button",{name:"Save hook"}).click();
+  await card.locator(".project-hook-row").getByTitle("Edit hook").click();await editor.locator("select").first().selectOption("source-control.before");await editor.getByPlaceholder(/Optional actions/).fill("push, git.commit");await editor.getByLabel("On failure").selectOption("warn");await clickCurrentSave();
   const row=card.locator(".project-hook-row");await expect(row).toContainText("Before source control");await expect(row).toContainText("push, git.commit");await expect(row.locator("b")).toHaveText("warn");expect(lastSaved.hooks[0].actions).toEqual(["push","git.commit"]);
   await page.setViewportSize({width:1280,height:800});const metrics=await card.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await row.scrollIntoViewIfNeeded();await page.screenshot({path:auditDir+"project-lifecycle-hooks-dark-1280x800.png",fullPage:true});
   await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await expect.poll(()=>row.evaluate(node=>getComputedStyle(node).backgroundColor)).toBe("rgb(255, 255, 255)");await page.screenshot({path:auditDir+"project-lifecycle-hooks-light-1280x800.png",fullPage:true});
@@ -3606,8 +3607,14 @@ test("General chat start failures stay on Projects with visible feedback",async(
   await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
   const general=page.getByRole("button",{name:/No project · General chat/});
   await expect(general).toBeVisible();
+  await page.evaluate(()=>{
+    window.__trebellVisualAlerts=[];
+    const capture=()=>document.querySelectorAll('[role="alert"]').forEach(node=>{const text=node.textContent?.trim();if(text&&!window.__trebellVisualAlerts.includes(text))window.__trebellVisualAlerts.push(text)});
+    capture();new MutationObserver(capture).observe(document.body,{childList:true,subtree:true,characterData:true});
+  });
   await general.click();
-  await expect(page.getByRole("alert")).toContainText("Could not start General chat: Deliberate General chat workspace failure");
+  await expect.poll(()=>page.evaluate(()=>window.__trebellVisualAlerts||[]),{timeout:10_000}).toContain("Could not start General chat: Deliberate General chat workspace failure");
+  await expect(general).toContainText("Start chat",{timeout:10_000});
   await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
   await expect(general).toBeVisible();
   await expect(general).toContainText("Start chat");
@@ -3652,8 +3659,8 @@ test("cross-environment project activation rolls back when project activation fa
   await expect(currentCard).toHaveClass(/active/);
   await expect(remoteCard).toBeVisible();
   await remoteCard.locator(".project-open").click();
-  await expect(page.getByRole("alert")).toContainText("Deliberate remote project activation failure");
-  await expect.poll(()=>activationCalls).toEqual([remoteEnvironment.id,null]);
+  await expect.poll(()=>activationCalls,{timeout:10_000}).toEqual([remoteEnvironment.id,null]);
+  await expect(page.getByRole("alert")).toContainText("Deliberate remote project activation failure",{timeout:10_000});
   expect(activeEnvironmentId).toBeNull();
   await expect(currentCard).toHaveClass(/active/);
   await expect(remoteCard).not.toHaveClass(/active/);

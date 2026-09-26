@@ -29,6 +29,25 @@ test("project, delegation and unknown tool requirements fail closed",()=>{
   assert.equal(unknown.decision,POLICY_REJECT);assert.match(unknown.reason,/unknown trebell tool/i);
 });
 
+test("Trebell-owned tool arguments are schema-validated before policy or execution",async()=>{
+  const normalized=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"node",args:"verify.mjs"}},{permissionProfile:"full",workspace:"/repo"});
+  assert.equal(normalized.decision,POLICY_ALLOW);
+  const combined=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"node verify.mjs"}},{permissionProfile:"full",workspace:"/repo"});
+  assert.equal(combined.decision,POLICY_ALLOW);
+  const shellSyntax=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"npm test | findstr FAIL"}},{permissionProfile:"full",workspace:"/repo"});
+  assert.equal(shellSyntax.decision,POLICY_REJECT);assert.match(shellSyntax.reason,/explicit shell executable/i);
+  const malformed=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"node",args:{bad:true}}},{permissionProfile:"full",workspace:"/repo"});
+  assert.equal(malformed.decision,POLICY_REJECT);assert.match(malformed.reason,/\.args must be an array/i);
+  const extra=authorizePlatformToolCall({namespace:"trebell_workspace",name:"read_file",arguments:{path:"a.js",surprise:true}},{permissionProfile:"read-only",workspace:"/repo"});
+  assert.equal(extra.decision,POLICY_REJECT);assert.match(extra.reason,/surprise is not allowed/i);
+  let executed=false,seen=null;
+  const gateway=createSharedToolGateway({execute:async call=>{executed=true;seen=call.arguments;return {args:call.arguments.args}}});
+  const result=await gateway.invoke({namespace:"trebell_terminal",name:"run",arguments:{command:"node",args:"verify.mjs"}},{permissionProfile:"full",workspace:"/repo"});
+  assert.equal(result.success,true);assert.equal(executed,true);assert.deepEqual(seen.args,["verify.mjs"]);assert.deepEqual(result.result.args,["verify.mjs"]);
+  const combinedResult=await gateway.invoke({namespace:"trebell_terminal",name:"run",arguments:{command:"node verify.mjs"}},{permissionProfile:"full",workspace:"/repo"});
+  assert.equal(combinedResult.success,true);assert.equal(seen.command,"node");assert.deepEqual(seen.args,["verify.mjs"]);
+});
+
 test("repository intelligence goes through the same gateway as other Trebell tools",async()=>{
   const authorized=authorizePlatformToolCall({namespace:"trebell_repo",name:"search_symbols",arguments:{query:"Session"}},{permissionProfile:"read-only",workspace:"/repo"});
   assert.equal(authorized.decision,POLICY_ALLOW);assert.equal(authorized.definition.source,"repository");assert.equal(authorized.action.kind,"read");
@@ -37,6 +56,18 @@ test("repository intelligence goes through the same gateway as other Trebell too
   const calls=[],gateway=createSharedToolGateway({execute:async call=>{calls.push(call);return {matches:["src/session.js"]}}});
   const result=await gateway.invoke({namespace:"trebell_repo",name:"search_symbols",arguments:{query:"Session"}},{permissionProfile:"read-only",workspace:"/repo"});
   assert.equal(result.success,true);assert.equal(calls[0].definition.handler,"searchSymbols");assert.deepEqual(calls[0].arguments,{query:"Session"});
+});
+
+test("workspace-root-style paths normalize before policy and execution",async()=>{
+  const workspace="C:\\repo";
+  const repo=authorizePlatformToolCall({namespace:"trebell_repo",name:"read_source",arguments:{path:"/src/app.js"}},{permissionProfile:"read-only",workspace,runtime:"native"});
+  assert.equal(repo.decision,POLICY_ALLOW);assert.equal(repo.arguments.path,"src/app.js");
+  const file=authorizePlatformToolCall({namespace:"trebell_workspace",name:"read_file",arguments:{path:"/README.md"}},{permissionProfile:"read-only",workspace,runtime:"native"});
+  assert.equal(file.decision,POLICY_ALLOW);assert.equal(file.arguments.path,"README.md");
+  const terminal=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"node",args:["verify.mjs"],cwd:"/"}},{permissionProfile:"full",workspace,runtime:"native"});
+  assert.equal(terminal.arguments.cwd,".");
+  const escape=authorizePlatformToolCall({namespace:"trebell_workspace",name:"read_file",arguments:{path:"../outside.txt"}},{permissionProfile:"read-only",workspace,runtime:"native"});
+  assert.equal(escape.decision,POLICY_REJECT);
 });
 
 test("shared tool gateway never executes rejected or unconfirmed work",async()=>{
@@ -56,8 +87,8 @@ test("confirmed shared tool work executes once, redacts results, and keeps raw a
     execute:async call=>{calls.push(call);return {success:true,content:`result token=${secret}`,authorization:"Bearer "+secret}},
     onEvent:event=>events.push(event),
   });
-  const result=await gateway.invoke({namespace:"trebell_browser",name:"snapshot",arguments:{secretPrompt:"do not trace me"}},{permissionProfile:"supervised",desktopAvailable:true});
-  assert.equal(result.success,true);assert.equal(calls.length,1);assert.equal(calls[0].definition.name,"snapshot");
+  const result=await gateway.invoke({namespace:"trebell_browser",name:"type",arguments:{ref:"e1",text:"do not trace me"}},{permissionProfile:"supervised",desktopAvailable:true});
+  assert.equal(result.success,true);assert.equal(calls.length,1);assert.equal(calls[0].definition.name,"type");
   assert.match(result.result.content,/\[redacted\]/);assert.equal(result.result.authorization,"[redacted]");
   const trace=JSON.stringify(events);assert.doesNotMatch(trace,/do not trace me/);assert.doesNotMatch(trace,new RegExp(secret));
   assert.deepEqual(events.map(event=>event.name),["shared_tool.policy","shared_tool.confirmation_requested","shared_tool.confirmation_resolved","shared_tool.started","shared_tool.completed"]);
@@ -121,7 +152,7 @@ test("Native terminal policy classifies argv content instead of trusting a stati
   assert.equal(ordinary.decision,POLICY_ALLOW);assert.equal(ordinary.action.riskLevel,"medium");
   const push=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"git",args:["push","origin","main"],cwd:"."}},{permissionProfile:"auto",workspace:"/repo",runtime:"native"});
   assert.equal(push.decision,POLICY_CONFIRM);assert.equal(push.action.externalSideEffect,true);assert.equal(push.action.riskLevel,"high");
-  const backgroundPush=authorizePlatformToolCall({namespace:"trebell_terminal",name:"start_background",arguments:{command:"git",args:["push","origin","main"],cwd:"."}},{permissionProfile:"auto",workspace:"/repo",runtime:"native"});
+  const backgroundPush=authorizePlatformToolCall({namespace:"trebell_process",name:"start",arguments:{command:"git",args:["push","origin","main"],cwd:"."}},{permissionProfile:"auto",workspace:"/repo",runtime:"native"});
   assert.equal(backgroundPush.decision,POLICY_CONFIRM);assert.equal(backgroundPush.action.externalSideEffect,true);assert.equal(backgroundPush.action.riskLevel,"high");
   const destructive=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"rm",args:["-rf","dist"],cwd:"."}},{permissionProfile:"auto",workspace:"/repo",runtime:"native"});
   assert.equal(destructive.decision,POLICY_REJECT);assert.equal(destructive.action.riskLevel,"critical");

@@ -2,7 +2,7 @@
 
 This file tracks the gap between **implemented + automated-tested** and **proven on real machines/accounts/services**.
 
-Current release target: **v1.3.2**
+Current release target: **v1.3.3**
 
 ## How to record results
 
@@ -20,7 +20,7 @@ For every test, mark **Pass / Fail / Blocked** and capture:
 ## 1. Fresh Windows installer
 
 - [ ] Uninstall an older Trebell build if present.
-- [ ] Run **Trebell-Code-Setup-1.3.2.exe**.
+- [ ] Run **Trebell-Code-Setup-1.3.3.exe**.
 - [ ] Choose a non-default install directory.
 - [ ] Confirm Start Menu shortcut.
 - [ ] Launch Trebell from the installed shortcut.
@@ -65,6 +65,28 @@ Failure checks:
 
 ## 3. Trebell Native with a real provider
 
+Automated baseline already proven for **VyceAi + deepseek-v4.1**:
+
+- Native provider path without Codex app-server;
+- Trebell Native system prompt delivered to the real model;
+- real repository/workspace/terminal tool calls;
+- real source edit;
+- real terminal verification;
+- independent post-turn verification.
+- stable progressive repository/MCP discovery keeps advanced schemas out of the baseline request;
+- large tool-output virtualization and repeated source-observation deduplication are covered by automated tests;
+- request-level telemetry records prompt/schema/history/tool-result estimates, provider bytes/latency, stable hashes, and cache usage;
+- the latest small live coding fixture completed in 4 model turns / 12,006 input tokens with no failed tool calls.
+
+Command: `npm run test:vyce:native`
+
+Additional live engineering checks:
+
+- `npm run test:vyce:cache` — repeated-prefix cache experiment for the current Vyce route;
+- `npm run bench:vyce:native` — multi-file refactor, failure-repair, and large-output benchmark scenarios.
+
+The checklist below is still required for broader real-world confidence:
+
 - [ ] Select Trebell Native.
 - [ ] Select a real provider/model.
 - [ ] Ask it to inspect a medium/large repository.
@@ -83,6 +105,13 @@ Budget test:
 - [ ] Set a deliberately tiny turn/tool/time budget.
 - [ ] Trigger a task that exceeds it.
 - [ ] Confirm Trebell stops with a clear budget error.
+
+Efficiency observation to revisit manually on larger tasks:
+
+- [ ] Record model turns/tool calls/input-token usage for representative tasks and compare against Codex/Claude/OpenCode on the same task.
+- [ ] Repeat the benchmark across other providers/models and compare cache hits, latency and task success.
+- [ ] Exercise a real task that requires an advanced repository capability and confirm the model uses `trebell_repo/discover` then `trebell_repo/invoke` without changing the provider-visible manifest.
+- [ ] Exercise a real task that requires an MCP tool and confirm discovery/call remains cache-stable and uses the target tool's real policy.
 
 ---
 
@@ -467,9 +496,9 @@ Expected:
 
 ## 29. Release artifact integrity
 
-For v1.3.2:
+For v1.3.3:
 
-- [ ] Compare installer SHA-256 with release-artifacts/v1.3.2/release.json.
+- [ ] Compare installer SHA-256 with release-artifacts/v1.3.3/release.json.
 - [ ] Confirm byte size.
 - [ ] Confirm release.json Git commit matches the release commit.
 - [ ] Confirm GitHub release contains installer, latest.yml, release.json and blockmap.

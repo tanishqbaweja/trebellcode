@@ -13,7 +13,7 @@ import {
 test("shared Trebell tool catalog owns unique schemas and policy metadata",()=>{
   const namespaceNames=SHARED_TOOL_NAMESPACE_CATALOG.map(item=>item.name);
   assert.equal(new Set(namespaceNames).size,namespaceNames.length);
-  assert.deepEqual(namespaceNames,["trebell_workspace","trebell_terminal","trebell_browser","trebell_computer","trebell_source_control","trebell_delegate"]);
+  assert.deepEqual(namespaceNames,["trebell_output","trebell_workspace","trebell_terminal","trebell_process","trebell_browser","trebell_computer","trebell_source_control","trebell_delegate"]);
   for(const namespace of SHARED_TOOL_NAMESPACE_CATALOG){
     assert.ok(namespace.description);assert.ok(namespace.tools.length);
     const names=namespace.tools.map(item=>item.name);assert.equal(new Set(names).size,names.length);
@@ -33,8 +33,9 @@ test("shared Trebell tool catalog owns unique schemas and policy metadata",()=>{
   const reload=sharedToolDefinition("trebell_browser","reload");assert.equal(reload.policy.kind,"fetch");assert.equal(reload.policy.idempotent,true);
   assert.equal(sharedToolNamespace("trebell_device"),null,"mobile simulator tooling is outside the desktop harness product surface");
   const terminal=sharedToolDefinition("trebell_terminal","run");assert.equal(terminal.policy.kind,"execute");assert.equal(terminal.policy.classifyFromInput,true);assert.equal(terminal.requirements.workspace,true);
-  const background=sharedToolDefinition("trebell_terminal","start_background");assert.equal(background.policy.kind,"execute");assert.equal(background.policy.classifyFromInput,true);
-  assert.equal(sharedToolDefinition("trebell_terminal","background_status").policy.kind,"read");assert.equal(sharedToolDefinition("trebell_terminal","stop_background").policy.kind,"execute");
+  const background=sharedToolDefinition("trebell_process","start");assert.equal(background.policy.kind,"execute");assert.equal(background.policy.classifyFromInput,true);
+  assert.equal(sharedToolDefinition("trebell_process","status").policy.kind,"read");assert.equal(sharedToolDefinition("trebell_process","stop").policy.kind,"execute");
+  assert.equal(sharedToolDefinition("trebell_terminal","start_background").policy.kind,"execute","legacy process aliases remain resolvable but are not advertised");
   assert.equal(sharedToolDefinition("trebell_source_control","status").policy.kind,"read");
   const push=sharedToolDefinition("trebell_source_control","push");assert.equal(push.policy.riskLevel,"high");assert.equal(push.policy.externalSideEffect,true);assert.equal(push.policy.reversibility,"none");
   assert.equal(sharedToolDefinition("trebell_browser","click").policy.externalSideEffect,true);assert.equal(sharedToolDefinition("trebell_browser","type").policy.externalSideEffect,true);
@@ -58,7 +59,7 @@ test("dynamic tool serialization strips harness-only metadata",()=>{
 
 test("dynamic tool exposure is capability-driven",()=>{
   const minimal=sharedDynamicToolNamespaces({sourceControl:false});assert.deepEqual(minimal,[]);
-  const enabled=sharedDynamicToolNamespaces({workspaceTools:true,terminal:true,browser:true,computer:true,sourceControl:true,delegation:true});
-  assert.deepEqual(enabled.map(item=>item.name),["trebell_workspace","trebell_terminal","trebell_browser","trebell_computer","trebell_source_control","trebell_delegate"]);
+  const enabled=sharedDynamicToolNamespaces({workspaceTools:true,terminal:true,process:true,browser:true,computer:true,sourceControl:true,delegation:true});
+  assert.deepEqual(enabled.map(item=>item.name),["trebell_workspace","trebell_terminal","trebell_process","trebell_browser","trebell_computer","trebell_source_control","trebell_delegate"]);
   const projectOnly=sharedDynamicToolNamespaces({sourceControl:true,delegation:true});assert.deepEqual(projectOnly.map(item=>item.name),["trebell_source_control","trebell_delegate"]);
 });

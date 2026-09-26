@@ -1,12 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  CORE_REPOSITORY_TOOL_NAMES,
   REPOSITORY_TOOL_ANNOTATIONS,
   REPOSITORY_TOOL_DEFINITIONS,
   invokeRepositoryTool,
   parseRepositoryToolArguments,
   repositoryDynamicToolNamespace,
   repositoryToolHandlers,
+  searchRepositoryToolDefinitions,
 } from "../src/repository-tool-catalog.mjs";
 
 test("repository tool catalog is unique, read-only, and includes deterministic verification control",()=>{
@@ -56,6 +58,32 @@ test("repository tool catalog serializes into one Codex dynamic-tool namespace",
   assert.ok(search.inputSchema.required.includes("query"));
   assert.equal(knowledge.inputSchema.type,"object");assert.equal(knowledge.inputSchema.properties.refresh.type,"boolean");
   assert.doesNotThrow(()=>JSON.stringify(namespace));
+});
+
+test("progressive Native repository catalog keeps common tools small and discovers advanced capabilities on demand",()=>{
+  const [namespace]=repositoryDynamicToolNamespace({progressive:true});
+  const names=namespace.tools.map(item=>item.name);
+  assert.ok(names.includes("discover"));
+  assert.ok(names.includes("invoke"));
+  for(const name of CORE_REPOSITORY_TOOL_NAMES)assert.ok(names.includes(name),name);
+  assert.ok(names.length<REPOSITORY_TOOL_DEFINITIONS.length);
+  assert.equal(names.includes("language_symbol"),false);
+  const semantic=searchRepositoryToolDefinitions({query:"semantic definition rename typescript",limit:5,exclude:names});
+  assert.ok(semantic.some(item=>item.name==="language_symbol"));
+  assert.ok(semantic.some(item=>item.name==="rename_preview"));
+  const [expanded]=repositoryDynamicToolNamespace({names:semantic.map(item=>item.name),includeDiscovery:false});
+  assert.ok(expanded.tools.some(item=>item.name==="language_symbol"));
+  assert.equal(expanded.tools.some(item=>item.name==="discover"),false);
+});
+
+test("repository discovery ignores generic navigation queries instead of expanding advanced schemas",()=>{
+  assert.deepEqual(searchRepositoryToolDefinitions({query:"repository structure and project layout",limit:8}),[]);
+  const semantic=searchRepositoryToolDefinitions({query:"semantic rename typescript code action",limit:8}).map(item=>item.name);
+  assert.ok(semantic.includes("rename_preview"));
+  assert.ok(semantic.includes("code_actions"));
+  const history=searchRepositoryToolDefinitions({query:"git history blame",limit:8}).map(item=>item.name);
+  assert.ok(history.includes("git_history"));
+  assert.ok(history.includes("git_blame"));
 });
 
 test("repository knowledge tools stay scoped to the active project and environment",async()=>{

@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread } from "../src/native-agent-session.mjs";
+import { NativeToolOutputStore } from "../src/native-tool-output-store.mjs";
 import { agentToolLifecycle } from "../src/agent-relay.mjs";
 const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
 
@@ -32,6 +36,60 @@ test("Native session reports namespaced tool lifecycle and keeps observations in
   assert.equal(lifecycle[0].update.namespace,"trebell_repo");assert.equal(lifecycle[0].update.tool,"search_symbols");assert.equal(lifecycle[1].update.status,"completed");
   const providerObservation=requests[1].messages.at(-1);assert.equal(providerObservation.role,"tool");assert.match(providerObservation.content,/untrusted tool data/i);assert.match(providerObservation.content,/src\/session\.js/);
   const persisted=agentToolLifecycle(lifecycle[1].update).item;assert.equal(persisted.type,"dynamicToolCall");assert.equal(persisted.namespace,"trebell_repo");assert.equal(persisted.tool,"search_symbols");assert.doesNotMatch(JSON.stringify(persisted.rawOutput),/untrusted tool data/i);
+});
+
+test("Native session keeps large tool output outside hot provider history behind a persistent handle",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-output-session-"));const requests=[],updates=[];
+  try{
+    const store=new NativeToolOutputStore({directory:root,maxHotBytes:4096});let calls=0;
+    const session=new NativeAgentSession({
+      model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_terminal",tools:[]}],toolOutputStore:store,onUpdate:update=>updates.push(update),
+      providerTurn:async request=>{requests.push(structuredClone(request));calls++;return calls===1
+        ?{id:"tool",text:"",toolCalls:[{id:"big",namespace:"trebell_terminal",name:"run",arguments:'{"command":"test"}'}],usage:{}}
+        :{id:"done",text:"done",toolCalls:[],usage:{}}},
+      executeTool:async()=>({exitCode:1,stdout:"x".repeat(40_000),stderr:"FAIL important"}),
+    });
+    await session.start({providerSessionId:"native-output",model:"model-a"});await session.prompt([{type:"text",text:"run"}]);
+    const observation=requests[1].messages.at(-1);assert.equal(observation.role,"tool");assert.match(observation.content,/trebell_output\/read/);assert.ok(observation.content.length<20_000);
+    const persisted=updates.find(entry=>entry.update?.sessionUpdate==="tool_call_update")?.update?.rawOutput;assert.ok(persisted?._trebell_output?.handle);assert.ok(JSON.stringify(persisted).length<20_000);
+    const read=await store.read({handle:persisted._trebell_output.handle,start_line:1,max_chars:48000});assert.match(read.content,/x{1000}/);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("Native session deduplicates only byte-identical repeated hot file observations",async()=>{
+  const requests=[],events=[];let providerCalls=0,content="A".repeat(4000);
+  const session=new NativeAgentSession({
+    model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {id:"read-1",text:"",toolCalls:[{id:"read-a",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"large.txt"}'}],usage:{}};
+      if(providerCalls===2)return {id:"read-2",text:"",toolCalls:[{id:"read-b",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"large.txt"}'}],usage:{}};
+      return {id:"done",text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>({path:"large.txt",size:content.length,content}),
+  });
+  await session.start({providerSessionId:"native-dedupe",model:"model-a"});await session.prompt([{type:"text",text:"read twice"}]);
+  const firstObservation=requests[1].messages.at(-1);assert.equal(firstObservation.role,"tool");assert.match(firstObservation.content,/A{1000}/);
+  const repeatedObservation=requests[2].messages.at(-1);assert.equal(repeatedObservation.role,"tool");assert.match(repeatedObservation.content,/byte-identical/i);assert.doesNotMatch(repeatedObservation.content,/A{1000}/);
+  const dedupe=events.find(event=>event.name==="native.tool.observation_deduplicated");assert.ok(dedupe);assert.ok(dedupe.data.savedBytes>3000);
+});
+
+test("Native session returns full file content again when a repeated read has changed",async()=>{
+  const requests=[];let providerCalls=0,reads=0;
+  const session=new NativeAgentSession({
+    model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {id:"read-1",text:"",toolCalls:[{id:"read-a",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"large.txt"}'}],usage:{}};
+      if(providerCalls===2)return {id:"read-2",text:"",toolCalls:[{id:"read-b",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"large.txt"}'}],usage:{}};
+      return {id:"done",text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>{reads++;const marker=reads===1?"A":"B";return {path:"large.txt",size:4000,content:marker.repeat(4000)}},
+  });
+  await session.start({providerSessionId:"native-dedupe-change",model:"model-a"});await session.prompt([{type:"text",text:"read changed file"}]);
+  assert.match(requests[1].messages.at(-1).content,/A{1000}/);
+  assert.match(requests[2].messages.at(-1).content,/B{1000}/);
+  assert.doesNotMatch(requests[2].messages.at(-1).content,/byte-identical/i);
 });
 
 test("Native session passes a recipe tool allowlist only to tool calls in that turn",async()=>{
@@ -76,6 +134,37 @@ test("Native compaction replaces old provider context with a bounded continuatio
   assert.match(compacted.summary,/src\/parser\.js/);assert.equal(compacted.usage.totalTokens,42);assert.equal(session.messages.length,2);assert.equal(session.messages[0].content,"Always preserve exact paths.");assert.equal(session.messages[1].trebellCompaction,true);
   await session.prompt([{type:"text",text:"Continue now"}]);
   const after=requests[1].messages;assert.equal(after.some(message=>String(message.content||"").includes("OLD USER REQUEST")),false);assert.equal(after.some(message=>String(message.content||"").includes("OLD ASSISTANT ANSWER")),false);assert.ok(after.some(message=>message.trebellCompaction&&String(message.content).includes("src/parser.js")));assert.equal(after.at(-1).content,"Continue now");
+});
+
+test("Native compaction preserves a recent hot window and deterministic continuity beside the model summary",async()=>{
+  const requests=[];let call=0;
+  const recent=[{role:"user",content:"RECENT USER exact_identifier"},{role:"assistant",content:"RECENT ANSWER keep this verbatim"}];
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model",initialMessages:[
+      {role:"system",content:"base"},
+      {role:"user",content:"OLD USER"},
+      {role:"assistant",content:"OLD ANSWER"},
+      ...recent,
+    ],
+    providerTurn:async request=>{
+      requests.push(structuredClone({...request,signal:undefined}));call++;
+      if(call===1){
+        assert.equal(request.messages.some(message=>String(message.content||"").includes("RECENT USER")),false);
+        assert.match(JSON.stringify(request.messages),/Active goal: Preserve auth protocol/);
+        return {id:"compact-hot",text:"Model summary omitted the goal on purpose.",toolCalls:[],usage:{inputTokens:20,outputTokens:5,totalTokens:25}};
+      }
+      return {id:"after-hot",text:"continued",toolCalls:[],usage:{}};
+    },executeTool:async()=>"",
+  });
+  await session.start({model:"model"});
+  const result=await session.compact({recentMessages:recent,deterministicContext:"Active goal: Preserve auth protocol\nLatest verification: tests passed"});
+  assert.equal(result.retainedRecentMessageCount,2);assert.match(result.summary,/Preserve auth protocol/);
+  assert.deepEqual(session.messages.slice(-2),recent);
+  await session.prompt([{type:"text",text:"NEXT"}]);
+  const after=requests[1].messages;assert.equal(after.some(message=>String(message.content||"").includes("OLD USER")),false);
+  assert.ok(after.some(message=>message.trebellCompaction&&String(message.content||"").includes("Preserve auth protocol")));
+  assert.ok(after.some(message=>String(message.content||"").includes("RECENT USER exact_identifier")));
+  assert.ok(after.some(message=>String(message.content||"").includes("RECENT ANSWER keep this verbatim")));
 });
 
 test("Native persisted history can resume strictly after a compaction turn boundary",()=>{

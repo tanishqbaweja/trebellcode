@@ -8,6 +8,8 @@ import {
   environmentWorkspacePath,
 } from "./workspace.mjs";
 import { buildRuntimeEnvironment, runtimeEnvironmentKeys } from "./runtime-environment.mjs";
+import { normalizeNativeCommandArguments } from "./native-command-argv.mjs";
+import { rootRelativeFallback } from "./native-workspace-path.mjs";
 
 const DEFAULT_READ_BYTES=256*1024;
 const MAX_EDIT_BYTES=2*1024*1024;
@@ -35,7 +37,9 @@ async function nearestExistingLocalParent(candidate){
 }
 
 async function localSafePath(root,requested,{mustExist=false}={}){
-  const base=resolve(String(root||process.cwd())),candidate=resolve(base,String(requested||"."));
+  const base=resolve(String(root||process.cwd()));let raw=String(requested||".");
+  raw=rootRelativeFallback(raw)??raw;
+  const candidate=resolve(base,raw);
   if(!inside(base,candidate))throw new Error("Path is outside the active workspace");
   const realBase=await realpath(base);
   if(mustExist){
@@ -68,7 +72,10 @@ async function nearestExistingRemoteParent(environments,environmentId,candidate,
 async function safeWorkspacePath(root,requested,{environments=null,environmentId=null,mustExist=false}={}){
   const profile=environmentId&&environments?environments.get(environmentId):null;
   if(!profile||profile.type==="local")return {path:await localSafePath(root,requested,{mustExist}),remote:false,profile};
-  const located=environmentWorkspacePath(root,requested,{environments,environmentId}),base=located.root,candidate=located.path;
+  let raw=String(requested||".");
+  const baseRoot=posix.normalize(String(root||profile.cwd||"/")),absolute=raw.startsWith("/")?posix.normalize(raw):null;
+  if(!(absolute&&(absolute===baseRoot||absolute.startsWith(baseRoot.endsWith("/")?baseRoot:baseRoot+"/"))))raw=rootRelativeFallback(raw)??raw;
+  const located=environmentWorkspacePath(root,raw,{environments,environmentId}),base=located.root,candidate=located.path;
   const realBase=await remoteRealpath(environments,environmentId,base);
   if(mustExist){
     const realCandidate=await remoteRealpath(environments,environmentId,candidate);if(!inside(realBase,realCandidate,posix))throw new Error("Path resolves outside the active workspace");return {path:candidate,remote:true,profile};
@@ -145,16 +152,16 @@ export function createNativeBuiltins({root,environments=null,environmentId=null,
     }
     if(namespace==="trebell_terminal"){
       if(name==="run"){
-        const command=String(args.command||"").trim();if(!command)throw new Error("command is required");
-        const commandArgs=Array.isArray(args.args)?args.args.map(value=>String(value)).slice(0,256):[];
-        return await runArgv({root,environments,environmentId,environment,platform,command,args:commandArgs,cwd:String(args.cwd||"."),timeoutMs:boundedInteger(args.timeout_ms,30_000,1000,300_000),maxOutput:boundedInteger(args.max_output_bytes,DEFAULT_OUTPUT_BYTES,1024,2*1024*1024),signal:call.signal||null});
+        const normalized=normalizeNativeCommandArguments(args),command=String(normalized.command||"").trim();if(!command)throw new Error("command is required");
+        const commandArgs=Array.isArray(normalized.args)?normalized.args.map(value=>String(value)).slice(0,256):[];
+        return await runArgv({root,environments,environmentId,environment,platform,command,args:commandArgs,cwd:String(normalized.cwd||"."),timeoutMs:boundedInteger(normalized.timeout_ms,30_000,1000,300_000),maxOutput:boundedInteger(normalized.max_output_bytes,DEFAULT_OUTPUT_BYTES,1024,2*1024*1024),signal:call.signal||null});
       }
       if(name==="start_background"){
         if(!backgroundProcesses||!threadId)throw new Error("Native background processes are unavailable");
-        const command=String(args.command||"").trim();if(!command)throw new Error("command is required");
-        const commandArgs=Array.isArray(args.args)?args.args.map(value=>String(value)).slice(0,256):[],located=await safeWorkspacePath(root,String(args.cwd||"."),{environments,environmentId,mustExist:true});
+        const normalized=normalizeNativeCommandArguments(args),command=String(normalized.command||"").trim();if(!command)throw new Error("command is required");
+        const commandArgs=Array.isArray(normalized.args)?normalized.args.map(value=>String(value)).slice(0,256):[],located=await safeWorkspacePath(root,String(normalized.cwd||"."),{environments,environmentId,mustExist:true});
         const info=located.remote?null:await stat(located.path);if(info&&!info.isDirectory())throw new Error("Command working directory is not a directory");
-        return backgroundProcesses.start({threadId,command,args:commandArgs,cwd:located.path,environmentId,maxOutputBytes:boundedInteger(args.max_output_bytes,DEFAULT_OUTPUT_BYTES,1024,2*1024*1024),environmentNames});
+        return backgroundProcesses.start({threadId,command,args:commandArgs,cwd:located.path,environmentId,maxOutputBytes:boundedInteger(normalized.max_output_bytes,DEFAULT_OUTPUT_BYTES,1024,2*1024*1024),environmentNames});
       }
       if(name==="background_status"){
         if(!backgroundProcesses||!threadId)throw new Error("Native background processes are unavailable");return backgroundProcesses.status(threadId,String(args.process_id||""));
@@ -163,6 +170,22 @@ export function createNativeBuiltins({root,environments=null,environmentId=null,
         if(!backgroundProcesses||!threadId)throw new Error("Native background processes are unavailable");return await backgroundProcesses.terminate(threadId,String(args.process_id||""));
       }
       throw new Error(`Unknown Native terminal tool: ${name}`);
+    }
+    if(namespace==="trebell_process"){
+      if(name==="start"){
+        if(!backgroundProcesses||!threadId)throw new Error("Native background processes are unavailable");
+        const command=String(args.command||"").trim();if(!command)throw new Error("command is required");
+        const commandArgs=Array.isArray(args.args)?args.args.map(value=>String(value)).slice(0,256):typeof args.args==="string"&&args.args.length?[args.args]:[],located=await safeWorkspacePath(root,String(args.cwd||"."),{environments,environmentId,mustExist:true});
+        const info=located.remote?null:await stat(located.path);if(info&&!info.isDirectory())throw new Error("Command working directory is not a directory");
+        return backgroundProcesses.start({threadId,command,args:commandArgs,cwd:located.path,environmentId,maxOutputBytes:boundedInteger(args.max_output_bytes,DEFAULT_OUTPUT_BYTES,1024,2*1024*1024),environmentNames});
+      }
+      if(name==="status"){
+        if(!backgroundProcesses||!threadId)throw new Error("Native background processes are unavailable");return backgroundProcesses.status(threadId,String(args.process_id||""));
+      }
+      if(name==="stop"){
+        if(!backgroundProcesses||!threadId)throw new Error("Native background processes are unavailable");return await backgroundProcesses.terminate(threadId,String(args.process_id||""));
+      }
+      throw new Error(`Unknown Native process tool: ${name}`);
     }
     throw new Error(`Native built-in executor does not own ${namespace}/${name}`);
   };

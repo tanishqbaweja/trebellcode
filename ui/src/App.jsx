@@ -2558,6 +2558,7 @@ export default function App(){
       computer:desktopTools.computer,
       sourceControl:!projectless,
       delegation:Boolean(runtimeCapabilities.delegation&&runtimeCapabilities.dynamicTools),
+      process:Boolean(runtimeCapabilities.backgroundProcesses&&runtimeCapabilities.dynamicTools),
     };
   }
   function dynamicToolNamespacesForTask(taskText,{projectless=projectlessMode}={}){
@@ -2698,7 +2699,7 @@ export default function App(){
       const custom=(settings.customModels||[]).find(item=>item.id===modelId&&item.runtime===agentRuntime&&(!managedInference||item.provider===provider));
       const collaboration=selectedCollaborationMode(modelId);
       const contextPacket=await prepareTurnContext(thread,cwd,text,focusPathsOverride||repositoryFocusPaths(paths,contextChips),{projectless:projectlessMode,ignoreUsage:autoCompaction.compacted});
-      const turnContext={...repositoryContextEntries(contextPacket),...(additionalContext||{})};
+      const turnContext={...repositoryContextEntries(contextPacket,{seedOnly:agentRuntime==="native"}),...(additionalContext||{})};
       const dynamicToolNamespaces=dynamicToolNamespacesForTask(text,{projectless:Boolean(thread.providerMeta?.projectless??projectlessMode)});
       const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(agentRuntime==="codex"&&custom?.effort?{effort:custom.effort}:{}),...(agentRuntime==="codex"&&custom?.serviceTier?{serviceTierForTurn:custom.serviceTier}:{}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{}),...(Array.isArray(toolAllowlist)&&toolAllowlist.length?{toolAllowlist}:{}),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);
       setMessages(prev=>prev.map(m=>m.id===clientId?{...m,turnId,checkpointId:checkpoint?.id||null}:m));if(checkpoint?.id&&turnId){try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}});setCheckpointByTurn(prev=>({...prev,[turnId]:{...checkpoint,turnId}}))}catch(error){reportCheckpointIssue("File checkpoint was created but could not be linked to this turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}}setAttachments([]);setContextChips([]);return{thread,turnId};
@@ -2725,7 +2726,7 @@ export default function App(){
       const custom=(settings.customModels||[]).find(item=>item.id===modelId&&item.runtime===agentRuntime&&(!managedInference||item.provider===provider));
       turnRequestStarted=true;
       const collaboration=selectedCollaborationMode(modelId);
-      const contextPacket=await prepareTurnContext(thread,cwd,text,focusPaths||repositoryFocusPaths(paths,contextChips),{projectless,background:true}),contextEntries=repositoryContextEntries(contextPacket);
+      const contextPacket=await prepareTurnContext(thread,cwd,text,focusPaths||repositoryFocusPaths(paths,contextChips),{projectless,background:true}),contextEntries=repositoryContextEntries(contextPacket,{seedOnly:agentRuntime==="native"});
       const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(agentRuntime==="codex"&&custom?.effort?{effort:custom.effort}:{}),...(agentRuntime==="codex"&&custom?.serviceTier?{serviceTierForTurn:custom.serviceTier}:{}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths),...(Object.keys(contextEntries).length?{additionalContext:contextEntries}:{})});const turnId=result?.turn?.id||null;
       if(checkpoint?.id&&turnId)try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}})}catch(error){reportCheckpointIssue("Background file checkpoint was created but could not be linked to its turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}
       return {thread,turnId,cwd};

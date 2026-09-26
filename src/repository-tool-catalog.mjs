@@ -3,6 +3,37 @@ import { mcpAnnotationsForPolicy, REPOSITORY_READ_POLICY } from "./tool-policy.m
 
 export const REPOSITORY_TOOL_ANNOTATIONS=mcpAnnotationsForPolicy(REPOSITORY_READ_POLICY);
 export const REPOSITORY_TOOL_INSTRUCTIONS="Use these deterministic Trebell repository-index tools for symbol discovery, structural relationships, bounded source retrieval, semantic evidence, durable project knowledge, verification, and Git context before doing broad manual exploration.";
+export const CORE_REPOSITORY_TOOL_NAMES=Object.freeze([
+  "search_symbols","search_files","search_code","read_source",
+]);
+export const REPOSITORY_DISCOVERY_TOOL=Object.freeze({
+  type:"function",
+  name:"discover",
+  description:"Find a repository capability not already exposed, such as repo maps, project commands, related tests, diagnostics, semantic refactors, Git history, verification, or durable knowledge. Returns names and input schemas without changing the provider-visible manifest.",
+  inputSchema:{
+    type:"object",
+    properties:{
+      query:{type:"string",description:"Capability needed, e.g. diagnostics, project commands, semantic rename, Git history, or verification."},
+      limit:{type:"integer",minimum:1,maximum:12},
+    },
+    required:["query"],
+    additionalProperties:false,
+  },
+});
+export const REPOSITORY_INVOKE_TOOL=Object.freeze({
+  type:"function",
+  name:"invoke",
+  description:"Call one capability returned by discover without changing the provider-visible manifest.",
+  inputSchema:{
+    type:"object",
+    properties:{
+      name:{type:"string",minLength:1,maxLength:100,description:"Capability name returned by discover."},
+      arguments:{type:"object",description:"Arguments matching its returned input schema."},
+    },
+    required:["name","arguments"],
+    additionalProperties:false,
+  },
+});
 
 export function repositoryToolHandlers({contextEngine,root,io=null,knowledgeService=null,environmentId=null}={}){
   if(!contextEngine)throw new Error("Repository tools require a Context Engine");
@@ -67,17 +98,66 @@ export const REPOSITORY_TOOL_DEFINITIONS=Object.freeze([
   definition("knowledge_list","knowledgeList","List bounded durable Trebell repository facts relevant to the current task. Stale facts are excluded.",{query:z.string().max(1000).optional(),limit:z.number().int().min(1).max(100).optional(),includeUnverified:z.boolean().optional()},"repository durable knowledge architecture conventions decisions commands evidence"),
   definition("knowledge_context","knowledgeContext","Retrieve bounded task-relevant durable repository knowledge and refresh evidence-backed facts before returning them.",{query:z.string().max(1000).optional(),limit:z.number().int().min(1).max(100).optional(),refresh:z.boolean().optional()},"repository knowledge context verified evidence stale facts decisions conventions"),
 ]);
+const CORE_REPOSITORY_TOOL_NAME_SET=new Set(CORE_REPOSITORY_TOOL_NAMES);
+export function repositoryToolDefinition(name){
+  return REPOSITORY_TOOL_DEFINITIONS.find(item=>item.name===String(name||""))||null;
+}
+export function advancedRepositoryToolDefinition(name){
+  const definition=repositoryToolDefinition(name);
+  return definition&&!CORE_REPOSITORY_TOOL_NAME_SET.has(definition.name)?definition:null;
+}
 
-export function repositoryDynamicToolNamespace(){
+const REPOSITORY_DISCOVERY_STOP_WORDS=new Set([
+  "a","an","and","the","for","of","to","in","on","with",
+  "repository","repo","project","code","source","file","files",
+  "structure","layout","inspect","inspection","tool","tools",
+  "capability","capabilities","intelligence","information","info",
+]);
+function searchTerms(value){
+  return String(value||"").toLowerCase().split(/[^a-z0-9_+-]+/)
+    .filter(term=>term&&!REPOSITORY_DISCOVERY_STOP_WORDS.has(term))
+    .slice(0,24);
+}
+function repositoryToolScore(definition,query){
+  const terms=searchTerms(query),name=String(definition?.name||"").toLowerCase(),description=String(definition?.description||"").toLowerCase(),hint=String(definition?.searchHint||"").toLowerCase();
+  if(!terms.length)return 0;
+  let score=0;
+  for(const term of terms){
+    if(name===term)score+=100;else if(name.startsWith(term))score+=50;else if(name.includes(term))score+=32;
+    if(hint.includes(term))score+=20;if(description.includes(term))score+=12;
+  }
+  return score;
+}
+
+export function searchRepositoryToolDefinitions({query="",limit=8,exclude=[]}={}){
+  const omitted=new Set((Array.isArray(exclude)?exclude:[]).map(value=>String(value||"")));
+  const max=Math.max(1,Math.min(12,Math.trunc(Number(limit)||8)));
+  return REPOSITORY_TOOL_DEFINITIONS
+    .filter(definition=>!omitted.has(definition.name))
+    .map(definition=>({definition,score:repositoryToolScore(definition,query)}))
+    .filter(item=>item.score>=12)
+    .sort((a,b)=>b.score-a.score||a.definition.name.localeCompare(b.definition.name))
+    .slice(0,max)
+    .map(item=>item.definition);
+}
+
+export function repositoryDynamicToolNamespace({progressive=false,names=null,includeDiscovery=progressive}={}){
+  const selected=Array.isArray(names)
+    ?new Set(names.map(value=>String(value||"")))
+    :progressive?new Set(CORE_REPOSITORY_TOOL_NAMES):null;
+  const definitions=selected?REPOSITORY_TOOL_DEFINITIONS.filter(definition=>selected.has(definition.name)):REPOSITORY_TOOL_DEFINITIONS;
   return [{
     type:"namespace",
     name:"trebell_repo",
     description:"Query Trebell's deterministic repository intelligence, verification helpers, Git evidence, and durable evidence-backed repository knowledge.",
-    tools:REPOSITORY_TOOL_DEFINITIONS.map(definition=>{
+    tools:[
+      ...definitions.map(definition=>{
       const inputSchema=z.toJSONSchema(z.object(definition.inputSchema));
       delete inputSchema.$schema;
       return {type:"function",name:definition.name,description:definition.description,inputSchema};
-    }),
+      }),
+      ...(includeDiscovery?[REPOSITORY_DISCOVERY_TOOL,REPOSITORY_INVOKE_TOOL]:[]),
+    ],
   }];
 }
 

@@ -1,4 +1,4 @@
-import { REPOSITORY_TOOL_DEFINITIONS, repositoryDynamicToolNamespace } from "./repository-tool-catalog.mjs";
+import { REPOSITORY_DISCOVERY_TOOL, REPOSITORY_INVOKE_TOOL, REPOSITORY_TOOL_DEFINITIONS, repositoryDynamicToolNamespace } from "./repository-tool-catalog.mjs";
 import { sharedDynamicToolNamespaces, sharedToolDefinition, sharedToolNamespace } from "./shared-tool-catalog.mjs";
 
 function mergedRequirements(namespaceRequirements={},toolRequirements={}){
@@ -16,6 +16,22 @@ function sharedPlatformDefinition(namespace,name){
 }
 
 function repositoryPlatformDefinition(name){
+  if(String(name||"")==="discover"){
+    return {
+      namespace:"trebell_repo",name:"discover",description:REPOSITORY_DISCOVERY_TOOL.description,inputSchema:REPOSITORY_DISCOVERY_TOOL.inputSchema,source:"repository-discovery",handler:null,
+      policy:{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,externalSideEffect:false,asyncSafe:true},
+      requirements:{desktop:false,workspace:true,project:false,fullAccess:false,delegation:false,environment:"any"},
+      rawDefinition:{discovery:true},
+    };
+  }
+  if(String(name||"")==="invoke"){
+    return {
+      namespace:"trebell_repo",name:"invoke",description:REPOSITORY_INVOKE_TOOL.description,inputSchema:REPOSITORY_INVOKE_TOOL.inputSchema,source:"repository-invoke",handler:null,
+      policy:{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,externalSideEffect:false,asyncSafe:true},
+      requirements:{desktop:false,workspace:true,project:false,fullAccess:false,delegation:false,environment:"any"},
+      rawDefinition:{invoke:true},
+    };
+  }
   const definition=REPOSITORY_TOOL_DEFINITIONS.find(item=>item.name===String(name||""));if(!definition)return null;
   const policy=definition.policy||{};
   return {
@@ -49,12 +65,12 @@ export function platformToolParallelSafe(namespace,name){
   return true;
 }
 
-export function platformDynamicToolNamespaces({repository=true,...sharedOptions}={}){
-  return [...(repository?repositoryDynamicToolNamespace():[]),...sharedDynamicToolNamespaces(sharedOptions)];
+export function platformDynamicToolNamespaces({repository=true,progressiveRepository=false,...sharedOptions}={}){
+  return [...(repository?repositoryDynamicToolNamespace({progressive:progressiveRepository}):[]),...sharedDynamicToolNamespaces(sharedOptions)];
 }
 
-export function platformToolCatalog({repository=true,...sharedOptions}={}){
-  const namespaces=platformDynamicToolNamespaces({repository,...sharedOptions});
+export function platformToolCatalog({repository=true,progressiveRepository=false,...sharedOptions}={}){
+  const namespaces=platformDynamicToolNamespaces({repository,progressiveRepository,...sharedOptions});
   return namespaces.map(namespace=>({
     ...namespace,
     tools:(namespace.tools||[]).map(tool=>({...tool,platform:platformToolDefinition(namespace.name,tool.name)})),

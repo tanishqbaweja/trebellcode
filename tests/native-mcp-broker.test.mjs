@@ -47,7 +47,7 @@ test("Native MCP broker discovers real SDK tools, maps policy annotations, calls
   }finally{await broker.close()}
 });
 
-test("Native MCP progressive discovery exposes only matching schemas on demand",async()=>{
+test("Native MCP progressive discovery keeps a stable manifest and returns matching schemas as data",async()=>{
   const exposed=[];
   const broker=new NativeMcpBroker({
     servers:servers(),cwd:root,localEnvironment:{PATH:process.env.PATH,PATHEXT:process.env.PATHEXT,SystemRoot:process.env.SystemRoot,WINDIR:process.env.WINDIR,HOME:process.env.HOME,USERPROFILE:process.env.USERPROFILE},version:"test",
@@ -55,8 +55,10 @@ test("Native MCP progressive discovery exposes only matching schemas on demand",
   });
   try{
     const all=await broker.connect();assert.equal(all[0].tools.length,3);
-    const discovery=broker.discoveryNamespace();assert.equal(discovery.name,"trebell_mcp");assert.deepEqual(discovery.tools.map(item=>item.name),["discover","discover_resources","read_resource"]);assert.equal(broker.toolDefinition("trebell_mcp","discover").policy.kind,"read");assert.equal(broker.toolDefinition("trebell_mcp","read_resource").policy.kind,"read");
-    const result=await broker.call({namespace:"trebell_mcp",name:"discover",arguments:{query:"echo read",limit:4}});assert.equal(result.success,true);assert.equal(exposed.length,1);assert.equal(exposed[0].length,1);assert.deepEqual(exposed[0][0].tools.map(item=>item.name),["echo-read"]);assert.match(result.contentItems[0].text,/echo-read/);assert.doesNotMatch(result.contentItems[0].text,/mutate-state/);
+    const discovery=broker.discoveryNamespace();assert.equal(discovery.name,"trebell_mcp");assert.deepEqual(discovery.tools.map(item=>item.name),["discover","call","discover_resources","read_resource"]);assert.equal(broker.toolDefinition("trebell_mcp","discover").policy.kind,"read");assert.equal(broker.toolDefinition("trebell_mcp","read_resource").policy.kind,"read");
+    const before=JSON.stringify(discovery);
+    const result=await broker.call({namespace:"trebell_mcp",name:"discover",arguments:{query:"echo read",limit:4}});assert.equal(result.success,true);assert.equal(exposed.length,0);assert.match(result.contentItems[0].text,/echo-read/);assert.match(result.contentItems[0].text,/inputSchema/);assert.match(result.contentItems[0].text,/trebell_mcp\/call/);assert.doesNotMatch(result.contentItems[0].text,/mutate-state/);
+    assert.equal(JSON.stringify(broker.discoveryNamespace()),before);
   }finally{await broker.close()}
 });
 
@@ -125,6 +127,9 @@ test("Native MCP tools pass through Trebell policy instead of bypassing it",asyn
     const readOnly=createNativeToolExecutor({mcpBroker:broker,policyContext:{permissionProfile:"read-only",runtime:"native",workspace:root}});
     const read=await readOnly({namespace:ns,name:"echo-read",arguments:{text:"policy"}});assert.match(read.contentItems[0].text,/echo:policy/);
     const rejected=await readOnly({namespace:ns,name:"mutate-state",arguments:{value:"x"}});assert.equal(rejected.success,false);assert.match(rejected.error,/Read Only profile rejects/i);
+    const stableRead=await readOnly({namespace:"trebell_mcp",name:"call",arguments:{namespace:ns,name:"echo-read",arguments:{text:"stable"}}});assert.match(stableRead.contentItems[0].text,/echo:stable/);
+    const invalidStableRead=await readOnly({namespace:"trebell_mcp",name:"call",arguments:{namespace:ns,name:"echo-read",arguments:{text:{bad:true}}}});assert.equal(invalidStableRead.success,false);assert.match(invalidStableRead.error,/arguments.*text must be a string/i);
+    const stableRejected=await readOnly({namespace:"trebell_mcp",name:"call",arguments:{namespace:ns,name:"mutate-state",arguments:{value:"x"}}});assert.equal(stableRejected.success,false);assert.match(stableRejected.error,/Read Only profile rejects/i);
 
     let confirmations=0;
     const guarded=createNativeToolExecutor({mcpBroker:broker,policyContext:{permissionProfile:"auto",runtime:"native",workspace:root},confirm:async()=>{confirmations++;return true}});

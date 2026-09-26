@@ -62,6 +62,7 @@ test("external runtimes receive Trebell application context before the visible u
   assert.match(prompt[0].text,/Trebell supplied the following bounded working context/);
   assert.match(prompt[0].text,/src\/auth\/session\.js/);
   assert.equal(prompt[1].text,"Fix the refresh bug");
+  assert.deepEqual(JSON.parse(JSON.stringify(prompt)),prompt,"Native-only prompt provenance must not change serialized ACP payloads");
 });
 
 test("rejected Claude rewind restores the original provider session and removed turns",async()=>{

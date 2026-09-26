@@ -5,6 +5,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, join } from "node:path";
 import { trebellHome } from "./paths.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
+import { performance } from "node:perf_hooks";
+import { providerCapabilities } from "./provider-capabilities.mjs";
 
 export const MODEL_PROVIDERS = Object.freeze({
   freebuff: {
@@ -150,6 +152,7 @@ export class ProviderManager {
       protocolCompatibility: [...(provider.protocolCompatibility || [])],
       requiresKey: provider.requiresKey,
       hasKey: provider.requiresKey ? this.hasKey(provider.id) : true,
+      capabilities:providerCapabilities(provider.id),
     }));
   }
 
@@ -200,6 +203,7 @@ export class ProviderManager {
       requiresKey: provider.requiresKey,
       hasKey: provider.requiresKey ? this.hasKey(provider.id) : true,
       ready: provider.requiresKey ? this.hasKey(provider.id) : true,
+      capabilities:providerCapabilities(provider.id),
     };
   }
 
@@ -253,14 +257,15 @@ export class ProviderManager {
     };
   }
 
-  async forwardChat(providerId, chatBody, { signal, userAgent } = {}) {
+  async forwardChat(providerId, chatBody, { signal, userAgent, onWire } = {}) {
     const provider = this.get(providerId);
     if (provider.id === "freebuff") throw new Error("Freebuff chat is handled by the local freebuff2api bridge.");
     const key = this.key(provider.id);
     if (!key) throw new Error(`${provider.name} API key is not configured.`);
     if (provider.id === "justworker") {
       const anthropicBody = chatToAnthropic(chatBody);
-      const upstream = await this.fetchFn(provider.baseUrl + "/messages", {
+      const endpoint=provider.baseUrl + "/messages",body=JSON.stringify(anthropicBody);onWire?.({endpoint,wireApi:"anthropic-messages",requestBytes:Buffer.byteLength(body,"utf8")});
+      const upstream = await this.fetchFn(endpoint, {
         method: "POST",
         headers: {
           "x-api-key": key,
@@ -269,7 +274,7 @@ export class ProviderManager {
           "Accept": anthropicBody.stream ? "text/event-stream, application/json" : "application/json",
           "User-Agent": TREBELL_USER_AGENT,
         },
-        body: JSON.stringify(anthropicBody),
+        body,
         signal: providerRequestSignal(signal, this.requestTimeoutMs),
       });
       return await adaptAnthropicResponse(upstream, { stream: anthropicBody.stream, model: chatBody.model });
@@ -286,15 +291,16 @@ export class ProviderManager {
           "User-Agent": TREBELL_USER_AGENT,
         };
 
-    return await this.fetchFn(provider.baseUrl + "/chat/completions", {
+    const endpoint=provider.baseUrl + "/chat/completions",body=JSON.stringify(chatBody);onWire?.({endpoint,wireApi:"openai-chat-completions",requestBytes:Buffer.byteLength(body,"utf8")});
+    return await this.fetchFn(endpoint, {
       method: "POST",
       headers,
-      body: JSON.stringify(chatBody),
+      body,
       signal: providerRequestSignal(signal, this.requestTimeoutMs),
     });
   }
 
-  async forwardResponses(providerId, responsesBody, { signal } = {}) {
+  async forwardResponses(providerId, responsesBody, { signal, onWire } = {}) {
     const provider = this.get(providerId);
     if (provider.id !== "agentrouter") {
       throw new Error(`${provider.name} does not use direct Responses forwarding.`);
@@ -302,12 +308,13 @@ export class ProviderManager {
     const key = this.key(provider.id);
     if (!key) throw new Error(`${provider.name} API key is not configured.`);
     const stream = Boolean(responsesBody?.stream);
-    return await this.fetchFn(provider.baseUrl + "/responses", {
+    const endpoint=provider.baseUrl + "/responses",body=JSON.stringify(responsesBody);onWire?.({endpoint,wireApi:"openai-responses",requestBytes:Buffer.byteLength(body,"utf8")});
+    return await this.fetchFn(endpoint, {
       method: "POST",
       headers: agentRouterHeaders(key, {
         accept: stream ? "text/event-stream, application/json" : "application/json",
       }),
-      body: JSON.stringify(responsesBody),
+      body,
       signal: providerRequestSignal(signal, this.requestTimeoutMs),
     });
   }
@@ -316,10 +323,14 @@ export class ProviderManager {
     const provider=this.get(providerId),model=String(request.model||"").trim();
     if(!model)throw new Error("Provider turn requires a model.");
     if(provider.id==="freebuff")throw new Error("Freebuff provider turns are served by the local Freebuff bridge, not ProviderManager.");
+    const started=performance.now();let wire={endpoint:null,wireApi:null,requestBytes:0};
+    const onWire=value=>{wire=value||wire};
     const upstream=provider.wireApi==="responses"
-      ?await this.forwardResponses(provider.id,providerTurnToResponses({...request,model}),{signal})
-      :await this.forwardChat(provider.id,providerTurnToChat({...request,model}),{signal});
+      ?await this.forwardResponses(provider.id,providerTurnToResponses({...request,model}),{signal,onWire})
+      :await this.forwardChat(provider.id,providerTurnToChat({...request,model}),{signal,onWire});
+    const headersLatencyMs=Number((performance.now()-started).toFixed(3));
     const raw=await upstream.text();
+    const totalLatencyMs=Number((performance.now()-started).toFixed(3));
     if(!upstream.ok){
       const error=new Error(`${provider.name} HTTP ${upstream.status}: ${providerErrorExcerpt(raw,{environment:this.env,secret:this.key(provider.id),maxChars:1200})}`);
       error.status=upstream.status;
@@ -327,9 +338,23 @@ export class ProviderManager {
       throw error;
     }
     let parsed;try{parsed=raw?JSON.parse(raw):{}}catch{throw new Error(`${provider.name} returned invalid JSON for a provider turn.`)}
-    return provider.wireApi==="responses"
+    const result=provider.wireApi==="responses"
       ?normalizeResponsesTurnResponse(parsed,provider.id,model)
       :normalizeChatTurnResponse(parsed,provider.id,model);
+    const providerRequestId=upstream.headers?.get?.("x-request-id")||upstream.headers?.get?.("request-id")||upstream.headers?.get?.("x-amzn-requestid")||null;
+    result.telemetry={
+      endpoint:wire.endpoint,
+      wireApi:wire.wireApi||provider.protocolCompatibility?.[0]||provider.wireApi,
+      requestBytes:Number(wire.requestBytes)||0,
+      responseBytes:Buffer.byteLength(raw,"utf8"),
+      responseHeadersLatencyMs:headersLatencyMs,
+      timeToFirstTokenMs:null,
+      totalLatencyMs,
+      streaming:false,
+      providerRequestId,
+      providerResponseId:result.id||null,
+    };
+    return result;
   }
 
   async directChat(providerId, { model, prompt }) {

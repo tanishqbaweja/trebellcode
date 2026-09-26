@@ -1,4 +1,5 @@
 import { test,expect } from "@playwright/test";
+import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { mkdir,mkdtemp,rm } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -28,7 +29,8 @@ test("Trebell Native exposes real thread-owned background processes in Runtime",
   let calls=0;
   const nativeProviderTurn=async request=>{
     calls++;
-    if(calls===1)return{id:"background-ui-tool",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"background-ui-call",namespace:"trebell_terminal",name:"start_background",arguments:JSON.stringify({command:process.execPath,args:["-e","process.stdout.write('READY');setInterval(()=>{},1000)"],cwd:"."})}],finishReason:"tool_calls",usage:{inputTokens:30_000,outputTokens:1_000,totalTokens:31_000}};
+    const processTools=request.tools.find(item=>item.name==="trebell_process");assert.ok(processTools);assert.ok(processTools.tools.some(item=>item.name==="start"));
+    if(calls===1)return{id:"background-ui-tool",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"background-ui-call",namespace:"trebell_process",name:"start",arguments:JSON.stringify({command:process.execPath,args:["-e","process.stdout.write('READY');setInterval(()=>{},1000)"],cwd:"."})}],finishReason:"tool_calls",usage:{inputTokens:30_000,outputTokens:1_000,totalTokens:31_000}};
     return{id:"background-ui-answer",provider:request.provider,model:request.model,text:"Background server started.",toolCalls:[],finishReason:"stop",usage:{inputTokens:40_000,outputTokens:1_000,totalTokens:41_000}};
   };
   const relayServer=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(relayServer,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,nativeModelContextWindow:()=>100_000,version:"visual-fixture"});

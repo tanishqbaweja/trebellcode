@@ -16,6 +16,10 @@ test("platform dynamic tools compose repository intelligence with only enabled s
   assert.deepEqual(withoutRepo,[]);
   const catalog=platformToolCatalog({repository:true,sourceControl:false});
   const repo=catalog.find(item=>item.name==="trebell_repo");assert.ok(repo.tools.length>10);assert.ok(repo.tools.every(item=>item.platform?.source==="repository"));
+  const progressive=platformDynamicToolNamespaces({repository:true,progressiveRepository:true,workspaceTools:true,terminal:true,sourceControl:false});
+  const progressiveRepo=progressive.find(item=>item.name==="trebell_repo");assert.ok(progressiveRepo.tools.some(item=>item.name==="discover"));assert.ok(progressiveRepo.tools.some(item=>item.name==="invoke"));assert.ok(progressiveRepo.tools.length<repo.tools.length);
+  assert.equal(platformToolDefinition("trebell_repo","discover").source,"repository-discovery");
+  assert.equal(platformToolDefinition("trebell_repo","invoke").source,"repository-invoke");
 });
 
 test("platform parallel-safety is stricter than generic async safety",()=>{
