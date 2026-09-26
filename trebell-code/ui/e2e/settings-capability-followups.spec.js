@@ -57,3 +57,30 @@ test("computer-use settings follow runtime and desktop capabilities instead of C
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   await page.screenshot({path:auditDir+"settings-native-computer-capability-1280x800.png",fullPage:true});
 });
+
+test("Codex runtime panel does not advertise Native-only background process controls",async({page})=>{
+  const capabilities={queue:true,nativeQueue:true,fork:true,rewind:true,compaction:true,dynamicTools:true,usageReporting:true,detachedTasks:true,multiModelFanout:true,delegation:true,harnessTools:true,collaborationModes:true,steering:true,runtimeProfileSwitching:true,projectOwnership:true,backgroundProcesses:false};
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"codex-capability-truth-fixture",runtimeCapabilities:capabilities,activeEnvironmentId:null,activeEnvironment:null})}));
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{}})}));
+  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({provider:"freebuff",agentRuntime:"codex",models:["codex-fixture"],metadata:{provider:"freebuff",models:[{id:"codex-fixture",name:"Codex Fixture",provider:"freebuff",agent:"Codex"}]}})}));
+  await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+  await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+  await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+  await page.route(/\/api\/agent-runtimes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
+    selectedRuntime:"codex",selectedInstanceId:"codex-default",compatibleInstanceIds:["codex-default"],capabilities,
+    definitions:[{id:"codex",name:"Codex",multipleInstances:true,capabilities,installable:true,canAuthenticate:true}],
+    instances:[{id:"codex-default",kind:"codex",displayName:"Codex"}],
+    statuses:[{id:"codex-default",kind:"codex",name:"Codex",available:true,installed:true,authenticated:true,version:"fixture"}],
+  })}));
+  await page.goto("/");
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await page.getByTestId("right-panel-toggle").click();
+  const panel=page.getByTestId("right-panel");await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Runtime",exact:true}).click();
+  const capability=panel.getByTestId("runtime-capabilities").locator(".runtime-capability-grid>div").filter({hasText:"Background processes"});
+  await expect(capability).toContainText("not exposed");
+  await expect(panel.getByTestId("agent-background-terminals")).toHaveCount(0);
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await panel.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"codex-background-process-capability-truth-1280x800.png",fullPage:true});
+});

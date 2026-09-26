@@ -65,6 +65,7 @@ test("runtime capabilities describe adapter behavior without pretending unsuppor
   assert.equal(codex.dynamicToolExpansion,false);
   assert.equal(codex.nativeQueue,true);
   assert.equal(codex.mcpInjection,false);
+  assert.equal(codex.backgroundProcesses,false,"Codex does not implement Trebell's thread/backgroundTerminals RPC surface");
   const native=runtimeCapabilities("native");
   assert.equal(native.projectOwnership,false);
   assert.equal(native.dynamicTools,true);assert.equal(native.dynamicToolExpansion,true);assert.equal(native.contextReporting,true);assert.equal(native.nativeQueue,true);assert.equal(native.nativeHistoryPagination,true);assert.equal(native.threadSearch,true);assert.equal(native.languageIntelligence,true);assert.equal(native.nativeLsp,false);assert.equal(native.clientFilesystem,true);assert.equal(native.clientTerminal,true);assert.equal(native.fork,true);assert.equal(native.rewind,true);
