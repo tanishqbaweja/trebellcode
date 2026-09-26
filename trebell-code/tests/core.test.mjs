@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { renderCodexConfig, ensureCodexConfig } from "../src/config.mjs";
 import { parseRunArgs } from "../src/trebell.mjs";
-import { codexArgs } from "../src/codex.mjs";
+import { codexArgs, codexChildEnvironment } from "../src/codex.mjs";
 import { rebrandTerminalChunk } from "../src/branding.mjs";
 import { trebellHome, codexHome, freebuffConfigDir } from "../src/paths.mjs";
 
@@ -75,6 +75,27 @@ test("Codex args use the selected provider", () => {
     codexArgs({ model: "gpt-5.5", provider: "agentrouter", forwarded: ["exec", "hi"] }),
     ["-c", 'model_provider="agentrouter"', "-m", "gpt-5.5", "exec", "hi"],
   );
+});
+
+test("standalone Codex child environment excludes unrelated host credentials",()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-codex-env-"));
+  const env=codexChildEnvironment({
+    PATH:process.env.PATH||"/usr/bin",
+    HOME:root,
+    USERPROFILE:root,
+    TREBELL_HOME:root,
+    OPENAI_API_KEY:"must-not-reach-codex",
+    CODEX_API_KEY:"must-not-reach-codex-either",
+    GITHUB_TOKEN:"unrelated-secret",
+    CUSTOM_PRIVATE_TOKEN:"hidden",
+  });
+  assert.equal(env.PATH,process.env.PATH||"/usr/bin");
+  assert.equal(env.HOME,root);
+  assert.equal(env.CODEX_HOME,join(root,"codex"));
+  assert.equal(env.OPENAI_API_KEY,undefined);
+  assert.equal(env.CODEX_API_KEY,undefined);
+  assert.equal(env.GITHUB_TOKEN,undefined);
+  assert.equal(env.CUSTOM_PRIVATE_TOKEN,undefined);
 });
 
 test("terminal branding removes upstream product name from visible banner", () => {

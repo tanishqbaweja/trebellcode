@@ -2,13 +2,13 @@ import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { rebrandTerminalChunk } from "./branding.mjs";
 import { codexBin, codexHome } from "./paths.mjs";
+import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
 
-function childEnv(env = process.env) {
-  const next = { ...env, CODEX_HOME: codexHome(env) };
-  delete next.OPENAI_API_KEY;
-  delete next.CODEX_API_KEY;
-  delete next.CODEX_ACCESS_TOKEN;
-  return next;
+export function codexChildEnvironment(env = process.env) {
+  return {
+    ...buildRuntimeEnvironment("native",{parent:env,platform:process.platform}),
+    CODEX_HOME:codexHome(env),
+  };
 }
 
 export function codexArgs({ model, provider = "freebuff", forwarded = [] } = {}) {
@@ -82,7 +82,7 @@ export async function runCodex({ model, provider = "freebuff", forwarded = [], e
   }
 
   const args = codexArgs({ model, provider, forwarded });
-  const nextEnv = childEnv(env);
+  const nextEnv = codexChildEnvironment(env);
 
   if (process.stdin.isTTY && process.stdout.isTTY && env.TREBELL_DISABLE_PTY !== "1") {
     try {
