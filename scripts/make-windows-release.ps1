@@ -84,12 +84,34 @@ function Reset-ReleaseOutput {
 }
 
 function New-IsolatedPackagingOutput([string]$Prefix) {
-  # Do not use GetTempPath() here: on this Windows host it resolves to H:\temp,
-  # and electron-builder repeatedly observed just-written PE/ASAR files as
-  # missing on that drive. LocalAppData resolves to the local system profile
-  # drive and passed both unpacked and NSIS builds with ASAR integrity enabled.
-  $LocalAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
-  $Base = if (-not [string]::IsNullOrWhiteSpace($LocalAppData)) { Join-Path $LocalAppData "Temp" } else { [IO.Path]::GetTempPath() }
+  # Use a unique staging directory with enough free space. The earlier
+  # materialization race came from shared/downloaded Electron output; isolated
+  # staging plus the installed Electron dist has been reliable on H:\temp, while
+  # forcing LocalAppData can fail with ENOSPC on smaller system drives.
+  $MinimumFreeBytes = 8GB
+  $Candidates = @(
+    [IO.Path]::GetTempPath(),
+    (Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) "Temp")
+  ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+  $Base = $null
+  foreach ($Candidate in $Candidates) {
+    try {
+      New-Item -ItemType Directory -Path $Candidate -Force | Out-Null
+      $RootPath = [IO.Path]::GetPathRoot([IO.Path]::GetFullPath($Candidate))
+      $FreeBytes = ([IO.DriveInfo]::new($RootPath)).AvailableFreeSpace
+      if ($FreeBytes -ge $MinimumFreeBytes) { $Base = $Candidate; break }
+    } catch {}
+  }
+  if (-not $Base) {
+    $Details = ($Candidates | ForEach-Object {
+      try {
+        $RootPath = [IO.Path]::GetPathRoot([IO.Path]::GetFullPath($_))
+        $FreeBytes = ([IO.DriveInfo]::new($RootPath)).AvailableFreeSpace
+        "$_=$([math]::Round($FreeBytes/1GB,2))GB"
+      } catch { "$_=unavailable" }
+    }) -join ", "
+    throw "Windows packaging needs at least 8 GB free in an isolated temp root. Candidates: $Details"
+  }
   New-Item -ItemType Directory -Path $Base -Force | Out-Null
   $Output = Join-Path $Base ($Prefix + [Guid]::NewGuid().ToString("N"))
   New-Item -ItemType Directory -Path $Output -Force | Out-Null
@@ -111,7 +133,7 @@ function Invoke-UnpackedWindowsBuild([string]$ElectronDist) {
         "electron-builder","--dir","--win","--x64",
         "--config.electronDist=$ElectronDist",
         "--config.directories.output=$Output"
-      )
+      ) | Out-Host
       if (-not (Test-Path $UnpackedExe)) { throw "Unpacked desktop build was not produced: $UnpackedExe" }
       return [pscustomobject]@{ Output = $Output; Exe = $UnpackedExe }
     } catch {
@@ -131,7 +153,7 @@ function Invoke-WindowsInstallerBuild([string]$ElectronDist) {
         "electron-builder","--win","nsis","--x64",
         "--config.electronDist=$ElectronDist",
         "--config.directories.output=$Output"
-      )
+      ) | Out-Host
       return [pscustomobject]@{ Output = $Output }
     } catch {
       Remove-GeneratedPath $Output
