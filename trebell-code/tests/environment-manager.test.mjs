@@ -210,3 +210,14 @@ test("remote runtime argv can clear the login environment and re-expose only app
   assert.equal(remoteEnvironmentCommand("'tool'",[]),"'tool'");
   assert.match(remoteEnvironmentCommand("'tool'",[],{FIXTURE:"visible"}),/^env -i FIXTURE='visible' 'tool'$/);
 });
+
+test("remote stdin argv forwards its environment allowlist to the spawned session",async()=>{
+  const profile={id:"ssh",name:"Build box",type:"ssh",cwd:"/srv/app",host:"build.example",user:"dev",port:22};
+  const manager=new EnvironmentManager({state:stateFor([profile]),platform:"linux"});let launch=null;
+  manager.spawnArgv=(_id,options)=>{
+    launch=options;const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();child.stdin=new Writable({write(_chunk,_encoding,callback){callback()}});
+    queueMicrotask(()=>child.emit("close",0,null));return child;
+  };
+  const result=await manager.executeArgvInput("ssh",{command:"glab",args:["api","projects"],input:"{}",cwd:"/srv/app",environmentNames:["PATH","HOME","GITLAB_TOKEN"]});
+  assert.equal(result.exitCode,0);assert.deepEqual(launch.environmentNames,["PATH","HOME","GITLAB_TOKEN"]);assert.equal(launch.command,"glab");
+});

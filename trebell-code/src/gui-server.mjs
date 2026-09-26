@@ -48,7 +48,7 @@ import { CloneJobService } from "./clone-job-service.mjs";
 import { prepareCodexHome } from "./codex-home-layout.mjs";
 import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
-import { ScopedSecretBroker } from "./secret-broker.mjs";
+import { createNativeSourceControlExecutor, sourceControlEnvironmentKeys } from "./native-source-control.mjs";
 import { ContextEngine, createRemoteContextIo } from "./context-engine.mjs";
 import { RepositoryKnowledgeService } from "./repository-knowledge-service.mjs";
 import { REPOSITORY_TOOL_DEFINITIONS, invokeRepositoryTool, parseRepositoryToolArguments, repositoryDynamicToolNamespace, repositoryToolHandlers } from "./repository-tool-catalog.mjs";
@@ -648,38 +648,29 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     }));
   }
   function sourceControlExecutor(environmentId){
-    const profile=environmentId?environments.get(environmentId):null,secretBroker=new ScopedSecretBroker({environment:env,environments,environmentId,platform:process.platform});
+    const profile=environmentId?environments.get(environmentId):null;
     const localRequest=async(url,options={})=>{
       const response=await fetchImpl(url,options);const text=await response.text();
       return {ok:response.ok,status:response.status,text};
     };
-    if(!profile||profile.type==="local")return {request:localRequest,secretValues:scope=>secretBroker.values(scope)};
-    const normalized=result=>({
-      ok:Number(result?.exitCode??1)===0&&!result?.timedOut,
-      code:Number(result?.exitCode??1),
-      exitCode:Number(result?.exitCode??1),
-      stdout:result?.stdout||"",
-      stderr:result?.stderr||"",
-      timedOut:Boolean(result?.timedOut),
-    });
+    const base=createNativeSourceControlExecutor({environments,environmentId,environment:env,platform:process.platform});
+    if(!profile||profile.type==="local")return {...base,request:localRequest};
     return {
-      run:async(command,args,{cwd,timeout,maxBuffer}={})=>normalized(await environments.executeArgv(environmentId,{command,args,cwd,timeoutMs:timeout,maxOutput:maxBuffer})),
-      runStdin:async(command,args,input,{cwd,timeout,maxBuffer}={})=>normalized(await environments.executeArgvInput(environmentId,{command,args,input,cwd,timeoutMs:timeout,maxOutput:maxBuffer})),
+      ...base,
       withTempJsonFile:async(content,callback)=>{
-        const allocated=await environments.executeArgv(environmentId,{command:"mktemp",args:["/tmp/trebell-azdo-XXXXXX.json"],cwd:"",timeoutMs:8000,maxOutput:64*1024});
+        const allocated=await environments.executeArgv(environmentId,{command:"mktemp",args:["/tmp/trebell-azdo-XXXXXX.json"],cwd:"",timeoutMs:8000,maxOutput:64*1024,environmentNames:sourceControlEnvironmentKeys("mktemp")});
         if(allocated.exitCode!==0)throw new Error(allocated.stderr||"Could not allocate remote Azure DevOps request file");
         const path=String(allocated.stdout||"").trim();if(!path)throw new Error("Remote Azure DevOps request file path was empty");
-        const created=await environments.executeArgvInput(environmentId,{command:"tee",args:[path],input:String(content??""),cwd:"",timeoutMs:12000,maxOutput:64*1024});
-        if(created.exitCode!==0){await environments.executeArgv(environmentId,{command:"rm",args:["-f",path],cwd:"",timeoutMs:8000,maxOutput:64*1024}).catch(()=>{});throw new Error(created.stderr||"Could not create remote Azure DevOps request file")}
+        const created=await environments.executeArgvInput(environmentId,{command:"tee",args:[path],input:String(content??""),cwd:"",timeoutMs:12000,maxOutput:64*1024,environmentNames:sourceControlEnvironmentKeys("tee")});
+        if(created.exitCode!==0){await environments.executeArgv(environmentId,{command:"rm",args:["-f",path],cwd:"",timeoutMs:8000,maxOutput:64*1024,environmentNames:sourceControlEnvironmentKeys("rm")}).catch(()=>{});throw new Error(created.stderr||"Could not create remote Azure DevOps request file")}
         try{return await callback(path)}
-        finally{await environments.executeArgv(environmentId,{command:"rm",args:["-f",path],cwd:"",timeoutMs:8000,maxOutput:64*1024}).catch(()=>{})}
+        finally{await environments.executeArgv(environmentId,{command:"rm",args:["-f",path],cwd:"",timeoutMs:8000,maxOutput:64*1024,environmentNames:sourceControlEnvironmentKeys("rm")}).catch(()=>{})}
       },
       readFile:async(path)=>{
-        const result=await environments.executeArgv(environmentId,{command:"cat",args:[String(path)],cwd:"",timeoutMs:12000,maxOutput:4*1024*1024});
+        const result=await environments.executeArgv(environmentId,{command:"cat",args:[String(path)],cwd:"",timeoutMs:12000,maxOutput:4*1024*1024,environmentNames:sourceControlEnvironmentKeys("cat")});
         if(result.exitCode!==0)throw new Error(result.stderr||"Could not read remote file");
         return result.stdout;
       },
-      secretValues:scope=>secretBroker.values(scope),
       request:async(url,options={})=>{
         if(offlineE2E&&!loopbackHttpUrl(url))throw new Error("Offline browser E2E blocked external network request: "+String(url));
         const method=String(options.method||"GET").toUpperCase();
@@ -690,7 +681,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const args=["--config","-"];
         if(options.body!==undefined)args.push("--data-raw",String(options.body));
         args.push(String(url));
-        const result=await environments.executeArgvInput(environmentId,{command:"curl",args,input:config.join("\n")+"\n",cwd:"",timeoutMs:35000,maxOutput:10*1024*1024});
+        const result=await environments.executeArgvInput(environmentId,{command:"curl",args,input:config.join("\n")+"\n",cwd:"",timeoutMs:35000,maxOutput:10*1024*1024,environmentNames:sourceControlEnvironmentKeys("curl")});
         if(result.exitCode!==0)throw new Error(result.stderr||"Remote HTTP request failed");
         const match=String(result.stdout||"").match(/\nTREBELL_HTTP_STATUS:(\d{3})$/);
         const status=Number(match?.[1]||0);
@@ -705,7 +696,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           "\"$HOME/Library/Application Support/Cyborus.forgejo-cli/keys.json\";",
           "do if [ -f \"$f\" ]; then cat \"$f\"; exit 0; fi; done; exit 1",
         ].join(" ");
-        const result=await environments.execute(environmentId,{command,cwd:"",timeoutMs:12000,maxOutput:2*1024*1024});
+        const result=await environments.executeArgv(environmentId,{command:"sh",args:["-lc",command],cwd:"",timeoutMs:12000,maxOutput:2*1024*1024,environmentNames:sourceControlEnvironmentKeys("tea")});
         if(result.exitCode!==0)return {hosts:{},aliases:{}};
         try{return JSON.parse(result.stdout)}catch{return {hosts:{},aliases:{}}}
       },

@@ -441,10 +441,10 @@ export class EnvironmentManager {
     return this.execute(id,{command:isolatedRemoteEnvironment(shellCommand(String(command||""),Array.isArray(args)?args:[]),environmentNames),cwd,timeoutMs,maxOutput});
   }
 
-  async executeArgvInput(id,{command,args=[],input="",cwd=null,timeoutMs=30000,maxOutput=MAX_OUTPUT}={}){
+  async executeArgvInput(id,{command,args=[],input="",cwd=null,timeoutMs=30000,maxOutput=MAX_OUTPUT,environmentNames=null,environment=null}={}){
     const profile=this.get(id);
     if(!profile)throw new Error("Environment profile was not found");
-    const child=this.spawnArgv(id,{command:String(command||""),args:Array.isArray(args)?args:[],cwd,stdio:["pipe","pipe","pipe"]});
+    const child=this.spawnArgv(id,{command:String(command||""),args:Array.isArray(args)?args:[],cwd,stdio:["pipe","pipe","pipe"],environmentNames,environment});
     const limit=Math.max(1024,Math.min(16*1024*1024,Number(maxOutput)||MAX_OUTPUT));
     const append=(current,chunk)=>{
       if(Buffer.byteLength(current,"utf8")>=limit)return current;
