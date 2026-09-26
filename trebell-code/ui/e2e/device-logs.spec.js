@@ -60,7 +60,11 @@ test("iOS Device panel maps Retina screenshots into IDB point-space for real inp
     devices:[{id:iosId,platform:"ios",serial:iosId.slice(4),name:"iPhone Fixture",state:"Booted",runtime:"iOS-26-0",running:true}],avds:[],
   })}));
   await page.route(/\/api\/device\/screenshot\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({id:iosId,platform:"ios",dataUrl,width:1179,height:2556,inputWidth:393,inputHeight:852,inputCoordinateSpace:"points"})}));
-  await page.route(/\/api\/device\/action$/,async route=>{const body=route.request().postDataJSON();actions.push(body);return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,id:iosId,action:body.action})})});
+  await page.route(/\/api\/device\/action$/,async route=>{
+    const body=route.request().postDataJSON();actions.push(body);
+    if(body.action==="packages")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,id:iosId,action:"packages",packages:["com.example.demo","com.example.other"],truncated:false,total:2})});
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,id:iosId,action:body.action})});
+  });
   await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:520,terminalHeight:330})));
   await page.goto("/");await expect(page.getByTestId("composer")).toBeVisible();await page.getByTestId("right-panel-toggle").click();
   const panel=page.getByTestId("right-panel");await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Device",exact:true}).click();
@@ -68,6 +72,8 @@ test("iOS Device panel maps Retina screenshots into IDB point-space for real inp
   await page.mouse.click(box.x+box.width*0.25,box.y+box.height*0.5);
   await expect.poll(()=>actions.some(item=>item.action==="tap")).toBe(true);
   const tapAction=actions.find(item=>item.action==="tap");expect(tapAction.args.x).toBeGreaterThan(90);expect(tapAction.args.x).toBeLessThan(105);expect(tapAction.args.y).toBeGreaterThan(415);expect(tapAction.args.y).toBeLessThan(437);
+  await panel.getByRole("button",{name:"Apps",exact:true}).click();await expect(panel.getByLabel("Simulator app id")).toHaveValue("com.example.demo");
+  await panel.getByRole("button",{name:"Launch",exact:true}).click();await expect.poll(()=>actions.some(item=>item.action==="launch"&&item.args?.app==="com.example.demo")).toBe(true);
   await panel.getByRole("button",{name:"Home",exact:true}).click();await expect.poll(()=>actions.some(item=>item.action==="key"&&item.args?.key==="home")).toBe(true);
   const input=panel.getByPlaceholder("Type into focused simulator control");await input.fill("hello ios");await panel.getByRole("button",{name:"Send",exact:true}).click();await expect.poll(()=>actions.some(item=>item.action==="type"&&item.args?.text==="hello ios")).toBe(true);
   await expect(panel.locator(".device-input-hint")).toHaveCount(0);

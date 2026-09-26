@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { win32 } from "node:path";
-import { androidCandidates, boundedDeviceLogText, parseAdbEmulators, parseAdbVersion, parseEmulatorVersion, parseIdbScreenSize, parseSdkManagerUpdates, parseSdkManagerVersion, pngSize, safeAppId, safeIosUdid } from "../src/device-service.mjs";
+import { androidCandidates, boundedDeviceLogText, parseAdbEmulators, parseAdbVersion, parseEmulatorVersion, parseIdbScreenSize, parseSdkManagerUpdates, parseSdkManagerVersion, parseSimctlAppIds, pngSize, safeAppId, safeIosUdid } from "../src/device-service.mjs";
 
 test("device discovery accepts Android emulators and excludes physical devices",()=>{
   const parsed=parseAdbEmulators(`List of devices attached\nemulator-5554 device product:sdk_gphone64_x86_64 model:sdk_gphone64_x86_64 device:emu64xa transport_id:1\nR5CT1234ABC device product:b0qxxx model:SM_S908B device:b0q transport_id:2\nemulator-5556 offline product:sdk_gphone64_arm64 model:Pixel_8_API_35 device:emu64a transport_id:3\n`);
@@ -67,6 +67,15 @@ test("iOS Simulator app lifecycle uses simctl argv without a shell",async()=>{
   await service.action("ios:"+udid,"launch",{app:"com.example.demo"});await service.action("ios:"+udid,"stop",{app:"com.example.demo"});
   assert.deepEqual(calls[0],{command:"xcrun",args:["simctl","launch",udid,"com.example.demo"]});
   assert.deepEqual(calls[1],{command:"xcrun",args:["simctl","terminate",udid,"com.example.demo"]});
+});
+
+test("iOS Simulator app discovery extracts bounded bundle ids from simctl listapps",async()=>{
+  const raw=["{","  \"com.example.demo\" = {","    ApplicationType = User;","    CFBundleDisplayName = Demo;","    CFBundleIdentifier = \"com.example.demo\";","  };","  \"com.apple.mobilesafari\" = {","    ApplicationType = System;","    CFBundleIdentifier = \"com.apple.mobilesafari\";","  };","}"].join("\n");
+  assert.deepEqual(parseSimctlAppIds(raw),["com.example.demo","com.apple.mobilesafari"]);
+  const calls=[],udid="12345678-1234-1234-1234-123456789ABC";const {DeviceService}=await import("../src/device-service.mjs");
+  const service=new DeviceService({platform:"darwin",env:{},findCommandFn:async()=>null,runTextFn:async(command,args)=>{calls.push({command,args});return {ok:true,stdout:raw,stderr:""}}});
+  const result=await service.action("ios:"+udid,"packages");
+  assert.deepEqual(calls[0],{command:"xcrun",args:["simctl","listapps",udid,"--all"]});assert.deepEqual(result.packages,["com.example.demo","com.apple.mobilesafari"]);
 });
 
 test("iOS Simulator IDB input uses argv-safe point coordinates, text, swipe and supported keys",async()=>{

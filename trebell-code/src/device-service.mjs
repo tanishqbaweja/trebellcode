@@ -112,6 +112,18 @@ function parseSdkManagerUpdates(raw=""){
   }
   return updates;
 }
+function parseSimctlAppIds(raw=""){
+  const ids=[],seen=new Set(),text=String(raw||"");
+  for(const match of text.matchAll(/CFBundleIdentifier\s*=\s*"?([A-Za-z0-9][A-Za-z0-9._-]{0,254})"?\s*;/g)){
+    const id=match[1];if(!seen.has(id)){seen.add(id);ids.push(id)}if(ids.length>=500)break;
+  }
+  if(!ids.length){
+    for(const match of text.matchAll(/^\s*"?([A-Za-z0-9][A-Za-z0-9._-]{0,254})"?\s*=\s*\{/gm)){
+      const id=match[1];if(id.includes(".")&&!seen.has(id)){seen.add(id);ids.push(id)}if(ids.length>=500)break;
+    }
+  }
+  return ids;
+}
 
 export class DeviceService{
   constructor({env=process.env,platform=process.platform,runTextFn=runText,runBufferFn=runBuffer,findCommandFn=findCommand}={}){this.env=env;this.platform=platform;this.runTextFn=runTextFn;this.runBufferFn=runBufferFn;this.findCommandFn=findCommandFn;this.adbPath=null;this.emulatorPath=null;this.sdkManagerPath=null;this.idbPath=null;this.detectedAt=0}
@@ -217,6 +229,11 @@ export class DeviceService{
     if(platform==="ios"){
       if(this.platform!=="darwin")throw new Error("iOS Simulator control requires macOS.");
       const iosSerial=this.#iosSerial(id);
+      if(action==="packages"){
+        const result=await this.runTextFn("xcrun",["simctl","listapps",iosSerial,"--all"],{allowFailure:true,timeout:20_000,env:this.env});
+        if(!result.ok)throw new Error(String(result.stderr||result.stdout||"Could not list iOS Simulator apps").trim().slice(-2000));
+        const packages=parseSimctlAppIds(result.stdout||"");return {ok:true,id,action,packages,truncated:packages.length>=500,total:packages.length};
+      }
       if(action==="boot"){await this.runTextFn("xcrun",["simctl","boot",iosSerial],{allowFailure:true,env:this.env});return {ok:true,id,action}}
       if(action==="poweroff"){await this.runTextFn("xcrun",["simctl","shutdown",iosSerial],{allowFailure:true,env:this.env});return {ok:true,id,action}}
       if(action==="launch"){const app=safeAppId(args.app),result=await this.runTextFn("xcrun",["simctl","launch",iosSerial,app],{allowFailure:true,env:this.env});if(!result.ok)throw new Error(String(result.stderr||result.stdout||("Could not launch "+app)).trim());return {ok:true,id,action,app}}
@@ -248,4 +265,4 @@ export class DeviceService{
   async startAndroid(avd){await this.#detect();if(!this.emulatorPath)throw new Error("Android Emulator is not installed or not on PATH.");const name=String(avd||"").trim();if(!name)throw new Error("AVD name is required");const child=spawn(this.emulatorPath,["-avd",name],{detached:true,stdio:"ignore",windowsHide:true,env:this.env});child.unref();return {ok:true,avd:name,pid:child.pid}}
 }
 
-export { androidCandidates, boundedDeviceLogText, parseAdbEmulators, parseAdbVersion, parseEmulatorVersion, parseIdbScreenSize, parseSdkManagerUpdates, parseSdkManagerVersion, pngSize, safeAppId, safeIosUdid };
+export { androidCandidates, boundedDeviceLogText, parseAdbEmulators, parseAdbVersion, parseEmulatorVersion, parseIdbScreenSize, parseSdkManagerUpdates, parseSdkManagerVersion, parseSimctlAppIds, pngSize, safeAppId, safeIosUdid };

@@ -80,10 +80,10 @@ export default function DevicePanel(){
     finally{setLogBusy(false)}
   }
   async function loadPackages(){
-    if(!selected||current?.platform!=="android")return;setBusy("packages");setMessage("");
+    if(!selected)return;setBusy("packages");setMessage("");
     try{
       const result=await api("/api/device/action",{method:"POST",body:{id:selected,action:"packages",args:{}}}),items=Array.isArray(result.packages)?result.packages:[];
-      setAppPackages(items);if(!appId&&items.length)setAppId(items[0]);setMessage("Loaded "+items.length+(result.truncated?"+":"")+" third-party app"+(items.length===1?"":"s")+".");
+      setAppPackages(items);if(!appId&&items.length)setAppId(items[0]);setMessage("Loaded "+items.length+(result.truncated?"+":"")+" installed app"+(items.length===1?"":"s")+".");
     }catch(error){setMessage(error.message||String(error))}
     finally{setBusy("")}
   }
@@ -113,7 +113,7 @@ export default function DevicePanel(){
         {current?.platform==="ios"&&(current.running?<><button onClick={()=>act("poweroff")}><CircleStop size={13}/> Power off</button>{data.capabilities?.ios?.inputAvailable&&<button onClick={()=>act("key",{key:"home"})}><Home size={13}/> Home</button>}</>:<button onClick={()=>act("boot")}><Play size={13}/> Boot simulator</button>)}
         {current?.running!==false&&<button onClick={refreshLogs} disabled={logBusy}><ScrollText size={13}/> {logBusy?"Refreshing…":"Recent logs"}</button>}
       </div>
-      {current?.running!==false&&<div className="device-app-controls"><input aria-label="Simulator app id" list="trebell-device-apps" value={appId} onChange={event=>setAppId(event.target.value)} placeholder={current?.platform==="ios"?"Bundle id · com.example.app":"Package id · com.example.app"}/><datalist id="trebell-device-apps">{appPackages.map(item=><option value={item} key={item}/>)}</datalist>{current?.platform==="android"&&<button onClick={loadPackages} disabled={!!busy}>Apps</button>}<button onClick={()=>appId&&act("launch",{app:appId})} disabled={!!busy||!appId}><Play size={11}/> Launch</button><button onClick={()=>appId&&act("stop",{app:appId})} disabled={!!busy||!appId}><CircleStop size={11}/> Stop</button></div>}
+      {current?.running!==false&&<div className="device-app-controls"><input aria-label="Simulator app id" list="trebell-device-apps" value={appId} onChange={event=>setAppId(event.target.value)} placeholder={current?.platform==="ios"?"Bundle id · com.example.app":"Package id · com.example.app"}/><datalist id="trebell-device-apps">{appPackages.map(item=><option value={item} key={item}/>)}</datalist><button onClick={loadPackages} disabled={!!busy}>Apps</button><button onClick={()=>appId&&act("launch",{app:appId})} disabled={!!busy||!appId}><Play size={11}/> Launch</button><button onClick={()=>appId&&act("stop",{app:appId})} disabled={!!busy||!appId}><CircleStop size={11}/> Stop</button></div>}
       {(current?.platform==="android"||(current?.platform==="ios"&&data.capabilities?.ios?.inputAvailable))&&<div className="device-type"><Keyboard size={13}/><input value={text} onChange={e=>setText(e.target.value)} onKeyDown={async e=>{if(e.key==="Enter"&&text&&await act("type",{text}))setText("")}} placeholder="Type into focused simulator control"/><button onClick={async()=>{if(text&&await act("type",{text}))setText("")}}>Send</button></div>}
       {current?.platform==="ios"&&current?.running!==false&&!data.capabilities?.ios?.inputAvailable&&<div className="device-input-hint">Install Meta IDB on this Mac to enable screenshot taps, swipes and typing. Screenshots, logs and app lifecycle still use Xcode directly.</div>}
       {logs&&<div className="device-logs" data-testid="device-logs"><div className="device-logs-head"><div><strong>Recent logs</strong><span>{logs.lineCount||0} line{Number(logs.lineCount)===1?"":"s"}{logs.truncated?" · truncated":""}</span></div><button onClick={refreshLogs} disabled={logBusy}><RefreshCw size={11}/> Refresh</button></div><pre>{logs.text||"No recent simulator logs."}</pre>{(logs.omittedLines||logs.omittedCharacters)?<small>{logs.omittedLines?`${logs.omittedLines} earlier line${logs.omittedLines===1?"":"s"} omitted`:""}{logs.omittedLines&&logs.omittedCharacters?" · ":""}{logs.omittedCharacters?`${logs.omittedCharacters} earlier character${logs.omittedCharacters===1?"":"s"} omitted`:""}</small>:null}</div>}
