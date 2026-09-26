@@ -1,6 +1,7 @@
 import React,{useEffect,useRef,useState} from "react";
 import { Activity, Bot, Download, FileText, HardDrive, Keyboard, MonitorCog, Palette, PlugZap, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal } from "lucide-react";
 import { api } from "../api.js";
+import { desktopBridgeToolAvailability } from "../desktop-tool-availability.js";
 import { KEYBINDING_COMMANDS, normalizeKeybindingRules } from "../keybindings.js";
 import { searchSettings } from "../settings-search.js";
 import { normalizeCustomTheme } from "../theme-utils.js";
@@ -462,6 +463,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   const selectedAgentStatus=agentInfo?.statuses?.find(item=>item.id===agentInfo?.selectedInstanceId)||agentInfo?.statuses?.find(item=>item.kind===selectedAgent);
   const selectedAgentDefinition=(agentInfo?.definitions||[]).find(item=>item.id===selectedAgent)||null;
   const selectedAgentCapabilities=Object.keys(runtimeCapabilities||{}).length?runtimeCapabilities:(selectedAgentDefinition?.capabilities||(agentInfo?.selectedRuntime===selectedAgent?agentInfo?.capabilities:null)||{});
+  const desktopTools=desktopBridgeToolAvailability(window.trebellDesktop);
   const selectedInstances=(agentInfo?.instances||[]).filter(item=>item.kind===selectedAgent);
   const customModels=(settings.customModels||[]).filter(item=>item.runtime===selectedAgent&&(!["native","codex"].includes(selectedAgent)||item.provider===selected));
   const mcpEnvironmentId=settings.activeEnvironmentId||null;
@@ -660,7 +662,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
         <div className="provider-key-actions"><button className="setting-action" onClick={runStorageCleanup} disabled={storageBusy}>{storageBusy?"Cleaning…":"Run safe cleanup now"}</button><button onClick={loadStorageInfo} disabled={storageBusy}><RefreshCw size={12}/> Refresh storage</button></div>
         {storageMessage&&<p className={/failed|error/i.test(storageMessage)?"provider-status-error":"provider-note"}>{storageMessage}</p>}
       </div>}
-      {settingsSection==="desktop"&&selectedAgent==="codex"&&<div className="settings-card"><h3>Computer use</h3><p>The agent can always inspect a desktop screenshot. Mouse and keyboard control are exposed only when the current thread is in <strong>Full access</strong> mode. This keeps desktop automation explicit instead of silently escalating permissions.</p></div>}
+      {settingsSection==="desktop"&&selectedAgentCapabilities.dynamicTools&&desktopTools.computer&&<div className="settings-card"><h3>Computer use</h3><p>The active runtime can use Trebell's Windows desktop tools. Screenshots are read-only; mouse and keyboard control are exposed only when the current thread is in <strong>Full access</strong> mode. This keeps desktop automation explicit instead of silently escalating permissions.</p></div>}
       {settingsSection==="appearance"&&<div className="settings-card environment-theme-settings">
         <h3>Environment themes</h3>
         <p><strong>{environmentThemeCatalog.environmentName||"Local machine"}</strong> can publish theme JSON files from <code>{environmentThemeCatalog.directory||"the environment theme directory"}</code>. Published themes stay owned by that environment, so edits on the machine can flow into Trebell after refresh.</p>

@@ -34,3 +34,26 @@ test("follow-up settings obey runtime steering capability instead of runtime nam
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   await page.screenshot({path:auditDir+"settings-capability-steering-1280x800.png",fullPage:true});
 });
+
+test("computer-use settings follow runtime and desktop capabilities instead of Codex branding",async({page})=>{
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  await page.addInitScript(()=>{window.trebellDesktop={platform:"win32",computer:{screenshot:async()=>({dataUrl:"",width:1,height:1})}}});
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:"win32",version:"settings-computer-fixture",runtimeCapabilities:{dynamicTools:true,steering:true},activeEnvironmentId:null,activeEnvironment:null})}));
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{}})}));
+  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({provider:"freebuff",agentRuntime:"native",models:["native-fixture"],metadata:{provider:"freebuff",models:[{id:"native-fixture",name:"Native Fixture",provider:"freebuff",agent:"Trebell Native"}]}})}));
+  await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+  await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+  await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+  await page.goto("/");
+  await expect(page.getByTestId("composer")).toBeVisible();
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await page.getByRole("button",{name:/Desktop/}).click();
+  const computer=page.locator(".settings-card").filter({hasText:"Computer use"});
+  await expect(computer).toBeVisible();
+  await expect(computer).toContainText("active runtime can use Trebell's Windows desktop tools");
+  await expect(computer).toContainText("Full access");
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await page.locator(".settings-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"settings-native-computer-capability-1280x800.png",fullPage:true});
+});
