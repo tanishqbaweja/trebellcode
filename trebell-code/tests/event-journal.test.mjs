@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventJournal } from "../src/event-journal.mjs";
@@ -113,6 +113,37 @@ test("event journal reconciles newer JSONL fallback events into an existing SQLi
     const reconciled=new EventJournal({TREBELL_HOME:home},{maxRecords:100,maxBytes:256*1024});
     assert.deepEqual(reconciled.list({threadId:"thread-reconcile"}).map(item=>item.id),["fallback-newer","sqlite-first"]);
     assert.equal(reconciled.status().records,2);await reconciled.close();
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
+test("event journal never resurrects older mirror records into an authoritative SQLite journal",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-events-authoritative-"));
+  try{
+    const first=new EventJournal({TREBELL_HOME:home},{maxRecords:100,maxBytes:256*1024});
+    first.record({id:"sqlite-existing",at:1_000,threadId:"thread-authoritative",category:"runtime",name:"turn/completed"});await first.close();
+    await writeFile(join(home,"events.jsonl"),[
+      JSON.stringify({id:"mirror-old",at:100,runtime:"codex",provider:null,environmentId:null,threadId:"thread-authoritative",turnId:null,category:"runtime",name:"old/pruned",status:null,data:{}}),
+      JSON.stringify({id:"sqlite-existing",at:1_000,runtime:null,provider:null,environmentId:null,threadId:"thread-authoritative",turnId:null,category:"runtime",name:"turn/completed",status:null,data:{}}),
+      JSON.stringify({id:"fallback-newer",at:2_000,runtime:"codex",provider:null,environmentId:null,threadId:"thread-authoritative",turnId:null,category:"runtime",name:"turn/recovered",status:null,data:{}}),
+      "",
+    ].join("\n"));
+    const reopened=new EventJournal({TREBELL_HOME:home},{maxRecords:100,maxBytes:256*1024});
+    assert.deepEqual(reopened.list({threadId:"thread-authoritative"}).map(item=>item.id),["fallback-newer","sqlite-existing"]);
+    assert.equal(reopened.list({threadId:"thread-authoritative"}).some(item=>item.id==="mirror-old"),false);
+    await reopened.close();
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
+test("JSONL fallback compaction enforces the configured byte bound",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-events-byte-bound-"));
+  try{
+    const journal=new EventJournal({TREBELL_HOME:home},{maxRecords:100,maxBytes:256*1024,preferSqlite:false});
+    for(let index=0;index<40;index++)journal.record({id:"large-"+index,at:index+1,threadId:"thread-large",category:"runtime",name:"large/event",data:{payload:"x".repeat(12_000),index}});
+    await journal.flush();
+    const info=await stat(join(home,"events.jsonl"));
+    assert.ok(info.size<=256*1024,"expected bounded JSONL, got "+info.size+" bytes");
+    assert.ok(journal.list({threadId:"thread-large",limit:100}).length<40);
+    await journal.close();
   }finally{await rm(home,{recursive:true,force:true})}
 });
 

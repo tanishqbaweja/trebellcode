@@ -54,11 +54,23 @@ export class EventJournal{
     try{
       if(!preferSqlite)throw new Error("SQLite event storage disabled");
       this.sqlite=new SqliteEventStore(env,{maxRecords:this.maxRecords,maxBytes:this.maxBytes});
-      if(legacy.length)this.sqlite.import(legacy);
+      if(legacy.length){
+        const newest=this.sqlite.recent(1)[0]||null;
+        const cutoff=newest?Number(newest.at)||0:null;
+        const recoverable=cutoff==null?legacy:legacy.filter(item=>(Number(item?.at)||0)>=cutoff);
+        if(recoverable.length)this.sqlite.import(recoverable);
+      }
       this.recent=this.sqlite.recent(this.maxRecords);
     }catch(error){
       this.sqlite=null;this.recent=legacy;
       if(preferSqlite)this.lastError={at:Date.now(),message:String(error?.message||error||"SQLite event storage unavailable").slice(0,2000)};
+    }
+    if(!this.sqlite)this.#boundRecentByBytes();
+    if(this.bytes>this.maxBytes){
+      this.writeQueue=this.writeQueue.then(()=>this.#compact()).catch(error=>{
+        this.exportError={at:Date.now(),message:String(error?.message||error||"Event journal export mirror compaction failed").slice(0,2000)};
+        if(!this.sqlite)this.lastError=clone(this.exportError);
+      });
     }
   }
 
@@ -75,9 +87,10 @@ export class EventJournal{
     const existingIndex=this.recent.findIndex(item=>item.id===record.id);if(existingIndex>=0)this.recent.splice(existingIndex,1);
     this.recent.push(record);if(this.recent.length>this.maxRecords)this.recent.splice(0,this.recent.length-this.maxRecords);
     if(this.sqlite)try{this.sqlite.insert(record);this.lastError=null}catch(error){this.lastError={at:Date.now(),message:String(error?.message||error||"SQLite event write failed").slice(0,2000)}}
-    const line=JSON.stringify(record)+"\n";this.bytes+=Buffer.byteLength(line);
+    const line=JSON.stringify(record)+"\n",lineBytes=Buffer.byteLength(line);
     this.writeQueue=this.writeQueue.then(async()=>{
       await appendFile(this.path,line,{encoding:"utf8",mode:0o600});
+      this.bytes+=lineBytes;
       if(this.bytes>this.maxBytes)await this.#compact();
       this.exportError=null;
     }).catch(error=>{
@@ -130,9 +143,19 @@ export class EventJournal{
   }
 
   async #compact(){
+    if(this.sqlite)this.recent=this.sqlite.recent(this.maxRecords);
+    else this.#boundRecentByBytes();
     const tmp=this.path+".tmp";
     const payload=this.recent.map(item=>JSON.stringify(item)).join("\n")+(this.recent.length?"\n":"");
     await writeFile(tmp,payload,{encoding:"utf8",mode:0o600});await rename(tmp,this.path);this.bytes=Buffer.byteLength(payload);
+  }
+
+  #boundRecentByBytes(){
+    let total=this.recent.reduce((sum,item)=>sum+Buffer.byteLength(JSON.stringify(item)+"\n"),0);
+    while(total>this.maxBytes&&this.recent.length>1){
+      total-=Buffer.byteLength(JSON.stringify(this.recent[0])+"\n");this.recent.shift();
+    }
+    return total;
   }
 
   async flush(){await this.writeQueue}
