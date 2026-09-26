@@ -146,6 +146,33 @@ function modelToolResult(value){
   return {contentItems:tagged};
 }
 
+function exposesTool(tools,namespace,name){
+  const entry=(Array.isArray(tools)?tools:[]).find(item=>item?.type==="namespace"&&String(item.name||"")===String(namespace||""));
+  return Boolean((Array.isArray(entry?.tools)?entry.tools:[]).some(tool=>String(tool?.name||"")===String(name||"")));
+}
+
+function unindexedSourceFailure(call,output){
+  return call?.namespace==="trebell_repo"&&call?.name==="read_source"&&output?.success===false&&/context file is not indexed\b/i.test(String(output.error||""));
+}
+
+function workspaceReadAsSource(file,args={}){
+  const content=String(file?.content??""),lines=content.split(/\r?\n/),start=Math.max(1,Math.trunc(Number(args.startLine)||1)),lineCap=Math.max(1,Math.min(400,Math.trunc(Number(args.maxLines)||200)));
+  if(start>Math.max(1,lines.length))return {success:false,error:`Source range starts after the end of ${String(args.path||file?.name||"file")}`};
+  const requestedEnd=args.endLine==null?start+lineCap-1:Math.max(start,Math.trunc(Number(args.endLine)||start));let end=Math.min(lines.length,requestedEnd,start+lineCap-1);
+  const selected=[];let chars=0,truncated=false;
+  for(let line=start;line<=end;line++){
+    const value=lines[line-1]??"",cost=value.length+(selected.length?1:0);
+    if(chars+cost>32_000){truncated=true;break}
+    selected.push(value);chars+=cost;
+  }
+  if(selected.length)end=start+selected.length-1;else end=start-1;
+  if(end<Math.min(lines.length,requestedEnd))truncated=true;
+  return {
+    path:String(args.path||file?.name||""),startLine:start,endLine:end,totalLines:lines.length,content:selected.join("\n"),truncated,
+    indexed:false,source:"workspace_text_fallback",_trebell_fallback:{from:"trebell_repo/read_source",to:"trebell_workspace/read_file",reason:"not_indexed"},
+  };
+}
+
 const DEDUPLICABLE_OBSERVATIONS=new Set([
   "trebell_workspace/read_file",
   "trebell_repo/read_source",
@@ -229,7 +256,18 @@ export class NativeAgentSession{
     const wrappedExecutor=async call=>{
       const definition=platformToolDefinition(call.namespace,call.name),kind=definition?.policy?.kind||"other";
       this.onUpdate({update:{sessionUpdate:"tool_call",toolCallId:call.id,namespace:call.namespace||"native",tool:call.name,title:(call.namespace?call.namespace+" / ":"")+call.name,kind,rawInput:call.arguments,status:"in_progress"}});
-      const output=await this.executeTool(call,{toolAllowlist:Array.isArray(toolAllowlist)?toolAllowlist:null});
+      const toolContext={toolAllowlist:Array.isArray(toolAllowlist)?toolAllowlist:null};
+      let output=await this.executeTool(call,toolContext);
+      if(unindexedSourceFailure(call,output)&&exposesTool(this.tools,"trebell_workspace","read_file")){
+        const fallback=await this.executeTool({
+          id:String(call.id||"")+":workspace-fallback",namespace:"trebell_workspace",name:"read_file",signal:call.signal||null,
+          arguments:{path:String(call.arguments?.path||""),max_bytes:256*1024},
+        },toolContext);
+        if(fallback?.success!==false&&typeof fallback?.content==="string"){
+          output=workspaceReadAsSource(fallback,call.arguments||{});
+          this.onEvent?.({name:"native.tool.read_fallback",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{from:"trebell_repo/read_source",to:"trebell_workspace/read_file",reason:"not_indexed"}});
+        }
+      }
       const key=observationKey(call),digest=key?observationDigest(output):null,prior=key?this.observationCache.get(key):null;
       let observed=output;
       if(key&&prior&&prior.hash===digest.hash&&digest.bytes>=512){

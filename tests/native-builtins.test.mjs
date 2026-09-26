@@ -46,6 +46,13 @@ test("Native terminal uses a least-privilege environment and workspace cwd",asyn
     assert.equal(result.exitCode,0);assert.equal(result.timedOut,false);const parsed=JSON.parse(result.stdout);assert.equal(parsed.cwd,join(root,"src"));assert.equal(parsed.secret,null);
     const virtualRoot=await execute({namespace:"trebell_terminal",name:"run",arguments:{command:process.execPath,args:["-e","process.stdout.write(process.cwd())"],cwd:"/workspace/src",timeout_ms:5000,max_output_bytes:65536}});
     assert.equal(virtualRoot.exitCode,0);assert.equal(virtualRoot.stdout,join(root,"src"));
+    const conventionalRoot=await execute({namespace:"trebell_terminal",name:"run",arguments:{command:process.execPath,args:["-e","process.stdout.write(process.cwd())"],cwd:"workspace",timeout_ms:5000,max_output_bytes:65536}});
+    assert.equal(conventionalRoot.exitCode,0);assert.equal(conventionalRoot.stdout,root);
+    const conventionalSrc=await execute({namespace:"trebell_terminal",name:"run",arguments:{command:process.execPath,args:["-e","process.stdout.write(process.cwd())"],cwd:"workspace/src",timeout_ms:5000,max_output_bytes:65536}});
+    assert.equal(conventionalSrc.exitCode,0);assert.equal(conventionalSrc.stdout,join(root,"src"));
+    await mkdir(join(root,"workspace"),{recursive:true});
+    const realWorkspaceDir=await execute({namespace:"trebell_terminal",name:"run",arguments:{command:process.execPath,args:["-e","process.stdout.write(process.cwd())"],cwd:"workspace",timeout_ms:5000,max_output_bytes:65536}});
+    assert.equal(realWorkspaceDir.exitCode,0);assert.equal(realWorkspaceDir.stdout,join(root,"workspace"));
   }finally{await rm(root,{recursive:true,force:true})}
 });
 

@@ -9,7 +9,7 @@ import {
 } from "./workspace.mjs";
 import { buildRuntimeEnvironment, runtimeEnvironmentKeys } from "./runtime-environment.mjs";
 import { normalizeNativeCommandArguments } from "./native-command-argv.mjs";
-import { rootRelativeFallback } from "./native-workspace-path.mjs";
+import { conventionalWorkspaceFallback, rootRelativeFallback } from "./native-workspace-path.mjs";
 
 const DEFAULT_READ_BYTES=256*1024;
 const MAX_EDIT_BYTES=2*1024*1024;
@@ -43,7 +43,14 @@ async function localSafePath(root,requested,{mustExist=false}={}){
   if(!inside(base,candidate))throw new Error("Path is outside the active workspace");
   const realBase=await realpath(base);
   if(mustExist){
-    const realCandidate=await realpath(candidate);if(!inside(realBase,realCandidate))throw new Error("Path resolves outside the active workspace");return candidate;
+    try{
+      const realCandidate=await realpath(candidate);if(!inside(realBase,realCandidate))throw new Error("Path resolves outside the active workspace");return candidate;
+    }catch(error){
+      if(error?.message?.includes("outside the active workspace"))throw error;
+      const fallback=conventionalWorkspaceFallback(raw);if(fallback==null)throw error;
+      const alternate=resolve(base,fallback);if(!inside(base,alternate))throw error;
+      const realAlternate=await realpath(alternate);if(!inside(realBase,realAlternate))throw new Error("Path resolves outside the active workspace");return alternate;
+    }
   }
   try{
     const realCandidate=await realpath(candidate);if(!inside(realBase,realCandidate))throw new Error("Path resolves outside the active workspace");return candidate;
@@ -78,7 +85,14 @@ async function safeWorkspacePath(root,requested,{environments=null,environmentId
   const located=environmentWorkspacePath(root,raw,{environments,environmentId}),base=located.root,candidate=located.path;
   const realBase=await remoteRealpath(environments,environmentId,base);
   if(mustExist){
-    const realCandidate=await remoteRealpath(environments,environmentId,candidate);if(!inside(realBase,realCandidate,posix))throw new Error("Path resolves outside the active workspace");return {path:candidate,remote:true,profile};
+    try{
+      const realCandidate=await remoteRealpath(environments,environmentId,candidate);if(!inside(realBase,realCandidate,posix))throw new Error("Path resolves outside the active workspace");return {path:candidate,remote:true,profile};
+    }catch(error){
+      if(error?.message?.includes("outside the active workspace"))throw error;
+      const fallback=conventionalWorkspaceFallback(raw);if(fallback==null)throw error;
+      const alternate=environmentWorkspacePath(root,fallback,{environments,environmentId}).path,realAlternate=await remoteRealpath(environments,environmentId,alternate);
+      if(!inside(realBase,realAlternate,posix))throw new Error("Path resolves outside the active workspace");return {path:alternate,remote:true,profile};
+    }
   }
   try{
     const realCandidate=await remoteRealpath(environments,environmentId,candidate);if(!inside(realBase,realCandidate,posix))throw new Error("Path resolves outside the active workspace");

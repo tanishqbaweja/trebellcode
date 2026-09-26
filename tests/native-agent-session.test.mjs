@@ -38,6 +38,43 @@ test("Native session reports namespaced tool lifecycle and keeps observations in
   const persisted=agentToolLifecycle(lifecycle[1].update).item;assert.equal(persisted.type,"dynamicToolCall");assert.equal(persisted.namespace,"trebell_repo");assert.equal(persisted.tool,"search_symbols");assert.doesNotMatch(JSON.stringify(persisted.rawOutput),/untrusted tool data/i);
 });
 
+test("Native session falls back from unindexed repository source reads to the exposed workspace reader",async()=>{
+  const requests=[],updates=[],events=[],executions=[];let turn=0;
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model",onUpdate:update=>updates.push(update),onEvent:event=>events.push(event),
+    tools:[
+      {type:"namespace",name:"trebell_repo",tools:[{name:"read_source"}]},
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"}]},
+    ],
+    providerTurn:async request=>{requests.push(structuredClone(request));turn++;return turn===1
+      ?{id:"r1",text:"",toolCalls:[{id:"task-read",namespace:"trebell_repo",name:"read_source",arguments:'{"path":"TASK.md","startLine":2,"maxLines":2}'}],usage:{}}
+      :{id:"r2",text:"done",toolCalls:[],usage:{}}},
+    executeTool:async(call,context)=>{
+      executions.push({call:structuredClone(call),context:structuredClone(context)});
+      if(call.namespace==="trebell_repo")return {success:false,error:"Context file is not indexed: TASK.md"};
+      if(call.namespace==="trebell_workspace"&&call.name==="read_file")return {path:"/repo/TASK.md",name:"TASK.md",size:26,content:"# Task\nline one\nline two\nline three"};
+      throw new Error("unexpected tool");
+    },
+  });
+  await session.start({model:"model"});await session.prompt([{type:"text",text:"read TASK.md"}],{toolAllowlist:["trebell_repo/read_source","trebell_workspace/read_file"]});
+  assert.deepEqual(executions.map(item=>item.call.namespace+"/"+item.call.name),["trebell_repo/read_source","trebell_workspace/read_file"]);
+  assert.deepEqual(executions.map(item=>item.context.toolAllowlist),[["trebell_repo/read_source","trebell_workspace/read_file"],["trebell_repo/read_source","trebell_workspace/read_file"]]);
+  const observation=requests[1].messages.at(-1);assert.equal(observation.role,"tool");assert.match(observation.content,/line one\nline two/);assert.doesNotMatch(observation.content,/line three/);
+  const lifecycle=updates.filter(item=>item.update?.sessionUpdate==="tool_call_update");assert.equal(lifecycle.length,1);assert.equal(lifecycle[0].update.status,"completed");assert.equal(lifecycle[0].update.namespace,"trebell_repo");assert.equal(lifecycle[0].update.tool,"read_source");assert.equal(lifecycle[0].update.rawOutput.source,"workspace_text_fallback");
+  assert.ok(events.some(event=>event.name==="native.tool.read_fallback"));
+});
+
+test("Native session does not use an unexposed workspace reader as an internal source fallback",async()=>{
+  const executions=[];let turn=0;
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model",tools:[{type:"namespace",name:"trebell_repo",tools:[{name:"read_source"}]}],
+    providerTurn:async()=>{turn++;return turn===1?{id:"r1",text:"",toolCalls:[{id:"task-read",namespace:"trebell_repo",name:"read_source",arguments:'{"path":"TASK.md"}'}],usage:{}}:{id:"r2",text:"stopped",toolCalls:[],usage:{}}},
+    executeTool:async call=>{executions.push(call);return {success:false,error:"Context file is not indexed: TASK.md"}},
+  });
+  await session.start({model:"model"});await session.prompt([{type:"text",text:"read TASK.md"}]);
+  assert.equal(executions.length,1);assert.equal(executions[0].namespace,"trebell_repo");
+});
+
 test("Native session keeps large tool output outside hot provider history behind a persistent handle",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-output-session-"));const requests=[],updates=[];
   try{
