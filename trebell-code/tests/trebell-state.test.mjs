@@ -32,6 +32,23 @@ test("legacy implicit System appearance migrates to Dark once",async()=>{
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
+test("retired mobile-device control settings are scrubbed from legacy state",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-state-device-retirement-")),env={...process.env,TREBELL_HOME:home};
+  try{
+    await writeFile(join(home,"ui-state.json"),JSON.stringify({
+      version:2,
+      projects:[{id:"project-1",path:"C:/repo",settingsOverrides:{agentDeviceAccess:true,autoPull:true}}],
+      threadMeta:{},
+      settings:{agentDeviceAccess:true,environmentDefaults:{"ssh-a":{agentDeviceAccess:true,defaultPermissionMode:"full"}}},
+    }));
+    const state=new TrebellStateStore(env);
+    assert.equal(Object.prototype.hasOwnProperty.call(state.settings(),"agentDeviceAccess"),false);
+    assert.equal(Object.prototype.hasOwnProperty.call(state.environmentDefaults("ssh-a"),"agentDeviceAccess"),false);
+    assert.equal(Object.prototype.hasOwnProperty.call(state.projects()[0].settingsOverrides,"agentDeviceAccess"),false);
+    const persisted=await readFile(join(home,"ui-state.json"),"utf8");assert.doesNotMatch(persisted,/agentDeviceAccess/);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 test("pull request auto-settle is opt-in and persists",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-state-auto-settle-"));const env={...process.env,TREBELL_HOME:home};
   try{
@@ -266,8 +283,8 @@ test("scoped settings resolve environment defaults and project overrides without
   const home=await mkdtemp(join(tmpdir(),"trebell-state-scopes-"));const env={...process.env,TREBELL_HOME:home};
   try{
     const state=new TrebellStateStore(env);
-    state.updateSettings({defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",worktreeSubmodules:"recursive",autoPull:false,agentDeviceAccess:false,defaultModel:"model-global",sourceControlMergeMethod:"squash",sourceControlTextStyle:"concise",sourceControlTextModel:null});
-    state.updateEnvironmentDefaults("ssh-a",{defaultPermissionMode:"full",defaultWorkspaceMode:"worktree",worktreeSubmodules:"none",agentDeviceAccess:true,defaultModel:"model-remote",sourceControlMergeMethod:"rebase",sourceControlTextStyle:"repository",sourceControlTextModel:"model-writing",sourceControlCustomInstructions:"Follow repository rules.",sourceControlFollowTemplates:true});
+    state.updateSettings({defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",worktreeSubmodules:"recursive",autoPull:false,defaultModel:"model-global",sourceControlMergeMethod:"squash",sourceControlTextStyle:"concise",sourceControlTextModel:null});
+    state.updateEnvironmentDefaults("ssh-a",{defaultPermissionMode:"full",defaultWorkspaceMode:"worktree",worktreeSubmodules:"none",defaultModel:"model-remote",sourceControlMergeMethod:"rebase",sourceControlTextStyle:"repository",sourceControlTextModel:"model-writing",sourceControlCustomInstructions:"Follow repository rules.",sourceControlFollowTemplates:true});
     const project=state.touchProject("/srv/app",{environmentId:"ssh-a",name:"Remote App"});
     let scoped=state.projectSettings(project.path,"ssh-a");
     assert.equal(scoped.effective.defaultPermissionMode,"full");

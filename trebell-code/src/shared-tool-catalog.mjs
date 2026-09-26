@@ -23,7 +23,6 @@ function tool(name,description,inputSchema,policy={},requirements={}){
       workspace:Boolean(requirements.workspace),
       project:Boolean(requirements.project),
       fullAccess:Boolean(requirements.fullAccess),
-      deviceAccess:Boolean(requirements.deviceAccess),
       delegation:Boolean(requirements.delegation),
     },
   });

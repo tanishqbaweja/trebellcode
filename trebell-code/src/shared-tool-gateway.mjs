@@ -13,7 +13,7 @@ function normalizedToolAllowlist(value){
 }
 
 const TOOL_ALLOWLIST_ALIASES=Object.freeze({
-  repo:"trebell_repo",repository:"trebell_repo",workspace:"trebell_workspace",terminal:"trebell_terminal",browser:"trebell_browser",computer:"trebell_computer",device:"trebell_device",
+  repo:"trebell_repo",repository:"trebell_repo",workspace:"trebell_workspace",terminal:"trebell_terminal",browser:"trebell_browser",computer:"trebell_computer",
   source_control:"trebell_source_control","source-control":"trebell_source_control",git:"trebell_source_control",delegate:"trebell_delegate",delegation:"trebell_delegate",
 });
 function canonicalToolPattern(value){
@@ -39,7 +39,6 @@ function requirementDecision(definition,context={}){
   if(requirements.desktop&&!context.desktopAvailable)return rejection("This Trebell tool requires the desktop app.",definition);
   if(requirements.workspace&&!context.workspace)return rejection("This Trebell tool requires an active workspace.",definition);
   if(requirements.project&&context.projectAvailable!==true)return rejection("This Trebell tool requires an active project.",definition);
-  if(requirements.deviceAccess&&!context.deviceAccess)return rejection("Agent device access is disabled for this project.",definition);
   if(requirements.delegation&&!context.delegationAvailable)return rejection("Trebell delegation is unavailable in this runtime.",definition);
   if(requirements.fullAccess&&profile!=="full")return rejection("This Trebell tool requires Full Access mode.",definition);
   return null;

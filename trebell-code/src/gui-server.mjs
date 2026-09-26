@@ -29,7 +29,6 @@ import { createRemoteControlServer } from "./remote-control.mjs";
 import { RemoteAuthStore } from "./remote-auth-store.mjs";
 import { RemoteAccessSecretStore } from "./remote-access-secret-store.mjs";
 import { REMOTE_SCOPES, normalizeRemoteScopes } from "./remote-scopes.mjs";
-import { DeviceService } from "./device-service.mjs";
 import { ProviderManager, normalizeProviderId } from "./provider-manager.mjs";
 import { modelContextWindowFromMetadata, modelContextWindowKey } from "./model-context-window.mjs";
 import { withNormalizedModelCapabilities } from "./model-capabilities.mjs";
@@ -481,7 +480,6 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   const state=new TrebellStateStore(env);
   const eventJournal=new EventJournal(env);
   const remoteAuth=new RemoteAuthStore(env);
-  const devices=new DeviceService({env});
   const providers=new ProviderManager({env,fetchFn:fetchImpl});
   const environments=new EnvironmentManager({state,env});
   const storedActiveEnvironmentId=state.settings().activeEnvironmentId||null;
@@ -1851,18 +1849,6 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         return json(res,200,await environments.execute(body.id,body));
       }catch(error){return json(res,400,{error:error.message});}
     }
-    if(url.pathname==="/api/devices"&&req.method==="GET"){
-      try{return json(res,200,await devices.list())}
-      catch(error){return json(res,400,{error:error.message});}
-    }
-    if(url.pathname==="/api/device/tool-updates"&&req.method==="GET"){
-      try{return json(res,200,await devices.updates())}
-      catch(error){return json(res,400,{error:error.message});}
-    }
-    if(url.pathname==="/api/device/tool-update"&&req.method==="POST"){
-      try{const body=await readJsonBody(req);return json(res,200,await devices.updateTool(body.tool))}
-      catch(error){return json(res,400,{error:error.message});}
-    }
     if(url.pathname==="/api/usage"){
       if(req.method==="GET"){
         const requested=url.searchParams.getAll("environmentId");
@@ -1881,22 +1867,6 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         before:url.searchParams.get("before")||null,
         after:url.searchParams.get("after")||null,
       }),journal:eventJournal.status()});
-    }
-    if(url.pathname==="/api/device/screenshot"&&req.method==="GET"){
-      try{return json(res,200,await devices.screenshot(url.searchParams.get("id")))}
-      catch(error){return json(res,400,{error:error.message});}
-    }
-    if(url.pathname==="/api/device/logs"&&req.method==="GET"){
-      try{return json(res,200,await devices.logs(url.searchParams.get("id"),{lines:Number(url.searchParams.get("lines")||200),minutes:Number(url.searchParams.get("minutes")||5)}))}
-      catch(error){return json(res,400,{error:error.message});}
-    }
-    if(url.pathname==="/api/device/action"&&req.method==="POST"){
-      try{const body=await readJsonBody(req);return json(res,200,await devices.action(body.id,body.action,body.args||{}))}
-      catch(error){return json(res,400,{error:error.message});}
-    }
-    if(url.pathname==="/api/device/start"&&req.method==="POST"){
-      try{const body=await readJsonBody(req);return json(res,200,await devices.startAndroid(body.avd))}
-      catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/remote-access"){
       if(req.method==="GET") return json(res,200,remoteInfo());

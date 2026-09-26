@@ -867,7 +867,6 @@ export default function App(){
     worktreeSubmodules:settings.worktreeSubmodules||"recursive",
     worktreeCleanup:settings.worktreeCleanup||{mode:"off"},
     autoPull:Boolean(settings.autoPull),
-    agentDeviceAccess:Boolean(settings.agentDeviceAccess),
   };
   const workspaceEnvironmentType=currentProject?.environment?.type||(workspaceEnvironmentId&&(workspaceEnvironmentId===settings.activeEnvironmentId)?bootstrap.activeEnvironment?.type:null)||(workspaceEnvironmentId?"remote":"local");
   const workspaceRemote=Boolean(workspaceEnvironmentId&&workspaceEnvironmentType!=="local");
@@ -1726,38 +1725,6 @@ export default function App(){
         })();
         return;
       }
-      if(p.namespace==="trebell_device"){
-        (async()=>{
-          try{
-            if(!effectiveProjectSettings.agentDeviceAccess)throw new Error("Agent device access is disabled for this project.");
-            const args=p.arguments||{};
-            if(p.tool==="list"){
-              const result=await api("/api/devices");
-              client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_device",[{type:"inputText",text:JSON.stringify(result)}]),success:true});return;
-            }
-            if(p.tool==="screenshot"){
-              const shot=await api("/api/device/screenshot?id="+encodeURIComponent(args.id||""));
-              client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_device",[{type:"inputImage",imageUrl:shot.dataUrl},{type:"inputText",text:JSON.stringify({id:shot.id,platform:shot.platform,width:shot.width,height:shot.height,inputWidth:shot.inputWidth??shot.width,inputHeight:shot.inputHeight??shot.height,inputCoordinateSpace:shot.inputCoordinateSpace||"pixels"})}]),success:true});return;
-            }
-            if(p.tool==="logs"){
-              const logs=await api("/api/device/logs?id="+encodeURIComponent(args.id||"")+"&lines="+encodeURIComponent(args.lines||200)+"&minutes="+encodeURIComponent(args.minutes||5));
-              client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_device",[{type:"inputText",text:JSON.stringify(logs)}]),success:true});return;
-            }
-            let result;
-            if(p.tool==="boot"||p.tool==="poweroff")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:p.tool,args:{}}});
-            else if(p.tool==="packages")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"packages",args:{}}});
-            else if(p.tool==="launch"||p.tool==="stop")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:p.tool,args:{app:args.app}}});
-            else if(p.tool==="tap")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"tap",args:{x:args.x,y:args.y}}});
-            else if(p.tool==="swipe")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"swipe",args:{x1:args.x1,y1:args.y1,x2:args.x2,y2:args.y2,duration:args.duration}}});
-            else if(p.tool==="type")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"type",args:{text:args.text}}});
-            else if(p.tool==="key")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"key",args:{key:args.key}}});
-            else if(p.tool==="foreground")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"foreground",args:{}}});
-            else throw new Error("Unknown Trebell device tool: "+p.tool);
-            client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_device",[{type:"inputText",text:JSON.stringify(result)}]),success:true});
-          }catch(error){client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false})}
-        })();
-        return;
-      }
       if(p.namespace==="trebell_source_control"){
         (async()=>{
           try{
@@ -2573,7 +2540,6 @@ export default function App(){
     return {
       browser:desktopTools.browser,
       computer:desktopTools.computer,
-      device:Boolean(effectiveProjectSettings.agentDeviceAccess),
       sourceControl:!projectless,
       delegation:Boolean(runtimeCapabilities.delegation&&runtimeCapabilities.dynamicTools),
     };

@@ -99,7 +99,9 @@ test("Trebell Native expands specialized tools on a later turn without replacing
   const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
   try{
     const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"read-only",dynamicTools:[]})).thread;
+    threadStore.update(thread.id,{providerMeta:{...threadStore.get(thread.id).providerMeta,dynamicToolNamespaces:["trebell_device"]}});
     const first=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"read-only",input:[{type:"text",text:"Fix the parser"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===first.id);
+    assert.deepEqual(threadStore.get(thread.id).providerMeta.dynamicToolNamespaces,[],"retired mobile-device tool metadata should be scrubbed when an old Native thread resumes");
     const second=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"read-only",dynamicToolNamespaces:["trebell_browser"],input:[{type:"text",text:"Now verify it in the browser"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===second.id);
     const persisted=threadStore.get(thread.id);assert.equal(persisted.id,thread.id);assert.equal(persisted.turns.length,2);assert.deepEqual(persisted.providerMeta.dynamicToolNamespaces,["trebell_browser"]);assert.equal(calls,2);
     const repeated=await rpc.request("thread/tools/ensure",{threadId:thread.id,namespaces:["trebell_browser"]});assert.deepEqual(repeated.added,[]);assert.equal(repeated.thread.id,thread.id);

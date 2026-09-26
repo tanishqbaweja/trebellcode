@@ -30,11 +30,13 @@ import { redactSecretText } from "./secret-redactor.mjs";
 
 const IMAGE_MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".bmp":"image/bmp"};
 const LIVE_TOOL_OUTPUT_LIMIT=256*1024;
-const EXPANDABLE_NATIVE_TOOL_NAMESPACES=new Set(["trebell_browser","trebell_computer","trebell_device","trebell_source_control","trebell_delegate"]);
+const EXPANDABLE_NATIVE_TOOL_NAMESPACES=new Set(["trebell_browser","trebell_computer","trebell_source_control","trebell_delegate"]);
+const RETIRED_NATIVE_TOOL_NAMESPACES=new Set(["trebell_device"]);
 function expandableNativeToolNamespaces(values=[]){
   const requested=[...new Set((Array.isArray(values)?values:[]).map(value=>String(value||"").trim()).filter(Boolean))];
-  const unsupported=requested.find(name=>!EXPANDABLE_NATIVE_TOOL_NAMESPACES.has(name));if(unsupported)throw new Error("Unsupported dynamic tool namespace: "+unsupported);
-  return requested;
+  const active=requested.filter(name=>!RETIRED_NATIVE_TOOL_NAMESPACES.has(name));
+  const unsupported=active.find(name=>!EXPANDABLE_NATIVE_TOOL_NAMESPACES.has(name));if(unsupported)throw new Error("Unsupported dynamic tool namespace: "+unsupported);
+  return active;
 }
 function agentProviderIdentity(thread){return thread?.runtime==="native"?(thread?.providerMeta?.modelProvider||null):(thread?.providerMeta?.runtimeInstanceId||thread?.runtimeInstanceId||null)}
 
@@ -613,6 +615,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
   }
 
   async function ensureSession(thread,context,{permissionMode=null,model=null}={}){
+    if(thread?.runtime==="native"){
+      const storedNamespaces=Array.isArray(thread.providerMeta?.dynamicToolNamespaces)?thread.providerMeta.dynamicToolNamespaces:[],activeNamespaces=expandableNativeToolNamespaces(storedNamespaces);
+      if(activeNamespaces.length!==storedNamespaces.length){
+        thread=threadStore.update(thread.id,{providerMeta:{...(thread.providerMeta||{}),dynamicToolNamespaces:activeNamespaces}});
+      }
+    }
     let session=sessions.get(thread.id);
     if(session instanceof NativeAgentSession){
       const environmentId=thread.providerMeta?.environmentId??state?.settings?.().activeEnvironmentId??null;
@@ -637,7 +645,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const platformTools=platformDynamicToolNamespaces({
         repository:!projectless,
         workspaceTools:true,terminal:true,
-        browser:namespaceNames.has("trebell_browser"),computer:namespaceNames.has("trebell_computer"),device:namespaceNames.has("trebell_device"),
+        browser:namespaceNames.has("trebell_browser"),computer:namespaceNames.has("trebell_computer"),
         sourceControl:!projectless&&namespaceNames.has("trebell_source_control"),delegation:namespaceNames.has("trebell_delegate"),
       });
       const repoIo=remoteIo?createRemoteContextIo({environments,environmentId,root:runtimeCwd}):null;
@@ -675,7 +683,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         projectAvailable:!projectless,
         policyContext:()=>({
           permissionProfile:normalizePermissionMode((threadStore.get(thread.id)||thread)?.providerMeta?.permissionProfile||effectivePermissionMode),runtime:"native",workspace:runtimeCwd,projectAvailable:!projectless,
-          desktopAvailable:namespaceNames.has("trebell_browser")||namespaceNames.has("trebell_computer"),deviceAccess:namespaceNames.has("trebell_device"),delegationAvailable:namespaceNames.has("trebell_delegate"),
+          desktopAvailable:namespaceNames.has("trebell_browser")||namespaceNames.has("trebell_computer"),delegationAvailable:namespaceNames.has("trebell_delegate"),
           environmentType:environmentProfile?.type||"local",environmentIsolated:false,provenance:"model",
         }),
         executeShared:async call=>{
@@ -897,7 +905,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     if(thread.runtime!=="native")return {supported:false,reason:"runtime_does_not_support_dynamic_tool_expansion",thread,added:[],namespaces:[]};
     if(thread.status?.type==="active")throw new Error("Stop the running turn before expanding thread tools.");
     const requested=expandableNativeToolNamespaces(requestedNamespaces);
-    const current=[...new Set(thread.providerMeta?.dynamicToolNamespaces||[])],currentSet=new Set(current),added=requested.filter(name=>!currentSet.has(name));
+    const current=expandableNativeToolNamespaces(thread.providerMeta?.dynamicToolNamespaces||[]),currentSet=new Set(current),added=requested.filter(name=>!currentSet.has(name));
     if(!added.length)return {supported:true,thread,added:[],namespaces:current};
     const activeSession=sessions.get(thread.id);if(activeSession instanceof NativeAgentSession&&activeSession.turnActive)throw new Error("Stop the running turn before expanding thread tools.");
     const namespaces=[...current,...added],providerMeta={...(thread.providerMeta||{}),dynamicToolNamespaces:namespaces};
@@ -965,7 +973,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       if(instance.kind!==runtime)throw new Error("Requested runtime profile does not match the active external runtime");
       const environmentId=Object.prototype.hasOwnProperty.call(params,"environmentId")?(params.environmentId||null):(state?.settings?.().activeEnvironmentId||null);
       const permissionMode=agentPermissionModeFromStart(params),effectiveCwd=runtimeManager.runtimeCwd(params.cwd||process.cwd(),environmentId);
-      const dynamicToolNamespaces=[...new Set((params.dynamicTools||[]).filter(item=>item?.type==="namespace"&&item.name).map(item=>String(item.name)))];
+      const dynamicToolNamespaces=runtime==="native"?expandableNativeToolNamespaces((params.dynamicTools||[]).filter(item=>item?.type==="namespace"&&item.name).map(item=>String(item.name))):[];
       const seed=threadStore.create({runtime,cwd:effectiveCwd,providerSessionId:"",model:params.model||null,agent:params.agent||null,providerMeta:{
         runtimeInstanceId:instance.id,environmentId,permissionProfile:permissionMode,
         ...(runtime==="native"?{

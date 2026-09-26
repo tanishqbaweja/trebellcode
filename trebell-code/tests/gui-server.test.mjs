@@ -426,11 +426,8 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     const health=await fetch(gui.url+"/api/health").then(r=>r.json());
     assert.equal(health.ok,true);
 
-    const devices=await fetch(gui.url+"/api/devices").then(r=>r.json());
-    assert.ok(devices.capabilities?.android);
-    assert.ok(devices.capabilities?.ios);
-    assert.ok(Array.isArray(devices.devices));
-    assert.ok(devices.devices.every(device=>device.platform!=="android"||String(device.serial||"").startsWith("emulator-")));
+    const retiredDeviceApi=await fetch(gui.url+"/api/devices");
+    assert.notEqual(retiredDeviceApi.headers.get("content-type"),"application/json; charset=utf-8","retired mobile-device control must not remain an API surface");
   } finally {
     await gui.close();
     await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});

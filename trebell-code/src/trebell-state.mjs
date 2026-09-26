@@ -38,7 +38,6 @@ const DEFAULT_STATE = Object.freeze({
     backgroundMode: false,
     continueThreadsAfterRestart: false,
     autoSettleMergedThreads: false,
-    agentDeviceAccess: false,
     keyboardShortcuts: {},
     keybindingRules: [],
     activeEnvironmentId: null,
@@ -125,7 +124,6 @@ export const PROJECT_SCOPED_SETTING_KEYS=Object.freeze([
   "sourceControlTextModel",
   "sourceControlCustomInstructions",
   "sourceControlFollowTemplates",
-  "agentDeviceAccess",
 ]);
 function normalizeScopedSetting(key,value){
   if(key==="defaultModel"){const text=String(value??"").trim();return text||null}
@@ -138,7 +136,7 @@ function normalizeScopedSetting(key,value){
   if(key==="sourceControlTextModel"){const text=String(value??"").trim();return text||null}
   if(key==="sourceControlCustomInstructions")return String(value??"").trim().slice(0,12000);
   if(key==="sourceControlFollowTemplates")return value!==false;
-  if(key==="autoPull"||key==="agentDeviceAccess")return Boolean(value);
+  if(key==="autoPull")return Boolean(value);
   return undefined;
 }
 function normalizeScopedObject(value={}){
@@ -169,6 +167,10 @@ export class TrebellStateStore {
       const parsed=JSON.parse(readFileSync(this.path,"utf8"));
       this.legacyCollectionsPresent=["threadMeta","checkpoints","usageRecords","verificationRecords","repositoryKnowledge"].some(key=>Object.prototype.hasOwnProperty.call(parsed,key));
       const rawSettings=parsed.settings&&typeof parsed.settings==="object"?parsed.settings:{};
+      const legacyDeviceControlSetting=Object.prototype.hasOwnProperty.call(rawSettings,"agentDeviceAccess")
+        ||Object.values(rawSettings.environmentDefaults||{}).some(value=>value&&typeof value==="object"&&Object.prototype.hasOwnProperty.call(value,"agentDeviceAccess"))
+        ||(Array.isArray(parsed.projects)&&parsed.projects.some(project=>project?.settingsOverrides&&Object.prototype.hasOwnProperty.call(project.settingsOverrides,"agentDeviceAccess")));
+      if(legacyDeviceControlSetting)this.needsRewrite=true;
       const projects=Array.isArray(parsed.projects)?parsed.projects.map(project=>({
         ...project,
         environmentId:normalizeEnvironmentId(project?.environmentId),
@@ -177,6 +179,7 @@ export class TrebellStateStore {
       })):[];
       const settings={...clone(DEFAULT_STATE.settings),...rawSettings};
       delete settings.remoteAccessToken;
+      delete settings.agentDeviceAccess;
       settings.environmentDefaults=Object.fromEntries(Object.entries(rawSettings.environmentDefaults||{}).map(([id,value])=>[String(id),normalizeScopedObject(value)]));
       if(Number(parsed.version||1)<2&&rawSettings.appearanceMode==="system")settings.appearanceMode="dark";
       settings.worktreeCleanup=normalizeWorktreeCleanup(settings.worktreeCleanup);
@@ -238,7 +241,6 @@ export class TrebellStateStore {
       sourceControlTextModel:normalizeScopedSetting("sourceControlTextModel",this.state.settings.sourceControlTextModel),
       sourceControlCustomInstructions:normalizeScopedSetting("sourceControlCustomInstructions",this.state.settings.sourceControlCustomInstructions),
       sourceControlFollowTemplates:normalizeScopedSetting("sourceControlFollowTemplates",this.state.settings.sourceControlFollowTemplates),
-      agentDeviceAccess:Boolean(this.state.settings.agentDeviceAccess),
     };
     const id=normalizeEnvironmentId(environmentId);if(!id)return clone(base);
     return {...clone(base),...clone(this.state.settings.environmentDefaults?.[id]||{})};
@@ -282,6 +284,7 @@ export class TrebellStateStore {
   }
   updateSettings(patch={}){
     if("remoteAccessToken" in patch){patch={...patch};delete patch.remoteAccessToken}
+    if("agentDeviceAccess" in patch){patch={...patch};delete patch.agentDeviceAccess}
     if("worktreeSubmodules" in patch&&!['recursive','top-level','none'].includes(String(patch.worktreeSubmodules)))patch={...patch,worktreeSubmodules:'recursive'};
     if("worktreeCleanup" in patch)patch={...patch,worktreeCleanup:normalizeWorktreeCleanup(patch.worktreeCleanup)};
     if("storageCleanup" in patch)patch={...patch,storageCleanup:normalizeStorageCleanup(patch.storageCleanup)};

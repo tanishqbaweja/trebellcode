@@ -29,7 +29,7 @@ function repositoryPlatformDefinition(name){
       asyncSafe:Boolean(policy.readOnly&&policy.externalSideEffects!==true),
     },
     requirements:{
-      desktop:false,workspace:policy.workspace==="required",project:false,fullAccess:false,deviceAccess:false,delegation:false,
+      desktop:false,workspace:policy.workspace==="required",project:false,fullAccess:false,delegation:false,
       environment:policy.environment||"any",
     },
     rawDefinition:definition,
