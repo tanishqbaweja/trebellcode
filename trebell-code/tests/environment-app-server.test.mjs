@@ -86,3 +86,38 @@ test("remote app-server logs redact runtime credentials before entering Trebell 
     assert.doesNotMatch(text,new RegExp(credential));assert.match(text,/\[redacted\]/);assert.match(text,/safe output/);
   }finally{await remote.close()}
 });
+
+test("remote Codex app-server clears the remote login environment before launch",async()=>{
+  const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();let command="";
+  const profile={id:"wsl-safe",name:"WSL safe",type:"wsl",cwd:"/srv/app"};
+  const environments={
+    get:id=>id===profile.id?profile:null,
+    execute:async()=>({exitCode:0,stdout:"HOST=127.0.0.1\nGUEST=127.0.0.1\n",stderr:""}),
+    spawnSession:(_id,options)=>{command=options.command;return child},
+  };
+  const remote=await startRemoteAppServer({
+    environments,environmentId:profile.id,appPort:33457,provider:"freebuff",localProviderPort:9,
+    runtimeInstance:{homePath:"~/.codex-safe",environment:{CUSTOM_MODE:"safe"}},
+    runtimeEnvironmentNames:["PATH","HOME","OPENAI_API_KEY","TEAM_PROXY"],
+  });
+  try{
+    assert.match(command,/exec env -i /);assert.match(command,/PATH="\$\{PATH-\}"/);assert.match(command,/HOME="\$\{HOME-\}"/);
+    assert.match(command,/OPENAI_API_KEY="\$\{OPENAI_API_KEY-\}"/);assert.match(command,/TEAM_PROXY="\$\{TEAM_PROXY-\}"/);
+    assert.match(command,/CUSTOM_MODE='safe'/);assert.match(command,/CODEX_HOME="\$\{CODEX_HOME-\}"/);
+    assert.doesNotMatch(command,/GITHUB_TOKEN|TREBELL_PRIVATE_SECRET/);
+  }finally{await remote.close()}
+});
+
+test("SSH app-server transport does not inherit unrelated host secrets",async()=>{
+  const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();let launch=null;
+  const profile={id:"ssh-safe",name:"SSH safe",type:"ssh",cwd:"/srv/app",host:"example.test",user:"dev",port:22};
+  const environments={get:id=>id===profile.id?profile:null};
+  const remote=await startRemoteAppServer({
+    environments,environmentId:profile.id,appPort:33458,provider:"freebuff",localProviderPort:9,
+    hostEnvironment:{PATH:"/usr/bin",HOME:"/home/local",SSH_AUTH_SOCK:"/tmp/agent.sock",TREBELL_PRIVATE_SECRET:"hidden"},
+    spawnProcess:(command,args,options)=>{launch={command,args,options};return child},
+  });
+  assert.ok(remote);assert.equal(launch.command,process.platform==="win32"?"ssh.exe":"ssh");
+  assert.equal(launch.options.env.PATH,"/usr/bin");assert.equal(launch.options.env.HOME,"/home/local");assert.equal(launch.options.env.SSH_AUTH_SOCK,"/tmp/agent.sock");
+  assert.equal(launch.options.env.TREBELL_PRIVATE_SECRET,undefined);
+});

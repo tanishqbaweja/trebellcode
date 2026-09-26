@@ -130,6 +130,7 @@ export async function startRemoteAppServer({
   runtimeInstance=null,
   runtimeEnvironmentNames=null,
   hostEnvironment=process.env,
+  spawnProcess=spawn,
   debug=false,
 }={}){
   const profile=environments?.get(environmentId);
@@ -192,7 +193,7 @@ export async function startRemoteAppServer({
     ];
     if(profile.identityFile)args.push("-i",profile.identityFile);
     args.push(profile.user?profile.user+"@"+profile.host:profile.host,remoteCommand);
-    const child=spawn(executable,args,{env:remoteTransportEnvironment(hostEnvironment),windowsHide:true,stdio:["ignore","pipe","pipe"]});
+    const child=spawnProcess(executable,args,{env:remoteTransportEnvironment(hostEnvironment),windowsHide:true,stdio:["ignore","pipe","pipe"]});
     attachLogs(child,logs,{debug,environment:logEnvironment});
     return {
       child,
