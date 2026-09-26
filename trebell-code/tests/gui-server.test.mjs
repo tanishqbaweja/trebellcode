@@ -87,6 +87,12 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     const savedRemoteSecret=JSON.parse(await readFile(join(home,"remote-access-secret.json"),"utf8"));
     assert.equal(savedRemoteSecret.token,compatibilityToken);
 
+    await fetch(gui.url+"/api/thread-meta",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId:"catalog-meta-fixture",patch:{runtime:"native",runtimeInstanceId:"native-default",cwd:home,projectless:true,branch:"feature/catalog",threadSnapshot:{id:"catalog-meta-fixture",name:"Catalog fixture",preview:"Compact bootstrap row",cwd:home,updatedAt:100,createdAt:90,status:{type:"idle"},runtime:"native"},delegation:{parentThreadId:"parent",task:"Child fixture",status:"running",ownership:["src/app.js"]},goal:{objective:"Heavy goal"},trebellQueue:[{id:"queue-heavy",input:[{type:"text",text:"heavy queued input"}]}],trebellContext:{task:"active-only",exactInjectedContext:"large context that should not be bootstrapped"},reviewedFiles:["src/app.js"]}})});
+    const compactState=await fetch(gui.url+"/api/state").then(r=>r.json()),compactMeta=compactState.threadMeta["catalog-meta-fixture"];
+    assert.equal(compactMeta.runtime,"native");assert.equal(compactMeta.threadSnapshot.name,"Catalog fixture");assert.equal(compactMeta.delegation.parentThreadId,"parent");
+    for(const heavy of ["goal","trebellQueue","trebellContext","reviewedFiles"])assert.equal(Object.prototype.hasOwnProperty.call(compactMeta,heavy),false,heavy+" must not ride the general bootstrap payload");
+    const fullMeta=await fetch(gui.url+"/api/thread-meta?threadId=catalog-meta-fixture").then(r=>r.json());assert.equal(fullMeta.goal.objective,"Heavy goal");assert.equal(fullMeta.trebellQueue[0].id,"queue-heavy");assert.equal(fullMeta.trebellContext.task,"active-only");
+
     const models=await fetch(gui.url+"/api/models").then(r=>r.json());
     assert.ok(models.models.length>=1);
     assert.ok(models.metadata.models.length>=1);for(const row of models.metadata.models){assert.ok(row.capabilities);assert.equal(Object.prototype.hasOwnProperty.call(row.capabilities,"contextWindow"),true);assert.equal(Object.prototype.hasOwnProperty.call(row.capabilities,"vision"),true);assert.equal(Object.prototype.hasOwnProperty.call(row.capabilities,"protocolCompatibility"),true);assert.equal(Object.prototype.hasOwnProperty.call(row.capabilities,"pricing"),true)}
