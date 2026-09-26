@@ -1924,7 +1924,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const runtime=normalizeAgentRuntime(body.runtime||selectedAgentRuntime);
         const execution=resolveRecipeExecution(recipe,{
           projectPath,input:body.input||"",currentPermission:body.currentPermission||"supervised",runtime,
-          toolPolicyEnforced:false,environmentIsolated:false,
+          toolPolicyEnforced:runtime==="native",environmentIsolated:false,
         });
         return json(res,200,{execution});
       }catch(error){return json(res,400,{error:error.message});}

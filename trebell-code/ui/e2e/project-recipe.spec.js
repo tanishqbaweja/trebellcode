@@ -10,7 +10,7 @@ async function freePort(){const server=createServer();await new Promise((resolve
 test("project recipe slash command starts a bounded turn with stricter permissions",async({page})=>{
   test.setTimeout(30_000);await page.setViewportSize({width:1280,height:800});
   const cwd=process.cwd(),calls=[];
-  const recipe={id:"recipe-fix-ci",name:"/fix-ci",title:"Fix CI",description:"Repair the failing CI workflow.",objective:"Fix the failing CI job.",permission:"workspace-write",allowedTools:[],expectedArtifacts:["Green CI"],validation:["Run affected tests"],context:"Avoid unrelated refactors.",model:null,runtime:null,maxChildren:0};
+  const recipe={id:"recipe-fix-ci",name:"/fix-ci",title:"Fix CI",description:"Repair the failing CI workflow.",objective:"Fix the failing CI job.",permission:"workspace-write",allowedTools:["repo"],expectedArtifacts:["Green CI"],validation:["Run affected tests"],context:"Avoid unrelated refactors.",model:null,runtime:null,maxChildren:0};
   const project={id:"recipe-project",name:"Recipe fixture",path:cwd,environmentId:null,recipes:[recipe],scripts:[],effectiveSettings:{}};
   const nativeProject={id:"native-recipe-project",name:project.name,roots:[{path:cwd}],metadata:{trebellManaged:"true",trebellProjectId:project.id},position:0,createdAt:1,updatedAt:1,recencyAt:null};
   const thread={id:"recipe-thread",name:"Recipe thread",preview:"Run a project recipe",historyMode:"paginated",projectId:nativeProject.id,cwd,model:"freebuff/test/coding-fast",status:{type:"idle"},createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
@@ -49,9 +49,9 @@ test("project recipe slash command starts a bounded turn with stricter permissio
     await page.route(/\/api\/context\/packet$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({injection:"RECIPE_REPO_CONTEXT",items:[],tokenEstimate:3})}));
     await page.route(/\/api\/project-recipe\/resolve$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({execution:{
       recipe,turnInput:"Fix the failing CI job.\n\nUser input for this recipe:\nLinux runner only",
-      context:"Trebell project recipe /fix-ci\n\nObjective:\nFix the failing CI job.\n\nValidation expectations:\n- Run affected tests\n\nDelegation limit: 0 child agents.\n\nCurrent Trebell permission profile: edits. The recipe does not silently elevate it.",
+      context:"Trebell project recipe /fix-ci\n\nObjective:\nFix the failing CI job.\n\nEnforced allowed tools (namespace, namespace/tool, or namespace/*):\n- repo\n\nValidation expectations:\n- Run affected tests\n\nDelegation limit: 0 child agents.\n\nCurrent Trebell permission profile: edits. The recipe does not silently elevate it.",
       goalPatch:{objective:"Fix the failing CI job. — Linux runner only",status:"active",completionConditions:["Green CI"],constraints:[],validationExpectations:["Run affected tests"],childAgentBudget:0},
-      permissionMode:"edits",model:null,runtime:"codex",
+      toolAllowlist:["repo"],permissionMode:"edits",model:null,runtime:"codex",
     }})}));
 
     await page.goto("/");await page.locator(".thread-main",{hasText:"Recipe thread"}).click();
@@ -67,8 +67,9 @@ test("project recipe slash command starts a bounded turn with stricter permissio
     const goalCall=calls.find(call=>call.method==="thread/goal/set"),turnCall=calls.find(call=>call.method==="turn/start");
     expect(goalCall.params.childAgentBudget).toBe(0);expect(goalCall.params.validationExpectations).toEqual(["Run affected tests"]);expect(goalCall.params.completionConditions).toEqual(["Green CI"]);
     expect(turnCall.params.approvalPolicy).toBe("on-request");expect(turnCall.params.sandboxPolicy.type).toBe("workspaceWrite");
+    expect(turnCall.params.toolAllowlist).toEqual(["repo"]);
     expect(turnCall.params.additionalContext["trebell.recipe"].value).toContain("Delegation limit: 0 child agents");
-    expect(turnCall.params.additionalContext["trebell.repo_context"].value).toBe("RECIPE_REPO_CONTEXT");
+    expect(turnCall.params.additionalContext["trebell.repo_evidence"]).toEqual({kind:"untrusted",value:"RECIPE_REPO_CONTEXT"});
     expect(turnCall.params.input[0].text).toContain("Linux runner only");
     await expect(page.locator("select.permission-picker")).toHaveValue("edits");
     await expect(page.getByText("Fix the failing CI job.",{exact:false}).first()).toBeVisible();

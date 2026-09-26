@@ -6,6 +6,28 @@ import { platformToolDefinition } from "./platform-tool-catalog.mjs";
 function callName(call={}){return {namespace:String(call.namespace||""),name:String(call.name||call.tool||"")}}
 function objectArguments(value){return value&&typeof value==="object"&&!Array.isArray(value)?value:{}}
 
+function normalizedToolAllowlist(value){
+  if(!Array.isArray(value))return null;
+  const items=[...new Set(value.map(item=>String(item||"").trim().toLowerCase()).filter(Boolean))].slice(0,100);
+  return items.length?items:null;
+}
+
+const TOOL_ALLOWLIST_ALIASES=Object.freeze({
+  repo:"trebell_repo",repository:"trebell_repo",workspace:"trebell_workspace",terminal:"trebell_terminal",browser:"trebell_browser",computer:"trebell_computer",device:"trebell_device",
+  source_control:"trebell_source_control","source-control":"trebell_source_control",git:"trebell_source_control",delegate:"trebell_delegate",delegation:"trebell_delegate",
+});
+function canonicalToolPattern(value){
+  const raw=String(value||"").trim().toLowerCase();if(!raw||raw==="*")return raw;
+  const separator=raw.includes("/")?"/":raw.includes(".*")?".*":null;
+  if(separator){const index=raw.indexOf(separator),head=raw.slice(0,index),tail=raw.slice(index+separator.length),namespace=TOOL_ALLOWLIST_ALIASES[head]||head;return separator===".*"?namespace+".*":namespace+"/"+tail}
+  return TOOL_ALLOWLIST_ALIASES[raw]||raw;
+}
+function toolAllowedByAllowlist(namespace,name,value){
+  const allowlist=normalizedToolAllowlist(value);if(!allowlist)return true;
+  const ns=String(namespace||"").toLowerCase(),tool=String(name||"").toLowerCase(),qualified=ns+"/"+tool;
+  return allowlist.some(raw=>{const item=canonicalToolPattern(raw);if(item==="mcp")return ns==="trebell_mcp"||ns.startsWith("mcp_");return item==="*"||item===ns||item===qualified||item===ns+"/*"||item===ns+".*"});
+}
+
 function rejection(reason,definition=null){
   return {decision:POLICY_REJECT,reason,definition,action:null,profile:null,requirementFailed:true};
 }
@@ -26,6 +48,7 @@ function requirementDecision(definition,context={}){
 export function authorizePlatformToolCall(call={},context={},resolveDefinition=platformToolDefinition){
   const {namespace,name}=callName(call),definition=(typeof resolveDefinition==="function"?resolveDefinition(namespace,name):null)||null;
   if(!namespace||!name||!definition)return rejection(`Unknown Trebell tool: ${namespace||"default"}/${name||"unknown"}.`,definition);
+  if(!toolAllowedByAllowlist(namespace,name,context.toolAllowlist))return rejection(`Tool ${namespace}/${name} is not allowed by the active recipe.`,definition);
   const requirement=requirementDecision(definition,{...context,namespace});if(requirement)return requirement;
   const args=objectArguments(call.arguments),policy=definition.policy||{};
   const policyMetadata=policy.classifyFromInput?{}:{

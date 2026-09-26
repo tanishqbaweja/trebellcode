@@ -1246,6 +1246,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const selectedAgent=Object.prototype.hasOwnProperty.call(params,"agent")?(params.agent||null):(thread.agent||null);
       if(selectedAgent!==thread.agent)threadStore.update(thread.id,{agent:selectedAgent});
       const promptOptions={messageId:randomUUID(),agent:selectedAgent};
+      if(session instanceof NativeAgentSession&&Array.isArray(params.toolAllowlist)&&params.toolAllowlist.length)promptOptions.toolAllowlist=params.toolAllowlist.map(item=>String(item||"").trim()).filter(Boolean).slice(0,100);
       if(session instanceof NativeAgentSession&&turnGoal?.toolCallBudget!=null&&turnGoal.toolCallTelemetryComplete!==false)promptOptions.maxToolCalls=Math.max(0,Number(turnGoal.toolCallBudget)-Number(turnGoal.toolCallsUsed||0));
       if(session instanceof NativeAgentSession&&turnGoal?.tokenBudgetRemaining!=null)promptOptions.maxOutputTokens=Math.max(1,Math.floor(Number(turnGoal.tokenBudgetRemaining)||1));
       settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,promptOptions),model:params.model||thread.model||null,context});

@@ -32,6 +32,8 @@ test("project recipes resolve into bounded executable turn context without permi
 
     const bounded=await fetch(gui.url+"/api/project-recipe/resolve",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({path:projectPath,recipe:"/bounded",runtime:"codex"})});
     assert.equal(bounded.status,400);assert.match((await bounded.json()).error,/cannot prove recipe tool-policy enforcement/i);
+    const nativeBounded=await fetch(gui.url+"/api/project-recipe/resolve",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({path:projectPath,recipe:"/bounded",runtime:"native"})});
+    assert.equal(nativeBounded.status,200);const nativeExecution=(await nativeBounded.json()).execution;assert.deepEqual(nativeExecution.toolAllowlist,["repo"]);assert.match(nativeExecution.context,/Enforced allowed tools/);
     const wrongRuntime=await fetch(gui.url+"/api/project-recipe/resolve",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({path:projectPath,recipe:"/claude-only",runtime:"codex"})});
     assert.equal(wrongRuntime.status,400);assert.match((await wrongRuntime.json()).error,/requires the claude runtime/i);
   }finally{await gui.close();await rm(home,{recursive:true,force:true})}

@@ -2659,7 +2659,7 @@ export default function App(){
       return null;
     }
   }
-  async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null,focusPathsOverride=null,{permissionModeOverride=null,additionalContext=null,goalPatch=null}={}){
+  async function startTurn(text,paths,modelId=model,threadOverride=null,cwdOverride=null,focusPathsOverride=null,{permissionModeOverride=null,additionalContext=null,goalPatch=null,toolAllowlist=null}={}){
     if(!projectlessMode&&!threadOverride&&(cwdOverride||projectPath)===projectPath)await waitForActiveClone();
     await validateAttachmentPaths(paths||[]);
     if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");let thread=threadOverride||activeThread;let cwd=cwdOverride||projectPath||bootstrap.cwd;
@@ -2683,7 +2683,7 @@ export default function App(){
       const contextPacket=await prepareTurnContext(thread,cwd,text,focusPathsOverride||repositoryFocusPaths(paths,contextChips),{projectless:projectlessMode,ignoreUsage:autoCompaction.compacted});
       const turnContext={...repositoryContextEntries(contextPacket),...(additionalContext||{})};
       const dynamicToolNamespaces=dynamicToolNamespacesForTask(text,{projectless:Boolean(thread.providerMeta?.projectless??projectlessMode)});
-      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(agentRuntime==="codex"&&custom?.effort?{effort:custom.effort}:{}),...(agentRuntime==="codex"&&custom?.serviceTier?{serviceTierForTurn:custom.serviceTier}:{}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{}),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);
+      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(agentRuntime==="codex"&&custom?.effort?{effort:custom.effort}:{}),...(agentRuntime==="codex"&&custom?.serviceTier?{serviceTierForTurn:custom.serviceTier}:{}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{}),...(Array.isArray(toolAllowlist)&&toolAllowlist.length?{toolAllowlist}:{}),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);
       setMessages(prev=>prev.map(m=>m.id===clientId?{...m,turnId,checkpointId:checkpoint?.id||null}:m));if(checkpoint?.id&&turnId){try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}});setCheckpointByTurn(prev=>({...prev,[turnId]:{...checkpoint,turnId}}))}catch(error){reportCheckpointIssue("File checkpoint was created but could not be linked to this turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}}setAttachments([]);setContextChips([]);return{thread,turnId};
     }catch(error){
       setMessages(prev=>prev.filter(message=>message.id!==clientId));
@@ -2813,6 +2813,7 @@ export default function App(){
           permissionModeOverride:execution.permissionMode,
           additionalContext:{"trebell.recipe":{kind:"application",value:execution.context}},
           goalPatch:execution.goalPatch,
+          toolAllowlist:execution.toolAllowlist,
         });
         if(execution.permissionMode&&execution.permissionMode!==permissionMode)setPermissionMode(execution.permissionMode);
         setEvents(prev=>[...prev,{id:"recipe-"+Date.now(),kind:"tool",title:`Started project recipe ${recipe.name}`,status:"done",raw:{recipe:recipe.name,permissionMode:execution.permissionMode,model:execution.model||model,maxChildren:execution.goalPatch?.childAgentBudget??null}}]);

@@ -74,6 +74,23 @@ test("explicit user policy rules still override a catalog tool that would otherw
   assert.equal(result.success,false);assert.equal(result.decision,POLICY_REJECT);assert.match(result.error,/no browser reads/i);assert.equal(executed,false);
 });
 
+test("per-turn tool allowlists reject tools outside the active recipe before execution",async()=>{
+  const namespaceAllowed=authorizePlatformToolCall({namespace:"trebell_repo",name:"search_symbols",arguments:{query:"Session"}},{permissionProfile:"read-only",workspace:"/repo",toolAllowlist:["trebell_repo"]});
+  assert.equal(namespaceAllowed.decision,POLICY_ALLOW);
+  const aliasAllowed=authorizePlatformToolCall({namespace:"trebell_repo",name:"search_symbols",arguments:{query:"Session"}},{permissionProfile:"read-only",workspace:"/repo",toolAllowlist:["repo"]});
+  assert.equal(aliasAllowed.decision,POLICY_ALLOW);
+  const exactAllowed=authorizePlatformToolCall({namespace:"trebell_browser",name:"snapshot",arguments:{}},{permissionProfile:"read-only",desktopAvailable:true,toolAllowlist:["trebell_browser/snapshot"]});
+  assert.equal(exactAllowed.decision,POLICY_ALLOW);
+  const aliasExactAllowed=authorizePlatformToolCall({namespace:"trebell_browser",name:"snapshot",arguments:{}},{permissionProfile:"read-only",desktopAvailable:true,toolAllowlist:["browser/snapshot"]});assert.equal(aliasExactAllowed.decision,POLICY_ALLOW);
+  const wildcardAllowed=authorizePlatformToolCall({namespace:"trebell_browser",name:"snapshot",arguments:{}},{permissionProfile:"read-only",desktopAvailable:true,toolAllowlist:["trebell_browser/*"]});
+  assert.equal(wildcardAllowed.decision,POLICY_ALLOW);
+  const blocked=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"npm",args:["test"]}},{permissionProfile:"auto",workspace:"/repo",toolAllowlist:["trebell_repo","trebell_browser/snapshot"]});
+  assert.equal(blocked.decision,POLICY_REJECT);assert.match(blocked.reason,/not allowed by the active recipe/i);assert.equal(blocked.requirementFailed,true);
+  let executed=false;const gateway=createSharedToolGateway({execute:async()=>{executed=true;return "nope"}});
+  const denied=await gateway.invoke({namespace:"trebell_browser",name:"click",arguments:{ref:"x"}},{permissionProfile:"full",desktopAvailable:true,toolAllowlist:["trebell_browser/snapshot"]});
+  assert.equal(denied.success,false);assert.equal(denied.decision,POLICY_REJECT);assert.equal(executed,false);
+});
+
 test("tool execution failures are normalized and secret-redacted",async()=>{
   const secret="tool-executor-secret";
   const gateway=createSharedToolGateway({environment:{API_TOKEN:secret},execute:async()=>{throw new Error("failed with "+secret)}});

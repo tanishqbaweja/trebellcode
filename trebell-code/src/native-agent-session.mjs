@@ -146,14 +146,14 @@ export class NativeAgentSession{
       return {summary,usage:result.usage,model:result.model||this.model,provider:result.provider||this.provider,modelTurns:result.modelTurns,sourceMessageCount:requestMessages.length-1};
     }finally{this.controller=null}
   }
-  async prompt(prompt,{messageId=null,maxModelTurns=24,maxToolCalls=100,maxOutputTokens=null}={}){
+  async prompt(prompt,{messageId=null,maxModelTurns=24,maxToolCalls=100,maxOutputTokens=null,toolAllowlist=null}={}){
     if(this.closed)throw new Error("Native session is closed");if(!this.model)throw new Error("Trebell Native requires a model");
     if(this.turnActive)throw new Error("Trebell Native already has a running turn");
     this.controller=new AbortController();this.turnActive=true;this.pendingSteering=[];const user=promptMessage(prompt),base=[...this.messages,user];
     const wrappedExecutor=async call=>{
       const definition=platformToolDefinition(call.namespace,call.name),kind=definition?.policy?.kind||"other";
       this.onUpdate({update:{sessionUpdate:"tool_call",toolCallId:call.id,namespace:call.namespace||"native",tool:call.name,title:(call.namespace?call.namespace+" / ":"")+call.name,kind,rawInput:call.arguments,status:"in_progress"}});
-      const output=await this.executeTool(call);
+      const output=await this.executeTool(call,{toolAllowlist:Array.isArray(toolAllowlist)?toolAllowlist:null});
       const failed=output?.success===false;
       this.onUpdate({update:{sessionUpdate:"tool_call_update",toolCallId:call.id,namespace:call.namespace||"native",tool:call.name,title:(call.namespace?call.namespace+" / ":"")+call.name,kind,rawInput:call.arguments,rawOutput:output,content:contentItems(output),status:failed?"failed":"completed"}});
       return modelToolResult(output);

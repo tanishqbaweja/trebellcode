@@ -34,6 +34,17 @@ test("Native session reports namespaced tool lifecycle and keeps observations in
   const persisted=agentToolLifecycle(lifecycle[1].update).item;assert.equal(persisted.type,"dynamicToolCall");assert.equal(persisted.namespace,"trebell_repo");assert.equal(persisted.tool,"search_symbols");assert.doesNotMatch(JSON.stringify(persisted.rawOutput),/untrusted tool data/i);
 });
 
+test("Native session passes a recipe tool allowlist only to tool calls in that turn",async()=>{
+  const contexts=[];let providerCalls=0;
+  const session=new NativeAgentSession({
+    model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_repo",tools:[{type:"function",name:"search_symbols",inputSchema:{type:"object",properties:{}}}]}],
+    executeTool:async(_call,context)=>{contexts.push(context);return {success:true,contentItems:[{type:"inputText",text:"ok"}]}},
+    providerTurn:async()=>{providerCalls++;return providerCalls===1?{id:"tool-turn",provider:"fixture",model:"model-a",text:"",toolCalls:[{id:"call-1",namespace:"trebell_repo",name:"search_symbols",arguments:"{}"}],finishReason:"tool_calls",usage:{}}:{id:"done",provider:"fixture",model:"model-a",text:"done",toolCalls:[],finishReason:"stop",usage:{}}},
+  });
+  await session.start({providerSessionId:"allowlist-session",model:"model-a"});await session.prompt([{type:"text",text:"search"}],{toolAllowlist:["trebell_repo/search_symbols"]});
+  assert.deepEqual(contexts,[{toolAllowlist:["trebell_repo/search_symbols"]}]);await session.close();
+});
+
 test("Native persisted thread evidence reconstructs model and tool history after restart",()=>{
   const thread={turns:[{items:[
     {type:"userMessage",id:"u1",content:[{type:"text",text:"find Session"}]},
