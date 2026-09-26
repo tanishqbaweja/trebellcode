@@ -1563,7 +1563,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   const server=createServer(async(req,res)=>{
     const url=new URL(req.url || "/",`http://127.0.0.1:${port}`);
 
-    if(url.pathname==="/api/state" && req.method==="GET") return json(res,200,state.snapshot({includeCollections:false}));
+    if(url.pathname==="/api/state" && req.method==="GET") return json(res,200,state.snapshot({includeCollections:false,threadMetaView:"catalog"}));
     if(url.pathname==="/api/recovery"){
       if(req.method==="GET")return json(res,200,codexRecoverySnapshot());
       if(req.method==="POST"){

@@ -2236,8 +2236,17 @@ export default function App(){
     if(await switchRuntimeForThread(thread,{preserveSection}))return thread;
     const previousThreadId=activeThreadRef.current?.id;
     const reopeningCurrentThread=previousThreadId===thread.id;
-    const threadEnvironmentId=thread.providerMeta?.environmentId||null;
-    const savedMeta=threadMeta[thread.id]||{};
+    let savedMeta=threadMeta[thread.id]||{},metaReadError=null;
+    if(savedMeta.__catalogOnly===true){
+      try{
+        const fullMeta=await api("/api/thread-meta?threadId="+encodeURIComponent(thread.id));
+        if(fullMeta&&typeof fullMeta==="object"){
+          savedMeta={...savedMeta,...fullMeta};delete savedMeta.__catalogOnly;
+          setThreadMeta(previous=>({...previous,[thread.id]:savedMeta}));
+        }
+      }catch(error){metaReadError=error}
+    }
+    const threadEnvironmentId=savedMeta.environmentId??thread.providerMeta?.environmentId??null;
     const projectless=Object.prototype.hasOwnProperty.call(savedMeta,"projectless")?Boolean(savedMeta.projectless):Boolean(thread.providerMeta?.projectless);
     const useNativeQueue=shouldUseRuntimeNativeQueue({agentRuntime,nativeQueue:runtimeCapabilities.nativeQueue,projectless});
     const savedContextTask=savedMeta.trebellContext?.continuityTask||savedMeta.trebellContext?.userTask||savedMeta.trebellContext?.task||"";if(savedContextTask)contextTaskRef.current.set(thread.id,savedContextTask);
@@ -2245,7 +2254,7 @@ export default function App(){
     if(thread.cwd&&!threadEnvironmentId&&!projectless)await api("/api/worktree/ensure",{method:"POST",body:{path:thread.cwd,environmentId:null}}).catch(error=>{throw new Error("Could not restore this managed worktree: "+error.message)});
     const connectedClient=Boolean(client&&!(client===rpc&&rpcStatus!=="connected"));
     let resumed=null,cp=null,goalData=null,continuityData=null,attachmentData=null;
-    const persistentReadErrors=[];
+    const persistentReadErrors=[];if(metaReadError)persistentReadErrors.push("thread metadata: "+(metaReadError.message||String(metaReadError)));
     if(connectedClient){
       const resumePromise=resumeWithBoundedHistory(client,{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null});
       const checkpointPromise=api("/api/checkpoints?threadId="+encodeURIComponent(thread.id)).then(value=>({value,error:null}),error=>({value:null,error}));
@@ -2270,7 +2279,7 @@ export default function App(){
     if(projectless){setProjectlessMode(true);setGeneralEnvironmentId(savedMeta.environmentId??threadEnvironmentId??null);setCurrentProject(null);setProjectPath(openedThread.cwd||projectPath);setGitInfo(null);setWorkspaceMode("current")}
     else if(openedThread.cwd)await touchProject(openedThread.cwd,threadEnvironmentId);else setProjectPath(projectPath);
     if(!reopeningCurrentThread){setCheckpointByTurn({});setGoal(null);setContinuity(null);setLinkedPullRequests(savedMeta.linkedPullRequests||[])}
-    if(!connectedClient)return;
+    if(!connectedClient){setReviewedFiles(savedMeta.reviewedFiles||[]);if(persistentReadErrors.length)showActionError(new Error(persistentReadErrors.join(" · ")),"Opened thread, but some saved state could not be loaded");return}
     const map=cp?Object.fromEntries((cp.checkpoints||[]).filter(x=>x.turnId).map(x=>[x.turnId,x])):(reopeningCurrentThread?checkpointByTurn:{});
     if(cp)setCheckpointByTurn(map);
     if(resumed?.thread){
@@ -2323,7 +2332,7 @@ export default function App(){
         });
     }
     if(useNativeQueue)await loadNativeQueue(client,thread.id).catch(error=>setEvents(prev=>[...prev,{id:"queue-load-error-"+Date.now(),kind:"error",title:"Could not load queued follow-ups: "+(error.message||String(error)),status:"done",raw:{}}]));
-    const meta=threadMeta[thread.id]||{};setReviewedFiles(meta.reviewedFiles||[]);
+    const meta=savedMeta;setReviewedFiles(meta.reviewedFiles||[]);
     if(goalData)setGoal(goalData?.goal||null);
     if(continuityData)setContinuity(continuityData?.continuity||null);
     if(attachmentData){

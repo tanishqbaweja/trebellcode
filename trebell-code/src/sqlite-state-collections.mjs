@@ -9,6 +9,37 @@ const LIMITS=Object.freeze({checkpoints:200,usage:5000,verification:1000,knowled
 function databaseSync(){try{return require("node:sqlite").DatabaseSync}catch{return null}}
 function payload(row){if(!row)return null;try{return JSON.parse(row.payload_json||"null")}catch{return null}}
 function normalizedEnvironment(value){const text=String(value??"").trim();return text||null}
+function boundedText(value,max=1000){const text=String(value??"").trim();return text?text.slice(0,max):null}
+function compactPullRequest(value){
+  if(!value||typeof value!=="object")return null;
+  const identity=value.identity&&typeof value.identity==="object"?{
+    provider:boundedText(value.identity.provider,80),host:boundedText(value.identity.host,300),repository:boundedText(value.identity.repository,500),
+    number:Number.isFinite(Number(value.identity.number))?Number(value.identity.number):null,
+  }:null;
+  const snapshot=value.snapshot&&typeof value.snapshot==="object"?{title:boundedText(value.snapshot.title,500),state:boundedText(value.snapshot.state,80),url:boundedText(value.snapshot.url,2000)}:null;
+  return {
+    ...(identity?{identity}:{}),number:Number.isFinite(Number(value.number))?Number(value.number):identity?.number??null,
+    title:boundedText(value.title,500),state:boundedText(value.state,80),url:boundedText(value.url,2000),
+    headRefName:boundedText(value.headRefName,300),baseRefName:boundedText(value.baseRefName,300),...(snapshot?{snapshot}:{}),
+  };
+}
+function compactThreadSnapshot(value){
+  if(!value||typeof value!=="object")return null;
+  const section=value.section&&typeof value.section==="object"?{id:boundedText(value.section.id,300),name:boundedText(value.section.name,300)}:null;
+  const status=value.status&&typeof value.status==="object"?{type:boundedText(value.status.type,80),activeFlags:Array.isArray(value.status.activeFlags)?value.status.activeFlags.slice(0,20).map(item=>String(item).slice(0,100)):[]}:null;
+  return {id:boundedText(value.id,500),name:boundedText(value.name,500),preview:boundedText(value.preview,1000),cwd:boundedText(value.cwd,4000),model:boundedText(value.model,500),updatedAt:Number(value.updatedAt)||0,createdAt:Number(value.createdAt)||0,...(status?{status}:{}),...(section?{section}:{}),projectId:boundedText(value.projectId,500),runtime:boundedText(value.runtime,80),provider:boundedText(value.provider,200)};
+}
+function compactDelegation(value){
+  if(!value||typeof value!=="object")return null;
+  return {id:boundedText(value.id,500),parentThreadId:boundedText(value.parentThreadId,500),label:boundedText(value.label,300),task:boundedText(value.task,1000),role:boundedText(value.role,100),status:boundedText(value.status,100),model:boundedText(value.model,500),permissions:boundedText(value.permissions,100),permission:boundedText(value.permission,100),isolation:boundedText(value.isolation,100),branch:boundedText(value.branch,500),ownership:Array.isArray(value.ownership)?value.ownership.slice(0,50).map(item=>String(item).slice(0,500)):[]};
+}
+export function threadMetaCatalogProjection(item={}){
+  if(!item||typeof item!=="object")return {};
+  const linked=Array.isArray(item.linkedPullRequests)?item.linkedPullRequests.slice(0,20).map(compactPullRequest).filter(Boolean):[];
+  const attachments=Array.isArray(item.attachments)?item.attachments.filter(entry=>entry?.attachmentType==="pull_request").slice(0,20).map(entry=>({attachmentType:"pull_request",identityKey:boundedText(entry.identityKey,1000),payload:compactPullRequest(entry.payload)})).filter(entry=>entry.payload):[];
+  const delegation=compactDelegation(item.delegation),snapshot=compactThreadSnapshot(item.threadSnapshot),branchPullRequest=compactPullRequest(item.branchPullRequest);
+  return {__catalogOnly:true,runtime:boundedText(item.runtime,80),runtimeInstanceId:boundedText(item.runtimeInstanceId,500),provider:boundedText(item.provider,200),model:boundedText(item.model,500),cwd:boundedText(item.cwd,4000),environmentId:boundedText(item.environmentId,500),branch:boundedText(item.branch,500),parentThreadId:boundedText(item.parentThreadId,500),projectless:Boolean(item.projectless),snoozedUntil:Number(item.snoozedUntil)||null,archived:Boolean(item.archived),deletedAt:Number(item.deletedAt)||null,pinned:Boolean(item.pinned),sectionName:boundedText(item.sectionName,300),updatedAt:Number(item.updatedAt)||0,lastOpenedAt:Number(item.lastOpenedAt)||0,createdAt:Number(item.createdAt)||0,...(snapshot?{threadSnapshot:snapshot}:{}),...(delegation?{delegation}:{}),...(linked.length?{linkedPullRequests:linked}:{}),...(attachments.length?{attachments}:{}),...(branchPullRequest?{branchPullRequest}:{}),};
+}
 
 export class SqliteStateCollections{
   constructor(env=process.env){
@@ -18,7 +49,7 @@ export class SqliteStateCollections{
       db.exec("PRAGMA auto_vacuum=INCREMENTAL; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");
       db.exec(`
         CREATE TABLE IF NOT EXISTS state_thread_meta (
-          thread_id TEXT PRIMARY KEY, runtime TEXT, environment_id TEXT, updated_at INTEGER NOT NULL, payload_json TEXT NOT NULL
+          thread_id TEXT PRIMARY KEY, runtime TEXT, environment_id TEXT, updated_at INTEGER NOT NULL, catalog_json TEXT NOT NULL DEFAULT '{}', payload_json TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS state_thread_meta_updated_idx ON state_thread_meta(updated_at DESC);
         CREATE INDEX IF NOT EXISTS state_thread_meta_runtime_idx ON state_thread_meta(runtime,updated_at DESC);
@@ -46,6 +77,13 @@ export class SqliteStateCollections{
         );
         CREATE INDEX IF NOT EXISTS state_knowledge_project_idx ON state_knowledge(project_path,environment_id,status,updated_at DESC);
       `);
+      const threadColumns=new Set(db.prepare("PRAGMA table_info(state_thread_meta)").all().map(row=>String(row.name)));
+      if(!threadColumns.has("catalog_json"))db.exec("ALTER TABLE state_thread_meta ADD COLUMN catalog_json TEXT NOT NULL DEFAULT '{}'");
+      const stale=db.prepare("SELECT thread_id,payload_json FROM state_thread_meta WHERE catalog_json IS NULL OR catalog_json='{}'").all();
+      if(stale.length){
+        const update=db.prepare("UPDATE state_thread_meta SET catalog_json=? WHERE thread_id=?");
+        for(const row of stale){let item={};try{item=JSON.parse(row.payload_json||"{}")}catch{}update.run(JSON.stringify(threadMetaCatalogProjection(item)),String(row.thread_id))}
+      }
     });
   }
   #withDb(fn,{write=false}={}){
@@ -60,8 +98,8 @@ export class SqliteStateCollections{
     const threadEntries=threadMeta&&typeof threadMeta==="object"&&!Array.isArray(threadMeta)?Object.entries(threadMeta):[];
     if(!threadEntries.length&&![checkpoints,usageRecords,verificationRecords,repositoryKnowledge].some(items=>Array.isArray(items)&&items.length))return false;
     this.#withDb(db=>{
-      const thread=db.prepare("INSERT OR IGNORE INTO state_thread_meta(thread_id,runtime,environment_id,updated_at,payload_json) VALUES(?,?,?,?,?)");
-      for(const [threadId,item] of threadEntries)if(threadId&&item&&typeof item==="object")thread.run(String(threadId),item.runtime||null,normalizedEnvironment(item.environmentId),Number(item.updatedAt)||Date.now(),JSON.stringify(item));
+      const thread=db.prepare("INSERT OR IGNORE INTO state_thread_meta(thread_id,runtime,environment_id,updated_at,catalog_json,payload_json) VALUES(?,?,?,?,?,?)");
+      for(const [threadId,item] of threadEntries)if(threadId&&item&&typeof item==="object")thread.run(String(threadId),item.runtime||null,normalizedEnvironment(item.environmentId),Number(item.updatedAt)||Date.now(),JSON.stringify(threadMetaCatalogProjection(item)),JSON.stringify(item));
       const checkpoint=db.prepare("INSERT OR IGNORE INTO state_checkpoints(id,thread_id,created_at,payload_json) VALUES(?,?,?,?)");
       for(const item of checkpoints||[])if(item?.id)checkpoint.run(String(item.id),item.threadId?String(item.threadId):null,Number(item.createdAt)||Date.now(),JSON.stringify(item));
       const usage=db.prepare("INSERT OR IGNORE INTO state_usage(id,runtime,provider,model,environment_id,thread_id,turn_id,at,payload_json) VALUES(?,?,?,?,?,?,?,?,?)");
@@ -74,8 +112,9 @@ export class SqliteStateCollections{
     },{write:true});return true;
   }
   threadMeta(threadId){return this.#withDb(db=>payload(db.prepare("SELECT payload_json FROM state_thread_meta WHERE thread_id=?").get(String(threadId))))}
-  putThreadMeta(threadId,item){return this.#withDb(db=>{db.prepare("INSERT INTO state_thread_meta(thread_id,runtime,environment_id,updated_at,payload_json) VALUES(?,?,?,?,?) ON CONFLICT(thread_id) DO UPDATE SET runtime=excluded.runtime,environment_id=excluded.environment_id,updated_at=excluded.updated_at,payload_json=excluded.payload_json").run(String(threadId),item?.runtime||null,normalizedEnvironment(item?.environmentId),Number(item?.updatedAt)||Date.now(),JSON.stringify(item||{}));return item},{write:true})}
+  putThreadMeta(threadId,item){return this.#withDb(db=>{db.prepare("INSERT INTO state_thread_meta(thread_id,runtime,environment_id,updated_at,catalog_json,payload_json) VALUES(?,?,?,?,?,?) ON CONFLICT(thread_id) DO UPDATE SET runtime=excluded.runtime,environment_id=excluded.environment_id,updated_at=excluded.updated_at,catalog_json=excluded.catalog_json,payload_json=excluded.payload_json").run(String(threadId),item?.runtime||null,normalizedEnvironment(item?.environmentId),Number(item?.updatedAt)||Date.now(),JSON.stringify(threadMetaCatalogProjection(item||{})),JSON.stringify(item||{}));return item},{write:true})}
   threadMetaMap(){return this.#withDb(db=>Object.fromEntries(db.prepare("SELECT thread_id,payload_json FROM state_thread_meta ORDER BY updated_at DESC").all().map(row=>[String(row.thread_id),payload(row)||{}])))}
+  threadMetaCatalogMap(){return this.#withDb(db=>Object.fromEntries(db.prepare("SELECT thread_id,catalog_json FROM state_thread_meta ORDER BY updated_at DESC").all().map(row=>{let item={};try{item=JSON.parse(row.catalog_json||"{}")}catch{}return [String(row.thread_id),item]})))}
   checkpoint(id){return this.#withDb(db=>payload(db.prepare("SELECT payload_json FROM state_checkpoints WHERE id=?").get(String(id))))}
   putCheckpoint(item){return this.#withDb(db=>{db.prepare("INSERT INTO state_checkpoints(id,thread_id,created_at,payload_json) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET thread_id=excluded.thread_id,created_at=excluded.created_at,payload_json=excluded.payload_json").run(String(item.id),item.threadId?String(item.threadId):null,Number(item.createdAt)||Date.now(),JSON.stringify(item));this.#prune(db,"state_checkpoints","created_at",LIMITS.checkpoints);return item},{write:true})}
   checkpoints(threadId=null){return this.#withDb(db=>{const rows=threadId?db.prepare("SELECT payload_json FROM state_checkpoints WHERE thread_id=? ORDER BY created_at DESC LIMIT ?").all(String(threadId),LIMITS.checkpoints):db.prepare("SELECT payload_json FROM state_checkpoints ORDER BY created_at DESC LIMIT ?").all(LIMITS.checkpoints);return rows.map(payload).filter(Boolean)})}

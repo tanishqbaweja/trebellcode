@@ -6,7 +6,7 @@ import { normalizeMcpServers } from "./mcp-registry.mjs";
 import { redactSecretValue, withoutSecretEnvironment } from "./secret-redactor.mjs";
 import { normalizeRecipes } from "./recipes.mjs";
 import { normalizeProjectHooks } from "./project-hooks.mjs";
-import { SqliteStateCollections } from "./sqlite-state-collections.mjs";
+import { SqliteStateCollections,threadMetaCatalogProjection } from "./sqlite-state-collections.mjs";
 
 const DEFAULT_STATE = Object.freeze({
   version: 2,
@@ -216,8 +216,8 @@ export class TrebellStateStore {
     writeFileSync(tmp,JSON.stringify(persisted,null,2),{encoding:"utf8",mode:0o600});
     renameSync(tmp,this.path);
   }
-  snapshot({includeCollections=true}={}){
-    const out=clone(this.state);if(this.collections)out.threadMeta=this.collections.threadMetaMap();if(!includeCollections){delete out.checkpoints;delete out.usageRecords;delete out.verificationRecords;delete out.repositoryKnowledge;return out}if(!this.collections)return out;
+  snapshot({includeCollections=true,threadMetaView="full"}={}){
+    const out=clone(this.state);if(this.collections)out.threadMeta=threadMetaView==="catalog"?this.collections.threadMetaCatalogMap():this.collections.threadMetaMap();else if(threadMetaView==="catalog")out.threadMeta=Object.fromEntries(Object.entries(out.threadMeta||{}).map(([threadId,item])=>[threadId,threadMetaCatalogProjection(item)]));if(!includeCollections){delete out.checkpoints;delete out.usageRecords;delete out.verificationRecords;delete out.repositoryKnowledge;return out}if(!this.collections)return out;
     out.checkpoints=this.collections.checkpoints();out.usageRecords=this.collections.usage({since:0,limit:5000});out.verificationRecords=this.collections.verificationRecords({limit:1000});out.repositoryKnowledge=this.collections.knowledge({limit:5000});return out;
   }
   settings(){ return clone(this.state.settings); }

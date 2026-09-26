@@ -189,7 +189,7 @@ test("Codex project follow-ups persist in Trebell and rebuild repository context
     const row=page.locator(".thread-row").filter({hasText:"Codex project queue fixture"});await row.locator(".thread-main").click();await expect(row).toHaveClass(/active/);
     const composer=page.getByTestId("composer");await composer.fill("Initial project turn");await page.getByTestId("send").click();
     await expect.poll(()=>calls.filter(call=>call.method==="turn/start").length).toBe(1);
-    expect(calls.find(call=>call.method==="turn/start")?.params?.additionalContext?.["trebell.repo_context"]?.value).toContain("FRESH_CONTEXT_1");
+    expect(calls.find(call=>call.method==="turn/start")?.params?.additionalContext?.["trebell.repo_evidence"]?.value).toContain("FRESH_CONTEXT_1");
     failQueuePersist=true;await composer.fill("Do not lose this queued draft");await page.getByTestId("send").click();
     await expect(composer).toHaveValue("Do not lose this queued draft");
     await expect(page.locator(".tool-event.kind-error").filter({hasText:"Could not queue follow-up"})).toContainText("Deliberate Trebell queue persistence failure");
@@ -211,7 +211,7 @@ test("Codex project follow-ups persist in Trebell and rebuild repository context
     await expect.poll(()=>calls.filter(call=>call.method==="turn/start").length).toBe(2);
     const secondTurn=calls.filter(call=>call.method==="turn/start")[1];
     expect(contextBodies.at(-1)?.task).toBe("Queued project follow-up");
-    expect(secondTurn.params.additionalContext?.["trebell.repo_context"]?.value).toContain("FRESH_CONTEXT_2");
+    expect(secondTurn.params.additionalContext?.["trebell.repo_evidence"]?.value).toContain("FRESH_CONTEXT_2");
     await expect(restoredQueue).toHaveCount(0);await expect.poll(()=>meta.trebellQueue?.length||0).toBe(0);
     expect(calls.some(call=>call.method==="thread/queue/start")).toBe(false);
     await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"chat-project-persistent-context-queue-1280x800.png",fullPage:true});
