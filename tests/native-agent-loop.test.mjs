@@ -63,6 +63,39 @@ test("native agent feeds namespaced tool observations back into the same model l
   assert.deepEqual(result.usage,{inputTokens:24,outputTokens:8,totalTokens:32,cachedInputTokens:4,cacheWriteInputTokens:0,reasoningOutputTokens:2});
 });
 
+test("native agent repairs obvious protocol-corrupted names only for single-tool namespaces",async()=>{
+  let turns=0;const executions=[],events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"verify"}],onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run",inputSchema:{type:"object",properties:{command:{type:"string"}}}}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"bad-name",namespace:"trebell_terminal",name:"arg_key>cwd</arg_key><arg_value>.</arg_value>",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      assert.equal(request.messages.at(-2).toolCalls[0].name,"run");
+      assert.equal(request.messages.at(-1).role,"tool");
+      return {text:"verified",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executions.push(call);return "PASS"},
+  });
+  assert.equal(result.text,"verified");assert.equal(result.modelTurns,2);assert.equal(result.toolCalls,1);
+  assert.equal(executions[0].namespace,"trebell_terminal");assert.equal(executions[0].name,"run");
+  const repaired=events.find(event=>event.name==="native.tool.call_repaired");assert.ok(repaired);assert.equal(repaired.data.name,"run");assert.equal(repaired.data.malformedNameLength,45);assert.equal("originalName" in repaired.data,false);
+});
+
+test("native agent does not guess ordinary unknown tool names",async()=>{
+  let turns=0;const executions=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"do it"}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{
+      turns++;if(turns===1)return {text:"",toolCalls:[{id:"unknown",namespace:"trebell_terminal",name:"delete_everything",arguments:"{}"}],usage:{}};
+      return {text:"stopped",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executions.push(call);return {success:false,error:"unknown tool"}},
+  });
+  assert.equal(result.text,"stopped");assert.equal(executions[0].name,"delete_everything");
+});
+
 test("native agent turns tool failures into bounded observations instead of crashing the whole loop",async()=>{
   let turns=0;
   const result=await runNativeAgentTurn({

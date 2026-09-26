@@ -201,6 +201,8 @@ async function runScenario(scenario){
     let independentVerificationPassed=true,independentVerificationError=null;
     try{await scenario.verify(root)}catch(error){independentVerificationPassed=false;independentVerificationError=String(error?.stderr||error?.message||error).slice(0,2000)}
     const completed=events.filter(event=>event.name==="native.model.completed"),toolUpdates=updates.filter(item=>item.update?.sessionUpdate==="tool_call_update");
+    const repairedToolCalls=events.filter(event=>event.name==="native.tool.call_repaired").length;
+    const failedToolCalls=toolUpdates.filter(item=>item.update?.status==="failed").length;
     const aggregate=providerRequests.reduce((out,item)=>({
       inputTokens:out.inputTokens+Number(item.usage?.inputTokens||0),
       outputTokens:out.outputTokens+Number(item.usage?.outputTokens||0),
@@ -234,7 +236,7 @@ async function runScenario(scenario){
       toolSchemaVariants:new Set(completed.map(event=>event.data?.requestMetrics?.toolSchemaHash).filter(Boolean)).size,
       firstSchemaEstimatedTokens:completed[0]?.data?.requestMetrics?.toolSchemas?.estimatedTokens||0,
       finalLogicalEstimatedTokens:completed.at(-1)?.data?.requestMetrics?.totalLogical?.estimatedTokens||0,
-      virtualizedOutputs:virtualized.length,
+      virtualizedOutputs:virtualized.length,repairedToolCalls,failedToolCalls,
       virtualizedBytes:virtualized.reduce((sum,item)=>sum+Number(item.totalBytes||0),0),
       usedOutputRetrieval:toolUpdates.some(item=>item.update?.namespace==="trebell_output"),
       turnFailure,independentVerificationPassed,independentVerificationError,verificationBeforeEdit,virtualizationSatisfied,

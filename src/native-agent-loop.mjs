@@ -17,6 +17,20 @@ function safeArguments(value){
   catch{return {}}
 }
 
+function obviousToolNameCorruption(value){
+  const name=String(value||"");
+  return /[<>]|arg_(?:key|value)|(?:^|\W)(?:tool|function)_?(?:name|call)(?:\W|$)/i.test(name);
+}
+
+function repairCorruptedToolCall(call,tools=[]){
+  const namespace=String(call?.namespace||"").trim(),name=String(call?.name||"").trim();
+  if(!namespace||!name||!obviousToolNameCorruption(name))return {call,repaired:false};
+  const entry=(Array.isArray(tools)?tools:[]).find(item=>item?.type==="namespace"&&String(item.name||"")===namespace);
+  const exposed=(Array.isArray(entry?.tools)?entry.tools:[]).filter(item=>String(item?.name||"").trim());
+  if(exposed.some(item=>String(item.name)===name)||exposed.length!==1)return {call,repaired:false};
+  return {call:{...call,name:String(exposed[0].name)},repaired:true,originalName:name};
+}
+
 function resultContent(value){
   if(typeof value==="string")return value;
   if(value==null)return "";
@@ -170,7 +184,11 @@ export async function runNativeAgentTurn({
     }
     if(response==null)continue;
     throwIfAborted(turnSignal);lastResponse=response||{};usage=aggregateUsage(usage,lastResponse.usage||{});
-    const calls=Array.isArray(lastResponse.toolCalls)?lastResponse.toolCalls:[];
+    const rawCalls=Array.isArray(lastResponse.toolCalls)?lastResponse.toolCalls:[],calls=rawCalls.map(call=>{
+      const normalized=repairCorruptedToolCall(call,tools);
+      if(normalized.repaired)emit(onEvent,{name:"native.tool.call_repaired",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{namespace:String(call?.namespace||""),malformedNameLength:String(normalized.originalName||"").length,name:String(normalized.call?.name||"")}});
+      return normalized.call;
+    });
     const providerTelemetry=lastResponse.telemetry||null,turnUsage=lastResponse.usage||{},inputTokens=Number(turnUsage.inputTokens||0),cachedTokens=Number(turnUsage.cachedInputTokens||0),contextWindow=Number(metadata?.contextWindow||0);
     emit(onEvent,{name:"native.model.completed",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{
       inferenceId,modelTurn:modelTurns,durationMs:duration(requestStarted),toolCallCount:calls.length,finishReason:lastResponse.finishReason||null,usage:turnUsage,
