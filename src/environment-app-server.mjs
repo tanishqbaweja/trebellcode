@@ -1,6 +1,4 @@
-import { createServer as createTcpServer, connect as tcpConnect } from "node:net";
 import { spawn } from "node:child_process";
-import { DEFAULT_PORT, PROVIDER_COMPAT_PORT } from "./config.mjs";
 import { remoteEnvironmentCommand, remoteToolPathPrelude, remoteTransportEnvironment } from "./environment-manager.mjs";
 import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
@@ -54,26 +52,11 @@ export function remoteCodexProfileSetup({profile={},runtimeInstance=null}={}){
 
 export function sshRemotePorts(localAppPort){
   const seed=Math.abs(Math.trunc(Number(localAppPort)||0))%16000;
-  return {appPort:30000+seed,providerPort:48000+seed};
+  return {appPort:30000+seed};
 }
 
-function providerPort(provider,override=null){
-  return Number.isInteger(override)?override:(provider==="freebuff"?DEFAULT_PORT:PROVIDER_COMPAT_PORT);
-}
-
-export function remoteCodexArgs({provider,baseUrl,listen}){
-  const id=String(provider||"freebuff");
-  return [
-    "--config",`model_provider=${JSON.stringify(id)}`,
-    "--config",`model_providers.${id}.name=${JSON.stringify("Trebell "+id)}`,
-    "--config",`model_providers.${id}.base_url=${JSON.stringify(baseUrl)}`,
-    "--config",`model_providers.${id}.wire_api="responses"`,
-    "--config",`model_providers.${id}.requires_openai_auth=false`,
-    "--config",`model_providers.${id}.request_max_retries=2`,
-    "--config",`model_providers.${id}.stream_max_retries=2`,
-    "--config",`model_providers.${id}.stream_idle_timeout_ms=300000`,
-    "app-server","--listen",listen,
-  ];
+export function remoteCodexArgs({listen}){
+  return ["app-server","--listen",listen];
 }
 
 function attachLogs(child,logs,{debug=false,environment=process.env}={}){
@@ -87,25 +70,6 @@ function attachLogs(child,logs,{debug=false,environment=process.env}={}){
   child.stderr?.on("data",chunk=>push(chunk,"stderr"));
   child.on("error",error=>push(error.stack||error.message,"stderr"));
   child.on("exit",(code,signal)=>push(`remote app-server exited code=${code} signal=${signal}\n`,"stderr"));
-}
-
-async function createProviderProxy(host,localPort){
-  const server=createTcpServer(client=>{
-    const upstream=tcpConnect({host:"127.0.0.1",port:localPort});
-    client.on("error",()=>{try{upstream.destroy()}catch{}});
-    upstream.on("error",()=>{try{client.destroy()}catch{}});
-    client.pipe(upstream);
-    upstream.pipe(client);
-  });
-  await new Promise((resolve,reject)=>{
-    server.once("error",reject);
-    server.listen(0,host,resolve);
-  });
-  const address=server.address();
-  return {
-    port:typeof address==="object"&&address?address.port:0,
-    close:()=>new Promise(resolve=>server.close(()=>resolve())),
-  };
 }
 
 async function wslNetwork(environments,id){
@@ -125,8 +89,6 @@ export async function startRemoteAppServer({
   environments,
   environmentId,
   appPort,
-  provider,
-  localProviderPort=null,
   runtimeInstance=null,
   runtimeEnvironmentNames=null,
   hostEnvironment=process.env,
@@ -137,31 +99,22 @@ export async function startRemoteAppServer({
   if(!profile||profile.type==="local")return null;
   const logs=[];
   const logEnvironment={...hostEnvironment,...(runtimeInstance?.environment||{})};
-  const resolvedProviderPort=providerPort(provider,localProviderPort);
   const runtime=remoteCodexProfileSetup({profile,runtimeInstance});
   const inheritedNames=Array.isArray(runtimeEnvironmentNames)&&runtimeEnvironmentNames.length
     ?runtimeEnvironmentNames
     :runtimeEnvironmentKeys("codex",{approved:runtimeInstance?.approvedEnvironmentKeys});
   const commandEnvironmentNames=[...new Set([...inheritedNames,...(runtime.effectiveHomePath?["CODEX_HOME"]:[])])];
-  const isolatedRuntimeCommand=(baseUrl,listen)=>"exec "+remoteEnvironmentCommand(
-    shellJoin([runtime.command,...remoteCodexArgs({provider,baseUrl,listen})]),
+  const isolatedRuntimeCommand=listen=>"exec "+remoteEnvironmentCommand(
+    shellJoin([runtime.command,...remoteCodexArgs({listen})]),
     commandEnvironmentNames,
     runtimeInstance?.environment||{},
   );
 
   if(profile.type==="wsl"){
     const network=await wslNetwork(environments,environmentId);
-    const proxy=await createProviderProxy(network.host,resolvedProviderPort);
-    const baseUrl=`http://${network.host}:${proxy.port}/v1`;
     const listen=`ws://0.0.0.0:${appPort}`;
-    const command=remoteToolPathPrelude()+"\n"+(runtime.prelude?runtime.prelude+"\n":"")+isolatedRuntimeCommand(baseUrl,listen);
-    let child;
-    try{
-      child=environments.spawnSession(environmentId,{command,cwd:profile.cwd||null});
-    }catch(error){
-      await proxy.close().catch(()=>{});
-      throw error;
-    }
+    const command=remoteToolPathPrelude()+"\n"+(runtime.prelude?runtime.prelude+"\n":"")+isolatedRuntimeCommand(listen);
+    const child=environments.spawnSession(environmentId,{command,cwd:profile.cwd||null});
     attachLogs(child,logs,{debug,environment:logEnvironment});
     return {
       child,
@@ -169,17 +122,15 @@ export async function startRemoteAppServer({
       environment:{id:profile.id,name:profile.name,type:profile.type,cwd:profile.cwd||""},
       targetUrl:`ws://${network.guest}:${appPort}`,
       readyUrl:`http://${network.guest}:${appPort}/readyz`,
-      close:()=>proxy.close(),
+      close:async()=>{},
     };
   }
 
   if(profile.type==="ssh"){
     const remotePorts=sshRemotePorts(appPort);
-    const remoteProviderPort=remotePorts.providerPort;
     const remoteAppPort=remotePorts.appPort;
-    const baseUrl=`http://127.0.0.1:${remoteProviderPort}/v1`;
     const listen=`ws://127.0.0.1:${remoteAppPort}`;
-    const remoteCommand=remoteToolPathPrelude()+"\n"+(runtime.prelude?runtime.prelude+"\n":"")+(profile.cwd?"cd "+quotePosix(profile.cwd)+" && ":"")+isolatedRuntimeCommand(baseUrl,listen);
+    const remoteCommand=remoteToolPathPrelude()+"\n"+(runtime.prelude?runtime.prelude+"\n":"")+(profile.cwd?"cd "+quotePosix(profile.cwd)+" && ":"")+isolatedRuntimeCommand(listen);
     const executable=process.platform==="win32"?"ssh.exe":"ssh";
     const args=[
       "-o","BatchMode=yes",
@@ -188,7 +139,6 @@ export async function startRemoteAppServer({
       "-o","ServerAliveInterval=15",
       "-o","ServerAliveCountMax=3",
       "-L",`127.0.0.1:${appPort}:127.0.0.1:${remoteAppPort}`,
-      "-R",`127.0.0.1:${remoteProviderPort}:127.0.0.1:${resolvedProviderPort}`,
       "-p",String(profile.port||22),
     ];
     if(profile.identityFile)args.push("-i",profile.identityFile);

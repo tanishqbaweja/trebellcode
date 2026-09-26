@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { deleteSession, forkSession, getSessionInfo, getSessionMessages, query, renameSession } from "@anthropic-ai/claude-agent-sdk";
 import { permissionDisposition } from "./permission-policy.mjs";
+import { runtimeInstructions } from "./runtime-instructions.mjs";
 
 const MODEL_ALIASES=["sonnet","opus","haiku"];
 
@@ -107,6 +108,7 @@ export class ClaudeAgentSession{
       enableFileCheckpointing:true,
       settingSources:["user","project","local"],
       tools:{type:"preset",preset:"claude_code"},
+      systemPrompt:{type:"preset",preset:"claude_code",append:runtimeInstructions({harness:"Claude Code"})},
       mcpServers:this.mcpServers,
       ...(this.autoCompactWindow?{autoCompactWindow:this.autoCompactWindow}:{}),
       ...(agent?{agent}:{}),

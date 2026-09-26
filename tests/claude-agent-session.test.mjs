@@ -41,6 +41,22 @@ test("Claude auto-compact threshold is forwarded to the SDK query",async()=>{
   assert.equal(calls.at(-1).options.autoCompactWindow,300000);
 });
 
+test("Claude keeps Claude Code's native prompt and appends only bounded Trebell runtime context",async()=>{
+  const calls=[];
+  const sdk={query:fakeQueryCapture(calls),getSessionInfo:async()=>({}),renameSession:async()=>{},getSessionMessages:async()=>[],deleteSession:async()=>{}};
+  const session=new ClaudeAgentSession({cwd:"/repo",sdk});
+  await session.start();
+  await session.prompt([{type:"text",text:"Fix the parser"}]);
+  const call=calls.at(-1);
+  assert.equal(call.prompt,"Fix the parser");
+  assert.deepEqual(call.options.settingSources,["user","project","local"]);
+  assert.equal(call.options.systemPrompt.type,"preset");
+  assert.equal(call.options.systemPrompt.preset,"claude_code");
+  assert.match(call.options.systemPrompt.append,/Trebell Code/);
+  assert.match(call.options.systemPrompt.append,/Claude Code harness/);
+  assert.doesNotMatch(call.options.systemPrompt.append,/autonomous software-engineering agent/i);
+});
+
 test("Claude MCP servers are forwarded to every SDK query",async()=>{
   const calls=[];
   const sdk={query:fakeQueryCapture(calls),getSessionInfo:async()=>({}),renameSession:async()=>{},getSessionMessages:async()=>[],deleteSession:async()=>{}};

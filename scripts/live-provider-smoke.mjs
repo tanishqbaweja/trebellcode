@@ -2,16 +2,19 @@ import { ProviderManager, MODEL_PROVIDERS } from "../src/provider-manager.mjs";
 import { createLiveSmokeGuard } from "../src/live-smoke-policy.mjs";
 
 const REQUEST_MARKER="TREBELL_PROVIDER_SMOKE_OK";
-const ALL_PROVIDERS=["agentrouter","justworker","hcnsec","vyceai"];
+const ALL_PROVIDERS=["openai","anthropic","gemini","agentrouter","justworker","hcnsec","vyceai"];
 const requested=String(process.env.TREBELL_PROVIDER_SMOKE_ONLY||"").split(",").map(value=>value.trim().toLowerCase()).filter(Boolean);
 const PROVIDERS=requested.length?ALL_PROVIDERS.filter(provider=>requested.includes(provider)):ALL_PROVIDERS;
 const PREFERRED_MODELS={
+  openai:["gpt-5.6","gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"],
+  anthropic:["claude-opus-5","claude-sonnet-5","claude-opus-4-8","claude-sonnet-4-6"],
+  gemini:["gemini-3.8-flash"],
   agentrouter:["gpt-6-astra","deepseek-v4-flash","claude-opus-5","claude-opus-4-8"],
   justworker:["claude-opus-4-8"],
   hcnsec:["glm-5.3"],
   vyceai:["deepseek-v4-flash","deepseek-v4.1"],
 };
-const TURN_TIMEOUT_MS={agentrouter:70_000,justworker:70_000,hcnsec:210_000,vyceai:70_000};
+const TURN_TIMEOUT_MS={openai:70_000,anthropic:70_000,gemini:70_000,agentrouter:70_000,justworker:70_000,hcnsec:210_000,vyceai:70_000};
 
 const guard=createLiveSmokeGuard({provider:"configured-providers",model:"provider-defaults",runtime:"native",maxTurns:PROVIDERS.length,timeoutMs:300_000});
 const manager=new ProviderManager({env:process.env,requestTimeoutMs:Math.max(...Object.values(TURN_TIMEOUT_MS))});

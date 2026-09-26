@@ -134,8 +134,10 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.ok(sourceControlEvents.some(item=>item.name==="source_control.git.commit"&&item.status==="completed"&&item.data?.externalSideEffect===false));
     assert.ok(sourceControlEvents.some(item=>item.name==="source_control.push"&&item.status==="failed"&&item.data?.externalSideEffect===true));
     assert.doesNotMatch(JSON.stringify(sourceControlEvents),new RegExp(privateCommitMessage));
-    assert.equal(models.metadata.provider,boot.provider);
-    assert.ok(models.metadata.models.every(model=>model.provider===boot.provider));
+    assert.equal(models.metadata.provider,"codex");
+    assert.equal(models.agentRuntime,"codex");
+    assert.equal(Object.prototype.hasOwnProperty.call(models,"provider"),false,"external harness catalogs must not masquerade as Trebell Native provider catalogs");
+    assert.ok(models.metadata.models.every(model=>model.provider==="codex"));
     const runtimeUsage=await fetch(gui.url+"/api/agent-runtime-usage").then(r=>r.json());
     assert.equal(runtimeUsage.runtime,"codex");
     assert.deepEqual(runtimeUsage.windows,[]);

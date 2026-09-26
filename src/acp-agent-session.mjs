@@ -2,6 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve, relative, isAbsolute, posix } from "node:path";
 import { AcpClient } from "./acp-client.mjs";
 import { normalizePermissionKind, permissionDisposition } from "./permission-policy.mjs";
+import { runtimeHarnessLabel, runtimeInstructions } from "./runtime-instructions.mjs";
 
 function inside(root,candidate){
   const rel=relative(resolve(root),resolve(candidate));
@@ -34,7 +35,7 @@ export class AcpAgentSession{
     this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onPermission=onPermission;this.onElicitation=onElicitation;this.version=version;
     this.spawnProcess=spawnProcess;this.remoteIo=remoteIo;this.processCwd=processCwd?resolve(processCwd):null;
     this.mcpServers=Array.isArray(mcpServers)?mcpServers.map(server=>({...server,args:[...(server.args||[])],env:(server.env||[]).map(item=>({...item}))})):[];
-    this.client=null;this.sessionId=null;this.initializeResult=null;this.sessionSetup=null;this.terminalIds=new Set();
+    this.client=null;this.sessionId=null;this.initializeResult=null;this.sessionSetup=null;this.terminalIds=new Set();this.model=null;
     this.remoteTerminals=new Map();
   }
 
@@ -56,7 +57,7 @@ export class AcpAgentSession{
       if(!setup&&this.initializeResult?.agentCapabilities?.loadSession)setup=await client.loadSession({sessionId:providerSessionId,cwd:this.cwd,mcpServers:this.mcpServers}).catch(()=>null);
     }
     if(!setup)setup=await client.createSession({cwd:this.cwd,mcpServers:this.mcpServers});
-    this.sessionSetup=setup;this.sessionId=setup.sessionId;
+    this.sessionSetup=setup;this.sessionId=setup.sessionId;this.model=model||setup.models?.currentModelId||null;
     if(model&&setup.models?.availableModels?.some(item=>item.modelId===model)&&setup.models.currentModelId!==model){
       await client.setModel(this.sessionId,model).catch(()=>{});
     }
@@ -65,10 +66,11 @@ export class AcpAgentSession{
 
   async prompt(content,{messageId=null}={}){
     if(!this.client||!this.sessionId)throw new Error("ACP session is not started");
-    return this.client.prompt(this.sessionId,content,{messageId});
+    const runtimeContext={type:"text",text:runtimeInstructions({harness:runtimeHarnessLabel(this.runtime),model:this.model})};
+    return this.client.prompt(this.sessionId,[...(Array.isArray(content)?content:[]),runtimeContext],{messageId});
   }
   cancel(){if(this.client&&this.sessionId)this.client.cancel(this.sessionId)}
-  async setModel(model){return this.client?.setModel(this.sessionId,model)}
+  async setModel(model){const result=await this.client?.setModel(this.sessionId,model);if(model)this.model=model;return result}
   async setMode(mode){return this.client?.setMode(this.sessionId,mode)}
   async setConfigOption(id,value){return this.client?.setConfigOption(this.sessionId,id,value)}
   async close(){

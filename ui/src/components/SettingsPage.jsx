@@ -12,10 +12,22 @@ import ScopedSettingsCard from "./ScopedSettingsCard.jsx";
 
 const PROVIDER_LABELS={
   freebuff:"Freebuff",
+  openai:"OpenAI API",
+  anthropic:"Anthropic API",
+  gemini:"Google Gemini API",
   agentrouter:"AgentRouter",
   justworker:"JustWorker.icu",
   hcnsec:"HCNSec.cn",
   vyceai:"VyceAi",
+};
+const PROVIDER_NOTES={
+  openai:"Models are loaded live from the official OpenAI /v1/models API for this key.",
+  anthropic:"Models are loaded live from the official Anthropic /v1/models API for this key.",
+  gemini:"Models are loaded live from Google's Gemini OpenAI-compatible /models API for this key.",
+  agentrouter:"Models are loaded live from AgentRouter /v1/models for this key.",
+  vyceai:"Models are loaded live from Vyce AI /v1/models for this key.",
+  justworker:"Available model: claude-opus-4-8.",
+  hcnsec:"Available model: glm-5.3.",
 };
 
 export default function SettingsPage({settings,onSettings,onProviderChanging,onProviderUpdated,runtime,runtimeCapabilities={},rpcStatus,loggedIn,freebuff=null,login,logout,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes}){
@@ -59,6 +71,9 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   const [themeMessage,setThemeMessage]=useState("");
   const themeImportRef=useRef(null);
   const selected=settings.modelProvider||"freebuff";
+  const providerOptions=providerInfo?.providers?.length
+    ?providerInfo.providers.map(item=>({id:item.id,name:item.name||PROVIDER_LABELS[item.id]||item.id,official:Boolean(item.official)}))
+    :Object.entries(PROVIDER_LABELS).map(([id,name])=>({id,name,official:["openai","anthropic","gemini"].includes(id)}));
   const freebuffUnavailable=selected==="freebuff"&&freebuffSessionUnavailable(freebuff);
   const selectedAgent=agentSelectionOverride||settings.agentRuntime||runtime?.agentRuntime||agentInfo?.selectedRuntime||"codex";
   const selectedManagedInference=Boolean(sharedRuntimeCapabilities(selectedAgent).managedInference);
@@ -559,7 +574,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       </div>}
       {settingsSection==="agents"&&<div className="settings-card agent-runtime-settings" {...targetProps("agents-harness")}>
         <h3>Agent harness</h3>
-        <p>Choose the coding-agent runtime. Only installed and ready runtimes can be activated.</p>
+        <p>Choose the coding-agent runtime. Trebell Native owns its model/tool loop and calls APIs directly; Codex, Claude Code, OpenCode, Cursor, Grok and Antigravity run as their real harnesses. Saved chats stay owned by the harness that created them, and opening one switches back to that harness automatically.</p>
         <div className="agent-runtime-list">{(agentInfo?.definitions||[]).map(def=>{
           const status=runtimeStatusForKind(agentInfo,def.id,{preferSelected:selectedAgent===def.id});
           const active=selectedAgent===def.id;
@@ -586,7 +601,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
         {instanceDraft&&<div className="runtime-profile-editor">
           <label>Profile name<input value={instanceDraft.displayName||""} onChange={e=>setInstanceDraft({...instanceDraft,displayName:e.target.value})}/></label>
           <label>Executable path<input value={instanceDraft.binaryPath||""} onChange={e=>setInstanceDraft({...instanceDraft,binaryPath:e.target.value})} placeholder="Leave blank to use the detected CLI"/></label>
-          {(instanceDraft.kind==="codex"||instanceDraft.kind==="claude")&&<label>{instanceDraft.kind==="codex"?"CODEX_HOME":"Claude config directory"}<input value={instanceDraft.homePath||""} onChange={e=>setInstanceDraft({...instanceDraft,homePath:e.target.value})} placeholder="Leave blank for Trebell/default profile"/></label>}
+          {(instanceDraft.kind==="codex"||instanceDraft.kind==="claude")&&<label>{instanceDraft.kind==="codex"?"CODEX_HOME":"Claude config directory"}<input value={instanceDraft.homePath||""} onChange={e=>setInstanceDraft({...instanceDraft,homePath:e.target.value})} placeholder={instanceDraft.kind==="codex"?"Leave blank to use your normal ~/.codex profile":"Leave blank for the default Claude profile"}/></label>}
           {instanceDraft.kind==="codex"&&<><label>Shadow home path<input value={instanceDraft.shadowHomePath||""} onChange={e=>setInstanceDraft({...instanceDraft,shadowHomePath:e.target.value})} placeholder="Optional account-specific home, e.g. ~/.codex_personal"/></label><p>Optional. Keeps this account's <code>auth.json</code> private while sharing sessions, config, skills, plugins and worktrees from the CODEX_HOME above. Use the same CODEX_HOME across compatible accounts.</p></>}
           {instanceDraft.kind==="claude"&&<><label>Auto-compact after<input type="number" min="100000" max="1000000" step="1000" value={instanceDraft.autoCompactWindow??""} onChange={e=>setInstanceDraft({...instanceDraft,autoCompactWindow:e.target.value})} placeholder="Claude default"/></label><p>Optional. Compact automatically after 100,000–1,000,000 tokens. Leave blank to use Claude Code's default threshold.</p></>}
           {instanceDraft.kind==="opencode"&&<label>Existing OpenCode server URL<input value={instanceDraft.serverUrl||""} onChange={e=>setInstanceDraft({...instanceDraft,serverUrl:e.target.value})} placeholder="Optional, e.g. http://127.0.0.1:4096"/></label>}
@@ -598,14 +613,10 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       </div>}
       {settingsSection==="agents"&&selectedManagedInference&&<div className="settings-card provider-settings-card" {...targetProps("agents-provider")} data-testid="provider-settings-card" aria-busy={providerSwitching?"true":"false"}>
         <h3>Model provider</h3>
-        <p>Choose the inference service used by {selectedAgent==="native"?"Trebell Native":"the Codex harness"}. Threads stay owned by Trebell; changing providers changes inference for later turns instead of creating a separate provider-specific history.</p>
+        <p>Choose the API that Trebell Native calls directly. This changes model inference, not the harness: Trebell Native still owns the thread, tools and agent loop.</p>
         <label>Provider
           <select data-testid="provider-selector" value={selected} disabled={providerSwitching} onChange={e=>save({modelProvider:e.target.value})}>
-            <option value="freebuff">Freebuff</option>
-            <option value="agentrouter">AgentRouter</option>
-            <option value="justworker">JustWorker.icu</option>
-            <option value="hcnsec">HCNSec.cn</option>
-            <option value="vyceai">VyceAi</option>
+            {providerOptions.map(item=><option key={item.id} value={item.id}>{item.name}{item.official?" · official":""}</option>)}
           </select>
         </label>
         {selected==="freebuff"?<>
@@ -619,9 +630,9 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
             <button data-testid="save-provider-key" className="setting-action" onClick={saveProviderKey} disabled={!apiKey.trim()}>Save API key</button>
             {selectedStatus?.hasKey&&<button onClick={clearProviderKey}>Remove key</button>}
           </div>
-          <p className="provider-note">{selected==="agentrouter"?"Models are loaded live from AgentRouter /v1/models for this key.":selected==="vyceai"?"Models are loaded live from Vyce AI /v1/models for this key.":selected==="justworker"?"Available model: claude-opus-4-8.":"Available model: glm-5.3."}</p>
+          <p className="provider-note">{PROVIDER_NOTES[selected]||"Models are loaded from the selected provider when its API supports discovery."}</p>
         </>}
-        <p data-testid="provider-status" className={modelError||freebuffAuthError||freebuffUnavailable?"provider-status-error":""}><strong>{PROVIDER_LABELS[selected]}</strong> · {providerSwitching?"switching provider…":selectedStatus?.hasKey||selected==="freebuff"?(modelError||freebuffAuthError||freebuffUnavailable?"provider error":(providerInfo?.ready?"ready":"configured")):"API key required"}{providerMessage?" · "+providerMessage:""}{modelError?" · "+modelError:""}</p>
+        <p data-testid="provider-status" className={modelError||freebuffAuthError||freebuffUnavailable?"provider-status-error":""}><strong>{PROVIDER_LABELS[selected]||selectedStatus?.name||selected}</strong> · {providerSwitching?"switching provider…":selectedStatus?.hasKey||selected==="freebuff"?(modelError||freebuffAuthError||freebuffUnavailable?"provider error":(providerInfo?.ready?"ready":"configured")):"API key required"}{providerMessage?" · "+providerMessage:""}{modelError?" · "+modelError:""}</p>
       </div>}
       {settingsSection==="agents"&&["codex","claude","opencode"].includes(selectedAgent)&&<div className="settings-card custom-model-settings" {...targetProps("agents-models")}>
         <h3>Custom models</h3>

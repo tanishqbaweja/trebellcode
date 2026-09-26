@@ -378,7 +378,7 @@ const SLASH_COMMANDS=[
   ["/clear","Reset the current draft/thread view"],
 ];
 
-const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,submitting=false,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",runtimeCapabilities={},login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,onFileMentionSearch,onFileMentionAttach,permissionMode,setPermissionMode,collaborationModes=[],collaborationMode="default",onCollaborationMode,collaborationModeBusy=false,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,recipes=[],settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,gitAvailable=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onModelPickerOpenChange}){
+const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyIndex=-1,onSend,onBackgroundSend,canBackground=false,running,submitting=false,openingThread=false,providerReady,provider,agentRuntime="codex",agentRuntimeLabel="Codex",runtimeCapabilities={},login,onConfigureProvider,models,modelMeta,model,setModel,selectedModels=[],onSelectedModels,allowMultiModel=false,modelError,freebuff,attachments,contextChips,onRemoveAttachment,onRemoveContext,onPickFiles,onCaptureScreen,onPaste,onDrop,onFileMentionSearch,onFileMentionAttach,permissionMode,setPermissionMode,collaborationModes=[],collaborationMode="default",onCollaborationMode,collaborationModeBusy=false,providerCommands=[],providerAgents=[],providerAgent="",onProviderAgent,recipes=[],settings,tokenUsage,workspaceMode,setWorkspaceMode,projectless=false,threadOpen=false,gitAvailable=false,canCompact=false,onCompact,runtimeProfiles=null,runtimeProfileBusy="",onRuntimeProfile,onModelPickerOpenChange}){
   const [modelOpen,setModelOpen]=useState(false);
   const [modelQuery,setModelQuery]=useState("");
   const [listening,setListening]=useState(false);
@@ -465,8 +465,8 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
       if(e.key==="Escape"){e.preventDefault();setMentionItems([]);return}
     }
     if(e.key==="Enter"&&!e.shiftKey){
-      if((e.ctrlKey||e.metaKey)&&canBackground){e.preventDefault();onBackgroundSend?.();return}
-      if(!e.ctrlKey&&!e.metaKey&&!e.altKey){e.preventDefault();onSend();return}
+      if((e.ctrlKey||e.metaKey)&&canBackground){e.preventDefault();onBackgroundSend?.(prompt);return}
+      if(!e.ctrlKey&&!e.metaKey&&!e.altKey){e.preventDefault();onSend?.(prompt);return}
     }
     const noExtras=!attachments.length&&!(contextChips||[]).length;
     if(e.key==="ArrowUp"&&noExtras&&(!prompt||historyIndex>=0)){
@@ -519,13 +519,13 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
   const steerFollowUps=Boolean(runtimeCapabilities.steering)&&settings.followUpMode==="steer";
   const modelProviderRuntime=Boolean(runtimeCapabilities.managedInference),freebuffInference=modelProviderRuntime&&provider==="freebuff";
   const freebuffNeedsSettings=freebuffInference&&Boolean(freebuff?.loggedIn)&&isFreebuffSessionUnavailable(freebuff);
-  const modelProviderLabel=({freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider||"provider");
+  const modelProviderLabel=({freebuff:"Freebuff",openai:"OpenAI API",anthropic:"Anthropic API",gemini:"Gemini API",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider||"provider");
   function pickModel(event,id){
     const next=nextModelSelection(chosenModels,id,{shiftKey:event.shiftKey,allowMulti:allowMultiModel});
     onSelectedModels?.(next);if(!next.includes(model))setModel(next[0]||id);
     if(!event.shiftKey||!allowMultiModel)setModelOpen(false);
   }
-  const composerPlaceholder=submitting?"Sending…"
+  const composerPlaceholder=openingThread?"Opening thread…":submitting?"Sending…"
     :providerReady?(running?(steerFollowUps?"Steer the running agent…":"Queue a follow-up…"):"Ask Trebell Code anything…")
     :freebuffNeedsSettings?`Freebuff ${freebuffSessionLabel(freebuff)} — check Settings…`
     :freebuffInference?"Sign in to Freebuff to start…"
@@ -536,7 +536,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
     {activeMention&&mentionItems.length>0&&<div className="file-mention-menu" data-testid="file-mention-menu">{mentionItems.map((item,index)=><button key={item.path||item.relativePath||index} className={index===mentionIndex?"active":""} disabled={mentionBusy} onMouseDown={event=>{event.preventDefault();chooseMention(item)}}><FileCode2 size={13}/><span><strong>{item.name||String(item.path||"").split(/[\\/]/).pop()}</strong><small>{item.relativePath||item.path}</small></span></button>)}</div>}
     {(contextChips||[]).length>0&&<div className="context-chip-row" data-testid="context-chips">{contextChips.map(chip=><span className={"context-chip kind-"+(chip.kind||"context")} data-testid="context-chip" key={chip.id||chip.path} title={chip.path}><Link2 size={11}/><strong>{chip.label||"Context"}</strong>{chip.detail&&<small>{chip.detail}</small>}<button onClick={()=>onRemoveContext(chip.path)} title="Remove context"><X size={10}/></button></span>)}</div>}
     <div className="attachment-shelf">{attachments.filter(path=>!contextPaths.has(path)).map(path=><span key={path} title={attachmentDisplayName(path)}><Paperclip size={11}/>{attachmentDisplayName(path)}<button onClick={()=>onRemoveAttachment(path)}><X size={10}/></button></span>)}</div>
-    <textarea ref={composerRef} data-testid="composer" value={prompt} onChange={e=>{onPromptEdit?.();setPrompt(e.target.value);setCaret(e.target.selectionStart)}} onClick={e=>setCaret(e.currentTarget.selectionStart)} onKeyUp={e=>setCaret(e.currentTarget.selectionStart)} onKeyDown={keyDown} onPaste={onPaste} placeholder={composerPlaceholder} disabled={!providerReady||submitting}/>
+    <textarea ref={composerRef} data-testid="composer" value={prompt} onChange={e=>{onPromptEdit?.();setPrompt(e.target.value);setCaret(e.target.selectionStart)}} onClick={e=>setCaret(e.currentTarget.selectionStart)} onKeyUp={e=>setCaret(e.currentTarget.selectionStart)} onKeyDown={keyDown} onPaste={onPaste} placeholder={composerPlaceholder} disabled={!providerReady||submitting||openingThread}/>
     <div className="composer-bar"><div className="composer-left">
       <button className="circle-btn" onClick={onPickFiles} title="Attach files" aria-label="Attach files"><Plus size={18}/></button>
       {window.trebellDesktop?.captureScreen&&<button className="circle-btn" onClick={onCaptureScreen} title="Capture desktop screenshot" aria-label="Capture desktop screenshot"><Camera size={15}/></button>}
@@ -549,7 +549,7 @@ const Composer=memo(function Composer({prompt,setPrompt,onPromptEdit,historyInde
         <div className="model-picker-wrap"><button data-testid="model-picker" className={"model-picker-button "+(chosenModels.length>1?"multi":"")} disabled={!models.length} onClick={()=>setModelOpen(value=>!value)} title={!providerReady?"Provider reconnecting":running&&agentRuntime==="codex"?"Select model · applies live when Codex step model switching is enabled":allowMultiModel?"Shift-click models to run the same task in isolated worktrees":"Select model"}><span className="model-picker-current"><strong>{chosenModels.length>1?`${chosenModels.length} models`:(modelMeta?.[model]?.name||compactModelLabel(model,freebuff)||modelError||"No models")}</strong>{runtimeProfileItems.length>1&&currentRuntimeProfile&&<small>{currentRuntimeProfile.displayName}</small>}</span><ChevronDown size={12}/></button>{modelOpen&&models.length>0&&<div className="model-picker-menu">{runtimeProfileItems.length>1&&<div className="model-runtime-profiles"><p>{runtimeProfileLabel}</p>{runtimeProfileItems.map(item=><button key={item.id} className={item.id===runtimeProfiles.currentInstanceId?"selected":""} disabled={!item.available||item.authenticated===false||Boolean(runtimeProfileBusy)||running} onClick={async()=>{const switched=await onRuntimeProfile?.(item.id);if(switched!==false)setModelOpen(false)}}><span>{item.id===runtimeProfiles.currentInstanceId?<Check size={11}/>:<i/>}<strong>{item.displayName}</strong></span><small>{runtimeProfileBusy===item.id?"Switching…":item.available?(item.authenticated===false?"Sign-in required":item.version||"Ready"):item.message||"Unavailable"}</small></button>)}</div>}{models.length>24&&<div className="model-picker-search"><Search size={12}/><input data-testid="model-picker-search" autoFocus value={modelQuery} onChange={event=>setModelQuery(event.target.value)} onKeyDown={event=>event.stopPropagation()} placeholder={`Search ${models.length.toLocaleString()} models…`}/></div>}{modelMenuIds.map(id=>{const selected=chosenModels.includes(id);return <button key={id} className={selected?"selected":""} onClick={event=>pickModel(event,id)}><span>{selected?<Check size={11}/>:<i/>}<strong>{modelMeta?.[id]?.name||modelLabel(id,freebuff)}</strong></span><small>{modelMeta?.[id]?.custom?"custom":modelMeta?.[id]?.upstreamProvider||modelMeta?.[id]?.agent||""}</small></button>})}{modelMenuIds.length===0&&<p>No models match “{modelQuery.trim()}”.</p>}{modelMenuIds.length<models.length&&<p>Showing {modelMenuIds.length} of {models.length.toLocaleString()} models. Search to narrow the list.</p>}{allowMultiModel&&<p>Shift-click to select multiple models. Each runs in its own worktree.</p>}</div>}</div>
       </>}
       <button className={"mic-btn "+(listening?"active":"")} onClick={dictate} disabled={!speechSupported} title={speechSupported?(listening?"Listening…":"Voice dictation"):"Voice dictation is unavailable on this platform"}><Mic size={15}/></button>
-      <button data-testid="send" className="send-btn" onClick={onSend} disabled={!providerReady||submitting||!prompt.trim()||promptTooLong}>{running&&!steerFollowUps?<Plus size={16}/>:<Send size={16}/>}</button>
+      <button data-testid="send" className="send-btn" onClick={()=>onSend?.(prompt)} disabled={!providerReady||submitting||openingThread||!prompt.trim()||promptTooLong}>{running&&!steerFollowUps?<Plus size={16}/>:<Send size={16}/>}</button>
     </div></div>
     <div className={"composer-status"+(modelError||promptTooLong?" error":"")}><span>{promptTooLong?`Draft is ${prompt.length.toLocaleString()} characters · maximum ${MAX_COMPOSER_CHARS.toLocaleString()}`:modelError||<>{tokenLabel(tokenUsage,priceConfig)}{canCompact&&!running&&<button className="context-compact-btn" type="button" onClick={onCompact} title="Compact conversation context">Compact</button>}</>}</span><span>{prompt.length.toLocaleString()}/{MAX_COMPOSER_CHARS.toLocaleString()} · {canBackground?"Ctrl/Cmd+Enter background · ":""}{steerFollowUps?"Steer":"Queue"} follow-ups</span></div>
   </div>;
@@ -599,7 +599,7 @@ export default function App(){
   const [threadHistory,setThreadHistory]=useState({runtime:null,runtimeSource:null,runtimeExhausted:false,items:[],nextCursor:null,loading:false,error:""});
   const [threadCatalogCursor,setThreadCatalogCursor]=useState(null);
   const [threadFind,setThreadFind]=useState({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});
-  const [running,setRunning]=useState(false); const [submitting,setSubmitting]=useState(false); const [queued,setQueued]=useState([]); const [queueMode,setQueueMode]=useState("unknown"); const [queuedEditId,setQueuedEditId]=useState(null);
+  const [running,setRunning]=useState(false); const [submitting,setSubmitting]=useState(false); const [openingThreadId,setOpeningThreadId]=useState(null); const [queued,setQueued]=useState([]); const [queueMode,setQueueMode]=useState("unknown"); const [queuedEditId,setQueuedEditId]=useState(null);
   const localQueueStartRef=useRef(null);
   const [query,setQuery]=useState(""); const [searchResults,setSearchResults]=useState(null); const [threadSearchError,setThreadSearchError]=useState(""); const [section,setSection]=useState("chat");
   const [prompt,setPrompt]=useState(""); const [promptHistoryIndex,setPromptHistoryIndex]=useState(-1); const [attachments,setAttachments]=useState([]); const [contextChips,setContextChips]=useState([]);
@@ -628,7 +628,7 @@ export default function App(){
   const [threadTelemetry,setThreadTelemetry]=useState({});const threadTelemetryRef=useRef({});
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false); const [initialLoadError,setInitialLoadError]=useState(""); const [initialLoadRevision,setInitialLoadRevision]=useState(0);
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"}); const [paletteDataError,setPaletteDataError]=useState("");
-  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const pendingRuntimeThreadRef=useRef(null); const catalogPersistRef=useRef(new Map()); const automaticVerificationRepairSeenRef=useRef(new Set()); const automaticVerificationContinuationSeenRef=useRef(new Set()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
+  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const openingThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const pendingRuntimeThreadRef=useRef(null); const catalogPersistRef=useRef(new Map()); const automaticVerificationRepairSeenRef=useRef(new Set()); const automaticVerificationContinuationSeenRef=useRef(new Set()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
   const autoSettleCandidates=useMemo(()=>hasAutoSettleCandidates(threads,threadMeta),[threads,threadMeta]);
   function resetAssistantStream(){assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();diffEventBufferRef.current?.reset();assistantTextRef.current="";commandOutputRef.current.clear();mcpProgressRef.current.clear();activityTimelineRef.current?.resetStreams()}
@@ -1231,9 +1231,11 @@ export default function App(){
     }
     try{
       const result=await client.request("thread/runtimeInstances/list",{threadId});
+      if(client!==rpcRef.current)return null;
       const next={...(result||{supported:false,currentInstanceId:null,items:[]}),threadId};
       setThreadRuntimeProfiles(next);return next;
     }catch(error){
+      if(client!==rpcRef.current)return null;
       const detail=error?.message||String(error);
       setThreadRuntimeProfiles(current=>current.threadId===threadId?current:{threadId,supported:false,currentInstanceId:null,items:[],reason:detail});
       showActionError(error,"Could not refresh runtime profiles");
@@ -1247,7 +1249,7 @@ export default function App(){
       const result=await rpc.request("thread/runtimeInstance/set",{threadId,instanceId});
       let updated=result?.thread;
       if(agentRuntime==="codex"){
-        const resumed=await rpc.request("thread/resume",{threadId,model:model||null,modelProvider:provider,cwd:activeThreadRef.current?.cwd||null,excludeTurns:true});
+        const resumed=await rpc.request("thread/resume",{threadId,model:model||null,cwd:activeThreadRef.current?.cwd||null,excludeTurns:true});
         updated=resumed?.thread||updated;
       }
       if(updated){
@@ -1355,7 +1357,7 @@ export default function App(){
     if(!recovery.items?.length)return;
     for(const item of recovery.items){
       try{
-        await client.request("thread/resume",{threadId:item.threadId,modelProvider:provider,excludeTurns:true});
+        await client.request("thread/resume",{threadId:item.threadId,excludeTurns:true});
         let previous=null,recentError=null,legacyError=null;
         try{
           const recent=await client.request("thread/turns/list",{threadId:item.threadId,limit:20,sortDirection:"desc",itemsView:"notLoaded"});
@@ -1424,7 +1426,7 @@ export default function App(){
   },[bootstrap.wsUrl,bootstrap.mock,provider,agentRuntime,providerRevision]);
   useEffect(()=>{if(rpcStatus==="connected"&&rpc)loadSkills(rpc,projectPath)},[projectPath,rpcStatus]);
   useEffect(()=>{
-    if(runtimeCapabilities.runtimeProfileSwitching&&rpcStatus==="connected"&&rpc&&activeThread?.id){loadThreadRuntimeProfiles(rpc,activeThread.id);return}
+    if(runtimeCapabilities.runtimeProfileSwitching&&rpcStatus==="connected"&&rpc&&rpc===rpcRef.current&&activeThread?.id){loadThreadRuntimeProfiles(rpc,activeThread.id);return}
     setThreadRuntimeProfiles({threadId:null,supported:false,currentInstanceId:null,items:[]});setThreadRuntimeProfileBusy("");
   },[agentRuntime,rpc,rpcStatus,activeThread?.id]);
 
@@ -2168,7 +2170,7 @@ export default function App(){
     if(action==="fork"){
       if(!rpc)return;
       const p=presetFor(permissionMode);
-      const result=await rpc.request("thread/fork",{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||projectPath,approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,threadSource:"trebell-code",excludeTurns:true});
+      const result=await rpc.request("thread/fork",{threadId:thread.id,model:model||null,...(agentRuntime==="native"?{modelProvider:provider}:{}),cwd:thread.cwd||projectPath,approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,threadSource:"trebell-code",excludeTurns:true});
       if(result?.thread){setThreads(prev=>[result.thread,...prev.filter(t=>t.id!==result.thread.id)]);await openThread(result.thread)}
       return;
     }
@@ -2250,7 +2252,16 @@ export default function App(){
     if(["files","diff","source"].includes(rightPanelTab)){setRightPanelTab("runtime");setRightPanelOpen(false);setRightPanelMaximized(false)}
     return scratch;
   }
-  async function openThread(thread,{client=rpc,preserveSection=false}={}){
+  async function openThread(thread,options={}){
+    const threadId=String(thread?.id||"");
+    if(threadId){openingThreadRef.current=threadId;setOpeningThreadId(threadId)}
+    try{return await openThreadInternal(thread,options)}
+    finally{
+      const pendingId=String(pendingRuntimeThreadRef.current?.thread?.id||"");
+      if(threadId&&pendingId!==threadId&&openingThreadRef.current===threadId){openingThreadRef.current=null;setOpeningThreadId(current=>current===threadId?null:current)}
+    }
+  }
+  async function openThreadInternal(thread,{client=rpc,preserveSection=false}={}){
     if(await switchRuntimeForThread(thread,{preserveSection}))return thread;
     const previousThreadId=activeThreadRef.current?.id;
     const reopeningCurrentThread=previousThreadId===thread.id;
@@ -2274,7 +2285,7 @@ export default function App(){
     let resumed=null,cp=null,goalData=null,continuityData=null,attachmentData=null;
     const persistentReadErrors=[];if(metaReadError)persistentReadErrors.push("thread metadata: "+(metaReadError.message||String(metaReadError)));
     if(connectedClient){
-      const resumePromise=resumeWithBoundedHistory(client,{threadId:thread.id,model:model||null,modelProvider:provider,cwd:thread.cwd||null});
+      const resumePromise=resumeWithBoundedHistory(client,{threadId:thread.id,model:model||null,...(agentRuntime==="native"?{modelProvider:provider}:{}),cwd:thread.cwd||null});
       const checkpointPromise=api("/api/checkpoints?threadId="+encodeURIComponent(thread.id)).then(value=>({value,error:null}),error=>({value:null,error}));
       const goalPromise=client.request("thread/goal/get",{threadId:thread.id}).then(value=>({value,error:null}),error=>({value:null,error}));
       const continuityPromise=client.request("thread/continuity/get",{threadId:thread.id}).then(value=>({value,error:null}),error=>({value:null,error}));
@@ -2614,7 +2625,7 @@ export default function App(){
       try{nativeProjectId=(await ensureRuntimeProject(rpc,{trebellProject,cwd}))?.id||null}
       catch(error){showActionError(error,"Could not sync runtime project identity")}
     }
-    const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,projectless,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(nativeProjectId?{projectId:nativeProjectId}:{}),approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools,developerInstructions});
+    const result=await rpc.request("thread/start",{model:modelId,...(agentRuntime==="native"?{modelProvider:provider}:{}),cwd,projectless,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(nativeProjectId?{projectId:nativeProjectId}:{}),approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools,developerInstructions});
     if(agentRuntime!=="codex"&&result.thread?.providerMeta){setProviderAgent(result.thread.agent||providerAgent||"");const meta=result.thread.providerMeta;applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}
     if(result.thread?.id)await persistThreadWorkspaceContext(result.thread,cwd,{sectionName:"Active",archived:false,projectless},{strict:true}).catch(error=>showActionError(error,"Could not save thread workspace context"));
     return result.thread;
@@ -2914,9 +2925,9 @@ export default function App(){
       setEvents(prev=>[...prev,{id:"compact-error-"+Date.now(),kind:"error",title:"Context compaction failed: "+(error.message||String(error)),status:"done",raw:{}}]);
     }
   }
-  async function dispatchSend(){
-    const text=prompt.trim();if(!text)return;
-    if(prompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"prompt-too-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{length:prompt.length}}]);return}
+  async function dispatchSend(promptOverride=null){
+    const visiblePrompt=promptOverride==null?prompt:String(promptOverride),text=visiblePrompt.trim();if(!text)return;
+    if(visiblePrompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"prompt-too-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{length:visiblePrompt.length}}]);return}
     if(text.startsWith("/")){const special=await handleSpecial(text);if(special===true){setPrompt("");return}}
     if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return}
     if(runtimeCapabilities.nativeQueue&&queuedEditId&&rpc&&activeThread&&queueMode!=="local"){
@@ -2953,7 +2964,7 @@ export default function App(){
       const clientId="user-"+Date.now();setMessages(prev=>[...prev,{id:clientId,role:"user",text:draft.text}]);setRunning(true);
       try{
         const d=await api("/api/chat/direct",{method:"POST",body:{prompt:draft.text,model:draft.model}});
-        setMessages(prev=>[...prev,{id:"assistant-"+Date.now(),role:"assistant",text:d.text||""}]);setEvents([{id:"fallback",kind:"tool",title:({freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||"Provider")+" direct response",status:"done",raw:{}}]);
+        setMessages(prev=>[...prev,{id:"assistant-"+Date.now(),role:"assistant",text:d.text||""}]);setEvents([{id:"fallback",kind:"tool",title:({freebuff:"Freebuff",openai:"OpenAI API",anthropic:"Anthropic API",gemini:"Gemini API",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||"Provider")+" direct response",status:"done",raw:{}}]);
       }catch(e){
         setMessages(prev=>prev.filter(message=>message.id!==clientId));restoreFailedDraft(draft);setEvents([{id:"error",kind:"error",title:e.message,status:"done",raw:{}}]);
       }finally{setRunning(false)}
@@ -2961,21 +2972,22 @@ export default function App(){
     }
     await startTurn(draft.text,draft.attachments,draft.model,null,null,repositoryFocusPaths(draft.attachments,draft.contextChips)).catch(e=>{restoreFailedDraft(draft);setRunning(false);setEvents([{id:"send-error",kind:"error",title:e.message,status:"done",raw:{}}])});
   }
-  async function send(){
+  async function send(promptOverride=null){
+    if(openingThreadRef.current)return;
     if(submittingRef.current)return;
     submittingRef.current=true;setSubmitting(true);
-    try{return await dispatchSend()}
+    try{return await dispatchSend(promptOverride)}
     finally{submittingRef.current=false;setSubmitting(false)}
   }
-  async function sendInBackground(){
-    if(!runtimeCapabilities.detachedTasks){await send();return}
-    if(activeThread?.id||running){await send();return}
-    const text=prompt.trim();if(!text)return;
-    if(prompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"prompt-too-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{length:prompt.length}}]);return}
-    if(text.startsWith("/")){await send();return}
+  async function sendInBackground(promptOverride=null){
+    if(!runtimeCapabilities.detachedTasks){await send(promptOverride);return}
+    if(activeThread?.id||running){await send(promptOverride);return}
+    const visiblePrompt=promptOverride==null?prompt:String(promptOverride),text=visiblePrompt.trim();if(!text)return;
+    if(visiblePrompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"prompt-too-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{length:visiblePrompt.length}}]);return}
+    if(text.startsWith("/")){await send(promptOverride);return}
     try{await waitForActiveClone()}catch(error){setEvents(prev=>[...prev,{id:"clone-wait-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
     if(await sendModelFanout(text))return;
-    if(bootstrap.mock||!rpc||rpcStatus!=="connected"){await send();return}
+    if(bootstrap.mock||!rpc||rpcStatus!=="connected"){await send(promptOverride);return}
     if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return}
     try{await validateAttachmentPaths(attachments)}catch(error){setEvents(prev=>[...prev,{id:"background-attachment-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
     const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd,model,projectless:projectlessMode};
@@ -3429,7 +3441,7 @@ export default function App(){
 
   const activeTitle=titleOf(activeThread);
   const projectLabel=projectlessMode?"No project":String(projectPath||activeThread?.cwd||bootstrap.cwd||"Workspace").split(/[\\/]/).filter(Boolean).at(-1)||"Workspace";
-  const providerLabel=({freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider);
+  const providerLabel=({freebuff:"Freebuff",openai:"OpenAI API",anthropic:"Anthropic API",gemini:"Gemini API",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider);
   const agentRuntimeLabel=({native:"Trebell Native",codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime);
   const conversationEditFromHere=useLatestCallback(editFromHere);
   const conversationLoadEarlier=useLatestCallback(loadEarlierMessages);
@@ -3618,7 +3630,7 @@ export default function App(){
           </div>
 
           {currentProject?.cloneJob&&currentProject.cloneJob.status!=="completed"&&<div className={"clone-banner "+currentProject.cloneJob.status} data-testid="clone-banner"><div><strong>{currentProject.cloneJob.phase||"Cloning repository"}</strong><span>{currentProject.cloneJob.status==="failed"?(currentProject.cloneJob.error||"Clone failed"):currentProject.cloneJob.status==="cancelled"?"Clone cancelled":"You can keep writing. Send waits until the repository is ready."}</span>{cloneRefreshError&&<span className="clone-refresh-error" role="alert">{cloneRefreshError}</span>}</div>{["running","cancelling"].includes(currentProject.cloneJob.status)&&<i><b style={{width:Math.max(2,Number(currentProject.cloneJob.progress)||0)+"%"}}/></i>}<em>{Math.round(currentProject.cloneJob.progress||0)}%</em>{currentProject.cloneJob.status==="running"&&<button onClick={()=>runUserAction(()=>cloneProjectAction("cancel"),"Could not cancel clone")}><X size={11}/> Cancel</button>}{["failed","cancelled"].includes(currentProject.cloneJob.status)&&<button onClick={()=>runUserAction(()=>cloneProjectAction("retry"),"Could not retry clone")}>Retry clone</button>}</div>}
-<Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={composerPromptEdit} historyIndex={promptHistoryIndex} onSend={composerSend} onBackgroundSend={composerBackgroundSend} canBackground={Boolean(runtimeCapabilities.detachedTasks)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} runtimeCapabilities={runtimeCapabilities} login={composerLogin} onConfigureProvider={composerConfigureProvider} models={models} modelMeta={modelMeta} model={model} setModel={composerSetModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={Boolean(runtimeCapabilities.multiModelFanout)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={composerRemoveAttachment} onRemoveContext={composerRemoveContext} onPickFiles={composerPickFiles} onCaptureScreen={composerCaptureScreen} onPaste={composerPaste} onDrop={composerDrop} onFileMentionSearch={composerFileMentionSearch} onFileMentionAttach={composerFileMentionAttach} permissionMode={permissionMode} setPermissionMode={setPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={composerCollaborationMode} collaborationModeBusy={collaborationModeBusy} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={composerProviderAgent} recipes={projectlessMode?[]:currentProject?.recipes||[]} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&runtimeCapabilities.compaction)} onCompact={composerCompact} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={composerRuntimeProfile} onModelPickerOpenChange={setModelPickerOpen}/>
+<Composer prompt={prompt} setPrompt={setPrompt} onPromptEdit={composerPromptEdit} historyIndex={promptHistoryIndex} onSend={composerSend} onBackgroundSend={composerBackgroundSend} canBackground={Boolean(runtimeCapabilities.detachedTasks)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"} running={running} submitting={submitting} openingThread={Boolean(openingThreadId)} providerReady={providerReady} provider={provider} agentRuntime={agentRuntime} agentRuntimeLabel={agentRuntimeLabel} runtimeCapabilities={runtimeCapabilities} login={composerLogin} onConfigureProvider={composerConfigureProvider} models={models} modelMeta={modelMeta} model={model} setModel={composerSetModel} selectedModels={selectedModels} onSelectedModels={setSelectedModels} allowMultiModel={Boolean(runtimeCapabilities.multiModelFanout)&&!activeThread?.id&&!running&&!submitting&&!bootstrap.mock&&rpcStatus==="connected"&&Boolean(gitInfo?.isGit)} modelError={modelError} freebuff={freebuff} attachments={attachments} contextChips={contextChips} onRemoveAttachment={composerRemoveAttachment} onRemoveContext={composerRemoveContext} onPickFiles={composerPickFiles} onCaptureScreen={composerCaptureScreen} onPaste={composerPaste} onDrop={composerDrop} onFileMentionSearch={composerFileMentionSearch} onFileMentionAttach={composerFileMentionAttach} permissionMode={permissionMode} setPermissionMode={setPermissionMode} collaborationModes={collaborationModes} collaborationMode={collaborationMode} onCollaborationMode={composerCollaborationMode} collaborationModeBusy={collaborationModeBusy} providerCommands={providerCommands} providerAgents={providerAgents} providerAgent={providerAgent} onProviderAgent={composerProviderAgent} recipes={projectlessMode?[]:currentProject?.recipes||[]} settings={settings} tokenUsage={tokenUsage} workspaceMode={workspaceMode} setWorkspaceMode={setWorkspaceMode} projectless={projectlessMode} threadOpen={Boolean(activeThread?.id)} gitAvailable={Boolean(gitInfo?.isGit)} canCompact={Boolean(activeThread?.id&&rpc&&rpcStatus==="connected"&&runtimeCapabilities.compaction)} onCompact={composerCompact} runtimeProfiles={threadRuntimeProfiles} runtimeProfileBusy={threadRuntimeProfileBusy} onRuntimeProfile={composerRuntimeProfile} onModelPickerOpenChange={setModelPickerOpen}/>
 
           {panel==="terminal"&&<div className="terminal-drawer" data-testid="drawer">
             <div className="layout-resizer terminal-resizer" data-testid="terminal-resizer" role="separator" aria-label="Resize terminal" aria-orientation="horizontal" onPointerDown={event=>beginLayoutResize("terminal",event)}/>

@@ -18,6 +18,30 @@ const COMMON_PROXY=Object.freeze({
 });
 
 const CAPABILITIES=Object.freeze({
+  openai:Object.freeze({
+    ...COMMON_PROXY,
+    promptCaching:feature("supported","The direct OpenAI Responses route can use OpenAI's automatic prompt caching when the selected model supports it; Trebell records returned cached-input usage."),
+    explicitCacheControl:feature("unsupported","Trebell's direct OpenAI route does not currently expose a manual prompt-cache control surface."),
+    previousResponseContinuation:feature("unsupported","Trebell Native currently carries its own durable conversation state instead of sending previous_response_id."),
+    persistentConnection:feature("unsupported","The current Trebell Native OpenAI integration uses HTTPS Responses requests, not a persistent Responses WebSocket."),
+    nativeCompaction:feature("unsupported","Trebell Native owns compaction rather than delegating it to the OpenAI API."),
+  }),
+  anthropic:Object.freeze({
+    ...COMMON_PROXY,
+    promptCaching:feature("unverified","Anthropic supports prompt caching, but Trebell's direct Messages adapter does not yet add explicit cache_control blocks."),
+    explicitCacheControl:feature("unsupported","Trebell's current Anthropic Messages adapter does not emit cache_control blocks."),
+    previousResponseContinuation:feature("unsupported","Trebell Native carries the conversation explicitly through Messages API turns."),
+    persistentConnection:feature("unsupported","The current Trebell Native Anthropic integration uses HTTPS Messages requests."),
+    nativeCompaction:feature("unsupported","Trebell Native owns compaction for direct Anthropic API sessions."),
+  }),
+  gemini:Object.freeze({
+    ...COMMON_PROXY,
+    promptCaching:feature("unverified","The direct Gemini route currently uses Google's OpenAI-compatibility API; Trebell does not assume Gemini cache behavior without measured returned usage."),
+    explicitCacheControl:feature("unsupported","Trebell does not currently map Gemini cached_content controls through the compatibility route."),
+    previousResponseContinuation:feature("unsupported","Trebell Native carries conversation state explicitly through Chat Completions-compatible requests."),
+    persistentConnection:feature("unsupported","The current Trebell Native Gemini integration uses HTTPS Chat Completions requests."),
+    nativeCompaction:feature("unsupported","Trebell Native owns compaction for direct Gemini API sessions."),
+  }),
   freebuff:Object.freeze({
     ...COMMON_PROXY,
     promptCaching:feature("unverified","Freebuff is served through Trebell's local compatibility bridge; cache behavior depends on the authenticated upstream route and must be measured."),

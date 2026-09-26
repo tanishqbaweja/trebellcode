@@ -96,20 +96,22 @@ try{
   }
   assert.ok(mainPage,"Packaged Trebell preload bridge was not available");
 
+  const runtimeSelection=await fetch(base+"/api/agent-runtimes",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"select",runtime:"native",instanceId:"native-default"})}).then(r=>r.json());
+  assert.equal(runtimeSelection.selected?.runtime,"native","Packaged model-driven validation must run through Trebell Native");
   const switched=await fetch(base+"/api/providers",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({provider:"vyceai"})}).then(r=>r.json());
   assert.equal(switched.selected,"vyceai");
   assert.ok(switched.models?.includes(model),`Vyce model ${model} is unavailable in packaged app`);
   let boot=null;
   for(let attempt=0;attempt<60;attempt++){
     boot=await fetch(base+"/api/bootstrap").then(r=>r.json()).catch(()=>null);
-    if(boot?.provider==="vyceai"&&boot?.appServerReady)break;
+    if(boot?.agentRuntime==="native"&&boot?.provider==="vyceai"&&boot?.agentRuntimeReady)break;
     await wait(250);
   }
-  assert.equal(boot?.provider,"vyceai");assert.equal(boot?.appServerReady,true);
+  assert.equal(boot?.agentRuntime,"native");assert.equal(boot?.provider,"vyceai");assert.equal(boot?.agentRuntimeReady,true);assert.match(String(boot?.wsUrl||""),/\/api\/agent\/ws$/);
 
   const toolCalls=[];let assistant="";
   ws=new WebSocket(boot.wsUrl,{origin:"http://trebell-installed-agent.local"});
-  await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error("packaged Codex websocket timed out")),15000);ws.once("open",()=>{clearTimeout(timer);resolve()});ws.once("error",reject)});
+  await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error("packaged Trebell Native websocket timed out")),15000);ws.once("open",()=>{clearTimeout(timer);resolve()});ws.once("error",reject)});
   rpc=new RpcClient(ws,async msg=>{
     const p=msg.params||{};
     if(msg.method==="item/tool/call"){
@@ -139,7 +141,7 @@ try{
 
   await rpc.request("initialize",{clientInfo:{name:"trebell-installed-agent",title:"Trebell Packaged Agent Validation",version:boot.version||"0.0.0"},capabilities:{experimentalApi:true}});
   ws.send(JSON.stringify({method:"initialized",params:{}}));
-  const thread=await rpc.request("thread/start",{model,modelProvider:"vyceai",cwd:workspace,approvalPolicy:"never",sandbox:"danger-full-access",ephemeral:true,threadSource:"trebell-installed-agent",dynamicTools,developerInstructions:"This is an automated packaged Trebell validation. Use the requested tools exactly and verify observed values instead of guessing."});
+  const thread=await rpc.request("thread/start",{model,modelProvider:"vyceai",cwd:workspace,permissionProfile:"full",approvalPolicy:"never",sandbox:"danger-full-access",ephemeral:true,threadSource:"trebell-installed-agent",dynamicTools,developerInstructions:"This is an automated packaged Trebell validation. Use the requested tools exactly and verify observed values instead of guessing."});
   assert.ok(thread.thread?.id,"thread/start did not return a thread id");
   createdThreadId=thread.thread.id;
   const fixtureUrl=`http://127.0.0.1:${fixturePort}`;
@@ -162,7 +164,7 @@ try{
     let lastError=null;
     for(let attempt=0;attempt<=retries;attempt++){
       const callsBefore=toolCalls.length;
-      const turn=await rpc.request("turn/start",{threadId:thread.thread.id,model,cwd:workspace,approvalPolicy:"never",sandboxPolicy:{type:"dangerFullAccess"},input:[{type:"text",text,textElements:[]}]});
+      const turn=await rpc.request("turn/start",{threadId:thread.thread.id,model,modelProvider:"vyceai",permissionProfile:"full",cwd:workspace,approvalPolicy:"never",sandboxPolicy:{type:"dangerFullAccess"},input:[{type:"text",text,textElements:[]}]});
       const turnId=turn.turn?.id;assert.ok(turnId,`${label}: turn/start did not return a turn id`);
       try{
         const completed=await rpc.waitFor(msg=>msg.method==="turn/completed"&&(msg.params?.turn?.id===turnId||msg.params?.turnId===turnId),timeoutMs);

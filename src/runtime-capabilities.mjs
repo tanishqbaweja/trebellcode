@@ -38,7 +38,7 @@ const RUNTIME_CAPABILITY_OVERRIDES=Object.freeze({
   codex:Object.freeze({
     fork:true,rewind:true,compaction:true,systemPromptInjection:true,dynamicTools:true,languageIntelligence:true,nativeSandbox:true,
     usageReporting:true,detachedTasks:true,multiModelFanout:true,delegation:true,harnessTools:true,collaborationModes:true,
-    nativeQueue:true,nativeHistoryPagination:true,steering:true,runtimeProfileSwitching:true,projectOwnership:true,managedInference:true,
+    nativeQueue:true,nativeHistoryPagination:true,steering:true,runtimeProfileSwitching:true,projectOwnership:true,
   }),
   claude:Object.freeze({fork:true,rewind:true,compaction:true,mcpInjection:true,languageIntelligence:true,usageReporting:true,runtimeProfileSwitching:true,detachedTasks:true,multiModelFanout:true,delegation:true}),
   opencode:Object.freeze({fork:true,rewind:true,compaction:true,nativeLsp:true,languageIntelligence:true,usageReporting:true,detachedTasks:true,multiModelFanout:true,delegation:true}),

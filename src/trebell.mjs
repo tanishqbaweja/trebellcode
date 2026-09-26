@@ -1,13 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { platform } from "node:os";
-import { ensureCodexConfig, DEFAULT_PORT, FALLBACK_MODEL } from "./config.mjs";
+import { DEFAULT_PORT } from "./config.mjs";
 import { credentialsPath, codexBin, freebuffEntrypoint, packageRoot, trebellHome } from "./paths.mjs";
-import { chooseModel, health, isLoggedIn, listModels, logout, runLogin, startBridge } from "./freebuff.mjs";
+import { isLoggedIn, listModels, logout, runLogin, startBridge } from "./freebuff.mjs";
 import { runCodex } from "./codex.mjs";
 import { TrebellStateStore } from "./trebell-state.mjs";
 import { ProviderManager, normalizeProviderId } from "./provider-manager.mjs";
-import { startProviderBridge } from "./provider-bridge.mjs";
 
 export const VERSION = (()=>{try{return String(JSON.parse(readFileSync(new URL("../package.json", import.meta.url),"utf8")).version||"0.0.0")}catch{return "0.0.0"}})();
 
@@ -16,29 +15,28 @@ export function printHelp() {
 
 Usage:
   trebell                       start Trebell Code
-  trebell run [options] [-- ...]  start Trebell Code and forward args to the agent runtime
+  trebell run [options] [-- ...]  launch the real Codex harness and forward Codex args
   trebell login [--force|--resume] sign in to Freebuff
   trebell signup               open Freebuff sign-up/login
   trebell logout               remove the locally stored Freebuff credential
-  trebell models               list Freebuff models available to this account
+  trebell models [--provider <id>] list models for a Trebell Native provider
   trebell doctor               check the local Trebell Code installation\n  trebell gui                  launch the Trebell Code graphical harness
 
 Run options:
-  --model <id>                 select a model for the active provider
-  --provider <id>              freebuff|agentrouter|justworker|hcnsec|vyceai
-  --port <port>                local Freebuff bridge port (default 23333)
-  --no-login-check             run even when no saved credential is present
+  --model <id>                 ask Codex to use this model
   --help                       show this help
+
+Native-provider utility options:
+  --provider <id>              openai|anthropic|gemini|freebuff|agentrouter|justworker|hcnsec|vyceai
+  --port <port>                local Freebuff bridge port for login/models (default 23333)
 
 Environment:
   TREBELL_HOME                 config root (default ~/.trebell-code)
-  TREBELL_MODEL                default model id
   TREBELL_CODEX_BIN            override runtime path (also useful for tests)
   TREBELL_DISABLE_PTY=1        disable terminal branding shim
 
-Trebell Code uses the Apache-2.0 Codex runtime for agent/tool execution.
-Inference can be supplied by Freebuff, AgentRouter, JustWorker.icu, HCNSec.cn,
-or VyceAi. Freebuff access uses the bundled MIT-licensed freebuff2api bridge.
+The CLI run command preserves Codex's own account, config, provider and session semantics.
+Trebell Native is a separate harness and calls its selected API directly in the graphical app.
 `);
 }
 
@@ -104,48 +102,11 @@ async function stopBridge(bridge) {
 }
 
 async function runCommand(args) {
+  const legacyInferenceFlag=args.find(arg=>["--provider","--port","--no-login-check"].includes(arg)||arg.startsWith("--provider=")||arg.startsWith("--port="));
+  if(legacyInferenceFlag)throw new Error(`${legacyInferenceFlag} no longer changes Codex inference. "trebell run" launches the real Codex harness; choose API providers under Trebell Native in the graphical app.`);
   const parsed = parseRunArgs(args);
-  const state = new TrebellStateStore(process.env);
-  const providers = new ProviderManager({ env: process.env });
-  const provider = normalizeProviderId(parsed.provider || state.settings().modelProvider || "freebuff");
-  ensureCodexConfig({ port: parsed.port, provider });
-
-  if (provider === "freebuff") {
-    if (parsed.loginCheck && !isLoggedIn()) {
-      console.log("Trebell Code needs a Freebuff sign-in before the first Freebuff run.");
-      console.log("Starting sign-in now…\n");
-      const loginCode = await runLogin([], { port: parsed.port });
-      if (loginCode !== 0) return loginCode;
-    }
-
-    const bridge = await startBridge({ port: parsed.port });
-    try {
-      const selectedModel = (await chooseModel({ requested: parsed.model, port: parsed.port })) || FALLBACK_MODEL;
-      console.log(`Trebell Code · provider: Freebuff · model: ${selectedModel}`);
-      return await runCodex({ model: selectedModel, provider, forwarded: parsed.forwarded });
-    } finally {
-      await stopBridge(bridge);
-    }
-  }
-
-  if (!providers.hasKey(provider)) throw new Error(`${providers.get(provider).name} API key is not configured. Add it in Trebell Settings first.`);
-  const catalog = await providers.models(provider);
-  const models = catalog.models || [];
-  if (!models.length) throw new Error(`No models are available for ${providers.get(provider).name}.`);
-  if (parsed.model && !models.includes(parsed.model)) throw new Error(`Model "${parsed.model}" is not available for ${providers.get(provider).name}.`);
-  const selectedModel = parsed.model || models[0];
-  const compatibilityBridge = await startProviderBridge({ providerManager: providers, provider });
-  try {
-    console.log(`Trebell Code · provider: ${providers.get(provider).name} · model: ${selectedModel}`);
-    return await runCodex({
-      model: selectedModel,
-      provider,
-      forwarded: parsed.forwarded,
-      env: process.env,
-    });
-  } finally {
-    await compatibilityBridge.close().catch(()=>{});
-  }
+  console.log(`Trebell Code · harness: Codex${parsed.model?` · model: ${parsed.model}`:""}`);
+  return await runCodex({model:parsed.model,forwarded:parsed.forwarded,env:process.env});
 }
 
 async function modelsCommand(args) {
@@ -171,7 +132,6 @@ async function modelsCommand(args) {
 }
 
 export async function doctor(env = process.env) {
-  ensureCodexConfig({ env });
   const checks = [
     ["Node >= 22", Number(process.versions.node.split(".")[0]) >= 22, process.version],
     ["Trebell home", existsSync(trebellHome(env)), trebellHome(env)],

@@ -65,7 +65,6 @@ flowchart LR
     GUI <--> CODEX
     GUI <--> EXTERNAL
     NATIVE <--> PROVIDERS
-    CODEX <--> PROVIDERS
     TOOLS <--> MCP
     TOOLS <--> BROWSER
 ~~~
@@ -80,10 +79,11 @@ Examples:
 
 - Trebell Native + VyceAi;
 - Trebell Native + AgentRouter;
-- Codex + Freebuff compatibility routing;
+- Trebell Native + the official OpenAI, Anthropic, or Gemini API;
+- Codex using Codex's own account/provider/model configuration;
 - Claude Code using Claude Code's own model/auth semantics.
 
-External harnesses are not forced through the Codex provider bridge merely to make the UI look symmetrical.
+External harnesses are not forced through Trebell Native's provider layer merely to make the UI look symmetrical.
 
 ---
 
@@ -460,11 +460,12 @@ trebell gui
 | **trebell login** | Freebuff login |
 | **trebell login --force** | Refresh/switch Freebuff login |
 | **trebell logout** | Remove local Freebuff credential |
-| **trebell models** | Show models for the active managed provider |
-| **trebell --provider ID** | Override managed inference provider for this CLI run |
-| **trebell --model ID** | Choose a model for this CLI run |
+| **trebell models --provider ID** | Show models for a Trebell Native provider |
+| **trebell --model ID** | Ask the real Codex harness to use a model for this CLI run |
+| **trebell gui** | Open the multi-harness app, including Trebell Native direct-API inference |
 
 Provider API keys for normal product use belong in **Settings**, not repository environment files.
+`trebell run` does not rewrite Codex's provider or account configuration; Native provider selection is intentionally separate.
 
 ---
 
@@ -506,7 +507,10 @@ npm run test:vyce:cache
 npm run bench:vyce:native
 npm run test:vyce:background
 npm run test:vyce:fanout
+npm run test:providers:live
 npm run test:runtime-profiles:live
+npm run test:external-harnesses:live
+npm run test:codex:live
 ~~~
 
 These may optionally read an ignored root **.env** containing test credentials only.
@@ -542,6 +546,8 @@ That live test also drove concrete Native efficiency work. Advanced repository a
 
 The exact token count varies by model behavior and conversation history, so these are audit measurements rather than a promised fixed cost.
 
+The post external-harness-separation audit improved the same small Native coding fixture again. With `deepseek-v4.1`, the real tool loop completed in **4 model turns / 7,896 input tokens / 261 output tokens**. The first provider request used **1,659 input tokens**, the tool catalog remained **11 functions / ~5.1 KB JSON**, all four turns kept one stable prefix hash and one stable tool-schema hash, and independent verification still passed. Compared with the preserved v1.3.3 small-task audit (**11,997 input tokens**), that is about **34% less input** without reducing the model-turn count or removing edit/verification work. Vyce still reported **0 cached input tokens**.
+
 The Native system prompt itself is intentionally compact: the current release candidate measures roughly **532 estimated tokens**. The larger recurring costs are tool schemas and accumulated conversation/tool evidence, so Native progressively exposes advanced capabilities, deduplicates byte-identical file observations, virtualizes large tool output behind searchable handles, and uses a compact repository seed in the UI instead of replaying full source excerpts on every model/tool round trip.
 
 The controlled `test:vyce:cache` experiment sent repeated stable ~9k-token prefixes and observed **0 cached input tokens** from the current Vyce Chat Completions route. Trebell therefore records provider cache/state capabilities explicitly and does not assume that an OpenAI-compatible endpoint also implements prompt caching or stateful Responses continuation.
@@ -553,6 +559,14 @@ For broader real-model regression work, `npm run bench:vyce:native` exercises di
 - 92 KB noisy-output repair: **7 model turns / 37,526 input tokens**, with the full command output virtualized outside hot context while retaining failure evidence in the preview.
 
 Across those three live tasks, Trebell used **16 model turns / 67,023 input tokens** total. Vyce reported **0 cached input tokens**, so long/noisy tool loops remain a measured optimization target rather than being hidden behind assumed prompt caching.
+
+The post-split rerun also passed all three scenarios with independent verification:
+
+- multi-file refactor: **5 model turns / 11,686 input tokens** (about **28.5% lower input** than the v1.3.3 run);
+- failure-driven repair: **5 model turns / 12,204 input tokens** (about **7.2% lower input**, with one additional model turn);
+- 92 KB noisy-output repair: **8 model turns / 34,518 input tokens** (about **8.0% lower input**, with one additional model turn), while the 92,130-byte command output remained virtualized outside hot context.
+
+Across the post-split benchmark Trebell used **18 model turns / 58,408 input tokens / 2,612 output tokens**. That is about **12.9% less total input** than the v1.3.3 three-scenario baseline despite two additional model turns. All scenarios kept stable schemas within a user turn and again reported **0 cached input tokens**, so the measured gain comes from context/tool-loop efficiency rather than provider prompt-cache credits.
 
 ---
 

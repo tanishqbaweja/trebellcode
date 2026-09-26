@@ -26,7 +26,7 @@ function normalizeToolCall(call={}){
   return {
     id:String(call.id||call.call_id||""),
     namespace:namespace?String(namespace):null,
-    name:String(call.name||split.name||"tool"),
+    name:String(split.name||call.name||"tool"),
     arguments:jsonArguments(source.arguments??call.arguments??{}),
   };
 }

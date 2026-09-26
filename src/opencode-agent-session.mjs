@@ -5,6 +5,7 @@ import { createOpencodeClient } from "@opencode-ai/sdk";
 import { createOpencodeClient as createOpencodeV2Client } from "@opencode-ai/sdk/v2";
 import spawn from "cross-spawn";
 import { normalizePermissionKind, permissionDisposition } from "./permission-policy.mjs";
+import { runtimeInstructions } from "./runtime-instructions.mjs";
 
 const MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".pdf":"application/pdf",".mp3":"audio/mpeg",".wav":"audio/wav",".m4a":"audio/mp4",".md":"text/markdown",".json":"application/json",".txt":"text/plain"};
 
@@ -147,7 +148,7 @@ export class OpenCodeAgentSession{
       return {type:"text",text:JSON.stringify(part)};
     });
     const selected=toProviderModel(this.model,this.modelMap);
-    const result=unwrap(await this.client.session.prompt({path:{id:this.sessionId},query:{directory:this.cwd},body:{...(messageId?{messageID:messageId}:{}),...(selected?{model:selected}:{}),...(agent?{agent}:{}),parts:bodyParts}}),"session prompt");
+    const result=unwrap(await this.client.session.prompt({path:{id:this.sessionId},query:{directory:this.cwd},body:{...(messageId?{messageID:messageId}:{}),...(selected?{model:selected}:{}),...(agent?{agent}:{}),system:runtimeInstructions({harness:"OpenCode",model:this.model}),parts:bodyParts}}),"session prompt");
     const info=result?.info||{};
     if(info.error)throw new Error(info.error?.data?.message||info.error?.name||"OpenCode model request failed");
     if(info.id)this.messageRoles.set(info.id,"assistant");

@@ -23,7 +23,7 @@ const viteConfig=fileURLToPath(new URL("./vite.config.mjs",import.meta.url));
 if(process.platform==="win32"&&process.env.COMSPEC) process.env.COMSPEC=process.env.COMSPEC.trim();
 if(!hostedBaseUrl&&!workerProcess){
   execFileSync(process.execPath,[viteBin,"build","--config",viteConfig],{cwd:repoRoot,env:process.env,stdio:"inherit",windowsHide:true});
-  rmSync(localTestHome,{recursive:true,force:true});
+  rmSync(localTestHome,{recursive:true,force:true,maxRetries:50,retryDelay:100});
   mkdirSync(localTestHome,{recursive:true});
   cpSync(fileURLToPath(new URL("./dist/",import.meta.url)),localTestUiDist,{recursive:true});
   process.env.TREBELL_E2E_HOME=localTestHome;

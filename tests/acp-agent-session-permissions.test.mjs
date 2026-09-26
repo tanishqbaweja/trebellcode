@@ -30,6 +30,17 @@ test("ACP full, auto, supervised and read-only modes preserve their approval con
   assert.equal(acpPermissionChoice(options,"read-only","read"),"reject");
 });
 
+test("ACP harness prompts append bounded Trebell runtime context without replacing the user message",async()=>{
+  const calls=[],session=new AcpAgentSession({runtime:"cursor",command:"fixture",cwd:process.cwd()});
+  session.sessionId="session-1";session.model="cursor-default";
+  session.client={prompt:async(sessionId,content,options)=>{calls.push({sessionId,content,options});return {stopReason:"end_turn"}}};
+  await session.prompt([{type:"text",text:"Inspect the repo"}],{messageId:"message-1"});
+  assert.equal(calls[0].content[0].text,"Inspect the repo");
+  assert.match(calls[0].content[1].text,/Trebell Code/);
+  assert.match(calls[0].content[1].text,/Cursor harness/);
+  assert.match(calls[0].content[1].text,/cursor-default/);
+});
+
 test("ACP edits mode never fabricates approval when the provider exposes no allow option",()=>{
   const rejectOnly=[{kind:"reject_once",optionId:"reject",name:"Reject"}];
   assert.equal(acpPermissionChoice(rejectOnly,"edits","edit"),null);

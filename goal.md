@@ -306,6 +306,15 @@ Trebell Native should be a first-class runtime in which Trebell owns:
 
 It must reuse the same platform services external runtimes use.
 
+Trebell Native is also the **direct-API harness**. Its model transport may be:
+
+- an official model API such as OpenAI, Anthropic or Google Gemini,
+- a third-party provider such as AgentRouter, VyceAi, JustWorker or HCNSec,
+- or another compatible transport added later.
+
+Changing the Native inference provider must not change which harness owns the
+thread: Trebell Native still owns the agent loop, tools and conversation.
+
 Conceptually:
 
 ```text
@@ -725,6 +734,21 @@ model provider transport
 
 A harness can be Trebell Native while the provider transport deliberately mimics another official client when an upstream requires that protocol identity.
 
+External coding harnesses are different. Selecting Codex, Claude Code,
+OpenCode, Cursor, Grok or Antigravity means Trebell should actually run that
+harness and respect its native session/configuration/instruction mechanisms.
+Do not silently turn an external-harness selection into a Trebell Native API
+session merely because both can reach a similar model.
+
+Trebell may append a **small, capability-accurate application context** to an
+external harness so the model knows it is operating inside Trebell and can use
+Trebell-owned integrations that are actually attached. This must use the
+harness's native extension point (for example Codex additional context, a
+Claude Code preset append, OpenCode's system field, or a bounded ACP prompt
+block). It must not replace the harness's own base prompt, repository
+instructions, settings discovery, tools, or session semantics with a second
+Trebell agent prompt.
+
 ### 9.1 Provider transport profiles
 
 A provider profile may define:
@@ -749,6 +773,9 @@ The platform should be able to normalize commonly encountered APIs such as:
 - OpenAI Responses,
 - OpenAI-compatible Chat Completions,
 - Anthropic Messages,
+- the official OpenAI API,
+- the official Anthropic API,
+- the official Google Gemini API,
 - provider-specific derivatives,
 - and future protocols as needed.
 
@@ -1841,7 +1868,21 @@ Settings should be structured and searchable, not a giant unaligned scroll dump.
 
 Conversation/history should not disappear merely because the user changed inference provider.
 
-Thread identity belongs to the task/session, with provider/runtime metadata attached to turns as needed.
+Within Trebell Native, thread identity belongs to the task/session, with the
+inference provider/model recorded as metadata rather than splitting history by
+API provider.
+
+External-harness threads are instead owned by the harness/session that created
+them. A Codex thread cannot be resumed through Claude Code, and a Claude Code
+thread cannot be resumed through OpenCode. If the user opens a saved thread
+owned by a different harness than the one currently selected, Trebell should:
+
+1. identify the thread's owning runtime and compatible runtime instance;
+2. switch to that harness automatically when it is available;
+3. then resume the thread through the owning harness;
+4. preserve the user's catalog and project context throughout the handoff;
+5. surface an honest setup/unavailable error instead of attempting a
+   cross-harness resume.
 
 ---
 

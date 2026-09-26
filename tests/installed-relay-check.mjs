@@ -41,7 +41,7 @@ try{
     capabilities:{experimentalApi:true},
   });
   ws.send(JSON.stringify({method:"initialized",params:{}}));
-  const threads=await rpc(ws,2,"thread/list",{limit:3,modelProviders:["freebuff"],sortKey:"updated_at",sortDirection:"desc"});
+  const threads=await rpc(ws,2,"thread/list",{limit:3,sortKey:"updated_at",sortDirection:"desc"});
   assert.ok(Array.isArray(threads.data));
 
   const result=await rpc(ws,3,"command/exec",{

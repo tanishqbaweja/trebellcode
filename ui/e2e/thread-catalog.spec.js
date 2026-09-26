@@ -91,5 +91,13 @@ test("saved threads stay visible across runtimes and foreign rows hand off befor
 
     await page.setViewportSize({width:1280,height:800});
     await page.screenshot({path:auditDir+"thread-catalog-cross-runtime-dark-1280x800.png",fullPage:true});
+
+    await codexRow.locator(".thread-main").click();
+    await expect.poll(()=>runtimeSwitches).toBe(2);await expect.poll(()=>runtime).toBe("codex");
+    await expect(codexRow).toHaveClass(/active/);
+    await expect(page.locator(".sidebar-provider strong")).toContainText("Codex");
+    expect(harness.requests.some(entry=>entry.runtime==="codex"&&entry.message.method==="thread/resume"&&entry.message.params?.threadId===codex.id)).toBe(true);
+    await expect(page.getByTestId("app-action-error")).toHaveCount(0);
+    await page.screenshot({path:auditDir+"thread-catalog-auto-switch-codex-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });

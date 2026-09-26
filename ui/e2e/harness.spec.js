@@ -16,7 +16,7 @@ async function selectProvider(page,value){
   await expect(selector).toHaveValue(value);
 }
 
-test("Trebell Code renders the harness and scopes models to the selected provider", async ({ page,request }) => {
+test("Trebell Code renders the harness and scopes Trebell Native models to the selected provider", async ({ page,request }) => {
   test.setTimeout(90_000);
   const publishedThemes=join(e2eHome(),"themes");
   await mkdir(publishedThemes,{recursive:true});
@@ -43,7 +43,7 @@ test("Trebell Code renders the harness and scopes models to the selected provide
       browser:{navigate:async()=>({ok:true}),show:async()=>({ok:true}),snapshot:async()=>snapshot,screenshot:async()=>({dataUrl:"data:image/png;base64,iVBORw0KGgo="}),importCookies:async()=>({ok:true,imported:2,failed:0}),importSources:async()=>({platform:"win32",sources:[{id:"firefox",name:"Firefox",installed:true,running:false,profiles:[{id:"C:/Profiles/Test",name:"Test profile"}]},{id:"helium",name:"Helium",installed:true,running:false,profiles:[{id:"C:/Helium/Default",name:"Default"}]}]}),importProfile:async(sourceId,profileId)=>sourceId==="helium"?({ok:true,sourceId,profileId,profileName:"Default",imported:5,failed:0,skipped:1}):({ok:true,sourceId,profileId,profileName:"Test profile",imported:7,failed:0}),close:async()=>({ok:true})}
     }});
   });
-  await request.post("/api/settings",{data:{onboardingComplete:true}});
+  await request.post("/api/settings",{data:{onboardingComplete:true,agentRuntime:"native",agentRuntimeInstanceId:"native-default"}});
   const boot=await (await request.get("/api/bootstrap")).json();
   await request.post("/api/projects",{data:{path:boot.cwd,name:"E2E Project",worktreeSubmodules:"top-level",icon:{kind:"monogram",value:"E2",color:"#4f8cff"}}});
   await request.post("/api/environments",{data:{id:"ssh-palette",name:"E2E SSH",type:"ssh",host:"example.invalid",cwd:"/srv/app"}});

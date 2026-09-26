@@ -108,7 +108,7 @@ export async function startProviderBridge({
           return sendJson(res, 400, { error: { message: "Freebuff uses the dedicated freebuff2api bridge." } });
         }
         const body = await readJson(req);
-        const response = selectedProvider === "agentrouter"
+        const response = providerManager.get(selectedProvider).wireApi === "responses"
           ? await providerManager.forwardResponses(selectedProvider, body)
           : await adaptResponsesBody(
               body,

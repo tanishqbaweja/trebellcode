@@ -16,31 +16,14 @@ test("remote harness PATH bootstrap covers Linuxbrew and common Node version man
   assert.match(script,/export PATH/);
 });
 
-test("remote Codex app-server receives Trebell provider overrides before the subcommand",()=>{
+test("remote Codex app-server always preserves Codex-native inference",()=>{
   const args=remoteCodexArgs({
     provider:"vyceai",
     baseUrl:"http://172.20.0.1:32123/v1",
     listen:"ws://0.0.0.0:23456",
   });
-  const appIndex=args.indexOf("app-server");
-  assert.ok(appIndex>0);
-  assert.equal(args[appIndex+1],"--listen");
-  assert.equal(args[appIndex+2],"ws://0.0.0.0:23456");
-  const joined=args.slice(0,appIndex).join("\n");
-  assert.match(joined,/model_provider="vyceai"/);
-  assert.match(joined,/model_providers\.vyceai\.base_url="http:\/\/172\.20\.0\.1:32123\/v1"/);
-  assert.match(joined,/wire_api="responses"/);
-  assert.match(joined,/requires_openai_auth=false/);
-});
-
-test("remote Freebuff session can point at a tunneled local bridge",()=>{
-  const args=remoteCodexArgs({
-    provider:"freebuff",
-    baseUrl:"http://127.0.0.1:23335/v1",
-    listen:"ws://127.0.0.1:23456",
-  });
-  assert.ok(args.includes('model_provider="freebuff"'));
-  assert.ok(args.includes('model_providers.freebuff.base_url="http://127.0.0.1:23335/v1"'));
+  assert.deepEqual(args,["app-server","--listen","ws://0.0.0.0:23456"]);
+  assert.doesNotMatch(args.join(" "),/model_provider|model_providers|base_url/);
 });
 
 test("remote Codex profiles honor custom binaries, homes, overlays and environment",()=>{
@@ -63,11 +46,11 @@ test("remote Codex profiles honor custom binaries, homes, overlays and environme
   assert.match(overlay.prelude,/\.codex-work/);
 });
 
-test("SSH remote Codex servers derive distinct app and provider tunnel ports",()=>{
+test("SSH remote Codex servers derive deterministic app tunnel ports",()=>{
   const first=sshRemotePorts(23456),second=sshRemotePorts(23457);
-  assert.notEqual(first.appPort,first.providerPort);
   assert.notDeepEqual(first,second);
-  for(const port of [first.appPort,first.providerPort,second.appPort,second.providerPort])assert.ok(port>1024&&port<65536);
+  for(const port of [first.appPort,second.appPort])assert.ok(port>1024&&port<65536);
+  assert.equal(Object.prototype.hasOwnProperty.call(first,"providerPort"),false);
 });
 
 test("remote app-server logs redact runtime credentials before entering Trebell diagnostics",async()=>{
@@ -78,7 +61,7 @@ test("remote app-server logs redact runtime credentials before entering Trebell 
     execute:async()=>({exitCode:0,stdout:"HOST=127.0.0.1\nGUEST=127.0.0.1\n",stderr:""}),
     spawnSession:()=>child,
   };
-  const remote=await startRemoteAppServer({environments,environmentId:profile.id,appPort:33456,provider:"freebuff",localProviderPort:9,runtimeInstance:{environment:{CUSTOM_RUNTIME_TOKEN:credential}}});
+  const remote=await startRemoteAppServer({environments,environmentId:profile.id,appPort:33456,runtimeInstance:{environment:{CUSTOM_RUNTIME_TOKEN:credential}}});
   try{
     child.stderr.write(`runtime failed with ${credential}\n`);child.stdout.write("safe output\n");
     await new Promise(resolve=>setImmediate(resolve));
@@ -96,7 +79,7 @@ test("remote Codex app-server clears the remote login environment before launch"
     spawnSession:(_id,options)=>{command=options.command;return child},
   };
   const remote=await startRemoteAppServer({
-    environments,environmentId:profile.id,appPort:33457,provider:"freebuff",localProviderPort:9,
+    environments,environmentId:profile.id,appPort:33457,
     runtimeInstance:{homePath:"~/.codex-safe",environment:{CUSTOM_MODE:"safe"}},
     runtimeEnvironmentNames:["PATH","HOME","OPENAI_API_KEY","TEAM_PROXY"],
   });
@@ -113,11 +96,27 @@ test("SSH app-server transport does not inherit unrelated host secrets",async()=
   const profile={id:"ssh-safe",name:"SSH safe",type:"ssh",cwd:"/srv/app",host:"example.test",user:"dev",port:22};
   const environments={get:id=>id===profile.id?profile:null};
   const remote=await startRemoteAppServer({
-    environments,environmentId:profile.id,appPort:33458,provider:"freebuff",localProviderPort:9,
+    environments,environmentId:profile.id,appPort:33458,
     hostEnvironment:{PATH:"/usr/bin",HOME:"/home/local",SSH_AUTH_SOCK:"/tmp/agent.sock",TREBELL_PRIVATE_SECRET:"hidden"},
     spawnProcess:(command,args,options)=>{launch={command,args,options};return child},
   });
   assert.ok(remote);assert.equal(launch.command,process.platform==="win32"?"ssh.exe":"ssh");
   assert.equal(launch.options.env.PATH,"/usr/bin");assert.equal(launch.options.env.HOME,"/home/local");assert.equal(launch.options.env.SSH_AUTH_SOCK,"/tmp/agent.sock");
   assert.equal(launch.options.env.TREBELL_PRIVATE_SECRET,undefined);
+});
+
+test("SSH native Codex transport omits Trebell provider reverse tunnels and overrides",async()=>{
+  const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();let launch=null;
+  const profile={id:"ssh-native",name:"SSH native",type:"ssh",cwd:"/srv/app",host:"example.test",user:"dev",port:22};
+  const environments={get:id=>id===profile.id?profile:null};
+  const remote=await startRemoteAppServer({
+    environments,environmentId:profile.id,appPort:33459,
+    hostEnvironment:{PATH:"/usr/bin",HOME:"/home/local",SSH_AUTH_SOCK:"/tmp/agent.sock"},
+    spawnProcess:(command,args,options)=>{launch={command,args,options};return child},
+  });
+  assert.ok(remote);
+  assert.equal(launch.args.includes("-R"),false,"native Codex must not tunnel Trebell's provider bridge");
+  const remoteCommand=String(launch.args.at(-1)||"");
+  assert.match(remoteCommand,/app-server/);
+  assert.doesNotMatch(remoteCommand,/model_provider|model_providers\./);
 });

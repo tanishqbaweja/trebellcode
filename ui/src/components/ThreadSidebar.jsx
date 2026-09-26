@@ -136,7 +136,7 @@ const ThreadSidebar=memo(function ThreadSidebar({
   const groups=useMemo(()=>groupSidebarThreads(threads,threadMeta),[threads,threadMeta]);
   const bulk=selectedIds.size>0;
   const managedInference=Boolean(runtimeCapabilities.managedInference);
-  const providerLabel={freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider;
+  const providerLabel={freebuff:"Freebuff",openai:"OpenAI API",anthropic:"Anthropic API",gemini:"Gemini API",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider;
   const runtimeLabel={native:"Trebell Native",codex:"Codex",claude:"Claude Code",cursor:"Cursor",grok:"Grok Build",opencode:"OpenCode",antigravity:"Antigravity"}[agentRuntime]||agentRuntime;
   const toggle=useCallback(id=>{const next=new Set(selectedIds);next.has(id)?next.delete(id):next.add(id);setSelectedIds(next)},[selectedIds,setSelectedIds]);
   const firstGroupName=THREAD_GROUP_NAMES.find(name=>groups[name]?.length)||null;

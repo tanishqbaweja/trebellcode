@@ -17,7 +17,7 @@ import {
 } from "./workspace.mjs";
 import { spawn } from "node:child_process";
 import { codexBin, codexHome, packageRoot, trebellHome } from "./paths.mjs";
-import { DEFAULT_PORT, codexProviderOverrides, ensureCodexConfig } from "./config.mjs";
+import { DEFAULT_PORT } from "./config.mjs";
 import { health, isLoggedIn, listModels, listModelMetadata, logout, runLogin, startBridge } from "./freebuff.mjs";
 import { getFreebuffOverview } from "./freebuff-product.mjs";
 import { TrebellStateStore } from "./trebell-state.mjs";
@@ -30,7 +30,6 @@ import { ProviderManager, normalizeProviderId } from "./provider-manager.mjs";
 import { modelContextWindowFromMetadata, modelContextWindowKey } from "./model-context-window.mjs";
 import { withNormalizedModelCapabilities } from "./model-capabilities.mjs";
 import { normalizeChatTurnResponse, providerTurnToChat } from "./provider-turn.mjs";
-import { startProviderBridge } from "./provider-bridge.mjs";
 import { AgentRuntimeManager, normalizeAgentRuntime } from "./agent-runtime-manager.mjs";
 import { AcpClient } from "./acp-client.mjs";
 import { configureAntigravityAuth } from "./antigravity-runtime-installer.mjs";
@@ -69,6 +68,7 @@ import { resolveCodexApprovalByPolicy } from "./codex-policy-adapter.mjs";
 import { resolveRecipeExecution } from "./recipes.mjs";
 import { runProjectHooks, verificationHookSteps } from "./project-hooks.mjs";
 import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
+import { runtimeInstructions } from "./runtime-instructions.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
   .then(text=>String(JSON.parse(text).version||"0.0.0"))
@@ -241,7 +241,7 @@ export function codexAppServerEnvironment({env=process.env,runtimeInstance=null,
   };
 }
 
-async function startAppServer({appPort,env=process.env,mock=false,provider="freebuff",providerPort=null,environments=null,environmentId=null,runtimeInstance=null}){
+async function startAppServer({appPort,env=process.env,mock=false,environments=null,environmentId=null,runtimeInstance=null,runtimeEnvironmentNames=null}){
   if(mock) return { child:null, logs:[], targetUrl:null, readyUrl:null, environment:null, appPort, runtimeInstanceId:runtimeInstance?.id||"codex-default" };
   if(environmentId&&environments){
     const profile=environments.get(environmentId);
@@ -251,10 +251,8 @@ async function startAppServer({appPort,env=process.env,mock=false,provider="free
           environments,
           environmentId,
           appPort,
-          provider,
-          localProviderPort:providerPort,
           runtimeInstance,
-          runtimeEnvironmentNames:agentRuntimes.childEnvironmentKeys(instance),
+          runtimeEnvironmentNames,
           hostEnvironment:env,
           debug:env.TREBELL_GUI_DEBUG==="1",
         });
@@ -274,14 +272,12 @@ async function startAppServer({appPort,env=process.env,mock=false,provider="free
       }
     }
   }
-  const inferencePort=Number.isInteger(providerPort)?providerPort:DEFAULT_PORT;
-  ensureCodexConfig({port:inferencePort,env,provider});
   const command=runtimeInstance?.binaryPath?.trim()||codexBin(env);
-  const homeLayout=await prepareCodexHome({homePath:runtimeInstance?.homePath?.trim()||codexHome(env),shadowHomePath:runtimeInstance?.shadowHomePath?.trim()||null,defaultHome:codexHome(env)});
-  const runtimeHome=homeLayout.effectiveHomePath||homeLayout.sharedHomePath;
-  await mkdir(runtimeHome,{recursive:true});
+  const homeLayout=await prepareCodexHome({homePath:runtimeInstance?.homePath?.trim()||null,shadowHomePath:runtimeInstance?.shadowHomePath?.trim()||null,defaultHome:String(env.CODEX_HOME||"").trim()||join(homedir(),".codex")});
+  const runtimeHome=homeLayout.effectiveHomePath||null;
+  if(runtimeHome)await mkdir(runtimeHome,{recursive:true});
   const runtimeEnv=codexAppServerEnvironment({env,runtimeInstance,runtimeHome});
-  const args=[...codexProviderOverrides({port:inferencePort,provider}),"app-server","--listen",`ws://127.0.0.1:${appPort}`];
+  const args=["app-server","--listen",`ws://127.0.0.1:${appPort}`];
   const logs=[];
   const pushLog=(chunk,stream)=>{
     const line=boundDiagnosticText(redactSecretText(chunk,{environment:runtimeEnv}));
@@ -539,18 +535,12 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     return nativeModelContextWindows.get(key)||null;
   }
   const safeLogText=value=>boundDiagnosticText(redactSecretText(value,{environment:env}));
-  const providerBridgeLogs=[];
-  const providerBridge=mock?null:await startProviderBridge({
-    port:0,
-    providerManager:providers,
-    provider:selectedProvider,
-    log:(message)=>{
-      providerBridgeLogs.push({at:Date.now(),stream:"provider-bridge",text:safeLogText(message)});
-      if(providerBridgeLogs.length>100) providerBridgeLogs.splice(0,providerBridgeLogs.length-100);
-    },
-  });
-  const selectedInferencePort=()=>selectedProvider==="freebuff"?DEFAULT_PORT:(providerBridge?.port??null);
-  ensureCodexConfig({port:selectedInferencePort(),env,provider:selectedProvider});
+  function codexRuntimeProvider(threadId=null){
+    const meta=threadId?state.threadMeta(threadId):null;
+    if(meta?.runtimeInstanceId)return meta.runtimeInstanceId;
+    if(agentRuntimes.activeRuntime()==="codex")return agentRuntimes.activeInstance().id;
+    return "codex-default";
+  }
   let bridge=null;
   let loginPromise=null;
   const checkpoints=new CheckpointService({state,env,environments});
@@ -974,7 +964,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     const starting=(async()=>{
       if(current){await stopAppServer(current);codexAppServers.delete(key)}
       const targetPort=preferredPort||await freeTcpPort();
-      const started=await startAppServer({appPort:targetPort,env,mock,provider:selectedProvider,providerPort:selectedInferencePort(),environments,environmentId,runtimeInstance:instance});
+      const started=await startAppServer({appPort:targetPort,env,mock,environments,environmentId,runtimeInstance:instance,runtimeEnvironmentNames:agentRuntimes.childEnvironmentKeys(instance)});
       started.poolKey=key;started.ownerKey=ownerKey;started.runtimeInstanceId=instance.id;started.environmentId=environmentId||null;started.continuationKey=agentRuntimes.continuationKey(instance);
       codexAppServers.set(key,started);
       if(!mock){const ready=await waitForAppServer(started,targetPort,15000).catch(()=>false);if(!ready&&!started.error)started.error=`Codex app-server profile '${instance.displayName||instance.id}' did not become ready`}
@@ -1075,7 +1065,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     const checkpoint=await createCodexVerificationCheckpoint(threadId,"Verification repair before "+String(record.id||"").slice(0,80));
     const started=await requestUpstream("turn/start",turnParams,{routeMessage:{method:"thread/read",params:{threadId}},timeoutMs:120_000});
     if(started?.turn?.id){linkCodexVerificationCheckpoint(checkpoint,started.turn.id);state.updateThreadMeta(threadId,{verificationRepairChain:verificationRepairChainState(repairAttempt,started.turn.id),...(params.auto?{verificationAutomationChain:verificationAutomationChainState(automationAttempt,started.turn.id)}:{})})}
-    eventJournal.record({runtime:"codex",provider:selectedProvider,environmentId:meta?.environmentId??null,threadId,turnId:started?.turn?.id||null,category:"verification",name:"verification.repair_started",status:"running",data:{recordId:record.id,nextAction:nextAction.action,failedSteps:nextAction.failedSteps||[],automatic:Boolean(params.auto),attempt:repairAttempt.attempts}});
+    eventJournal.record({runtime:"codex",provider:codexRuntimeProvider(threadId),environmentId:meta?.environmentId??null,threadId,turnId:started?.turn?.id||null,category:"verification",name:"verification.repair_started",status:"running",data:{recordId:record.id,nextAction:nextAction.action,failedSteps:nextAction.failedSteps||[],automatic:Boolean(params.auto),attempt:repairAttempt.attempts}});
     return {record,nextAction,turn:started?.turn||null};
   }
   async function continueCodexVerification(threadId,params,requestUpstream){
@@ -1090,13 +1080,13 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     const turnParams={threadId,cwd:meta?.cwd||undefined,approvalPolicy:params.approvalPolicy,sandboxPolicy:params.sandboxPolicy,input:[{type:"text",text:verificationContinuationPrompt(),textElements:[]}],additionalContext,...(model?{model}:{})};for(const key of Object.keys(turnParams))if(turnParams[key]===undefined)delete turnParams[key];
     const started=await requestUpstream("turn/start",turnParams,{routeMessage:{method:"thread/read",params:{threadId}},timeoutMs:120_000});
     if(started?.turn?.id)state.updateThreadMeta(threadId,{verificationContinuationChain:verificationContinuationChainState(continuationAttempt,started.turn.id),...(params.auto?{verificationAutomationChain:verificationAutomationChainState(automationAttempt,started.turn.id)}:{})});
-    eventJournal.record({runtime:"codex",provider:selectedProvider,environmentId:meta?.environmentId??null,threadId,turnId:started?.turn?.id||null,category:"verification",name:"verification.continuation_started",status:"running",data:{recordId:record.id,nextStepId:nextAction.nextStep?.id||null,automatic:Boolean(params.auto),attempt:continuationAttempt.attempts}});
+    eventJournal.record({runtime:"codex",provider:codexRuntimeProvider(threadId),environmentId:meta?.environmentId??null,threadId,turnId:started?.turn?.id||null,category:"verification",name:"verification.continuation_started",status:"running",data:{recordId:record.id,nextStepId:nextAction.nextStep?.id||null,automatic:Boolean(params.auto),attempt:continuationAttempt.attempts}});
     return {record,nextAction,turn:started?.turn||null};
   }
   function assertCodexGoalBudget(threadId){
     const goal=durableCodexGoal(threadId),gate=goalBudgetGate(goal,{includeChildAgents:false});if(gate.allowed)return goal;
     const meta=state.threadMeta(threadId);
-    eventJournal.record({runtime:"codex",provider:selectedProvider,environmentId:meta?.environmentId??state.settings().activeEnvironmentId??null,threadId,category:"budget",name:"goal.budget_blocked",status:"blocked",data:{goalStatus:goal?.status||null,tokenBudget:goal?.tokenBudget??null,tokensUsed:goal?.tokensUsed??0,timeBudgetMinutes:goal?.timeBudgetMinutes??null,timeUsedSeconds:goal?.timeUsedSeconds??0,turnBudget:goal?.turnBudget??null,turnsUsed:goal?.turnsUsed??0,toolCallBudget:goal?.toolCallBudget??null,toolCallsUsed:goal?.toolCallsUsed??0,toolCallTelemetryComplete:goal?.toolCallTelemetryComplete??true,childAgentBudget:goal?.childAgentBudget??null,childAgentsUsed:goal?.childAgentsUsed??null,childAgentTelemetryComplete:goal?.childAgentTelemetryComplete??false,costBudgetUsd:goal?.costBudgetUsd??null,costUsedUsd:goal?.costUsedUsd??null,costTelemetryComplete:goal?.costTelemetryComplete??true,tokenExhausted:gate.tokenExhausted,timeExhausted:gate.timeExhausted,turnExhausted:gate.turnExhausted,toolCallExhausted:gate.toolCallExhausted,childAgentExhausted:gate.childAgentExhausted,costExhausted:gate.costExhausted}});
+    eventJournal.record({runtime:"codex",provider:codexRuntimeProvider(threadId),environmentId:meta?.environmentId??state.settings().activeEnvironmentId??null,threadId,category:"budget",name:"goal.budget_blocked",status:"blocked",data:{goalStatus:goal?.status||null,tokenBudget:goal?.tokenBudget??null,tokensUsed:goal?.tokensUsed??0,timeBudgetMinutes:goal?.timeBudgetMinutes??null,timeUsedSeconds:goal?.timeUsedSeconds??0,turnBudget:goal?.turnBudget??null,turnsUsed:goal?.turnsUsed??0,toolCallBudget:goal?.toolCallBudget??null,toolCallsUsed:goal?.toolCallsUsed??0,toolCallTelemetryComplete:goal?.toolCallTelemetryComplete??true,childAgentBudget:goal?.childAgentBudget??null,childAgentsUsed:goal?.childAgentsUsed??null,childAgentTelemetryComplete:goal?.childAgentTelemetryComplete??false,costBudgetUsd:goal?.costBudgetUsd??null,costUsedUsd:goal?.costUsedUsd??null,costTelemetryComplete:goal?.costTelemetryComplete??true,tokenExhausted:gate.tokenExhausted,timeExhausted:gate.timeExhausted,turnExhausted:gate.turnExhausted,toolCallExhausted:gate.toolCallExhausted,childAgentExhausted:gate.childAgentExhausted,costExhausted:gate.costExhausted}});
     throw Object.assign(new Error(gate.reason),{code:-32001});
   }
   const pendingDelegations=new Map();
@@ -1172,7 +1162,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       prepareWorkspace:({spec})=>prepareCodexDelegationWorkspace(parentThreadId,spec),
       startThread:async({spec,workspace})=>{
         const model=spec.model||codexThreadModels.get(parentThreadId)||null,policy=delegationPolicies(spec.permissions,workspace.cwd);
-        const startParams={cwd:workspace.cwd,modelProvider:selectedProvider,approvalPolicy:policy.approvalPolicy,sandbox:policy.sandbox,ephemeral:false,threadSource:"trebell-delegate",...(model?{model}:{})};
+        const startParams={cwd:workspace.cwd,approvalPolicy:policy.approvalPolicy,sandbox:policy.sandbox,ephemeral:false,threadSource:"trebell-delegate",...(model?{model}:{})};
         const started=await requestUpstream("thread/start",startParams,{routeMessage:{method:"thread/read",params:{threadId:parentThreadId}},timeoutMs:120_000});
         return started?.thread||null;
       },
@@ -1202,7 +1192,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       },
       onStarted:async result=>{
         const childId=String(result.thread.id),publicThread={...result.thread,parentThreadId,agentRole:"delegate"};
-        eventJournal.record({runtime:"codex",provider:selectedProvider,environmentId:parentMeta?.environmentId??null,threadId:parentThreadId,turnId:result.turn?.id||null,category:"delegation",name:"delegation.started",status:"running",data:{delegationId:result.delegationId,childThreadId:childId,isolation:result.isolation,permissions:result.permission,branch:result.workspace?.branch||null}});
+        eventJournal.record({runtime:"codex",provider:codexRuntimeProvider(parentThreadId),environmentId:parentMeta?.environmentId??null,threadId:parentThreadId,turnId:result.turn?.id||null,category:"delegation",name:"delegation.started",status:"running",data:{delegationId:result.delegationId,childThreadId:childId,isolation:result.isolation,permissions:result.permission,branch:result.workspace?.branch||null}});
         relay.broadcast("thread/delegated",{threadId:parentThreadId,delegationId:result.delegationId,childThreadId:childId,thread:publicThread,turn:result.turn||null,workspace:result.workspace});
         result.thread=publicThread;
       },
@@ -1231,7 +1221,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     const environmentId=Object.prototype.hasOwnProperty.call(meta||{},"environmentId")?meta.environmentId:null,profile=environmentId?environments.get(environmentId):null;
     const io=profile&&profile.type!=="local"?createRemoteContextIo({environments,environmentId,root}):null;
     const handlers=repositoryToolHandlers({contextEngine,root,io,knowledgeService:repositoryKnowledge,environmentId});
-    const traceBase={runtime:"codex",provider:selectedProvider,environmentId,threadId:threadId||null,turnId:params.turnId||null,category:"tool"};
+    const traceBase={runtime:"codex",provider:codexRuntimeProvider(threadId),environmentId,threadId:threadId||null,turnId:params.turnId||null,category:"tool"};
     try{
       const args=parseRepositoryToolArguments(definition,params.arguments||{});
       const result=await invokeRepositoryTool(handlers,definition,args);
@@ -1250,7 +1240,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       provenance:params?._meta?.provenance||params.provenance||"unknown",
     });
     if(!resolved?.policy)return null;
-    const action=resolved.policy.action,base={runtime:"codex",provider:selectedProvider,environmentId:meta?.environmentId??state.settings().activeEnvironmentId??null,threadId,turnId:params.turnId||null,category:"policy"};
+    const action=resolved.policy.action,base={runtime:"codex",provider:codexRuntimeProvider(threadId),environmentId:meta?.environmentId??state.settings().activeEnvironmentId??null,threadId,turnId:params.turnId||null,category:"policy"};
     const data={
       method:message.method,decision:resolved.policy.decision,reason:resolved.policy.reason,profile:resolved.policy.profile,
       action:action.action,kind:action.kind,riskLevel:action.riskLevel,reversibility:action.reversibility,idempotent:action.idempotent,
@@ -1268,7 +1258,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   async function withCodexGoalContext(message){
     if(message?.method!=="turn/start")return message;
     const params=message.params||{},threadId=params.threadId?String(params.threadId):"";if(!threadId)return message;
-    const goalContext=goalAdditionalContext(params.additionalContext,durableCodexGoal(threadId));
+    const runtimeContext={
+      ...(params.additionalContext||{}),
+      "trebell.runtime":{kind:"application",value:runtimeInstructions({harness:"Codex",model:params.model||codexThreadModels.get(threadId)||null})},
+    };
+    const goalContext=goalAdditionalContext(runtimeContext,durableCodexGoal(threadId));
     let additionalContext=continuityAdditionalContext(goalContext,durableCodexContinuity(threadId));
     const meta=state.threadMeta(threadId),projectPath=meta?.cwd||params.cwd||null;
     if(projectPath){
@@ -1310,14 +1304,10 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     return {enabled,bootId,items,blocked};
   }
 
-  async function restartAppServer(providerId=selectedProvider){
-    const next=normalizeProviderId(providerId);
+  async function restartAppServer(){
     await stopCodexAppServers();
-    selectedProvider=next;
-    providerBridge?.setProvider(selectedProvider);
-    ensureCodexConfig({port:selectedInferencePort(),env,provider:selectedProvider});
     appServer=await ensureCodexAppServer(agentRuntimes.activeRuntime()==="codex"?agentRuntimes.activeInstance().id:null,{preferredPort:appPort,ownerKey:"catalog"});
-    return selectedProvider;
+    return appServer;
   }
 
   function importedHistorySourceIds(){
@@ -1366,7 +1356,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
             if(!appServer?.targetUrl||appServer?.environment)throw new Error("Local Codex app-server is not available");
             if(!await waitForAppServer(appServer,appPort,15_000))throw new Error("Local Codex app-server is not ready");
             if(!codexClient){codexClient=new CodexAppServerClient(appServer.targetUrl,{clientVersion:TREBELL_VERSION});await codexClient.connect()}
-            const forked=await codexClient.forkFromRollout({threadId:candidate.providerSessionId,path:candidate.sourcePath,cwd:candidate.cwd,modelProvider:selectedProvider});
+            const forked=await codexClient.forkFromRollout({threadId:candidate.providerSessionId,path:candidate.sourcePath,cwd:candidate.cwd});
             const threadId=String(forked?.thread?.id||"").trim();if(!threadId)throw new Error("Codex did not return the imported thread");
             if(candidate.title)await codexClient.request("thread/name/set",{threadId,name:candidate.title}).catch(()=>{});
             state.updateThreadMeta(threadId,{cwd:candidate.cwd,environmentId:null,historyImport:{source:"codex",sourceId:id,sourceThreadId:candidate.providerSessionId,importedAt:Date.now()}});
@@ -1381,14 +1371,42 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     }finally{codexClient?.close()}
     return results;
   }
+  async function codexNativeModelCatalog(){
+    const instance=agentRuntimes.activeRuntime()==="codex"?agentRuntimes.activeInstance():codexInstance();
+    if(!instance)throw new Error("Codex runtime profile was not found");
+    const server=await ensureCodexAppServer(instance.id,{ownerKey:"catalog",preferredPort:appPort});
+    if(!server?.targetUrl||server.error)throw new Error(server?.error||"Codex app-server is unavailable");
+    if(!mock&&!await waitForAppServer(server,server.appPort||appPort,15_000))throw new Error("Codex app-server is not ready");
+    const client=new CodexAppServerClient(server.targetUrl,{clientVersion:TREBELL_VERSION});
+    try{
+      await client.connect();
+      const account=await client.request("account/read",{}).catch(()=>null);
+      if(account?.requiresOpenaiAuth&&!account?.account)throw new Error("Codex is not authenticated. Run codex login or use Sign in from Agents & models.");
+      const rows=[],seen=new Set();let cursor=null;
+      for(let page=0;page<20;page++){
+        const result=await client.request("model/list",cursor?{cursor}:{});
+        for(const row of result?.data||[]){
+          const id=String(row?.id||row?.model||"").trim();if(!id||row?.hidden||seen.has(id))continue;seen.add(id);rows.push(row);
+        }
+        const next=String(result?.nextCursor||"").trim();if(!next||next===cursor)break;cursor=next;
+      }
+      const models=rows.map(row=>String(row.id||row.model));
+      const metadata=rows.map(row=>({
+        ...row,id:String(row.id||row.model),name:String(row.displayName||row.id||row.model),provider:"codex",agent:"Codex",
+        reasoningEfforts:Array.isArray(row.supportedReasoningEfforts)?row.supportedReasoningEfforts:undefined,
+        defaultReasoningEffort:row.defaultReasoningEffort||null,
+      }));
+      return {models,metadata:{provider:"codex",agentRuntime:"codex",source:"codex-model-list",models:metadata}};
+    }finally{client.close()}
+  }
 
   async function selectedModels(){
     const mergeCustom=catalog=>{
       if(!["native","codex","claude","opencode"].includes(selectedAgentRuntime))return catalog;
-      const custom=(state.settings().customModels||[]).filter(item=>item&&item.id&&item.runtime===selectedAgentRuntime&&(!["native","codex"].includes(selectedAgentRuntime)||item.provider===selectedProvider));
+      const custom=(state.settings().customModels||[]).filter(item=>item&&item.id&&item.runtime===selectedAgentRuntime&&(selectedAgentRuntime!=="native"||item.provider===selectedProvider));
       if(!custom.length)return catalog;
       const baseModels=Array.isArray(catalog.models)?catalog.models:[];const models=[...baseModels];for(const item of custom)if(!models.includes(item.id))models.push(item.id);
-      const metadataModels=[...(catalog.metadata?.models||[])];for(const item of custom){const index=metadataModels.findIndex(model=>model.id===item.id);const meta={id:item.id,name:item.name||item.id,provider:["native","codex"].includes(selectedAgentRuntime)?selectedProvider:selectedAgentRuntime,agent:selectedAgentRuntime,custom:true,effort:item.effort||null,serviceTier:item.serviceTier||null};if(index>=0)metadataModels[index]={...metadataModels[index],...meta};else metadataModels.push(meta)}
+      const metadataModels=[...(catalog.metadata?.models||[])];for(const item of custom){const index=metadataModels.findIndex(model=>model.id===item.id);const meta={id:item.id,name:item.name||item.id,provider:selectedAgentRuntime==="native"?selectedProvider:selectedAgentRuntime,agent:selectedAgentRuntime,custom:true,effort:item.effort||null,serviceTier:item.serviceTier||null};if(index>=0)metadataModels[index]={...metadataModels[index],...meta};else metadataModels.push(meta)}
       return {...catalog,models,metadata:{...(catalog.metadata||{}),models:metadataModels}};
     };
     const finish=catalog=>{
@@ -1397,7 +1415,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       if(selectedAgentRuntime==="native")rememberNativeModelContextWindows(normalized);
       return normalized;
     };
-    if(!["native","codex"].includes(selectedAgentRuntime)){
+    if(selectedAgentRuntime==="codex"){
+      if(mock)return finish({models:["gpt-6-astra","gpt-5.6-sol","gpt-5.6-terra"],metadata:{provider:"codex",agentRuntime:"codex",source:"mock-codex",models:["gpt-6-astra","gpt-5.6-sol","gpt-5.6-terra"].map(id=>({id,name:id,provider:"codex",agent:"Codex"}))}});
+      return finish(await codexNativeModelCatalog());
+    }
+    if(selectedAgentRuntime!=="native"){
       const result=await agentRuntimes.models(agentRuntimes.activeInstance());
       return finish({models:result.models||[],metadata:{provider:selectedAgentRuntime,agentRuntime:selectedAgentRuntime,source:result.source,models:result.metadata||[]},error:result.error||null});
     }
@@ -1562,8 +1584,10 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
             delete patch.agentRuntime;delete patch.agentRuntimeInstanceId;
           }
           const next=state.updateSettings(patch);
-          if("modelProvider" in patch && patch.modelProvider!==previous) await restartAppServer(patch.modelProvider);
-          if(runtimeSelection?.runtime==="codex"&&previous===selectedProvider&&(previousAgentRuntime!=="codex"||previousAgentInstanceId!==runtimeSelection.instance.id))await restartAppServer(selectedProvider);
+          if("modelProvider" in patch && patch.modelProvider!==previous){
+            selectedProvider=patch.modelProvider;
+          }
+          if(runtimeSelection?.runtime==="codex"&&(previousAgentRuntime!=="codex"||previousAgentInstanceId!==runtimeSelection.instance.id))await restartAppServer();
           return json(res,200,next);
         }catch(error){return json(res,400,{error:error.message});}
       }
@@ -1590,12 +1614,12 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
             const previousInstanceId=agentRuntimes.activeInstance().id;
             const selected=await agentRuntimes.setActive({runtime:body.runtime,instanceId:body.instanceId||null});
             selectedAgentRuntime=selected.runtime;
-            if(selected.runtime==="codex"&&(previousRuntime!=="codex"||previousInstanceId!==selected.instance.id))await restartAppServer(selectedProvider);
+            if(selected.runtime==="codex"&&(previousRuntime!=="codex"||previousInstanceId!==selected.instance.id))await restartAppServer();
             return json(res,200,{...await agentRuntimes.snapshot(),selected});
           }
           if(body.action==="upsert"){
             const instance=agentRuntimes.upsertInstance(body.instance||{});
-            if(instance.kind==="codex"&&agentRuntimes.activeInstance().id===instance.id)await restartAppServer(selectedProvider);
+            if(instance.kind==="codex"&&agentRuntimes.activeInstance().id===instance.id)await restartAppServer();
             return json(res,200,{instance,...await agentRuntimes.snapshot()});
           }
           if(body.action==="probe"){
@@ -1613,7 +1637,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const id=url.searchParams.get("id");if(!id)return json(res,400,{error:"id is required"});
         try{
           const removed=agentRuntimes.removeInstance(id);
-          if(removed.resetTo&&removed.kind==="codex")await restartAppServer(selectedProvider);
+          if(removed.resetTo&&removed.kind==="codex")await restartAppServer();
           return json(res,200,{...removed,...await agentRuntimes.snapshot()});
         }catch(error){return json(res,400,{error:error.message});}
       }
@@ -1698,7 +1722,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           if("apiKey" in body && provider!=="freebuff"){
             previousKey=providers.key(provider);
             providers.setKey(provider,body.apiKey);
-            if(String(body.apiKey||"").trim() && (provider==="agentrouter"||provider==="vyceai")){
+            if(String(body.apiKey||"").trim() && ["openai","anthropic","gemini","agentrouter","vyceai"].includes(provider)){
               try{
                 await providers.models(provider);
               }catch(error){
@@ -1708,8 +1732,10 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
             }
           }
           const changed=provider!==selectedProvider;
-          if(changed) state.updateSettings({modelProvider:provider});
-          if(changed || ("apiKey" in body && provider===selectedProvider)) await restartAppServer(provider);
+          if(changed){
+            state.updateSettings({modelProvider:provider});
+            selectedProvider=provider;
+          }
           const catalog=await selectedModels().catch(error=>({models:[],error:error.message}));
           return json(res,200,{
             selected:selectedProvider,
@@ -1738,7 +1764,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const ok=id?environments.remove(id):false;
         if(wasActive){
           state.updateSettings({activeEnvironmentId:null});
-          await restartAppServer(selectedProvider);
+          await restartAppServer();
         }
         return json(res,200,{ok,activeEnvironmentId:state.settings().activeEnvironmentId||null});
       }
@@ -1752,7 +1778,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         if(!enabled&&activeEnvironmentId===id){
           activeEnvironmentId=null;state.updateSettings({activeEnvironmentId:null});
           await agentRelay?.reset?.();
-          await restartAppServer(selectedProvider);
+          await restartAppServer();
         }
         return json(res,200,{ok:true,profile:updated,activeEnvironmentId,appServerReady:mock||await appServerReady(appServer,appPort)});
       }catch(error){return json(res,400,{error:error.message});}
@@ -1768,21 +1794,19 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         }
         state.updateSettings({activeEnvironmentId:id});
         await agentRelay?.reset?.();
-        await restartAppServer(selectedProvider);
+        await restartAppServer();
         const appReady=mock||await appServerReady(appServer,appPort);
         const activeAgentInstance=agentRuntimes.activeInstance();
-        const activeAgentStatus=selectedAgentRuntime==="codex"
-          ?null
-          :await agentRuntimes.probe(activeAgentInstance,{environmentId:id}).catch(error=>({
-            id:activeAgentInstance?.id||null,
-            kind:selectedAgentRuntime,
-            name:selectedAgentRuntime,
-            available:false,
-            message:error instanceof Error?error.message:String(error),
-          }));
-        const agentRuntimeReady=selectedAgentRuntime==="codex"?appReady:(mock||Boolean(activeAgentStatus?.available));
+        const activeAgentStatus=await agentRuntimes.probe(activeAgentInstance,{environmentId:id}).catch(error=>({
+          id:activeAgentInstance?.id||null,
+          kind:selectedAgentRuntime,
+          name:selectedAgentRuntime,
+          available:false,
+          message:error instanceof Error?error.message:String(error),
+        }));
+        const agentRuntimeReady=mock||(selectedAgentRuntime==="codex"?Boolean(appReady&&activeAgentStatus?.available):Boolean(activeAgentStatus?.available));
         const runtimeError=selectedAgentRuntime==="codex"
-          ?(appServer?.error||null)
+          ?(appServer?.error||(!activeAgentStatus?.available?activeAgentStatus?.message:null)||null)
           :(agentRuntimeReady?null:(activeAgentStatus?.message||"Active agent runtime is unavailable"));
         return json(res,200,{
           activeEnvironmentId:id,
@@ -2337,13 +2361,16 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       const appReady=mock || await appServerReady(appServer,appPort);
       const activeAgentInstance=agentRuntimes.activeInstance();
       const activeAgentStatus=await agentRuntimes.probe(activeAgentInstance).catch(()=>null);
+      const runtimeReady=selectedAgentRuntime==="codex"
+        ?Boolean(appReady&&activeAgentStatus?.available)
+        :Boolean(activeAgentStatus?.available);
       return json(res,200,{
         mock,
         loggedIn:mock || isLoggedIn(env),
         agentRuntime:selectedAgentRuntime,
         agentRuntimeInstanceId:activeAgentInstance?.id||`${selectedAgentRuntime}-default`,
         runtimeCapabilities:agentRuntimes.capabilities(activeAgentInstance),
-        agentRuntimeReady:selectedAgentRuntime==="codex"?appReady:Boolean(activeAgentStatus?.available),
+        agentRuntimeReady:mock||runtimeReady,
         agentRuntimeStatus:activeAgentStatus,
         provider:selectedProvider,
         providerReady:providerReady(),
@@ -2372,7 +2399,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         appServerExitCode:appServer?.child?.exitCode ?? null,
         activeEnvironment:appServer?.environment||null,
         appServerError:appServer?.error||null,
-        logs:[...(providerBridgeLogs||[]),...(appServer?.logs||[])].sort((a,b)=>a.at-b.at).slice(-80),
+        logs:[...(appServer?.logs||[])].sort((a,b)=>a.at-b.at).slice(-80),
       });
     }
     if(url.pathname==="/api/chat/direct" && req.method==="POST"){
@@ -2815,9 +2842,9 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     if(url.pathname==="/api/models"){
       try{
         const catalog=await selectedModels();
-        return json(res,200,{provider:selectedProvider,agentRuntime:selectedAgentRuntime,ready:["native","codex"].includes(selectedAgentRuntime)?providerReady():true,models:catalog.models||[],metadata:catalog.metadata||null,error:catalog.error||null});
+        return json(res,200,{...(selectedAgentRuntime==="native"?{provider:selectedProvider}:{}),agentRuntime:selectedAgentRuntime,ready:selectedAgentRuntime==="native"?providerReady():true,models:catalog.models||[],metadata:catalog.metadata||null,error:catalog.error||null});
       }catch(error){
-        return json(res,503,{provider:selectedProvider,agentRuntime:selectedAgentRuntime,ready:["native","codex"].includes(selectedAgentRuntime)?providerReady():false,models:[],error:error instanceof Error?error.message:String(error)});
+        return json(res,503,{...(selectedAgentRuntime==="native"?{provider:selectedProvider}:{}),agentRuntime:selectedAgentRuntime,ready:false,models:[],error:error instanceof Error?error.message:String(error)});
       }
     }
     if(url.pathname==="/api/login/start" && req.method==="POST"){
@@ -2874,7 +2901,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         state:{projects:state.projects(),settings:state.settings(),threadMeta:state.listThreadMeta()},
         git:await gitInfo(cwd).catch(error=>({error:error.message})),
         terminalSessions:mock?[]:terminals.list(),
-        logs:[...(providerBridgeLogs||[]),...(appServer?.logs||[])].sort((a,b)=>a.at-b.at).slice(-100),
+        logs:[...(appServer?.logs||[])].sort((a,b)=>a.at-b.at).slice(-100),
       });
     }
     if(url.pathname==="/api/stats") return json(res,200,statsSnapshot());
@@ -2999,7 +3026,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       if(message.method==="thread/verification/get")return {handled:true,result:threadId?codexVerificationState(threadId,params.recordId||null):{record:null,nextAction:null}};
       if(message.method==="thread/verification/evidence/record"){
         if(!threadId)throw Object.assign(new Error("threadId is required"),{code:-32602});const turnId=String(params.turnId||"").trim();if(!turnId)throw Object.assign(new Error("turnId is required"),{code:-32602});
-        const evidence=normalizeBrowserVerificationReceipt(params.evidence||{}),meta=state.threadMeta(threadId);eventJournal.record({runtime:"codex",provider:selectedProvider,environmentId:meta?.environmentId??null,threadId,turnId,category:"verification",name:"verification.browser_evidence",status:evidence.success?"completed":"failed",data:evidence});return {handled:true,result:{ok:true}};
+        const evidence=normalizeBrowserVerificationReceipt(params.evidence||{}),meta=state.threadMeta(threadId);eventJournal.record({runtime:"codex",provider:codexRuntimeProvider(threadId),environmentId:meta?.environmentId??null,threadId,turnId,category:"verification",name:"verification.browser_evidence",status:evidence.success?"completed":"failed",data:evidence});return {handled:true,result:{ok:true}};
       }
       if(message.method==="thread/verification/repair"){
         if(!threadId)throw Object.assign(new Error("threadId is required"),{code:-32602});
@@ -3019,7 +3046,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"relay",text:safeLogText(message)}),
     onClientMessage:message=>{
       const traceParams=message?.params||{};const traceThreadId=traceParams.threadId||null;const traceMeta=traceThreadId?state.threadMeta(traceThreadId):null;
-      eventJournal.recordProtocol({runtime:"codex",provider:selectedProvider,environmentId:traceMeta?.environmentId??state.settings().activeEnvironmentId??null,direction:"client",method:message?.method||"",params:traceParams});
+      eventJournal.recordProtocol({runtime:"codex",provider:codexRuntimeProvider(traceThreadId),environmentId:traceMeta?.environmentId??state.settings().activeEnvironmentId??null,direction:"client",method:message?.method||"",params:traceParams});
       if((message?.method==="thread/resume"||message?.method==="turn/start")&&message.params?.threadId&&message.params?.cwd){
         state.updateThreadMeta(message.params.threadId,{cwd:message.params.cwd,runtime:"codex",deletedAt:null});
       }
@@ -3037,7 +3064,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       recordCodexBudgetEvidence(state,message);
       recordCodexRecoveryItemEvidence(state,message);
       const traceThreadId=params.threadId||params.thread?.id||null;const traceMeta=traceThreadId?state.threadMeta(traceThreadId):null;
-      eventJournal.recordProtocol({runtime:"codex",provider:selectedProvider,environmentId:traceMeta?.environmentId??state.settings().activeEnvironmentId??null,direction:"runtime",method:message?.method||route?.requestMethod||"",params});
+      eventJournal.recordProtocol({runtime:"codex",provider:codexRuntimeProvider(traceThreadId),environmentId:traceMeta?.environmentId??state.settings().activeEnvironmentId??null,direction:"runtime",method:message?.method||route?.requestMethod||"",params});
       const startedThread=message?.method==="thread/started"?params.thread:(route?.requestMethod==="thread/start"?message?.result?.thread:null);
       if(startedThread?.id){
         recordCodexChildAgentEvidence(state,startedThread);
@@ -3061,7 +3088,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       if(message?.method==="turn/completed")clearCodexRecovery(params.threadId,"completed");
       if(message?.method==="thread/tokenUsage/updated"&&params.threadId&&params.turnId){
         const meta=state.threadMeta(params.threadId);
-        state.recordUsage({runtime:"codex",provider:selectedProvider,model:codexThreadModels.get(params.threadId)||null,environmentId:meta?.environmentId??state.settings().activeEnvironmentId??null,threadId:params.threadId,turnId:params.turnId,usage:params.tokenUsage?.last||params.tokenUsage?.total||{},cost:params.tokenUsage?.cost||null,at:Date.now()});
+        state.recordUsage({runtime:"codex",provider:codexRuntimeProvider(params.threadId),model:codexThreadModels.get(params.threadId)||null,environmentId:meta?.environmentId??state.settings().activeEnvironmentId??null,threadId:params.threadId,turnId:params.turnId,usage:params.tokenUsage?.last||params.tokenUsage?.total||{},cost:params.tokenUsage?.cost||null,at:Date.now()});
       }
     },
   });
@@ -3142,7 +3169,6 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         terminals?.shutdown(),
         stopCodexAppServers(),
         stopChildProcess(bridge?.child),
-        providerBridge?.close(),
         eventJournal.close(),
       ]);
       await new Promise(resolve=>server.close(resolve));

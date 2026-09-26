@@ -65,6 +65,11 @@ test("external runtimes receive Trebell application context before the visible u
   assert.deepEqual(JSON.parse(JSON.stringify(prompt)),prompt,"Native-only prompt provenance must not change serialized ACP payloads");
 });
 
+test("external runtimes keep their native prompt when Trebell has no bounded context to add",async()=>{
+  const prompt=await contextualAgentPrompt([{type:"text",text:"Fix the refresh bug"}],{});
+  assert.deepEqual(prompt,[{type:"text",text:"Fix the refresh bug"}]);
+});
+
 test("rejected Claude rewind restores the original provider session and removed turns",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-claude-rewind-"));
   const env={...process.env,TREBELL_HOME:home};

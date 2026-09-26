@@ -17,7 +17,7 @@ export class CodexAppServerClient{
     });
     ws.on("message",data=>this.#message(String(data)));
     ws.on("close",()=>this.#failPending(new Error("Codex app-server disconnected")));
-    await this.request("initialize",{clientInfo:{name:"trebell-history-import",title:"Trebell Code",version:this.clientVersion},capabilities:{experimentalApi:true}});
+    await this.request("initialize",{clientInfo:{name:"trebell-code",title:"Trebell Code",version:this.clientVersion},capabilities:{experimentalApi:true}});
     this.notify("initialized",{});
     return this;
   }
@@ -33,13 +33,12 @@ export class CodexAppServerClient{
   notify(method,params={}){
     if(this.ws?.readyState===WebSocket.OPEN)this.ws.send(JSON.stringify({method,params}));
   }
-  async forkFromRollout({threadId,path,cwd=null,modelProvider=null,model=null}={}){
+  async forkFromRollout({threadId,path,cwd=null,model=null}={}){
     if(!threadId||!path)throw new Error("Codex history import requires a source thread and rollout path");
     return this.request("thread/fork",{
       threadId:String(threadId),
       path:String(path),
       ...(cwd?{cwd:String(cwd)}:{}),
-      ...(modelProvider?{modelProvider:String(modelProvider)}:{}),
       ...(model?{model:String(model)}:{}),
       threadSource:"trebell-code",
       ephemeral:false,

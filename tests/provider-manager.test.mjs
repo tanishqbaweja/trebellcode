@@ -140,6 +140,83 @@ test("provider environment aliases match Trebell root .env names", () => {
   assert.equal(manager.childEnv("hcnsec",{}).HCNSEC_API_KEY,"hc-alias");
 });
 
+test("official API providers are first-class Trebell Native inference providers without exposing keys", () => {
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
+  const manager=new ProviderManager({env:{TREBELL_HOME:root,OPENAI_API_KEY:"oa-env",ANTHROPIC_API_KEY:"an-env",GOOGLE_API_KEY:"gm-env"}});
+  const definitions=manager.definitions();
+  for(const id of ["openai","anthropic","gemini"]){
+    const provider=definitions.find(item=>item.id===id);
+    assert.equal(provider?.official,true);
+    assert.equal(provider?.hasKey,true);
+    assert.equal("apiKey" in provider,false);
+  }
+  assert.equal(manager.key("openai"),"oa-env");
+  assert.equal(manager.key("anthropic"),"an-env");
+  assert.equal(manager.key("gemini"),"gm-env");
+  assert.equal(manager.childEnv("gemini",{}).GEMINI_API_KEY,"gm-env");
+});
+
+test("official API model catalogs use their documented authentication styles",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
+  const requests=[];
+  const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(url,init={})=>{
+    requests.push({url,headers:init.headers});
+    return Response.json({data:[{id:url.includes("anthropic.com")?"claude-opus-5":url.includes("googleapis.com")?"gemini-3.8-flash":"gpt-5.6"}]});
+  }});
+  manager.setKey("openai","oa-key");manager.setKey("anthropic","an-key");manager.setKey("gemini","gm-key");
+  assert.deepEqual((await manager.models("openai")).models,["gpt-5.6"]);
+  assert.deepEqual((await manager.models("anthropic")).models,["claude-opus-5"]);
+  assert.deepEqual((await manager.models("gemini")).models,["gemini-3.8-flash"]);
+  const openai=requests.find(item=>item.url==="https://api.openai.com/v1/models");
+  const anthropic=requests.find(item=>item.url==="https://api.anthropic.com/v1/models");
+  const gemini=requests.find(item=>item.url==="https://generativelanguage.googleapis.com/v1beta/openai/models");
+  assert.equal(openai.headers.Authorization,"Bearer oa-key");
+  assert.equal(anthropic.headers["x-api-key"],"an-key");
+  assert.equal(anthropic.headers["anthropic-version"],"2023-06-01");
+  assert.equal(gemini.headers.Authorization,"Bearer gm-key");
+});
+
+test("official OpenAI Anthropic and Gemini turns use their native compatibility endpoints",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
+  const requests=[];
+  const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(url,init={})=>{
+    const body=JSON.parse(init.body||"{}");requests.push({url,headers:init.headers,body});
+    if(url.endsWith("/responses"))return Response.json({id:"resp-official",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"openai-ok"}]}],usage:{input_tokens:3,output_tokens:2,total_tokens:5}});
+    if(url.includes("anthropic.com"))return Response.json({id:"msg-official",type:"message",role:"assistant",model:body.model,content:[{type:"text",text:"anthropic-ok"}],stop_reason:"end_turn",usage:{input_tokens:3,output_tokens:2}},{headers:{"content-type":"application/json"}});
+    return Response.json({id:"chat-official",model:body.model,choices:[{finish_reason:"stop",message:{role:"assistant",content:"gemini-ok"}}],usage:{prompt_tokens:3,completion_tokens:2,total_tokens:5}});
+  }});
+  manager.setKey("openai","oa-key");manager.setKey("anthropic","an-key");manager.setKey("gemini","gm-key");
+  const common={messages:[{role:"user",content:"hello"}],tools:[],toolChoice:"none"};
+  assert.equal((await manager.turn("openai",{...common,model:"gpt-5.6"})).text,"openai-ok");
+  assert.equal((await manager.turn("anthropic",{...common,model:"claude-opus-5"})).text,"anthropic-ok");
+  assert.equal((await manager.turn("gemini",{...common,model:"gemini-3.8-flash"})).text,"gemini-ok");
+  const openai=requests.find(item=>item.url==="https://api.openai.com/v1/responses");
+  const anthropic=requests.find(item=>item.url==="https://api.anthropic.com/v1/messages");
+  const gemini=requests.find(item=>item.url==="https://generativelanguage.googleapis.com/v1beta/openai/chat/completions");
+  assert.equal(openai.headers.Authorization,"Bearer oa-key");
+  assert.equal(anthropic.headers["x-api-key"],"an-key");
+  assert.equal(anthropic.headers["anthropic-version"],"2023-06-01");
+  assert.equal(gemini.headers.Authorization,"Bearer gm-key");
+  assert.equal(anthropic.body.messages[0].content[0].text,"hello");
+  assert.equal(gemini.body.messages[0].content,"hello");
+});
+
+test("official OpenAI Responses flattens Trebell namespaces into standard function tools and restores them on tool calls",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));let seen=null;
+  const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(url,init={})=>{
+    seen={url,body:JSON.parse(init.body||"{}")};;
+    return Response.json({id:"resp-tools",model:"gpt-5.6",status:"completed",output:[{type:"function_call",call_id:"call-1",name:"trebell_repo__search_symbols",arguments:'{"query":"Session"}'}],usage:{input_tokens:5,output_tokens:2,total_tokens:7}});
+  }});
+  manager.setKey("openai","oa-key");
+  const result=await manager.turn("openai",{
+    model:"gpt-5.6",messages:[{role:"user",content:"Find Session"}],
+    tools:[{type:"namespace",name:"trebell_repo",description:"Repository tools",tools:[{type:"function",name:"search_symbols",description:"Search symbols",inputSchema:{type:"object",properties:{query:{type:"string"}},required:["query"]}}]}],
+  });
+  assert.equal(seen.url,"https://api.openai.com/v1/responses");
+  assert.deepEqual(seen.body.tools,[{type:"function",name:"trebell_repo__search_symbols",description:"Search symbols",parameters:{type:"object",properties:{query:{type:"string"}},required:["query"]}}]);
+  assert.deepEqual(result.toolCalls,[{id:"call-1",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Session"}'}]);
+});
+
 
 test("JustWorker uses the documented Anthropic-compatible messages endpoint", async () => {
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));

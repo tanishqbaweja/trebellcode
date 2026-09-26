@@ -62,8 +62,8 @@ test("project recipe slash command starts a bounded turn with stricter permissio
     await page.evaluate(()=>{document.documentElement.dataset.mode="light"});await page.screenshot({path:auditDir+"project-recipe-slash-menu-light-1280x800.png",fullPage:true});await page.evaluate(()=>{document.documentElement.dataset.mode="dark"});
 
     await composer.fill("/fix-ci Linux runner only");await page.getByTestId("send").click();
-    await expect.poll(()=>calls.filter(call=>call.method==="thread/goal/set").length).toBe(1);
-    await expect.poll(()=>calls.filter(call=>call.method==="turn/start").length).toBe(1);
+    await expect.poll(()=>calls.filter(call=>call.method==="thread/goal/set").length,{timeout:15_000}).toBe(1);
+    await expect.poll(()=>calls.filter(call=>call.method==="turn/start").length,{timeout:15_000}).toBe(1);
     const goalCall=calls.find(call=>call.method==="thread/goal/set"),turnCall=calls.find(call=>call.method==="turn/start");
     expect(goalCall.params.childAgentBudget).toBe(0);expect(goalCall.params.validationExpectations).toEqual(["Run affected tests"]);expect(goalCall.params.completionConditions).toEqual(["Green CI"]);
     expect(turnCall.params.approvalPolicy).toBe("on-request");expect(turnCall.params.sandboxPolicy.type).toBe("workspaceWrite");

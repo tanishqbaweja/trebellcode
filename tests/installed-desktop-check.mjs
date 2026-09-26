@@ -69,19 +69,23 @@ try {
       });
       return await response.json();
     });
-    if(providerSwitch?.selected!=="vyceai"||!providerSwitch?.models?.includes("deepseek-v4.1")){
-      throw new Error("Installed app could not switch to Vyce AI with deepseek-v4.1 available.");
+    if(providerSwitch?.selected!=="vyceai"||providerSwitch?.status?.hasKey!==true){
+      throw new Error("Installed app could not persist the configured Trebell Native Vyce provider.");
     }
     let providerRuntime=null;
     for(let attempt=0;attempt<30;attempt++){
       providerRuntime=await mainPage.evaluate(()=>fetch("/api/runtime").then(r=>r.json())).catch(()=>null);
-      if(providerRuntime?.provider==="vyceai"&&providerRuntime?.appServerReady)break;
+      if(providerRuntime?.provider==="vyceai"&&providerRuntime?.agentRuntime==="codex"&&providerRuntime?.appServerReady)break;
       await new Promise(r=>setTimeout(r,500));
     }
-    if(providerRuntime?.provider!=="vyceai"||!providerRuntime?.appServerReady){
-      throw new Error("Bundled Codex rejected the Vyce AI provider config.");
+    if(providerRuntime?.provider!=="vyceai"||providerRuntime?.agentRuntime!=="codex"||!providerRuntime?.appServerReady){
+      throw new Error("Changing the Trebell Native provider disturbed the packaged Codex runtime.");
     }
-    providerCompatibility={skipped:false,selected:providerSwitch.selected,runtime:providerRuntime};
+    const codexCatalog=await mainPage.evaluate(()=>fetch("/api/models").then(r=>r.json()));
+    if(codexCatalog?.metadata?.provider!=="codex"||codexCatalog?.provider!==undefined){
+      throw new Error("Packaged Codex model discovery was incorrectly coupled to the Trebell Native provider.");
+    }
+    providerCompatibility={skipped:false,selected:providerSwitch.selected,runtime:providerRuntime,codexCatalogProvider:codexCatalog.metadata.provider};
     await mainPage.evaluate(()=>fetch("/api/providers",{
       method:"POST",
       headers:{"content-type":"application/json"},

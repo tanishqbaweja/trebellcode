@@ -54,6 +54,19 @@ test("OpenCode fork rewind and compaction map to the real SDK session operations
   ]);
 });
 
+test("OpenCode appends bounded Trebell runtime context through its native system field",async()=>{
+  const calls=[],session=new OpenCodeAgentSession({cwd:"/repo"});
+  session.sessionId="session-1";session.model="openai/gpt-5";
+  session.modelMap.set("openai/gpt-5",{providerID:"openai",modelID:"gpt-5"});
+  session.client={session:{prompt:async request=>{calls.push(request);return {data:{info:{id:"assistant-1",parentID:"user-1",tokens:{}},parts:[]}}}}};
+  await session.prompt([{type:"text",text:"Fix the parser"}],{messageId:"user-1"});
+  assert.equal(calls.length,1);
+  assert.equal(calls[0].body.parts[0].text,"Fix the parser");
+  assert.match(calls[0].body.system,/Trebell Code/);
+  assert.match(calls[0].body.system,/OpenCode harness/);
+  assert.match(calls[0].body.system,/openai\/gpt-5/);
+});
+
 test("OpenCode advertised controls surface SDK failures instead of pretending success",async()=>{
   const session=new OpenCodeAgentSession({cwd:"/repo"});session.sessionId="session-1";session.model="provider-a/model-a";session.modelMap.set("provider-a/model-a",{providerID:"provider-a",modelID:"model-a"});
   session.client={session:{fork:async()=>({error:{message:"fork unavailable"}}),revert:async()=>({error:{data:{message:"rewind rejected"}}}),summarize:async()=>({error:{message:"summary failed"}})}};

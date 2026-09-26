@@ -1,20 +1,16 @@
 import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { rebrandTerminalChunk } from "./branding.mjs";
-import { codexBin, codexHome } from "./paths.mjs";
+import { codexBin } from "./paths.mjs";
 import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
 
 export function codexChildEnvironment(env = process.env) {
-  return {
-    ...buildRuntimeEnvironment("native",{parent:env,platform:process.platform}),
-    CODEX_HOME:codexHome(env),
-  };
+  return buildRuntimeEnvironment("codex",{parent:env,platform:process.platform});
 }
 
-export function codexArgs({ model, provider = "freebuff", forwarded = [] } = {}) {
-  const base = [
-    "-c", `model_provider="${provider}"`,
-  ];
+export function codexArgs({ model, provider = null, forwarded = [] } = {}) {
+  if(provider)throw new Error("Codex uses its native account/provider configuration. Trebell API providers belong to Trebell Native.");
+  const base = [];
   if (model) base.push("-m", model);
   return [...base, ...forwarded];
 }
@@ -75,13 +71,13 @@ async function runInherited(command, args, env) {
   });
 }
 
-export async function runCodex({ model, provider = "freebuff", forwarded = [], env = process.env } = {}) {
+export async function runCodex({ model, forwarded = [], env = process.env } = {}) {
   const command = codexBin(env);
   if (!existsSync(command) && !env.TREBELL_CODEX_BIN) {
     throw new Error(`Codex runtime was not installed at ${command}. Run npm install in Trebell Code.`);
   }
 
-  const args = codexArgs({ model, provider, forwarded });
+  const args = codexArgs({ model, forwarded });
   const nextEnv = codexChildEnvironment(env);
 
   if (process.stdin.isTTY && process.stdout.isTTY && env.TREBELL_DISABLE_PTY !== "1") {

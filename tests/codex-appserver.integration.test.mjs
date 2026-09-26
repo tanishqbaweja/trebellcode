@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { copyFile, mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
 import { createGuiServer } from "../src/gui-server.mjs";
@@ -31,6 +31,22 @@ async function waitForNonEmptyRollout(root,{timeoutMs=5000}={}){
   throw new Error("Codex rollout did not become non-empty before timeout");
 }
 
+async function isolatedCodexRuntime(env,root,{name="codex-runtime",instanceId="codex-default"}={}){
+  const sourceHome=String(process.env.CODEX_HOME||"").trim()||join(homedir(),".codex");
+  const sourceAuth=join(sourceHome,"auth.json"),runtimeHome=join(root,name);
+  try{
+    await mkdir(runtimeHome,{recursive:true});
+    await copyFile(sourceAuth,join(runtimeHome,"auth.json"));
+  }catch{return null}
+  const state=new TrebellStateStore(env);
+  state.updateSettings({
+    agentRuntime:"codex",
+    agentRuntimeInstanceId:instanceId,
+    agentRuntimeInstances:[{id:instanceId,kind:"codex",displayName:"Codex",enabled:true,homePath:runtimeHome,shadowHomePath:"",environment:{}}],
+  });
+  return runtimeHome;
+}
+
 function rpc(ws,id,method,params={}) {
   return new Promise((resolve,reject)=>{
     const timer=setTimeout(()=>reject(new Error(`${method} timed out`)),15000);
@@ -48,9 +64,9 @@ function rpc(ws,id,method,params={}) {
   });
 }
 
-function rpcOutcome(ws,id,method,params={}) {
+function rpcOutcome(ws,id,method,params={},timeoutMs=15000) {
   return new Promise((resolve,reject)=>{
-    const timer=setTimeout(()=>reject(new Error(`${method} timed out`)),15000);
+    const timer=setTimeout(()=>reject(new Error(`${method} timed out`)),timeoutMs);
     const onMessage=(data)=>{
       let msg;
       try{msg=JSON.parse(String(data));}catch{return;}
@@ -72,10 +88,11 @@ function waitNotification(ws,method,predicate=()=>true,timeoutMs=30000){
   });
 }
 
-test("Trebell owns the Codex repository dynamic-tool namespace", {timeout:45000}, async () => {
+test("Trebell owns the Codex repository dynamic-tool namespace", {timeout:45000}, async (t) => {
   const [port,appPort]=await Promise.all([freePort(),freePort()]);
   const home=await mkdtemp(join(tmpdir(),"trebell-repository-tools-"));
   const env={...process.env,TREBELL_HOME:home};
+  const runtimeHome=await isolatedCodexRuntime(env,home);if(!runtimeHome){t.skip("Codex login is unavailable for real app-server integration");await rm(home,{recursive:true,force:true});return}
   const gui=await createGuiServer({port,appPort,mock:false,env});
   let ws;
   try{
@@ -93,7 +110,6 @@ test("Trebell owns the Codex repository dynamic-tool namespace", {timeout:45000}
 
     const started=await rpc(ws,2,"thread/start",{
       cwd:process.cwd(),
-      modelProvider:"freebuff",
       approvalPolicy:"never",
       sandbox:"danger-full-access",
       ephemeral:true,
@@ -108,12 +124,36 @@ test("Trebell owns the Codex repository dynamic-tool namespace", {timeout:45000}
   }
 });
 
-test("real Codex app-server is reachable through Trebell browser relay", {timeout:45000}, async () => {
+test("Codex model catalog comes from the Codex harness instead of Trebell Native's provider selection",{timeout:45000},async(t)=>{
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  const home=await mkdtemp(join(tmpdir(),"trebell-codex-native-models-"));
+  const env={...process.env,TREBELL_HOME:home};
+  const runtimeHome=await isolatedCodexRuntime(env,home);if(!runtimeHome){t.skip("Codex login is unavailable for real app-server integration");await rm(home,{recursive:true,force:true});return}
+  const state=new TrebellStateStore(env);state.updateSettings({modelProvider:"agentrouter"});
+  const gui=await createGuiServer({port,appPort,mock:false,env});
+  try{
+    let boot=null;for(let i=0;i<80;i++){boot=await fetch(gui.url+"/api/bootstrap").then(response=>response.json());if(boot.appServerReady&&boot.agentRuntimeReady)break;await new Promise(resolve=>setTimeout(resolve,200))}
+    assert.equal(boot.agentRuntime,"codex");
+    assert.equal(boot.agentRuntimeReady,true,boot.agentRuntimeStatus?.message||boot.appServerError||"Codex runtime did not become ready");
+    assert.equal(boot.provider,"agentrouter","the stored Trebell Native provider preference should remain independent");
+    const catalogResponse=await fetch(gui.url+"/api/models");assert.equal(catalogResponse.status,200);
+    const catalog=await catalogResponse.json();
+    assert.equal(catalog.agentRuntime,"codex");
+    assert.equal(Object.prototype.hasOwnProperty.call(catalog,"provider"),false,"Codex catalog must not be labeled as a Trebell Native provider catalog");
+    assert.equal(catalog.metadata?.provider,"codex");
+    assert.equal(catalog.metadata?.source,"codex-model-list");
+    assert.ok(catalog.models?.length>0,"Codex should return its authenticated native model catalog");
+    assert.ok(catalog.metadata.models.every(model=>model.provider==="codex"&&model.agent==="Codex"));
+  }finally{await gui.close();await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
+});
+
+test("real Codex app-server is reachable through Trebell browser relay", {timeout:45000}, async (t) => {
   const [port,appPort]=await Promise.all([freePort(),freePort()]);
   const home=await mkdtemp(join(tmpdir(),"trebell-relay-integration-"));
   const env={...process.env,TREBELL_HOME:home};
+  const runtimeHome=await isolatedCodexRuntime(env,home);if(!runtimeHome){t.skip("Codex login is unavailable for real app-server integration");await rm(home,{recursive:true,force:true});return}
   const gui=await createGuiServer({port,appPort,mock:false,env});
-  let ws;
+  let ws,rejectUnsupportedServerRequest=null;
   try{
     let boot=null;
     for(let i=0;i<80;i++){
@@ -140,7 +180,6 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
 
     const threads=await rpc(ws,2,"thread/list",{
       limit:5,
-      modelProviders:["freebuff"],
       sortKey:"updated_at",
       sortDirection:"desc",
     });
@@ -160,7 +199,6 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
 
     const recoveryThread=await rpc(ws,4,"thread/start",{
       cwd:process.cwd(),
-      modelProvider:"freebuff",
       approvalPolicy:"never",
       sandbox:"danger-full-access",
       ephemeral:true,
@@ -202,6 +240,16 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
       },
     });
     assert.equal(guardianOverride.ok,true,guardianOverride.error?.message||"thread/approveGuardianDeniedAction failed");
+    // The real renderer answers unsupported Codex server-initiated requests with
+    // -32601. Keep this bare integration client honest too; otherwise native
+    // capability calls such as plugin/list can wait forever for a callback that
+    // production Trebell would reject immediately.
+    rejectUnsupportedServerRequest=data=>{
+      let message;try{message=JSON.parse(String(data))}catch{return}
+      if(!message?.method||!Object.prototype.hasOwnProperty.call(message,"id"))return;
+      ws.send(JSON.stringify({id:message.id,error:{code:-32601,message:"Unsupported Trebell integration-test client request: "+message.method}}));
+    };
+    ws.on("message",rejectUnsupportedServerRequest);
     const capabilityCalls=[
       ["account/read",{refreshToken:false}],
       ["account/rateLimits/read",{excludeResetCreditDetails:true}],
@@ -209,16 +257,7 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
       ["config/read",{includeLayers:true,cwd:process.cwd()}],
       ["configRequirements/read",{}],
       ["mcpServerStatus/list",{limit:20,detail:"full",threadId:null}],
-      ["plugin/list",{cwds:[process.cwd()],forceRefetch:false}],
-      ["plugin/search",{searchTerm:"trebell-integration-no-match",scope:"workspace",cwds:[process.cwd()],limit:1}],
-      ["plugin/installed",{cwds:[process.cwd()],installSuggestionPluginNames:[]}],
-      ["plugin/reconcile",{reason:"trebell-integration"}],
       ["plugin/read",{marketplacePath:join(home,"missing-marketplace"),remoteMarketplaceName:null,pluginName:"trebell-missing-plugin"}],
-      ["plugin/share/list",{}],
-      ["plugin/share/save",{pluginPath:join(home,"missing-plugin"),discoverability:"PRIVATE",shareTargets:[]}],
-      ["plugin/share/checkout",{remotePluginId:"trebell-invalid-plugin-share"}],
-      ["plugin/share/delete",{remotePluginId:"trebell-invalid-plugin-share"}],
-      ["plugin/share/updateTargets",{remotePluginId:"trebell-invalid-plugin-share",discoverability:"PRIVATE",shareTargets:[]}],
       ["hooks/list",{cwds:[process.cwd()]}],
       ["experimentalFeature/list",{limit:100,threadId:null}],
       ["modelProvider/capabilities/read",{}],
@@ -233,6 +272,12 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
       assert.notEqual(outcome.error?.code,-32601,`${method} must exist in the bundled Codex app-server`);
       assert.doesNotMatch(String(outcome.error?.message||""),/method not found|unknown method/i,`${method} must be a real capability`);
     }
+    // Marketplace-backed plugin discovery can legitimately block on remote
+    // catalog I/O in this deliberately bare CODEX_HOME (it only contains auth).
+    // Keep the relay gate deterministic: prove the local plugin RPC surface via
+    // plugin/read above, while real-home plugin discovery is exercised by the
+    // installed Codex smoke rather than turning network latency into a relay
+    // failure.
     const apps=await rpcOutcome(ws,id++,"app/list",{limit:10,threadId:null,forceRefetch:false});
     if(apps.ok&&apps.result?.data?.length){
       const appId=apps.result.data[0].id;
@@ -259,16 +304,18 @@ test("real Codex app-server is reachable through Trebell browser relay", {timeou
     const memoryReset=await rpcOutcome(ws,id++,"memory/reset");
     assert.equal(memoryReset.ok,true,memoryReset.error?.message||"memory/reset failed in the disposable integration home");
   } finally {
+    if(ws&&rejectUnsupportedServerRequest)ws.off("message",rejectUnsupportedServerRequest);
     try{ws?.close();}catch{}
     await gui.close();
     await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});
   }
 });
 
-test("real Codex app-server exposes native project ownership and collaboration modes without starting a turn",{timeout:30000},async()=>{
+test("real Codex app-server exposes native project ownership and collaboration modes without starting a turn",{timeout:30000},async(t)=>{
   const [port,appPort]=await Promise.all([freePort(),freePort()]);
   const home=await mkdtemp(join(tmpdir(),"trebell-codex-project-integration-"));
   const env={...process.env,TREBELL_HOME:home};
+  const runtimeHome=await isolatedCodexRuntime(env,home);if(!runtimeHome){t.skip("Codex login is unavailable for real app-server integration");await rm(home,{recursive:true,force:true});return}
   const gui=await createGuiServer({port,appPort,mock:false,env});
   let ws;
   try{
@@ -301,7 +348,6 @@ test("real Codex app-server exposes native project ownership and collaboration m
     assert.ok(nativeProject.project?.id,"project/create should return a native project id");
     const projectedThread=await rpc(ws,4,"thread/start",{
       cwd:process.cwd(),
-      modelProvider:"freebuff",
       approvalPolicy:"never",
       sandbox:"danger-full-access",
       ephemeral:false,
@@ -318,11 +364,15 @@ test("real Codex app-server exposes native project ownership and collaboration m
   }
 });
 
-test("compatible Codex profiles switch an existing thread through a separate app-server",{timeout:60000},async()=>{
+test("compatible Codex profiles switch an existing thread through a separate app-server",{timeout:60000},async(t)=>{
   const [port,appPort]=await Promise.all([freePort(),freePort()]);
   const home=await mkdtemp(join(tmpdir(),"trebell-codex-profiles-"));
   const env={...process.env,TREBELL_HOME:home};
   const shared=join(home,"shared-codex"),shadow=join(home,"personal-codex"),isolated=join(home,"isolated-codex");
+  const sourceAuth=join(String(process.env.CODEX_HOME||"").trim()||join(homedir(),".codex"),"auth.json");
+  try{
+    for(const target of [shared,shadow,isolated]){await mkdir(target,{recursive:true});await copyFile(sourceAuth,join(target,"auth.json"))}
+  }catch{t.skip("Codex login is unavailable for real profile integration");await rm(home,{recursive:true,force:true});return}
   const persisted=new TrebellStateStore(env);
   persisted.updateSettings({
     agentRuntime:"codex",
@@ -339,7 +389,7 @@ test("compatible Codex profiles switch an existing thread through a separate app
     assert.equal(boot.appServerReady,true,"primary Codex profile did not become ready");
     ws=new WebSocket(boot.wsUrl,{origin:gui.url});await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});
     await rpc(ws,1,"initialize",{clientInfo:{name:"trebell-profile-test",title:"Trebell Profile Test",version:"1.0.0"},capabilities:{experimentalApi:true}});ws.send(JSON.stringify({method:"initialized",params:{}}));
-    const started=await rpc(ws,2,"thread/start",{cwd:process.cwd(),modelProvider:"freebuff",approvalPolicy:"never",sandbox:"danger-full-access",ephemeral:false,threadSource:"trebell-code"});
+    const started=await rpc(ws,2,"thread/start",{cwd:process.cwd(),approvalPolicy:"never",sandbox:"danger-full-access",ephemeral:false,threadSource:"trebell-code"});
     const threadId=started.thread.id;assert.ok(threadId);
     const memoryDisabled=await rpcOutcome(ws,30,"thread/memoryMode/set",{threadId,mode:"disabled"});
     assert.equal(memoryDisabled.ok,true,memoryDisabled.error?.message||"thread memory disable failed");
@@ -352,7 +402,7 @@ test("compatible Codex profiles switch an existing thread through a separate app
     const profiles=await rpc(ws,5,"thread/runtimeInstances/list",{threadId});
     assert.equal(profiles.supported,true);assert.equal(profiles.currentInstanceId,"codex-work");assert.equal(profiles.label,"Codex profile");
     assert.deepEqual(profiles.items.map(item=>item.id).sort(),["codex-personal","codex-work"]);
-    const background=await rpc(ws,20,"thread/start",{cwd:process.cwd(),modelProvider:"freebuff",approvalPolicy:"never",sandbox:"danger-full-access",ephemeral:false,threadSource:"trebell-code"});
+    const background=await rpc(ws,20,"thread/start",{cwd:process.cwd(),approvalPolicy:"never",sandbox:"danger-full-access",ephemeral:false,threadSource:"trebell-code"});
     const backgroundStartedNotification=waitNotification(ws,"turn/started",params=>params.threadId===background.thread.id);
     const backgroundCompletedNotification=waitNotification(ws,"turn/completed",params=>params.threadId===background.thread.id);
     const backgroundTurn=await rpc(ws,21,"turn/start",{threadId:background.thread.id,input:[],turnTrigger:"trebell-concurrent-thread"});
@@ -366,7 +416,7 @@ test("compatible Codex profiles switch an existing thread through a separate app
     // the first thread while the sibling owns a live writer does not tear that
     // sibling route down.
     await backgroundCompletedNotification;
-    const resumed=await rpc(ws,7,"thread/resume",{threadId,modelProvider:"freebuff",excludeTurns:false});
+    const resumed=await rpc(ws,7,"thread/resume",{threadId,excludeTurns:false});
     assert.equal(resumed.thread.id,threadId);
     const backgroundSecondTurn=await rpcOutcome(ws,22,"turn/start",{threadId:background.thread.id,input:[],turnTrigger:"trebell-concurrent-thread-after-profile-switch"});
     assert.equal(backgroundSecondTurn.ok,true,`switching one thread must not tear down or steal another thread's Codex runtime: ${JSON.stringify(backgroundSecondTurn.error||null)}`);
@@ -376,7 +426,7 @@ test("compatible Codex profiles switch an existing thread through a separate app
     const unsubscribed=await rpc(ws,23,"thread/unsubscribe",{threadId});
     assert.match(String(unsubscribed.status||""),/unsubscribed|notSubscribed/i);
     await new Promise(resolve=>setTimeout(resolve,100));
-    const resumedAfterUnsubscribe=await rpcOutcome(ws,24,"thread/resume",{threadId,modelProvider:"freebuff",excludeTurns:false});
+    const resumedAfterUnsubscribe=await rpcOutcome(ws,24,"thread/resume",{threadId,excludeTurns:false});
     assert.equal(resumedAfterUnsubscribe.ok,true,`an idle unsubscribed thread must restart its routed Codex process on demand: ${JSON.stringify(resumedAfterUnsubscribe.error||null)}`);
     assert.equal(resumedAfterUnsubscribe.result?.thread?.id,threadId);
     const incompatible=await rpcOutcome(ws,9,"thread/runtimeInstance/set",{threadId,instanceId:"codex-isolated"});
@@ -384,19 +434,19 @@ test("compatible Codex profiles switch an existing thread through a separate app
   }finally{try{ws?.close()}catch{}await gui.close();await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
 });
 
-test("native Codex queue persists, edits, reorders, deletes and resumes follow-ups",{timeout:90000},async()=>{
+test("native Codex queue persists, edits, reorders, deletes and resumes follow-ups",{timeout:90000},async(t)=>{
   const [port,appPort]=await Promise.all([freePort(),freePort()]);
   const home=await mkdtemp(join(tmpdir(),"trebell-codex-queue-"));
-  const env={...process.env,TREBELL_HOME:home};const gui=await createGuiServer({port,appPort,mock:false,env});let ws;
+  const env={...process.env,TREBELL_HOME:home};const runtimeHome=await isolatedCodexRuntime(env,home);if(!runtimeHome){t.skip("Codex login is unavailable for real app-server integration");await rm(home,{recursive:true,force:true});return}const gui=await createGuiServer({port,appPort,mock:false,env});let ws;
   try{
     let boot=null;for(let i=0;i<80;i++){boot=await fetch(gui.url+"/api/bootstrap").then(response=>response.json());if(boot.appServerReady)break;await new Promise(resolve=>setTimeout(resolve,200))}
     assert.equal(boot.appServerReady,true,"Codex app-server did not become ready for queue test");
     ws=new WebSocket(boot.wsUrl,{origin:gui.url});await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});
     await rpc(ws,1,"initialize",{clientInfo:{name:"trebell-queue-test",title:"Trebell Queue Test",version:"1.0.0"},capabilities:{experimentalApi:true}});ws.send(JSON.stringify({method:"initialized",params:{}}));
-    const started=await rpc(ws,2,"thread/start",{cwd:process.cwd(),modelProvider:"freebuff",approvalPolicy:"never",sandbox:"danger-full-access",ephemeral:false,threadSource:"trebell-code"});
+    const started=await rpc(ws,2,"thread/start",{cwd:process.cwd(),approvalPolicy:"never",sandbox:"danger-full-access",ephemeral:false,threadSource:"trebell-code"});
     const threadId=started.thread.id;assert.ok(threadId);
     const seedTurn=await rpc(ws,3,"turn/start",{threadId,input:[],turnTrigger:"trebell-queue-persistence"});
-    assert.ok(seedTurn.turn?.id);await waitForNonEmptyRollout(join(home,"codex","sessions"));await rpcOutcome(ws,4,"turn/interrupt",{threadId,turnId:seedTurn.turn.id});
+    assert.ok(seedTurn.turn?.id);await waitForNonEmptyRollout(join(runtimeHome,"sessions"));await rpcOutcome(ws,4,"turn/interrupt",{threadId,turnId:seedTurn.turn.id});
     let seedSettled=false;
     for(let i=0;i<300;i++){
       const current=await fetch(gui.url+"/api/thread-meta?threadId="+encodeURIComponent(threadId)).then(response=>response.json());
@@ -417,7 +467,7 @@ test("native Codex queue persists, edits, reorders, deletes and resumes follow-u
     const deleted=await rpc(ws,12,"thread/queue/delete",{threadId,queuedSubmissionId:first.queuedSubmission.id});assert.equal(deleted.deleted,true);
     listed=await rpc(ws,13,"thread/queue/list",{threadId,limit:20});assert.deepEqual(listed.data.map(item=>item.id),[second.queuedSubmission.id]);
     const autoStarted=waitNotification(ws,"turn/started",params=>params.threadId===threadId);
-    await rpc(ws,15,"thread/resume",{threadId,modelProvider:"freebuff",excludeTurns:false});
+    await rpc(ws,15,"thread/resume",{threadId,excludeTurns:false});
     const autoTurn=await autoStarted;const autoTurnId=autoTurn.turn?.id||autoTurn.turnId;assert.ok(autoTurnId,"resume should auto-dispatch the first queued submission");
     await rpcOutcome(ws,16,"turn/interrupt",{threadId,turnId:autoTurnId});
     let autoSettled=false;
@@ -431,23 +481,23 @@ test("native Codex queue persists, edits, reorders, deletes and resumes follow-u
   }finally{try{ws?.close()}catch{}await gui.close();await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
 });
 
-test("native Codex history resumes with bounded item pages and keeps turn pagination compatible",{timeout:60000},async()=>{
+test("native Codex history resumes with bounded item pages and keeps turn pagination compatible",{timeout:60000},async(t)=>{
   const [port,appPort]=await Promise.all([freePort(),freePort()]);
   const home=await mkdtemp(join(tmpdir(),"trebell-codex-history-page-"));
-  const env={...process.env,TREBELL_HOME:home};const gui=await createGuiServer({port,appPort,mock:false,env});let ws;
+  const env={...process.env,TREBELL_HOME:home};const runtimeHome=await isolatedCodexRuntime(env,home);if(!runtimeHome){t.skip("Codex login is unavailable for real app-server integration");await rm(home,{recursive:true,force:true});return}const gui=await createGuiServer({port,appPort,mock:false,env});let ws;
   try{
     let boot=null;for(let i=0;i<80;i++){boot=await fetch(gui.url+"/api/bootstrap").then(response=>response.json());if(boot.appServerReady)break;await new Promise(resolve=>setTimeout(resolve,200))}
     assert.equal(boot.appServerReady,true,"Codex app-server did not become ready for history pagination test");
     ws=new WebSocket(boot.wsUrl,{origin:gui.url});await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});
     await rpc(ws,1,"initialize",{clientInfo:{name:"trebell-history-test",title:"Trebell History Test",version:"1.0.0"},capabilities:{experimentalApi:true}});ws.send(JSON.stringify({method:"initialized",params:{}}));
-    const started=await rpc(ws,2,"thread/start",{cwd:process.cwd(),modelProvider:"freebuff",approvalPolicy:"never",sandbox:"danger-full-access",ephemeral:false,threadSource:"trebell-code"});
+    const started=await rpc(ws,2,"thread/start",{cwd:process.cwd(),approvalPolicy:"never",sandbox:"danger-full-access",ephemeral:false,threadSource:"trebell-code"});
     const threadId=started.thread.id;assert.ok(threadId);
     for(let index=0;index<3;index++){
       const userPersisted=waitNotification(ws,"item/started",params=>params.threadId===threadId&&params.item?.type==="userMessage");
       const completed=waitNotification(ws,"turn/completed",params=>params.threadId===threadId);
       const turn=await rpc(ws,10+index*2,"turn/start",{threadId,input:[{type:"text",text:`history pagination turn ${index+1}`,textElements:[]}],turnTrigger:`trebell-history-page-${index+1}`});assert.ok(turn.turn?.id);
       await userPersisted;
-      if(index===0)await waitForNonEmptyRollout(join(home,"codex","sessions"));
+      if(index===0)await waitForNonEmptyRollout(join(runtimeHome,"sessions"));
       await rpcOutcome(ws,11+index*2,"turn/interrupt",{threadId,turnId:turn.turn.id});await completed;
       for(let attempt=0;attempt<80;attempt++){
         const current=await fetch(gui.url+"/api/thread-meta?threadId="+encodeURIComponent(threadId)).then(response=>response.json());if(current.active===false)break;
@@ -455,7 +505,7 @@ test("native Codex history resumes with bounded item pages and keeps turn pagina
       }
     }
     await rpc(ws,20,"thread/unsubscribe",{threadId});await new Promise(resolve=>setTimeout(resolve,150));
-    const resumed=await rpc(ws,21,"thread/resume",{threadId,modelProvider:"freebuff",excludeTurns:true});
+    const resumed=await rpc(ws,21,"thread/resume",{threadId,excludeTurns:true});
     assert.equal(resumed.thread.id,threadId);assert.equal(resumed.thread.turns.length,0,"excludeTurns should keep the resumed thread payload bounded");
     assert.ok(resumed.itemsBackwardsCursor,"paginated resume should expose the newest item cursor");
     const itemPage=await rpc(ws,25,"thread/items/list",{threadId,cursor:resumed.itemsBackwardsCursor,limit:2,sortDirection:"desc"});

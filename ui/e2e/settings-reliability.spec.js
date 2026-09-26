@@ -59,7 +59,7 @@ test("Codex runtime diagnostics show unavailable state instead of assuming readi
   await page.getByRole("button",{name:/Agents & models/}).click();
   const runtimeCard=page.locator('[data-setting-target="agents-runtime"]');
   await expect(runtimeCard).toContainText("Agent runtime: not ready");
-  await expect(runtimeCard).toContainText("Codex app-server: not ready");
+  await expect(runtimeCard).not.toContainText("Inference:");
   await page.getByRole("button",{name:/Diagnostics/}).click();
   await expect(page.locator(".diag-badges span").first()).not.toHaveClass(/\bok\b/);
 });

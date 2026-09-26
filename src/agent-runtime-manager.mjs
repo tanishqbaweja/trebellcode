@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, posix, resolve } from "node:path";
 import spawn from "cross-spawn";
-import { codexHome, trebellHome } from "./paths.mjs";
+import { codexBin, codexHome, trebellHome } from "./paths.mjs";
 import { resolveCodexHomeLayout } from "./codex-home-layout.mjs";
 import { readAgentRuntimeUsage } from "./agent-usage-limits.mjs";
 import { sharedRuntimeCapabilities } from "./runtime-capabilities.mjs";
@@ -14,7 +14,7 @@ import { discoverOpenCodeModelCatalog } from "./opencode-agent-session.mjs";
 
 const RUNTIMES=Object.freeze({
   native:{id:"native",name:"Trebell Native",protocol:"native",command:null,multipleInstances:false,managed:true},
-  codex:{id:"codex",name:"Codex",protocol:"codex",command:null,multipleInstances:true},
+  codex:{id:"codex",name:"Codex",protocol:"codex",command:"codex",multipleInstances:true},
   claude:{id:"claude",name:"Claude Code",protocol:"claude",command:"claude",multipleInstances:true},
   cursor:{id:"cursor",name:"Cursor",protocol:"acp",command:"cursor-agent",multipleInstances:true},
   grok:{id:"grok",name:"Grok Build",protocol:"acp",command:"grok",multipleInstances:true},
@@ -68,6 +68,13 @@ function satisfiesSimpleRange(version,range){
   });
 }
 function stripAnsi(value){return String(value||"").replace(/\x1B\[[0-?]*[ -/]*[@-~]/g,"")}
+function runtimeProbeFailure(def,result={}){
+  const raw=stripAnsi(String(result.stderr||result.error||"")).trim();
+  if(/spawn\s+EINVAL/i.test(raw))return `${def?.name||"Runtime"} launcher could not start on this system. Reinstall or update the CLI, then refresh.`;
+  if(/ENOENT|not recognized as an internal or external command|command not found/i.test(raw))return `${def?.name||"Runtime"} executable was not found.`;
+  const first=raw.split(/\r?\n/).map(line=>line.trim()).find(Boolean);
+  return (first||`${def?.name||"Runtime"} executable was not found`).slice(0,500);
+}
 export function parseCursorAboutResult(result={}){
   const stdout=String(result.stdout||"").trim();
   const combined=stripAnsi(stdout+"\n"+String(result.stderr||""));
@@ -198,9 +205,9 @@ export class AgentRuntimeManager{
     if(instance.kind==="native")return "native:in-process";
     if(instance.kind==="codex"){
       return resolveCodexHomeLayout({
-        homePath:String(instance.homePath||"").trim()||codexHome(this.env),
+        homePath:String(instance.homePath||"").trim()||null,
         shadowHomePath:String(instance.shadowHomePath||"").trim()||null,
-        defaultHome:codexHome(this.env),
+        defaultHome:String(this.env.CODEX_HOME||"").trim()||join(homedir(),".codex"),
       }).continuationKey;
     }
     if(instance.kind==="claude"){
@@ -261,6 +268,7 @@ export class AgentRuntimeManager{
     const def=RUNTIMES[instance?.kind];
     const profile=this.activeEnvironment(environmentId);
     if(profile&&profile.type!=="local")return def?.command||null;
+    if(instance?.kind==="codex")return codexBin(this.env,this.platform,this.arch);
     if(instance?.kind==="antigravity")return join(trebellHome(this.env),"agent-runtimes","antigravity","current",this.platform==="win32"?"agy_acp_server.exe":"agy_acp_server.par");
     const discovered=runtimeExecutableCandidates(instance?.kind,{env:this.env,platform:this.platform}).find(candidate=>existsSync(candidate));
     if(discovered)return discovered;
@@ -269,7 +277,7 @@ export class AgentRuntimeManager{
   childEnv(instance){
     const env=buildRuntimeEnvironment(instance?.kind,{parent:this.env,approved:instance?.approvedEnvironmentKeys,overrides:instance?.environment,platform:this.platform});
     if(instance?.kind==="codex"){
-      const layout=resolveCodexHomeLayout({homePath:instance?.homePath,shadowHomePath:instance?.shadowHomePath});
+      const layout=resolveCodexHomeLayout({homePath:instance?.homePath,shadowHomePath:instance?.shadowHomePath,defaultHome:String(this.env.CODEX_HOME||"").trim()||join(homedir(),".codex")});
       if(layout.effectiveHomePath)env.CODEX_HOME=layout.effectiveHomePath;
     }
     if(instance?.kind==="claude"&&instance?.homePath)env.CLAUDE_CONFIG_DIR=instance.homePath;
@@ -346,6 +354,7 @@ export class AgentRuntimeManager{
     if(action!=="login")throw new Error("Unsupported runtime authentication action");
     if(instance.kind==="opencode"&&instance.serverUrl)throw new Error("This OpenCode profile uses an external server. Authenticate providers on that server instead.");
     const args=instance.kind==="claude"?["auth","login"]
+      :instance.kind==="codex"?["login"]
       :instance.kind==="cursor"?["login"]
       :instance.kind==="grok"?["login"]
       :instance.kind==="opencode"?["auth","login"]
@@ -404,9 +413,12 @@ export class AgentRuntimeManager{
     const def=RUNTIMES[instance.kind];
     if(instance.kind==="native")return {id:instance.id,kind:"native",name:def.name,available:true,installed:true,authenticated:null,protocol:"native",managed:true,version:null,binary:null,message:"Built into Trebell Code"};
     if(instance.kind==="codex"){
-      if(!instance.binaryPath?.trim())return {id:instance.id,kind:"codex",name:def.name,available:true,installed:true,authenticated:true,protocol:"codex",version:null,binary:null,message:"Bundled Codex app-server"};
       const checked=await this.#run(instance,["--version"],{timeoutMs:6000,environmentId});
-      return {id:instance.id,kind:"codex",name:def.name,available:checked.ok,installed:checked.ok,authenticated:true,protocol:"codex",version:checked.ok?(checked.stdout||checked.stderr).trim().split(/\r?\n/)[0]||null:null,binary:this.executable(instance),message:checked.ok?"Ready":(checked.stderr||checked.error||"Custom Codex binary is unavailable").trim().slice(0,500)};
+      if(!checked.ok)return {id:instance.id,kind:"codex",name:def.name,available:false,installed:false,authenticated:false,protocol:"codex",version:null,binary:this.executable(instance),message:(checked.stderr||checked.error||"Codex CLI is unavailable").trim().slice(0,500)};
+      const auth=await this.#run(instance,["login","status"],{timeoutMs:8000,environmentId});
+      const authText=((auth.stdout||"")+"\n"+(auth.stderr||"")).trim(),authenticated=auth.ok&&/logged in/i.test(authText);
+      const version=(checked.stdout||checked.stderr).trim().split(/\r?\n/)[0]||null;
+      return {id:instance.id,kind:"codex",name:def.name,available:authenticated,installed:true,authenticated,protocol:"codex",version,binary:this.executable(instance),message:authenticated?(authText||"Ready"):"Codex is installed but not authenticated. Run codex login."};
     }
     const command=this.executable(instance);
     if(instance.kind==="antigravity"&&!this.activeEnvironment(environmentId)){
@@ -427,7 +439,7 @@ export class AgentRuntimeManager{
     }
     const versionArgs=instance.kind==="antigravity"?["--version"]:["--version"];
     const versionResult=await this.#run(instance,versionArgs,{timeoutMs:6000,environmentId});
-    if(!versionResult.ok)return {id:instance.id,kind:instance.kind,name:def.name,available:false,installed:false,authenticated:false,protocol:def.protocol,managed:Boolean(def.managed),binary:command,message:(versionResult.stderr||versionResult.error||`${def.name} executable was not found`).trim().slice(0,500)};
+    if(!versionResult.ok)return {id:instance.id,kind:instance.kind,name:def.name,available:false,installed:false,authenticated:false,protocol:def.protocol,managed:Boolean(def.managed),binary:command,message:runtimeProbeFailure(def,versionResult)};
     let authenticated=true,account=null,message="Ready";
     if(instance.kind==="claude"){
       const auth=await this.#run(instance,["auth","status"],{timeoutMs:8000,environmentId});
@@ -525,7 +537,7 @@ export class AgentRuntimeManager{
       const {environment,...safe}=instance;
       return {...safe,environmentKeys:Object.keys(environment||{}),approvedEnvironmentKeys:normalizeApprovedEnvironmentKeys(instance.approvedEnvironmentKeys)};
     });
-    const definitions=this.definitions().map(def=>({...def,installable:Boolean(this.installable(def.id)),packageName:INSTALLABLE_PACKAGES[def.id]||null,canAuthenticate:["claude","cursor","grok","opencode","antigravity"].includes(def.id)}));
+    const definitions=this.definitions().map(def=>({...def,installable:Boolean(this.installable(def.id)),packageName:INSTALLABLE_PACKAGES[def.id]||null,canAuthenticate:["codex","claude","cursor","grok","opencode","antigravity"].includes(def.id)}));
     const active=this.activeInstance();return {selectedRuntime:this.activeRuntime(),selectedInstanceId:active.id,compatibleInstanceIds:this.compatibleInstanceIds(active),capabilities:this.capabilities(active),definitions,instances:publicInstances,statuses};
   }
 }

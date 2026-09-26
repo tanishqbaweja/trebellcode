@@ -9,7 +9,7 @@
     "trebell-code": "./bin/trebell.mjs"
   },
   "scripts": {
-    "test": "node --import tsx --test tests/*.test.mjs",
+    "test": "node --import tsx --test --test-concurrency=2 tests/*.test.mjs",
     "bench:core": "node scripts/benchmark-core.mjs",
     "doctor": "node ./bin/trebell.mjs doctor",
     "smoke:bridge": "node --import tsx ./vendor/freebuff2api/src/index.ts --help",
@@ -38,6 +38,7 @@
     "test:providers:live": "node --env-file-if-exists=.env scripts/live-provider-smoke.mjs --live",
     "test:runtime-profiles:live": "node --env-file-if-exists=.env scripts/live-runtime-profile-smoke.mjs --live",
     "test:external-harnesses:live": "node --env-file-if-exists=.env scripts/live-external-harness-smoke.mjs --live",
+    "test:codex:live": "node --env-file-if-exists=.env scripts/live-codex-harness-smoke.mjs --live",
     "trace:export": "node scripts/export-event-replay.mjs",
     "trace:replay": "node scripts/replay-event-bundle.mjs",
     "prepare:icon": "node scripts/materialize-icon.mjs",

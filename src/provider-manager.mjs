@@ -18,6 +18,38 @@ export const MODEL_PROVIDERS = Object.freeze({
     envKey: null,
     requiresKey: false,
   },
+  openai: {
+    id: "openai",
+    name: "OpenAI API",
+    baseUrl: "https://api.openai.com/v1",
+    wireApi: "responses",
+    protocolCompatibility: ["openai-responses"],
+    envKey: "OPENAI_API_KEY",
+    requiresKey: true,
+    official: true,
+  },
+  anthropic: {
+    id: "anthropic",
+    name: "Anthropic API",
+    baseUrl: "https://api.anthropic.com/v1",
+    wireApi: "chat",
+    protocolCompatibility: ["anthropic-messages"],
+    envKey: "ANTHROPIC_API_KEY",
+    requiresKey: true,
+    official: true,
+    authStyle: "anthropic",
+  },
+  gemini: {
+    id: "gemini",
+    name: "Google Gemini API",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    wireApi: "chat",
+    protocolCompatibility: ["openai-chat-completions"],
+    envKey: "GEMINI_API_KEY",
+    envKeys: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+    requiresKey: true,
+    official: true,
+  },
   agentrouter: {
     id: "agentrouter",
     name: "AgentRouter",
@@ -97,6 +129,30 @@ function agentRouterHeaders(key, { accept = "application/json" } = {}) {
   };
 }
 
+function officialResponsesToolName(namespace,name){return namespace?String(namespace)+"__"+String(name||"tool"):String(name||"tool")}
+function officialOpenAiResponsesBody(request={}){
+  const body=providerTurnToResponses(request),tools=[];
+  for(const entry of Array.isArray(request.tools)?request.tools:[]){
+    if(entry?.type==="namespace"&&entry.name&&Array.isArray(entry.tools)){
+      for(const child of entry.tools){
+        if(!child?.name)continue;
+        tools.push({type:"function",name:officialResponsesToolName(entry.name,child.name),description:child.description||entry.description||"",parameters:child.parameters||child.inputSchema||{type:"object",properties:{}}});
+      }
+      continue;
+    }
+    if(entry?.type==="function"){
+      const source=entry.function||entry,name=source.name||entry.name;if(!name)continue;
+      tools.push({type:"function",name:String(name),description:source.description||entry.description||"",parameters:source.parameters||entry.parameters||entry.inputSchema||{type:"object",properties:{}}});
+    }
+  }
+  body.tools=tools;
+  body.input=(body.input||[]).map(item=>{
+    if(item?.type!=="function_call"||!item.namespace)return item;
+    const next={...item,name:officialResponsesToolName(item.namespace,item.name)};delete next.namespace;return next;
+  });
+  return body;
+}
+
 function normalizeProviderKey(value) {
   let key = String(value || "")
     .replace(/[\u200B-\u200D\u2060\uFEFF]/g, "")
@@ -151,6 +207,7 @@ export class ProviderManager {
       wireApi: provider.wireApi,
       protocolCompatibility: [...(provider.protocolCompatibility || [])],
       requiresKey: provider.requiresKey,
+      official: Boolean(provider.official),
       hasKey: provider.requiresKey ? this.hasKey(provider.id) : true,
       capabilities:providerCapabilities(provider.id),
     }));
@@ -201,6 +258,7 @@ export class ProviderManager {
       wireApi: provider.wireApi,
       protocolCompatibility: [...(provider.protocolCompatibility || [])],
       requiresKey: provider.requiresKey,
+      official: Boolean(provider.official),
       hasKey: provider.requiresKey ? this.hasKey(provider.id) : true,
       ready: provider.requiresKey ? this.hasKey(provider.id) : true,
       capabilities:providerCapabilities(provider.id),
@@ -226,10 +284,16 @@ export class ProviderManager {
     const response = await this.fetchFn(provider.baseUrl + "/models", {
       headers: provider.id === "agentrouter"
         ? agentRouterHeaders(key)
-        : {
-            Authorization: `Bearer ${key}`,
-            Accept: "application/json",
-          },
+        : provider.authStyle === "anthropic"
+          ? {
+              "x-api-key": key,
+              "anthropic-version": "2023-06-01",
+              Accept: "application/json",
+            }
+          : {
+              Authorization: `Bearer ${key}`,
+              Accept: "application/json",
+            },
       signal: AbortSignal.timeout(12_000),
     });
     const raw = await response.text();
@@ -262,7 +326,7 @@ export class ProviderManager {
     if (provider.id === "freebuff") throw new Error("Freebuff chat is handled by the local freebuff2api bridge.");
     const key = this.key(provider.id);
     if (!key) throw new Error(`${provider.name} API key is not configured.`);
-    if (provider.id === "justworker") {
+    if (provider.protocolCompatibility?.includes("anthropic-messages")) {
       const anthropicBody = chatToAnthropic(chatBody);
       const endpoint=provider.baseUrl + "/messages",body=JSON.stringify(anthropicBody);onWire?.({endpoint,wireApi:"anthropic-messages",requestBytes:Buffer.byteLength(body,"utf8")});
       const upstream = await this.fetchFn(endpoint, {
@@ -302,7 +366,7 @@ export class ProviderManager {
 
   async forwardResponses(providerId, responsesBody, { signal, onWire } = {}) {
     const provider = this.get(providerId);
-    if (provider.id !== "agentrouter") {
+    if (provider.wireApi !== "responses") {
       throw new Error(`${provider.name} does not use direct Responses forwarding.`);
     }
     const key = this.key(provider.id);
@@ -311,9 +375,16 @@ export class ProviderManager {
     const endpoint=provider.baseUrl + "/responses",body=JSON.stringify(responsesBody);onWire?.({endpoint,wireApi:"openai-responses",requestBytes:Buffer.byteLength(body,"utf8")});
     return await this.fetchFn(endpoint, {
       method: "POST",
-      headers: agentRouterHeaders(key, {
-        accept: stream ? "text/event-stream, application/json" : "application/json",
-      }),
+      headers: provider.id === "agentrouter"
+        ? agentRouterHeaders(key, {
+            accept: stream ? "text/event-stream, application/json" : "application/json",
+          })
+        : {
+            Authorization: `Bearer ${key}`,
+            "Content-Type": "application/json",
+            Accept: stream ? "text/event-stream, application/json" : "application/json",
+            "User-Agent": TREBELL_USER_AGENT,
+          },
       body,
       signal: providerRequestSignal(signal, this.requestTimeoutMs),
     });
@@ -326,7 +397,7 @@ export class ProviderManager {
     const started=performance.now();let wire={endpoint:null,wireApi:null,requestBytes:0};
     const onWire=value=>{wire=value||wire};
     const upstream=provider.wireApi==="responses"
-      ?await this.forwardResponses(provider.id,providerTurnToResponses({...request,model}),{signal,onWire})
+      ?await this.forwardResponses(provider.id,provider.id==="openai"?officialOpenAiResponsesBody({...request,model}):providerTurnToResponses({...request,model}),{signal,onWire})
       :await this.forwardChat(provider.id,providerTurnToChat({...request,model}),{signal,onWire});
     const headersLatencyMs=Number((performance.now()-started).toFixed(3));
     const raw=await upstream.text();
@@ -359,19 +430,12 @@ export class ProviderManager {
 
   async directChat(providerId, { model, prompt }) {
     const provider = this.get(providerId);
-    const response = await this.forwardChat(provider.id, {
+    const result=await this.turn(provider.id,{
       model,
-      messages: [{ role: "user", content: prompt }],
-      stream: false,
+      messages:[{role:"user",content:prompt}],
+      tools:[],
+      toolChoice:"none",
     });
-    const raw = await response.text();
-    if (!response.ok) throw new Error(`${provider.name} HTTP ${response.status}: ${providerErrorExcerpt(raw,{environment:this.env,secret:this.key(provider.id),maxChars:1200})}`);
-    const parsed = JSON.parse(raw);
-    return {
-      text: parsed?.choices?.[0]?.message?.content ?? "",
-      model,
-      provider: provider.id,
-      raw: parsed,
-    };
+    return {text:String(result.text||""),model:result.model||model,provider:provider.id,raw:result.raw};
   }
 }

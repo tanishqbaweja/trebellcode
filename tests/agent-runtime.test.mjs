@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
 import { AgentRuntimeManager, parseCursorAboutResult, parseGrokModelsAuth, parseOpenCodeAuthList, runtimeCapabilities, runtimeCompatibility, runtimeExecutableCandidates } from "../src/agent-runtime-manager.mjs";
 import { runtimeCapabilityKinds, sharedRuntimeCapabilities } from "../src/runtime-capabilities.mjs";
@@ -65,7 +65,7 @@ test("runtime capabilities describe adapter behavior without pretending unsuppor
   assert.equal(codex.dynamicToolExpansion,false);
   assert.equal(codex.nativeQueue,true);
   assert.equal(codex.mcpInjection,false);
-  assert.equal(codex.managedInference,true);
+  assert.equal(codex.managedInference,false);
   assert.equal(codex.backgroundProcesses,false,"Codex does not implement Trebell's thread/backgroundTerminals RPC surface");
   const native=runtimeCapabilities("native");
   assert.equal(native.projectOwnership,false);
@@ -179,9 +179,11 @@ test("Claude runtime profiles validate and persist auto-compact thresholds",asyn
 test("runtime profile compatibility follows continuation identity instead of display names",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-runtime-compat-"));
   try{
-    const env={...process.env,TREBELL_HOME:home,CLAUDE_CONFIG_DIR:join(home,"claude-default")};
+    const nativeCodexHome=join(home,"codex-env"),env={...process.env,TREBELL_HOME:home,CODEX_HOME:nativeCodexHome,CLAUDE_CONFIG_DIR:join(home,"claude-default")};
     const state=new TrebellStateStore(env);
     const manager=new AgentRuntimeManager({state,env,platform:"win32"});
+    assert.equal(manager.childEnv(manager.instances().find(item=>item.id==="codex-default")).CODEX_HOME,nativeCodexHome);
+    assert.match(manager.continuationKey("codex-default").toLowerCase(),new RegExp(resolve(nativeCodexHome).replace(/[.*+?^${}()|[\]\\]/g,"\\$&").toLowerCase()));
     const sharedCodex=join(home,"shared-codex");
     manager.upsertInstance({id:"codex-work",kind:"codex",displayName:"Work",homePath:sharedCodex,shadowHomePath:join(home,"codex-work-auth")});
     manager.upsertInstance({id:"codex-personal",kind:"codex",displayName:"Personal",homePath:sharedCodex,shadowHomePath:join(home,"codex-personal-auth")});
@@ -305,9 +307,10 @@ test("runtime auth commands use the provider's real interactive CLI flow",async(
     assert.deepEqual(manager.authCommand("cursor"),{runtime:"cursor",instanceId:"cursor-default",name:"Cursor",command:"cursor-agent",args:["login"]});
     assert.deepEqual(manager.authCommand("grok"),{runtime:"grok",instanceId:"grok-default",name:"Grok Build",command:"grok",args:["login"]});
     assert.deepEqual(manager.authCommand("opencode"),{runtime:"opencode",instanceId:"opencode-default",name:"OpenCode",command:"opencode",args:["auth","login"]});
+    const codexAuth=manager.authCommand("codex");
+    assert.equal(codexAuth.runtime,"codex");assert.equal(codexAuth.instanceId,"codex-default");assert.equal(codexAuth.name,"Codex");assert.deepEqual(codexAuth.args,["login"]);assert.ok(codexAuth.command);
     const external=manager.upsertInstance({id:"opencode-external",kind:"opencode",serverUrl:"https://opencode.example.test"});
     assert.throws(()=>manager.authCommand(external),/external server/i);
-    assert.throws(()=>manager.authCommand("codex"),/does not expose/i);
   }finally{await rm(home,{recursive:true,force:true})}
 });
 

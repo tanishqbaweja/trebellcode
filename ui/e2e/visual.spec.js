@@ -142,7 +142,7 @@ test("startup failures never become a fake empty mock workspace",async({page})=>
   await expect(page.getByTestId("model-picker")).toBeEnabled();
 });
 
-test("startup partial failures stay visible while the workspace remains usable",async({page})=>{
+test("startup partial failures stay visible while Codex skips unrelated Native provider account state",async({page})=>{
   test.setTimeout(30_000);
   await page.addInitScript(()=>Object.defineProperty(window,"trebellDesktop",{configurable:true,value:{background:{set:async()=>{throw new Error("Deliberate background mode apply failure")}}}}));
   const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",backgroundMode:true};
@@ -151,7 +151,8 @@ test("startup partial failures stay visible while the workspace remains usable",
   await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})}));
   await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
   await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
-  await page.route(/\/api\/freebuff\/overview/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate startup Freebuff account failure"})}));
+  let freebuffOverviewCalls=0;
+  await page.route(/\/api\/freebuff\/overview/,route=>{freebuffOverviewCalls++;return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate startup Freebuff account failure"})})});
   await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
   await page.goto("/");
   await expect(page.getByTestId("composer")).toBeVisible();
@@ -159,7 +160,7 @@ test("startup partial failures stay visible while the workspace remains usable",
   const error=page.getByTestId("app-action-error");
   await expect(error).toContainText("Started with partial data");
   await expect(error).toContainText("desktop background mode: Deliberate background mode apply failure");
-  await expect(error).toContainText("Freebuff account state: Deliberate startup Freebuff account failure");
+  expect(freebuffOverviewCalls).toBe(0);
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
@@ -1643,7 +1644,7 @@ test("direct fallback never drops attachments or failed text sends",async({page,
 
 test("failed automatic local queue starts keep the follow-up retryable",async({page})=>{
   test.setTimeout(35_000);
-  const thread={id:"local-queue-failure-thread",name:"Local queue failure fixture",preview:"Queued retry coverage",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const thread={id:"local-queue-failure-thread-"+Date.now(),name:"Local queue failure fixture",preview:"Queued retry coverage",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
   let turnStarts=0;
   const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
     if(message.method==="thread/queue/list"){
@@ -2463,7 +2464,7 @@ test("terminal failures keep backend and visible session state in sync",async({p
   const newButton=drawer.locator(".terminal-new");
   await expect(newButton).toBeVisible();
   await newButton.click();
-  await expect(drawer.locator(".terminal-pane")).toHaveCount(1);
+  await expect(drawer.locator(".terminal-pane")).toHaveCount(1,{timeout:10_000});
   const pane=drawer.locator(".terminal-pane").first();
   await expect(pane.locator(".terminal-screen")).toContainText("terminal fixture output",{timeout:10_000});
   await page.route(/\/api\/attachments\/text$/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate terminal attachment failure"})}));
@@ -2563,7 +2564,7 @@ test("settings page visual audit",async({page,request})=>{
   await expect(page.getByRole("heading",{name:"Context management"})).toBeVisible();
   const typeScale=await page.evaluate(()=>{
     const px=selector=>parseFloat(getComputedStyle(document.querySelector(selector)).fontSize)||0;
-    return {sidebar:px(".thread-main strong"),settingsBody:px(".settings-card p"),settingsNav:px(".settings-nav button strong"),sectionHeading:px(".settings-section-head h2")};
+    return {sidebar:px(".sidebar-provider strong"),settingsBody:px(".settings-card p"),settingsNav:px(".settings-nav button strong"),sectionHeading:px(".settings-section-head h2")};
   });
   expect(typeScale.settingsBody).toBeGreaterThanOrEqual(typeScale.sidebar*.85);
   expect(typeScale.settingsNav).toBeGreaterThanOrEqual(10);
@@ -2597,7 +2598,7 @@ test("settings page visual audit",async({page,request})=>{
 
   await page.getByRole("button",{name:/Agents & models/}).click();
   await expect(page.getByRole("heading",{name:"Agent harness"})).toBeVisible();
-  await expect(page.getByRole("heading",{name:"Model provider"})).toBeVisible();
+  await expect(page.getByRole("heading",{name:"Model provider"})).toHaveCount(0);
   await expect(page.getByLabel("Model ID")).toHaveCount(0);
   await page.screenshot({path:auditDir+"settings-agents-1600x980.png",fullPage:true});
   await page.getByRole("button",{name:"Add custom model",exact:true}).click();
@@ -2648,6 +2649,11 @@ test("settings page visual audit",async({page,request})=>{
   await page.screenshot({path:auditDir+"settings-general-1280x800.png",fullPage:true});
   const compact=await pageShell.evaluate(node=>({clientWidth:node.clientWidth,scrollWidth:node.scrollWidth}));
   expect(compact.scrollWidth).toBeLessThanOrEqual(compact.clientWidth+1);
+  await page.setViewportSize({width:1024,height:700});
+  const zoomLike=await pageShell.evaluate(node=>({clientWidth:node.clientWidth,scrollWidth:node.scrollWidth}));
+  expect(zoomLike.scrollWidth).toBeLessThanOrEqual(zoomLike.clientWidth+1);
+  await page.screenshot({path:auditDir+"settings-general-effective-zoom-1024x700.png",fullPage:true});
+  await page.setViewportSize({width:1280,height:800});
   await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
   await page.getByRole("button",{name:/Workspace/}).click();
   await expect(page.getByRole("heading",{name:"Storage cleanup"})).toBeVisible();
@@ -2746,7 +2752,7 @@ test("published theme refresh failures keep the last valid catalog visible",asyn
 
 test("Freebuff sign-in failures surface immediately without starting a useless poll",async({page,request})=>{
   test.setTimeout(30_000);
-  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff"}});
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"freebuff"}});
   const boot=await (await request.get("/api/bootstrap")).json();
   let bootstrapCalls=0;
   await page.route(/\/api\/bootstrap$/,route=>{
@@ -2774,7 +2780,7 @@ test("Freebuff sign-in failures surface immediately without starting a useless p
 
 test("Freebuff sign-in verification failures stop the poll and stay visible",async({page,request})=>{
   test.setTimeout(30_000);
-  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff"}});
+  await request.post("/api/settings",{data:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"freebuff"}});
   const boot=await (await request.get("/api/bootstrap")).json();
   let verifying=false,bootstrapCalls=0;
   await page.route(/\/api\/bootstrap$/,route=>{
@@ -2884,19 +2890,34 @@ test("Trebell Native is a built-in provider-backed runtime in Settings",async({p
   await prepare(page,request);
   await page.getByRole("button",{name:"Settings"}).click();
   await page.getByRole("button",{name:/Agents & models/}).click();
+  await expect(page.getByTestId("provider-settings-card")).toHaveCount(0);
+  await expect(page.locator(".sidebar-provider")).toContainText("Codex");
+  await expect(page.locator(".sidebar-provider")).toContainText("Agent harness");
   const nativeOption=page.locator(".agent-runtime-option").filter({hasText:"Trebell Native"});
-  await expect(nativeOption).toBeVisible();
+  await expect(nativeOption).toBeVisible({timeout:15_000});
   await nativeOption.locator("button").first().click();
   await expect(nativeOption.getByText("Active",{exact:true})).toBeVisible();
   await expect(nativeOption).toContainText("Built into Trebell Code");
+  await expect(page.locator(".agent-runtime-settings")).toContainText("Trebell Native selected.",{timeout:15_000});
   const profiles=page.locator('[data-setting-target="agents-profiles"]');
   await expect(profiles).toHaveCount(0);
   const providerCard=page.getByTestId("provider-settings-card");
   await expect(providerCard).toBeVisible();
-  await expect(providerCard).toContainText("inference service used by Trebell Native");
-  await expect(providerCard).toContainText("Threads stay owned by Trebell");
+  await expect(providerCard).toContainText("API that Trebell Native calls directly");
+  await expect(providerCard).toContainText("Trebell Native still owns the thread, tools and agent loop");
   const providerSelect=page.getByTestId("provider-selector");
   await expect(providerSelect).toHaveValue("freebuff");
+  await expect(providerSelect.locator('option[value="openai"]')).toHaveText("OpenAI API · official");
+  await expect(providerSelect.locator('option[value="anthropic"]')).toHaveText("Anthropic API · official");
+  await expect(providerSelect.locator('option[value="gemini"]')).toHaveText("Google Gemini API · official");
+  await providerSelect.selectOption("openai");
+  await expect(providerCard).toHaveAttribute("aria-busy","false");
+  await expect(providerSelect).toHaveValue("openai");
+  await expect(providerCard).toContainText("OpenAI API");
+  await expect(providerCard).toContainText("API key required");
+  await page.setViewportSize({width:1280,height:800});
+  await providerCard.scrollIntoViewIfNeeded();
+  await page.screenshot({path:auditDir+"settings-native-official-openai-1280x800.png",fullPage:true});
   await providerSelect.selectOption("agentrouter");
   await expect(providerCard).toHaveAttribute("aria-busy","false");
   await expect(providerSelect).toHaveValue("agentrouter");
@@ -2922,6 +2943,11 @@ test("Trebell Native is a built-in provider-backed runtime in Settings",async({p
   await mcpCard.scrollIntoViewIfNeeded();
   metrics=await page.locator(".settings-stage").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   await page.screenshot({path:auditDir+"settings-native-runtime-1280x800.png",fullPage:true});
+  await page.setViewportSize({width:1024,height:720});
+  await mcpCard.scrollIntoViewIfNeeded();
+  metrics=await page.locator(".settings-stage").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"settings-native-runtime-1024x720.png",fullPage:true});
+  await page.setViewportSize({width:1280,height:800});
   await page.getByRole("button",{name:/General/}).click();
   const followups=page.locator('[data-setting-target="general-followups"]');
   await expect(followups).toBeVisible();
@@ -4510,6 +4536,9 @@ test("light mode stays visually coherent across workspace and panels",async({pag
 test("Freebuff dashboard stays visually coherent in light mode",async({page,request})=>{
   test.setTimeout(30_000);
   await prepare(page,request);
+  await request.post("/api/settings",{data:{agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"freebuff"}});
+  await page.reload();
+  await expect(page.locator(".sidebar-provider")).toContainText("Trebell Native");
   await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
   await page.locator(".sidebar-provider").click();
   await expect(page.getByRole("heading",{name:"Freebuff",level:1})).toBeVisible();
@@ -4527,6 +4556,9 @@ test("Freebuff dashboard stays visually coherent in light mode",async({page,requ
 test("Freebuff manual refresh failures preserve the last valid account state",async({page,request})=>{
   test.setTimeout(30_000);
   await prepare(page,request);
+  await request.post("/api/settings",{data:{agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"freebuff"}});
+  await page.reload();
+  await expect(page.locator(".sidebar-provider")).toContainText("Trebell Native");
   await page.locator(".sidebar-provider").click();
   await expect(page.getByRole("heading",{name:"Freebuff",level:1})).toBeVisible();
   const hero=page.locator(".fb-hero");
@@ -4589,13 +4621,13 @@ test("custom theme stays coherent across chat panel and command palette",async({
 test("provider model refresh preserves models when provider status refresh fails",async({page})=>{
   test.setTimeout(30_000);
   let provider="freebuff",failBootstrap=false;
-  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
+  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
   const modelCatalog=()=>provider==="agentrouter"
     ?{models:["agentrouter/test/coding-fast"],metadata:{provider,models:[{id:"agentrouter/test/coding-fast",name:"Coding Fast",provider}]}}
     :{models:["freebuff/test/coding-fast"],metadata:{provider,models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider}]}};
   await page.route(/\/api\/bootstrap$/,route=>failBootstrap
     ?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate provider bootstrap refresh failure"})})
-    :route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider,providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"provider-bootstrap-refresh-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    :route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider,providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"provider-bootstrap-refresh-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
   await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:settings(),projects:[],threadMeta:{}})}));
   await page.route(/\/api\/settings$/,route=>{
     if(route.request().method()==="POST"){
@@ -4629,13 +4661,13 @@ test("provider model refresh preserves models when provider status refresh fails
 test("provider model refresh preserves the same-provider catalog when model refresh fails",async({page})=>{
   test.setTimeout(30_000);
   let failModels=false;
-  const provider="agentrouter",settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
-  const catalog={provider,agentRuntime:"codex",models:["agentrouter/test/coding-fast"],metadata:{provider,models:[{id:"agentrouter/test/coding-fast",name:"Coding Fast",provider}]}};
-  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider,providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"provider-model-refresh-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+  const provider="agentrouter",settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const catalog={provider,agentRuntime:"native",models:["agentrouter/test/coding-fast"],metadata:{provider,models:[{id:"agentrouter/test/coding-fast",name:"Coding Fast",provider}]}};
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider,providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"provider-model-refresh-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
   await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{}})}));
   await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
   await page.route(/\/api\/models$/,route=>failModels
-    ?route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({provider,agentRuntime:"codex",models:[],error:"Deliberate model catalog refresh failure"})})
+    ?route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({provider,agentRuntime:"native",models:[],error:"Deliberate model catalog refresh failure"})})
     :route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(catalog)}));
   await page.route(/\/api\/providers$/,route=>{
     if(route.request().method()==="POST")failModels=true;
@@ -4651,7 +4683,7 @@ test("provider model refresh preserves the same-provider catalog when model refr
   await page.setViewportSize({width:1280,height:800});const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({path:auditDir+"provider-model-refresh-error-retains-catalog-1280x800.png",fullPage:true});
 });
 
-test("switching Codex inference provider preserves the active chat and sidebar threads",async({page})=>{
+test("switching Trebell Native inference provider preserves the active chat and sidebar threads",async({page})=>{
   test.setTimeout(45_000);
   const turn={id:"provider-turn-1",status:"completed",items:[
     {id:"provider-user-1",type:"userMessage",text:"Keep this conversation open while I change inference providers."},
@@ -4670,14 +4702,8 @@ test("switching Codex inference provider preserves the active chat and sidebar t
       else if(message.method==="thread/list")result={data:[thread],nextCursor:null};
       else if(message.method==="thread/resume")result=message.params?.excludeTurns?{thread:{...thread,turns:[]},turnsBackwardsCursor:"turn-page-1"}:{thread};
       else if(message.method==="thread/turns/list")result={data:[turn],nextCursor:null};
-      else if(message.method==="threadSection/list"){
-        if(provider==="agentrouter"){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate section refresh failure"}}));return}
-        result={data:["Pinned","Snoozed","Settled"].map(name=>({id:name.toLowerCase(),name}))};
-      }
-      else if(message.method==="collaborationMode/list"){
-        if(provider==="agentrouter"){ws.send(JSON.stringify({id:message.id,error:{code:-32000,message:"Deliberate collaboration mode refresh failure"}}));return}
-        result={data:[{name:"Default",mode:"default"},{name:"Plan",mode:"plan"}]};
-      }
+      else if(message.method==="threadSection/list")result={data:["Pinned","Snoozed","Settled"].map(name=>({id:name.toLowerCase(),name}))};
+      else if(message.method==="collaborationMode/list")result={data:[]};
       else if(message.method==="skills/list")result={data:[]};
       else if(message.method==="modelProvider/capabilities/read")result={namespaceTools:true,webSearch:true,imageGeneration:false};
       ws.send(JSON.stringify({id:message.id,result}));
@@ -4685,12 +4711,12 @@ test("switching Codex inference provider preserves the active chat and sidebar t
   });
   const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
   let provider="freebuff";
-  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
+  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
   const models=()=>provider==="agentrouter"
     ?{models:["agentrouter/test/coding-fast"],metadata:{provider,models:[{id:"agentrouter/test/coding-fast",name:"Coding Fast",provider}]}}
     :{models:["freebuff/test/coding-fast"],metadata:{provider,models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider}]}};
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider,providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider,providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:settings(),projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}})}));
     await page.route(/\/api\/settings$/,async route=>{
       if(route.request().method()==="POST"){const body=route.request().postDataJSON()||{};if(body.modelProvider)provider=body.modelProvider;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())})}
@@ -4708,10 +4734,6 @@ test("switching Codex inference provider preserves the active chat and sidebar t
     await threadButton.click();
     await expect(page.getByText("Keep this conversation open while I change inference providers.")).toBeVisible();
     await expect(page.getByText("This message should still be here after the provider switch.")).toBeVisible();
-    const collaborationPicker=page.getByTestId("collaboration-mode-picker");
-    await expect(collaborationPicker).toBeVisible();
-    await collaborationPicker.selectOption("plan");
-    await expect(collaborationPicker).toHaveValue("plan");
     await page.keyboard.press("Control+k");
     await expect(page.getByTestId("command-palette").getByText("Copy conversation",{exact:true})).toBeVisible();
     await page.keyboard.press("Escape");
@@ -4732,9 +4754,6 @@ test("switching Codex inference provider preserves the active chat and sidebar t
     await expect(page.getByText("Keep this conversation open while I change inference providers.")).toBeVisible();
     await expect(page.getByText("This message should still be here after the provider switch.")).toBeVisible();
     await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","Provider independent thread");
-    await expect(collaborationPicker).toBeVisible();
-    await expect(collaborationPicker).toHaveValue("plan");
-    await expect(collaborationPicker.locator("option")).toHaveCount(2);
     const after=await page.locator(".thread-main").evaluateAll(nodes=>nodes.map(node=>node.getAttribute("title")||node.textContent.trim()));
     expect(after).toEqual(before);
     await expect(page.locator(".sidebar-provider")).toContainText("AgentRouter");

@@ -86,6 +86,7 @@ test("Chat SSE is translated back into Responses SSE with tool calls", async () 
 test("Provider bridge exposes Responses API while forwarding Chat Completions upstream", async () => {
   const calls=[];
   const providerManager={
+    get(){return {wireApi:"chat"};},
     hasKey(provider){return provider==="hcnsec";},
     async models(provider){
       assert.equal(provider,"hcnsec");
@@ -156,6 +157,7 @@ test("stream=true always returns Responses SSE even when upstream answers with J
 test("provider bridge passes AgentRouter Responses through directly", async () => {
   let seenBody=null;
   const providerManager={
+    get(){return {wireApi:"responses"};},
     hasKey(provider){return provider==="agentrouter";},
     async models(){return {models:["deepseek-v4-flash"]};},
     async forwardResponses(provider,body){
@@ -189,4 +191,23 @@ test("provider bridge passes AgentRouter Responses through directly", async () =
   }finally{
     await bridge.close();
   }
+});
+
+test("provider bridge preserves direct Responses transport for official OpenAI",async()=>{
+  let seenBody=null;
+  const providerManager={
+    get(){return {wireApi:"responses"};},
+    hasKey(provider){return provider==="openai";},
+    async models(){return {models:["gpt-5.6"]};},
+    async forwardResponses(provider,body){
+      assert.equal(provider,"openai");seenBody=body;
+      return Response.json({id:"resp_openai",object:"response",model:body.model,output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"openai-ok"}]}]});
+    },
+  };
+  const bridge=await startProviderBridge({port:0,providerManager,provider:"openai"});
+  try{
+    const response=await fetch(bridge.url+"/v1/responses",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({model:"gpt-5.6",input:"hello",stream:false})});
+    assert.equal(response.status,200);const json=await response.json();
+    assert.equal(json.output[0].content[0].text,"openai-ok");assert.equal(seenBody.input,"hello");
+  }finally{await bridge.close()}
 });

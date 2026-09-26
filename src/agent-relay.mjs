@@ -552,6 +552,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
   const recoveryInFlight=new Set();
   const liveToolOutput=new Map();
   const pendingDelegations=new Map();
+  const promptSettlements=new Set();
+  let closing=false;
   async function createVerificationCheckpoint(thread,label){
     if(!checkpoints?.create||!thread?.cwd)return null;
     try{
@@ -807,7 +809,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
   }
 
   async function autoStartNextNativeQueue(threadId,context){
-    const id=String(threadId||"");if(!id||!context||nativeQueueStarting.has(id))return false;
+    const id=String(threadId||"");if(closing||!id||!context||nativeQueueStarting.has(id))return false;
     const current=threadStore.get(id);if(!current||current.runtime!=="native"||current.status?.type==="active")return false;
     const queue=agentQueue(state,id);if(!queue.length)return false;
     nativeQueueStarting.add(id);
@@ -828,7 +830,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       if(thread.runtime!=="native")return;const count=Number(value);if(!Number.isFinite(count)||count<0)return;
       threadStore.updateTurn(thread.id,turn.id,{modelTurns:Math.max(0,Math.floor(count))});
     };
-    promptPromise.then(result=>{
+    const settlement=promptPromise.then(result=>{
       persistUsage(result);persistModelTurns(result?.raw?.modelTurns);
       const providerMessageId=result?.providerMessageId||result?.userMessageId||null;
       const providerUserMessageId=result?.userMessageId||null;
@@ -850,6 +852,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       persistUsage(null);persistModelTurns(error?.nativeModelTurns);
       const completed=threadStore.finishTurn(thread.id,turn.id,{status:"failed",error:{message:error.message}});emit("error",{threadId:thread.id,turnId:turn.id,message:error.message});emit("turn/completed",{threadId:thread.id,turn:completed});
     }).finally(()=>{clearLiveToolOutput(thread.id);recoveryInFlight.delete(thread.id)});
+    promptSettlements.add(settlement);
+    void settlement.finally(()=>promptSettlements.delete(settlement)).catch(error=>log(error?.stack||String(error)));
+    return settlement;
   }
 
   async function recoverPending(context){
@@ -1468,8 +1473,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     });
   };
   server.on("upgrade",upgrade);
-  async function closeSessions(){for(const session of sessions.values())await session.close().catch(()=>{});sessions.clear()}
+  async function closeSessions(){
+    for(const session of sessions.values())await session.close().catch(()=>{});sessions.clear();
+    if(promptSettlements.size)await Promise.allSettled([...promptSettlements]);
+  }
   return {reset:closeSessions,close:async()=>{
+    closing=true;
     server.off("upgrade",upgrade);
     for(const context of socketContexts){try{context.ws.terminate()}catch{}}
     socketContexts.clear();
