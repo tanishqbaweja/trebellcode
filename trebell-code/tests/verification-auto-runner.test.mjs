@@ -26,3 +26,9 @@ test("automatic verification does not execute command, browser, or integration s
   const plan={paths:["src/a.js"],steps:[{id:"tests",kind:"tests",cost:"low",required:true,command:"npm test"}]};
   const result=await runAutomaticVerificationEvidence({contextEngine,plan,root:"/repo"});assert.equal(calls,0);assert.deepEqual(result.evidence,[]);assert.equal(result.nextAction.nextStep.id,"tests");
 });
+
+test("automatic verification runs Python diagnostics through the existing Context Engine adapter",async()=>{
+  const calls=[],contextEngine={diagnostics:async args=>{calls.push(args);return {supported:true,engine:"python-ast",semantic:false,diagnostics:[],semanticDiagnostics:[]}}};
+  const plan={paths:["src/service.py","src/types.pyi","README.md"],steps:[{id:"diagnostics",kind:"diagnostics",cost:"low",required:true}]};
+  const result=await runAutomaticVerificationEvidence({contextEngine,plan,root:"/repo"});assert.deepEqual(calls.map(item=>item.path),["src/service.py","src/types.pyi"]);assert.equal(result.evidence[0].status,"passed");assert.deepEqual(result.evidence[0].coveredPaths,["src/service.py","src/types.pyi"]);assert.deepEqual(result.evidence[0].engines,["python-ast"]);assert.equal(result.nextAction.action,"complete");
+});

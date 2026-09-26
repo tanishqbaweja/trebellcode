@@ -1,6 +1,6 @@
 import { mergeVerificationEvidence, nextVerificationAction } from "./verification-loop.mjs";
 
-const DIAGNOSTIC_SOURCE=/\.(?:[cm]?[jt]sx?)$/i;
+const DIAGNOSTIC_SOURCE=/\.(?:[cm]?[jt]sx?|pyi?)$/i;
 
 function array(value){return Array.isArray(value)?value:[]}
 function slash(value){return String(value||"").replace(/\\/g,"/")}
@@ -13,7 +13,7 @@ export async function runAutomaticVerificationEvidence({contextEngine,plan,evide
   if(next.action!=="verify"||step?.kind!=="diagnostics")return {evidence:initial,attempted:[],nextAction:next};
   const targets=[...new Set(array(plan?.paths).map(slash).filter(path=>DIAGNOSTIC_SOURCE.test(path)))].slice(0,80);
   if(!targets.length){
-    const update={stepId:step.id,status:"blocked",reason:"No changed JavaScript/TypeScript source paths were available for deterministic diagnostics.",source:"harness-diagnostics",coveredPaths:[]};
+    const update={stepId:step.id,status:"blocked",reason:"No changed JavaScript/TypeScript/Python source paths were available for deterministic diagnostics.",source:"harness-diagnostics",coveredPaths:[]};
     const merged=mergeVerificationEvidence(initial,[update]);return {evidence:merged,attempted:[update],nextAction:nextVerificationAction({plan,evidence:merged})};
   }
   const attempted=[],engines=new Set();let errorCount=0,blockedReason="";

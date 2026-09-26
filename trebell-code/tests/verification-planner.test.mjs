@@ -48,3 +48,14 @@ test("Rust changes use cargo check convention when no declared typecheck exists"
   assert.equal(plan.steps[0].command,"cargo check");
   assert.ok(plan.steps.some(step=>step.id==="project_tests"&&step.command==="cargo test"));
 });
+
+test("Python changes use deterministic diagnostics and discovered project tests",()=>{
+  const plan=planVerification({
+    changedPaths:["src/service.py"],
+    projectCommands:{declared:[{name:"test",command:"python -m pytest",kind:"test",confidence:"declared"}],conventional:[]},
+    capabilities:{diagnostics:true,semanticDiagnostics:true},
+  });
+  assert.equal(plan.categories.python,true);assert.equal(plan.risk,"medium");assert.match(plan.reasons.join(" "),/Python changes benefit from AST syntax diagnostics/i);
+  const diagnostics=plan.steps.find(step=>step.id==="diagnostics");assert.ok(diagnostics);assert.equal(diagnostics.semantic,true);assert.match(diagnostics.reason,/Python syntax/i);
+  const tests=plan.steps.find(step=>step.id==="project_tests");assert.ok(tests);assert.equal(tests.command,"python -m pytest");
+});

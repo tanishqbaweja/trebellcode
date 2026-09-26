@@ -36,6 +36,12 @@ test("diagnostics evidence stays incomplete until every changed source target wa
   assert.deepEqual(collectVerificationEvidence({plan,turnItems}),[]);
 });
 
+test("diagnostics evidence collector includes Python source targets",()=>{
+  const plan={paths:["src/service.py"],steps:[{id:"diagnostics",kind:"diagnostics",required:true}]};
+  const turnItems=[{type:"dynamicToolCall",id:"diag-python",namespace:"trebell_repo",tool:"diagnostics",status:"completed",arguments:{path:"src/service.py"},rawOutput:{path:"src/service.py",diagnostics:[],semanticDiagnostics:[]}}];
+  assert.deepEqual(collectVerificationEvidence({plan,turnItems}),[{stepId:"diagnostics",status:"passed",errorCount:0,source:"turn-tool",toolCallIds:["diag-python"],coveredPaths:["src/service.py"]}]);
+});
+
 test("verification evidence collector converts sanitized browser receipts into planned browser evidence",()=>{
   const plan={steps:[
     {id:"browser_interaction",kind:"browser",required:true},

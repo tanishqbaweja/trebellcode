@@ -1,4 +1,4 @@
-const SOURCE_EXTENSIONS=/\.(?:[cm]?[jt]sx?)$/i;
+const SOURCE_EXTENSIONS=/\.(?:[cm]?[jt]sx?|pyi?)$/i;
 
 function array(value){return Array.isArray(value)?value:[]}
 function slash(value){return String(value||"").replace(/\\/g,"/")}
