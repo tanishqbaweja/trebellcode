@@ -33,6 +33,6 @@ test("source-control hooks filter actions and blocking failures stop before muta
 
 test("after-source-control hook failures are warnings and never expose command output",async()=>{
   const result=await runProjectHooks({hooks:[{id:"notify",name:"Notify",event:"source-control.after",command:"echo secret",failureMode:"block"}],event:"source-control.after",action:"push",execute:async()=>({exitCode:7,stdout:"TOP_SECRET",stderr:"PRIVATE"})});
-  assert.deepEqual(result,[{hookId:"notify",name:"Notify",event:"source-control.after",action:"push",status:"failed",exitCode:7,timedOut:false,durationMs:0,failureMode:"warn"}]);
+  assert.equal(result.length,1);assert.deepEqual({...result[0],durationMs:0},{hookId:"notify",name:"Notify",event:"source-control.after",action:"push",status:"failed",exitCode:7,timedOut:false,durationMs:0,failureMode:"warn"});assert.ok(Number.isFinite(result[0].durationMs)&&result[0].durationMs>=0);
   assert.doesNotMatch(JSON.stringify(result),/TOP_SECRET|PRIVATE/);
 });
