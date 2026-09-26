@@ -8,6 +8,7 @@ import { parseFirefoxProfiles, readFirefoxCookieDatabase } from "./firefox-impor
 import { chromiumCookieDatabase, discoverHeliumProfiles, readHeliumProfileCookies } from "./chromium-import.mjs";
 import { DEFAULT_SNAPSHOT_CONFIG, normalizeSnapshotConfig } from "./snapshot-config.mjs";
 import { discoverEditors } from "./editor-discovery.mjs";
+import { createUpdaterController } from "./updater-controller.mjs";
 
 const require=createRequire(import.meta.url);
 const { autoUpdater }=require("electron-updater");
@@ -21,64 +22,32 @@ let tray=null;
 let backgroundEnabled=false;
 let snapshotConfig={...DEFAULT_SNAPSHOT_CONFIG};
 let browserRecordingGrantUntil=0;
-let updaterConfigured=false;
-let updaterState={supported:false,status:"idle",currentVersion:null,availableVersion:null,percent:null,transferred:null,total:null,error:null,releaseName:null};
+let updaterController=null;
 
 const MIN_ZOOM_FACTOR=0.7;
 const MAX_ZOOM_FACTOR=2.5;
 const ZOOM_STEP=0.1;
 
-function publishUpdaterState(patch={}){
-  updaterState={...updaterState,...patch,currentVersion:app.getVersion?.()||updaterState.currentVersion};
-  try{if(windowRef&&!windowRef.isDestroyed())windowRef.webContents.send("desktop:update:state",updaterState)}catch{}
-  return {...updaterState};
-}
-
 function configureUpdater(){
-  if(updaterConfigured)return updaterState;
-  updaterConfigured=true;
-  if(!app.isPackaged)return publishUpdaterState({supported:false,status:"development",error:null});
-  autoUpdater.autoDownload=false;
-  autoUpdater.autoInstallOnAppQuit=false;
-  autoUpdater.allowPrerelease=false;
-  autoUpdater.on("checking-for-update",()=>publishUpdaterState({supported:true,status:"checking",error:null,percent:null,transferred:null,total:null}));
-  autoUpdater.on("update-available",info=>publishUpdaterState({supported:true,status:"available",availableVersion:info?.version||null,releaseName:info?.releaseName||null,error:null}));
-  autoUpdater.on("update-not-available",info=>publishUpdaterState({supported:true,status:"current",availableVersion:info?.version||app.getVersion(),releaseName:info?.releaseName||null,error:null,percent:null}));
-  autoUpdater.on("download-progress",progress=>publishUpdaterState({supported:true,status:"downloading",percent:Number(progress?.percent)||0,transferred:Number(progress?.transferred)||0,total:Number(progress?.total)||0,error:null}));
-  autoUpdater.on("update-downloaded",info=>publishUpdaterState({supported:true,status:"downloaded",availableVersion:info?.version||updaterState.availableVersion,releaseName:info?.releaseName||updaterState.releaseName,percent:100,error:null}));
-  autoUpdater.on("error",error=>publishUpdaterState({supported:true,status:"error",error:error?.message||String(error)}));
-  return publishUpdaterState({supported:true,status:"idle",error:null});
+  if(updaterController)return updaterController.configure();
+  updaterController=createUpdaterController({
+    app,autoUpdater,
+    onState:state=>{try{if(windowRef&&!windowRef.isDestroyed())windowRef.webContents.send("desktop:update:state",state)}catch{}},
+    beforeInstall:async()=>{
+      quitting=true;
+      try{if(agentBrowser&&!agentBrowser.isDestroyed())agentBrowser.destroy()}catch{}
+      try{tray?.destroy();tray=null}catch{}
+      try{if(registeredSnapshotShortcut)globalShortcut.unregister(registeredSnapshotShortcut);registeredSnapshotShortcut=null}catch{}
+      const activeGui=gui;gui=null;await Promise.resolve(activeGui?.close?.()).catch(()=>{});
+    },
+    onInstallLaunchFailure:()=>recoverAfterFailedUpdateInstall(),
+  });
+  return updaterController.configure();
 }
 
-async function checkDesktopUpdate(){
-  configureUpdater();
-  if(!app.isPackaged)return publishUpdaterState({supported:false,status:"development",error:null});
-  await autoUpdater.checkForUpdates();
-  return {...updaterState};
-}
-
-async function downloadDesktopUpdate(){
-  configureUpdater();
-  if(!app.isPackaged)throw new Error("Desktop updates are only available in packaged builds.");
-  if(updaterState.status!=="available")throw new Error("No downloadable update is currently available.");
-  publishUpdaterState({status:"downloading",error:null,percent:0});
-  await autoUpdater.downloadUpdate();
-  return {...updaterState};
-}
-
-async function installDesktopUpdate(){
-  configureUpdater();
-  if(!app.isPackaged)throw new Error("Desktop updates are only available in packaged builds.");
-  if(updaterState.status!=="downloaded")throw new Error("Download the update before installing it.");
-  publishUpdaterState({status:"installing",error:null});
-  quitting=true;
-  try{if(agentBrowser&&!agentBrowser.isDestroyed())agentBrowser.destroy()}catch{}
-  try{tray?.destroy();tray=null}catch{}
-  try{if(registeredSnapshotShortcut)globalShortcut.unregister(registeredSnapshotShortcut);registeredSnapshotShortcut=null}catch{}
-  await Promise.resolve(gui?.close?.()).catch(()=>{});
-  setImmediate(()=>autoUpdater.quitAndInstall(false,true));
-  return {ok:true};
-}
+async function checkDesktopUpdate(){configureUpdater();return updaterController.check()}
+async function downloadDesktopUpdate(){configureUpdater();return updaterController.download()}
+async function installDesktopUpdate(){configureUpdater();return updaterController.install()}
 
 function clampZoomFactor(value){
   const numeric=Number(value);
@@ -746,14 +715,35 @@ async function computerType(text){
   return {ok:true,length:value.length};
 }
 
+function guiServerOptions(){
+  return {
+    port:Number(process.env.TREBELL_GUI_PORT || 3210),
+    appPort:Number(process.env.TREBELL_APP_SERVER_PORT || 23456),
+    mock:process.env.TREBELL_GUI_MOCK==="1",
+    env:process.env,
+  };
+}
+
+async function startGuiServer(){
+  if(gui)return gui;
+  gui=await createGuiServer(guiServerOptions());
+  return gui;
+}
+
+async function recoverAfterFailedUpdateInstall(){
+  quitting=false;
+  try{
+    const server=await startGuiServer();
+    if(windowRef&&!windowRef.isDestroyed())await windowRef.loadURL(server.url);
+  }catch(error){console.error("Could not restart Trebell after updater launch failure:",error)}
+  if(backgroundEnabled&&!tray)try{ensureTray()}catch(error){console.error("Could not restore Trebell tray after updater launch failure:",error)}
+  if(snapshotConfig.enabled&&!registeredSnapshotShortcut)try{applySnapshotConfig(snapshotConfig,{persist:false})}catch(error){console.error("Could not restore SnapShot shortcut after updater launch failure:",error)}
+}
+
 async function createWindow(){
   configureBundledRuntime();
   try{ process.chdir(app.getPath("home")); }catch{}
-
-  const port=Number(process.env.TREBELL_GUI_PORT || 3210);
-  const appPort=Number(process.env.TREBELL_APP_SERVER_PORT || 23456);
-  const mock=process.env.TREBELL_GUI_MOCK==="1";
-  gui=await createGuiServer({port,appPort,mock,env:process.env});
+  await startGuiServer();
 
   windowRef=new BrowserWindow({
     width:1600,
