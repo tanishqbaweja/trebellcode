@@ -30,8 +30,8 @@ test("Native session reports namespaced tool lifecycle and keeps observations in
   await session.start({model:"model"});await session.prompt([{type:"text",text:"find Session"}]);
   const lifecycle=updates.filter(item=>["tool_call","tool_call_update"].includes(item.update.sessionUpdate));assert.equal(lifecycle.length,2);
   assert.equal(lifecycle[0].update.namespace,"trebell_repo");assert.equal(lifecycle[0].update.tool,"search_symbols");assert.equal(lifecycle[1].update.status,"completed");
-  const providerObservation=requests[1].messages.at(-1);assert.equal(providerObservation.role,"tool");assert.match(providerObservation.content,/src\/session\.js/);
-  const persisted=agentToolLifecycle(lifecycle[1].update).item;assert.equal(persisted.type,"dynamicToolCall");assert.equal(persisted.namespace,"trebell_repo");assert.equal(persisted.tool,"search_symbols");
+  const providerObservation=requests[1].messages.at(-1);assert.equal(providerObservation.role,"tool");assert.match(providerObservation.content,/untrusted tool data/i);assert.match(providerObservation.content,/src\/session\.js/);
+  const persisted=agentToolLifecycle(lifecycle[1].update).item;assert.equal(persisted.type,"dynamicToolCall");assert.equal(persisted.namespace,"trebell_repo");assert.equal(persisted.tool,"search_symbols");assert.doesNotMatch(JSON.stringify(persisted.rawOutput),/untrusted tool data/i);
 });
 
 test("Native persisted thread evidence reconstructs model and tool history after restart",()=>{
@@ -41,14 +41,14 @@ test("Native persisted thread evidence reconstructs model and tool history after
     {type:"agentMessage",id:"a1",text:"Found Session."},
   ]}]};
   const messages=nativeMessagesFromThread(thread);assert.deepEqual(messages.map(item=>item.role),["user","assistant","tool","assistant"]);
-  assert.equal(messages[1].toolCalls[0].namespace,"trebell_repo");assert.match(messages[2].content,/session\.js/);assert.equal(messages[3].content,"Found Session.");
+  assert.equal(messages[1].toolCalls[0].namespace,"trebell_repo");assert.match(messages[2].content,/untrusted tool data/i);assert.match(messages[2].content,/session\.js/);assert.equal(messages[3].content,"Found Session.");
 });
 
 test("Native persisted tool content reconstructs image observations when available",()=>{
   const thread={turns:[{items:[
     {type:"dynamicToolCall",id:"shot-1",namespace:"trebell_browser",tool:"screenshot",arguments:{},status:"completed",contentItems:[{type:"inputText",text:"screen metadata"},{type:"inputImage",imageUrl:IMAGE_DATA_URL}],success:true},
   ]}]};
-  const messages=nativeMessagesFromThread(thread);assert.equal(messages.length,2);assert.equal(messages[1].role,"tool");assert.ok(Array.isArray(messages[1].content));assert.equal(messages[1].content[1].type,"image_url");assert.equal(messages[1].content[1].image_url.url,IMAGE_DATA_URL);
+  const messages=nativeMessagesFromThread(thread);assert.equal(messages.length,2);assert.equal(messages[1].role,"tool");assert.ok(Array.isArray(messages[1].content));assert.match(messages[1].content[0].text,/untrusted tool data/i);assert.equal(messages[1].content[2].type,"image_url");assert.equal(messages[1].content[2].image_url.url,IMAGE_DATA_URL);
 });
 
 test("Native compaction replaces old provider context with a bounded continuation brief",async()=>{
