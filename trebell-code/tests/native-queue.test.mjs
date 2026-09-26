@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, reorderQueue, shouldUseRuntimeNativeQueue } from "../ui/src/native-queue.js";
+import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, queuedSubmissionNeedsToolExpansion, reorderQueue, shouldUseRuntimeNativeQueue } from "../ui/src/native-queue.js";
 
 test("Trebell Native uses the durable runtime queue for project and General threads",()=>{
   assert.equal(shouldUseRuntimeNativeQueue({agentRuntime:"native",nativeQueue:true,projectless:false}),true);
@@ -13,6 +13,7 @@ test("Trebell Native uses the durable runtime queue for project and General thre
 test("native queue submissions become Trebell drafts without losing local attachments",()=>{
   const draft=queuedSubmissionDraft({
     id:"q1",clientUserMessageId:"client-1",
+    dynamicToolNamespaces:["trebell_browser","trebell_browser"],
     input:[
       {type:"text",text:"follow up",text_elements:[]},
       {type:"localImage",path:"C:/tmp/shot.png"},
@@ -21,6 +22,7 @@ test("native queue submissions become Trebell drafts without losing local attach
   });
   assert.equal(draft.id,"q1");assert.equal(draft.text,"follow up");assert.equal(draft.draftText,"follow up");
   assert.deepEqual(draft.attachments,["C:/tmp/shot.png","C:/repo/notes.md"]);assert.equal(draft.native,true);assert.equal(draft.editable,true);
+  assert.deepEqual(draft.dynamicToolNamespaces,["trebell_browser"]);
   assert.deepEqual(draft.contextChips,[{path:"C:/repo/notes.md",kind:"file",label:"notes.md",detail:"C:/repo/notes.md"}]);
 });
 
@@ -33,6 +35,14 @@ test("refreshing a native queue preserves Trebell-only draft metadata for matchi
   const previous=[{id:"q1",native:true,clientUserMessageId:"client-1",contextChips:[{path:"a",label:"Context"}],model:"model-a"}];
   const merged=mergeNativeQueue(previous,[{id:"q1",clientUserMessageId:"client-1",input:[{type:"text",text:"updated",text_elements:[]}]}]);
   assert.equal(merged[0].text,"updated");assert.deepEqual(merged[0].contextChips,previous[0].contextChips);assert.equal(merged[0].model,"model-a");
+});
+
+test("queued follow-ups wait for a safe turn boundary only when a required tool is still missing",()=>{
+  const browser={dynamicToolNamespaces:["trebell_browser"]};
+  assert.equal(queuedSubmissionNeedsToolExpansion(browser,[]),true);
+  assert.equal(queuedSubmissionNeedsToolExpansion(browser,["trebell_browser"]),false);
+  assert.equal(queuedSubmissionNeedsToolExpansion({dynamicToolNamespaces:["trebell_browser","trebell_source_control"]},["trebell_browser"]),true);
+  assert.equal(queuedSubmissionNeedsToolExpansion({},[]),false);
 });
 
 test("native queue fallback detection ignores ordinary request failures",()=>{

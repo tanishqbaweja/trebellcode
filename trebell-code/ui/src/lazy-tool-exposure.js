@@ -16,3 +16,13 @@ export function specializedToolSelection(taskText,{browser=false,computer=false,
     delegation:Boolean(delegation&&DELEGATION_TASK.test(task)),
   };
 }
+
+export function specializedToolNamespaceNames(taskText,availability={}){
+  const selected=specializedToolSelection(taskText,availability),names=[];
+  if(selected.browser)names.push("trebell_browser");
+  if(selected.computer)names.push("trebell_computer");
+  if(selected.device)names.push("trebell_device");
+  if(selected.sourceControl)names.push("trebell_source_control");
+  if(selected.delegation)names.push("trebell_delegate");
+  return names;
+}

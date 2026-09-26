@@ -28,6 +28,7 @@ export function queuedSubmissionDraft(submission={}){
   const contextChips=input.map(inputContextChip).filter(Boolean);
   const unsupported=input.some(item=>item&&!(["text","localImage","localAudio","mention","skill"].includes(item.type)));
   const text=textParts.join("\n").trim();
+  const dynamicToolNamespaces=[...new Set((Array.isArray(submission.dynamicToolNamespaces)?submission.dynamicToolNamespaces:[]).map(value=>String(value||"").trim()).filter(Boolean))];
   return {
     id:String(submission.id||""),
     text:text||"Queued attachment",
@@ -38,6 +39,7 @@ export function queuedSubmissionDraft(submission={}){
     native:true,
     input,
     clientUserMessageId:submission.clientUserMessageId?String(submission.clientUserMessageId):"",
+    dynamicToolNamespaces,
     editable:!unsupported&&Boolean(text),
   };
 }
@@ -48,6 +50,11 @@ export function mergeNativeQueue(previous=[],submissions=[]){
     const existing=(previous||[]).find(item=>item?.native&&(item.id===next.id||(next.clientUserMessageId&&item.clientUserMessageId===next.clientUserMessageId)));
     return existing?{...next,contextChips:existing.contextChips||[],model:existing.model||null}:next;
   });
+}
+
+export function queuedSubmissionNeedsToolExpansion(submission={},currentNamespaces=[]){
+  const current=new Set((Array.isArray(currentNamespaces)?currentNamespaces:[]).map(value=>String(value||"").trim()).filter(Boolean));
+  return (Array.isArray(submission.dynamicToolNamespaces)?submission.dynamicToolNamespaces:[]).some(value=>{const name=String(value||"").trim();return Boolean(name&&!current.has(name))});
 }
 
 export function reorderQueue(items,id,direction){

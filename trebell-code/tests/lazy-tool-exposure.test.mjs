@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { specializedToolSelection } from "../ui/src/lazy-tool-exposure.js";
+import { specializedToolNamespaceNames, specializedToolSelection } from "../ui/src/lazy-tool-exposure.js";
 
 const all={browser:true,computer:true,device:true,sourceControl:true,delegation:true};
 
@@ -18,4 +18,9 @@ test("specialized task language exposes only relevant capability groups",()=>{
 
 test("unavailable capability groups never become exposed from task wording",()=>{
   assert.deepEqual(specializedToolSelection("Take a browser screenshot, then push a git branch",{}),{browser:false,computer:false,device:false,sourceControl:false,delegation:false});
+});
+
+test("specialized task selection maps to stable Trebell namespace names for later-turn expansion",()=>{
+  assert.deepEqual(specializedToolNamespaceNames("Now verify the responsive page in a browser and commit the fix",all),["trebell_browser","trebell_source_control"]);
+  assert.deepEqual(specializedToolNamespaceNames("Keep debugging the parser",all),[]);
 });

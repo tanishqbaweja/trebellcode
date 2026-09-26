@@ -6,6 +6,7 @@ const BASE_RUNTIME_CAPABILITIES=Object.freeze({
   mcpInjection:false,
   systemPromptInjection:false,
   dynamicTools:false,
+  dynamicToolExpansion:false,
   nativeLsp:false,
   languageIntelligence:false,
   nativeSandbox:false,
@@ -29,7 +30,7 @@ const BASE_RUNTIME_CAPABILITIES=Object.freeze({
 
 const RUNTIME_CAPABILITY_OVERRIDES=Object.freeze({
   native:Object.freeze({
-    fork:true,rewind:true,compaction:true,mcpInjection:true,systemPromptInjection:true,dynamicTools:true,languageIntelligence:true,clientFilesystem:true,clientTerminal:true,usageReporting:true,contextReporting:true,detachedTasks:true,multiModelFanout:true,backgroundProcesses:true,nativeQueue:true,nativeHistoryPagination:true,steering:true,delegation:true,
+    fork:true,rewind:true,compaction:true,mcpInjection:true,systemPromptInjection:true,dynamicTools:true,dynamicToolExpansion:true,languageIntelligence:true,clientFilesystem:true,clientTerminal:true,usageReporting:true,contextReporting:true,detachedTasks:true,multiModelFanout:true,backgroundProcesses:true,nativeQueue:true,nativeHistoryPagination:true,steering:true,delegation:true,
   }),
   codex:Object.freeze({
     fork:true,rewind:true,compaction:true,systemPromptInjection:true,dynamicTools:true,languageIntelligence:true,nativeSandbox:true,

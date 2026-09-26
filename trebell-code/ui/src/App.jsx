@@ -17,7 +17,7 @@ import WorktreeSetupCard from "./components/WorktreeSetupCard.jsx";
 import { resolveKeybinding } from "./keybindings.js";
 import { isVideoAttachment, restoreQueuedDraft } from "./composer-state.js";
 import { applyFileMention, fileMentionAt, rankFileMentions } from "./composer-mentions.js";
-import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, reorderQueue, shouldUseRuntimeNativeQueue } from "./native-queue.js";
+import { mergeNativeQueue, nativeQueueUnavailable, queuedSubmissionDraft, queuedSubmissionNeedsToolExpansion, reorderQueue, shouldUseRuntimeNativeQueue } from "./native-queue.js";
 import { historyFromItemEntries, historyFromTurns, mergeHistoryMessages, resumedActiveTurnId } from "./thread-history.js";
 import { normalizeCustomTheme, themeCssVariables } from "./theme-utils.js";
 import { approvalResponse } from "./approval-utils.js";
@@ -50,7 +50,7 @@ import { catalogMetaPatch, mergeThreadCatalog, sameCatalogSnapshot, threadCatalo
 import { conversationChunkIndexForMessage, conversationVirtualChunks, shouldVirtualizeConversation } from "./conversation-virtualization.js";
 import { activityWindow, nextActivityWindowEnd, previousActivityWindowEnd } from "./activity-window.js";
 import { startVisibilityPoll } from "./visibility-poll.js";
-import { specializedToolSelection } from "./lazy-tool-exposure.js";
+import { specializedToolNamespaceNames, specializedToolSelection } from "./lazy-tool-exposure.js";
 import { maybeStartAutomaticVerificationRepair } from "./auto-verification-repair.js";
 import { maybeStartAutomaticVerificationContinuation } from "./auto-verification-continuation.js";
 import { browserVerificationReceipt } from "../../src/browser-verification-evidence.mjs";
@@ -1843,6 +1843,10 @@ export default function App(){
       setThreads(prev=>prev.map(t=>t.id===p.threadId?{...t,name:p.name}:t));
       if(isCurrent)setActiveThread(prev=>prev?.id===p.threadId?{...prev,name:p.name}:prev);
     }
+    else if(message.method==="thread/tools/updated"&&p.thread){
+      setThreads(prev=>prev.map(t=>t.id===p.thread.id?p.thread:t));
+      if(isCurrent){setActiveThread(p.thread);activeThreadRef.current=p.thread}
+    }
     else if(message.method==="thread/project/updated"){
       setThreads(prev=>prev.map(t=>t.id===p.threadId?{...t,projectId:p.projectId||null}:t));
       if(isCurrent){
@@ -2530,15 +2534,22 @@ export default function App(){
     if(setup?.session?.id&&setup.waitForSetup){const settled=await waitForDetachedSetup(setup.session.id);if(settled.timeout)throw new Error("Background worktree setup is still running after 30 minutes.");if(settled.exitCode!==0)throw new Error(`Background worktree setup failed with exit code ${settled.exitCode??"unknown"}.`)}
     return worktree;
   }
-  async function createThreadFor(modelId,cwd,{projectless=projectlessMode,taskText=""}={}){
-    const p=presetFor(permissionMode);
-    const specializedTools=specializedToolSelection(taskText,{
+  function specializedToolAvailability({projectless=projectlessMode}={}){
+    return {
       browser:Boolean(window.trebellDesktop?.browser),
       computer:Boolean(window.trebellDesktop?.computer),
       device:Boolean(effectiveProjectSettings.agentDeviceAccess),
       sourceControl:!projectless,
       delegation:Boolean(runtimeCapabilities.delegation&&runtimeCapabilities.dynamicTools),
-    });
+    };
+  }
+  function dynamicToolNamespacesForTask(taskText,{projectless=projectlessMode}={}){
+    if(!runtimeCapabilities.dynamicToolExpansion)return [];
+    return specializedToolNamespaceNames(taskText,specializedToolAvailability({projectless}));
+  }
+  async function createThreadFor(modelId,cwd,{projectless=projectlessMode,taskText=""}={}){
+    const p=presetFor(permissionMode);
+    const specializedTools=specializedToolSelection(taskText,specializedToolAvailability({projectless}));
     const dynamicTools=sharedDynamicToolNamespaces(specializedTools);
     const researchInstruction="Web research is available when useful. Use it when current or external information materially improves the task."+(specializedTools.browser?" Use trebell_browser for interactive pages.":"")+(runtimeCapabilities.dynamicTools?" Use trebell_repo for deterministic symbol and structural repository lookups when that is faster than manual exploration.":"")+(specializedTools.delegation?" Trebell delegation is available for bounded parallel child tasks; use it only when parallelism materially helps, prefer explicit ownership and budgets, and do not create agent swarms.":"");
     const developerInstructions=projectless
@@ -2582,13 +2593,14 @@ export default function App(){
     await validateAttachmentPaths(paths||[]);
     try{
       const input=inputsFor(text,paths);
+      const dynamicToolNamespaces=dynamicToolNamespacesForTask(text,{projectless:Boolean(activeThread.providerMeta?.projectless??projectlessMode)});
       if(queuedId){
-        const result=await rpc.request("thread/queue/update",{threadId:activeThread.id,queuedSubmissionId:queuedId,input});
+        const result=await rpc.request("thread/queue/update",{threadId:activeThread.id,queuedSubmissionId:queuedId,input,dynamicToolNamespaces});
         const draft={...queuedSubmissionDraft(result?.queuedSubmission||{}),contextChips:[...(chips||[])],model};
         setQueued(previous=>previous.map(item=>item.id===queuedId?draft:item));setQueuedEditId(null);
       }else{
         const clientUserMessageId="trebell-queue-"+crypto.randomUUID();
-        const result=await rpc.request("thread/queue/add",{threadId:activeThread.id,input,clientUserMessageId});
+        const result=await rpc.request("thread/queue/add",{threadId:activeThread.id,input,clientUserMessageId,dynamicToolNamespaces});
         const draft={...queuedSubmissionDraft(result?.queuedSubmission||{}),contextChips:[...(chips||[])],model};
         setQueued(previous=>[...previous.filter(item=>item.id!==draft.id),draft]);
       }
@@ -2670,7 +2682,8 @@ export default function App(){
       const collaboration=selectedCollaborationMode(modelId);
       const contextPacket=await prepareTurnContext(thread,cwd,text,focusPathsOverride||repositoryFocusPaths(paths,contextChips),{projectless:projectlessMode,ignoreUsage:autoCompaction.compacted});
       const turnContext={...repositoryContextEntries(contextPacket),...(additionalContext||{})};
-      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(agentRuntime==="codex"&&custom?.effort?{effort:custom.effort}:{}),...(agentRuntime==="codex"&&custom?.serviceTier?{serviceTierForTurn:custom.serviceTier}:{}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);
+      const dynamicToolNamespaces=dynamicToolNamespacesForTask(text,{projectless:Boolean(thread.providerMeta?.projectless??projectlessMode)});
+      const result=await rpc.request("turn/start",{threadId:thread.id,model:modelId,...(agentRuntime==="native"?{modelProvider:provider}:{}),cwd,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(agentRuntime==="codex"&&custom?.effort?{effort:custom.effort}:{}),...(agentRuntime==="codex"&&custom?.serviceTier?{serviceTierForTurn:custom.serviceTier}:{}),...(collaboration?{collaborationMode:collaboration}:{}),approvalPolicy:p.approvalPolicy,sandboxPolicy,input:inputsFor(text,paths),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{}),...(Object.keys(turnContext).length?{additionalContext:turnContext}:{})});const turnId=result?.turn?.id||null;setActiveTurnId(turnId);
       setMessages(prev=>prev.map(m=>m.id===clientId?{...m,turnId,checkpointId:checkpoint?.id||null}:m));if(checkpoint?.id&&turnId){try{await api("/api/checkpoints/link",{method:"POST",body:{id:checkpoint.id,patch:{turnId}}});setCheckpointByTurn(prev=>({...prev,[turnId]:{...checkpoint,turnId}}))}catch(error){reportCheckpointIssue("File checkpoint was created but could not be linked to this turn; restore may be unavailable after reload",error,{threadId:thread.id,turnId,checkpointId:checkpoint.id})}}setAttachments([]);setContextChips([]);return{thread,turnId};
     }catch(error){
       setMessages(prev=>prev.filter(message=>message.id!==clientId));
@@ -2942,7 +2955,8 @@ export default function App(){
   }
   async function sendQueuedNow(item){
     if(item?.native&&runtimeCapabilities.nativeQueue&&rpc&&activeThread?.id){
-      if(running&&activeTurnId&&runtimeCapabilities.steering){
+      const requiredToolNamespaces=Array.isArray(item.dynamicToolNamespaces)?item.dynamicToolNamespaces:[],needsToolExpansion=queuedSubmissionNeedsToolExpansion(item,activeThread.providerMeta?.dynamicToolNamespaces||[]);
+      if(running&&activeTurnId&&runtimeCapabilities.steering&&!needsToolExpansion){
         const originalInput=item.input?.length?item.input:inputsFor(item.draftText||item.text,item.attachments);const originalClientId=item.clientUserMessageId||("trebell-queue-"+crypto.randomUUID());
         try{
           await rpc.request("thread/queue/delete",{threadId:activeThread.id,queuedSubmissionId:item.id});
@@ -2951,7 +2965,7 @@ export default function App(){
         }catch(error){
           let restored;
           try{
-            restored=await rpc.request("thread/queue/add",{threadId:activeThread.id,input:originalInput,clientUserMessageId:originalClientId});
+            restored=await rpc.request("thread/queue/add",{threadId:activeThread.id,input:originalInput,clientUserMessageId:originalClientId,dynamicToolNamespaces:requiredToolNamespaces});
           }catch(restoreError){
             setQueued(prev=>prev.filter(q=>q.id!==item.id));
             restoreFailedDraft({text:item.draftText||item.text,attachments:item.attachments||[],contextChips:item.contextChips||[]});

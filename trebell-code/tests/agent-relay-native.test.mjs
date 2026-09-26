@@ -85,6 +85,28 @@ test("Trebell Native browser evidence RPC journals only sanitized bounded facts"
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });
 
+test("Trebell Native expands specialized tools on a later turn without replacing the thread",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-tool-expansion-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env),events=[];let calls=0;
+  const nativeProviderTurn=async request=>{
+    calls++;const browser=(request.tools||[]).find(item=>item.name==="trebell_browser");
+    if(calls===1){assert.equal(browser,undefined);return{id:"plain-done",provider:request.provider,model:request.model,text:"Parser fix complete.",toolCalls:[],finishReason:"stop",usage:{}}}
+    assert.ok(browser);assert.ok(browser.tools.some(tool=>tool.name==="screenshot"));assert.ok(request.messages.some(message=>message.role==="assistant"&&/Parser fix complete/.test(String(message.content||""))));
+    return{id:"browser-done",provider:request.provider,model:request.model,text:"Browser capability available on the same thread.",toolCalls:[],finishReason:"stop",usage:{}};
+  };
+  const journal={record:event=>events.push(event),recordProtocol:()=>{}},server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test",journal});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
+  try{
+    const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"read-only",dynamicTools:[]})).thread;
+    const first=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"read-only",input:[{type:"text",text:"Fix the parser"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===first.id);
+    const second=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"read-only",dynamicToolNamespaces:["trebell_browser"],input:[{type:"text",text:"Now verify it in the browser"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===second.id);
+    const persisted=threadStore.get(thread.id);assert.equal(persisted.id,thread.id);assert.equal(persisted.turns.length,2);assert.deepEqual(persisted.providerMeta.dynamicToolNamespaces,["trebell_browser"]);assert.equal(calls,2);
+    const repeated=await rpc.request("thread/tools/ensure",{threadId:thread.id,namespaces:["trebell_browser"]});assert.deepEqual(repeated.added,[]);assert.equal(repeated.thread.id,thread.id);
+    assert.equal(events.filter(event=>event.name==="native.tools.expanded").length,1);assert.ok(events.some(event=>event.name==="native.tools.expanded"&&event.threadId===thread.id&&event.data?.added?.[0]==="trebell_browser"));
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
 test("Trebell Native exposes Trebell semantic language intelligence directly to the model loop",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-language-relay-")),home=join(root,"home"),repo=join(root,"repo");
   await mkdir(join(repo,"src"),{recursive:true});await mkdir(join(repo,"node_modules","typescript","lib"),{recursive:true});
@@ -398,6 +420,7 @@ test("Trebell Native durable queue edits, reorders and auto-starts after a succe
   const nativeProviderTurn=async request=>{
     const visible=JSON.stringify(request.messages.at(-1)?.content||"");prompts.push(visible);
     if(prompts.length===1){firstStartedResolve();await releaseFirst;return{id:"initial-done",provider:request.provider,model:request.model,text:"Initial done",toolCalls:[],finishReason:"stop",usage:{}}}
+    if(/SECOND QUEUED/.test(visible))assert.ok((request.tools||[]).some(item=>item.name==="trebell_browser"));
     return{id:"queued-done-"+prompts.length,provider:request.provider,model:request.model,text:"Queued done",toolCalls:[],finishReason:"stop",usage:{}};
   };
   const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
@@ -406,17 +429,17 @@ test("Trebell Native durable queue edits, reorders and auto-starts after a succe
     const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:true,permissionProfile:"auto",dynamicTools:[]})).thread;
     const initial=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",input:[{type:"text",text:"INITIAL TURN"}]})).turn;await firstStarted;
     const q1=(await rpc.request("thread/queue/add",{threadId:thread.id,input:[{type:"text",text:"FIRST QUEUED"}],clientUserMessageId:"client-q1"})).queuedSubmission;
-    const q2=(await rpc.request("thread/queue/add",{threadId:thread.id,input:[{type:"text",text:"SECOND QUEUED"}],clientUserMessageId:"client-q2"})).queuedSubmission;
+    const q2=(await rpc.request("thread/queue/add",{threadId:thread.id,input:[{type:"text",text:"SECOND QUEUED"}],clientUserMessageId:"client-q2",dynamicToolNamespaces:["trebell_browser"]})).queuedSubmission;
     await rpc.request("thread/queue/update",{threadId:thread.id,queuedSubmissionId:q1.id,input:[{type:"text",text:"FIRST QUEUED EDITED"}]});
     await rpc.request("thread/queue/reorder",{threadId:thread.id,queuedSubmissionIds:[q2.id,q1.id]});
-    let queued=(await rpc.request("thread/queue/list",{threadId:thread.id,limit:10})).data;assert.deepEqual(queued.map(item=>item.id),[q2.id,q1.id]);assert.match(JSON.stringify(queued[1].input),/FIRST QUEUED EDITED/);
+    let queued=(await rpc.request("thread/queue/list",{threadId:thread.id,limit:10})).data;assert.deepEqual(queued.map(item=>item.id),[q2.id,q1.id]);assert.deepEqual(queued[0].dynamicToolNamespaces,["trebell_browser"]);assert.match(JSON.stringify(queued[1].input),/FIRST QUEUED EDITED/);
     releaseFirstResolve();await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===initial.id);
     for(let attempt=0;attempt<100;attempt++){
       const current=threadStore.get(thread.id),remaining=(state.threadMeta(thread.id)?.queuedSubmissions||[]).length;
       if(current.turns.length===3&&current.turns.every(turn=>turn.status==="completed")&&remaining===0)break;
       await new Promise(resolve=>setTimeout(resolve,20));
     }
-    const final=threadStore.get(thread.id);assert.equal(final.turns.length,3);assert.ok(final.turns.every(turn=>turn.status==="completed"));assert.equal((state.threadMeta(thread.id)?.queuedSubmissions||[]).length,0);assert.equal(prompts.length,3);
+    const final=threadStore.get(thread.id);assert.equal(final.turns.length,3);assert.ok(final.turns.every(turn=>turn.status==="completed"));assert.deepEqual(final.providerMeta.dynamicToolNamespaces,["trebell_browser"]);assert.equal((state.threadMeta(thread.id)?.queuedSubmissions||[]).length,0);assert.equal(prompts.length,3);
     assert.match(prompts[0],/INITIAL TURN/);assert.match(prompts[1],/SECOND QUEUED/);assert.match(prompts[2],/FIRST QUEUED EDITED/);
     assert.equal((await rpc.request("thread/queue/list",{threadId:thread.id,limit:10})).data.length,0);
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}

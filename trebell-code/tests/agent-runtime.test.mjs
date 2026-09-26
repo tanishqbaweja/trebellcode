@@ -32,6 +32,7 @@ test("agent runtime registry exposes real harnesses and capability-gates configu
     assert.deepEqual(models.models,["cursor-default"]);
     assert.equal(manager.capabilities("codex").nativeSandbox,true);
     assert.equal(manager.capabilities("native").dynamicTools,true);
+    assert.equal(manager.capabilities("native").dynamicToolExpansion,true);
     assert.equal(manager.capabilities("native").nativeSandbox,false);
     assert.equal(manager.capabilities("native").mcpInjection,true);
     assert.equal(manager.capabilities("native").languageIntelligence,true);
@@ -60,10 +61,11 @@ test("runtime capabilities describe adapter behavior without pretending unsuppor
   for(const runtime of runtimeCapabilityKinds)assert.deepEqual(runtimeCapabilities(runtime),sharedRuntimeCapabilities(runtime));
   const codex=runtimeCapabilities("codex");
   assert.equal(codex.dynamicTools,true);
+  assert.equal(codex.dynamicToolExpansion,false);
   assert.equal(codex.nativeQueue,true);
   assert.equal(codex.mcpInjection,false);
   const native=runtimeCapabilities("native");
-  assert.equal(native.dynamicTools,true);assert.equal(native.contextReporting,true);assert.equal(native.nativeQueue,true);assert.equal(native.nativeHistoryPagination,true);assert.equal(native.threadSearch,true);assert.equal(native.languageIntelligence,true);assert.equal(native.nativeLsp,false);assert.equal(native.clientFilesystem,true);assert.equal(native.clientTerminal,true);assert.equal(native.fork,true);assert.equal(native.rewind,true);
+  assert.equal(native.dynamicTools,true);assert.equal(native.dynamicToolExpansion,true);assert.equal(native.contextReporting,true);assert.equal(native.nativeQueue,true);assert.equal(native.nativeHistoryPagination,true);assert.equal(native.threadSearch,true);assert.equal(native.languageIntelligence,true);assert.equal(native.nativeLsp,false);assert.equal(native.clientFilesystem,true);assert.equal(native.clientTerminal,true);assert.equal(native.fork,true);assert.equal(native.rewind,true);
   assert.equal(native.mcpInjection,true);assert.equal(native.systemPromptInjection,true);assert.equal(native.compaction,true);assert.equal(native.delegation,true);assert.equal(native.steering,true);assert.equal(native.backgroundProcesses,true);
   const openCode=runtimeCapabilities("opencode");
   assert.equal(openCode.compaction,true);

@@ -29,6 +29,12 @@ import { redactSecretText } from "./secret-redactor.mjs";
 
 const IMAGE_MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".bmp":"image/bmp"};
 const LIVE_TOOL_OUTPUT_LIMIT=256*1024;
+const EXPANDABLE_NATIVE_TOOL_NAMESPACES=new Set(["trebell_browser","trebell_computer","trebell_device","trebell_source_control","trebell_delegate"]);
+function expandableNativeToolNamespaces(values=[]){
+  const requested=[...new Set((Array.isArray(values)?values:[]).map(value=>String(value||"").trim()).filter(Boolean))];
+  const unsupported=requested.find(name=>!EXPANDABLE_NATIVE_TOOL_NAMESPACES.has(name));if(unsupported)throw new Error("Unsupported dynamic tool namespace: "+unsupported);
+  return requested;
+}
 function agentProviderIdentity(thread){return thread?.runtime==="native"?(thread?.providerMeta?.modelProvider||null):(thread?.providerMeta?.runtimeInstanceId||thread?.runtimeInstanceId||null)}
 
 function textOfInput(input=[]){return input.filter(item=>item?.type==="text").map(item=>item.text||"").join("\n")}
@@ -860,6 +866,21 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     }
   }
 
+  async function ensureNativeToolNamespaces(thread,requestedNamespaces=[]){
+    if(!thread)return {supported:false,reason:"thread_missing",thread:null,added:[],namespaces:[]};
+    if(thread.runtime!=="native")return {supported:false,reason:"runtime_does_not_support_dynamic_tool_expansion",thread,added:[],namespaces:[]};
+    if(thread.status?.type==="active")throw new Error("Stop the running turn before expanding thread tools.");
+    const requested=expandableNativeToolNamespaces(requestedNamespaces);
+    const current=[...new Set(thread.providerMeta?.dynamicToolNamespaces||[])],currentSet=new Set(current),added=requested.filter(name=>!currentSet.has(name));
+    if(!added.length)return {supported:true,thread,added:[],namespaces:current};
+    const activeSession=sessions.get(thread.id);if(activeSession instanceof NativeAgentSession&&activeSession.turnActive)throw new Error("Stop the running turn before expanding thread tools.");
+    const namespaces=[...current,...added],providerMeta={...(thread.providerMeta||{}),dynamicToolNamespaces:namespaces};
+    const updated=threadStore.update(thread.id,{providerMeta});
+    if(activeSession instanceof NativeAgentSession){await activeSession.close().catch(()=>{});sessions.delete(thread.id)}
+    journal?.record?.({runtime:"native",provider:providerMeta.modelProvider||null,environmentId:providerMeta.environmentId??null,threadId:thread.id,category:"tool",name:"native.tools.expanded",status:"completed",data:{added,namespaces}});
+    emit("thread/tools/updated",{threadId:thread.id,added,namespaces,thread:updated});return {supported:true,thread:updated,added,namespaces};
+  }
+
   async function request(context,method,params={}){
     if(method==="initialize")return {userAgent:"trebell-agent-relay",capabilities:{experimentalApi:true}};
     const runtime=runtimeManager.activeRuntime();
@@ -961,6 +982,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     if(method==="thread/settings/update"){
       const current=threadStore.get(params.threadId);const nextSettings={...(current?.settings||{}),...(params.settings||{})};
       return {thread:threadStore.update(params.threadId,{settings:nextSettings,...(Object.prototype.hasOwnProperty.call(params.settings||{},"agent")?{agent:params.settings.agent||null}:{})})}
+    }
+    if(method==="thread/tools/ensure"){
+      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      return ensureNativeToolNamespaces(thread,params.namespaces);
     }
     if(method==="thread/goal/get")return {goal:durableGoal(params.threadId)};
     if(method==="thread/goal/set"){
@@ -1123,16 +1148,21 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       return paginateAgentQueue(agentQueue(state,params.threadId),params);
     }
     if(method==="thread/queue/add"){
-      if(!threadStore.get(params.threadId))throw new Error("Thread not found");
+      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
       if(!Array.isArray(params.input)||!params.input.length)throw Object.assign(new Error("Queued submission input is required"),{code:-32602});
-      const queue=agentQueue(state,params.threadId),queuedSubmission={id:randomUUID(),input:params.input,clientUserMessageId:String(params.clientUserMessageId||"")};
+      const dynamicToolNamespaces=thread.runtime==="native"?expandableNativeToolNamespaces(params.dynamicToolNamespaces):[];
+      const queue=agentQueue(state,params.threadId),queuedSubmission={id:randomUUID(),input:params.input,clientUserMessageId:String(params.clientUserMessageId||""),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{})};
       queue.push(queuedSubmission);saveAgentQueue(state,params.threadId,queue);emit("thread/queue/changed",{threadId:params.threadId});return {queuedSubmission};
     }
     if(method==="thread/queue/update"){
-      if(!threadStore.get(params.threadId))throw new Error("Thread not found");
+      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
       if(!Array.isArray(params.input)||!params.input.length)throw Object.assign(new Error("Queued submission input is required"),{code:-32602});
       const queue=agentQueue(state,params.threadId),index=queue.findIndex(item=>item.id===params.queuedSubmissionId);if(index<0)throw Object.assign(new Error("Queued submission not found: "+params.queuedSubmissionId),{code:-32602});
-      queue[index]={...queue[index],input:params.input};saveAgentQueue(state,params.threadId,queue);emit("thread/queue/changed",{threadId:params.threadId});return {queuedSubmission:queue[index]};
+      queue[index]={...queue[index],input:params.input};
+      if(thread.runtime==="native"&&Object.prototype.hasOwnProperty.call(params,"dynamicToolNamespaces")){
+        const dynamicToolNamespaces=expandableNativeToolNamespaces(params.dynamicToolNamespaces);if(dynamicToolNamespaces.length)queue[index].dynamicToolNamespaces=dynamicToolNamespaces;else delete queue[index].dynamicToolNamespaces;
+      }
+      saveAgentQueue(state,params.threadId,queue);emit("thread/queue/changed",{threadId:params.threadId});return {queuedSubmission:queue[index]};
     }
     if(method==="thread/queue/delete"){
       if(!threadStore.get(params.threadId))throw new Error("Thread not found");
@@ -1151,7 +1181,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       if(thread.status?.type==="active")throw Object.assign(new Error("Thread already has an active or pending turn"),{code:-32602});
       const queue=agentQueue(state,params.threadId),index=params.queuedSubmissionId?queue.findIndex(item=>item.id===params.queuedSubmissionId):0;
       if(index<0||!queue[index])throw Object.assign(new Error("Queued submission not found"),{code:-32602});
-      const submission=queue[index],started=await request(context,"turn/start",{threadId:params.threadId,input:submission.input});
+      const submission=queue[index],started=await request(context,"turn/start",{threadId:params.threadId,input:submission.input,...(Array.isArray(submission.dynamicToolNamespaces)&&submission.dynamicToolNamespaces.length?{dynamicToolNamespaces:submission.dynamicToolNamespaces}:{})});
       const next=queue.filter((_,itemIndex)=>itemIndex!==index);saveAgentQueue(state,params.threadId,next);emit("thread/queue/changed",{threadId:params.threadId});return {turn:started.turn};
     }
     if(method==="thread/backgroundTerminals/list"){
@@ -1199,6 +1229,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const permissionPatch=agentPermissionProfilePatch(params);
       const providerPatch=runtime==="native"&&params.modelProvider?{modelProvider:String(params.modelProvider)}:{};
       if(Object.keys(permissionPatch).length||Object.keys(providerPatch).length)thread=threadStore.update(thread.id,{providerMeta:{...(thread.providerMeta||{}),...permissionPatch,...providerPatch}});
+      if(thread.runtime==="native"&&Array.isArray(params.dynamicToolNamespaces)&&params.dynamicToolNamespaces.length)thread=(await ensureNativeToolNamespaces(thread,params.dynamicToolNamespaces)).thread;
       const session=await ensureSession(thread,context,{model:params.model||thread.model});
       if(runtime==="native"&&params.modelProvider&&typeof session.setProvider==="function")session.setProvider(params.modelProvider);
       if(runtime==="native"&&typeof session.setPermissionMode==="function")session.setPermissionMode((threadStore.get(thread.id)||thread)?.providerMeta?.permissionProfile||"supervised");
