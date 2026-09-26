@@ -32,6 +32,7 @@ import { REMOTE_SCOPES, normalizeRemoteScopes } from "./remote-scopes.mjs";
 import { DeviceService } from "./device-service.mjs";
 import { ProviderManager, normalizeProviderId } from "./provider-manager.mjs";
 import { modelContextWindowFromMetadata, modelContextWindowKey } from "./model-context-window.mjs";
+import { withNormalizedModelCapabilities } from "./model-capabilities.mjs";
 import { normalizeChatTurnResponse, providerTurnToChat } from "./provider-turn.mjs";
 import { startProviderBridge } from "./provider-bridge.mjs";
 import { AgentRuntimeManager, normalizeAgentRuntime } from "./agent-runtime-manager.mjs";
@@ -1374,8 +1375,9 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     };
     const finish=catalog=>{
       const merged=mergeCustom(catalog);
-      if(selectedAgentRuntime==="native")rememberNativeModelContextWindows(merged);
-      return merged;
+      const normalized={...merged,metadata:{...(merged.metadata||{}),models:(merged.metadata?.models||[]).map(withNormalizedModelCapabilities)}};
+      if(selectedAgentRuntime==="native")rememberNativeModelContextWindows(normalized);
+      return normalized;
     };
     if(!["native","codex"].includes(selectedAgentRuntime)){
       const result=await agentRuntimes.models(agentRuntimes.activeInstance());
