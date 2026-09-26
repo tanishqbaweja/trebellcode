@@ -31,6 +31,10 @@ function verificationIssues(value){
     return [id,reason].filter(Boolean).join(" · ");
   }).filter(Boolean).slice(0,20);
 }
+function recoveryToolLabel(item={}){
+  const tool=[text(item.namespace,200),text(item.tool,300)].filter(Boolean).join("/")||text(item.command,500)||text(item.type,200)||"tool/action";
+  const status=text(item.status,120);return status?`${tool} · ${status}`:tool;
+}
 
 export function normalizeContinuityNotes(previous=null,patch={},now=Date.now()){
   const prior=previous&&typeof previous==="object"?previous:{},next={updatedAt:now};
@@ -57,6 +61,11 @@ export function continuitySnapshot({
     return [label,commit&&("commit "+commit),root&&("at "+root)].filter(Boolean).join(" · ");
   }).filter(Boolean);
   const completedTurns=(thread?.turns||[]).filter(turn=>turn?.status==="completed").slice(-10).map(turn=>String(turn.id));
+  const rawRecovery=thread?.recovery&&typeof thread.recovery==="object"?thread.recovery:null;
+  const recovery=rawRecovery?{
+    pending:Boolean(rawRecovery.pending),blocked:Boolean(rawRecovery.blocked),turnId:text(rawRecovery.turnId,300)||null,reason:text(rawRecovery.reason,300)||null,message:text(rawRecovery.message,1600)||null,
+    uncertainTools:(Array.isArray(rawRecovery.uncertainTools)?rawRecovery.uncertainTools:[]).map(recoveryToolLabel).filter(Boolean).slice(0,20),
+  }:null;
   const workspace={
     cwd:text(thread?.cwd||meta?.cwd,1000)||null,
     branch:text(meta?.branch,300)||null,
@@ -77,18 +86,19 @@ export function continuitySnapshot({
       blocked:verificationIssues(latestVerification.assessment?.blocked),
       updatedAt:Number(latestVerification.updatedAt)||null,
     }:null,
+    recovery,
     completedTurnIds:completedTurns,
-    unresolvedFailures:unique(notes.unresolvedFailures,20),
+    unresolvedFailures:unique([...notes.unresolvedFailures,...(recovery?.blocked&&recovery.message?[recovery.message]:[])],20),
     recentFailures:unique(traceFailures,20),
     artifactsCreated:unique([...notes.artifactsCreated,...checkpointArtifacts],20),
-    pendingNextActions:unique([...notes.pendingNextActions,...queued],20),
+    pendingNextActions:unique([...notes.pendingNextActions,...queued,...(recovery?.blocked?["Inspect the uncertain restart-time tool/action state before repeating any side effect."]:[])],20),
     completedWork:unique(notes.completedWork,30),
     importantDecisions:unique(notes.importantDecisions,30),
     updatedAt:Math.max(Number(notes.updatedAt)||0,Number(latestVerification?.updatedAt)||0,...failedTrace.map(item=>Number(item.at)||0),...((checkpoints||[]).map(item=>Number(item.createdAt)||0))),
   };
   snapshot.meaningful=Boolean(
     snapshot.completedWork.length||snapshot.unresolvedFailures.length||snapshot.recentFailures.length||snapshot.importantDecisions.length||
-    snapshot.artifactsCreated.length||snapshot.pendingNextActions.length||snapshot.verification||snapshot.completedTurnIds.length
+    snapshot.artifactsCreated.length||snapshot.pendingNextActions.length||snapshot.verification||snapshot.recovery||snapshot.completedTurnIds.length
   );
   return snapshot;
 }
@@ -108,6 +118,8 @@ export function continuityContextValue(snapshot){
     snapshot.verification&&listBlock("Verification still required",snapshot.verification.missing),
     snapshot.verification&&listBlock("Verification failures",snapshot.verification.failures),
     snapshot.verification&&listBlock("Verification blockers",snapshot.verification.blocked),
+    snapshot.recovery&&("Restart recovery: "+(snapshot.recovery.blocked?"blocked because tool/action state is uncertain":snapshot.recovery.pending?"pending automatic continuation":"recorded")+(snapshot.recovery.message?" · "+snapshot.recovery.message:"")),
+    snapshot.recovery&&listBlock("Uncertain restart-time tool/actions",snapshot.recovery.uncertainTools),
     listBlock("Completed work",snapshot.completedWork),
     listBlock("Unresolved failures",snapshot.unresolvedFailures),
     listBlock("Recent failure evidence",snapshot.recentFailures),

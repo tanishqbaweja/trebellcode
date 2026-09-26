@@ -383,6 +383,27 @@ test("external active turns become queued restart recoveries only when enabled",
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
+test("restart recovery refuses to auto-repeat an unresolved tool action", async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-agent-uncertain-recovery-"));
+  const env={...process.env,TREBELL_HOME:home};
+  try{
+    const first=new AgentThreadStore(env);const thread=first.create({runtime:"native",cwd:home,providerSessionId:"native-saved",model:"fixture/model"});const turn=first.addTurn(thread.id,{inputText:"Deploy the change"});
+    first.addItem(thread.id,turn.id,{type:"dynamicToolCall",id:"tool-1",namespace:"trebell_browser",tool:"click",arguments:{ref:"submit"},status:"inProgress"});
+    const restarted=new AgentThreadStore(env);assert.deepEqual(restarted.reconcileRestart({continueAfterRestart:true}),[]);
+    const blocked=restarted.get(thread.id);assert.equal(blocked.status.type,"systemError");assert.equal(blocked.turns[0].status,"interrupted");assert.equal(blocked.recovery?.pending,false);assert.equal(blocked.recovery?.blocked,true);assert.equal(blocked.recovery?.reason,"uncertain_tool_action");assert.equal(blocked.recovery?.uncertainTools?.[0]?.id,"tool-1");assert.equal(blocked.recovery?.uncertainTools?.[0]?.tool,"click");assert.match(blocked.turns[0].error?.message||"",/Inspect its real-world state before repeating/i);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
+test("restart recovery still auto-resumes when all recorded tool actions are settled", async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-agent-settled-recovery-"));
+  const env={...process.env,TREBELL_HOME:home};
+  try{
+    const first=new AgentThreadStore(env);const thread=first.create({runtime:"opencode",cwd:home,providerSessionId:"ses-settled",model:"fixture/model"});const turn=first.addTurn(thread.id,{inputText:"Continue"});
+    first.addItem(thread.id,turn.id,{type:"dynamicToolCall",id:"tool-done",namespace:"trebell_repo",tool:"search_symbols",arguments:{query:"Session"},status:"completed",success:true});
+    const restarted=new AgentThreadStore(env);const recovered=restarted.reconcileRestart({continueAfterRestart:true});assert.deepEqual(recovered.map(item=>item.threadId),[thread.id]);assert.equal(restarted.get(thread.id).recovery?.pending,true);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 test("external active turns settle as interrupted errors when restart recovery is disabled", async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-agent-no-recovery-"));
   const env={...process.env,TREBELL_HOME:home};

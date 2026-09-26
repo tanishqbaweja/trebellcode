@@ -43,3 +43,13 @@ test("continuity formats structured verification summaries and preserves missing
   const value=continuityContextValue(snapshot);
   assert.doesNotMatch(value,/\[object Object\]/);assert.match(value,/Verification still required/);assert.match(value,/visual · No screenshot yet/);assert.match(value,/Verification failures/);assert.match(value,/tests · Command exited with code 1/);
 });
+
+test("continuity preserves blocked restart recovery and uncertain tool state",()=>{
+  const snapshot=continuitySnapshot({
+    threadId:"thread-recovery",
+    thread:{id:"thread-recovery",cwd:"/repo",runtime:"native",turns:[{id:"turn-1",status:"interrupted"}],recovery:{pending:false,blocked:true,turnId:"turn-1",reason:"uncertain_tool_action",message:"A tool may already have completed.",uncertainTools:[{id:"tool-1",namespace:"trebell_browser",tool:"click",status:"inProgress"}] }},
+    meta:{},
+  });
+  assert.equal(snapshot.recovery.blocked,true);assert.deepEqual(snapshot.recovery.uncertainTools,["trebell_browser/click · inProgress"]);assert.ok(snapshot.unresolvedFailures.includes("A tool may already have completed."));assert.ok(snapshot.pendingNextActions.some(item=>/Inspect the uncertain restart-time tool/i.test(item)));
+  const value=continuityContextValue(snapshot);assert.match(value,/Restart recovery: blocked/i);assert.match(value,/trebell_browser\/click · inProgress/);assert.match(value,/before repeating any side effect/i);
+});

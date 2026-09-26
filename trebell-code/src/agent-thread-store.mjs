@@ -4,8 +4,30 @@ import { randomUUID } from "node:crypto";
 import { trebellHome } from "./paths.mjs";
 import { boundDiagnosticText, boundDiagnosticValue } from "./diagnostic-bounds.mjs";
 import { redactSecretText, redactSecretValue } from "./secret-redactor.mjs";
+import { isToolCallItem } from "./goal-state.mjs";
 
 function clone(value){return JSON.parse(JSON.stringify(value))}
+const TERMINAL_TOOL_STATUSES=new Set(["completed","failed","cancelled","canceled","rejected","declined","skipped"]);
+
+function recoveryToolSummary(item={}){
+  return {
+    id:item.id==null?null:String(item.id),type:item.type==null?null:String(item.type),status:item.status==null?null:String(item.status),
+    namespace:item.namespace==null?null:String(item.namespace),tool:item.tool==null?null:String(item.tool),command:item.command==null?null:String(item.command).slice(0,1000),
+  };
+}
+
+export function interruptedTurnRecoverySafety(turn={}){
+  const uncertainTools=[];
+  for(const item of Array.isArray(turn?.items)?turn.items:[]){
+    if(!isToolCallItem(item))continue;
+    const status=String(item?.status||"").trim().toLowerCase();
+    if(TERMINAL_TOOL_STATUSES.has(status))continue;
+    uncertainTools.push(recoveryToolSummary(item));
+  }
+  return uncertainTools.length
+    ?{safe:false,reason:"uncertain_tool_action",uncertainTools,message:"Automatic restart continuation is blocked because a tool or action was still unresolved when Trebell stopped. Inspect its real-world state before repeating it."}
+    :{safe:true,reason:"no_uncertain_tool_action",uncertainTools:[]};
+}
 function persistedItem(item,environment){
   const next={...item};
   if(Object.prototype.hasOwnProperty.call(next,"aggregatedOutput")&&next.aggregatedOutput!=null)next.aggregatedOutput=boundDiagnosticText(redactSecretText(next.aggregatedOutput,{environment}),256*1024);
@@ -46,10 +68,15 @@ export class AgentThreadStore{
       const stale=thread.status?.type==="active"||Boolean(activeTurn);
       if(!stale)continue;
       changed=true;
-      if(activeTurn&&continueAfterRestart&&thread.providerSessionId){
+      const recoverySafety=activeTurn?interruptedTurnRecoverySafety(activeTurn):{safe:true,uncertainTools:[]};
+      if(activeTurn&&continueAfterRestart&&thread.providerSessionId&&recoverySafety.safe){
         activeTurn.status="interrupted";activeTurn.completedAt=now;activeTurn.durationMs=activeTurn.startedAt?Math.max(0,(now-activeTurn.startedAt)*1000):null;
         activeTurn.error={message:"Trebell restarted while this turn was running. Recovery is queued."};
         thread.status={type:"idle"};thread.recovery={pending:true,turnId:activeTurn.id,createdAt:now};recoverable.push({threadId:thread.id,turnId:activeTurn.id,runtime:thread.runtime});
+      }else if(activeTurn&&continueAfterRestart&&thread.providerSessionId&&!recoverySafety.safe){
+        activeTurn.status="interrupted";activeTurn.completedAt=now;activeTurn.durationMs=activeTurn.startedAt?Math.max(0,(now-activeTurn.startedAt)*1000):null;
+        activeTurn.error={message:recoverySafety.message};
+        thread.status={type:"systemError"};thread.recovery={pending:false,blocked:true,turnId:activeTurn.id,createdAt:now,reason:recoverySafety.reason,message:recoverySafety.message,uncertainTools:recoverySafety.uncertainTools};
       }else{
         if(activeTurn){activeTurn.status="failed";activeTurn.completedAt=now;activeTurn.durationMs=activeTurn.startedAt?Math.max(0,(now-activeTurn.startedAt)*1000):null;activeTurn.error={message:"Agent session was interrupted by a Trebell restart. Send a new message to continue."}}
         thread.status={type:"systemError"};delete thread.recovery;
