@@ -29,6 +29,7 @@
     "test:vyce:agent": "node --env-file-if-exists=../.env scripts/live-vyce-agent-test.mjs --live",
     "test:vyce:background": "node --env-file-if-exists=../.env scripts/live-vyce-background-test.mjs --live",
     "test:vyce:fanout": "node --env-file-if-exists=../.env scripts/live-vyce-fanout-test.mjs --live",
+    "test:runtime-profiles:live": "node --env-file-if-exists=../.env scripts/live-runtime-profile-smoke.mjs --live",
     "trace:export": "node scripts/export-event-replay.mjs",
     "trace:replay": "node scripts/replay-event-bundle.mjs",
     "prepare:icon": "node scripts/materialize-icon.mjs",
