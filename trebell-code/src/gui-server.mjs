@@ -28,6 +28,7 @@ import { startRemoteAppServer } from "./environment-app-server.mjs";
 import { createRemoteControlServer } from "./remote-control.mjs";
 import { RemoteAuthStore } from "./remote-auth-store.mjs";
 import { RemoteAccessSecretStore } from "./remote-access-secret-store.mjs";
+import { REMOTE_SCOPES, normalizeRemoteScopes } from "./remote-scopes.mjs";
 import { DeviceService } from "./device-service.mjs";
 import { ProviderManager, normalizeProviderId } from "./provider-manager.mjs";
 import { modelContextWindowFromMetadata, modelContextWindowKey } from "./model-context-window.mjs";
@@ -1402,6 +1403,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       running:Boolean(remoteControl),
       port:Number(settings.remoteAccessPort||3211),
       urls:remoteControl?.urls||[],
+      availableScopes:[...REMOTE_SCOPES],
       devices:remoteAuth.listDevices(),
     };
   }
@@ -1886,7 +1888,10 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       try{
         if(!state.settings().remoteAccessEnabled)return json(res,400,{error:"Enable remote access before creating a pairing link"});
         if(!remoteControl)await syncRemoteControl();
-        return json(res,200,remoteControl.createPairing());
+        const body=await readJsonBody(req),hasScopes=Object.prototype.hasOwnProperty.call(body,"scopes");
+        const scopes=hasScopes?normalizeRemoteScopes(body.scopes,{fallback:[]}):null;
+        if(hasScopes&&!scopes.length)throw new Error("Choose at least one remote access scope");
+        return json(res,200,remoteControl.createPairing(hasScopes?{scopes}:{}));
       }catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/remote-access/device"&&req.method==="DELETE"){

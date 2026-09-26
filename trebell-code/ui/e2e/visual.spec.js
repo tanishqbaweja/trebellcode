@@ -3728,6 +3728,23 @@ test("remote access port rolls back when persistence fails",async({page,request}
   await page.screenshot({path:auditDir+"remote-access-save-error-1280x800.png",fullPage:true});
 });
 
+test("remote pairing defaults to least privilege and visibly preserves granted scopes",async({page,request})=>{
+  test.setTimeout(30_000);
+  const scopes=["status","threads:read","threads:write","approvals","environments:read","environments:execute"],pairBodies=[];
+  const remote={enabled:true,running:true,port:3211,urls:["http://127.0.0.1:3211"],availableScopes:scopes,devices:[{id:"phone-1",name:"Existing read-only phone",createdAt:Date.now()-60_000,lastSeenAt:Date.now()-5_000,scopes:["status","threads:read"]}]};
+  await page.route(/\/api\/remote-access\/pair$/,route=>{pairBodies.push(route.request().postDataJSON()||{});const body=pairBodies.at(-1);return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({id:"pair-1",token:"fixture-pair-token",createdAt:Date.now(),expiresAt:Date.now()+600_000,scopes:body.scopes||[],urls:["http://127.0.0.1:3211/#pair=fixture-pair-token"]})})});
+  await page.route(/\/api\/remote-access$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(remote)}));
+  await prepare(page,request);await page.getByRole("button",{name:"Environments",exact:true}).click();
+  const card=page.locator(".remote-access-card");await expect(card).toBeVisible();await expect(card.getByLabel("Enable remote access")).toBeChecked();
+  await expect(card.getByLabel("View host status")).toBeChecked();await expect(card.getByLabel("View threads")).toBeChecked();await expect(card.getByLabel("Start, steer and stop threads")).not.toBeChecked();await expect(card.getByLabel("Approve agent requests")).not.toBeChecked();
+  await card.getByRole("button",{name:"Thread control",exact:true}).click();await expect(card.getByLabel("Start, steer and stop threads")).toBeChecked();await expect(card.getByLabel("Approve agent requests")).toBeChecked();await expect(card.getByLabel("Run environment commands")).not.toBeChecked();
+  await card.getByRole("button",{name:"Read only",exact:true}).click();await card.getByRole("button",{name:"Create one-time pairing link",exact:true}).click();
+  await expect.poll(()=>pairBodies.length).toBe(1);expect(pairBodies[0]).toEqual({scopes:["status","threads:read"]});await expect(card.locator(".remote-pairing")).toContainText("Granted View host status · View threads");
+  const existing=card.locator(".remote-devices>div").filter({hasText:"Existing read-only phone"});await expect(existing).toContainText("Access · View host status · View threads");
+  await page.setViewportSize({width:1280,height:800});const panel=card.locator(".remote-scope-panel"),metrics=await panel.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await card.screenshot({path:auditDir+"remote-pairing-scopes-dark-1280x800.png"});
+  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});const lightSurfaces=await card.evaluate(node=>({pairing:getComputedStyle(node.querySelector(".remote-pairing>div")).backgroundColor,device:getComputedStyle(node.querySelector(".remote-devices>div")).backgroundColor,unchecked:getComputedStyle(node.querySelector('.remote-scope-grid input:not(:checked)')).backgroundColor}));expect(lightSurfaces.pairing).not.toBe("rgb(12, 15, 18)");expect(lightSurfaces.device).not.toBe("rgb(12, 15, 18)");expect(lightSurfaces.unchecked).not.toBe("rgb(18, 22, 27)");await card.screenshot({path:auditDir+"remote-pairing-scopes-light-1280x800.png"});
+});
+
 test("workspace file refresh and save failures stay visible without lying about state",async({page,request})=>{
   test.setTimeout(35_000);
   await prepare(page,request);
