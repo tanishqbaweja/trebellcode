@@ -18,6 +18,12 @@ test("Device panel exposes bounded recent simulator logs without breaking the wo
     id:deviceId,platform:"android",text:"09-26 10:42:01.012 I/TrebellDemo: Activity resumed\n09-26 10:42:01.083 I/Network: API handshake complete\n09-26 10:42:02.501 W/Renderer: Frame budget recovered",
     lineCount:3,omittedLines:17,omittedCharacters:0,truncated:true,
   })}));
+  const deviceActions=[];
+  await page.route(/\/api\/device\/action$/,async route=>{
+    const body=route.request().postDataJSON();deviceActions.push(body);
+    if(body.action==="packages")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,id:deviceId,action:"packages",packages:["com.example.demo","com.example.other"],truncated:false,total:2})});
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,id:deviceId,action:body.action,app:body.args?.app||null})});
+  });
   await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:520,terminalHeight:330})));
   await page.goto("/");
   await expect(page.getByTestId("composer")).toBeVisible();
@@ -26,6 +32,11 @@ test("Device panel exposes bounded recent simulator logs without breaking the wo
   await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Device",exact:true}).click();
   await expect(panel.locator(".device-toolbar select")).toHaveValue(deviceId);
   await expect(panel.getByAltText("Pixel Fixture")).toBeVisible();
+  await panel.getByRole("button",{name:"Apps",exact:true}).click();
+  await expect(panel.getByLabel("Simulator app id")).toHaveValue("com.example.demo");
+  await panel.getByRole("button",{name:"Launch",exact:true}).click();
+  expect(deviceActions.some(item=>item.action==="packages")).toBe(true);
+  expect(deviceActions.some(item=>item.action==="launch"&&item.args?.app==="com.example.demo")).toBe(true);
   await panel.getByRole("button",{name:"Recent logs",exact:true}).click();
   const logs=panel.getByTestId("device-logs");
   await expect(logs).toBeVisible();

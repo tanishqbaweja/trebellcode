@@ -44,11 +44,11 @@ async function fakeAppServer(thread){
   };
 }
 
-test("agent device logs route through the bounded simulator-log API as untrusted read data",async({page})=>{
+test("agent device validation routes logs and app lifecycle through bounded device APIs",async({page})=>{
   const root=process.cwd(),project={id:"device-agent-project",name:"Device agent fixture",path:root,environmentId:null,effectiveSettings:{defaultWorkspaceMode:"current",agentDeviceAccess:true}};
   const thread={id:"device-agent-thread",name:"Device agent fixture",preview:"Agent simulator log validation",cwd:root,createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
-  const harness=await fakeAppServer(thread);let requestedUrl="";
-  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current",activeProjectId:project.id};
+  const harness=await fakeAppServer(thread);let requestedUrl="";const deviceActions=[];
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"full",defaultWorkspaceMode:"current",activeProjectId:project.id};
   try{
     await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:true,wsUrl:harness.wsUrl,cwd:root,platform:process.platform,version:"device-agent-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[project],threadMeta:{[thread.id]:{projectless:false,cwd:root,environmentId:null}}})}));
@@ -58,6 +58,11 @@ test("agent device logs route through the bounded simulator-log API as untrusted
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
     await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
     await page.route(/\/api\/device\/logs\?/,route=>{requestedUrl=route.request().url();return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({id:"android:emulator-5554",platform:"android",text:"I/Trebell: bounded device log",lineCount:1,omittedLines:0,omittedCharacters:0,truncated:false})})});
+    await page.route(/\/api\/device\/action$/,async route=>{
+      const body=route.request().postDataJSON();deviceActions.push(body);
+      if(body.action==="packages")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,id:"android:emulator-5554",action:"packages",packages:["com.example.demo"],truncated:false,total:1})});
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,id:"android:emulator-5554",action:body.action,app:body.args?.app||null})});
+    });
     await page.goto("/");
     await page.getByRole("button",{name:/Device agent fixture/}).click();
     await expect(page.locator(".thread-row.active")).toContainText("Device agent fixture");
@@ -68,5 +73,14 @@ test("agent device logs route through the bounded simulator-log API as untrusted
     const payload=JSON.parse(response.result.contentItems.find(item=>item.text?.startsWith("{"))?.text||"{}");
     expect(payload.text).toContain("bounded device log");expect(payload.lineCount).toBe(1);
     expect(requestedUrl).toContain("lines=75");expect(requestedUrl).toContain("minutes=3");
+
+    const packages=await harness.request("item/tool/call",{threadId:thread.id,namespace:"trebell_device",tool:"packages",arguments:{id:"android:emulator-5554"}});
+    expect(packages.result?.success).toBe(true);expect(packages.result.contentItems[0].text).toContain("untrusted external tool data");
+    const launched=await harness.request("item/tool/call",{threadId:thread.id,namespace:"trebell_device",tool:"launch",arguments:{id:"android:emulator-5554",app:"com.example.demo"}});
+    const stopped=await harness.request("item/tool/call",{threadId:thread.id,namespace:"trebell_device",tool:"stop",arguments:{id:"android:emulator-5554",app:"com.example.demo"}});
+    expect(launched.result?.success).toBe(true);expect(stopped.result?.success).toBe(true);
+    expect(deviceActions.some(item=>item.action==="packages")).toBe(true);
+    expect(deviceActions.some(item=>item.action==="launch"&&item.args?.app==="com.example.demo")).toBe(true);
+    expect(deviceActions.some(item=>item.action==="stop"&&item.args?.app==="com.example.demo")).toBe(true);
   }finally{await harness.close()}
 });

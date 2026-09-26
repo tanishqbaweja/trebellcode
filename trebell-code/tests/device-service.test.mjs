@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { win32 } from "node:path";
-import { androidCandidates, boundedDeviceLogText, parseAdbEmulators, parseAdbVersion, parseEmulatorVersion, parseSdkManagerUpdates, parseSdkManagerVersion, pngSize } from "../src/device-service.mjs";
+import { androidCandidates, boundedDeviceLogText, parseAdbEmulators, parseAdbVersion, parseEmulatorVersion, parseSdkManagerUpdates, parseSdkManagerVersion, pngSize, safeAppId } from "../src/device-service.mjs";
 
 test("device discovery accepts Android emulators and excludes physical devices",()=>{
   const parsed=parseAdbEmulators(`List of devices attached\nemulator-5554 device product:sdk_gphone64_x86_64 model:sdk_gphone64_x86_64 device:emu64xa transport_id:1\nR5CT1234ABC device product:b0qxxx model:SM_S908B device:b0q transport_id:2\nemulator-5556 offline product:sdk_gphone64_arm64 model:Pixel_8_API_35 device:emu64a transport_id:3\n`);
@@ -34,6 +34,31 @@ test("Android emulator logs use bounded logcat and redact environment secrets",a
   const result=await service.logs("android:emulator-5554",{lines:25});
   assert.deepEqual(calls.at(-1),{command:"/fixture/adb",args:["-s","emulator-5554","logcat","-d","-t","25"]});
   assert.doesNotMatch(result.text,new RegExp(secret));assert.match(result.text,/\[redacted\]/);assert.equal(result.platform,"android");
+});
+
+test("simulator app ids are bounded identifiers rather than shell fragments",()=>{
+  assert.equal(safeAppId("com.example.demo"),"com.example.demo");assert.equal(safeAppId("com.example-demo.app"),"com.example-demo.app");
+  for(const value of ["","../../escape","com.example.app;rm","com.example app","$HOME"])assert.throws(()=>safeAppId(value),/invalid/i);
+});
+
+test("Android app validation lists bounded packages and uses argv-safe launch and stop commands",async()=>{
+  const calls=[];const {DeviceService}=await import("../src/device-service.mjs");
+  const service=new DeviceService({
+    platform:"linux",env:{},findCommandFn:async name=>name==="adb"?"/fixture/adb":null,
+    runTextFn:async(command,args)=>{calls.push({command,args});if(args.includes("packages"))return {ok:true,stdout:"package:com.example.demo\npackage:com.example.other\n",stderr:""};return {ok:true,stdout:"Events injected: 1\n",stderr:""}},
+  });
+  const packages=await service.action("android:emulator-5554","packages");assert.deepEqual(packages.packages,["com.example.demo","com.example.other"]);assert.equal(packages.truncated,false);
+  await service.action("android:emulator-5554","launch",{app:"com.example.demo"});await service.action("android:emulator-5554","stop",{app:"com.example.demo"});
+  assert.deepEqual(calls.at(-2).args,["-s","emulator-5554","shell","monkey","-p","com.example.demo","-c","android.intent.category.LAUNCHER","1"]);
+  assert.deepEqual(calls.at(-1).args,["-s","emulator-5554","shell","am","force-stop","com.example.demo"]);
+});
+
+test("iOS Simulator app lifecycle uses simctl argv without a shell",async()=>{
+  const calls=[];const {DeviceService}=await import("../src/device-service.mjs");
+  const service=new DeviceService({platform:"darwin",env:{},findCommandFn:async()=>null,runTextFn:async(command,args)=>{calls.push({command,args});return {ok:true,stdout:"",stderr:""}}});
+  await service.action("ios:fixture-udid","launch",{app:"com.example.demo"});await service.action("ios:fixture-udid","stop",{app:"com.example.demo"});
+  assert.deepEqual(calls[0],{command:"xcrun",args:["simctl","launch","fixture-udid","com.example.demo"]});
+  assert.deepEqual(calls[1],{command:"xcrun",args:["simctl","terminate","fixture-udid","com.example.demo"]});
 });
 
 test("Android tool versions are parsed from their native CLI output",()=>{

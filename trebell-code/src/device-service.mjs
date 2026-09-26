@@ -73,6 +73,9 @@ function parseAdbEmulators(raw=""){
 
 function pngSize(buffer){return buffer.length>=24&&buffer.subarray(1,4).toString()==="PNG"?{width:buffer.readUInt32BE(16),height:buffer.readUInt32BE(20)}:{width:null,height:null}}
 function encodedInput(value){return String(value??"").replace(/%/g,"%25").replace(/ /g,"%s")}
+function safeAppId(value){
+  const id=String(value||"").trim();if(!/^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/.test(id))throw new Error("App package/bundle id is invalid.");return id;
+}
 function boundedDeviceLogText(value,{lines=200,maxChars=128*1024}={}){
   const lineLimit=Math.max(10,Math.min(2000,Math.trunc(Number(lines)||200))),charLimit=Math.max(1024,Math.min(512*1024,Math.trunc(Number(maxChars)||128*1024)));
   const rows=String(value??"").replaceAll("\0","").split(/\r?\n/);if(rows.at(-1)==="")rows.pop();
@@ -180,13 +183,26 @@ export class DeviceService{
       else if(action==="theme")await this.#adb(id,["shell","cmd","uimode","night",args.dark?"yes":"no"]);
       else if(action==="rotate")await this.#adb(id,["shell","settings","put","system","user_rotation",String(((Number(args.rotation)||0)%4+4)%4)]);
       else if(action==="foreground"){const result=await this.#adb(id,["shell","dumpsys","window","windows"],{allowFailure:true});const match=(result.stdout||"").match(/mCurrentFocus=Window\{[^}]*\s([\w.$-]+\/[\w.$-]+)/);return {ok:result.ok,foreground:match?.[1]||null}}
+      else if(action==="packages"){
+        const result=await this.#adb(id,["shell","pm","list","packages","-3"],{allowFailure:true});if(!result.ok)throw new Error(String(result.stderr||result.stdout||"Could not list Android apps").trim());
+        const all=String(result.stdout||"").split(/\r?\n/).map(line=>line.trim().replace(/^package:/,"")).filter(Boolean),packages=all.slice(0,500);
+        return {ok:true,id,action,packages,truncated:all.length>packages.length,total:all.length};
+      }
+      else if(action==="launch"){
+        const app=safeAppId(args.app),result=await this.#adb(id,["shell","monkey","-p",app,"-c","android.intent.category.LAUNCHER","1"],{allowFailure:true,timeout:30_000});
+        if(!result.ok||/No activities found|monkey aborted/i.test(result.stdout||result.stderr||""))throw new Error(String(result.stderr||result.stdout||("Could not launch "+app)).trim().slice(-2000));
+        return {ok:true,id,action,app};
+      }
+      else if(action==="stop"){const app=safeAppId(args.app);await this.#adb(id,["shell","am","force-stop",app]);return {ok:true,id,action,app}}
       else throw new Error("Unsupported Android emulator action: "+action);
       return {ok:true,id,action};
     }
     if(platform==="ios"){
       if(this.platform!=="darwin")throw new Error("iOS Simulator control requires macOS.");
-      if(action==="boot"){await runText("xcrun",["simctl","boot",serial],{allowFailure:true});return {ok:true,id,action}}
-      if(action==="poweroff"){await runText("xcrun",["simctl","shutdown",serial],{allowFailure:true});return {ok:true,id,action}}
+      if(action==="boot"){await this.runTextFn("xcrun",["simctl","boot",serial],{allowFailure:true,env:this.env});return {ok:true,id,action}}
+      if(action==="poweroff"){await this.runTextFn("xcrun",["simctl","shutdown",serial],{allowFailure:true,env:this.env});return {ok:true,id,action}}
+      if(action==="launch"){const app=safeAppId(args.app),result=await this.runTextFn("xcrun",["simctl","launch",serial,app],{allowFailure:true,env:this.env});if(!result.ok)throw new Error(String(result.stderr||result.stdout||("Could not launch "+app)).trim());return {ok:true,id,action,app}}
+      if(action==="stop"){const app=safeAppId(args.app),result=await this.runTextFn("xcrun",["simctl","terminate",serial,app],{allowFailure:true,env:this.env});if(!result.ok)throw new Error(String(result.stderr||result.stdout||("Could not terminate "+app)).trim());return {ok:true,id,action,app}}
       throw new Error("This iOS simulator action requires the dedicated simulator helper: "+action);
     }
     throw new Error("Unsupported simulator platform");
@@ -194,4 +210,4 @@ export class DeviceService{
   async startAndroid(avd){await this.#detect();if(!this.emulatorPath)throw new Error("Android Emulator is not installed or not on PATH.");const name=String(avd||"").trim();if(!name)throw new Error("AVD name is required");const child=spawn(this.emulatorPath,["-avd",name],{detached:true,stdio:"ignore",windowsHide:true,env:this.env});child.unref();return {ok:true,avd:name,pid:child.pid}}
 }
 
-export { androidCandidates, boundedDeviceLogText, parseAdbEmulators, parseAdbVersion, parseEmulatorVersion, parseSdkManagerUpdates, parseSdkManagerVersion, pngSize };
+export { androidCandidates, boundedDeviceLogText, parseAdbEmulators, parseAdbVersion, parseEmulatorVersion, parseSdkManagerUpdates, parseSdkManagerVersion, pngSize, safeAppId };
