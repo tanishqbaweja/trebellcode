@@ -852,7 +852,16 @@ if(!lock){
   ipcMain.handle("browser:state",async()=>browserState());
   ipcMain.handle("browser:history",async(_event,direction)=>browserNavigateHistory(direction));
   ipcMain.handle("browser:viewport",async(_event,payload)=>browserViewport(payload));
-  ipcMain.handle("browser:recording:arm",async()=>{const browser=await ensureAgentBrowser({show:true});browserRecordingGrantUntil=Date.now()+5000;return {ok:true,expiresAt:browserRecordingGrantUntil,sourceId:browser.getMediaSourceId()};});
+  ipcMain.handle("browser:recording:arm",async()=>{
+    const browser=await ensureAgentBrowser({show:true});
+    if(process.env.TREBELL_TEST_HIDDEN==="1"&&!browser.isVisible()){
+      browser.showInactive();
+      const hideTimer=setTimeout(()=>{if(agentBrowser===browser&&!browser.isDestroyed())browser.hide()},10_000);
+      hideTimer.unref?.();
+    }
+    browserRecordingGrantUntil=Date.now()+5000;
+    return {ok:true,expiresAt:browserRecordingGrantUntil,sourceId:browser.getMediaSourceId()};
+  });
   ipcMain.handle("desktop:screenshot",async()=>desktopScreenshot());
   ipcMain.handle("computer:screenshot",async()=>desktopScreenshot());
   ipcMain.handle("computer:move",async(_event,payload={})=>computerMove(payload.x,payload.y));

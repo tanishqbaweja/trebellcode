@@ -150,19 +150,20 @@ export default function PreviewPage({projectPath,onAttachText,onAttachImage,onAt
     try{
       await browser.armRecording();
       const stream=await navigator.mediaDevices.getDisplayMedia({audio:false,video:{frameRate:{ideal:30,max:30}}});streamRef.current=stream;
-      const choices=["video/mp4;codecs=avc1","video/webm;codecs=vp9","video/webm;codecs=vp8","video/webm"];
+      const choices=["video/webm;codecs=vp9","video/webm;codecs=vp8","video/webm","video/mp4;codecs=avc1"];
       const mimeType=choices.find(type=>MediaRecorder.isTypeSupported(type))||"";const recorder=new MediaRecorder(stream,mimeType?{mimeType}:undefined);chunksRef.current=[];recorderRef.current=recorder;
       recorder.ondataavailable=event=>{if(event.data?.size)chunksRef.current.push(event.data)};
-      recorder.start(1000);setRecordingSince(Date.now());setRecording(true);
+      recorder.start(250);setRecordingSince(Date.now());setRecording(true);
     }finally{setBusy("")}
   }
   async function stopRecording(){
     const recorder=recorderRef.current;if(!recorder)return;setBusy("recording-stop");
     try{
-      const stopped=new Promise(resolve=>{recorder.addEventListener("stop",resolve,{once:true});if(recorder.state!=="inactive")recorder.stop();else resolve()});await stopped;
+      const stopped=new Promise(resolve=>{recorder.addEventListener("stop",()=>setTimeout(resolve,50),{once:true});if(recorder.state!=="inactive"){try{recorder.requestData()}catch{};setTimeout(()=>{if(recorder.state!=="inactive")recorder.stop()},60)}else resolve()});await stopped;
       for(const track of streamRef.current?.getTracks?.()||[])track.stop();
       const type=recorder.mimeType||chunksRef.current[0]?.type||"video/webm";const blob=new Blob(chunksRef.current,{type});
-      if(blob.size>0&&onAttachFile){const ext=type.includes("mp4")?"mp4":"webm";await onAttachFile(new File([blob],`browser-recording-${Date.now()}.${ext}`,{type}),{kind:"browser",label:"Browser recording",detail:`${recordingSeconds}s · ${(blob.size/1024/1024).toFixed(1)} MB`})}
+      if(!blob.size)throw new Error("Browser recording produced no encoded video. Record for a little longer and try again.");
+      if(onAttachFile){const ext=type.includes("mp4")?"mp4":"webm";await onAttachFile(new File([blob],`browser-recording-${Date.now()}.${ext}`,{type}),{kind:"browser",label:"Browser recording",detail:`${recordingSeconds}s · ${(blob.size/1024/1024).toFixed(1)} MB`})}
     }finally{recorderRef.current=null;streamRef.current=null;chunksRef.current=[];setRecording(false);setBusy("")}
   }
   async function attachElement(element,note=""){

@@ -143,11 +143,13 @@ try {
   const browserRecording=await mainPage.evaluate(async()=>{
     await window.trebellDesktop.browser.armRecording();
     const stream=await navigator.mediaDevices.getDisplayMedia({audio:false,video:{frameRate:{ideal:15,max:15}}});
-    const types=["video/mp4;codecs=avc1","video/webm;codecs=vp9","video/webm;codecs=vp8","video/webm"];
+    const types=["video/webm;codecs=vp9","video/webm;codecs=vp8","video/webm","video/mp4;codecs=avc1"];
     const mimeType=types.find(type=>MediaRecorder.isTypeSupported(type))||"";
-    const chunks=[];const recorder=new MediaRecorder(stream,mimeType?{mimeType}:undefined);recorder.ondataavailable=event=>{if(event.data?.size)chunks.push(event.data)};recorder.start(100);
-    await new Promise(resolve=>setTimeout(resolve,1200));
-    await new Promise(resolve=>{recorder.addEventListener("stop",resolve,{once:true});recorder.stop()});
+    const chunks=[];const recorder=new MediaRecorder(stream,mimeType?{mimeType}:undefined);recorder.ondataavailable=event=>{if(event.data?.size)chunks.push(event.data)};recorder.start(250);
+    await new Promise(resolve=>setTimeout(resolve,1400));
+    try{recorder.requestData()}catch{}
+    await new Promise(resolve=>setTimeout(resolve,100));
+    await new Promise(resolve=>{recorder.addEventListener("stop",()=>setTimeout(resolve,50),{once:true});recorder.stop()});
     const settings=stream.getVideoTracks()[0]?.getSettings?.()||{};for(const track of stream.getTracks())track.stop();const blob=new Blob(chunks,{type:recorder.mimeType||chunks[0]?.type||"video/webm"});
     return {bytes:blob.size,type:blob.type,width:settings.width||null,height:settings.height||null};
   });
