@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { boundDiagnosticText, boundDiagnosticValue } from "../src/diagnostic-bounds.mjs";
@@ -39,8 +39,7 @@ test("agent thread persistence bounds raw tool diagnostics but preserves convers
       rawInput:{payload:"I".repeat(500_000)},
       rawOutput:{payload:"O".repeat(900_000)},
     });
-    const saved=JSON.parse(await readFile(join(home,"agent-threads.json"),"utf8"));
-    const savedTurn=saved.threads[0].turns[0];
+    const saved=new AgentThreadStore(env).get(thread.id),savedTurn=saved.turns[0];
     assert.equal(savedTurn.items.find(item=>item.id==="user-"+turn.id).content[0].text,"user text stays exact");
     assert.equal(savedTurn.items.find(item=>item.id==="assistant").text,"assistant text stays exact");
     const tool=savedTurn.items.find(item=>item.id==="tool");
@@ -48,7 +47,7 @@ test("agent thread persistence bounds raw tool diagnostics but preserves convers
     assert.match(tool.aggregatedOutput,/THE-END$/);
     assert.match(JSON.stringify(tool.rawInput),/truncated|omitted/i);
     assert.match(JSON.stringify(tool.rawOutput),/truncated|omitted/i);
-    assert.ok((await stat(join(home,"agent-threads.json"))).size<900_000);
+    assert.ok(JSON.stringify(saved).length<900_000);
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
@@ -61,9 +60,8 @@ test("agent thread persistence redacts credentials from stored messages and tool
     const tool=store.addItem(thread.id,turn.id,{type:"commandExecution",id:"tool-secret",aggregatedOutput:`stdout=${credential}`,rawInput:{authorization:`Bearer ${credential}`},rawOutput:{nested:{token:credential},text:`echo ${credential}`}});
     assert.doesNotMatch(JSON.stringify(tool),new RegExp(credential));
     assert.match(JSON.stringify(tool),/\[redacted\]/);
-    const savedText=await readFile(join(home,"agent-threads.json"),"utf8");
+    const saved=new AgentThreadStore(env).get(thread.id),savedText=JSON.stringify(saved),savedTurn=saved.turns[0];
     assert.doesNotMatch(savedText,new RegExp(credential));
-    const saved=JSON.parse(savedText),savedTurn=saved.threads[0].turns[0];
     assert.match(savedTurn.items.find(item=>item.id===`user-${turn.id}`).content[0].text,/\[redacted\]/);
     assert.match(JSON.stringify(savedTurn.items.find(item=>item.id==="tool-secret")),/\[redacted\]/);
   }finally{await rm(home,{recursive:true,force:true})}
@@ -80,7 +78,7 @@ test("bounded tool persistence still redacts retained secrets after truncation",
       rawInput:{payload:credential+"I".repeat(500_000)+credential},
       rawOutput:{payload:credential+"O".repeat(900_000)+credential},
     });
-    const savedText=await readFile(join(home,"agent-threads.json"),"utf8");
+    const savedText=JSON.stringify(new AgentThreadStore(env).get(thread.id));
     assert.doesNotMatch(savedText,new RegExp(credential));assert.match(savedText,/\[redacted\]/);
   }finally{await rm(home,{recursive:true,force:true})}
 });

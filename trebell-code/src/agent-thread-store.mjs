@@ -1,10 +1,8 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { trebellHome } from "./paths.mjs";
 import { boundDiagnosticText, boundDiagnosticValue } from "./diagnostic-bounds.mjs";
 import { redactSecretText, redactSecretValue } from "./secret-redactor.mjs";
 import { isToolCallItem } from "./goal-state.mjs";
+import { SqliteAgentThreadStore } from "./sqlite-agent-thread-store.mjs";
 
 function clone(value){return JSON.parse(JSON.stringify(value))}
 const TERMINAL_TOOL_STATUSES=new Set(["completed","failed","cancelled","canceled","rejected","declined","skipped"]);
@@ -45,29 +43,21 @@ function persistedItem(item,environment){
 export class AgentThreadStore{
   constructor(env=process.env){
     this.env=env;
-    this.path=join(trebellHome(env),"agent-threads.json");
-    mkdirSync(dirname(this.path),{recursive:true});
-    this.data=this.#load();
+    this.storage=new SqliteAgentThreadStore(env);
+    this.path=this.storage.path;
+    this.legacyPath=this.storage.legacyPath;
+    this.data={version:2,threads:this.storage.list()};
   }
-  #load(){
-    try{
-      const parsed=JSON.parse(readFileSync(this.path,"utf8"));
-      return {version:1,threads:Array.isArray(parsed?.threads)?parsed.threads:[]};
-    }catch{return {version:1,threads:[]}}
-  }
-  #save(){
-    const tmp=this.path+".tmp";
-    const safe=redactSecretValue(this.data,{environment:this.env,maxDepth:20,maxArray:10000,maxFields:5000});
-    writeFileSync(tmp,JSON.stringify(safe,null,2),{encoding:"utf8",mode:0o600});
-    renameSync(tmp,this.path);
-  }
+  #safe(value){return redactSecretValue(value,{environment:this.env,maxDepth:20,maxArray:10000,maxFields:5000})}
+  #persistThread(thread,{replaceTurns=false}={}){this.storage.putThread(this.#safe(thread),{replaceTurns})}
+  #persistTurn(thread,turn){this.storage.putThreadAndTurn(this.#safe({...thread,turns:undefined}),this.#safe(turn))}
   reconcileRestart({continueAfterRestart=false}={}){
-    const now=Math.floor(Date.now()/1000);const recoverable=[];let changed=false;
+    const now=Math.floor(Date.now()/1000);const recoverable=[],changed=[];
     for(const thread of this.data.threads){
       const activeTurn=[...(thread.turns||[])].reverse().find(turn=>["inProgress","running","starting"].includes(turn?.status));
       const stale=thread.status?.type==="active"||Boolean(activeTurn);
       if(!stale)continue;
-      changed=true;
+      changed.push(thread);
       const recoverySafety=activeTurn?interruptedTurnRecoverySafety(activeTurn):{safe:true,uncertainTools:[]};
       if(activeTurn&&continueAfterRestart&&thread.providerSessionId&&recoverySafety.safe){
         activeTurn.status="interrupted";activeTurn.completedAt=now;activeTurn.durationMs=activeTurn.startedAt?Math.max(0,(now-activeTurn.startedAt)*1000):null;
@@ -83,7 +73,7 @@ export class AgentThreadStore{
       }
       thread.updatedAt=now;
     }
-    if(changed)this.#save();return clone(recoverable);
+    for(const thread of changed)this.#persistThread(thread,{replaceTurns:true});return clone(recoverable);
   }
   list(runtime=null){
     return clone(this.data.threads.filter(thread=>!runtime||thread.runtime===runtime).sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0)));
@@ -100,7 +90,7 @@ export class AgentThreadStore{
       model:model||null,agent:agent||null,name:name||null,preview:preview||null,providerMeta:providerMeta||null,createdAt:now,updatedAt:now,
       status:{type:"idle"},turns:[],archived:false,section:null,
     };
-    this.data.threads.unshift(thread);this.#save();return clone(thread);
+    this.data.threads.unshift(thread);this.#persistThread(thread,{replaceTurns:true});return clone(thread);
   }
   importHistory({runtime,cwd,providerSessionId,model=null,agent=null,name=null,preview=null,providerMeta=null,turns=[],createdAt=null,updatedAt=null}={}){
     const existing=this.findProviderSession(runtime,providerSessionId);if(existing)return existing;
@@ -112,43 +102,43 @@ export class AgentThreadStore{
       model:model||null,agent:agent||null,name:name||null,preview:preview||null,providerMeta:providerMeta||null,createdAt:created,updatedAt:updated,
       status:{type:"idle"},turns:clone(turns).map(turn=>({...turn,status:"completed"})),archived:false,section:null,
     };
-    this.data.threads.unshift(thread);this.#save();return clone(thread);
+    this.data.threads.unshift(thread);this.#persistThread(thread,{replaceTurns:true});return clone(thread);
   }
   update(id,patch={}){
     const thread=this.data.threads.find(item=>item.id===id);if(!thread)return null;
-    Object.assign(thread,patch,{updatedAt:Math.floor(Date.now()/1000)});this.#save();return clone(thread);
+    Object.assign(thread,patch,{updatedAt:Math.floor(Date.now()/1000)});this.#persistThread(thread,{replaceTurns:Object.prototype.hasOwnProperty.call(patch,"turns")});return clone(thread);
   }
-  delete(id){const before=this.data.threads.length;this.data.threads=this.data.threads.filter(thread=>thread.id!==id);if(this.data.threads.length!==before)this.#save();return before!==this.data.threads.length}
+  delete(id){const before=this.data.threads.length;this.data.threads=this.data.threads.filter(thread=>thread.id!==id);if(this.data.threads.length!==before)this.storage.delete(id);return before!==this.data.threads.length}
   addTurn(threadId,{id=randomUUID(),inputText="",items=[],status="inProgress",startedAt=Math.floor(Date.now()/1000)}={}){
     const thread=this.data.threads.find(item=>item.id===threadId);if(!thread)return null;
     const turn={id,status,startedAt,completedAt:null,durationMs:null,error:null,items:[
       ...(inputText?[{type:"userMessage",id:`user-${id}`,clientId:null,content:[{type:"text",text:redactSecretText(inputText,{environment:this.env})}]}]:[]),
       ...items,
     ]};
-    thread.turns.push(turn);thread.status={type:"active",activeFlags:[]};thread.updatedAt=Math.floor(Date.now()/1000);this.#save();return clone(turn);
+    thread.turns.push(turn);thread.status={type:"active",activeFlags:[]};thread.updatedAt=Math.floor(Date.now()/1000);this.#persistTurn(thread,turn);return clone(turn);
   }
   updateTurn(threadId,turnId,patch={}){
     const thread=this.data.threads.find(item=>item.id===threadId);const turn=thread?.turns?.find(item=>item.id===turnId);if(!turn)return null;
-    Object.assign(turn,patch);thread.updatedAt=Math.floor(Date.now()/1000);this.#save();return clone(turn);
+    Object.assign(turn,patch);thread.updatedAt=Math.floor(Date.now()/1000);this.#persistTurn(thread,turn);return clone(turn);
   }
   restartTurn(threadId,turnId){
     const thread=this.data.threads.find(item=>item.id===threadId);const turn=thread?.turns?.find(item=>item.id===turnId);if(!turn)return null;
     turn.status="inProgress";turn.completedAt=null;turn.durationMs=null;turn.error=null;thread.status={type:"active",activeFlags:[]};
     if(thread.recovery)thread.recovery={...thread.recovery,pending:false,startedAt:Math.floor(Date.now()/1000)};
-    thread.updatedAt=Math.floor(Date.now()/1000);this.#save();return clone(turn);
+    thread.updatedAt=Math.floor(Date.now()/1000);this.#persistTurn(thread,turn);return clone(turn);
   }
   addItem(threadId,turnId,item){
     const thread=this.data.threads.find(entry=>entry.id===threadId);const turn=thread?.turns?.find(entry=>entry.id===turnId);if(!turn)return null;
     const index=turn.items.findIndex(entry=>entry.id===item.id);
     const stored=persistedItem(index>=0?{...turn.items[index],...item}:item,this.env);
     if(index>=0)turn.items[index]=stored;else turn.items.push(stored);
-    thread.updatedAt=Math.floor(Date.now()/1000);this.#save();return clone(stored);
+    thread.updatedAt=Math.floor(Date.now()/1000);this.#persistTurn(thread,turn);return clone(stored);
   }
   finishTurn(threadId,turnId,{status="completed",error=null}={}){
     const thread=this.data.threads.find(item=>item.id===threadId);const turn=thread?.turns?.find(item=>item.id===turnId);if(!turn)return null;
     const completedAt=Math.floor(Date.now()/1000);turn.status=status;turn.error=error;turn.completedAt=completedAt;
     turn.durationMs=turn.startedAt?Math.max(0,(completedAt-turn.startedAt)*1000):null;
-    thread.status=status==="failed"?{type:"systemError"}:{type:"idle"};delete thread.recovery;thread.updatedAt=completedAt;this.#save();return clone(turn);
+    thread.status=status==="failed"?{type:"systemError"}:{type:"idle"};delete thread.recovery;thread.updatedAt=completedAt;this.#persistTurn(thread,turn);return clone(turn);
   }
   rename(id,name){return this.update(id,{name:String(name||"").trim()||null})}
 }
