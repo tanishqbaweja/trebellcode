@@ -2,6 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync, readdirSync } from "node:fs";
 import { posix, win32 } from "node:path";
+import { redactSecretText } from "./secret-redactor.mjs";
 
 const execFileAsync=promisify(execFile);
 
@@ -72,6 +73,13 @@ function parseAdbEmulators(raw=""){
 
 function pngSize(buffer){return buffer.length>=24&&buffer.subarray(1,4).toString()==="PNG"?{width:buffer.readUInt32BE(16),height:buffer.readUInt32BE(20)}:{width:null,height:null}}
 function encodedInput(value){return String(value??"").replace(/%/g,"%25").replace(/ /g,"%s")}
+function boundedDeviceLogText(value,{lines=200,maxChars=128*1024}={}){
+  const lineLimit=Math.max(10,Math.min(2000,Math.trunc(Number(lines)||200))),charLimit=Math.max(1024,Math.min(512*1024,Math.trunc(Number(maxChars)||128*1024)));
+  const rows=String(value??"").replaceAll("\0","").split(/\r?\n/);if(rows.at(-1)==="")rows.pop();
+  const omittedLines=Math.max(0,rows.length-lineLimit),kept=rows.slice(-lineLimit);let text=kept.join("\n"),omittedCharacters=0;
+  if(text.length>charLimit){omittedCharacters=text.length-charLimit;const marker="… Trebell truncated "+omittedCharacters+" earlier device-log characters …\n";text=marker+text.slice(-Math.max(0,charLimit-marker.length))}
+  return {text,lineCount:kept.length,omittedLines,omittedCharacters,truncated:omittedLines>0||omittedCharacters>0};
+}
 function parseAdbVersion(raw=""){
   const text=String(raw||"");return {
     protocol:text.match(/Android Debug Bridge version\s+([^\s]+)/i)?.[1]||null,
@@ -94,12 +102,12 @@ function parseSdkManagerUpdates(raw=""){
 }
 
 export class DeviceService{
-  constructor({env=process.env,platform=process.platform}={}){this.env=env;this.platform=platform;this.adbPath=null;this.emulatorPath=null;this.sdkManagerPath=null;this.detectedAt=0}
+  constructor({env=process.env,platform=process.platform,runTextFn=runText,findCommandFn=findCommand}={}){this.env=env;this.platform=platform;this.runTextFn=runTextFn;this.findCommandFn=findCommandFn;this.adbPath=null;this.emulatorPath=null;this.sdkManagerPath=null;this.detectedAt=0}
   async #detect(){
     if(Date.now()-this.detectedAt<15_000)return;this.detectedAt=Date.now();
-    this.adbPath=await findCommand("adb",androidCandidates("adb",{env:this.env,platform:this.platform}),{platform:this.platform,env:this.env});
-    this.emulatorPath=await findCommand("emulator",androidCandidates("emulator",{env:this.env,platform:this.platform}),{platform:this.platform,env:this.env});
-    this.sdkManagerPath=await findCommand("sdkmanager",androidCandidates("sdkmanager",{env:this.env,platform:this.platform}),{platform:this.platform,env:this.env});
+    this.adbPath=await this.findCommandFn("adb",androidCandidates("adb",{env:this.env,platform:this.platform}),{platform:this.platform,env:this.env});
+    this.emulatorPath=await this.findCommandFn("emulator",androidCandidates("emulator",{env:this.env,platform:this.platform}),{platform:this.platform,env:this.env});
+    this.sdkManagerPath=await this.findCommandFn("sdkmanager",androidCandidates("sdkmanager",{env:this.env,platform:this.platform}),{platform:this.platform,env:this.env});
   }
   async capabilities(){
     await this.#detect();let androidVersion=null,adbRevision=null,emulatorVersion=null,sdkManagerVersion=null;
@@ -142,7 +150,19 @@ export class DeviceService{
     return {capabilities,devices,avds};
   }
   #androidSerial(id){const [platform,serial]=String(id||"").split(":",2);if(platform!=="android"||!serial?.startsWith("emulator-"))throw new Error("Only Android emulators are supported by Trebell device control.");return serial}
-  async #adb(id,args,{allowFailure=false,timeout=20_000}={}){await this.#detect();if(!this.adbPath)throw new Error("Android Platform-Tools (adb) are not installed. Install them or set ANDROID_HOME.");return runText(this.adbPath,["-s",this.#androidSerial(id),...args],{allowFailure,timeout,env:this.env})}
+  async #adb(id,args,{allowFailure=false,timeout=20_000}={}){await this.#detect();if(!this.adbPath)throw new Error("Android Platform-Tools (adb) are not installed. Install them or set ANDROID_HOME.");return this.runTextFn(this.adbPath,["-s",this.#androidSerial(id),...args],{allowFailure,timeout,env:this.env})}
+  async logs(id,{lines=200,minutes=5}={}){
+    const [platform,serial]=String(id||"").split(":",2),lineLimit=Math.max(10,Math.min(2000,Math.trunc(Number(lines)||200)));let result,windowMinutes=null;
+    if(platform==="android")result=await this.#adb(id,["logcat","-d","-t",String(lineLimit)],{allowFailure:true,timeout:20_000});
+    else if(platform==="ios"){
+      if(this.platform!=="darwin")throw new Error("iOS Simulator logs require macOS.");
+      windowMinutes=Math.max(1,Math.min(60,Math.trunc(Number(minutes)||5)));
+      result=await this.runTextFn("xcrun",["simctl","spawn",serial,"log","show","--style","compact","--last",windowMinutes+"m"],{allowFailure:true,timeout:20_000,env:this.env});
+    }else throw new Error("Unsupported simulator platform");
+    if(!result?.ok)throw new Error(String(result?.stderr||result?.stdout||"Could not read simulator logs").trim().slice(-2000));
+    const bounded=boundedDeviceLogText(result.stdout||result.stderr||"",{lines:lineLimit});
+    return {id,platform,...bounded,text:redactSecretText(bounded.text,{environment:this.env}),...(windowMinutes?{windowMinutes}:{})};
+  }
   async screenshot(id){
     const [platform,serial]=String(id||"").split(":",2);let data;
     if(platform==="android"){await this.#detect();if(!this.adbPath)throw new Error("Android Platform-Tools (adb) are not installed.");this.#androidSerial(id);data=await runBuffer(this.adbPath,["-s",serial,"exec-out","screencap","-p"])}
@@ -174,4 +194,4 @@ export class DeviceService{
   async startAndroid(avd){await this.#detect();if(!this.emulatorPath)throw new Error("Android Emulator is not installed or not on PATH.");const name=String(avd||"").trim();if(!name)throw new Error("AVD name is required");const child=spawn(this.emulatorPath,["-avd",name],{detached:true,stdio:"ignore",windowsHide:true,env:this.env});child.unref();return {ok:true,avd:name,pid:child.pid}}
 }
 
-export { androidCandidates, parseAdbEmulators, parseAdbVersion, parseEmulatorVersion, parseSdkManagerUpdates, parseSdkManagerVersion, pngSize };
+export { androidCandidates, boundedDeviceLogText, parseAdbEmulators, parseAdbVersion, parseEmulatorVersion, parseSdkManagerUpdates, parseSdkManagerVersion, pngSize };

@@ -1,5 +1,5 @@
 import React,{useEffect,useMemo,useRef,useState} from "react";
-import { CircleStop, Download, Home, Keyboard, Moon, Play, RefreshCw, RotateCw, Smartphone, Sun, Undo2 } from "lucide-react";
+import { CircleStop, Download, Home, Keyboard, Moon, Play, RefreshCw, RotateCw, ScrollText, Smartphone, Sun, Undo2 } from "lucide-react";
 import { api } from "../api.js";
 import { startVisibilityPoll } from "../visibility-poll.js";
 
@@ -11,6 +11,8 @@ export default function DevicePanel(){
   const [busy,setBusy]=useState("");
   const [toolBusy,setToolBusy]=useState("");
   const [toolUpdates,setToolUpdates]=useState(null);
+  const [logs,setLogs]=useState(null);
+  const [logBusy,setLogBusy]=useState(false);
   const [message,setMessage]=useState("");
   const imageRef=useRef(null);
   const current=useMemo(()=>data.devices.find(device=>device.id===selected)||null,[data.devices,selected]);
@@ -22,7 +24,7 @@ export default function DevicePanel(){
   }
   async function refreshShot(){if(!selected)return;try{setShot(await api("/api/device/screenshot?id="+encodeURIComponent(selected)))}catch(error){setMessage(error.message)}}
   useEffect(()=>{const poll=startVisibilityPoll(refresh,{intervalMs:5000});return()=>poll.dispose()},[]);
-  useEffect(()=>{setShot(null);if(!selected||current?.running===false)return;const poll=startVisibilityPoll(refreshShot,{intervalMs:1200});return()=>poll.dispose()},[selected,current?.running]);
+  useEffect(()=>{setShot(null);setLogs(null);if(!selected||current?.running===false)return;const poll=startVisibilityPoll(refreshShot,{intervalMs:1200});return()=>poll.dispose()},[selected,current?.running]);
 
   async function act(action,args={}){
     if(!selected)return false;setBusy(action);setMessage("");
@@ -69,6 +71,12 @@ export default function DevicePanel(){
     }catch(error){setMessage(error.message)}
     finally{setToolBusy("")}
   }
+  async function refreshLogs(){
+    if(!selected)return;setLogBusy(true);setMessage("");
+    try{setLogs(await api("/api/device/logs?id="+encodeURIComponent(selected)+"&lines=300&minutes=5"))}
+    catch(error){setMessage(error.message||String(error))}
+    finally{setLogBusy(false)}
+  }
   function tap(event){if(!shot?.width||!shot?.height||!imageRef.current||!selected)return;const rect=imageRef.current.getBoundingClientRect();const x=(event.clientX-rect.left)/rect.width*shot.width;const y=(event.clientY-rect.top)/rect.height*shot.height;act("tap",{x,y})}
   const androidTools=data.capabilities?.android?.tools||[];
   const showAndroidTooling=Boolean(data.capabilities?.android?.available||data.capabilities?.android?.sdkManagerAvailable||androidTools.length);
@@ -88,8 +96,10 @@ export default function DevicePanel(){
       <div className="device-controls">
         {current?.platform==="android"&&<><button onClick={()=>act("key",{key:"back"})}><Undo2 size={13}/> Back</button><button onClick={()=>act("key",{key:"home"})}><Home size={13}/> Home</button><button onClick={()=>act("key",{key:"recents"})}>Recents</button><button onClick={()=>act("rotate",{rotation:1})}><RotateCw size={13}/> Rotate</button><button onClick={()=>act("theme",{dark:true})}><Moon size={13}/></button><button onClick={()=>act("theme",{dark:false})}><Sun size={13}/></button><button onClick={()=>act("foreground")}>Foreground app</button></>}
         {current?.platform==="ios"&&(current.running?<button onClick={()=>act("poweroff")}><CircleStop size={13}/> Power off</button>:<button onClick={()=>act("boot")}><Play size={13}/> Boot simulator</button>)}
+        {current?.running!==false&&<button onClick={refreshLogs} disabled={logBusy}><ScrollText size={13}/> {logBusy?"Refreshing…":"Recent logs"}</button>}
       </div>
       {current?.platform==="android"&&<div className="device-type"><Keyboard size={13}/><input value={text} onChange={e=>setText(e.target.value)} onKeyDown={async e=>{if(e.key==="Enter"&&text&&await act("type",{text}))setText("")}} placeholder="Type into focused emulator control"/><button onClick={async()=>{if(text&&await act("type",{text}))setText("")}}>Send</button></div>}
+      {logs&&<div className="device-logs" data-testid="device-logs"><div className="device-logs-head"><div><strong>Recent logs</strong><span>{logs.lineCount||0} line{Number(logs.lineCount)===1?"":"s"}{logs.truncated?" · truncated":""}</span></div><button onClick={refreshLogs} disabled={logBusy}><RefreshCw size={11}/> Refresh</button></div><pre>{logs.text||"No recent simulator logs."}</pre>{(logs.omittedLines||logs.omittedCharacters)?<small>{logs.omittedLines?`${logs.omittedLines} earlier line${logs.omittedLines===1?"":"s"} omitted`:""}{logs.omittedLines&&logs.omittedCharacters?" · ":""}{logs.omittedCharacters?`${logs.omittedCharacters} earlier character${logs.omittedCharacters===1?"":"s"} omitted`:""}</small>:null}</div>}
     </>}
     {message&&<div className="inline-status">{message}</div>}
   </div>;

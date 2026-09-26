@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { win32 } from "node:path";
-import { androidCandidates, parseAdbEmulators, parseAdbVersion, parseEmulatorVersion, parseSdkManagerUpdates, parseSdkManagerVersion, pngSize } from "../src/device-service.mjs";
+import { androidCandidates, boundedDeviceLogText, parseAdbEmulators, parseAdbVersion, parseEmulatorVersion, parseSdkManagerUpdates, parseSdkManagerVersion, pngSize } from "../src/device-service.mjs";
 
 test("device discovery accepts Android emulators and excludes physical devices",()=>{
   const parsed=parseAdbEmulators(`List of devices attached\nemulator-5554 device product:sdk_gphone64_x86_64 model:sdk_gphone64_x86_64 device:emu64xa transport_id:1\nR5CT1234ABC device product:b0qxxx model:SM_S908B device:b0q transport_id:2\nemulator-5556 offline product:sdk_gphone64_arm64 model:Pixel_8_API_35 device:emu64a transport_id:3\n`);
@@ -15,6 +15,25 @@ test("device screenshot metadata reads PNG dimensions",()=>{
   const buffer=Buffer.alloc(24);buffer.writeUInt8(0x89,0);buffer.write("PNG",1,"ascii");buffer.writeUInt32BE(1080,16);buffer.writeUInt32BE(2400,20);
   assert.deepEqual(pngSize(buffer),{width:1080,height:2400});
   assert.deepEqual(pngSize(Buffer.from("not-png")),{width:null,height:null});
+});
+
+test("device logs stay line and character bounded",()=>{
+  const lines=Array.from({length:50},(_,index)=>"line-"+index+"-"+("x".repeat(80))).join("\n");
+  const bounded=boundedDeviceLogText(lines,{lines:12,maxChars:1024});
+  assert.equal(bounded.lineCount,12);assert.equal(bounded.omittedLines,38);assert.equal(bounded.truncated,true);assert.ok(bounded.text.length<=1024);assert.match(bounded.text,/line-49/);
+});
+
+test("Android emulator logs use bounded logcat and redact environment secrets",async()=>{
+  const calls=[],secret="device-log-private-token";
+  const {DeviceService}=await import("../src/device-service.mjs");
+  const service=new DeviceService({
+    platform:"linux",env:{DEVICE_LOG_SECRET:secret},
+    findCommandFn:async name=>name==="adb"?"/fixture/adb":null,
+    runTextFn:async(command,args)=>{calls.push({command,args});return {ok:true,stdout:"first\nsecret="+secret+"\nlast\n",stderr:""}},
+  });
+  const result=await service.logs("android:emulator-5554",{lines:25});
+  assert.deepEqual(calls.at(-1),{command:"/fixture/adb",args:["-s","emulator-5554","logcat","-d","-t","25"]});
+  assert.doesNotMatch(result.text,new RegExp(secret));assert.match(result.text,/\[redacted\]/);assert.equal(result.platform,"android");
 });
 
 test("Android tool versions are parsed from their native CLI output",()=>{
@@ -59,4 +78,5 @@ test("iOS simulator lifecycle actions fail honestly off macOS",async()=>{
   const service=new DeviceService({platform:"win32",env:{}});
   await assert.rejects(()=>service.action("ios:fixture-udid","boot"),/requires macOS/i);
   await assert.rejects(()=>service.action("ios:fixture-udid","poweroff"),/requires macOS/i);
+  await assert.rejects(()=>service.logs("ios:fixture-udid"),/logs require macOS/i);
 });

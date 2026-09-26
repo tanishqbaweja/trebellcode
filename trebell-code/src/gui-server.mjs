@@ -1860,6 +1860,10 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       try{return json(res,200,await devices.screenshot(url.searchParams.get("id")))}
       catch(error){return json(res,400,{error:error.message});}
     }
+    if(url.pathname==="/api/device/logs"&&req.method==="GET"){
+      try{return json(res,200,await devices.logs(url.searchParams.get("id"),{lines:Number(url.searchParams.get("lines")||200),minutes:Number(url.searchParams.get("minutes")||5)}))}
+      catch(error){return json(res,400,{error:error.message});}
+    }
     if(url.pathname==="/api/device/action"&&req.method==="POST"){
       try{const body=await readJsonBody(req);return json(res,200,await devices.action(body.id,body.action,body.args||{}))}
       catch(error){return json(res,400,{error:error.message});}
