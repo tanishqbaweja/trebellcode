@@ -43,6 +43,7 @@ import { sharedRuntimeCapabilities } from "../../src/runtime-capabilities.mjs";
 import { sharedDynamicToolNamespaces, sharedToolResponseContent } from "../../src/shared-tool-catalog.mjs";
 import { repositoryFocusPaths } from "./context-focus.js";
 import { repositoryContextEntries } from "./context-provenance.js";
+import { desktopBridgeToolAvailability } from "./desktop-tool-availability.js";
 import { hydratePersistedQueue, persistedQueueItems } from "./persistent-queue.js";
 import { contextTaskAnchor, contextTaskText } from "./context-task.js";
 import { requestTurnVerificationPlan, verificationPlanEvent } from "./turn-verification.js";
@@ -1687,7 +1688,7 @@ export default function App(){
       if(p.namespace==="trebell_computer"){
         (async()=>{
           try{
-            if(!window.trebellDesktop?.computer)throw new Error("Computer use is only available in the Windows desktop app.");
+            if(!desktopBridgeToolAvailability(window.trebellDesktop).computer)throw new Error("Computer use is only available in the Windows desktop app.");
             const args=p.arguments||{};
             if(p.tool!=="screenshot"&&permissionMode!=="full")throw new Error("Desktop mouse and keyboard control requires Full access mode.");
             if(p.tool==="screenshot"){
@@ -2535,9 +2536,10 @@ export default function App(){
     return worktree;
   }
   function specializedToolAvailability({projectless=projectlessMode}={}){
+    const desktopTools=desktopBridgeToolAvailability(window.trebellDesktop);
     return {
-      browser:Boolean(window.trebellDesktop?.browser),
-      computer:Boolean(window.trebellDesktop?.computer),
+      browser:desktopTools.browser,
+      computer:desktopTools.computer,
       device:Boolean(effectiveProjectSettings.agentDeviceAccess),
       sourceControl:!projectless,
       delegation:Boolean(runtimeCapabilities.delegation&&runtimeCapabilities.dynamicTools),
