@@ -6,6 +6,8 @@ import { ContextEngine } from "./context-engine.mjs";
 import { EventJournal } from "./event-journal.mjs";
 import { createReplayFixture, replayEventFixture } from "./event-replay.mjs";
 import { TrebellStateStore } from "./trebell-state.mjs";
+import { createTextFrameBuffer } from "../ui/src/text-frame-buffer.js";
+import { CONVERSATION_CHUNK_SIZE, conversationChunkIndexForMessage, conversationVirtualChunks, shouldVirtualizeConversation } from "../ui/src/conversation-virtualization.js";
 
 function integer(value,fallback,min,max){
   const number=Math.trunc(Number(value));return Number.isFinite(number)?Math.max(min,Math.min(max,number)):fallback;
@@ -37,6 +39,52 @@ export function benchmarkReplay(options={}){
     fixtureMs:Number(fixtureMs.toFixed(3)),replayMs:Number(replayMs.toFixed(3)),
     memoryDeltaBytes:delta(after,before),
     diagnostics:fixture.diagnostics,
+  };
+}
+
+export function benchmarkConversationVirtualization({messageCount=10_000,lookupCount=200}={}){
+  const count=integer(messageCount,10_000,200,100_000),lookups=integer(lookupCount,200,1,5000);
+  const text="Trebell long-conversation benchmark message with enough content to exercise height estimation and chunk bookkeeping. ";
+  const messages=Array.from({length:count},(_,index)=>({
+    id:"chat-message-"+index,role:index%3===0?"user":"assistant",text:text+"#"+index,
+  }));
+  const before=memory(),chunkStart=performance.now(),chunks=conversationVirtualChunks(messages),chunkBuildMs=performance.now()-chunkStart;
+  const lookupStart=performance.now();let lookupHits=0;
+  for(let index=0;index<lookups;index++){
+    const messageIndex=Math.min(count-1,Math.floor(index*Math.max(1,count-1)/Math.max(1,lookups-1)));
+    if(conversationChunkIndexForMessage(chunks,"chat-message-"+messageIndex)>=0)lookupHits++;
+  }
+  const lookupMs=performance.now()-lookupStart,after=memory(),initialChunks=chunks.slice(-2);
+  return {
+    messages:count,virtualized:shouldVirtualizeConversation(messages),chunks:chunks.length,chunkSize:CONVERSATION_CHUNK_SIZE,
+    maxChunkMessages:chunks.reduce((max,chunk)=>Math.max(max,chunk.messages.length),0),
+    initiallyMountedMessages:initialChunks.reduce((sum,chunk)=>sum+chunk.messages.length,0),
+    lookups,lookupHits,chunkBuildMs:Number(chunkBuildMs.toFixed(3)),lookupMs:Number(lookupMs.toFixed(3)),
+    avgLookupUs:Number((lookupMs*1000/lookups).toFixed(3)),memoryDeltaBytes:delta(after,before),
+  };
+}
+
+export function benchmarkStreamingCoalescing({deltaCount=50_000,deltaBytes=32,deltasPerFrame=100}={}){
+  const count=integer(deltaCount,50_000,100,1_000_000),bytes=integer(deltaBytes,32,1,4096),perFrame=integer(deltasPerFrame,100,1,10_000);
+  const callbacks=[];let nextHandle=1,scheduledFrames=0,commits=0,flushedBytes=0;
+  const before=memory(),payload="x".repeat(bytes),started=performance.now();
+  const buffer=createTextFrameBuffer({
+    schedule:callback=>{callbacks.push(callback);scheduledFrames++;return nextHandle++},
+    cancel:()=>{},
+    onFlush:value=>{commits++;flushedBytes+=Buffer.byteLength(value)},
+  });
+  for(let index=0;index<count;index++){
+    buffer.push(payload);
+    if((index+1)%perFrame===0)callbacks.shift()?.();
+  }
+  while(callbacks.length)callbacks.shift()?.();
+  buffer.dispose();
+  const elapsedMs=performance.now()-started,after=memory(),inputBytes=count*Buffer.byteLength(payload),elapsedSeconds=Math.max(elapsedMs/1000,0.000001);
+  return {
+    deltas:count,deltaBytes:bytes,deltasPerFrame:perFrame,inputBytes,flushedBytes,scheduledFrames,commits,
+    coalescingRatio:Number((count/Math.max(1,commits)).toFixed(3)),elapsedMs:Number(elapsedMs.toFixed(3)),
+    deltasPerSecond:Number((count/elapsedSeconds).toFixed(1)),throughputMiBPerSecond:Number((inputBytes/1024/1024/elapsedSeconds).toFixed(3)),
+    memoryDeltaBytes:delta(after,before),
   };
 }
 
@@ -130,11 +178,11 @@ export async function benchmarkRepositoryIndex({fileCount=1000}={}){
   }finally{await rm(root,{recursive:true,force:true})}
 }
 
-export async function runCoreBenchmark({env=process.env,threads=1000,eventsPerThread=20,eventCount=10_000,queryCount=200,stateRecords=500,repoFiles=1000}={}){
-  const startedAt=new Date().toISOString(),started=performance.now(),replay=benchmarkReplay({threads,eventsPerThread}),eventStore=await benchmarkEventStore({env,eventCount,queryCount}),durableState=await benchmarkDurableState({env,recordCount:stateRecords,queryCount}),repositoryIndex=await benchmarkRepositoryIndex({fileCount:repoFiles});
+export async function runCoreBenchmark({env=process.env,threads=1000,eventsPerThread=20,eventCount=10_000,queryCount=200,stateRecords=500,repoFiles=1000,longChatMessages=10_000,streamDeltas=50_000}={}){
+  const startedAt=new Date().toISOString(),started=performance.now(),replay=benchmarkReplay({threads,eventsPerThread}),conversation=benchmarkConversationVirtualization({messageCount:longChatMessages}),streaming=benchmarkStreamingCoalescing({deltaCount:streamDeltas}),eventStore=await benchmarkEventStore({env,eventCount,queryCount}),durableState=await benchmarkDurableState({env,recordCount:stateRecords,queryCount}),repositoryIndex=await benchmarkRepositoryIndex({fileCount:repoFiles});
   return {
-    version:3,startedAt,durationMs:Number((performance.now()-started).toFixed(3)),
+    version:4,startedAt,durationMs:Number((performance.now()-started).toFixed(3)),
     environment:{node:process.version,platform:process.platform,arch:process.arch},
-    replay,eventStore,durableState,repositoryIndex,
+    replay,conversation,streaming,eventStore,durableState,repositoryIndex,
   };
 }

@@ -15,6 +15,8 @@ try{
     eventCount:arg("store-events",10000),queryCount:arg("queries",200),
     stateRecords:arg("state-records",500),
     repoFiles:arg("repo-files",1000),
+    longChatMessages:arg("long-chat-messages",10000),
+    streamDeltas:arg("stream-deltas",50000),
   });
   console.log(JSON.stringify(result,null,2));
 }finally{await rm(home,{recursive:true,force:true})}
