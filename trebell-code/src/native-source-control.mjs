@@ -4,6 +4,7 @@ import { buildRuntimeEnvironment, runtimeEnvironmentKeys } from "./runtime-envir
 import { sourceControlGitAction, sourceControlGitInfo, withSourceControlExecutor } from "./source-control-service.mjs";
 import { boundDiagnosticValue } from "./diagnostic-bounds.mjs";
 import { redactSecretValue } from "./secret-redactor.mjs";
+import { ScopedSecretBroker } from "./secret-broker.mjs";
 
 const execFileAsync=promisify(execFile);
 
@@ -11,8 +12,9 @@ function boundedTimeout(value){const number=Math.trunc(Number(value));return Num
 function boundedOutput(value){const number=Math.trunc(Number(value));return Number.isFinite(number)?Math.max(64*1024,Math.min(8*1024*1024,number)):8*1024*1024}
 
 export function createNativeSourceControlExecutor({environments=null,environmentId=null,environment=process.env,platform=process.platform,environmentNames=null}={}){
-  const profile=environmentId&&environments?environments.get(environmentId):null,safeNames=Array.isArray(environmentNames)&&environmentNames.length?environmentNames:runtimeEnvironmentKeys("native");
+  const profile=environmentId&&environments?environments.get(environmentId):null,safeNames=Array.isArray(environmentNames)&&environmentNames.length?environmentNames:runtimeEnvironmentKeys("native"),secretBroker=new ScopedSecretBroker({environment,environments,environmentId,platform});
   return {
+    secretValues:scope=>secretBroker.values(scope),
     async run(command,args,{cwd,timeout=120000,maxBuffer=8*1024*1024}={}){
       const executable=String(command||"").trim(),argv=Array.isArray(args)?args.map(String):[],limit=boundedOutput(maxBuffer),timeoutMs=boundedTimeout(timeout);
       if(profile&&profile.type!=="local"){

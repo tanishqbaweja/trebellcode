@@ -34,6 +34,11 @@ test("Native source-control executor keeps unrelated parent secrets out of Git s
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
+test("Native source-control executor brokers Bitbucket credentials without exposing unrelated parent secrets",async()=>{
+  const executor=createNativeSourceControlExecutor({environment:{TREBELL_BITBUCKET_ACCESS_TOKEN:"bb-secret",NATIVE_SC_SECRET:"unrelated"}});
+  assert.deepEqual(await executor.secretValues("source-control.bitbucket"),{TREBELL_BITBUCKET_ACCESS_TOKEN:"bb-secret"});
+});
+
 test("Native source-control results redact credential-bearing remote URLs before the model sees them",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-source-control-redaction-"));
   try{

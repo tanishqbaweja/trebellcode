@@ -538,7 +538,9 @@ async function forgejoPublishContext(cwd){
 
 async function bitbucketAuthHeaders(){
   const executor=currentExecutor();
-  const values=executor?.env
+  const values=executor?.secretValues
+    ?await executor.secretValues("source-control.bitbucket")
+    :executor?.env
     ?await executor.env(["TREBELL_BITBUCKET_ACCESS_TOKEN","T3CODE_BITBUCKET_ACCESS_TOKEN","TREBELL_BITBUCKET_EMAIL","T3CODE_BITBUCKET_EMAIL","TREBELL_BITBUCKET_API_TOKEN","T3CODE_BITBUCKET_API_TOKEN"])
     :process.env;
   const access=values.TREBELL_BITBUCKET_ACCESS_TOKEN||values.T3CODE_BITBUCKET_ACCESS_TOKEN;
