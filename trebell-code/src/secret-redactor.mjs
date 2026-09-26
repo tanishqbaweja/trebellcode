@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 
 const PAIRING_URL_PATTERN=/https?:\/\/[^\s]*\/pair#[^\s]*/gi;
-const URL_USERINFO_PATTERN=/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi;
+const URL_USERINFO_PATTERN=/([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/@]+@/gi;
 const BEARER_TOKEN_PATTERN=/\bBearer\s+[A-Za-z0-9._\-+=/]+/gi;
 const BASIC_AUTH_PATTERN=/\bAuthorization:\s*Basic\s+\S+/gi;
 const API_KEY_HEADER_PATTERN=/\bx-api-key:\s*\S+/gi;

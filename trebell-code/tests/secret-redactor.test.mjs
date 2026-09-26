@@ -31,3 +31,8 @@ test("secret redactor recursively scrubs sensitive keys and CLI flag values",()=
   assert.equal(value.nested.note,"safe");
   assert.deepEqual(value.command,["tool","--token","[redacted]","--flag","safe"]);
 });
+
+test("secret redactor handles large non-URL diagnostics without pathological URL-scheme backtracking",()=>{
+  const text="A".repeat(300_000);
+  assert.equal(redactSecretText(text,{environment:{}}),text);
+});

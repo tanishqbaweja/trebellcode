@@ -68,3 +68,19 @@ test("agent thread persistence redacts credentials from stored messages and tool
     assert.match(JSON.stringify(savedTurn.items.find(item=>item.id==="tool-secret")),/\[redacted\]/);
   }finally{await rm(home,{recursive:true,force:true})}
 });
+
+test("bounded tool persistence still redacts retained secrets after truncation",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-thread-bounded-redaction-")),credential="retained-secret-value-12345";
+  const env={...process.env,TREBELL_HOME:home,CUSTOM_RUNTIME_TOKEN:credential};
+  try{
+    const store=new AgentThreadStore(env),thread=store.create({runtime:"native",cwd:home,providerSessionId:"provider-3"}),turn=store.addTurn(thread.id,{inputText:"inspect output"});
+    store.addItem(thread.id,turn.id,{
+      type:"commandExecution",id:"large-secret-tool",status:"completed",
+      aggregatedOutput:credential+"A".repeat(900_000)+credential,
+      rawInput:{payload:credential+"I".repeat(500_000)+credential},
+      rawOutput:{payload:credential+"O".repeat(900_000)+credential},
+    });
+    const savedText=await readFile(join(home,"agent-threads.json"),"utf8");
+    assert.doesNotMatch(savedText,new RegExp(credential));assert.match(savedText,/\[redacted\]/);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
