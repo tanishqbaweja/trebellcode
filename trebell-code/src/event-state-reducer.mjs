@@ -1,3 +1,5 @@
+import { isToolCallItem } from "./goal-state.mjs";
+
 function text(value,max=2000){return String(value??"").trim().slice(0,max)}
 function normalizedName(value){return text(value,200).replace(/\//g,".").toLowerCase()}
 function number(value){const parsed=Number(value);return Number.isFinite(parsed)?parsed:null}
@@ -16,9 +18,13 @@ export function reduceThreadEvents(events=[],options={}){
     checkpoint:null,verification:null,
     budget:{blocked:false,lastBlockedAt:null,reason:null},
     policy:{lastDecision:null,lastReason:null,blockedCount:0,confirmedCount:0},
+    recovery:{blocked:false,reason:null,uncertainTools:[]},
     delegation:{started:0,lastChildThreadId:null,lastAt:null},
     recentFailures:[],
   };
+  const uncertainTools=new Map();
+  const toolKey=(turnId,itemId)=>String(turnId||"")+"\0"+String(itemId||"");
+  const syncRecovery=()=>{const items=[...uncertainTools.values()].slice(-100);state.recovery={blocked:items.length>0,reason:items.length?"uncertain_tool_action":null,uncertainTools:items}};
   const failureKeys=new Set();
   function failure(event,message,kind="error"){
     const value=text(message,1600);if(!value)return;
@@ -38,7 +44,14 @@ export function reduceThreadEvents(events=[],options={}){
       state.turns.completed++;if(status==="failed")state.turns.failed++;if(status==="cancelled"||status==="canceled")state.turns.cancelled++;
       state.status=status==="failed"?"failed":"idle";if(!id||state.activeTurnId===id)state.activeTurnId=null;
       state.turns.last={id,status,startedAt:state.turns.last?.id===id?state.turns.last.startedAt:null,completedAt:at,durationMs:number(data.turn?.durationMs)};
+      if(id){for(const [key,item] of uncertainTools)if(item.turnId===id)uncertainTools.delete(key);syncRecovery()}
       if(status==="failed")failure(event,data.message||"Turn failed.","turn");
+    }else if(name==="item.started"){
+      const item=data.item&&typeof data.item==="object"?data.item:{},itemId=text(item.id,300),turnId=text(event.turnId||data.turn?.id,300)||null;
+      if(itemId&&isToolCallItem(item)){uncertainTools.set(toolKey(turnId,itemId),{id:itemId,type:text(item.type,120)||"toolCall",turnId,status:"inProgress",tool:text(item.tool||item.name,200)||null,server:text(item.server,200)||null});syncRecovery()}
+    }else if(name==="item.completed"){
+      const item=data.item&&typeof data.item==="object"?data.item:{},itemId=text(item.id,300),turnId=text(event.turnId||data.turn?.id,300)||null;
+      if(itemId){uncertainTools.delete(toolKey(turnId,itemId));syncRecovery()}
     }else if(name==="thread.status.changed"){
       const status=text(data.status||event.status,80).toLowerCase();if(status)state.status=status==="inprogress"?"active":status;
     }else if(name==="error"){

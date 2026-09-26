@@ -73,6 +73,7 @@ export function replayDiff(before={},after={}){
       eventCount:{before:left?.eventCount??0,after:right?.eventCount??0},
       verification:{before:left?.verification??null,after:right?.verification??null},
       budget:{before:left?.budget??null,after:right?.budget??null},
+      recovery:{before:left?.recovery??null,after:right?.recovery??null},
     };
   }
   return {changedThreadIds:Object.keys(threads),threads};
