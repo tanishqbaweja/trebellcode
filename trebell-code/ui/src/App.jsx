@@ -50,6 +50,7 @@ import { catalogMetaPatch, mergeThreadCatalog, sameCatalogSnapshot, threadCatalo
 import { conversationChunkIndexForMessage, conversationVirtualChunks, shouldVirtualizeConversation } from "./conversation-virtualization.js";
 import { activityWindow, nextActivityWindowEnd, previousActivityWindowEnd } from "./activity-window.js";
 import { startVisibilityPoll } from "./visibility-poll.js";
+import { specializedToolSelection } from "./lazy-tool-exposure.js";
 
 const TerminalPanel=lazy(()=>import("./components/TerminalPanel.jsx"));
 const WorkspacePanel=lazy(()=>import("./components/WorkspacePanel.jsx"));
@@ -2500,16 +2501,17 @@ export default function App(){
     if(setup?.session?.id&&setup.waitForSetup){const settled=await waitForDetachedSetup(setup.session.id);if(settled.timeout)throw new Error("Background worktree setup is still running after 30 minutes.");if(settled.exitCode!==0)throw new Error(`Background worktree setup failed with exit code ${settled.exitCode??"unknown"}.`)}
     return worktree;
   }
-  async function createThreadFor(modelId,cwd,{projectless=projectlessMode}={}){
+  async function createThreadFor(modelId,cwd,{projectless=projectlessMode,taskText=""}={}){
     const p=presetFor(permissionMode);
-    const dynamicTools=sharedDynamicToolNamespaces({
+    const specializedTools=specializedToolSelection(taskText,{
       browser:Boolean(window.trebellDesktop?.browser),
       computer:Boolean(window.trebellDesktop?.computer),
       device:Boolean(effectiveProjectSettings.agentDeviceAccess),
       sourceControl:!projectless,
       delegation:Boolean(runtimeCapabilities.delegation&&runtimeCapabilities.dynamicTools),
     });
-    const researchInstruction="Web research is available when useful. Use it when current or external information materially improves the task; use trebell_browser for interactive pages."+(runtimeCapabilities.dynamicTools?" Use trebell_repo for deterministic symbol and structural repository lookups when that is faster than manual exploration.":"")+(runtimeCapabilities.dynamicTools&&runtimeCapabilities.delegation?" Trebell delegation is available for bounded parallel child tasks; use it only when parallelism materially helps, prefer explicit ownership and budgets, and do not create agent swarms.":"");
+    const dynamicTools=sharedDynamicToolNamespaces(specializedTools);
+    const researchInstruction="Web research is available when useful. Use it when current or external information materially improves the task."+(specializedTools.browser?" Use trebell_browser for interactive pages.":"")+(runtimeCapabilities.dynamicTools?" Use trebell_repo for deterministic symbol and structural repository lookups when that is faster than manual exploration.":"")+(specializedTools.delegation?" Trebell delegation is available for bounded parallel child tasks; use it only when parallelism materially helps, prefer explicit ownership and budgets, and do not create agent swarms.":"");
     const developerInstructions=projectless
       ?"This is a Trebell General chat with no attached project or repository. The working directory is an app-managed scratch workspace. Do not assume it is a codebase, repository, or user project. "+researchInstruction
       :researchInstruction;
@@ -2621,7 +2623,7 @@ export default function App(){
     await validateAttachmentPaths(paths||[]);
     if(!rpc||rpcStatus!=="connected")throw new Error("Agent harness is not connected");let thread=threadOverride||activeThread;let cwd=cwdOverride||projectPath||bootstrap.cwd;
     const autoCompaction=thread?await maybeAutoCompactBeforeTurn(thread):{attempted:false,compacted:false,decision:null,error:null};
-    if(!thread){if(!projectlessMode)cwd=await prepareWorktree(cwd,modelId);thread=await createThreadFor(modelId,cwd,{projectless:projectlessMode});activeThreadRef.current=thread;setActiveThread(thread);setThreads(prev=>[thread,...prev]);setProjectPath(cwd)}
+    if(!thread){if(!projectlessMode)cwd=await prepareWorktree(cwd,modelId);thread=await createThreadFor(modelId,cwd,{projectless:projectlessMode,taskText:text});activeThreadRef.current=thread;setActiveThread(thread);setThreads(prev=>[thread,...prev]);setProjectPath(cwd)}
     const clientId="user-"+Date.now()+"-"+Math.random().toString(36).slice(2,7);setMessages(prev=>[...prev,{id:clientId,role:"user",text}]);setEvents(autoCompaction.attempted?[{id:"auto-compact-"+thread.id,kind:autoCompaction.error?"error":"contextCompaction",title:autoCompaction.error?"Automatic context compaction failed; continuing: "+(autoCompaction.error.message||String(autoCompaction.error)):"Context compacted automatically before this turn",status:"done",raw:autoCompaction.decision||{}}]:[]);resetAssistantStream();setRunning(true);
     try{
       let checkpoint=null;
@@ -2652,7 +2654,7 @@ export default function App(){
     let cwd=basePath||projectPath||bootstrap.cwd;if(!cwd)throw new Error(projectless?"Could not prepare the General chat workspace.":"Choose a project before starting background work.");if(!projectless)cwd=await prepareDetachedWorktree(cwd,modelId,{force:forceWorktree,environmentId:workspaceEnvironmentId});
     let thread=null;let turnRequestStarted=false;
     try{
-      thread=await createThreadFor(modelId,cwd,{projectless});if(!thread?.id)throw new Error("Agent harness did not create a background thread");
+      thread=await createThreadFor(modelId,cwd,{projectless,taskText:text});if(!thread?.id)throw new Error("Agent harness did not create a background thread");
       backgroundThreadsRef.current.add(thread.id);setThreads(prev=>[thread,...prev.filter(item=>item.id!==thread.id)]);
       let checkpoint=null;
       if(!projectless){

@@ -166,6 +166,58 @@ test("startup partial failures stay visible while the workspace remains usable",
   await page.screenshot({path:auditDir+"startup-partial-data-error-1280x800.png",fullPage:true});
 });
 
+test("plain new threads omit unrelated specialized tool groups",async({page})=>{
+  test.setTimeout(35_000);
+  const seed={id:"lazy-tools-plain-seed",name:"Lazy tools plain seed",preview:"Capability fixture",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const starts=[];
+  const harness=await startCodexRequestHarness(seed,{onRequest:async(message,ws)=>{
+    if(message.method==="thread/start"){
+      starts.push((message.params?.dynamicTools||[]).map(item=>item?.name).filter(Boolean));
+      const thread={id:"lazy-tools-plain-thread",name:"Plain coding task",preview:"Task",cwd:process.cwd(),createdAt:Date.now()/1000,updatedAt:Date.now()/1000,turns:[]};
+      ws.send(JSON.stringify({id:message.id,result:{thread}}));return true;
+    }
+    if(message.method==="turn/start"){
+      ws.send(JSON.stringify({id:message.id,result:{turn:{id:"lazy-plain-turn",status:"inProgress",items:[]}}}));return true;
+    }
+    return false;
+  }});
+  try{
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await routeProjectlessCodexRequestFixture(page,harness,seed,"lazy-tool-plain-fixture");
+    await page.goto("/");
+    const newThread=page.getByRole("button",{name:"New thread",exact:true}),composer=page.getByTestId("composer");
+    await newThread.click();await composer.fill("Fix the parser bug and add targeted tests");await page.getByTestId("send").click();
+    await expect.poll(()=>starts.length).toBe(1);expect(starts[0]).toEqual([]);
+  }finally{await harness.close()}
+});
+
+test("browser tasks add only the browser specialized tool group",async({page})=>{
+  test.setTimeout(35_000);
+  const seed={id:"lazy-tools-browser-seed",name:"Lazy tools browser seed",preview:"Capability fixture",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
+  const starts=[];
+  const harness=await startCodexRequestHarness(seed,{onRequest:async(message,ws)=>{
+    if(message.method==="thread/start"){
+      starts.push((message.params?.dynamicTools||[]).map(item=>item?.name).filter(Boolean));
+      const thread={id:"lazy-tools-browser-thread",name:"Browser verification task",preview:"Task",cwd:process.cwd(),createdAt:Date.now()/1000,updatedAt:Date.now()/1000,turns:[]};
+      ws.send(JSON.stringify({id:message.id,result:{thread}}));return true;
+    }
+    if(message.method==="turn/start"){
+      ws.send(JSON.stringify({id:message.id,result:{turn:{id:"lazy-browser-turn",status:"inProgress",items:[]}}}));return true;
+    }
+    return false;
+  }});
+  try{
+    await page.addInitScript(()=>{window.trebellDesktop={browser:{}};localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330}))});
+    await routeProjectlessCodexRequestFixture(page,harness,seed,"lazy-tool-browser-fixture");
+    await page.goto("/");
+    await page.getByRole("button",{name:"New thread",exact:true}).click();const composer=page.getByTestId("composer");
+    await composer.fill("Fix the responsive CSS layout and verify it with a browser screenshot");await page.getByTestId("send").click();
+    await expect.poll(()=>starts.length).toBe(1);expect(starts[0]).toEqual(["trebell_browser"]);
+    await page.setViewportSize({width:1280,height:800});const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"lazy-tool-exposure-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
 test("chat workspace is visually bounded and panes resize",async({page,request})=>{
   test.setTimeout(45_000);
   await prepare(page,request);
