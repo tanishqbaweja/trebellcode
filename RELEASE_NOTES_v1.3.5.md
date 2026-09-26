@@ -14,6 +14,7 @@ Version 1.3.5 separates Trebell Native cleanly from external coding harnesses, e
 
 - Trebell Native has first-class direct adapters for official OpenAI, Anthropic and Gemini APIs in addition to AgentRouter, JustWorker, HCNSec and VyceAI.
 - Official OpenAI uses the Responses API and preserves Trebell namespaced function-tool identity.
+- Official OpenAI Responses requests now carry a deterministic `prompt_cache_key` derived from the stable model/instructions/tool/first-task prefix, so later turns in the same task keep the same cache-routing/accounting key while materially different task prefixes separate cleanly. OpenAI still performs prompt caching automatically where supported; Trebell does not claim a cache hit unless the provider reports one.
 - Anthropic uses the Messages API with Anthropic-native authentication semantics.
 - Gemini currently uses Google's OpenAI-compatible endpoint; native cached-content behavior remains intentionally unclaimed until measured.
 - Provider telemetry records request/response bytes, latency, normalized usage, cached-input fields when exposed, endpoint and wire API without persisting secrets.
@@ -27,6 +28,7 @@ Version 1.3.5 separates Trebell Native cleanly from external coding harnesses, e
 - Native now performs one bounded recovery when the user explicitly names an exact exposed tool and the model tries to answer without calling it. Negated, vague and stale-context tool mentions do not trigger this behavior.
 - A tool-order experiment showed the requested tool was called with both normal and reordered schemas, so Trebell keeps schema ordering stable rather than shuffling tools and breaking stable schema hashes.
 - A proposed reduction of the baseline repository manifest to only `search_code` was rejected after it caused three focused regressions. `search_symbols`, `search_files` and `read_source` remain directly available until a lower-cost migration is proven without behavior loss.
+- A later clean three-scenario Vyce benchmark passed all independent verification checks in **14 model turns / 35,397 input tokens / 17 tool calls** total, roughly **47% less input** than the preserved v1.3.3 aggregate baseline of 67,023 tokens. Vyce still reported zero cached-input tokens, so the measured reduction comes from Trebell's context/tool-loop work rather than assumed provider caching.
 
 ## Current prompt/context telemetry
 
@@ -60,6 +62,7 @@ These are measurements, not fixed guarantees; model behavior and provider routin
 - The packaged desktop/browser smoke passed browser navigation, typing/clicking, cookies, screenshots, video recording, desktop capture, SnapShot persistence, zoom controls, notifications and background/startup toggling.
 - A real packaged Trebell Native `deepseek-v4.1` run called packaged computer screenshot plus browser open/snapshot/type/click capabilities and created/verified a filesystem proof file.
 - Windows packaging now builds unpacked and NSIS artifacts in unique isolated temp directories, uses the already-installed Electron distribution to avoid archive-extraction races, retries once in a fresh isolated directory for observed Windows materialization races, and only copies completed installer/update artifacts into `desktop-dist`.
+- The second packaged smoke now waits for the first Electron process tree to fully terminate and uses fresh GUI/app-server/CDP/fixture ports before relaunching, avoiding a Windows single-instance/socket teardown race between the desktop smoke and the real-model Native smoke.
 
 ## Automated regression baseline
 
