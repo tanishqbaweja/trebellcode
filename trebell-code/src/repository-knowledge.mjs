@@ -140,11 +140,11 @@ export function repositoryKnowledgeContext(entries=[],{limit=20}={}){
   if(!selected.length)return "";
   const lines=[
     "Durable Trebell repository knowledge",
-    "These are explicit repository facts with recorded evidence. Stale facts are omitted. Inspect source when a fact is important to the current change.",
+    "These are saved repository facts. Verified facts still match their recorded evidence; unverified facts may lack supporting evidence. Stale facts are omitted. Inspect source when a fact is important to the current change.",
   ];
   for(const item of selected){
     const evidence=(item.evidence||[]).map(source=>source.path+(source.symbol?"#"+source.symbol:"")).slice(0,5).join(", ");
-    lines.push("- ["+item.category+"] "+item.fact+(item.scope?" · scope: "+item.scope:"")+(evidence?" · evidence: "+evidence:"")+(item.lastVerifiedRevision?" · verified: "+item.lastVerifiedRevision.slice(0,12):""));
+    lines.push("- ["+item.category+"] "+item.fact+" · status: "+(item.status||"unverified")+(item.scope?" · scope: "+item.scope:"")+(evidence?" · evidence: "+evidence:"")+(item.lastVerifiedRevision?" · verified revision: "+item.lastVerifiedRevision.slice(0,12):""));
   }
   return lines.join("\n").slice(0,16_000);
 }

@@ -39,6 +39,6 @@ test("repository knowledge rejects evidence outside the repository and omits sta
       {category:"decision",fact:"Use one relay.",scope:"runtime",status:"verified",evidence:[{path:"src/relay.js"}],lastVerifiedRevision:"abcdef1234567890"},
       {category:"failure-mode",fact:"Old stale claim.",status:"stale",evidence:[]},
     ]);
-    assert.match(context,/Use one relay/);assert.doesNotMatch(context,/Old stale claim/);assert.match(context,/abcdef123456/);
+    assert.match(context,/Use one relay/);assert.match(context,/status: verified/);assert.doesNotMatch(context,/Old stale claim/);assert.match(context,/verified revision: abcdef123456/);
   }finally{await rm(root,{recursive:true,force:true})}
 });

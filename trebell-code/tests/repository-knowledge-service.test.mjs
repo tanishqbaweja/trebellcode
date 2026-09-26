@@ -40,6 +40,7 @@ test("repository knowledge service keeps explicit facts without evidence unverif
     const state=new TrebellStateStore({home}),service=new RepositoryKnowledgeService({state});
     const entry=await service.remember({projectPath:"C:/repo",category:"decision",fact:"Prefer explicit migrations.",source:"user"});
     assert.equal(entry.status,"unverified");assert.equal(entry.evidence.length,0);
-    assert.match((await service.context({projectPath:"C:/repo",refresh:false})).context,/Prefer explicit migrations/);
+    const context=(await service.context({projectPath:"C:/repo",refresh:false})).context;
+    assert.match(context,/Prefer explicit migrations/);assert.match(context,/status: unverified/);assert.match(context,/unverified facts may lack supporting evidence/i);
   }finally{await rm(home,{recursive:true,force:true})}
 });
