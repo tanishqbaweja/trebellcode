@@ -157,7 +157,7 @@ export class TrebellStateStore {
     this.collections=null;
     try{
       const collections=new SqliteStateCollections(env);
-      const legacy={threadMeta:redactSecretValue(this.state.threadMeta,{environment:env,maxDepth:20,maxArray:10000,maxFields:5000}),checkpoints:this.state.checkpoints,usageRecords:this.state.usageRecords,verificationRecords:this.state.verificationRecords,repositoryKnowledge:this.state.repositoryKnowledge};
+      const legacy=redactSecretValue({threadMeta:this.state.threadMeta,checkpoints:this.state.checkpoints,usageRecords:this.state.usageRecords,verificationRecords:this.state.verificationRecords,repositoryKnowledge:this.state.repositoryKnowledge},{environment:env,maxDepth:20,maxArray:10000,maxFields:5000});
       const migrated=collections.importLegacy(legacy);this.collections=collections;
       this.state.threadMeta={};this.state.checkpoints=[];this.state.usageRecords=[];this.state.verificationRecords=[];this.state.repositoryKnowledge=[];
       if(migrated||this.legacyCollectionsPresent)this.needsRewrite=true;
@@ -422,7 +422,7 @@ export class TrebellStateStore {
     this.#save();
   }
   addCheckpoint(checkpoint){
-    const item={id:checkpoint.id||randomUUID(),createdAt:Date.now(),...checkpoint};
+    const item=redactSecretValue({id:checkpoint.id||randomUUID(),createdAt:Date.now(),...checkpoint},{environment:this.env,maxDepth:20,maxArray:1000,maxFields:2000});
     if(this.collections){this.collections.putCheckpoint(item);return clone(item)}
     this.state.checkpoints.unshift(item);
     this.state.checkpoints=this.state.checkpoints.slice(0,200);
@@ -430,10 +430,10 @@ export class TrebellStateStore {
     return clone(item);
   }
   updateCheckpoint(id,patch){
-    if(this.collections){const item=this.collections.checkpoint(id);if(!item)return null;Object.assign(item,patch);this.collections.putCheckpoint(item);return clone(item)}
+    if(this.collections){const item=this.collections.checkpoint(id);if(!item)return null;const next=redactSecretValue({...item,...patch},{environment:this.env,maxDepth:20,maxArray:1000,maxFields:2000});this.collections.putCheckpoint(next);return clone(next)}
     const item=this.state.checkpoints.find(c=>c.id===id);
     if(!item) return null;
-    Object.assign(item,patch);
+    Object.assign(item,redactSecretValue(patch,{environment:this.env,maxDepth:20,maxArray:1000,maxFields:2000}));
     this.#save();
     return clone(item);
   }
@@ -494,14 +494,14 @@ export class TrebellStateStore {
   recordVerification(entry={}){
     const now=Number(entry.updatedAt)||Date.now(),environmentId=normalizeEnvironmentId(entry.environmentId),projectPath=entry.projectPath?String(entry.projectPath):null,threadId=entry.threadId?String(entry.threadId):null,turnId=entry.turnId?String(entry.turnId):null;
     const fallbackId=threadId&&turnId?`verification:${environmentId||"local"}:${threadId}:${turnId}`:randomUUID(),id=String(entry.id||fallbackId).slice(0,300),index=this.collections?-1:this.state.verificationRecords.findIndex(item=>item.id===id),previous=this.collections?this.collections.verificationRecord(id):(index>=0?this.state.verificationRecords[index]:null);
-    const record={
+    const record=redactSecretValue({
       id,environmentId,projectPath,threadId,turnId,
       plan:entry.plan&&typeof entry.plan==="object"?clone(entry.plan):null,
       evidence:Array.isArray(entry.evidence)?clone(entry.evidence.slice(0,300)):[],
       assessment:entry.assessment&&typeof entry.assessment==="object"?clone(entry.assessment):null,
       status:String(entry.assessment?.status||entry.status||"incomplete"),risk:String(entry.assessment?.risk||entry.plan?.risk||entry.risk||"unknown"),
       createdAt:Number(previous?.createdAt)||Number(entry.createdAt)||now,updatedAt:now,
-    };
+    },{environment:this.env,maxDepth:20,maxArray:2000,maxFields:5000});
     if(this.collections){this.collections.putVerification(record);return clone(record)}
     if(index>=0)this.state.verificationRecords[index]=record;else this.state.verificationRecords.unshift(record);
     this.state.verificationRecords=this.state.verificationRecords.sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0)).slice(0,1000);this.#save();return clone(record);
@@ -513,7 +513,7 @@ export class TrebellStateStore {
   }
   upsertRepositoryKnowledge(entry={}){
     const now=Number(entry.updatedAt)||Date.now(),id=String(entry.id||randomUUID()).slice(0,300),index=this.collections?-1:this.state.repositoryKnowledge.findIndex(item=>item.id===id),previous=this.collections?this.collections.knowledgeRecord(id):(index>=0?this.state.repositoryKnowledge[index]:null);
-    const record={
+    const record=redactSecretValue({
       id,
       projectPath:String(entry.projectPath||previous?.projectPath||"").slice(0,4000),
       environmentId:normalizeEnvironmentId(entry.environmentId??previous?.environmentId),
@@ -528,7 +528,7 @@ export class TrebellStateStore {
       staleReason:entry.staleReason==null?(previous?.staleReason||null):String(entry.staleReason||"").slice(0,2000)||null,
       verifiedAt:entry.verifiedAt==null?(previous?.verifiedAt||null):(Number(entry.verifiedAt)||null),
       createdAt:Number(previous?.createdAt)||Number(entry.createdAt)||now,updatedAt:now,
-    };
+    },{environment:this.env,maxDepth:20,maxArray:1000,maxFields:3000});
     if(!record.projectPath||!record.fact)throw new Error("Repository knowledge requires projectPath and fact.");
     if(this.collections){this.collections.putKnowledge(record);return clone(record)}
     if(index>=0)this.state.repositoryKnowledge[index]=record;else this.state.repositoryKnowledge.unshift(record);
