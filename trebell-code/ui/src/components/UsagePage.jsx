@@ -168,7 +168,7 @@ export default function UsagePage({settings={},rpc=null,rpcStatus="disconnected"
     </section>}
     <div className="usage-summary">
       <div><span>Total tokens</span><strong>{formatTokens(data.total?.totalTokens)}</strong><small>{(data.records||[]).length} recorded turns</small></div>
-      <div><span>Input</span><strong>{formatTokens(data.total?.inputTokens)}</strong><small>{formatTokens(data.total?.cachedInputTokens)} cached</small></div>
+      <div><span>Input</span><strong>{formatTokens(data.total?.inputTokens)}</strong><small>{formatTokens(data.total?.cachedInputTokens)} cache read · {formatTokens(data.total?.cacheWriteInputTokens)} cache write</small></div>
       <div><span>Output</span><strong>{formatTokens(data.total?.outputTokens)}</strong><small>{formatTokens(data.total?.reasoningOutputTokens)} reasoning</small></div>
       <div><span>Cost</span><strong>{computed.known||computed.estimated?`$${computed.cost.toFixed(computed.cost<1?4:2)}`:"—"}</strong><small>{computed.known} provider · {computed.estimated} estimated</small></div>
     </div>
