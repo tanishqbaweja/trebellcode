@@ -18,7 +18,7 @@ const BASE_SETTINGS_SEARCH_ITEMS=[
   {id:"desktop-computer",section:"desktop",title:"Computer use",terms:"computer use desktop mouse keyboard screenshot full access"},
   {id:"desktop-browser",section:"desktop",title:"Browser profiles",terms:"browser profile firefox helium cookies import"},
   {id:"desktop-snapshot",section:"desktop",title:"SnapShots",terms:"snapshot capture shortcut screenshot accessibility text flash sound"},
-  {id:"desktop-background",section:"desktop",title:"Background mode",terms:"background tray startup windows"},
+  {id:"desktop-background",section:"desktop",title:"Background mode",terms:"background tray startup login sign in"},
   {id:"shortcuts-overview",section:"shortcuts",title:"Keyboard shortcuts",terms:"shortcuts keybindings keyboard commands hotkeys keys"},
   {id:"diagnostics-runtime",section:"diagnostics",title:"Diagnostics",terms:"diagnostics health runtime provider agent"},
   {id:"diagnostics-log",section:"diagnostics",title:"Runtime log",terms:"runtime log logs diagnostics stderr stdout"},
