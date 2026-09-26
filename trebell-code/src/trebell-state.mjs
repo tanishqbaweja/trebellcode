@@ -5,6 +5,7 @@ import { trebellHome } from "./paths.mjs";
 import { normalizeMcpServers } from "./mcp-registry.mjs";
 import { withoutSecretEnvironment } from "./secret-redactor.mjs";
 import { normalizeRecipes } from "./recipes.mjs";
+import { SqliteStateCollections } from "./sqlite-state-collections.mjs";
 
 const DEFAULT_STATE = Object.freeze({
   version: 2,
@@ -151,11 +152,20 @@ export class TrebellStateStore {
     mkdirSync(dirname(this.path),{recursive:true});
     this.needsRewrite=false;
     this.state=this.#load();
+    this.collections=null;
+    try{
+      const collections=new SqliteStateCollections(env);
+      const legacy={checkpoints:this.state.checkpoints,usageRecords:this.state.usageRecords,verificationRecords:this.state.verificationRecords,repositoryKnowledge:this.state.repositoryKnowledge};
+      const migrated=collections.importLegacy(legacy);this.collections=collections;
+      this.state.checkpoints=[];this.state.usageRecords=[];this.state.verificationRecords=[];this.state.repositoryKnowledge=[];
+      if(migrated||this.legacyCollectionsPresent)this.needsRewrite=true;
+    }catch{this.collections=null}
     if(this.needsRewrite)this.#save();
   }
   #load(){
     try{
       const parsed=JSON.parse(readFileSync(this.path,"utf8"));
+      this.legacyCollectionsPresent=["checkpoints","usageRecords","verificationRecords","repositoryKnowledge"].some(key=>Object.prototype.hasOwnProperty.call(parsed,key));
       const rawSettings=parsed.settings&&typeof parsed.settings==="object"?parsed.settings:{};
       const projects=Array.isArray(parsed.projects)?parsed.projects.map(project=>({
         ...project,
@@ -195,14 +205,19 @@ export class TrebellStateStore {
         verificationRecords:Array.isArray(parsed.verificationRecords)?parsed.verificationRecords:[],
         repositoryKnowledge:Array.isArray(parsed.repositoryKnowledge)?parsed.repositoryKnowledge:[],
       };
-    }catch{return clone(DEFAULT_STATE);}
+    }catch{this.legacyCollectionsPresent=false;return clone(DEFAULT_STATE);}
   }
   #save(){
     const tmp=this.path+".tmp";
-    writeFileSync(tmp,JSON.stringify(this.state,null,2),{encoding:"utf8",mode:0o600});
+    const persisted=this.collections?{...this.state}:this.state;
+    if(this.collections){delete persisted.checkpoints;delete persisted.usageRecords;delete persisted.verificationRecords;delete persisted.repositoryKnowledge}
+    writeFileSync(tmp,JSON.stringify(persisted,null,2),{encoding:"utf8",mode:0o600});
     renameSync(tmp,this.path);
   }
-  snapshot(){ return clone(this.state); }
+  snapshot({includeCollections=true}={}){
+    const out=clone(this.state);if(!includeCollections){delete out.checkpoints;delete out.usageRecords;delete out.verificationRecords;delete out.repositoryKnowledge;return out}if(!this.collections)return out;
+    out.checkpoints=this.collections.checkpoints();out.usageRecords=this.collections.usage({since:0,limit:5000});out.verificationRecords=this.collections.verificationRecords({limit:1000});out.repositoryKnowledge=this.collections.knowledge({limit:5000});return out;
+  }
   settings(){ return clone(this.state.settings); }
   environmentDefaults(environmentId=null){
     const base={
@@ -402,12 +417,14 @@ export class TrebellStateStore {
   }
   addCheckpoint(checkpoint){
     const item={id:checkpoint.id||randomUUID(),createdAt:Date.now(),...checkpoint};
+    if(this.collections){this.collections.putCheckpoint(item);return clone(item)}
     this.state.checkpoints.unshift(item);
     this.state.checkpoints=this.state.checkpoints.slice(0,200);
     this.#save();
     return clone(item);
   }
   updateCheckpoint(id,patch){
+    if(this.collections){const item=this.collections.checkpoint(id);if(!item)return null;Object.assign(item,patch);this.collections.putCheckpoint(item);return clone(item)}
     const item=this.state.checkpoints.find(c=>c.id===id);
     if(!item) return null;
     Object.assign(item,patch);
@@ -415,6 +432,7 @@ export class TrebellStateStore {
     return clone(item);
   }
   checkpoints(threadId=null){
+    if(this.collections)return clone(this.collections.checkpoints(threadId));
     const items=threadId?this.state.checkpoints.filter(c=>c.threadId===threadId):this.state.checkpoints;
     return clone(items);
   }
@@ -431,6 +449,10 @@ export class TrebellStateStore {
       },
       cost:entry.cost&&Number.isFinite(Number(entry.cost.amount))?{amount:Number(entry.cost.amount),currency:String(entry.cost.currency||"USD")}:null,
     };
+    if(this.collections){
+      const previous=this.collections.usageRecord(record.id),stored=previous?{...previous,...record,model:record.model||previous.model,provider:record.provider||previous.provider,environmentId:record.environmentId??previous.environmentId??null}:record;
+      this.collections.putUsage(stored);return clone(record);
+    }
     const index=this.state.usageRecords.findIndex(item=>item.id===record.id);
     if(index>=0)this.state.usageRecords[index]={...this.state.usageRecords[index],...record,model:record.model||this.state.usageRecords[index].model,provider:record.provider||this.state.usageRecords[index].provider,environmentId:record.environmentId??this.state.usageRecords[index].environmentId??null};
     else this.state.usageRecords.push(record);
@@ -439,7 +461,7 @@ export class TrebellStateStore {
   usage({days=30,limit=1000,environmentIds=undefined}={}){
     const horizon=Math.max(1,Math.min(3650,Number(days)||30));const since=Date.now()-horizon*86400000;
     const selected=Array.isArray(environmentIds)?new Set(environmentIds.map(normalizeEnvironmentId)):null;
-    const records=this.state.usageRecords.filter(item=>(item.at||0)>=since&&(!selected||selected.has(normalizeEnvironmentId(item.environmentId)))).slice(0,Math.max(1,Math.min(5000,Number(limit)||1000)));
+    const records=this.collections?this.collections.usage({since,limit,environmentIds:Array.isArray(environmentIds)?environmentIds:undefined}):this.state.usageRecords.filter(item=>(item.at||0)>=since&&(!selected||selected.has(normalizeEnvironmentId(item.environmentId)))).slice(0,Math.max(1,Math.min(5000,Number(limit)||1000)));
     const total={totalTokens:0,inputTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,outputTokens:0,reasoningOutputTokens:0,costUsd:0,costKnown:0};
     const models={},runtimes={},daily={},environments={};
     for(const record of records){
@@ -455,17 +477,17 @@ export class TrebellStateStore {
     return {days:horizon,total,models,runtimes,daily,environments,environmentIds:selected?[...selected]:null,records:clone(records)};
   }
   threadUsage(threadId,{since=0}={}){
-    const id=String(threadId||""),start=Math.max(0,Number(since)||0),records=this.state.usageRecords.filter(item=>item.threadId===id&&Number(item.at||0)>=start);
+    const id=String(threadId||""),start=Math.max(0,Number(since)||0),records=this.collections?this.collections.usage({since:start,limit:5000,threadId:id}):this.state.usageRecords.filter(item=>item.threadId===id&&Number(item.at||0)>=start);
     const total={totalTokens:0,inputTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,outputTokens:0,reasoningOutputTokens:0,costUsd:0,costKnown:0};
     const tokenKeys=["totalTokens","inputTokens","cachedInputTokens","cacheWriteInputTokens","outputTokens","reasoningOutputTokens"];
     for(const record of records)for(const key of tokenKeys)total[key]+=Number(record.usage?.[key]||0);
     for(const record of records)if(record.cost?.currency==="USD"&&Number.isFinite(Number(record.cost.amount))){total.costUsd+=Number(record.cost.amount);total.costKnown++}
     return {...total,turns:records.length,records:records.length};
   }
-  clearUsage(){const count=this.state.usageRecords.length;this.state.usageRecords=[];this.#save();return count}
+  clearUsage(){if(this.collections)return this.collections.clearUsage();const count=this.state.usageRecords.length;this.state.usageRecords=[];this.#save();return count}
   recordVerification(entry={}){
     const now=Number(entry.updatedAt)||Date.now(),environmentId=normalizeEnvironmentId(entry.environmentId),projectPath=entry.projectPath?String(entry.projectPath):null,threadId=entry.threadId?String(entry.threadId):null,turnId=entry.turnId?String(entry.turnId):null;
-    const fallbackId=threadId&&turnId?`verification:${environmentId||"local"}:${threadId}:${turnId}`:randomUUID(),id=String(entry.id||fallbackId).slice(0,300),index=this.state.verificationRecords.findIndex(item=>item.id===id),previous=index>=0?this.state.verificationRecords[index]:null;
+    const fallbackId=threadId&&turnId?`verification:${environmentId||"local"}:${threadId}:${turnId}`:randomUUID(),id=String(entry.id||fallbackId).slice(0,300),index=this.collections?-1:this.state.verificationRecords.findIndex(item=>item.id===id),previous=this.collections?this.collections.verificationRecord(id):(index>=0?this.state.verificationRecords[index]:null);
     const record={
       id,environmentId,projectPath,threadId,turnId,
       plan:entry.plan&&typeof entry.plan==="object"?clone(entry.plan):null,
@@ -474,15 +496,17 @@ export class TrebellStateStore {
       status:String(entry.assessment?.status||entry.status||"incomplete"),risk:String(entry.assessment?.risk||entry.plan?.risk||entry.risk||"unknown"),
       createdAt:Number(previous?.createdAt)||Number(entry.createdAt)||now,updatedAt:now,
     };
+    if(this.collections){this.collections.putVerification(record);return clone(record)}
     if(index>=0)this.state.verificationRecords[index]=record;else this.state.verificationRecords.unshift(record);
     this.state.verificationRecords=this.state.verificationRecords.sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0)).slice(0,1000);this.#save();return clone(record);
   }
   verificationRecords(options={}){
     const threadId=options.threadId==null?null:String(options.threadId),projectPath=options.projectPath==null?null:String(options.projectPath),hasEnvironment=Object.prototype.hasOwnProperty.call(options,"environmentId"),environmentId=normalizeEnvironmentId(options.environmentId),limit=Math.max(1,Math.min(1000,Number(options.limit)||100));
+    if(this.collections)return clone(this.collections.verificationRecords({threadId,projectPath,hasEnvironment,environmentId,limit}));
     return clone(this.state.verificationRecords.filter(item=>(!threadId||item.threadId===threadId)&&(!projectPath||item.projectPath===projectPath)&&(!hasEnvironment||normalizeEnvironmentId(item.environmentId)===environmentId)).slice(0,limit));
   }
   upsertRepositoryKnowledge(entry={}){
-    const now=Number(entry.updatedAt)||Date.now(),id=String(entry.id||randomUUID()).slice(0,300),index=this.state.repositoryKnowledge.findIndex(item=>item.id===id),previous=index>=0?this.state.repositoryKnowledge[index]:null;
+    const now=Number(entry.updatedAt)||Date.now(),id=String(entry.id||randomUUID()).slice(0,300),index=this.collections?-1:this.state.repositoryKnowledge.findIndex(item=>item.id===id),previous=this.collections?this.collections.knowledgeRecord(id):(index>=0?this.state.repositoryKnowledge[index]:null);
     const record={
       id,
       projectPath:String(entry.projectPath||previous?.projectPath||"").slice(0,4000),
@@ -500,14 +524,17 @@ export class TrebellStateStore {
       createdAt:Number(previous?.createdAt)||Number(entry.createdAt)||now,updatedAt:now,
     };
     if(!record.projectPath||!record.fact)throw new Error("Repository knowledge requires projectPath and fact.");
+    if(this.collections){this.collections.putKnowledge(record);return clone(record)}
     if(index>=0)this.state.repositoryKnowledge[index]=record;else this.state.repositoryKnowledge.unshift(record);
     this.state.repositoryKnowledge=this.state.repositoryKnowledge.sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0)).slice(0,5000);this.#save();return clone(record);
   }
   repositoryKnowledge(options={}){
     const projectPath=options.projectPath==null?null:String(options.projectPath),hasEnvironment=Object.prototype.hasOwnProperty.call(options,"environmentId"),environmentId=normalizeEnvironmentId(options.environmentId),status=options.status==null?null:String(options.status),limit=Math.max(1,Math.min(5000,Number(options.limit)||200));
+    if(this.collections)return clone(this.collections.knowledge({projectPath,hasEnvironment,environmentId,status,limit}));
     return clone(this.state.repositoryKnowledge.filter(item=>(!projectPath||item.projectPath===projectPath)&&(!hasEnvironment||normalizeEnvironmentId(item.environmentId)===environmentId)&&(!status||item.status===status)).slice(0,limit));
   }
   removeRepositoryKnowledge(id){
+    if(this.collections)return this.collections.removeKnowledge(id);
     const key=String(id||""),before=this.state.repositoryKnowledge.length;this.state.repositoryKnowledge=this.state.repositoryKnowledge.filter(item=>item.id!==key);
     if(this.state.repositoryKnowledge.length!==before)this.#save();return before!==this.state.repositoryKnowledge.length;
   }

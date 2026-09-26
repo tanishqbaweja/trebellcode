@@ -211,6 +211,18 @@ test("verification records persist, upsert by turn, and stay filterable",async()
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
+test("legacy high-growth state migrates to SQLite while ui-state JSON stays lean",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-state-sqlite-migration-")),env={...process.env,TREBELL_HOME:home},now=Date.now();
+  try{
+    await writeFile(join(home,"ui-state.json"),JSON.stringify({version:2,projects:[],threadMeta:{},settings:{},checkpoints:[{id:"cp-legacy",threadId:"thread-legacy",createdAt:now-4,root:"/repo",commit:"abc"}],usageRecords:[{id:"native:thread-legacy:turn-1",runtime:"native",provider:"agentrouter",model:"model-a",environmentId:null,threadId:"thread-legacy",turnId:"turn-1",at:now-3,usage:{totalTokens:12,inputTokens:8,outputTokens:4},cost:null}],verificationRecords:[{id:"verification:local:thread-legacy:turn-1",environmentId:null,projectPath:"/repo",threadId:"thread-legacy",turnId:"turn-1",plan:{risk:"low",steps:[]},evidence:[],assessment:{status:"verified",risk:"low",verified:true},status:"verified",risk:"low",createdAt:now-2,updatedAt:now-2}],repositoryKnowledge:[{id:"knowledge-legacy",projectPath:"/repo",environmentId:null,category:"architecture",fact:"Legacy fact",scope:"repository",source:"explicit",confidence:1,status:"verified",evidence:[],createdAt:now-1,updatedAt:now-1}]}));
+    const state=new TrebellStateStore(env);assert.equal(state.checkpoints("thread-legacy")[0].id,"cp-legacy");assert.equal(state.usage({days:1}).records[0].usage.totalTokens,12);assert.equal(state.verificationRecords({threadId:"thread-legacy"})[0].status,"verified");assert.equal(state.repositoryKnowledge({projectPath:"/repo"})[0].fact,"Legacy fact");
+    state.updateCheckpoint("cp-legacy",{turnId:"turn-linked"});state.updateSettings({notifications:false});
+    const disk=JSON.parse(await readFile(join(home,"ui-state.json"),"utf8"));for(const key of ["checkpoints","usageRecords","verificationRecords","repositoryKnowledge"])assert.equal(Object.prototype.hasOwnProperty.call(disk,key),false,key+" should live in SQLite, not ui-state.json");
+    const restarted=new TrebellStateStore(env),snapshot=restarted.snapshot();assert.equal(restarted.checkpoints("thread-legacy")[0].turnId,"turn-linked");assert.equal(snapshot.usageRecords.length,1);assert.equal(snapshot.verificationRecords.length,1);assert.equal(snapshot.repositoryKnowledge.length,1);assert.equal(restarted.settings().notifications,false);
+    assert.match(await readFile(join(home,"trebell.sqlite"),"latin1"),/state_usage/);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 test("projects with the same remote path stay distinct across environments",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-state-project-env-"));
   const env={...process.env,TREBELL_HOME:home};

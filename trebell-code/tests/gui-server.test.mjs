@@ -78,6 +78,7 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     const publicState=await fetch(gui.url+"/api/state").then(r=>r.json());
     assert.equal(Object.prototype.hasOwnProperty.call(publicSettings,"remoteAccessToken"),false);
     assert.equal(Object.prototype.hasOwnProperty.call(publicState.settings||{},"remoteAccessToken"),false);
+    for(const key of ["checkpoints","usageRecords","verificationRecords","repositoryKnowledge"])assert.equal(Object.prototype.hasOwnProperty.call(publicState,key),false,key+" should be queried through its indexed API instead of the general state payload");
     const compatibilityToken=["older","client","remote","credential"].join("-");
     const updatedSettings=await fetch(gui.url+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({remoteAccessToken:compatibilityToken})}).then(r=>r.json());
     assert.equal(Object.prototype.hasOwnProperty.call(updatedSettings,"remoteAccessToken"),false);
