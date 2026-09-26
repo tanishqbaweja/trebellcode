@@ -84,7 +84,12 @@ function Reset-ReleaseOutput {
 }
 
 function New-IsolatedPackagingOutput([string]$Prefix) {
-  $Base = [IO.Path]::GetTempPath()
+  # Do not use GetTempPath() here: on this Windows host it resolves to H:\temp,
+  # and electron-builder repeatedly observed just-written PE/ASAR files as
+  # missing on that drive. LocalAppData resolves to the local system profile
+  # drive and passed both unpacked and NSIS builds with ASAR integrity enabled.
+  $LocalAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+  $Base = if (-not [string]::IsNullOrWhiteSpace($LocalAppData)) { Join-Path $LocalAppData "Temp" } else { [IO.Path]::GetTempPath() }
   New-Item -ItemType Directory -Path $Base -Force | Out-Null
   $Output = Join-Path $Base ($Prefix + [Guid]::NewGuid().ToString("N"))
   New-Item -ItemType Directory -Path $Output -Force | Out-Null
