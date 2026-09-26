@@ -587,6 +587,8 @@ A separate attempt to shrink the baseline Native repository manifest to only `se
 
 A separate Native system-prompt compression experiment was also rejected. The shorter wording remained functionally correct in focused prompt tests, but the same multi-file live benchmark regressed from the earlier **11,583 input tokens / 5 model turns / 8 tool calls** to **14,219 input / 6 turns / 10 calls**. Trebell therefore keeps the clearer prompt wording: shaving prompt characters is not an optimization when the model spends more turns and tokens compensating for reduced guidance.
 
+A provider-visible repository-description compression experiment was rejected for the same reason. It kept all **11** baseline functions and reduced the repeated tool manifest from **5,117 to 4,793 JSON characters** (about **1,280 to 1,199 estimated schema tokens**), but a reproduced three-scenario live run still used **44,968 input tokens / 17 model turns / 21 tool calls**. The clean pre-experiment baseline was **35,397 input / 14 turns / 17 calls**. Trebell therefore keeps the fuller tool descriptions: schema bytes are only worth removing when end-to-end model behavior stays at least as efficient.
+
 ### Same-task live harness comparison
 
 `npm run bench:harnesses:live` gives each available harness its own disposable copy of the same small repository bug-fix task, requires the harness to edit code and run `node verify.mjs`, and then reruns that verification independently outside the harness. Set `TREBELL_HARNESS_COMPARE_ONLY` to a comma-separated runtime list to run a bounded subset. The command is explicitly live/opt-in and should not be used as a background benchmark tournament.
