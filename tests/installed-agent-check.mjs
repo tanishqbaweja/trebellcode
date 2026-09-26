@@ -148,6 +148,7 @@ try{
   const expected=`${proof}:model-ok`;
   async function timeoutDiagnostics(error,label){
     const diagnostics=await fetch(base+"/api/diagnostics?path="+encodeURIComponent(workspace)).then(r=>r.json()).catch(()=>null);
+    const traces=await fetch(base+"/api/traces?threadId="+encodeURIComponent(thread.thread.id)+"&limit=100").then(r=>r.json()).catch(()=>null);
     const resumed=await rpc.request("thread/resume",{threadId:thread.thread.id,model,modelProvider:"vyceai",cwd:workspace,excludeTurns:false}).catch(()=>null);
     console.error("PACKAGED_AGENT_TIMEOUT_DIAGNOSTICS",JSON.stringify({
       label,
@@ -157,6 +158,7 @@ try{
       resumedThread:resumed?.thread||null,
       runtime:diagnostics?.runtime||null,
       logs:(diagnostics?.logs||[]).slice(-30),
+      traces:(traces?.items||[]).slice(-40),
     },null,2));
     throw error;
   }

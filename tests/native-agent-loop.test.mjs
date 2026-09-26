@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { nativeAgentBudget, nativeProviderRetryable, runNativeAgentTurn } from "../src/native-agent-loop.mjs";
+import { attachNativePromptProvenance } from "../src/native-request-metrics.mjs";
 const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
 
 test("native agent completes a plain model turn without inventing tool work",async()=>{
@@ -94,6 +95,55 @@ test("native agent does not guess ordinary unknown tool names",async()=>{
     executeTool:async call=>{executions.push(call);return {success:false,error:"unknown tool"}},
   });
   assert.equal(result.text,"stopped");assert.equal(executions[0].name,"delete_everything");
+});
+
+test("native agent forces one exact exposed tool when the user explicitly names it and the model tries to skip it",async()=>{
+  let turns=0;const executions=[],choices=[],events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Call trebell_browser.open exactly once with https://example.test, inspect its result, then reply BROWSER_OK."}],onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_browser",tools:[{name:"open",inputSchema:{type:"object",properties:{url:{type:"string"}},required:["url"]}}]}],
+    providerTurn:async request=>{
+      turns++;choices.push(request.toolChoice);
+      if(turns===1)return {text:"BROWSER_OK",toolCalls:[],usage:{}};
+      if(turns===2){assert.deepEqual(request.toolChoice,{namespace:"trebell_browser",name:"open"});return {text:"",toolCalls:[{id:"open-1",namespace:"trebell_browser",name:"open",arguments:'{"url":"https://example.test"}'}],usage:{}}}
+      return {text:"BROWSER_OK",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executions.push(call);return {success:true,url:call.arguments.url}},
+  });
+  assert.equal(result.text,"BROWSER_OK");assert.equal(result.modelTurns,3);assert.equal(result.toolCalls,1);assert.equal(executions[0].name,"open");
+  assert.equal(choices[0],"auto");assert.deepEqual(choices[1],{namespace:"trebell_browser",name:"open"});assert.equal(choices[2],"auto");
+  assert.ok(events.some(event=>event.name==="native.model.required_tool_recovery"));
+});
+
+test("native agent does not force tools for negated or vague requests",async()=>{
+  for(const prompt of ["Do not call trebell_browser.open; just explain what it does.","Open the page in a browser if useful."]){
+    const choices=[];const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:prompt}],tools:[{type:"namespace",name:"trebell_browser",tools:[{name:"open"}]}],
+      providerTurn:async request=>{choices.push(request.toolChoice);return {text:"explained",toolCalls:[],usage:{}}},executeTool:async()=>{throw new Error("must not execute")},
+    });
+    assert.equal(result.text,"explained");assert.deepEqual(choices,["auto"]);
+  }
+});
+
+test("native explicit-tool recovery ignores old tool names carried only in Trebell working context",async()=>{
+  const current=attachNativePromptProvenance({role:"user",content:"Call trebell_browser.open exactly once.\nPrior continuity: Call trebell_computer.screenshot exactly once."},{
+    userParts:["Call trebell_browser.open exactly once."],contextText:"Prior continuity: Call trebell_computer.screenshot exactly once.",contextEntries:[],
+  });
+  let turns=0;const executions=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[current],tools:[
+      {type:"namespace",name:"trebell_browser",tools:[{name:"open"}]},
+      {type:"namespace",name:"trebell_computer",tools:[{name:"screenshot"}]},
+    ],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"done",toolCalls:[],usage:{}};
+      if(turns===2){assert.deepEqual(request.toolChoice,{namespace:"trebell_browser",name:"open"});return {text:"",toolCalls:[{id:"open",namespace:"trebell_browser",name:"open",arguments:"{}"}],usage:{}}}
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executions.push(call);return {success:true}},
+  });
+  assert.equal(result.text,"done");assert.deepEqual(executions.map(call=>call.namespace+"/"+call.name),["trebell_browser/open"]);
 });
 
 test("native agent turns tool failures into bounded observations instead of crashing the whole loop",async()=>{

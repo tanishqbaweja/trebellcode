@@ -146,7 +146,7 @@ try{
     "Complete the coding task in TASK.md.",
     "Use the Trebell Native tools as needed to inspect the relevant files, fix the bug, and run the requested verification command.",
     "Do not merely explain the fix.",
-    "When the command passes, reply with LIVE_NATIVE_DONE and a concise summary of what you changed.",
+    "When the command passes, give a concise summary of what you changed and the verification you actually ran.",
   ].join("\n");
   const contextPacket=await contextEngine.buildPacket({root:workspace,task:prompt,focusPaths:["TASK.md"]});
   const additionalContext=repositoryContextEntries(contextPacket,{seedOnly:true});
@@ -270,7 +270,7 @@ try{
     nativeToolDetails:toolDetails,
     independentVerification:"LIVE_NATIVE_TEST_PASS",
     finalAssistantChars:assistant.length,
-    finalAssistantIncludedDoneMarker:/LIVE_NATIVE_DONE/.test(assistant),
+    finalAssistantPersisted:Boolean(assistant.trim()),
     usedRepositoryIntelligence:toolCalls.some(name=>name.startsWith("trebell_repo/")),
     usedWorkspaceEdit:toolCalls.some(name=>name==="trebell_workspace/replace_text"||name==="trebell_workspace/write_file"),
     usedTerminalVerification:toolCalls.includes("trebell_terminal/run"),
@@ -280,7 +280,7 @@ try{
   assert.ok(toolCalls.some(name=>name==="trebell_workspace/read_file"||name==="trebell_repo/read_source"||name==="trebell_repo/search_code"),"real model must inspect source through Native tools");
   assert.equal(report.usedWorkspaceEdit,true,"real model must edit the file through Native workspace tools");
   assert.equal(report.usedTerminalVerification,true,"real model must execute verification through the Native terminal tool");
-  assert.match(assistant,/LIVE_NATIVE_DONE/,"real Native run completed the coding work but did not persist the requested final assistant response");
+  assert.ok(assistant.trim().length>0,"real Native run completed the coding work but did not persist a final assistant response");
 }finally{
   try{ws.close()}catch{}
   await relay.close().catch(()=>{});

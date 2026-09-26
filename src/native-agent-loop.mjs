@@ -1,5 +1,5 @@
 import { performance } from "node:perf_hooks";
-import { nativeRequestMetrics } from "./native-request-metrics.mjs";
+import { nativeRequestMetrics, NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 
 function abortError(signal){
   const reason=signal?.reason;if(reason?.name==="AbortError")return reason;
@@ -29,6 +29,37 @@ function repairCorruptedToolCall(call,tools=[]){
   const exposed=(Array.isArray(entry?.tools)?entry.tools:[]).filter(item=>String(item?.name||"").trim());
   if(exposed.some(item=>String(item.name)===name)||exposed.length!==1)return {call,repaired:false};
   return {call:{...call,name:String(exposed[0].name)},repaired:true,originalName:name};
+}
+
+function messageText(message){
+  const provenance=message&&typeof message==="object"?message[NATIVE_PROMPT_PROVENANCE]:null;
+  if(Array.isArray(provenance?.userParts))return provenance.userParts.map(value=>String(value||"")).filter(Boolean).join("\n");
+  const content=message?.content;
+  if(typeof content==="string")return content;
+  if(!Array.isArray(content))return "";
+  return content.map(part=>typeof part==="string"?part:typeof part?.text==="string"?part.text:"").filter(Boolean).join("\n");
+}
+
+function escapeRegex(value){return String(value||"").replace(/[.*+?^${}()|[\]\\]/g,"\\$&")}
+
+function explicitlyRequestedTools(messages=[],tools=[]){
+  const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=messageText(user);
+  if(!text)return [];
+  const requested=[];
+  for(const namespace of Array.isArray(tools)?tools:[]){
+    const ns=String(namespace?.name||"").trim();if(namespace?.type!=="namespace"||!ns)continue;
+    for(const tool of Array.isArray(namespace.tools)?namespace.tools:[]){
+      const name=String(tool?.name||"").trim();if(!name)continue;
+      const pattern=new RegExp(`\\b(?:call|use|invoke)\\s+(?:the\\s+)?${escapeRegex(ns)}[./]${escapeRegex(name)}\\b`,"ig");
+      let match;
+      while((match=pattern.exec(text))){
+        const prefix=text.slice(Math.max(0,match.index-24),match.index);
+        if(/(?:do\s+not|don't|never)\s*$/i.test(prefix))continue;
+        requested.push({namespace:ns,name});break;
+      }
+    }
+  }
+  return requested;
 }
 
 function resultContent(value){
@@ -119,7 +150,8 @@ export async function runNativeAgentTurn({
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
   const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])];
-  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
+  const explicitlyRequired=explicitlyRequestedTools(conversation,tools),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
+  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,forcedToolChoice=null,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
   const startedAt=Date.now(),started=nowMs(),wallController=budget.maxWallTimeMs!=null?new AbortController():null,deadlineAt=budget.maxWallTimeMs==null?null:Date.now()+budget.maxWallTimeMs;
   let wallTimer=null;
   const armWallTimer=()=>{
@@ -133,6 +165,7 @@ export async function runNativeAgentTurn({
   const canRunParallel=call=>parallelToolCalls===true&&typeof isToolParallelSafe==="function"&&isToolParallelSafe(call)===true;
   const executeOneTool=async(call,toolCallNumber)=>{
     const callId=String(call?.id||("native-tool-"+toolCallNumber)),namespace=call?.namespace?String(call.namespace):null,name=String(call?.name||"tool"),args=safeArguments(call?.arguments);
+    if(namespace)executedToolKeys.add(namespace+"/"+name);
     const toolStarted=nowMs();
     emit(onEvent,{name:"native.tool.requested",status:"running",model:String(model),provider:provider||null,data:{toolCall:toolCallNumber,callId,namespace,name}});
     let output,success=true,errorMessage=null,uncertain=false,retrySafe=false;
@@ -164,7 +197,7 @@ export async function runNativeAgentTurn({
     const providerAttempts=boundedInteger(maxProviderAttempts,3,{min:1,max:8});let response=null;
     for(let attempt=1;attempt<=providerAttempts;attempt++){
       try{
-        response=await providerTurn({model,provider,messages:conversation,tools,toolChoice,maxOutputTokens,temperature,parallelToolCalls,signal:turnSignal});break;
+        response=await providerTurn({model,provider,messages:conversation,tools,toolChoice:forcedToolChoice||toolChoice,maxOutputTokens,temperature,parallelToolCalls,signal:turnSignal});break;
       }catch(error){
         if(error?.nativeSteered){
           if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"model_request_interrupted"})){
@@ -183,6 +216,7 @@ export async function runNativeAgentTurn({
       }
     }
     if(response==null)continue;
+    forcedToolChoice=null;
     throwIfAborted(turnSignal);lastResponse=response||{};usage=aggregateUsage(usage,lastResponse.usage||{});
     const rawCalls=Array.isArray(lastResponse.toolCalls)?lastResponse.toolCalls:[],calls=rawCalls.map(call=>{
       const normalized=repairCorruptedToolCall(call,tools);
@@ -212,6 +246,18 @@ export async function runNativeAgentTurn({
     }
     conversation.push({role:"assistant",content:responseText,toolCalls:calls});
     if(!calls.length){
+      const missingRequired=explicitlyRequired.find(item=>!executedToolKeys.has(item.namespace+"/"+item.name));
+      if(missingRequired){
+        const key=missingRequired.namespace+"/"+missingRequired.name;
+        if(requiredToolRecoveries.has(key)||modelTurns>=budget.maxModelTurns){
+          const error=new Error(`Native model did not perform the explicitly requested tool call ${key}.`);error.code="native_required_tool_not_called";
+          emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{reason:error.code,namespace:missingRequired.namespace,name:missingRequired.name,modelTurns,toolCalls}});throw error;
+        }
+        requiredToolRecoveries.add(key);forcedToolChoice={namespace:missingRequired.namespace,name:missingRequired.name};
+        conversation.push({role:"developer",content:`The user explicitly required ${key}, but the previous response did not call it. Call that exact tool now and inspect its result before answering. Do not claim completion without the requested tool evidence.`});
+        emit(onEvent,{name:"native.model.required_tool_recovery",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{namespace:missingRequired.namespace,name:missingRequired.name,modelTurn:modelTurns}});
+        continue;
+      }
       if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_completion"}))continue;
       const result={
         text:responseText,model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,
