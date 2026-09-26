@@ -67,6 +67,24 @@ function repairCorruptedToolCall(call,tools=[]){
   return {call:{...call,name:String(exposed[0].name)},repaired:true,originalName:name,reason:"single_tool_corruption"};
 }
 
+function sameStringArray(left,right){
+  if(!Array.isArray(left)||!Array.isArray(right)||left.length!==right.length)return false;
+  return left.every((value,index)=>String(value)===String(right[index]));
+}
+
+function repairRepeatedTerminalCommand(call,successfulTerminalRuns=[]){
+  if(call?.namespace!=="trebell_terminal"||call?.name!=="run")return {call,repaired:false};
+  const args=safeArguments(call?.arguments),command=String(args.command||"").trim();
+  if(command||!Array.isArray(args.args)||!args.args.length)return {call,repaired:false};
+  const cwd=String(args.cwd??"");
+  const commands=[...new Set((Array.isArray(successfulTerminalRuns)?successfulTerminalRuns:[])
+    .filter(item=>String(item?.cwd??"")===cwd&&sameStringArray(item?.args,args.args))
+    .map(item=>String(item?.command||"").trim()).filter(Boolean))];
+  if(commands.length!==1)return {call,repaired:false};
+  const repairedArgs={...args,command:commands[0]},serialized=typeof call.arguments==="string"?JSON.stringify(repairedArgs):repairedArgs;
+  return {call:{...call,arguments:serialized},repaired:true,command:commands[0],reason:"repeated_terminal_command"};
+}
+
 function messageText(message){
   const provenance=message&&typeof message==="object"?message[NATIVE_PROMPT_PROVENANCE]:null;
   if(Array.isArray(provenance?.userParts))return provenance.userParts.map(value=>String(value||"")).filter(Boolean).join("\n");
@@ -187,6 +205,7 @@ export async function runNativeAgentTurn({
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
   const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])];
   const explicitlyRequired=explicitlyRequestedTools(conversation,tools),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
+  const successfulTerminalRuns=[];
   let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,forcedToolChoice=null,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
   const startedAt=Date.now(),started=nowMs(),wallController=budget.maxWallTimeMs!=null?new AbortController():null,deadlineAt=budget.maxWallTimeMs==null?null:Date.now()+budget.maxWallTimeMs;
   let wallTimer=null;
@@ -212,6 +231,9 @@ export async function runNativeAgentTurn({
     }catch(error){
       if(turnSignal?.aborted||error?.name==="AbortError")throw abortError(turnSignal);
       success=false;errorMessage=error?.message||String(error);output={success:false,error:errorMessage};
+    }
+    if(success&&output?.success!==false&&namespace==="trebell_terminal"&&name==="run"&&String(args.command||"").trim()&&Array.isArray(args.args)){
+      successfulTerminalRuns.push({command:String(args.command).trim(),args:args.args.map(value=>String(value)),cwd:String(args.cwd??"")});
     }
     const content=resultContent(output)||(!success?errorMessage||"Tool execution failed.":"Tool completed without text output.");
     emit(onEvent,{name:"native.tool.completed",status:success?"completed":uncertain?"uncertain":"failed",model:String(model),provider:provider||null,data:{toolCall:toolCallNumber,callId,namespace,name,durationMs:duration(toolStarted),success,uncertain,retrySafe,error:errorMessage}});
@@ -257,7 +279,9 @@ export async function runNativeAgentTurn({
     const rawCalls=Array.isArray(lastResponse.toolCalls)?lastResponse.toolCalls:[],calls=rawCalls.map(call=>{
       const normalized=repairCorruptedToolCall(call,tools);
       if(normalized.repaired)emit(onEvent,{name:"native.tool.call_repaired",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{namespace:String(call?.namespace||""),repairedNamespace:String(normalized.call?.namespace||""),malformedNameLength:String(normalized.originalName||"").length,name:String(normalized.call?.name||""),reason:normalized.reason||"corruption"}});
-      return normalized.call;
+      const repairedArgs=repairRepeatedTerminalCommand(normalized.call,successfulTerminalRuns);
+      if(repairedArgs.repaired)emit(onEvent,{name:"native.tool.call_repaired",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{namespace:"trebell_terminal",repairedNamespace:"trebell_terminal",malformedNameLength:0,name:"run",reason:repairedArgs.reason}});
+      return repairedArgs.call;
     });
     const providerTelemetry=lastResponse.telemetry||null,turnUsage=lastResponse.usage||{},inputTokens=Number(turnUsage.inputTokens||0),cachedTokens=Number(turnUsage.cachedInputTokens||0),contextWindow=Number(metadata?.contextWindow||0);
     emit(onEvent,{name:"native.model.completed",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{

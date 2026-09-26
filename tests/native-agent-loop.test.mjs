@@ -120,6 +120,63 @@ test("native agent does not repair a flattened alias when the target tool name i
   assert.equal(result.text,"stopped");assert.equal(executions[0].namespace,null);assert.equal(executions[0].name,"trebell_open");
 });
 
+test("native agent reuses one successful same-turn terminal command when a repeated call loses only command",async()=>{
+  let turns=0;const executions=[],events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Run the verifier, fix the issue, and rerun it."}],onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"verify-before",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"],"cwd":"."}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[{id:"verify-after",namespace:"trebell_terminal",name:"run",arguments:'{"args":["verify.mjs"],"cwd":"."}'}],usage:{}};
+      const prior=request.messages.find(message=>message.role==="assistant"&&message.toolCalls?.some(call=>call.id==="verify-after"));
+      assert.match(String(prior.toolCalls.find(call=>call.id==="verify-after").arguments),/"command":"node"/);
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executions.push(structuredClone(call));return {success:true,exitCode:0}},
+  });
+  assert.equal(result.text,"done");assert.equal(result.modelTurns,3);assert.equal(result.toolCalls,2);
+  assert.deepEqual(executions.map(call=>call.arguments.command),["node","node"]);
+  assert.ok(events.some(event=>event.name==="native.tool.call_repaired"&&event.data?.reason==="repeated_terminal_command"));
+});
+
+test("native agent does not guess a missing terminal command without one unique same-turn match",async()=>{
+  let turns=0;const executions=[],events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Run checks."}],onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[
+        {id:"node",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"],"cwd":"."}'},
+        {id:"bun",namespace:"trebell_terminal",name:"run",arguments:'{"command":"bun","args":["verify.mjs"],"cwd":"."}'},
+      ],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[{id:"missing",namespace:"trebell_terminal",name:"run",arguments:'{"args":["verify.mjs"],"cwd":"."}'}],usage:{}};
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executions.push(structuredClone(call));return call.arguments.command?{success:true}:{success:false,error:"command required"}},
+  });
+  assert.equal(result.text,"done");assert.equal(executions.at(-1).arguments.command,undefined);
+  assert.equal(events.some(event=>event.name==="native.tool.call_repaired"&&event.data?.reason==="repeated_terminal_command"),false);
+});
+
+test("native agent does not reuse a terminal command from a failed tool execution",async()=>{
+  let turns=0;const executions=[],events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Run checks."}],onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"failed",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"],"cwd":"workspace"}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[{id:"missing",namespace:"trebell_terminal",name:"run",arguments:'{"args":["verify.mjs"],"cwd":"workspace"}'}],usage:{}};
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executions.push(structuredClone(call));return {success:false,error:"working directory not found"}},
+  });
+  assert.equal(result.text,"done");assert.equal(executions[1].arguments.command,undefined);
+  assert.equal(events.some(event=>event.name==="native.tool.call_repaired"&&event.data?.reason==="repeated_terminal_command"),false);
+});
+
 test("native agent does not guess ordinary unknown tool names",async()=>{
   let turns=0;const executions=[];
   const result=await runNativeAgentTurn({
