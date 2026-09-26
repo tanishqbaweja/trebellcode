@@ -65,18 +65,39 @@ function Stop-GeneratedDesktopProcesses {
   Start-Sleep -Milliseconds 500
 }
 
-function Reset-ReleaseOutput {
-  Stop-GeneratedDesktopProcesses
-  $Output = Join-Path $Root "desktop-dist"
-  if (-not (Test-Path $Output)) { return }
+function Remove-GeneratedPath([string]$Path) {
+  if (-not $Path -or -not (Test-Path $Path)) { return }
   for ($Attempt = 1; $Attempt -le 12; $Attempt++) {
     try {
-      Remove-Item $Output -Recurse -Force -ErrorAction Stop
+      Remove-Item $Path -Recurse -Force -ErrorAction Stop
       return
     } catch {
       if ($Attempt -eq 12) { throw }
       Start-Sleep -Milliseconds 500
     }
+  }
+}
+
+function Reset-ReleaseOutput {
+  Stop-GeneratedDesktopProcesses
+  Remove-GeneratedPath (Join-Path $Root "desktop-dist")
+}
+
+function Invoke-UnpackedWindowsBuild([string]$ElectronDist) {
+  $Output = Join-Path ([IO.Path]::GetTempPath()) ("trebell-release-unpacked-" + [Guid]::NewGuid().ToString("N"))
+  $UnpackedExe = Join-Path $Output "win-unpacked\Trebell Code.exe"
+  Reset-ReleaseOutput
+  try {
+    Invoke-Native "npx" @(
+      "electron-builder","--dir","--win","--x64",
+      "--config.electronDist=$ElectronDist",
+      "--config.directories.output=$Output"
+    )
+    if (-not (Test-Path $UnpackedExe)) { throw "Unpacked desktop build was not produced: $UnpackedExe" }
+    return [pscustomobject]@{ Output = $Output; Exe = $UnpackedExe }
+  } catch {
+    Remove-GeneratedPath $Output
+    throw
   }
 }
 
@@ -91,6 +112,9 @@ if ($NodeMajor -lt 22) {
 $Package = Get-Content (Join-Path $Root "package.json") -Raw | ConvertFrom-Json
 $Version = [string]$Package.version
 if ([string]::IsNullOrWhiteSpace($Tag)) { $Tag = "v$Version" }
+$ElectronDist = Join-Path $Root "node_modules\electron\dist"
+$ElectronExe = Join-Path $ElectronDist "electron.exe"
+if (-not (Test-Path $ElectronExe)) { throw "Installed Electron distribution is unavailable: $ElectronExe" }
 
 Write-Host "== Trebell Code Windows release ==" -ForegroundColor Cyan
 Write-Host "Version: $Version"
@@ -114,11 +138,8 @@ Invoke-Native "npm" @("run","bridge:build")
 Invoke-Native "npm" @("run","ui:build")
 
 Write-Host "`n[5/8] Building unpacked Windows app for native smoke tests..." -ForegroundColor Cyan
-Reset-ReleaseOutput
-Invoke-Native "npx" @("electron-builder","--dir","--win","--x64")
-
-$UnpackedExe = Join-Path $Root "desktop-dist\win-unpacked\Trebell Code.exe"
-if (-not (Test-Path $UnpackedExe)) { throw "Unpacked desktop build was not produced: $UnpackedExe" }
+$UnpackedBuild = Invoke-UnpackedWindowsBuild $ElectronDist
+$UnpackedExe = $UnpackedBuild.Exe
 
 Write-Host "`n[6/8] Running Windows desktop + bundled Codex smoke tests..." -ForegroundColor Cyan
 $GuiPort = Get-FreeTcpPort
@@ -225,11 +246,12 @@ try {
   if (Test-Path $SmokeHome) {
     Remove-Item $SmokeHome -Recurse -Force -ErrorAction SilentlyContinue
   }
+  Remove-GeneratedPath $UnpackedBuild.Output
 }
 
 Write-Host "`n[7/8] Building Windows x64 NSIS installer..." -ForegroundColor Cyan
 Reset-ReleaseOutput
-Invoke-Native "npx" @("electron-builder","--win","nsis","--x64")
+Invoke-Native "npx" @("electron-builder","--win","nsis","--x64","--config.electronDist=$ElectronDist")
 
 $InstallerName = "Trebell-Code-Setup-$Version.exe"
 $Installer = Join-Path $Root "desktop-dist\$InstallerName"
