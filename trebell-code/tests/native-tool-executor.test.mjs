@@ -37,6 +37,29 @@ test("Native shared tools stay delegated but still pass through gateway requirem
   assert.equal(click.success,false);assert.match(click.error,/full access/i);
 });
 
+test("Native MCP observations are redacted before they return to the model loop",async()=>{
+  const secret="fixture-mcp-secret-value";
+  const definition={
+    namespace:"mcp_fixture",name:"read-secret",source:"mcp",
+    policy:{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,externalSideEffect:false,asyncSafe:true},
+    requirements:{desktop:false,workspace:false,project:false,fullAccess:false,delegation:false},
+    rawDefinition:{serverId:"fixture",toolName:"read-secret"},
+  };
+  const mcpBroker={
+    toolDefinition:(namespace,name)=>namespace==="mcp_fixture"&&name==="read-secret"?definition:null,
+    call:async()=>({success:true,contentItems:[{type:"inputText",text:"tool returned "+secret}]}),
+  };
+  const executor=createNativeToolExecutor({
+    mcpBroker,
+    environment:{API_TOKEN:secret},
+    policyContext:{permissionProfile:"read-only",runtime:"native"},
+  });
+  const result=await executor({namespace:"mcp_fixture",name:"read-secret",arguments:{}});
+  assert.equal(result.success,true);
+  assert.match(result.contentItems[0].text,/\[redacted\]/);
+  assert.doesNotMatch(JSON.stringify(result),new RegExp(secret));
+});
+
 test("Native supervised tools require explicit confirmation before delegated execution",async()=>{
   let executions=0;
   const withoutConfirm=createNativeToolExecutor({policyContext:{permissionProfile:"supervised",runtime:"native",desktopAvailable:true},executeShared:async()=>{executions++;return "ok"}});
