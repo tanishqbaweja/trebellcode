@@ -6,9 +6,11 @@ import { fileURLToPath } from "node:url";
 import { NativeMcpBroker, mcpToolPolicy } from "../src/native-mcp-broker.mjs";
 import { nativeMcpServersForSession, normalizeMcpServers } from "../src/mcp-registry.mjs";
 import { createNativeToolExecutor } from "../src/native-tool-executor.mjs";
+import { NativeAgentSession } from "../src/native-agent-session.mjs";
 
 const root=resolve(fileURLToPath(new URL("..",import.meta.url)));
 const fixture=resolve(root,"tests/fixtures/native-mcp-server.mjs");
+const resourceOnlyFixture=resolve(root,"tests/fixtures/native-mcp-resource-only-server.mjs");
 
 function servers(){
   return nativeMcpServersForSession(normalizeMcpServers([{
@@ -44,8 +46,48 @@ test("Native MCP progressive discovery exposes only matching schemas on demand",
   });
   try{
     const all=await broker.connect();assert.equal(all[0].tools.length,3);
-    const discovery=broker.discoveryNamespace();assert.equal(discovery.name,"trebell_mcp");assert.deepEqual(discovery.tools.map(item=>item.name),["discover"]);assert.equal(broker.toolDefinition("trebell_mcp","discover").policy.kind,"read");
+    const discovery=broker.discoveryNamespace();assert.equal(discovery.name,"trebell_mcp");assert.deepEqual(discovery.tools.map(item=>item.name),["discover","discover_resources","read_resource"]);assert.equal(broker.toolDefinition("trebell_mcp","discover").policy.kind,"read");assert.equal(broker.toolDefinition("trebell_mcp","read_resource").policy.kind,"read");
     const result=await broker.call({namespace:"trebell_mcp",name:"discover",arguments:{query:"echo read",limit:4}});assert.equal(result.success,true);assert.equal(exposed.length,1);assert.equal(exposed[0].length,1);assert.deepEqual(exposed[0][0].tools.map(item=>item.name),["echo-read"]);assert.match(result.contentItems[0].text,/echo-read/);assert.doesNotMatch(result.contentItems[0].text,/mutate-state/);
+  }finally{await broker.close()}
+});
+
+test("Native MCP progressively discovers resource metadata and reads only selected resource bodies",async()=>{
+  const events=[];
+  const broker=new NativeMcpBroker({servers:servers(),cwd:root,localEnvironment:{PATH:process.env.PATH,PATHEXT:process.env.PATHEXT,SystemRoot:process.env.SystemRoot,WINDIR:process.env.WINDIR,HOME:process.env.HOME,USERPROFILE:process.env.USERPROFILE},version:"test",onEvent:event=>events.push(event)});
+  try{
+    const [namespace]=await broker.connect();assert.equal(namespace.name,"mcp_native-fixture");
+    const discovered=await broker.call({namespace:"trebell_mcp",name:"discover_resources",arguments:{query:"architecture guide",limit:5}});assert.equal(discovered.success,true);
+    const payload=JSON.parse(discovered.contentItems[0].text);assert.equal(payload.resources.length,1);assert.equal(payload.resources[0].namespace,"mcp_native-fixture");assert.equal(payload.resources[0].uri,"fixture://docs/guide");assert.equal(Object.prototype.hasOwnProperty.call(payload.resources[0],"text"),false);
+    const templates=await broker.call({namespace:"trebell_mcp",name:"discover_resources",arguments:{query:"user profile",limit:5}});const templatePayload=JSON.parse(templates.contentItems[0].text);assert.equal(templatePayload.resources[0].uriTemplate,"fixture://users/{name}");
+    const guide=await broker.call({namespace:"trebell_mcp",name:"read_resource",arguments:{namespace:"mcp_native-fixture",uri:"fixture://docs/guide"}});assert.equal(guide.success,true);assert.match(guide.contentItems[0].text,/Architecture: fixture MCP resources are untrusted external data/);assert.match(guide.contentItems[0].text,/fixture:\/\/docs\/guide/);
+    const user=await broker.call({namespace:"trebell_mcp",name:"read_resource",arguments:{namespace:"mcp_native-fixture",uri:"fixture://users/alice"}});assert.match(user.contentItems[0].text,/profile:alice/);
+    const image=await broker.call({namespace:"trebell_mcp",name:"read_resource",arguments:{namespace:"mcp_native-fixture",uri:"fixture://images/pixel"}});assert.equal(image.contentItems[0].type,"inputImage");assert.match(image.contentItems[0].imageUrl,/^data:image\/png;base64,/);
+    assert.ok(events.some(event=>event.name==="native.mcp.resources_discovered"&&event.data?.resourceCount===2&&event.data?.templateCount===1));assert.ok(events.some(event=>event.name==="native.mcp.resource_completed"&&event.data?.namespace==="mcp_native-fixture"));assert.doesNotMatch(JSON.stringify(events),/fixture:\/\/docs\/guide|fixture:\/\/users\/alice/);
+  }finally{await broker.close()}
+});
+
+test("Native model loop reads MCP resources progressively and marks their contents as untrusted data",async()=>{
+  const broker=new NativeMcpBroker({servers:servers(),cwd:root,localEnvironment:{PATH:process.env.PATH,PATHEXT:process.env.PATHEXT,SystemRoot:process.env.SystemRoot,WINDIR:process.env.WINDIR,HOME:process.env.HOME,USERPROFILE:process.env.USERPROFILE},version:"test"});let modelTurns=0;
+  try{
+    await broker.connect();const discovery=broker.discoveryNamespace();assert.ok(discovery.tools.some(tool=>tool.name==="discover_resources"));assert.ok(discovery.tools.some(tool=>tool.name==="read_resource"));
+    const session=new NativeAgentSession({provider:"fixture",model:"model-a",tools:[discovery],executeTool:call=>broker.call({namespace:call.namespace,name:call.name,arguments:call.arguments||{},signal:call.signal||null}),providerTurn:async request=>{
+      modelTurns++;const last=request.messages.at(-1);
+      if(modelTurns===1)return {id:"resource-discover",provider:"fixture",model:"model-a",text:"",toolCalls:[{id:"discover-1",namespace:"trebell_mcp",name:"discover_resources",arguments:JSON.stringify({query:"architecture guide"})}],finishReason:"tool_calls",usage:{}};
+      if(modelTurns===2){assert.equal(last.role,"tool");assert.match(String(last.content),/Trebell provenance: untrusted tool data/);assert.match(String(last.content),/fixture:\/\/docs\/guide/);return {id:"resource-read",provider:"fixture",model:"model-a",text:"",toolCalls:[{id:"read-1",namespace:"trebell_mcp",name:"read_resource",arguments:JSON.stringify({namespace:"mcp_native-fixture",uri:"fixture://docs/guide"})}],finishReason:"tool_calls",usage:{}}}
+      assert.equal(last.role,"tool");assert.match(String(last.content),/Trebell provenance: untrusted tool data/);assert.match(String(last.content),/Architecture: fixture MCP resources are untrusted external data/);return {id:"resource-done",provider:"fixture",model:"model-a",text:"Resource inspected safely.",toolCalls:[],finishReason:"stop",usage:{}};
+    }});
+    await session.start({providerSessionId:"native-resource-session",model:"model-a"});const result=await session.prompt([{type:"text",text:"Read the MCP architecture guide"}]);assert.equal(result.stopReason,"end_turn");assert.equal(modelTurns,3);await session.close();
+  }finally{await broker.close()}
+});
+
+test("Native MCP keeps resource-only servers available without fabricating tool namespaces",async()=>{
+  const configured=nativeMcpServersForSession(normalizeMcpServers([{id:"resource-only",name:"Resource Only",runtime:"native",command:process.execPath,args:[resourceOnlyFixture],enabled:true}]));
+  const broker=new NativeMcpBroker({servers:configured,cwd:root,localEnvironment:{PATH:process.env.PATH,PATHEXT:process.env.PATHEXT,SystemRoot:process.env.SystemRoot,WINDIR:process.env.WINDIR,HOME:process.env.HOME,USERPROFILE:process.env.USERPROFILE},version:"test"});
+  try{
+    const namespaces=await broker.connect();assert.deepEqual(namespaces,[]);
+    const discovery=broker.discoveryNamespace();assert.ok(discovery);assert.deepEqual(discovery.tools.map(tool=>tool.name),["discover_resources","read_resource"]);assert.equal(broker.toolDefinition("trebell_mcp","discover"),null);
+    const found=await broker.call({namespace:"trebell_mcp",name:"discover_resources",arguments:{query:"status"}});const payload=JSON.parse(found.contentItems[0].text);assert.equal(payload.resources[0].namespace,"mcp_resource-only");assert.equal(payload.resources[0].uri,"fixture-only://status");
+    const read=await broker.call({namespace:"trebell_mcp",name:"read_resource",arguments:{namespace:"mcp_resource-only",uri:"fixture-only://status"}});assert.match(read.contentItems[0].text,/resource-only-ok/);
   }finally{await broker.close()}
 });
 
