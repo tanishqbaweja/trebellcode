@@ -172,6 +172,74 @@ test("checkpoint change inspection compares against the captured tree without bl
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
+test("remote checkpoints capture, diff, and restore through the pinned environment without local filesystem access",async()=>{
+  const checkpoints=[],calls=[],metas={"thread-remote":{cwd:"/srv/repo",environmentId:"ssh-1"}};
+  const state={
+    addCheckpoint:item=>{const stored={...item,createdAt:1};checkpoints.unshift(stored);return structuredClone(stored)},
+    checkpoints:()=>structuredClone(checkpoints),updateCheckpoint:(id,patch)=>{const item=checkpoints.find(entry=>entry.id===id);if(!item)return null;Object.assign(item,patch);return structuredClone(item)},
+    threadMeta:id=>metas[id]||{},listThreadMeta:()=>structuredClone(metas),projects:()=>[{path:"/srv/repo",environmentId:"ssh-1",managedWorktree:{root:"/srv/source",branch:"feature",createdAt:1,cleanedAt:null}}],
+  };
+  const environments={
+    get:id=>id==="ssh-1"?{id:"ssh-1",type:"ssh",cwd:"/srv/repo"}:null,
+    executeArgv:async(id,request)=>{
+      assert.equal(id,"ssh-1");calls.push(structuredClone(request));
+      if(request.command==="mktemp")return {exitCode:0,stdout:"/tmp/trebell-checkpoint.fixture\n",stderr:""};
+      if(request.command==="rm")return {exitCode:0,stdout:"",stderr:""};
+      if(request.command==="test")return {exitCode:1,stdout:"",stderr:""};
+      const args=request.command==="env"?request.args.slice(2):request.args,command=gitCommand(args);
+      if(command==="rev-parse"&&args.includes("--show-toplevel"))return {exitCode:0,stdout:"/srv/repo\n",stderr:""};
+      if(command==="branch")return {exitCode:0,stdout:"feature\n",stderr:""};
+      if(command==="rev-parse")return {exitCode:0,stdout:"head123\n",stderr:""};
+      if(["read-tree","add","update-ref","update-index","restore"].includes(command))return {exitCode:0,stdout:"",stderr:""};
+      if(command==="write-tree")return {exitCode:0,stdout:"tree123\n",stderr:""};
+      if(command==="commit-tree")return {exitCode:0,stdout:"commit123\n",stderr:""};
+      if(command==="diff-files")return {exitCode:0,stdout:"src/a.js\0",stderr:""};
+      if(command==="ls-files")return {exitCode:0,stdout:"new-after-turn.txt\0",stderr:""};
+      if(command==="ls-tree")return {exitCode:0,stdout:"src/a.js\0preexisting.txt\0",stderr:""};
+      throw new Error(`unexpected remote command ${request.command} ${request.args.join(" ")}`);
+    },
+  };
+  const service=new CheckpointService({state,environments,env:{}}),checkpoint=await service.create({cwd:"/srv/repo",threadId:"thread-remote",environmentId:"ssh-1",label:"Before remote edit"});
+  assert.equal(checkpoint.supported,true);assert.equal(checkpoint.environmentId,"ssh-1");assert.equal(checkpoint.root,"/srv/repo");assert.equal(checkpoint.commit,"commit123");
+  const changed=await service.changedPaths(checkpoint.id,{threadId:"thread-remote"});assert.deepEqual(changed.paths,["new-after-turn.txt","src/a.js"]);assert.equal(changed.root,"/srv/repo");
+  const restored=await service.restore(checkpoint.id,{threadId:"thread-remote"});assert.equal(restored.ok,true);assert.equal(restored.info.root,"/srv/repo");
+  assert.ok(calls.some(call=>call.command==="env"&&call.args[0].startsWith("GIT_INDEX_FILE=/tmp/trebell-checkpoint.fixture/index")&&call.args.includes("read-tree")));
+  assert.ok(calls.some(call=>call.command==="rm"&&call.cwd==="/srv/repo"&&call.args.at(-1)==="new-after-turn.txt"));
+  assert.equal(calls.some(call=>/^[A-Za-z]:\\/.test(String(call.cwd||""))),false,"remote checkpoints must not fall back to local Windows paths");
+});
+
+test("remote checkpoint restore refuses shared workspaces just like local restore",async()=>{
+  const checkpoint={id:"remote-shared",threadId:"thread-remote",root:"/srv/repo",commit:"commit123",environmentId:"ssh-1"};
+  const state={checkpoints:()=>[checkpoint],threadMeta:()=>({cwd:"/srv/repo",environmentId:"ssh-1"}),projects:()=>[{path:"/srv/repo",environmentId:"ssh-1"}],listThreadMeta:()=>({"thread-remote":{cwd:"/srv/repo",environmentId:"ssh-1"}})};
+  const environments={get:()=>({id:"ssh-1",type:"ssh"}),executeArgv:async()=>{throw new Error("remote command should not run before isolation is proven")}};
+  await assert.rejects(()=>new CheckpointService({state,environments}).restore("remote-shared",{threadId:"thread-remote"}),/isolated Trebell worktree/i);
+});
+
+test("remote checkpoint capture skips an unborn nested repository instead of abandoning the checkpoint",async()=>{
+  const calls=[],state={addCheckpoint:item=>({...item,createdAt:1})};let stageAttempts=0;
+  const environments={
+    get:()=>({id:"ssh-1",type:"ssh",cwd:"/srv/repo"}),
+    executeArgv:async(_id,request)=>{
+      calls.push(structuredClone(request));if(request.command==="mktemp")return {exitCode:0,stdout:"/tmp/trebell-checkpoint.nested\n"};if(request.command==="rm")return {exitCode:0,stdout:""};if(request.command==="test")return {exitCode:0,stdout:""};
+      const args=request.command==="env"?request.args.slice(2):request.args,command=gitCommand(args);
+      if(command==="rev-parse"&&args.includes("--show-toplevel"))return {exitCode:0,stdout:request.cwd+"\n"};
+      if(command==="branch")return {exitCode:0,stdout:"main\n"};
+      if(command==="rev-parse"&&String(request.cwd||"").replace(/\/$/,"")==="/srv/repo/scratch/empty")return {exitCode:1,stdout:"",stderr:"fatal: Needed a single revision"};
+      if(command==="rev-parse")return {exitCode:0,stdout:"head123\n"};
+      if(command==="read-tree"||command==="update-ref")return {exitCode:0,stdout:""};
+      if(command==="add"){
+        stageAttempts++;if(stageAttempts===1)return {exitCode:128,stdout:"",stderr:"error: 'scratch/empty/' does not have a commit checked out\nfatal: adding files failed"};
+        assert.ok(args.includes(":(exclude,literal)scratch/empty/"));return {exitCode:0,stdout:""};
+      }
+      if(command==="ls-files")return {exitCode:0,stdout:"scratch/empty/\0"};
+      if(command==="write-tree")return {exitCode:0,stdout:"tree123\n"};if(command==="commit-tree")return {exitCode:0,stdout:"commit123\n"};
+      throw new Error(`unexpected remote command ${request.command} ${request.args.join(" ")}`);
+    },
+  };
+  const checkpoint=await new CheckpointService({state,environments}).create({cwd:"/srv/repo",threadId:"thread-remote",environmentId:"ssh-1"});
+  assert.equal(checkpoint.supported,true);assert.equal(stageAttempts,2);assert.ok(calls.some(call=>call.command==="test"&&call.args.at(-1)==="/srv/repo/scratch/empty/.git"));
+});
+
 test("file rewind restores only an isolated managed worktree and refuses sibling ownership",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-checkpoint-isolation-"));
   const home=join(root,"home"),repo=join(root,"repo"),worktree=join(root,"worktree");

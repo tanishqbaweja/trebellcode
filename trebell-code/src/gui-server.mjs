@@ -527,7 +527,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   ensureCodexConfig({port:selectedInferencePort(),env,provider:selectedProvider});
   let bridge=null;
   let loginPromise=null;
-  const checkpoints=new CheckpointService({state,env});
+  const checkpoints=new CheckpointService({state,env,environments});
   function recordCheckpointTrace(name,status,checkpoint=null,extra={}){
     const threadId=checkpoint?.threadId||extra.threadId||null,meta=threadId?state.threadMeta(threadId):{};
     eventJournal.record({
@@ -1005,9 +1005,9 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     return verificationRepairState(records,recordId);
   }
   async function createCodexVerificationCheckpoint(threadId,label){
-    const meta=state.threadMeta(threadId);if(!meta?.cwd||meta.environmentId)return null;
+    const meta=state.threadMeta(threadId);if(!meta?.cwd)return null;
     try{
-      const checkpoint=await checkpoints.create({cwd:meta.cwd,threadId,label});
+      const checkpoint=await checkpoints.create({cwd:meta.cwd,threadId,label,environmentId:meta.environmentId??null});
       recordCheckpointTrace(checkpoint?.supported===false?"checkpoint.skipped":"checkpoint.created",checkpoint?.supported===false?"unsupported":"completed",checkpoint,{threadId,reason:checkpoint?.reason||null});
       return checkpoint?.supported===false?null:checkpoint;
     }catch(error){recordCheckpointTrace("checkpoint.create_failed","error",null,{threadId,message:error.message});return null}
@@ -2081,7 +2081,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
               scripts:sourceProject.scripts||[],
               preferredScriptId:sourceProject.preferredScriptId??null,
             }:{};
-            state.touchProject(environmentPath(body.path,environmentId),{...inherited,environmentId});
+            state.touchProject(environmentPath(body.path,environmentId),{...inherited,environmentId,managedWorktree:{root:result.info?.root||cwd,branch:String(body.branch||""),baseBranch:String(body.baseBranch||result.info?.branch||""),submodules:"none",createdAt:Date.now(),cleanedAt:null,cleanupReason:null}});
           }
           return json(res,200,{ok:true,result});
         }
@@ -2304,7 +2304,9 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       if(req.method==="POST"){
         try{
           const body=await readJsonBody(req);
-          const checkpoint=await checkpoints.create(body);
+          const meta=body.threadId?state.threadMeta(String(body.threadId)):null;
+          const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?(body.environmentId||null):(meta?.environmentId??null);
+          const checkpoint=await checkpoints.create({...body,environmentId});
           recordCheckpointTrace(checkpoint?.supported===false?"checkpoint.skipped":"checkpoint.created",checkpoint?.supported===false?"unsupported":"completed",checkpoint,{threadId:body.threadId||null,reason:checkpoint?.reason||null});
           return json(res,200,checkpoint);
         }catch(error){
