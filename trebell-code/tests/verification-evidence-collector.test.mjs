@@ -77,3 +77,15 @@ test("failed browser runtime receipt cannot look like a clean runtime check",()=
   const plan={steps:[{id:"browser_runtime",kind:"browser-runtime",required:true}]},traces=[{name:"verification.browser_evidence",data:{namespace:"trebell_browser",tool:"runtime",success:false,consoleErrorCount:0,networkFailureCount:0,callId:"runtime-failed"}}];
   assert.deepEqual(collectVerificationEvidence({plan,traces}),[{stepId:"browser_runtime",status:"failed",source:"browser-receipt",toolCallId:"runtime-failed"}]);
 });
+
+test("responsive visual evidence counts only viewport sizes that were actually screenshotted",()=>{
+  const plan={steps:[{id:"visual",kind:"visual",required:true,evidence:["screenshot","responsive-viewport"]}]},traces=[
+    {name:"verification.browser_evidence",data:{namespace:"trebell_browser",tool:"set_viewport",success:true,viewport:true,width:390,height:844,callId:"viewport-mobile"}},
+    {name:"verification.browser_evidence",data:{namespace:"trebell_browser",tool:"screenshot",success:true,screenshot:true,width:390,height:844,callId:"shot-mobile"}},
+    {name:"verification.browser_evidence",data:{namespace:"trebell_browser",tool:"set_viewport",success:true,viewport:true,width:1280,height:800,callId:"viewport-desktop"}},
+    {name:"verification.browser_evidence",data:{namespace:"trebell_browser",tool:"runtime",success:true,consoleErrorCount:0,networkFailureCount:0,viewportCount:2,callId:"runtime-1"}},
+  ];
+  assert.deepEqual(collectVerificationEvidence({plan,traces}),[
+    {stepId:"visual",screenshots:1,viewports:1,source:"browser-receipt",toolCallIds:["shot-mobile","viewport-mobile"]},
+  ]);
+});

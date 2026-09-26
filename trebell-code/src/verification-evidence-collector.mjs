@@ -74,10 +74,13 @@ function browserEvidence(plan,traces=[]){
     }
     if(step?.kind==="visual"){
       const screenshots=receipts.filter(item=>item.tool==="screenshot"&&item.success!==false&&item.screenshot===true),viewportKeys=new Set();
-      for(const item of receipts){if(item.success===false)continue;const width=Number(item.width),height=Number(item.height);if(width>0&&height>0&&["set_viewport","screenshot"].includes(item.tool))viewportKeys.add(`${Math.trunc(width)}x${Math.trunc(height)}`)}
-      const runtimeViewportCount=Math.max(0,...receipts.filter(item=>item.tool==="runtime"&&item.success!==false).map(item=>Number(item.viewportCount)||0)),viewports=Math.max(viewportKeys.size,runtimeViewportCount);
+      for(const item of screenshots){const width=Number(item.width),height=Number(item.height);if(width>0&&height>0)viewportKeys.add(`${Math.trunc(width)}x${Math.trunc(height)}`)}
+      const viewports=viewportKeys.size,viewportCalls=receipts.filter(item=>{
+        if(item.tool!=="set_viewport"||item.success===false)return false;
+        const width=Number(item.width),height=Number(item.height);return width>0&&height>0&&viewportKeys.has(`${Math.trunc(width)}x${Math.trunc(height)}`);
+      });
       if(!screenshots.length&&!viewports)continue;
-      evidence.push({stepId:step.id,screenshots:screenshots.length,viewports,source:"browser-receipt",toolCallIds:[...screenshots,...receipts.filter(item=>item.tool==="set_viewport"&&item.success!==false)].map(item=>item.callId).filter(Boolean).slice(-40)});
+      evidence.push({stepId:step.id,screenshots:screenshots.length,viewports,source:"browser-receipt",toolCallIds:[...screenshots,...viewportCalls].map(item=>item.callId).filter(Boolean).slice(-40)});
     }
   }
   return evidence;
