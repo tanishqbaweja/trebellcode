@@ -66,6 +66,7 @@ import { verificationAutomationAttempt, verificationAutomationChainState } from 
 import { normalizeBrowserVerificationReceipt } from "./browser-verification-evidence.mjs";
 import { delegationContextValue, delegationGoalPatch, delegationPolicies } from "./delegation-state.mjs";
 import { executeDelegation } from "./delegation-executor.mjs";
+import { cleanupDelegationWorktree, createDelegationWorktree } from "./delegation-worktree.mjs";
 import { resolveCodexApprovalByPolicy } from "./codex-policy-adapter.mjs";
 import { resolveRecipeExecution } from "./recipes.mjs";
 import { runProjectHooks, verificationHookSteps } from "./project-hooks.mjs";
@@ -1128,39 +1129,54 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     if(!sourceCwd)throw new Error("Delegation requires a parent workspace");
     if(spec.isolation==="inherit")return {cwd:sourceCwd,branch:meta?.branch||null,isolation:"inherit",worktree:false};
     const environmentId=meta?.environmentId??parentThread?.providerMeta?.environmentId??null;
-    if(environmentId)throw new Error("Isolated delegation worktrees are currently supported only for local workspaces. Use isolation='inherit' for remote environments.");
-    const info=await gitInfo(sourceCwd);if(!info.isGit)throw new Error("Worktree delegation requires a Git workspace");if(!info.branch)throw new Error("Worktree delegation requires a checked-out base branch");
+    const info=environmentId?await inSourceControlEnvironment(environmentId,()=>sourceControlGitInfo(sourceCwd)):await gitInfo(sourceCwd);if(!info.isGit)throw new Error("Worktree delegation requires a Git workspace");if(!info.branch)throw new Error("Worktree delegation requires a checked-out base branch");
     const label=spec.label||spec.model||spec.task.split(/\s+/).slice(0,4).join("-");
     const slug=String(label||"agent").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,28)||"agent";
     const stamp=Date.now().toString(36)+randomBytes(2).toString("hex");
     const branch=`trebell/delegate-${slug}-${stamp}`,path=info.root+`-trebell-delegate-${slug}-${stamp}`;
-    const sourceProject=state.project(resolve(sourceCwd),null),scoped=sourceProject?state.projectSettings(sourceProject.path,null):{defaults:state.environmentDefaults(null),overrides:{}};
+    const sourceProject=state.project(environmentId?sourceCwd:resolve(sourceCwd),environmentId),scoped=sourceProject?state.projectSettings(sourceProject.path,environmentId):{defaults:state.environmentDefaults(environmentId),overrides:{}};
     const submodules=scoped.overrides.worktreeSubmodules||scoped.defaults.worktreeSubmodules||"recursive";
     let created=null;
     try{
-      created=await createWorktree(sourceCwd,{branch,path,baseBranch:info.branch,submodules});
+      created=await createDelegationWorktree({
+        sourceCwd,environmentId,branch,path,baseBranch:info.branch,submodules,
+        createLocal:createWorktree,removeLocal:removeWorktree,
+        runRemoteGit:environmentId?action=>inSourceControlEnvironment(environmentId,()=>sourceControlGitAction(sourceCwd,action)):null,
+        executeRemoteArgv:environmentId?options=>environments.executeArgv(environmentId,options):null,
+      });
       const inherited=sourceProject?{
         defaultModel:sourceProject.defaultModel??null,permissionMode:sourceProject.permissionMode??null,workspaceMode:sourceProject.workspaceMode??null,
         worktreeSubmodules:sourceProject.worktreeSubmodules??null,worktreeCleanup:sourceProject.worktreeCleanup??null,settingsOverrides:sourceProject.settingsOverrides||{},
         icon:sourceProject.icon??null,scripts:sourceProject.scripts||[],preferredScriptId:sourceProject.preferredScriptId??null,hooks:sourceProject.hooks||[],
       }:{};
-      state.touchProject(created.worktree,{...inherited,environmentId:null,managedWorktree:{root:created.info.root,branch,baseBranch:info.branch,submodules,createdAt:Date.now(),cleanedAt:null,cleanupReason:null}});
+      state.touchProject(created.worktree,{...inherited,environmentId:environmentId||null,managedWorktree:{root:created.info?.root||info.root,branch,baseBranch:info.branch,submodules,createdAt:Date.now(),cleanedAt:null,cleanupReason:null}});
       const setup=(sourceProject?.scripts||[]).find(script=>script.runOnWorktreeCreate);
       let setupSession=null;
       if(setup&&!mock&&terminals){
-        const shell=commandShellSpec(setup.command,env);
-        setupSession=await terminals.create({cwd:created.worktree,name:`${setup.name||"Setup"} · delegated setup`,cols:120,rows:32,shell:shell.shell,args:shell.args});
+        if(environmentId){
+          const remote=environments.terminalArgvSpec(environmentId,{command:"sh",args:["-lc",String(setup.command||"")],cwd:created.worktree}),profile=environments.get(environmentId);
+          setupSession=await terminals.create({cwd:remote.cwd,displayCwd:created.worktree,name:`${setup.name||"Setup"} · delegated setup`,cols:120,rows:32,shell:remote.shell,args:remote.args,env:remoteTransportEnvironment(env,{platform:process.platform}),replaceEnv:true,environmentId:remote.environmentId,environmentName:remote.environmentName||profile?.name||"Remote environment",environmentType:remote.environmentType||profile?.type||"remote"});
+        }else{
+          const shell=commandShellSpec(setup.command,env);
+          setupSession=await terminals.create({cwd:created.worktree,name:`${setup.name||"Setup"} · delegated setup`,cols:120,rows:32,shell:shell.shell,args:shell.args});
+        }
         if(setup.waitForSetup){
           const settled=await terminals.waitForExit(setupSession.id,{timeoutMs:30*60_000});
           if(settled.timeout)throw new Error("Delegated worktree setup is still running after 30 minutes");
           if(settled.exitCode!==0)throw new Error(`Delegated worktree setup failed with exit code ${settled.exitCode??"unknown"}`);
         }
       }
-      return {cwd:created.worktree,branch,isolation:"worktree",worktree:true,baseBranch:info.branch,setupSessionId:setupSession?.id||null};
+      return {cwd:created.worktree,branch,isolation:"worktree",worktree:true,baseBranch:info.branch,environmentId:environmentId||null,setupSessionId:setupSession?.id||null};
     }catch(error){
-      if(created?.worktree)await removeWorktree(sourceCwd,created.worktree).catch(()=>{});
+      if(created?.worktree)await cleanupDelegationWorktree({sourceCwd,worktreePath:created.worktree,environmentId,removeLocal:removeWorktree,runRemoteGit:environmentId?action=>inSourceControlEnvironment(environmentId,()=>sourceControlGitAction(sourceCwd,action)):null}).catch(()=>{});
       throw error;
     }
+  }
+
+  async function cleanupPreparedDelegationWorkspace(workspace,parentThread=null){
+    if(!workspace?.worktree)return;
+    const parentId=String(parentThread?.id||""),parentMeta=parentId?state.threadMeta(parentId):{},sourceCwd=String(parentMeta?.cwd||parentThread?.cwd||workspace.cwd||"").trim(),environmentId=parentMeta?.environmentId??parentThread?.providerMeta?.environmentId??workspace.environmentId??null;
+    await cleanupDelegationWorktree({sourceCwd,worktreePath:workspace.cwd,environmentId,removeLocal:removeWorktree,runRemoteGit:environmentId?action=>inSourceControlEnvironment(environmentId,()=>sourceControlGitAction(sourceCwd,action)):null});
   }
   async function delegateCodexThread(params,requestUpstream){
     const parentThreadId=String(params.threadId||params.parentThreadId||"").trim();if(!parentThreadId)throw Object.assign(new Error("threadId is required"),{code:-32602});
@@ -1194,7 +1210,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         state.updateThreadMeta(String(childThread.id),{delegation:{...state.threadMeta(String(childThread.id)).delegation,turnId:turnStarted?.turn?.id||null}});
         return turnStarted?.turn||null;
       },
-      cleanupWorkspace:async({workspace})=>{if(workspace?.worktree)await removeWorktree(parentMeta?.cwd||workspace.cwd,workspace.cwd).catch(()=>{})},
+      cleanupWorkspace:async({workspace})=>{if(workspace?.worktree)await cleanupPreparedDelegationWorkspace(workspace,{id:parentThreadId,cwd:parentMeta?.cwd||workspace.cwd,providerMeta:{environmentId:parentMeta?.environmentId??null}}).catch(()=>{})},
       markFailed:async({childThread,error})=>{
         const childId=String(childThread.id),meta=state.threadMeta(childId);
         state.updateThreadMeta(childId,{delegation:{...(meta.delegation||{}),status:"failed",error:error.message||String(error),failedAt:Date.now()}});
@@ -3164,7 +3180,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     journal:eventJournal,
     checkpoints,
     prepareDelegationWorkspace:({parentThreadId,parentThread,spec})=>prepareCodexDelegationWorkspace(parentThreadId,spec,parentThread),
-    cleanupDelegationWorkspace:async({workspace,parentThread})=>{if(workspace?.worktree)await removeWorktree(parentThread?.cwd||workspace.cwd,workspace.cwd).catch(()=>{})},
+    cleanupDelegationWorkspace:({workspace,parentThread})=>cleanupPreparedDelegationWorkspace(workspace,parentThread),
   });
 
   await new Promise((resolve,reject)=>{
