@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { git, gitInfo, createBranch, createWorktree, safeAutoPull, worktreeSubmoduleArgs } from "../src/git-service.mjs";
+import { git, gitInfo, createBranch, createWorktree, removeWorktree, safeAutoPull, worktreeSubmoduleArgs } from "../src/git-service.mjs";
 
 test("Git service reports status and branch operations",{timeout:20000},async()=>{
   const dir=await mkdtemp(join(tmpdir(),"trebell-git-"));
@@ -38,6 +38,19 @@ test("worktree creation records the selected submodule policy",{timeout:20000},a
     await writeFile(join(root,"file.txt"),"base");await git(root,["add","file.txt"]);await git(root,["commit","-m","base"]);
     const created=await createWorktree(root,{branch:"trebell-test-worktree",path:worktree,submodules:"none"});
     assert.equal(created.worktree,worktree);assert.equal(created.submodules,"none");assert.equal((await gitInfo(worktree)).branch,"trebell-test-worktree");
+  }finally{await rm(worktree,{recursive:true,force:true}).catch(()=>{});await rm(root,{recursive:true,force:true})}
+});
+
+test("non-forced worktree removal preserves dirty delegated work for inspection",{timeout:20000},async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-dirty-worktree-root-")),worktree=root+"-child";
+  try{
+    await git(root,["init"]);await git(root,["config","user.email","trebell@example.test"]);await git(root,["config","user.name","Trebell Test"]);
+    await writeFile(join(root,"file.txt"),"base\n");await git(root,["add","file.txt"]);await git(root,["commit","-m","base"]);
+    await createWorktree(root,{branch:"trebell-dirty-worktree",path:worktree,submodules:"none"});
+    await writeFile(join(worktree,"file.txt"),"setup changed this before failing\n");
+    await assert.rejects(()=>removeWorktree(root,worktree),/modified|changes|force/i);
+    assert.equal(await readFile(join(worktree,"file.txt"),"utf8"),"setup changed this before failing\n");
+    await removeWorktree(root,worktree,{force:true});
   }finally{await rm(worktree,{recursive:true,force:true}).catch(()=>{});await rm(root,{recursive:true,force:true})}
 });
 

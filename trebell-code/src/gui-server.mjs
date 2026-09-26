@@ -1141,7 +1141,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       }
       return {cwd:created.worktree,branch,isolation:"worktree",worktree:true,baseBranch:info.branch,setupSessionId:setupSession?.id||null};
     }catch(error){
-      if(created?.worktree)await removeWorktree(sourceCwd,created.worktree,{force:true}).catch(()=>{});
+      if(created?.worktree)await removeWorktree(sourceCwd,created.worktree).catch(()=>{});
       throw error;
     }
   }
@@ -1177,7 +1177,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         state.updateThreadMeta(String(childThread.id),{delegation:{...state.threadMeta(String(childThread.id)).delegation,turnId:turnStarted?.turn?.id||null}});
         return turnStarted?.turn||null;
       },
-      cleanupWorkspace:async({workspace})=>{if(workspace?.worktree)await removeWorktree(parentMeta?.cwd||workspace.cwd,workspace.cwd,{force:true}).catch(()=>{})},
+      cleanupWorkspace:async({workspace})=>{if(workspace?.worktree)await removeWorktree(parentMeta?.cwd||workspace.cwd,workspace.cwd).catch(()=>{})},
       markFailed:async({childThread,error})=>{
         const childId=String(childThread.id),meta=state.threadMeta(childId);
         state.updateThreadMeta(childId,{delegation:{...(meta.delegation||{}),status:"failed",error:error.message||String(error),failedAt:Date.now()}});
@@ -3141,7 +3141,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     journal:eventJournal,
     checkpoints,
     prepareDelegationWorkspace:({parentThreadId,parentThread,spec})=>prepareCodexDelegationWorkspace(parentThreadId,spec,parentThread),
-    cleanupDelegationWorkspace:async({workspace,parentThread})=>{if(workspace?.worktree)await removeWorktree(parentThread?.cwd||workspace.cwd,workspace.cwd,{force:true}).catch(()=>{})},
+    cleanupDelegationWorkspace:async({workspace,parentThread})=>{if(workspace?.worktree)await removeWorktree(parentThread?.cwd||workspace.cwd,workspace.cwd).catch(()=>{})},
   });
 
   await new Promise((resolve,reject)=>{
