@@ -54,6 +54,18 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     }
     return true;
   }
+  function partialSuccess(label,issues=[]){
+    const details=(Array.isArray(issues)?issues:[]).map(item=>String(item||"").trim()).filter(Boolean);
+    if(details.length)setError(label+", but "+details.join(" "));
+  }
+  async function refreshAfterSuccess(label,providerOverride=sourceProvider){
+    const refreshed=await refresh(providerOverride);
+    if(!refreshed)partialSuccess(label,["the latest source-control state could not be refreshed. The last valid view is still shown."]);
+    return refreshed;
+  }
+  function gitActionSuccessLabel(action){
+    return ({init:"Git repository was initialized","branch-create":"Branch was created","branch-switch":"Branch was switched",commit:"Commit was created",fetch:"Fetch completed",pull:"Pull completed",push:"Push completed","worktree-create":"Worktree was created"}[action]||"Git action completed");
+  }
   useEffect(()=>{setSourceProvider("");setSelectedPr(null);onSelectedPrChange?.(null);setViewed({prNumber:null,store:null,files:[],loading:false});setLinkedThreads([]);setLinkedThreadsKey(null);refresh("")},[projectPath,environmentId]);
   useEffect(()=>{setStackMergeMethod(defaultMergeMethod)},[defaultMergeMethod]);
   useEffect(()=>{setStatusLimit(SOURCE_CONTROL_PAGE_SIZE);setPrLimit(SOURCE_CONTROL_PAGE_SIZE)},[projectPath,environmentId,sourceProvider]);
@@ -63,7 +75,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     setBusy(action);setError("");
     try{
       const data=await api("/api/git/action",{method:"POST",body:environmentBody({action,cwd:projectPath,...extra})});
-      setInfo(data.result?.info||data.result||info);await refresh();return data;
+      setInfo(data.result?.info||data.result||info);await refreshAfterSuccess(gitActionSuccessLabel(action));return data;
     }catch(e){setError(e.message);return null}finally{setBusy("")}
   }
   async function generate(){
@@ -79,8 +91,13 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       const title=prompt("PR title",suggested.title||commitMessage||"Trebell Code changes");if(!title)return;
       const body=prompt("PR description",suggested.body||"");if(body==null)return;
       const d=await api("/api/source-control/pr",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,title:title.trim(),body})});
-      if(d.url){if(threadId)await onLinkPrUrl?.(d.url,"created");window.open(d.url,"_blank")}
-      await refresh();
+      const issues=[];
+      if(d.url){
+        if(threadId)try{await onLinkPrUrl?.(d.url,"created")}catch(error){issues.push("it could not be linked to this thread: "+(error.message||String(error))+".")}
+        try{window.open(d.url,"_blank")}catch(error){issues.push("its browser tab could not be opened: "+(error.message||String(error))+".")}
+      }
+      const refreshed=await refresh();if(!refreshed)issues.push("the latest source-control state could not be refreshed. The last valid view is still shown.");
+      partialSuccess("Pull request was created",issues);
     }catch(e){setError(e.message||String(e))}finally{setBusy("")}
   }
   async function openPr(pr){
@@ -97,7 +114,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       try{const reverse=await api("/api/source-control/thread-link?"+params);setLinkedThreads(reverse.threads||[]);setLinkedThreadsKey(linkKey)}
       catch(error){if(linkedThreadsKey!==linkKey){setLinkedThreads([]);setLinkedThreadsKey(linkKey)}nextError=error.message||String(error)||"Could not load linked threads."}
     }else{setLinkedThreads([]);setLinkedThreadsKey(null)}
-    setError(nextError);
+    setError(nextError);return nextError;
   }
   async function syncLinkedPullRequests(reportErrors=false){
     if(!threadId)return;
@@ -129,7 +146,9 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     setBusy(actionName);setError("");
     try{
       const result=await api("/api/source-control/pr-action",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,number:selectedPr.number,action:actionName,...extra})});
-      await openPr(selectedPr);await refresh();
+      const issues=[];const detailError=await openPr(selectedPr);if(detailError)issues.push("the pull-request detail could not refresh: "+detailError+".");
+      const refreshed=await refresh();if(!refreshed)issues.push("the latest source-control state could not be refreshed. The last valid view is still shown.");
+      partialSuccess("Pull request action "+actionName+" succeeded",issues);
       return result;
     }catch(e){setError(e.message);return null}finally{setBusy("")}
   }
@@ -181,10 +200,27 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
       }else{
         await api("/api/source-control/pr-action",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider||null,number:selectedPr.number,action:"rebase-stack"})});
       }
-      await refresh();
-      if(selectedPr)await openPr(selectedPr);
+      const issues=[];const refreshed=await refresh();if(!refreshed)issues.push("the latest source-control state could not be refreshed. The last valid view is still shown.");
+      if(selectedPr){const detailError=await openPr(selectedPr);if(detailError)issues.push("the pull-request detail could not refresh: "+detailError+".")}
+      partialSuccess("Stack "+kind+" succeeded",issues);
     }catch(e){setError(e.message)}
     finally{setBusy("")}
+  }
+  async function publishRepository(){
+    const localName=String(info?.root||projectPath).split(/[\\/]/).filter(Boolean).pop()||"repository";
+    const labels={gitlab:"Repository path (group/project or project)",forgejo:"Repository path (owner/repository or repository)",bitbucket:"Repository path (workspace/repository)","azure-devops":"Repository path (project/repository)"};
+    const defaults={bitbucket:"workspace/"+localName,"azure-devops":"project/"+localName};
+    const name=prompt(labels[sourceProvider]||"Repository name",defaults[sourceProvider]||localName);if(!name)return;
+    const visibility=sourceProvider==="azure-devops"?"private":confirm("Make this repository public?\n\nOK = public\nCancel = private")?"public":"private";
+    setBusy("publish");setError("");
+    try{
+      const result=await api("/api/source-control/publish",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider,name,visibility})});
+      const issues=[];
+      if(result.url)try{window.open(result.url,"_blank")}catch(error){issues.push("its browser tab could not be opened: "+(error.message||String(error))+".")}
+      const refreshed=await refresh();if(!refreshed)issues.push("the latest source-control state could not be refreshed. The last valid view is still shown.");
+      if(!result.pushed)issues.push("no commit was pushed yet; make the first commit, then push it to origin.");
+      partialSuccess(result.pushed?"Repository was published":"Repository was created",issues);
+    }catch(e){setError("Could not publish repository: "+(e.message||String(e)))}finally{setBusy("")}
   }
   const linkedGroups=(()=>{
     const groups=[];const byKey=new Map();
@@ -222,7 +258,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
         <div className="commit-box"><textarea value={commitMessage} onChange={e=>setCommitMessage(e.target.value)} placeholder="Commit message"/><button onClick={generate} disabled={busy==="generate"}><WandSparkles size={13}/> Generate with {{freebuff:"Freebuff",agentrouter:"AgentRouter",justworker:"JustWorker",hcnsec:"HCNSec",vyceai:"VyceAi"}[provider]||provider}</button><button className="primary" onClick={()=>action("commit",{message:commitMessage})} disabled={!commitMessage.trim()||!!busy}><GitCommit size={13}/> Commit</button></div>
       </section>
       <section className="sc-card"><h3>Repository</h3><p>Root: <code>{info?.root}</code></p><p>Upstream: <code>{info?.upstream||"none"}</code></p><p>Git: {diagnostics?.git?.version||"not found"}</p><label className="source-provider-field"><span>Code host</span><select value={sourceProvider} onChange={e=>{setSourceProvider(e.target.value);setSelectedPr(null);onSelectedPrChange?.(null);setViewed({prNumber:null,store:null,files:[],loading:false});refresh(e.target.value,{reportErrors:true})}}><option value="">Auto detect</option><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="forgejo">Forgejo / Gitea</option><option value="bitbucket">Bitbucket</option><option value="azure-devops">Azure DevOps</option></select></label><p>{sourceProvider?diagnostics?.providers?.[sourceProvider]?.label||sourceProvider:"Detected: "+(diagnostics?.detectedProvider||"unknown")} · {sourceProvider?(diagnostics?.providers?.[sourceProvider]?.authenticated?"authenticated":diagnostics?.providers?.[sourceProvider]?.installed?"needs authentication":"client/credentials missing"):"choose a provider if auto-detection is ambiguous"}</p>
-        {!info?.remotes?.some(remote=>remote.name==="origin")&&sourceProvider&&diagnostics?.capabilities?.[sourceProvider]?.publish&&<button onClick={async()=>{const localName=String(info?.root||projectPath).split(/[\\/]/).filter(Boolean).pop()||"repository";const labels={gitlab:"Repository path (group/project or project)",forgejo:"Repository path (owner/repository or repository)",bitbucket:"Repository path (workspace/repository)","azure-devops":"Repository path (project/repository)"};const defaults={bitbucket:`workspace/${localName}`,"azure-devops":`project/${localName}`};const name=prompt(labels[sourceProvider]||"Repository name",defaults[sourceProvider]||localName);if(!name)return;const visibility=sourceProvider==="azure-devops"?"private":confirm("Make this repository public?\n\nOK = public\nCancel = private")?"public":"private";setBusy("publish");setError("");try{const result=await api("/api/source-control/publish",{method:"POST",body:environmentBody({cwd:projectPath,provider:sourceProvider,name,visibility})});if(result.url)window.open(result.url,"_blank");await refresh();if(!result.pushed)setError("Repository created. Make the first commit, then push it to origin.")}catch(e){setError(e.message)}finally{setBusy("")}}} disabled={!!busy||!diagnostics?.providers?.[sourceProvider]?.authenticated}><Upload size={13}/> Publish repository</button>}
+        {!info?.remotes?.some(remote=>remote.name==="origin")&&sourceProvider&&diagnostics?.capabilities?.[sourceProvider]?.publish&&<button onClick={publishRepository} disabled={!!busy||!diagnostics?.providers?.[sourceProvider]?.authenticated}><Upload size={13}/> Publish repository</button>}
         <h4>Worktrees</h4>{(info?.worktrees||[]).map(w=><div className="worktree-row" key={w.path}><span>{w.branch||"detached"}</span><code>{w.path}</code>{w.path!==info?.root&&<button onClick={()=>openProjectPath(w.path)} disabled={busy==="open-project"}>Open</button>}</div>)}
         {(remote||window.trebellDesktop?.pickDirectory)&&<button onClick={addWorktree} disabled={!!busy}><Plus size={13}/> Add worktree</button>}
       </section>

@@ -106,6 +106,19 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     }).catch(()=>{});
     return run;
   }
+  function partialSuccess(label,issues=[]){
+    const details=(Array.isArray(issues)?issues:[]).map(item=>String(item||"").trim()).filter(Boolean);
+    if(details.length)setError(`${label}, but ${details.join(" ")}`);
+  }
+  async function freshRefresh({reportErrors=false}={}){
+    const active=refreshInFlightRef.current;if(active)await active.catch(()=>false);
+    return refresh({reportErrors});
+  }
+  async function refreshAfterSuccess(label){
+    const refreshed=await freshRefresh({reportErrors:true});
+    if(!refreshed)partialSuccess(label,["the project list could not refresh. The last valid project data is still shown."]);
+    return refreshed;
+  }
   useEffect(()=>{refresh({reportErrors:true})},[]);
   useEffect(()=>{
     if(hasDesktopPicker||cloneEnvironmentId||!environmentData.profiles?.length)return;
@@ -117,12 +130,15 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
 
   async function saveProject(project,patch){
     setError("");
+    let result;
     try{
-      const result=await api("/api/projects",{method:"POST",body:{path:project.path,environmentId:project.environmentId||null,...patch}});
-      onProjectUpdated?.(result.project);
-      await refresh({reportErrors:true});
-      return result.project||project;
+      result=await api("/api/projects",{method:"POST",body:{path:project.path,environmentId:project.environmentId||null,...patch}});
     }catch(err){setError(err.message||String(err));return null}
+    const issues=[];
+    try{onProjectUpdated?.(result.project)}catch(err){issues.push("the local project view could not apply the saved update: "+(err.message||String(err))+".")}
+    const refreshed=await freshRefresh({reportErrors:true});if(!refreshed)issues.push("the project list could not refresh. The last valid project data is still shown.");
+    partialSuccess("Project settings were saved",issues);
+    return result.project||project;
   }
   async function openProject(project){
     if(project.managedWorktree?.cleanedAt){
@@ -156,13 +172,16 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
   async function addLocal(){
     setBusy(true);setError("");
     try{
-      const path=await window.trebellDesktop?.pickDirectory?.();
-      if(!path)return;
-      await api("/api/projects",{method:"POST",body:{path,environmentId:null,activate:true}});
-      await refresh({reportErrors:true});
-      await Promise.resolve(onOpen(path,null));
-    }catch(err){setError("Could not add local project: "+(err.message||String(err)))}
-    finally{setBusy(false)}
+      let path=null;
+      try{
+        path=await window.trebellDesktop?.pickDirectory?.();
+        if(!path)return;
+        await api("/api/projects",{method:"POST",body:{path,environmentId:null,activate:true}});
+      }catch(err){setError("Could not add local project: "+(err.message||String(err)));return}
+      const issues=[];const refreshed=await freshRefresh({reportErrors:true});if(!refreshed)issues.push("the project list could not refresh. The last valid project data is still shown.");
+      try{await Promise.resolve(onOpen(path,null))}catch(err){issues.push("the project could not be opened: "+(err.message||String(err))+".")}
+      partialSuccess("Project was added",issues);
+    }finally{setBusy(false)}
   }
 
   async function clone(){
@@ -171,29 +190,31 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     if(!hasDesktopPicker&&!environmentId)return;
     setBusy(true);setError("");
     try{
-      const profile=environmentData.profiles?.find(item=>item.id===environmentId)||null;
-      const parent=environmentId?(cloneParent.trim()||profile?.cwd||""):await window.trebellDesktop?.pickDirectory?.();
-      if(!parent)return;
-      const name=cloneUrl.replace(/\/+$/,"").split("/").pop().replace(/\.git$/,"")||"repository";
-      const sep=environmentId?"/":parent.includes("\\")?"\\":"/";
-      const destination=parent.replace(/[\\\/]$/,"")+sep+name;
-      const result=await api("/api/clone-jobs",{method:"POST",body:{action:"start",url:cloneUrl.trim(),destination,environmentId}});
-      await refresh({reportErrors:true});
-      await Promise.resolve(onOpen(result.project?.path||destination,environmentId));
-      setCloneUrl("");
-    } catch(err){setError(err.message||String(err))}
-    finally { setBusy(false); }
+      let result=null,destination="";
+      try{
+        const profile=environmentData.profiles?.find(item=>item.id===environmentId)||null;
+        const parent=environmentId?(cloneParent.trim()||profile?.cwd||""):await window.trebellDesktop?.pickDirectory?.();
+        if(!parent)return;
+        const name=cloneUrl.replace(/\/+$/,"").split("/").pop().replace(/\.git$/,"")||"repository";
+        const sep=environmentId?"/":parent.includes("\\")?"\\":"/";
+        destination=parent.replace(/[\\\/]$/,"")+sep+name;
+        result=await api("/api/clone-jobs",{method:"POST",body:{action:"start",url:cloneUrl.trim(),destination,environmentId}});
+      }catch(err){setError(err.message||String(err));return}
+      const issues=[];const refreshed=await freshRefresh({reportErrors:true});if(!refreshed)issues.push("the project list could not refresh. The last valid project data is still shown.");
+      try{await Promise.resolve(onOpen(result.project?.path||destination,environmentId))}catch(err){issues.push("the cloned project could not be opened: "+(err.message||String(err))+".")}
+      setCloneUrl("");partialSuccess("Clone was started",issues);
+    }finally{setBusy(false)}
   }
   async function cloneAction(project,action){
     setError("");
-    try{await api("/api/clone-jobs",{method:"POST",body:{action,id:project.cloneJob?.id}});await refresh()}
+    try{await api("/api/clone-jobs",{method:"POST",body:{action,id:project.cloneJob?.id}});await refreshAfterSuccess("Clone "+action+" was accepted")}
     catch(err){setError(err.message||String(err))}
   }
   async function removeProject(project){
     setBusy(true);setError("");
     try{
       await api("/api/projects?id="+encodeURIComponent(project.id),{method:"DELETE"});
-      await refresh({reportErrors:true});
+      await refreshAfterSuccess("Project was removed");
     }catch(err){setError("Could not remove project: "+(err.message||String(err)))}
     finally{setBusy(false)}
   }
