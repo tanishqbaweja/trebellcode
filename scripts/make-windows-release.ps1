@@ -92,39 +92,48 @@ function New-IsolatedPackagingOutput([string]$Prefix) {
 }
 
 function Invoke-UnpackedWindowsBuild([string]$ElectronDist) {
+  Reset-ReleaseOutput
   # Keep the unpacked smoke build in a unique temp directory so it is isolated
   # from workspace cleanup and concurrent builders. Using the already installed
-  # Electron distribution also avoids the archive-extraction race we observed
-  # when electron.exe disappeared during an immediate rename/check.
-  $Output = New-IsolatedPackagingOutput "trebell-release-unpacked-"
-  $UnpackedExe = Join-Path $Output "win-unpacked\Trebell Code.exe"
-  Reset-ReleaseOutput
-  try {
-    Invoke-Native "npx" @(
-      "electron-builder","--dir","--win","--x64",
-      "--config.electronDist=$ElectronDist",
-      "--config.directories.output=$Output"
-    )
-    if (-not (Test-Path $UnpackedExe)) { throw "Unpacked desktop build was not produced: $UnpackedExe" }
-    return [pscustomobject]@{ Output = $Output; Exe = $UnpackedExe }
-  } catch {
-    Remove-GeneratedPath $Output
-    throw
+  # Electron distribution avoids archive extraction, while the single bounded
+  # retry covers the observed Windows race where a completed builder invocation
+  # can transiently miss its just-materialized executable.
+  for ($Attempt = 1; $Attempt -le 2; $Attempt++) {
+    $Output = New-IsolatedPackagingOutput "trebell-release-unpacked-"
+    $UnpackedExe = Join-Path $Output "win-unpacked\Trebell Code.exe"
+    try {
+      Invoke-Native "npx" @(
+        "electron-builder","--dir","--win","--x64",
+        "--config.electronDist=$ElectronDist",
+        "--config.directories.output=$Output"
+      )
+      if (-not (Test-Path $UnpackedExe)) { throw "Unpacked desktop build was not produced: $UnpackedExe" }
+      return [pscustomobject]@{ Output = $Output; Exe = $UnpackedExe }
+    } catch {
+      Remove-GeneratedPath $Output
+      if ($Attempt -ge 2) { throw }
+      Write-Warning "Unpacked Windows packaging attempt $Attempt failed; retrying once in a fresh isolated directory."
+      Start-Sleep -Seconds 1
+    }
   }
 }
 
 function Invoke-WindowsInstallerBuild([string]$ElectronDist) {
-  $Output = New-IsolatedPackagingOutput "trebell-release-installer-"
-  try {
-    Invoke-Native "npx" @(
-      "electron-builder","--win","nsis","--x64",
-      "--config.electronDist=$ElectronDist",
-      "--config.directories.output=$Output"
-    )
-    return [pscustomobject]@{ Output = $Output }
-  } catch {
-    Remove-GeneratedPath $Output
-    throw
+  for ($Attempt = 1; $Attempt -le 2; $Attempt++) {
+    $Output = New-IsolatedPackagingOutput "trebell-release-installer-"
+    try {
+      Invoke-Native "npx" @(
+        "electron-builder","--win","nsis","--x64",
+        "--config.electronDist=$ElectronDist",
+        "--config.directories.output=$Output"
+      )
+      return [pscustomobject]@{ Output = $Output }
+    } catch {
+      Remove-GeneratedPath $Output
+      if ($Attempt -ge 2) { throw }
+      Write-Warning "Windows installer packaging attempt $Attempt failed; retrying once in a fresh isolated directory."
+      Start-Sleep -Seconds 1
+    }
   }
 }
 
