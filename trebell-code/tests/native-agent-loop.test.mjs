@@ -11,7 +11,7 @@ test("native agent completes a plain model turn without inventing tool work",asy
     executeTool:async()=>{throw new Error("tool executor should not run")},
   });
   assert.equal(requests.length,1);assert.equal(result.text,"hello back");assert.equal(result.modelTurns,1);assert.equal(result.toolCalls,0);
-  assert.deepEqual(result.usage,{inputTokens:3,outputTokens:2,totalTokens:5,cachedInputTokens:0,cacheWriteInputTokens:0});
+  assert.deepEqual(result.usage,{inputTokens:3,outputTokens:2,totalTokens:5,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0});
   assert.deepEqual(events.map(event=>event.name),["native.turn.started","native.model.requested","native.model.completed","native.turn.completed"]);
 });
 
@@ -22,7 +22,7 @@ test("native agent feeds namespaced tool observations back into the same model l
     providerTurn:async request=>{
       requests.push(structuredClone(request));
       if(requests.length===1)return {model:"test-model",provider:"fixture",text:"I will inspect it.",toolCalls:[{id:"call-1",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Session"}'}],finishReason:"tool_calls",usage:{inputTokens:10,outputTokens:3,totalTokens:13}};
-      return {model:"test-model",provider:"fixture",text:"Session is in src/session.js",toolCalls:[],finishReason:"stop",usage:{inputTokens:14,outputTokens:5,totalTokens:19,cachedInputTokens:4}};
+      return {model:"test-model",provider:"fixture",text:"Session is in src/session.js",toolCalls:[],finishReason:"stop",usage:{inputTokens:14,outputTokens:5,totalTokens:19,cachedInputTokens:4,reasoningOutputTokens:2}};
     },
     executeTool:async call=>{executions.push(call);return {success:true,content:"src/session.js"}},
   });
@@ -30,7 +30,7 @@ test("native agent feeds namespaced tool observations back into the same model l
   assert.equal(requests.length,2);const second=requests[1].messages;
   assert.equal(second.at(-2).role,"assistant");assert.equal(second.at(-2).toolCalls[0].id,"call-1");assert.equal(second.at(-1).role,"tool");assert.equal(second.at(-1).toolCallId,"call-1");assert.equal(second.at(-1).content,"src/session.js");
   assert.equal(result.text,"Session is in src/session.js");assert.equal(result.modelTurns,2);assert.equal(result.toolCalls,1);
-  assert.deepEqual(result.usage,{inputTokens:24,outputTokens:8,totalTokens:32,cachedInputTokens:4,cacheWriteInputTokens:0});
+  assert.deepEqual(result.usage,{inputTokens:24,outputTokens:8,totalTokens:32,cachedInputTokens:4,cacheWriteInputTokens:0,reasoningOutputTokens:2});
 });
 
 test("native agent turns tool failures into bounded observations instead of crashing the whole loop",async()=>{

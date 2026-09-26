@@ -41,6 +41,7 @@ function aggregateUsage(total,value={}){
     totalTokens:total.totalTokens+(Number(value.totalTokens)||0),
     cachedInputTokens:total.cachedInputTokens+(Number(value.cachedInputTokens)||0),
     cacheWriteInputTokens:total.cacheWriteInputTokens+(Number(value.cacheWriteInputTokens)||0),
+    reasoningOutputTokens:total.reasoningOutputTokens+(Number(value.reasoningOutputTokens)||0),
   };
 }
 
@@ -103,7 +104,7 @@ export async function runNativeAgentTurn({
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
   const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])];
-  let modelTurns=0,toolCalls=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0},lastResponse=null;
+  let modelTurns=0,toolCalls=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
   const startedAt=Date.now(),started=nowMs(),wallController=budget.maxWallTimeMs!=null?new AbortController():null,deadlineAt=budget.maxWallTimeMs==null?null:Date.now()+budget.maxWallTimeMs;
   let wallTimer=null;
   const armWallTimer=()=>{

@@ -44,8 +44,8 @@ test("Trebell Native relay executes repository tools and switches inference prov
   const nativeProviderTurn=async request=>{
     providers.push(request.provider);modelTurns++;
     assert.equal(request.messages[0]?.role,"developer");assert.match(String(request.messages[0]?.content||""),/Use repository intelligence when useful/);
-    if(modelTurns===1)return {id:"native-first",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"repo-call",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"SessionManager"}'}],finishReason:"tool_calls",usage:{inputTokens:4,outputTokens:1,totalTokens:5}};
-    if(modelTurns===2){assert.equal(request.messages.at(-1).role,"tool");assert.match(request.messages.at(-1).content,/SessionManager/);return {id:"native-answer",provider:request.provider,model:request.model,text:"Found SessionManager.",toolCalls:[],finishReason:"stop",usage:{inputTokens:8,outputTokens:3,totalTokens:11}}}
+    if(modelTurns===1)return {id:"native-first",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"repo-call",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"SessionManager"}'}],finishReason:"tool_calls",usage:{inputTokens:4,outputTokens:1,totalTokens:5,reasoningOutputTokens:1}};
+    if(modelTurns===2){assert.equal(request.messages.at(-1).role,"tool");assert.match(request.messages.at(-1).content,/SessionManager/);return {id:"native-answer",provider:request.provider,model:request.model,text:"Found SessionManager.",toolCalls:[],finishReason:"stop",usage:{inputTokens:8,outputTokens:3,totalTokens:11,reasoningOutputTokens:2}}}
     return {id:"native-second-provider",provider:request.provider,model:request.model,text:"Still the same Trebell thread.",toolCalls:[],finishReason:"stop",usage:{inputTokens:6,outputTokens:4,totalTokens:10}};
   };
   const server=createServer((_req,res)=>{res.writeHead(404);res.end()});
@@ -56,8 +56,8 @@ test("Trebell Native relay executes repository tools and switches inference prov
     const threadId=started.thread.id;assert.equal(started.thread.runtime,"native");assert.equal(started.thread.providerMeta.modelProvider,"agentrouter");assert.equal(started.thread.providerSessionId.startsWith("native_"),true);
     const first=await rpc.request("turn/start",{threadId,model:"model-a",modelProvider:"agentrouter",approvalPolicy:"never",sandboxPolicy:{type:"readOnly"},input:[{type:"text",text:"Find SessionManager"}]});
     await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===first.turn.id);
-    const firstTelemetry=await rpc.waitFor(message=>message.method==="thread/tokenUsage/updated"&&message.params?.turnId===first.turn.id);assert.equal(firstTelemetry.params.tokenUsage.modelContextWindow,128000);assert.equal(firstTelemetry.params.tokenUsage.last.inputTokens,12);
-    const firstUsage=state.threadUsage(threadId);assert.equal(firstUsage.totalTokens,16);assert.equal(firstUsage.inputTokens,12);assert.equal(firstUsage.outputTokens,4);
+    const firstTelemetry=await rpc.waitFor(message=>message.method==="thread/tokenUsage/updated"&&message.params?.turnId===first.turn.id);assert.equal(firstTelemetry.params.tokenUsage.modelContextWindow,128000);assert.equal(firstTelemetry.params.tokenUsage.last.inputTokens,12);assert.equal(firstTelemetry.params.tokenUsage.last.reasoningOutputTokens,3);
+    const firstUsage=state.threadUsage(threadId);assert.equal(firstUsage.totalTokens,16);assert.equal(firstUsage.inputTokens,12);assert.equal(firstUsage.outputTokens,4);assert.equal(firstUsage.reasoningOutputTokens,3);
     const firstUsageRecord=state.usage({days:1,limit:20}).records.find(record=>record.turnId===first.turn.id);assert.equal(firstUsageRecord.provider,"agentrouter");
     const afterFirst=(await rpc.request("thread/read",{threadId})).thread;assert.equal(afterFirst.id,threadId);assert.equal(afterFirst.turns.length,1);
     const items=afterFirst.turns[0].items;assert.ok(items.some(item=>item.type==="dynamicToolCall"&&item.namespace==="trebell_repo"&&item.tool==="search_symbols"));assert.ok(items.some(item=>item.type==="agentMessage"&&/Found SessionManager/.test(item.text)));

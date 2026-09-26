@@ -61,11 +61,11 @@ test("provider turns preserve image tool observations for Chat and Responses tra
 test("provider turn normalizes Chat Completions text, tool calls, finish reason and usage",()=>{
   const result=normalizeChatTurnResponse({
     id:"chat-1",model:"glm-5.3",choices:[{finish_reason:"tool_calls",message:{role:"assistant",content:"Checking",tool_calls:[{id:"call-7",type:"function",function:{name:"trebell_repo__search_symbols",arguments:'{"query":"Auth"}'}}]}}],
-    usage:{prompt_tokens:12,completion_tokens:4,total_tokens:16,prompt_tokens_details:{cached_tokens:3}},
+    usage:{prompt_tokens:12,completion_tokens:4,total_tokens:16,prompt_tokens_details:{cached_tokens:3},completion_tokens_details:{reasoning_tokens:2}},
   },"hcnsec");
   assert.equal(result.text,"Checking");assert.equal(result.finishReason,"tool_calls");assert.equal(result.provider,"hcnsec");
   assert.deepEqual(result.toolCalls,[{id:"call-7",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Auth"}'}]);
-  assert.deepEqual(result.usage,{inputTokens:12,outputTokens:4,totalTokens:16,cachedInputTokens:3,cacheWriteInputTokens:0});
+  assert.deepEqual(result.usage,{inputTokens:12,outputTokens:4,totalTokens:16,cachedInputTokens:3,cacheWriteInputTokens:0,reasoningOutputTokens:2});
 });
 
 test("provider turn normalizes Responses text, namespaced calls and usage",()=>{
@@ -73,9 +73,9 @@ test("provider turn normalizes Responses text, namespaced calls and usage",()=>{
     id:"resp-1",model:"gpt-5.6",status:"completed",output:[
       {type:"message",role:"assistant",content:[{type:"output_text",text:"Checking"}]},
       {type:"function_call",call_id:"call-9",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Auth"}'},
-    ],usage:{input_tokens:20,output_tokens:5,total_tokens:25,input_tokens_details:{cached_tokens:8}},
+    ],usage:{input_tokens:20,output_tokens:5,total_tokens:25,input_tokens_details:{cached_tokens:8},output_tokens_details:{reasoning_tokens:3}},
   },"agentrouter");
   assert.equal(result.text,"Checking");assert.equal(result.finishReason,"tool_calls");assert.equal(result.provider,"agentrouter");
   assert.deepEqual(result.toolCalls,[{id:"call-9",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Auth"}'}]);
-  assert.deepEqual(result.usage,{inputTokens:20,outputTokens:5,totalTokens:25,cachedInputTokens:8,cacheWriteInputTokens:0});
+  assert.deepEqual(result.usage,{inputTokens:20,outputTokens:5,totalTokens:25,cachedInputTokens:8,cacheWriteInputTokens:0,reasoningOutputTokens:3});
 });

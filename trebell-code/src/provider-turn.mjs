@@ -35,7 +35,8 @@ function normalizeUsage(value={}){
   const inputTokens=Number(value.input_tokens??value.prompt_tokens??0)||0,outputTokens=Number(value.output_tokens??value.completion_tokens??0)||0;
   const cachedInputTokens=Number(value.input_tokens_details?.cached_tokens??value.prompt_tokens_details?.cached_tokens??value.cache_read_input_tokens??0)||0;
   const cacheWriteInputTokens=Number(value.cache_creation_input_tokens??0)||0;
-  return {inputTokens,outputTokens,totalTokens:Number(value.total_tokens??inputTokens+outputTokens)||inputTokens+outputTokens,cachedInputTokens,cacheWriteInputTokens};
+  const reasoningOutputTokens=Number(value.output_tokens_details?.reasoning_tokens??value.completion_tokens_details?.reasoning_tokens??value.reasoning_tokens??0)||0;
+  return {inputTokens,outputTokens,totalTokens:Number(value.total_tokens??inputTokens+outputTokens)||inputTokens+outputTokens,cachedInputTokens,cacheWriteInputTokens,reasoningOutputTokens};
 }
 
 function openAiContent(content){

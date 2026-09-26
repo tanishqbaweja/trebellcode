@@ -159,14 +159,15 @@ test("usage records upsert streaming updates instead of double-counting a turn",
   const env={...process.env,TREBELL_HOME:home};
   try{
     const state=new TrebellStateStore(env);
-    state.recordUsage({runtime:"opencode",provider:"opencode-default",model:"opencode/big-pickle",environmentId:"ssh-a",threadId:"thread-1",turnId:"turn-1",usage:{totalTokens:100,inputTokens:70,outputTokens:30},cost:{amount:0.01,currency:"USD"},at:Date.now()});
-    state.recordUsage({runtime:"opencode",provider:"opencode-default",model:"opencode/big-pickle",threadId:"thread-1",turnId:"turn-1",usage:{totalTokens:140,inputTokens:90,outputTokens:50},cost:{amount:0.02,currency:"USD"},at:Date.now()});
-    state.recordUsage({runtime:"claude",provider:"claude-default",model:"sonnet",threadId:"thread-2",turnId:"turn-2",usage:{totalTokens:60,inputTokens:40,outputTokens:20},at:Date.now()});
+    state.recordUsage({runtime:"opencode",provider:"opencode-default",model:"opencode/big-pickle",environmentId:"ssh-a",threadId:"thread-1",turnId:"turn-1",usage:{totalTokens:100,inputTokens:70,outputTokens:30,reasoningOutputTokens:20},cost:{amount:0.01,currency:"USD"},at:Date.now()});
+    state.recordUsage({runtime:"opencode",provider:"opencode-default",model:"opencode/big-pickle",threadId:"thread-1",turnId:"turn-1",usage:{totalTokens:140,inputTokens:90,outputTokens:50,reasoningOutputTokens:25},cost:{amount:0.02,currency:"USD"},at:Date.now()});
+    state.recordUsage({runtime:"claude",provider:"claude-default",model:"sonnet",threadId:"thread-2",turnId:"turn-2",usage:{totalTokens:60,inputTokens:40,outputTokens:20,reasoningOutputTokens:3},at:Date.now()});
     const usage=state.usage({days:1});
     assert.equal(usage.records.length,2);
     assert.equal(usage.total.totalTokens,200);
     assert.equal(usage.total.inputTokens,130);
     assert.equal(usage.total.outputTokens,70);
+    assert.equal(usage.total.reasoningOutputTokens,28);
     assert.equal(usage.total.costUsd,0.02);
     assert.equal(usage.models["opencode/big-pickle"].turns,1);
     assert.equal(usage.environments["ssh-a"].tokens,140);
@@ -190,9 +191,9 @@ test("thread usage reconstructs goal token totals from persisted turn usage",asy
   try{
     const state=new TrebellStateStore(env);
     state.recordUsage({runtime:"claude",threadId:"thread-a",turnId:"turn-1",at:1000,usage:{totalTokens:120,inputTokens:80,outputTokens:40}});
-    state.recordUsage({runtime:"claude",threadId:"thread-a",turnId:"turn-2",at:2000,usage:{totalTokens:230,inputTokens:180,outputTokens:50},cost:{amount:0.25,currency:"USD"}});
+    state.recordUsage({runtime:"claude",threadId:"thread-a",turnId:"turn-2",at:2000,usage:{totalTokens:230,inputTokens:180,outputTokens:50,reasoningOutputTokens:7},cost:{amount:0.25,currency:"USD"}});
     state.recordUsage({runtime:"claude",threadId:"thread-b",turnId:"turn-3",at:3000,usage:{totalTokens:999}});
-    assert.deepEqual(state.threadUsage("thread-a",{since:1500}),{totalTokens:230,inputTokens:180,cachedInputTokens:0,cacheWriteInputTokens:0,outputTokens:50,reasoningOutputTokens:0,costUsd:0.25,costKnown:1,turns:1,records:1});
+    assert.deepEqual(state.threadUsage("thread-a",{since:1500}),{totalTokens:230,inputTokens:180,cachedInputTokens:0,cacheWriteInputTokens:0,outputTokens:50,reasoningOutputTokens:7,costUsd:0.25,costKnown:1,turns:1,records:1});
   }finally{await rm(home,{recursive:true,force:true})}
 });
 

@@ -173,12 +173,12 @@ export class NativeAgentSession{
         },executeTool:wrappedExecutor,
       });
       this.messages=result.messages;if(result.text)this.onUpdate({update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:result.text}}});
-      this.onUpdate({update:{sessionUpdate:"usage_update",usage:{input_tokens:result.usage.inputTokens,output_tokens:result.usage.outputTokens,cache_read_input_tokens:result.usage.cachedInputTokens,cache_write_input_tokens:result.usage.cacheWriteInputTokens},used:result.usage.totalTokens,size:this.contextWindow||0}});
+      this.onUpdate({update:{sessionUpdate:"usage_update",usage:{input_tokens:result.usage.inputTokens,output_tokens:result.usage.outputTokens,reasoning_tokens:result.usage.reasoningOutputTokens,cache_read_input_tokens:result.usage.cachedInputTokens,cache_write_input_tokens:result.usage.cacheWriteInputTokens},used:result.usage.totalTokens,size:this.contextWindow||0}});
       return {stopReason:"end_turn",messageId,providerMessageId:result.lastResponse?.id||null,raw:{usage:result.usage,modelTurns:result.modelTurns,toolCalls:result.toolCalls,provider:result.provider,model:result.model}};
     }catch(error){
       if(error?.nativeUsage){
         const usage=error.nativeUsage;
-        this.onUpdate({update:{sessionUpdate:"usage_update",usage:{input_tokens:usage.inputTokens,output_tokens:usage.outputTokens,cache_read_input_tokens:usage.cachedInputTokens,cache_write_input_tokens:usage.cacheWriteInputTokens},used:usage.totalTokens,size:this.contextWindow||0}});
+        this.onUpdate({update:{sessionUpdate:"usage_update",usage:{input_tokens:usage.inputTokens,output_tokens:usage.outputTokens,reasoning_tokens:usage.reasoningOutputTokens,cache_read_input_tokens:usage.cachedInputTokens,cache_write_input_tokens:usage.cacheWriteInputTokens},used:usage.totalTokens,size:this.contextWindow||0}});
       }
       if(this.controller.signal.aborted||error?.name==="AbortError")return {stopReason:"cancelled",messageId,raw:{cancelled:true}};
       throw error;
