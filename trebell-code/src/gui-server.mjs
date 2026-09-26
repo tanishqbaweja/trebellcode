@@ -65,6 +65,7 @@ import { delegationContextValue, delegationGoalPatch, delegationPolicies } from 
 import { executeDelegation } from "./delegation-executor.mjs";
 import { resolveCodexApprovalByPolicy } from "./codex-policy-adapter.mjs";
 import { resolveRecipeExecution } from "./recipes.mjs";
+import { runProjectHooks, verificationHookSteps } from "./project-hooks.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
   .then(text=>String(JSON.parse(text).version||"0.0.0"))
@@ -401,6 +402,17 @@ function commandShellSpec(command,env=process.env){
   return {shell,args:["-lc",String(command||"")]};
 }
 
+async function runLocalHookCommand(command,{cwd=null,env=process.env,timeoutMs=30000}={}){
+  const spec=commandShellSpec(command,env),startedAt=Date.now(),limit=Math.max(1000,Math.min(300000,Number(timeoutMs)||30000));
+  return new Promise((resolveRun,reject)=>{
+    let settled=false,timedOut=false;const child=spawn(spec.shell,spec.args,{cwd:cwd||undefined,env,windowsHide:true,stdio:["ignore","pipe","pipe"]});
+    child.stdout?.on("data",()=>{});child.stderr?.on("data",()=>{});
+    const timer=setTimeout(()=>{timedOut=true;void stopChildProcess(child)},limit);
+    const finish=(error,code=null)=>{if(settled)return;settled=true;clearTimeout(timer);if(error)reject(error);else resolveRun({exitCode:code??1,timedOut,durationMs:Date.now()-startedAt})};
+    child.once("error",error=>finish(error));child.once("close",code=>finish(null,code));
+  });
+}
+
 async function projectActionSuggestions(projectPath){
   const root=resolve(projectPath);
   const [t3,pkg,pnpmLock,yarnLock,bunLock,bunLockb]=await Promise.all([
@@ -537,10 +549,35 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     });
   }
   const EXTERNAL_SOURCE_CONTROL_ACTIONS=new Set(["push","git.push","publish","pr.create","pr.edit","pr.edit-comment","pr.approve-workflows","pr.revert","pr.rebase-stack","pr.comment","pr.review","pr.merge","pr.update-branch","pr.request-reviewer"]);
+  function hookProjectFor(cwd,environmentId=null){
+    const value=String(cwd||"").trim();if(!value)return null;const profile=environmentId?environments.get(environmentId):null,remote=Boolean(profile&&profile.type!=="local");
+    const key=input=>{if(remote){const normalized=posix.normalize(String(input||"").replace(/\\/g,"/"));return normalized.length>1?normalized.replace(/\/$/,""):normalized}const normalized=resolve(String(input||""));return process.platform==="win32"?normalized.toLowerCase():normalized};
+    const wanted=key(value);return state.projects().find(project=>(project.environmentId||null)===(environmentId||null)&&key(project.path)===wanted)||null;
+  }
+  async function executeInstalledProjectHooks(event,{cwd=null,environmentId=null,action=null,threadId=null}={}){
+    const project=hookProjectFor(cwd,environmentId);if(!project?.hooks?.length)return [];
+    return runProjectHooks({
+      hooks:project.hooks,event,action,
+      execute:async hook=>{
+        if(environmentId){const result=await environments.execute(environmentId,{command:hook.command,cwd:project.path,timeoutMs:hook.timeoutMs,maxOutput:64*1024});return {exitCode:result.exitCode,timedOut:result.timedOut,durationMs:result.durationMs}}
+        return runLocalHookCommand(hook.command,{cwd:project.path,env,timeoutMs:hook.timeoutMs});
+      },
+      onEvent:entry=>{
+        const phase=entry.phase,status=phase==="started"?"running":phase==="completed"?"completed":"failed",result=entry.result||{};
+        eventJournal.record({environmentId:environmentId||null,threadId:threadId||null,category:"hook",name:"hook."+phase,status,data:{hookId:entry.hook?.id||null,name:entry.hook?.name||null,event,action:action||null,failureMode:entry.hook?.failureMode||null,...(phase==="started"?{}:{exitCode:result.exitCode??null,timedOut:Boolean(result.timedOut),durationMs:Number(result.durationMs)||0}),...(entry.error?{message:redactSecretText(entry.error?.message||String(entry.error),{environment:env}).slice(0,1000)}:{})}});
+      },
+    });
+  }
+  function withInstalledVerificationHooks(plan,{cwd=null,environmentId=null}={}){
+    const project=hookProjectFor(cwd,environmentId),hookSteps=verificationHookSteps(project?.hooks||[]);if(!hookSteps.length)return plan;
+    const existing=new Set((plan?.steps||[]).map(step=>String(step?.id||"")));return {...plan,steps:[...(plan?.steps||[]),...hookSteps.filter(step=>!existing.has(step.id))]};
+  }
   async function tracedSourceControlMutation(action,{cwd=null,environmentId=null,provider=null,number=null,threadId=null}={},run){
     const startedAt=Date.now(),externalSideEffect=EXTERNAL_SOURCE_CONTROL_ACTIONS.has(String(action||""));
     try{
+      await executeInstalledProjectHooks("source-control.before",{cwd,environmentId,action,threadId});
       const result=await run();
+      await executeInstalledProjectHooks("source-control.after",{cwd,environmentId,action,threadId});
       const resolvedNumber=number??result?.number??result?.item?.number??null;
       eventJournal.record({environmentId:environmentId||null,threadId:threadId||null,category:"source-control",name:"source_control."+String(action||"mutation"),status:"completed",data:{action,cwd,provider:provider||result?.provider||result?.item?.provider||null,number:resolvedNumber==null?null:Number(resolvedNumber),externalSideEffect,durationMs:Date.now()-startedAt}});
       return result;
@@ -1092,7 +1129,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       const inherited=sourceProject?{
         defaultModel:sourceProject.defaultModel??null,permissionMode:sourceProject.permissionMode??null,workspaceMode:sourceProject.workspaceMode??null,
         worktreeSubmodules:sourceProject.worktreeSubmodules??null,worktreeCleanup:sourceProject.worktreeCleanup??null,settingsOverrides:sourceProject.settingsOverrides||{},
-        icon:sourceProject.icon??null,scripts:sourceProject.scripts||[],preferredScriptId:sourceProject.preferredScriptId??null,
+        icon:sourceProject.icon??null,scripts:sourceProject.scripts||[],preferredScriptId:sourceProject.preferredScriptId??null,hooks:sourceProject.hooks||[],
       }:{};
       state.touchProject(created.worktree,{...inherited,environmentId:null,managedWorktree:{root:created.info.root,branch,baseBranch:info.branch,submodules,createdAt:Date.now(),cleanedAt:null,cleanupReason:null}});
       const setup=(sourceProject?.scripts||[]).find(script=>script.runOnWorktreeCreate);
@@ -2080,6 +2117,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
               icon:sourceProject.icon??null,
               scripts:sourceProject.scripts||[],
               preferredScriptId:sourceProject.preferredScriptId??null,
+              hooks:sourceProject.hooks||[],
             }:{};
             state.touchProject(environmentPath(body.path,environmentId),{...inherited,environmentId,managedWorktree:{root:result.info?.root||cwd,branch:String(body.branch||""),baseBranch:String(body.baseBranch||result.info?.branch||""),submodules:"none",createdAt:Date.now(),cleanedAt:null,cleanupReason:null}});
           }
@@ -2112,6 +2150,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
               icon:sourceProject.icon??null,
               scripts:sourceProject.scripts||[],
               preferredScriptId:sourceProject.preferredScriptId??null,
+              hooks:sourceProject.hooks||[],
             }:{};
             state.touchProject(result.worktree,{...inherited,environmentId:null,managedWorktree:{root:result.info.root,branch:String(body.branch||""),baseBranch:String(body.baseBranch||result.info.branch||""),submodules,createdAt:Date.now(),cleanedAt:null,cleanupReason:null}});
             const setup=(sourceProject?.scripts||[]).find(script=>script.runOnWorktreeCreate);
@@ -2525,7 +2564,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       try{
         const environmentId=url.searchParams.has("environmentId")?requestedEnvironmentId(url.searchParams.get("environmentId"),{fallback:false}):requestedEnvironmentId(null);
         const root=environmentPath(url.searchParams.get("path")||process.cwd(),environmentId),remote=remoteEnvironmentProfile(environmentId),files=url.searchParams.getAll("file").filter(Boolean),riskHints=url.searchParams.getAll("risk").filter(Boolean);
-        return json(res,200,await contextEngine.verificationPlan({root,paths:files.length?files:null,riskHints,capabilities:{diagnostics:!['0','false','no'].includes(String(url.searchParams.get("diagnostics")||"").toLowerCase()),semanticDiagnostics:['1','true','yes'].includes(String(url.searchParams.get("semantic")||"").toLowerCase())},io:remote?createRemoteContextIo({environments,environmentId,root}):null}));
+        const plan=withInstalledVerificationHooks(await contextEngine.verificationPlan({root,paths:files.length?files:null,riskHints,capabilities:{diagnostics:!['0','false','no'].includes(String(url.searchParams.get("diagnostics")||"").toLowerCase()),semanticDiagnostics:['1','true','yes'].includes(String(url.searchParams.get("semantic")||"").toLowerCase())},io:remote?createRemoteContextIo({environments,environmentId,root}):null}),{cwd:root,environmentId});
+        return json(res,200,plan);
       }catch(error){return json(res,400,{error:error.message});}
     }
     if(url.pathname==="/api/context/verification/assess"&&req.method==="POST"){
@@ -2563,7 +2603,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           return json(res,200,{supported:true,checkpointId:checkpoint.id,threadId,turnId,changedPaths:[],record:null,nextAction:{action:"complete",reason:"No workspace file changes were detected since the pre-turn checkpoint."}});
         }
         const environmentId=meta?.environmentId??null,remote=remoteEnvironmentProfile(environmentId),verificationIo=remote?createRemoteContextIo({environments,environmentId,root:changed.root}):null,riskHints=Array.isArray(body.riskHints)?body.riskHints.map(String).filter(Boolean).slice(0,20):[];
-        const plan=await contextEngine.verificationPlan({root:changed.root,paths:changed.paths,riskHints,capabilities:{diagnostics:body.diagnostics!==false,semanticDiagnostics:Boolean(body.semanticDiagnostics)},io:verificationIo});
+        const plan=withInstalledVerificationHooks(await contextEngine.verificationPlan({root:changed.root,paths:changed.paths,riskHints,capabilities:{diagnostics:body.diagnostics!==false,semanticDiagnostics:Boolean(body.semanticDiagnostics)},io:verificationIo}),{cwd:changed.root,environmentId});
         const agentTurn=agentThreads.get(threadId)?.turns?.find(turn=>String(turn?.id||"")===turnId)||null;
         const traces=eventJournal.list({threadId,turnId,limit:500}),collectedEvidence=collectVerificationEvidence({plan,turnItems:agentTurn?.items||[],traces});
         const automatic=await runAutomaticVerificationEvidence({contextEngine,plan,evidence:collectedEvidence,root:changed.root,io:verificationIo}),evidence=automatic.evidence,assessment=contextEngine.assessVerification({plan,evidence});

@@ -1,5 +1,5 @@
 import React,{useEffect,useMemo,useRef,useState} from "react";
-import { Check, Download, ExternalLink, FolderCode, GitBranch, ImagePlus, Layers3, MessageSquareText, Pencil, Play, Plus, RefreshCw, Settings2, SquareTerminal, Trash2, X } from "lucide-react";
+import { Check, Download, ExternalLink, FolderCode, GitBranch, ImagePlus, Layers3, MessageSquareText, Pencil, Play, Plus, RefreshCw, Settings2, SquareTerminal, Trash2, Workflow, X } from "lucide-react";
 import { api } from "../api.js";
 import { baseProjectRecord, enrichProjectRecords, summarizeProjectRefreshErrors } from "../project-enrichment.js";
 import { PROJECT_PAGE_SIZE, projectGroupCounts, projectGroupKey, projectWindow } from "../project-window.js";
@@ -8,6 +8,8 @@ import { startVisibilityPoll } from "../visibility-poll.js";
 function blankScript(){
   return {id:null,name:"",command:"",previewUrl:"",autoOpenPreview:false,runOnWorktreeCreate:false,waitForSetup:false};
 }
+function blankHook(){return {id:null,name:"",event:"verification.required",command:"",failureMode:"block",timeoutMs:30000,actionsText:""}}
+function hookEventLabel(event){return event==="verification.required"?"Required verification":event==="source-control.before"?"Before source control":"After source control"}
 
 const ICON_COLORS=["#7c5cff","#4f8cff","#2fa57d","#c57b32","#c45a7a","#6d7f93"];
 function autoMonogram(name="Project"){
@@ -37,6 +39,7 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
   const [environmentData,setEnvironmentData]=useState({profiles:[]});
   const [busy,setBusy]=useState(false);
   const [editor,setEditor]=useState(null);
+  const [hookEditor,setHookEditor]=useState(null);
   const [error,setError]=useState("");
   const [suggestionsOpen,setSuggestionsOpen]=useState({});
   const [identityOpen,setIdentityOpen]=useState({});
@@ -233,6 +236,18 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     if(saved&&editor?.projectId===project.id&&editor?.id===id)setEditor(null);
   }
 
+  function editHook(project,hook=null){
+    const value=hook||blankHook();setHookEditor({projectId:project.id,id:value.id||null,name:value.name||"",event:value.event||"verification.required",command:value.command||"",failureMode:value.failureMode||"block",timeoutMs:Number(value.timeoutMs)||30000,actionsText:(value.actions||[]).join(", ")});
+  }
+
+  async function submitHook(project){
+    if(!hookEditor?.command.trim())return;
+    const event=hookEditor.event,item={id:hookEditor.id||crypto.randomUUID(),name:hookEditor.name.trim()||hookEventLabel(event),event,command:hookEditor.command.trim(),enabled:true,failureMode:event==="source-control.after"?"warn":hookEditor.failureMode,timeoutMs:Math.max(1000,Math.min(300000,Number(hookEditor.timeoutMs)||30000)),actions:event.startsWith("source-control.")?hookEditor.actionsText.split(",").map(value=>value.trim()).filter(Boolean):[]};
+    const hooks=hookEditor.id?(project.hooks||[]).map(hook=>hook.id===hookEditor.id?item:hook):[...(project.hooks||[]),item];const saved=await saveProject(project,{hooks});if(saved)setHookEditor(null);
+  }
+
+  async function deleteHook(project,id){const saved=await saveProject(project,{hooks:(project.hooks||[]).filter(hook=>hook.id!==id)});if(saved&&hookEditor?.projectId===project.id&&hookEditor?.id===id)setHookEditor(null)}
+
   async function runScript(project,script){
     setBusy(true);setError("");
     try{
@@ -339,6 +354,22 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
             <label><input type="checkbox" checked={editor.waitForSetup} disabled={!editor.runOnWorktreeCreate} onChange={e=>setEditor({...editor,waitForSetup:e.target.checked})}/> Wait for setup to finish before starting the agent</label>
             <label><input type="checkbox" checked={editor.autoOpenPreview} disabled={!editor.previewUrl.trim()} onChange={e=>setEditor({...editor,autoOpenPreview:e.target.checked})}/> Open preview when this action runs</label>
             <div><button className="primary" disabled={!editor.command.trim()} onClick={()=>submitScript(p)}><Check size={12}/> Save action</button><button onClick={()=>setEditor(null)}><X size={12}/> Cancel</button></div>
+          </div>}
+        </div>
+        <div className="project-hooks">
+          <div className="project-actions-head"><span><Workflow size={13}/> Lifecycle hooks</span><button onClick={()=>editHook(p)}><Plus size={12}/> Add hook</button></div>
+          <p className="project-hook-note">Hooks are installed explicitly here. Repository <code>t3.json</code> files cannot silently install executable hooks.</p>
+          {(p.hooks||[]).length?<div className="project-hook-list">{(p.hooks||[]).map(hook=><div className="project-hook-row" key={hook.id}>
+            <span><strong>{hook.name}</strong><small>{hookEventLabel(hook.event)} · {hook.command}</small>{hook.actions?.length>0&&<em>{hook.actions.join(", ")}</em>}</span>
+            <b>{hook.event==="source-control.after"?"warn":hook.failureMode}</b><button title="Edit hook" onClick={()=>editHook(p,hook)}><Pencil size={12}/></button><button className="danger" title="Delete hook" onClick={()=>deleteHook(p,hook.id)}><Trash2 size={12}/></button>
+          </div>)}</div>:<p className="project-actions-empty">No automatic lifecycle hooks are installed for this project.</p>}
+          {hookEditor?.projectId===p.id&&<div className="project-hook-editor">
+            <input value={hookEditor.name} onChange={e=>setHookEditor({...hookEditor,name:e.target.value})} placeholder="Hook name (e.g. Lint gate)"/>
+            <select value={hookEditor.event} onChange={e=>setHookEditor({...hookEditor,event:e.target.value,failureMode:e.target.value==="source-control.after"?"warn":hookEditor.failureMode})}><option value="verification.required">Required verification</option><option value="source-control.before">Before source control</option><option value="source-control.after">After source control</option></select>
+            <input value={hookEditor.command} onChange={e=>setHookEditor({...hookEditor,command:e.target.value})} placeholder="Command (e.g. npm run lint)"/>
+            {hookEditor.event.startsWith("source-control.")&&<input value={hookEditor.actionsText} onChange={e=>setHookEditor({...hookEditor,actionsText:e.target.value})} placeholder="Optional actions: push, git.commit (blank = all)"/>}
+            <div className="project-hook-options"><label>Timeout (seconds)<input type="number" min="1" max="300" value={Math.round(hookEditor.timeoutMs/1000)} onChange={e=>setHookEditor({...hookEditor,timeoutMs:Math.max(1,Number(e.target.value)||30)*1000})}/></label>{hookEditor.event==="source-control.before"&&<label>On failure<select value={hookEditor.failureMode} onChange={e=>setHookEditor({...hookEditor,failureMode:e.target.value})}><option value="block">Block mutation</option><option value="warn">Warn and continue</option></select></label>}</div>
+            <div><button className="primary" disabled={!hookEditor.command.trim()} onClick={()=>submitHook(p)}><Check size={12}/> Save hook</button><button onClick={()=>setHookEditor(null)}><X size={12}/> Cancel</button></div>
           </div>}
         </div>
       </div>)}</div>

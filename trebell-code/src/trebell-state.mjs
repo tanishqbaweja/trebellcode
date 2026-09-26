@@ -5,6 +5,7 @@ import { trebellHome } from "./paths.mjs";
 import { normalizeMcpServers } from "./mcp-registry.mjs";
 import { withoutSecretEnvironment } from "./secret-redactor.mjs";
 import { normalizeRecipes } from "./recipes.mjs";
+import { normalizeProjectHooks } from "./project-hooks.mjs";
 import { SqliteStateCollections } from "./sqlite-state-collections.mjs";
 
 const DEFAULT_STATE = Object.freeze({
@@ -384,6 +385,8 @@ export class TrebellStateStore {
     if(project.preferredScriptId&&!project.scripts.some(script=>script.id===project.preferredScriptId))project.preferredScriptId=null;
     if(Array.isArray(patch.recipes))project.recipes=normalizeRecipes(patch.recipes).map(recipe=>({...recipe,id:recipe.id||randomUUID()}));
     else if(!Array.isArray(project.recipes))project.recipes=[];
+    if(Array.isArray(patch.hooks))project.hooks=normalizeProjectHooks(patch.hooks).map(hook=>({...hook,id:hook.id||randomUUID()}));
+    else if(!Array.isArray(project.hooks))project.hooks=[];
     this.#save();
     return clone(project);
   }
