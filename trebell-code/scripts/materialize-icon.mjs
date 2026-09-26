@@ -34,4 +34,17 @@ const ico=Buffer.concat([header,entry,png]);
 const icoOutput=join(outputDir,"icon.ico");
 writeFileSync(icoOutput,ico);
 
-console.log(`Materialized Trebell Code icons: ${pngOutput} (${png.length} bytes), ${icoOutput} (${ico.length} bytes)`);
+// ICNS supports PNG-backed icon elements. A single 256px `ic08` entry keeps
+// the canonical Trebell pixels unchanged and gives electron-builder a native
+// macOS icon without requiring platform-specific conversion binaries.
+const icnsEntry=Buffer.alloc(8);
+icnsEntry.write("ic08",0,4,"ascii");
+icnsEntry.writeUInt32BE(8+png.length,4);
+const icnsHeader=Buffer.alloc(8);
+icnsHeader.write("icns",0,4,"ascii");
+icnsHeader.writeUInt32BE(8+icnsEntry.length+png.length,4);
+const icns=Buffer.concat([icnsHeader,icnsEntry,png]);
+const icnsOutput=join(outputDir,"icon.icns");
+writeFileSync(icnsOutput,icns);
+
+console.log(`Materialized Trebell Code icons: ${pngOutput} (${png.length} bytes), ${icoOutput} (${ico.length} bytes), ${icnsOutput} (${icns.length} bytes)`);

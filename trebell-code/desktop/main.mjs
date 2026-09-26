@@ -9,6 +9,7 @@ import { chromiumCookieDatabase, discoverHeliumProfiles, readHeliumProfileCookie
 import { DEFAULT_SNAPSHOT_CONFIG, normalizeSnapshotConfig } from "./snapshot-config.mjs";
 import { discoverEditors } from "./editor-discovery.mjs";
 import { createUpdaterController } from "./updater-controller.mjs";
+import { bundledCodexPath } from "./bundled-codex.mjs";
 
 const require=createRequire(import.meta.url);
 const { autoUpdater }=require("electron-updater");
@@ -87,15 +88,7 @@ function installMainZoomControls(win){
 
 function nativeCodexPath(){
   if(!app.isPackaged) return null;
-  const root=join(process.resourcesPath,"app.asar.unpacked","node_modules","@openai");
-  const packageName=process.arch==="arm64" ? "codex-win32-arm64" : "codex-win32-x64";
-  const triple=process.arch==="arm64" ? "aarch64-pc-windows-msvc" : "x86_64-pc-windows-msvc";
-  const vendor=join(root,packageName,"vendor",triple);
-  const candidates=[
-    join(vendor,"bin","codex.exe"),
-    join(vendor,"codex","codex.exe"),
-  ];
-  return candidates.find(existsSync) || candidates[0];
+  return bundledCodexPath(process.resourcesPath);
 }
 
 function bundledBridgePath(){
