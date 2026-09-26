@@ -5,6 +5,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProviderManager } from "../src/provider-manager.mjs";
 
+function abortingFetch(seen) {
+  return async (url, init = {}) => {
+    seen.push({ url, signal: init.signal });
+    return await new Promise((resolve, reject) => {
+      const signal = init.signal;
+      const aborted = () => reject(signal.reason);
+      if (signal?.aborted) return aborted();
+      signal?.addEventListener?.("abort", aborted, { once: true });
+    });
+  };
+}
+
 test("provider keys are stored separately and never returned by definitions", () => {
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
   const env={...process.env,TREBELL_HOME:root};
@@ -266,4 +278,49 @@ test("normalized provider turns expose retryability for transient HTTP failures 
   await assert.rejects(()=>manager.turn("hcnsec",{model:"glm-5.3",messages:[{role:"user",content:"hello"}]}),error=>error?.status===429&&error?.retryable===true);
   status=401;
   await assert.rejects(()=>manager.turn("hcnsec",{model:"glm-5.3",messages:[{role:"user",content:"hello"}]}),error=>error?.status===401&&error?.retryable===false);
+});
+
+test("provider inference transports keep their request timeout when a caller signal exists", async () => {
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
+  const seen=[];
+  const manager=new ProviderManager({
+    env:{...process.env,TREBELL_HOME:root},
+    fetchFn:abortingFetch(seen),
+    requestTimeoutMs:20,
+  });
+  manager.setKey("hcnsec","hc-timeout-key");
+  manager.setKey("agentrouter","ar-timeout-key");
+  manager.setKey("justworker","jw-timeout-key");
+
+  const cases=[
+    () => manager.forwardChat("hcnsec",{model:"glm-5.3",messages:[{role:"user",content:"hello"}],stream:false},{signal:new AbortController().signal}),
+    () => manager.forwardResponses("agentrouter",{model:"gpt-5.6",input:"hello",stream:false},{signal:new AbortController().signal}),
+    () => manager.forwardChat("justworker",{model:"claude-opus-4-8",messages:[{role:"user",content:"hello"}],stream:false},{signal:new AbortController().signal}),
+  ];
+
+  for (const run of cases) {
+    await assert.rejects(run,error=>error?.name==="TimeoutError");
+  }
+  assert.equal(seen.length,3);
+  assert.deepEqual(seen.map(item=>new URL(item.url).pathname),["/v1/chat/completions","/v1/responses","/v1/messages"]);
+  assert.ok(seen.every(item=>item.signal?.aborted&&item.signal.reason?.name==="TimeoutError"));
+});
+
+test("caller cancellation still wins over the provider request timeout", async () => {
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
+  const seen=[];
+  const manager=new ProviderManager({
+    env:{...process.env,TREBELL_HOME:root},
+    fetchFn:abortingFetch(seen),
+    requestTimeoutMs:5_000,
+  });
+  manager.setKey("hcnsec","hc-cancel-key");
+  const controller=new AbortController();
+  const pending=manager.forwardChat("hcnsec",{model:"glm-5.3",messages:[{role:"user",content:"hello"}],stream:false},{signal:controller.signal});
+  const reason=new DOMException("cancelled by caller","AbortError");
+  controller.abort(reason);
+  await assert.rejects(pending,error=>error===reason);
+  assert.equal(seen.length,1);
+  assert.notEqual(seen[0].signal,controller.signal);
+  assert.equal(seen[0].signal.reason,reason);
 });

@@ -69,6 +69,7 @@ function clone(value) {
 }
 
 const AGENTROUTER_CLIENT_VERSION = "0.149.1";
+const DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS = 300_000;
 const AGENTROUTER_CLIENT_HEADERS = Object.freeze({
   "User-Agent": `codex_cli_rs/${AGENTROUTER_CLIENT_VERSION}`,
   originator: "codex_cli_rs",
@@ -99,10 +100,17 @@ function normalizeProviderKey(value) {
   return key;
 }
 
+function providerRequestSignal(signal, timeoutMs = DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS) {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+}
+
 export class ProviderManager {
-  constructor({ env = process.env, fetchFn = fetch } = {}) {
+  constructor({ env = process.env, fetchFn = fetch, requestTimeoutMs = DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS } = {}) {
     this.env = env;
     this.fetchFn = fetchFn;
+    const timeoutMs = Math.trunc(Number(requestTimeoutMs));
+    this.requestTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS;
     this.path = providerSecretsPath(env);
     mkdirSync(dirname(this.path), { recursive: true });
     this.secrets = this.#load();
@@ -246,7 +254,7 @@ export class ProviderManager {
           "User-Agent": TREBELL_USER_AGENT,
         },
         body: JSON.stringify(anthropicBody),
-        signal: signal || AbortSignal.timeout(300_000),
+        signal: providerRequestSignal(signal, this.requestTimeoutMs),
       });
       return await adaptAnthropicResponse(upstream, { stream: anthropicBody.stream, model: chatBody.model });
     }
@@ -266,7 +274,7 @@ export class ProviderManager {
       method: "POST",
       headers,
       body: JSON.stringify(chatBody),
-      signal: signal || AbortSignal.timeout(300_000),
+      signal: providerRequestSignal(signal, this.requestTimeoutMs),
     });
   }
 
@@ -284,7 +292,7 @@ export class ProviderManager {
         accept: stream ? "text/event-stream, application/json" : "application/json",
       }),
       body: JSON.stringify(responsesBody),
-      signal: signal || AbortSignal.timeout(300_000),
+      signal: providerRequestSignal(signal, this.requestTimeoutMs),
     });
   }
 
