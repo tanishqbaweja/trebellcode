@@ -98,7 +98,7 @@ export function nativeAgentBudget(options={}){
 export async function runNativeAgentTurn({
   providerTurn,executeTool,model,messages=[],tools=[],provider=null,toolChoice="auto",
   maxOutputTokens=null,temperature=null,parallelToolCalls=true,maxModelTurns=24,maxToolCalls=100,maxWallTimeMs=null,
-  maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,signal=null,onEvent=null,metadata=null,
+  maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,signal=null,onEvent=null,metadata=null,
 }={}){
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
@@ -114,6 +114,25 @@ export async function runNativeAgentTurn({
   };
   armWallTimer();
   const turnSignal=wallController?(signal?AbortSignal.any([signal,wallController.signal]):wallController.signal):signal;
+  const parallelLimit=boundedInteger(maxParallelToolCalls,8,{min:1,max:32});
+  const canRunParallel=call=>parallelToolCalls===true&&typeof isToolParallelSafe==="function"&&isToolParallelSafe(call)===true;
+  const executeOneTool=async(call,toolCallNumber)=>{
+    const callId=String(call?.id||("native-tool-"+toolCallNumber)),namespace=call?.namespace?String(call.namespace):null,name=String(call?.name||"tool"),args=safeArguments(call?.arguments);
+    const toolStarted=nowMs();
+    emit(onEvent,{name:"native.tool.requested",status:"running",model:String(model),provider:provider||null,data:{toolCall:toolCallNumber,callId,namespace,name}});
+    let output,success=true,errorMessage=null,uncertain=false,retrySafe=false;
+    try{
+      output=await executeTool({id:callId,namespace,name,arguments:args,rawArguments:call?.arguments??"{}",signal:turnSignal,modelTurn:modelTurns,toolCall:toolCallNumber});
+      throwIfAborted(turnSignal);
+      if(output?.success===false){success=false;errorMessage=String(output.error||output.message||"Tool execution failed.");uncertain=output?.uncertain===true;retrySafe=output?.retrySafe===true}
+    }catch(error){
+      if(turnSignal?.aborted||error?.name==="AbortError")throw abortError(turnSignal);
+      success=false;errorMessage=error?.message||String(error);output={success:false,error:errorMessage};
+    }
+    const content=resultContent(output)||(!success?errorMessage||"Tool execution failed.":"Tool completed without text output.");
+    emit(onEvent,{name:"native.tool.completed",status:success?"completed":uncertain?"uncertain":"failed",model:String(model),provider:provider||null,data:{toolCall:toolCallNumber,callId,namespace,name,durationMs:duration(toolStarted),success,uncertain,retrySafe,error:errorMessage}});
+    return {role:"tool",toolCallId:callId,content};
+  };
   emit(onEvent,{name:"native.turn.started",status:"running",model:String(model),provider:provider||null,data:{...metadata,maxModelTurns:budget.maxModelTurns,maxToolCalls:budget.maxToolCalls,maxWallTimeMs:budget.maxWallTimeMs}});
   try{for(;;){
     throwIfAborted(turnSignal);
@@ -162,7 +181,7 @@ export async function runNativeAgentTurn({
       return result;
     }
     let redirected=false;
-    for(let callIndex=0;callIndex<calls.length;callIndex++){
+    for(let callIndex=0;callIndex<calls.length;){
       const call=calls[callIndex];
       throwIfAborted(turnSignal);
       const steerNow=steeringMessages(consumeSteering);
@@ -180,22 +199,20 @@ export async function runNativeAgentTurn({
         const error=new Error(`Native agent tool-call budget exhausted (${toolCalls}/${budget.maxToolCalls}).`);error.code="native_tool_call_budget";
         emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(model),provider:provider||null,data:{reason:error.code,modelTurns,toolCalls}});throw error;
       }
-      toolCalls++;
-      const callId=String(call?.id||`native-tool-${toolCalls}`),namespace=call?.namespace?String(call.namespace):null,name=String(call?.name||"tool"),args=safeArguments(call?.arguments);
-      const toolStarted=nowMs();
-      emit(onEvent,{name:"native.tool.requested",status:"running",model:String(model),provider:provider||null,data:{toolCall:toolCalls,callId,namespace,name}});
-      let output,success=true,errorMessage=null,uncertain=false,retrySafe=false;
-      try{
-        output=await executeTool({id:callId,namespace,name,arguments:args,rawArguments:call?.arguments??"{}",signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
-        throwIfAborted(turnSignal);
-        if(output?.success===false){success=false;errorMessage=String(output.error||output.message||"Tool execution failed.");uncertain=output?.uncertain===true;retrySafe=output?.retrySafe===true}
-      }catch(error){
-        if(turnSignal?.aborted||error?.name==="AbortError")throw abortError(turnSignal);
-        success=false;errorMessage=error?.message||String(error);output={success:false,error:errorMessage};
+      const remainingBudget=budget.maxToolCalls-toolCalls,batch=[call];
+      if(canRunParallel(call)){
+        for(let next=callIndex+1;next<calls.length&&batch.length<parallelLimit&&batch.length<remainingBudget;next++){
+          if(!canRunParallel(calls[next]))break;
+          batch.push(calls[next]);
+        }
       }
-      const content=resultContent(output)||(!success?errorMessage||"Tool execution failed.":"Tool completed without text output.");
-      emit(onEvent,{name:"native.tool.completed",status:success?"completed":uncertain?"uncertain":"failed",model:String(model),provider:provider||null,data:{toolCall:toolCalls,callId,namespace,name,durationMs:duration(toolStarted),success,uncertain,retrySafe,error:errorMessage}});
-      conversation.push({role:"tool",toolCallId:callId,content});
+      const prepared=batch.map((item,index)=>({call:item,toolCallNumber:toolCalls+index+1}));
+      toolCalls+=prepared.length;
+      const observations=prepared.length>1
+        ?await Promise.all(prepared.map(item=>executeOneTool(item.call,item.toolCallNumber)))
+        :[await executeOneTool(prepared[0].call,prepared[0].toolCallNumber)];
+      conversation.push(...observations);
+      callIndex+=batch.length;
     }
     if(redirected)continue;
   }}catch(caught){

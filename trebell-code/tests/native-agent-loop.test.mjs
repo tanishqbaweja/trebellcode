@@ -80,6 +80,40 @@ test("native agent preserves image tool observations for the next model turn",as
   assert.equal(result.text,"I can see the screenshot.");assert.equal(result.modelTurns,2);
 });
 
+test("native agent runs explicitly parallel-safe tool reads concurrently while preserving model observation order",async()=>{
+  let providerTurns=0,active=0,maxActive=0;const completed=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"inspect both"}],parallelToolCalls:true,isToolParallelSafe:()=>true,maxParallelToolCalls:4,
+    providerTurn:async request=>{
+      providerTurns++;
+      if(providerTurns===1)return {text:"",toolCalls:[
+        {id:"slow",namespace:"trebell_repo",name:"read_source",arguments:'{"path":"slow.js"}'},
+        {id:"fast",namespace:"trebell_repo",name:"read_source",arguments:'{"path":"fast.js"}'},
+      ],usage:{}};
+      const observations=request.messages.filter(message=>message.role==="tool");
+      assert.deepEqual(observations.map(message=>message.toolCallId),["slow","fast"],"provider-visible observations must retain model call order");
+      assert.deepEqual(observations.map(message=>message.content),["result-slow","result-fast"]);
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{
+      active++;maxActive=Math.max(maxActive,active);
+      await new Promise(resolve=>setTimeout(resolve,call.id==="slow"?40:5));
+      completed.push(call.id);active--;return "result-"+call.id;
+    },
+  });
+  assert.equal(maxActive,2,"parallel-safe reads should overlap");assert.deepEqual(completed,["fast","slow"],"fixture must prove completion order differed from model order");assert.equal(result.toolCalls,2);assert.equal(result.text,"done");
+});
+
+test("native parallel-safe batching never starts work beyond the exact tool-call budget",async()=>{
+  const executed=[];
+  await assert.rejects(()=>runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"bounded parallel reads"}],maxToolCalls:1,isToolParallelSafe:()=>true,
+    providerTurn:async()=>({text:"",toolCalls:[{id:"one",name:"read",arguments:"{}"},{id:"two",name:"read",arguments:"{}"}],usage:{}}),
+    executeTool:async call=>{executed.push(call.id);return "ok"},
+  }),error=>error?.code==="native_tool_call_budget");
+  assert.deepEqual(executed,["one"]);
+});
+
 test("native agent enforces model-turn and tool-call budgets before extra work starts",async()=>{
   let executions=0;
   await assert.rejects(()=>runNativeAgentTurn({

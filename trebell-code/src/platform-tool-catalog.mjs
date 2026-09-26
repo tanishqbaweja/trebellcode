@@ -41,6 +41,14 @@ export function platformToolDefinition(namespace,name){
   return namespaceName==="trebell_repo"?repositoryPlatformDefinition(name):sharedPlatformDefinition(namespaceName,name);
 }
 
+export function platformToolParallelSafe(namespace,name){
+  const definition=platformToolDefinition(namespace,name),policy=definition?.policy||{};
+  if(policy.asyncSafe!==true||policy.idempotent!==true||policy.kind!=="read")return false;
+  // These mutate shared browser session state despite being reversible/idempotent.
+  if(String(namespace||"")==="trebell_browser"&&String(name||"")==="set_viewport")return false;
+  return true;
+}
+
 export function platformDynamicToolNamespaces({repository=true,...sharedOptions}={}){
   return [...(repository?repositoryDynamicToolNamespace():[]),...sharedDynamicToolNamespaces(sharedOptions)];
 }
