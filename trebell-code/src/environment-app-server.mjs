@@ -1,9 +1,10 @@
 import { createServer as createTcpServer, connect as tcpConnect } from "node:net";
 import { spawn } from "node:child_process";
 import { DEFAULT_PORT, PROVIDER_COMPAT_PORT } from "./config.mjs";
-import { remoteToolPathPrelude, remoteTransportEnvironment } from "./environment-manager.mjs";
+import { remoteEnvironmentCommand, remoteToolPathPrelude, remoteTransportEnvironment } from "./environment-manager.mjs";
 import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
+import { runtimeEnvironmentKeys } from "./runtime-environment.mjs";
 
 function quotePosix(value){
   return "'" + String(value).replace(/'/g,"'\\''") + "'";
@@ -127,6 +128,7 @@ export async function startRemoteAppServer({
   provider,
   localProviderPort=null,
   runtimeInstance=null,
+  runtimeEnvironmentNames=null,
   hostEnvironment=process.env,
   debug=false,
 }={}){
@@ -136,13 +138,22 @@ export async function startRemoteAppServer({
   const logEnvironment={...hostEnvironment,...(runtimeInstance?.environment||{})};
   const resolvedProviderPort=providerPort(provider,localProviderPort);
   const runtime=remoteCodexProfileSetup({profile,runtimeInstance});
+  const inheritedNames=Array.isArray(runtimeEnvironmentNames)&&runtimeEnvironmentNames.length
+    ?runtimeEnvironmentNames
+    :runtimeEnvironmentKeys("codex",{approved:runtimeInstance?.approvedEnvironmentKeys});
+  const commandEnvironmentNames=[...new Set([...inheritedNames,...(runtime.effectiveHomePath?["CODEX_HOME"]:[])])];
+  const isolatedRuntimeCommand=(baseUrl,listen)=>"exec "+remoteEnvironmentCommand(
+    shellJoin([runtime.command,...remoteCodexArgs({provider,baseUrl,listen})]),
+    commandEnvironmentNames,
+    runtimeInstance?.environment||{},
+  );
 
   if(profile.type==="wsl"){
     const network=await wslNetwork(environments,environmentId);
     const proxy=await createProviderProxy(network.host,resolvedProviderPort);
     const baseUrl=`http://${network.host}:${proxy.port}/v1`;
     const listen=`ws://0.0.0.0:${appPort}`;
-    const command=remoteToolPathPrelude()+"\n"+(runtime.prelude?runtime.prelude+"\n":"")+"exec "+shellJoin([runtime.command,...remoteCodexArgs({provider,baseUrl,listen})]);
+    const command=remoteToolPathPrelude()+"\n"+(runtime.prelude?runtime.prelude+"\n":"")+isolatedRuntimeCommand(baseUrl,listen);
     let child;
     try{
       child=environments.spawnSession(environmentId,{command,cwd:profile.cwd||null});
@@ -167,7 +178,7 @@ export async function startRemoteAppServer({
     const remoteAppPort=remotePorts.appPort;
     const baseUrl=`http://127.0.0.1:${remoteProviderPort}/v1`;
     const listen=`ws://127.0.0.1:${remoteAppPort}`;
-    const remoteCommand=remoteToolPathPrelude()+"\n"+(runtime.prelude?runtime.prelude+"\n":"")+(profile.cwd?"cd "+quotePosix(profile.cwd)+" && ":"")+"exec "+shellJoin([runtime.command,...remoteCodexArgs({provider,baseUrl,listen})]);
+    const remoteCommand=remoteToolPathPrelude()+"\n"+(runtime.prelude?runtime.prelude+"\n":"")+(profile.cwd?"cd "+quotePosix(profile.cwd)+" && ":"")+isolatedRuntimeCommand(baseUrl,listen);
     const executable=process.platform==="win32"?"ssh.exe":"ssh";
     const args=[
       "-o","BatchMode=yes",

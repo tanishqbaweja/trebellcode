@@ -255,6 +255,7 @@ async function startAppServer({appPort,env=process.env,mock=false,provider="free
           provider,
           localProviderPort:providerPort,
           runtimeInstance,
+          runtimeEnvironmentNames:agentRuntimes.childEnvironmentKeys(instance),
           hostEnvironment:env,
           debug:env.TREBELL_GUI_DEBUG==="1",
         });
