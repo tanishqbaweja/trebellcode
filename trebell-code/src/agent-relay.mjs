@@ -909,7 +909,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       method,params,
     });
     if(method==="thread/list")return paginateAgentThreads(threadStore.list(runtime),params);
-    if(method==="thread/search")return searchAgentThreads(threadStore.list(runtime),params);
+    if(method==="thread/search")return searchAgentThreads(typeof threadStore.searchCandidates==="function"?threadStore.searchCandidates(runtime,params.searchTerm,{archived:params.archived===true}):threadStore.list(runtime),params);
     if(method==="thread/read"){
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
       return {thread:params.includeTurns===false?{...thread,turns:[]}:thread};

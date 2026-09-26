@@ -14,6 +14,7 @@ try{
     threads:arg("threads",1000),eventsPerThread:arg("events-per-thread",20),
     eventCount:arg("store-events",10000),queryCount:arg("queries",200),
     stateRecords:arg("state-records",500),
+    threadSearchThreads:arg("thread-search-threads",1000),
     repoFiles:arg("repo-files",1000),
     longChatMessages:arg("long-chat-messages",10000),
     streamDeltas:arg("stream-deltas",50000),

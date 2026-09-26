@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp,rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { benchmarkConversationVirtualization, benchmarkDurableState, benchmarkReplay, benchmarkRepositoryIndex, benchmarkStreamingCoalescing, runCoreBenchmark, syntheticEventHistory } from "../src/performance-benchmark.mjs";
+import { benchmarkAgentThreadSearch, benchmarkConversationVirtualization, benchmarkDurableState, benchmarkReplay, benchmarkRepositoryIndex, benchmarkStreamingCoalescing, runCoreBenchmark, syntheticEventHistory } from "../src/performance-benchmark.mjs";
 
 test("synthetic performance fixture is deterministic and bounded",()=>{
   const a=syntheticEventHistory({threads:3,eventsPerThread:4}),b=syntheticEventHistory({threads:3,eventsPerThread:4});
@@ -46,13 +46,23 @@ test("durable state benchmark measures indexed writes queries and lean general-s
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
+test("agent thread benchmark measures SQLite conversation search without hydrating full histories",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-thread-search-benchmark-test-"));
+  try{
+    const result=benchmarkAgentThreadSearch({env:{TREBELL_HOME:home,HOME:home},threadCount:60,queryCount:5});
+    assert.equal(result.threads,60);assert.equal(result.queries,5);assert.ok(result.returned>0);assert.equal(result.hydratedTurns,result.returned);
+    assert.ok(result.writeMs>=0);assert.ok(result.queryMs>=0);assert.ok(result.avgWriteUs>=0);assert.ok(result.avgQueryUs>=0);
+  }finally{await rm(home,{recursive:true,force:true})}
+});
+
 test("core benchmark exercises SQLite event storage without a hard machine-speed threshold",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-benchmark-test-"));
   try{
-    const result=await runCoreBenchmark({env:{TREBELL_HOME:home,HOME:home},threads:10,eventsPerThread:6,eventCount:200,queryCount:10,stateRecords:30,repoFiles:30,longChatMessages:500,streamDeltas:1000});
+    const result=await runCoreBenchmark({env:{TREBELL_HOME:home,HOME:home},threads:10,eventsPerThread:6,eventCount:200,queryCount:10,stateRecords:30,threadSearchThreads:30,repoFiles:30,longChatMessages:500,streamDeltas:1000});
     assert.equal(result.replay.events,60);assert.equal(result.eventStore.events,200);assert.equal(result.eventStore.queries,10);assert.ok(["sqlite","jsonl"].includes(result.eventStore.backend));
     assert.equal(result.conversation.messages,500);assert.equal(result.conversation.virtualized,true);assert.equal(result.streaming.deltas,1000);assert.equal(result.streaming.flushedBytes,result.streaming.inputBytes);
     assert.equal(result.durableState.records,30);assert.ok(result.durableState.compatSnapshotBytes>result.durableState.leanSnapshotBytes);
+    assert.equal(result.agentThreadSearch.threads,30);assert.ok(result.agentThreadSearch.returned>0);assert.equal(result.agentThreadSearch.hydratedTurns,result.agentThreadSearch.returned);
     assert.equal(result.repositoryIndex.files,30);assert.equal(result.repositoryIndex.unchanged.reparsed,0);assert.equal(result.repositoryIndex.incremental.reparsed,1);
     assert.ok(result.durationMs>=0);assert.ok(result.eventStore.avgInsertUs>=0);assert.ok(result.eventStore.avgQueryUs>=0);
   }finally{await rm(home,{recursive:true,force:true})}

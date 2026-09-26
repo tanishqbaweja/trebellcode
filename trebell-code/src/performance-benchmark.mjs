@@ -6,6 +6,7 @@ import { ContextEngine } from "./context-engine.mjs";
 import { EventJournal } from "./event-journal.mjs";
 import { createReplayFixture, replayEventFixture } from "./event-replay.mjs";
 import { TrebellStateStore } from "./trebell-state.mjs";
+import { AgentThreadStore } from "./agent-thread-store.mjs";
 import { createTextFrameBuffer } from "../ui/src/text-frame-buffer.js";
 import { CONVERSATION_CHUNK_SIZE, conversationChunkIndexForMessage, conversationVirtualChunks, shouldVirtualizeConversation } from "../ui/src/conversation-virtualization.js";
 
@@ -132,6 +133,26 @@ export async function benchmarkDurableState({env,recordCount=500,queryCount=100}
   };
 }
 
+export function benchmarkAgentThreadSearch({env,threadCount=1000,queryCount=100}={}){
+  const count=integer(threadCount,1000,20,10_000),queries=integer(queryCount,100,1,2000),store=new AgentThreadStore(env),before=memory(),writeStart=performance.now();
+  for(let index=0;index<count;index++){
+    const thread=store.create({runtime:"native",cwd:"/bench/project",providerSessionId:"bench-session-"+index,name:"Benchmark thread "+index});
+    const turn=store.addTurn(thread.id,{id:"bench-turn-"+index,inputText:"Synthetic request "+index+" target-group-"+(index%50)});
+    store.addItem(thread.id,turn.id,{id:"bench-tool-"+index,type:"commandExecution",status:"completed",aggregatedOutput:"tool-only benchmark output "+index});
+    store.addItem(thread.id,turn.id,{id:"bench-agent-"+index,type:"agentMessage",text:"Synthetic completed result "+index});
+    store.finishTurn(thread.id,turn.id);
+  }
+  const writeMs=performance.now()-writeStart,queryStart=performance.now();let returned=0,hydratedTurns=0;
+  for(let index=0;index<queries;index++){
+    const matches=store.searchCandidates("native","target-group-"+(index%50));returned+=matches.length;hydratedTurns+=matches.reduce((sum,item)=>sum+(item.turns?.length||0),0);
+  }
+  const queryMs=performance.now()-queryStart,after=memory();
+  return {
+    threads:count,queries,returned,hydratedTurns,writeMs:Number(writeMs.toFixed(3)),queryMs:Number(queryMs.toFixed(3)),
+    avgWriteUs:Number((writeMs*1000/count).toFixed(3)),avgQueryUs:Number((queryMs*1000/queries).toFixed(3)),memoryDeltaBytes:delta(after,before),
+  };
+}
+
 async function writeSyntheticRepository(root,fileCount){
   const source=join(root,"src");await mkdir(source,{recursive:true});
   await writeFile(join(root,"package.json"),JSON.stringify({name:"trebell-context-benchmark",private:true,scripts:{test:"node --test"}},null,2));
@@ -178,11 +199,11 @@ export async function benchmarkRepositoryIndex({fileCount=1000}={}){
   }finally{await rm(root,{recursive:true,force:true})}
 }
 
-export async function runCoreBenchmark({env=process.env,threads=1000,eventsPerThread=20,eventCount=10_000,queryCount=200,stateRecords=500,repoFiles=1000,longChatMessages=10_000,streamDeltas=50_000}={}){
-  const startedAt=new Date().toISOString(),started=performance.now(),replay=benchmarkReplay({threads,eventsPerThread}),conversation=benchmarkConversationVirtualization({messageCount:longChatMessages}),streaming=benchmarkStreamingCoalescing({deltaCount:streamDeltas}),eventStore=await benchmarkEventStore({env,eventCount,queryCount}),durableState=await benchmarkDurableState({env,recordCount:stateRecords,queryCount}),repositoryIndex=await benchmarkRepositoryIndex({fileCount:repoFiles});
+export async function runCoreBenchmark({env=process.env,threads=1000,eventsPerThread=20,eventCount=10_000,queryCount=200,stateRecords=500,threadSearchThreads=1000,repoFiles=1000,longChatMessages=10_000,streamDeltas=50_000}={}){
+  const startedAt=new Date().toISOString(),started=performance.now(),replay=benchmarkReplay({threads,eventsPerThread}),conversation=benchmarkConversationVirtualization({messageCount:longChatMessages}),streaming=benchmarkStreamingCoalescing({deltaCount:streamDeltas}),eventStore=await benchmarkEventStore({env,eventCount,queryCount}),durableState=await benchmarkDurableState({env,recordCount:stateRecords,queryCount}),agentThreadSearch=benchmarkAgentThreadSearch({env,threadCount:threadSearchThreads,queryCount}),repositoryIndex=await benchmarkRepositoryIndex({fileCount:repoFiles});
   return {
-    version:4,startedAt,durationMs:Number((performance.now()-started).toFixed(3)),
+    version:5,startedAt,durationMs:Number((performance.now()-started).toFixed(3)),
     environment:{node:process.version,platform:process.platform,arch:process.arch},
-    replay,conversation,streaming,eventStore,durableState,repositoryIndex,
+    replay,conversation,streaming,eventStore,durableState,agentThreadSearch,repositoryIndex,
   };
 }
