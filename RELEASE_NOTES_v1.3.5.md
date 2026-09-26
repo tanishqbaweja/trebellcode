@@ -28,7 +28,6 @@ Version 1.3.5 separates Trebell Native cleanly from external coding harnesses, e
 - Native now performs one bounded recovery when the user explicitly names an exact exposed tool and the model tries to answer without calling it. Negated, vague and stale-context tool mentions do not trigger this behavior.
 - A tool-order experiment showed the requested tool was called with both normal and reordered schemas, so Trebell keeps schema ordering stable rather than shuffling tools and breaking stable schema hashes.
 - A proposed reduction of the baseline repository manifest to only `search_code` was rejected after it caused three focused regressions. `search_symbols`, `search_files` and `read_source` remain directly available until a lower-cost migration is proven without behavior loss.
-- A later clean three-scenario Vyce benchmark passed all independent verification checks in **14 model turns / 35,397 input tokens / 17 tool calls** total, roughly **47% less input** than the preserved v1.3.3 aggregate baseline of 67,023 tokens. Vyce still reported zero cached-input tokens, so the measured reduction comes from Trebell's context/tool-loop work rather than assumed provider caching.
 
 ## Current prompt/context telemetry
 
