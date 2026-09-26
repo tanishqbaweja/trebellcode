@@ -22,13 +22,49 @@ function obviousToolNameCorruption(value){
   return /[<>]|arg_(?:key|value)|(?:^|\W)(?:tool|function)_?(?:name|call)(?:\W|$)/i.test(name);
 }
 
+function exposedToolPairs(tools=[]){
+  const out=[];
+  for(const entry of Array.isArray(tools)?tools:[]){
+    if(entry?.type==="namespace"&&entry.name&&Array.isArray(entry.tools)){
+      for(const tool of entry.tools){
+        const name=String(tool?.name||"").trim();if(name)out.push({namespace:String(entry.name),name});
+      }
+    }else if(entry?.type==="function"){
+      const name=String(entry.function?.name||entry.name||"").trim();if(name)out.push({namespace:"",name});
+    }
+  }
+  return out;
+}
+
+function protocolAliasMatches(namespace,name,tools=[]){
+  const rawNamespace=String(namespace||"").trim(),rawName=String(name||"").trim();if(!rawName)return [];
+  const pairs=exposedToolPairs(tools),namespaceExists=rawNamespace&&pairs.some(item=>item.namespace===rawNamespace);
+  return pairs.filter(item=>{
+    if(namespaceExists&&item.namespace!==rawNamespace)return false;
+    const aliases=new Set([
+      item.namespace?item.namespace+"__"+item.name:item.name,
+      item.namespace?item.namespace+"_"+item.name:item.name,
+      item.namespace?item.namespace+"."+item.name:item.name,
+      item.namespace?item.namespace+"/"+item.name:item.name,
+      ...(item.namespace.startsWith("trebell_")?["trebell_"+item.name]:[]),
+    ]);
+    return aliases.has(rawName);
+  });
+}
+
 function repairCorruptedToolCall(call,tools=[]){
   const namespace=String(call?.namespace||"").trim(),name=String(call?.name||"").trim();
-  if(!namespace||!name||!obviousToolNameCorruption(name))return {call,repaired:false};
+  if(!name)return {call,repaired:false};
+  const aliasMatches=protocolAliasMatches(namespace,name,tools);
+  if(aliasMatches.length===1){
+    const target=aliasMatches[0];
+    if(target.namespace!==namespace||target.name!==name)return {call:{...call,namespace:target.namespace||null,name:target.name},repaired:true,originalName:name,reason:"protocol_alias"};
+  }
+  if(!namespace||!obviousToolNameCorruption(name))return {call,repaired:false};
   const entry=(Array.isArray(tools)?tools:[]).find(item=>item?.type==="namespace"&&String(item.name||"")===namespace);
   const exposed=(Array.isArray(entry?.tools)?entry.tools:[]).filter(item=>String(item?.name||"").trim());
   if(exposed.some(item=>String(item.name)===name)||exposed.length!==1)return {call,repaired:false};
-  return {call:{...call,name:String(exposed[0].name)},repaired:true,originalName:name};
+  return {call:{...call,name:String(exposed[0].name)},repaired:true,originalName:name,reason:"single_tool_corruption"};
 }
 
 function messageText(message){
@@ -220,7 +256,7 @@ export async function runNativeAgentTurn({
     throwIfAborted(turnSignal);lastResponse=response||{};usage=aggregateUsage(usage,lastResponse.usage||{});
     const rawCalls=Array.isArray(lastResponse.toolCalls)?lastResponse.toolCalls:[],calls=rawCalls.map(call=>{
       const normalized=repairCorruptedToolCall(call,tools);
-      if(normalized.repaired)emit(onEvent,{name:"native.tool.call_repaired",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{namespace:String(call?.namespace||""),malformedNameLength:String(normalized.originalName||"").length,name:String(normalized.call?.name||"")}});
+      if(normalized.repaired)emit(onEvent,{name:"native.tool.call_repaired",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{namespace:String(call?.namespace||""),repairedNamespace:String(normalized.call?.namespace||""),malformedNameLength:String(normalized.originalName||"").length,name:String(normalized.call?.name||""),reason:normalized.reason||"corruption"}});
       return normalized.call;
     });
     const providerTelemetry=lastResponse.telemetry||null,turnUsage=lastResponse.usage||{},inputTokens=Number(turnUsage.inputTokens||0),cachedTokens=Number(turnUsage.cachedInputTokens||0),contextWindow=Number(metadata?.contextWindow||0);

@@ -83,6 +83,43 @@ test("native agent repairs obvious protocol-corrupted names only for single-tool
   const repaired=events.find(event=>event.name==="native.tool.call_repaired");assert.ok(repaired);assert.equal(repaired.data.name,"run");assert.equal(repaired.data.malformedNameLength,45);assert.equal("originalName" in repaired.data,false);
 });
 
+test("native agent repairs a uniquely identifiable flattened Trebell tool alias without guessing",async()=>{
+  let turns=0;const executions=[],events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"find the old symbol"}],onEvent:event=>events.push(event),
+    tools:[
+      {type:"namespace",name:"trebell_repo",tools:[{name:"search_code"},{name:"search_symbols"}]},
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"}]},
+    ],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"alias",namespace:null,name:"trebell_search_code",arguments:'{"query":"sumNumbers"}'}],usage:{}};
+      assert.equal(request.messages.at(-2).toolCalls[0].namespace,"trebell_repo");assert.equal(request.messages.at(-2).toolCalls[0].name,"search_code");
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executions.push(call);return {success:true,matches:[]}},
+  });
+  assert.equal(result.text,"done");assert.equal(result.toolCalls,1);
+  assert.equal(executions[0].namespace,"trebell_repo");assert.equal(executions[0].name,"search_code");
+  const repaired=events.find(event=>event.name==="native.tool.call_repaired");assert.ok(repaired);assert.equal(repaired.data.reason,"protocol_alias");assert.equal(repaired.data.repairedNamespace,"trebell_repo");assert.equal(repaired.data.name,"search_code");
+});
+
+test("native agent does not repair a flattened alias when the target tool name is ambiguous",async()=>{
+  const executions=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"open it"}],
+    tools:[
+      {type:"namespace",name:"trebell_browser",tools:[{name:"open"}]},
+      {type:"namespace",name:"trebell_mcp",tools:[{name:"open"}]},
+    ],
+    providerTurn:async request=>request.messages.some(message=>message.role==="tool")
+      ?{text:"stopped",toolCalls:[],usage:{}}
+      :{text:"",toolCalls:[{id:"ambiguous",namespace:null,name:"trebell_open",arguments:"{}"}],usage:{}},
+    executeTool:async call=>{executions.push(call);return {success:false,error:"unknown tool"}},
+  });
+  assert.equal(result.text,"stopped");assert.equal(executions[0].namespace,null);assert.equal(executions[0].name,"trebell_open");
+});
+
 test("native agent does not guess ordinary unknown tool names",async()=>{
   let turns=0;const executions=[];
   const result=await runNativeAgentTurn({
