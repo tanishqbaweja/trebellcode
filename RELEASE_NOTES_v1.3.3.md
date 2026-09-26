@@ -55,15 +55,15 @@ Version 1.3.3 hardens Trebell Native as a real first-party coding harness and ad
 
 ## Live efficiency result
 
-The first measured real Native coding run consumed roughly **40.4k input tokens** for the small validation fixture. The latest equivalent run completed successfully in **4 model turns / 12,006 input tokens / 373 output tokens**, with no failed tool calls, one stable prefix, one stable tool-schema hash, and independent post-turn verification.
+The first measured real Native coding run consumed roughly **40.4k input tokens** for the small validation fixture. The latest equivalent run completed successfully in **4 model turns / 11,997 input tokens / 373 output tokens**, with no failed tool calls, one stable prefix, one stable tool-schema hash, and independent post-turn verification.
 
 A new `bench:vyce:native` live benchmark also covers multi-file refactoring, failing-test repair, and large noisy command output in disposable repositories with independent verification and per-scenario token/latency/tool metrics. The final v1.3.3 benchmark passed all three scenarios:
 
-- multi-file refactor: **6 turns / 20,343 input tokens**;
-- failing-test repair: **6 turns / 22,055 input tokens**;
-- 92 KB noisy-output repair: **7 turns / 36,566 input tokens** with virtualized command output.
+- multi-file refactor: **5 turns / 16,349 input tokens**;
+- failing-test repair: **4 turns / 13,148 input tokens**;
+- 92 KB noisy-output repair: **7 turns / 37,526 input tokens** with virtualized command output.
 
-The three tasks totaled **19 model turns / 78,964 input tokens**. Large-output work remains an optimization area: virtualization materially bounds retained context and preserves useful failure signals, but model/tool-loop decisions can still dominate total cost.
+The three tasks totaled **16 model turns / 67,023 input tokens**. Large-output work remains an optimization area: virtualization materially bounds retained context and preserves useful failure signals, but model/tool-loop decisions can still dominate total cost.
 
 ## Release validation
 

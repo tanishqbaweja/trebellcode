@@ -536,7 +536,7 @@ That live test also drove concrete Native efficiency work. Advanced repository a
 - baseline tool functions dropped from **31 to 11**;
 - first-request tool-schema JSON dropped from roughly **14.3 KB to 4.9 KB**;
 - the first real model request used roughly **2.66k provider input tokens**;
-- the complete small coding task finished in **4 model turns / 12,006 input tokens**, down from the first measured run of roughly **40.4k input tokens**;
+- the complete small coding task finished in **4 model turns / 11,997 input tokens**, down from the first measured run of roughly **40.4k input tokens**;
 - all four requests kept one stable prefix and one stable tool-schema hash;
 - the model batched three independent reads, made one surgical edit, ran one verification command, and passed independent post-turn verification.
 
@@ -548,11 +548,11 @@ The controlled `test:vyce:cache` experiment sent repeated stable ~9k-token prefi
 
 For broader real-model regression work, `npm run bench:vyce:native` exercises disposable repositories covering multi-file refactoring, failing-test repair, and large noisy tool output with independent verification and per-scenario token/latency/tool metrics. The final v1.3.3 benchmark passed all three scenarios:
 
-- multi-file refactor: **6 model turns / 20,343 input tokens**;
-- failure-driven repair: **6 model turns / 22,055 input tokens**;
-- 92 KB noisy-output repair: **7 model turns / 36,566 input tokens**, with the full command output virtualized outside hot context while retaining failure evidence in the preview.
+- multi-file refactor: **5 model turns / 16,349 input tokens**;
+- failure-driven repair: **4 model turns / 13,148 input tokens**;
+- 92 KB noisy-output repair: **7 model turns / 37,526 input tokens**, with the full command output virtualized outside hot context while retaining failure evidence in the preview.
 
-Across those three live tasks, Trebell used **19 model turns / 78,964 input tokens** total. Vyce reported **0 cached input tokens**, so long/noisy tool loops remain a measured optimization target rather than being hidden behind assumed prompt caching.
+Across those three live tasks, Trebell used **16 model turns / 67,023 input tokens** total. Vyce reported **0 cached input tokens**, so long/noisy tool loops remain a measured optimization target rather than being hidden behind assumed prompt caching.
 
 ---
 

@@ -76,7 +76,7 @@ Automated baseline already proven for **VyceAi + deepseek-v4.1**:
 - stable progressive repository/MCP discovery keeps advanced schemas out of the baseline request;
 - large tool-output virtualization and repeated source-observation deduplication are covered by automated tests;
 - request-level telemetry records prompt/schema/history/tool-result estimates, provider bytes/latency, stable hashes, and cache usage;
-- the latest small live coding fixture completed in 4 model turns / 12,006 input tokens with no failed tool calls.
+- the latest small live coding fixture completed in 4 model turns / 11,997 input tokens with no failed tool calls.
 
 Command: `npm run test:vyce:native`
 
@@ -87,9 +87,10 @@ Additional live engineering checks:
 
 Final v1.3.3 benchmark baseline on VyceAi + `deepseek-v4.1`:
 
-- multi-file refactor: 6 model turns / 20,343 input tokens;
-- failure-driven repair: 6 model turns / 22,055 input tokens;
-- 92 KB noisy-output repair: 7 model turns / 36,566 input tokens;
+- multi-file refactor: 5 model turns / 16,349 input tokens;
+- failure-driven repair: 4 model turns / 13,148 input tokens;
+- 92 KB noisy-output repair: 7 model turns / 37,526 input tokens;
+- all three scenarios total: 16 model turns / 67,023 input tokens;
 - all three scenarios independently verified after the Native turn;
 - Vyce reported 0 cached input tokens.
 
