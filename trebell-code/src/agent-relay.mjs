@@ -604,15 +604,26 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const repoIo=remoteIo?createRemoteContextIo({environments,environmentId,root:runtimeCwd}):null;
       const environmentProfile=environmentId&&environments?environments.get(environmentId):null;
       const mcpServers=nativeMcpServersForSession(state?.settings?.().mcpServers||[],{environmentId});
+      const tools=[...platformTools];
+      const exposeToolNamespaces=namespaces=>{
+        for(const namespace of Array.isArray(namespaces)?namespaces:[]){
+          if(!namespace?.name)continue;
+          const index=tools.findIndex(item=>item?.name===namespace.name);
+          if(index<0){tools.push(namespace);continue}
+          const current=tools[index],byName=new Map((current.tools||[]).map(item=>[item.name,item]));for(const item of namespace.tools||[])byName.set(item.name,item);
+          tools[index]={...current,...namespace,tools:[...byName.values()]};
+        }
+      };
       const mcpBroker=new NativeMcpBroker({
         servers:mcpServers,cwd:runtimeCwd,environments,environmentId,localEnvironment:runtimeManager.childEnv(instance),remoteEnvironmentNames:runtimeManager.childEnvironmentKeys(instance),version,
         onElicitation:async({server,params})=>context.serverRequest("mcpServer/elicitation/request",{
           ...params,threadId:thread.id,serverName:server.name,_meta:{...(params?._meta||{}),trebell_source:"native",mcp_server_id:server.id},
         }),
+        onToolsDiscovered:exposeToolNamespaces,
         onEvent:event=>journal?.record?.({runtime:"native",provider:thread.providerMeta?.modelProvider||null,environmentId,threadId:thread.id,category:"mcp",name:event.name,status:event.status,data:event.data||{}}),
       });
       const mcpTools=await mcpBroker.connect();
-      const tools=[...platformTools,...mcpTools];
+      const mcpDiscovery=mcpBroker.discoveryNamespace();if(mcpDiscovery)tools.push(mcpDiscovery);
       const nativeBuiltins=createNativeBuiltins({
         root:runtimeCwd,environments,environmentId,environment:runtimeManager.env||process.env,platform:runtimeManager.platform||process.platform,
         backgroundProcesses:nativeBackgroundProcesses,threadId:thread.id,environmentNames:runtimeManager.childEnvironmentKeys(instance),

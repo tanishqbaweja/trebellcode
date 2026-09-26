@@ -36,6 +36,19 @@ test("Native MCP broker discovers real SDK tools, maps policy annotations, calls
   }finally{await broker.close()}
 });
 
+test("Native MCP progressive discovery exposes only matching schemas on demand",async()=>{
+  const exposed=[];
+  const broker=new NativeMcpBroker({
+    servers:servers(),cwd:root,localEnvironment:{PATH:process.env.PATH,PATHEXT:process.env.PATHEXT,SystemRoot:process.env.SystemRoot,WINDIR:process.env.WINDIR,HOME:process.env.HOME,USERPROFILE:process.env.USERPROFILE},version:"test",
+    onToolsDiscovered:namespaces=>exposed.push(namespaces),
+  });
+  try{
+    const all=await broker.connect();assert.equal(all[0].tools.length,3);
+    const discovery=broker.discoveryNamespace();assert.equal(discovery.name,"trebell_mcp");assert.deepEqual(discovery.tools.map(item=>item.name),["discover"]);assert.equal(broker.toolDefinition("trebell_mcp","discover").policy.kind,"read");
+    const result=await broker.call({namespace:"trebell_mcp",name:"discover",arguments:{query:"echo read",limit:4}});assert.equal(result.success,true);assert.equal(exposed.length,1);assert.equal(exposed[0].length,1);assert.deepEqual(exposed[0][0].tools.map(item=>item.name),["echo-read"]);assert.match(result.contentItems[0].text,/echo-read/);assert.doesNotMatch(result.contentItems[0].text,/mutate-state/);
+  }finally{await broker.close()}
+});
+
 test("Native MCP tools pass through Trebell policy instead of bypassing it",async()=>{
   const broker=new NativeMcpBroker({servers:servers(),cwd:root,localEnvironment:{PATH:process.env.PATH,PATHEXT:process.env.PATHEXT,SystemRoot:process.env.SystemRoot,WINDIR:process.env.WINDIR,HOME:process.env.HOME,USERPROFILE:process.env.USERPROFILE},version:"test"});
   try{

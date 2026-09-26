@@ -25,7 +25,7 @@ export function createNativeToolExecutor({
         const args=parseRepositoryToolArguments(call.definition.rawDefinition,call.arguments||{});
         return await invokeRepositoryTool(repositoryHandlers,call.definition.rawDefinition,args);
       }
-      if(call.definition?.source==="mcp"){
+      if(["mcp","mcp-discovery"].includes(call.definition?.source)){
         if(!mcpBroker)throw new Error("Native MCP broker is unavailable.");
         return await mcpBroker.call({namespace:call.namespace,name:call.name,arguments:call.arguments||{},signal:call.signal||null});
       }

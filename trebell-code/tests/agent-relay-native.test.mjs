@@ -97,7 +97,7 @@ module.exports={version:"fixture-ts-native",sys:{fileExists:fs.existsSync,readFi
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });
 
-test("Trebell Native exposes configured MCP tools directly to the model loop",async()=>{
+test("Trebell Native progressively discovers configured MCP tools inside the same model turn",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-mcp-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({
     agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null,
@@ -105,8 +105,10 @@ test("Trebell Native exposes configured MCP tools directly to the model loop",as
   });
   const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let calls=0,seenNamespace=null;
   const nativeProviderTurn=async request=>{
-    calls++;const namespace=(request.tools||[]).find(item=>item.name?.startsWith("mcp_"));assert.ok(namespace);assert.ok(namespace.tools.some(tool=>tool.name==="echo-read"));seenNamespace=namespace.name;
-    if(calls===1)return {id:"mcp-call",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"mcp-1",namespace:namespace.name,name:"echo-read",arguments:'{"text":"from-model"}'}],finishReason:"tool_calls",usage:{}};
+    calls++;const discovery=(request.tools||[]).find(item=>item.name==="trebell_mcp"),namespace=(request.tools||[]).find(item=>item.name?.startsWith("mcp_"));assert.ok(discovery);assert.ok(discovery.tools.some(tool=>tool.name==="discover"));
+    if(calls===1){assert.equal(namespace,undefined);return {id:"mcp-discover",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"mcp-discovery-1",namespace:"trebell_mcp",name:"discover",arguments:'{"query":"echo read"}'}],finishReason:"tool_calls",usage:{}}}
+    assert.ok(namespace);assert.ok(namespace.tools.some(tool=>tool.name==="echo-read"));seenNamespace=namespace.name;
+    if(calls===2){const discoveryObservation=request.messages.at(-1);assert.equal(discoveryObservation.role,"tool");assert.match(JSON.stringify(discoveryObservation.content),/echo-read/);return {id:"mcp-call",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"mcp-1",namespace:namespace.name,name:"echo-read",arguments:'{"text":"from-model"}'}],finishReason:"tool_calls",usage:{}}}
     const observation=request.messages.at(-1);assert.equal(observation.role,"tool");assert.match(JSON.stringify(observation.content),/echo:from-model:env=relay:secret=\[redacted\]/);
     return {id:"mcp-done",provider:request.provider,model:request.model,text:"MCP completed.",toolCalls:[],finishReason:"stop",usage:{}};
   };
@@ -115,7 +117,7 @@ test("Trebell Native exposes configured MCP tools directly to the model loop",as
   try{
     const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"read-only",dynamicTools:[]})).thread;
     const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"read-only",input:[{type:"text",text:"Use the configured MCP echo tool"}]})).turn;
-    const completed=await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);assert.equal(completed.params.turn.status,"completed",JSON.stringify(completed.params.turn.error||null));assert.equal(calls,2);
+    const completed=await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);assert.equal(completed.params.turn.status,"completed",JSON.stringify(completed.params.turn.error||null));assert.equal(calls,3);
     const persisted=(await rpc.request("thread/read",{threadId:thread.id})).thread;assert.deepEqual(persisted.providerMeta.nativeMcp.failures,[]);assert.deepEqual(persisted.providerMeta.nativeMcp.namespaces,[seenNamespace]);assert.ok(persisted.turns[0].items.some(item=>item.type==="dynamicToolCall"&&item.namespace===seenNamespace&&item.tool==="echo-read"&&item.success===true));
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
 });
@@ -126,11 +128,13 @@ test("Trebell Native reloads changed MCP settings on the next turn of the same t
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null,mcpServers:serverConfig("before")});
   const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let call=0,namespaceName=null;
   const nativeProviderTurn=async request=>{
-    call++;const namespace=(request.tools||[]).find(item=>item.name?.startsWith("mcp_"));assert.ok(namespace);namespaceName=namespace.name;
-    if(call===1||call===3)return{id:`reload-call-${call}`,provider:request.provider,model:request.model,text:"",toolCalls:[{id:`reload-tool-${call}`,namespace:namespace.name,name:"echo-read",arguments:JSON.stringify({text:call===1?"first":"second"})}],finishReason:"tool_calls",usage:{}};
+    call++;const discovery=(request.tools||[]).find(item=>item.name==="trebell_mcp"),namespace=(request.tools||[]).find(item=>item.name?.startsWith("mcp_"));assert.ok(discovery);
+    if(call===1||call===4){assert.equal(namespace,undefined);return{id:`reload-discover-${call}`,provider:request.provider,model:request.model,text:"",toolCalls:[{id:`reload-discover-tool-${call}`,namespace:"trebell_mcp",name:"discover",arguments:JSON.stringify({query:"echo read"})}],finishReason:"tool_calls",usage:{}}}
+    assert.ok(namespace);namespaceName=namespace.name;
+    if(call===2||call===5)return{id:`reload-call-${call}`,provider:request.provider,model:request.model,text:"",toolCalls:[{id:`reload-tool-${call}`,namespace:namespace.name,name:"echo-read",arguments:JSON.stringify({text:call===2?"first":"second"})}],finishReason:"tool_calls",usage:{}};
     const observation=String(request.messages.at(-1)?.content||"");
-    if(call===2){assert.match(observation,/echo:first:env=before/);return{id:"reload-done-before",provider:request.provider,model:request.model,text:"First MCP config used.",toolCalls:[],finishReason:"stop",usage:{}}}
-    assert.equal(call,4);assert.match(observation,/echo:second:env=after/);return{id:"reload-done-after",provider:request.provider,model:request.model,text:"Reloaded MCP config used.",toolCalls:[],finishReason:"stop",usage:{}};
+    if(call===3){assert.match(observation,/echo:first:env=before/);return{id:"reload-done-before",provider:request.provider,model:request.model,text:"First MCP config used.",toolCalls:[],finishReason:"stop",usage:{}}}
+    assert.equal(call,6);assert.match(observation,/echo:second:env=after/);return{id:"reload-done-after",provider:request.provider,model:request.model,text:"Reloaded MCP config used.",toolCalls:[],finishReason:"stop",usage:{}};
   };
   const events=[],journal={record:event=>events.push(event),recordProtocol:()=>{}};
   const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test",journal});
@@ -140,7 +144,7 @@ test("Trebell Native reloads changed MCP settings on the next turn of the same t
     const first=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"read-only",input:[{type:"text",text:"Use MCP before reload"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===first.id);
     state.updateSettings({mcpServers:serverConfig("after")});
     const second=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"read-only",input:[{type:"text",text:"Use MCP after reload"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===second.id);
-    assert.equal(call,4);assert.ok(events.some(event=>event.name==="native.mcp.reloaded"&&event.threadId===thread.id));const persisted=threadStore.get(thread.id);assert.equal(persisted.id,thread.id);assert.deepEqual(persisted.providerMeta.nativeMcp.namespaces,[namespaceName]);assert.equal(persisted.turns.length,2);
+    assert.equal(call,6);assert.ok(events.some(event=>event.name==="native.mcp.reloaded"&&event.threadId===thread.id));const persisted=threadStore.get(thread.id);assert.equal(persisted.id,thread.id);assert.deepEqual(persisted.providerMeta.nativeMcp.namespaces,[namespaceName]);assert.equal(persisted.turns.length,2);
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });
 

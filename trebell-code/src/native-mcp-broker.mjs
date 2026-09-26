@@ -6,6 +6,14 @@ import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 const MAX_TOOLS_PER_SERVER=100;
 const MAX_TOTAL_TOOLS=200;
 const MAX_TOOL_TEXT=128*1024;
+const DISCOVERY_NAMESPACE="trebell_mcp";
+const DISCOVERY_TOOL="discover";
+const DISCOVERY_DEFINITION=Object.freeze({
+  namespace:DISCOVERY_NAMESPACE,name:DISCOVERY_TOOL,description:"Search configured MCP capabilities and expose only matching tool schemas for the next model step.",source:"mcp-discovery",
+  inputSchema:{type:"object",properties:{query:{type:"string",description:"What capability or action is needed."},limit:{type:"integer",minimum:1,maximum:20}},required:["query"],additionalProperties:false},
+  policy:{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,externalSideEffect:false,asyncSafe:true},
+  requirements:{desktop:false,workspace:false,project:false,fullAccess:false,deviceAccess:false,delegation:false},rawDefinition:{discovery:true},
+});
 
 function safeName(value,{prefix="tool",max=64}={}){
   let text=String(value||"").trim().replace(/[^A-Za-z0-9_-]+/g,"_").replace(/^_+|_+$/g,"");
@@ -21,6 +29,14 @@ function uniqueName(base,used,max=64){
 }
 
 function boundedText(value,max=MAX_TOOL_TEXT){const text=String(value??"");return text.length>max?text.slice(0,max)+"\n[truncated]":text}
+function searchTerms(value){return String(value||"").toLowerCase().split(/[^a-z0-9_+-]+/).filter(Boolean).slice(0,20)}
+
+function toolSearchScore({tool,originalName,serverName},query){
+  const terms=searchTerms(query),name=String(originalName||"").toLowerCase(),description=String(tool?.description||tool?.title||"").toLowerCase(),server=String(serverName||"").toLowerCase(),haystack=`${name} ${description} ${server}`;
+  if(!terms.length)return 1;
+  let score=0;for(const term of terms){if(name===term)score+=100;else if(name.startsWith(term))score+=45;else if(name.includes(term))score+=30;if(description.includes(term))score+=12;if(server.includes(term))score+=8;if(haystack.includes(term))score+=2}
+  return score;
+}
 
 export function mcpToolPolicy(tool={}){
   const annotations=tool.annotations&&typeof tool.annotations==="object"?tool.annotations:{};
@@ -85,8 +101,8 @@ function definitionFor(serverEntry,toolEntry){
 }
 
 export class NativeMcpBroker{
-  constructor({servers=[],cwd=null,environments=null,environmentId=null,localEnvironment={},remoteEnvironmentNames=[],version="0.0.0",onElicitation=null,onEvent=null}={}){
-    this.servers=(Array.isArray(servers)?servers:[]).slice(0,50);this.cwd=cwd;this.environments=environments;this.environmentId=environmentId;this.localEnvironment={...localEnvironment};this.remoteEnvironmentNames=[...remoteEnvironmentNames];this.version=version;this.onElicitation=onElicitation;this.onEvent=onEvent;this.entries=[];this.definitions=new Map();this.started=false;
+  constructor({servers=[],cwd=null,environments=null,environmentId=null,localEnvironment={},remoteEnvironmentNames=[],version="0.0.0",onElicitation=null,onEvent=null,onToolsDiscovered=null}={}){
+    this.servers=(Array.isArray(servers)?servers:[]).slice(0,50);this.cwd=cwd;this.environments=environments;this.environmentId=environmentId;this.localEnvironment={...localEnvironment};this.remoteEnvironmentNames=[...remoteEnvironmentNames];this.version=version;this.onElicitation=onElicitation;this.onEvent=onEvent;this.onToolsDiscovered=onToolsDiscovered;this.entries=[];this.definitions=new Map();this.started=false;
   }
   event(name,status,data={}){try{this.onEvent?.({name,status,data,at:Date.now()})}catch{}}
   async connect(){
@@ -129,9 +145,38 @@ export class NativeMcpBroker{
       tools:entry.tools.map(item=>({type:"function",name:item.safeName,description:item.tool.description||item.tool.title||item.originalName,inputSchema:item.tool.inputSchema||{type:"object",properties:{}}})),
     }));
   }
-  toolDefinition(namespace,name){return this.definitions.get(String(namespace||"")+"\0"+String(name||""))||null}
+  discoveryNamespace(){
+    if(!this.definitions.size)return null;
+    return {type:"namespace",name:DISCOVERY_NAMESPACE,description:"Discover configured MCP capabilities on demand instead of loading every MCP schema into each model request.",tools:[{type:"function",name:DISCOVERY_TOOL,description:DISCOVERY_DEFINITION.description,inputSchema:DISCOVERY_DEFINITION.inputSchema}]};
+  }
+  discover({query="",limit=8}={}){
+    const max=Math.max(1,Math.min(20,Math.trunc(Number(limit)||8))),matches=[];
+    for(const entry of this.entries){
+      if(!entry.client)continue;
+      for(const toolEntry of entry.tools){
+        const score=toolSearchScore({tool:toolEntry.tool,originalName:toolEntry.originalName,serverName:entry.server.name},query);if(score<=0)continue;
+        matches.push({score,entry,toolEntry});
+      }
+    }
+    matches.sort((a,b)=>b.score-a.score||String(a.entry.server.name).localeCompare(String(b.entry.server.name))||String(a.toolEntry.originalName).localeCompare(String(b.toolEntry.originalName)));
+    const selected=matches.slice(0,max),grouped=new Map();
+    for(const match of selected){const list=grouped.get(match.entry.namespace)||[];list.push(match.toolEntry);grouped.set(match.entry.namespace,list)}
+    const namespaces=[];
+    for(const [namespace,tools] of grouped){const entry=selected.find(item=>item.entry.namespace===namespace)?.entry;if(!entry)continue;namespaces.push({type:"namespace",name:namespace,description:`MCP server: ${entry.server.name}`,tools:tools.map(item=>({type:"function",name:item.safeName,description:item.tool.description||item.tool.title||item.originalName,inputSchema:item.tool.inputSchema||{type:"object",properties:{}}}))})}
+    const publicMatches=selected.map(({entry,toolEntry})=>({namespace:entry.namespace,name:toolEntry.safeName,originalName:toolEntry.originalName,server:entry.server.name,description:String(toolEntry.tool.description||toolEntry.tool.title||"").slice(0,500)}));
+    return {query:String(query||""),matches:publicMatches,namespaces};
+  }
+  toolDefinition(namespace,name){
+    if(String(namespace||"")===DISCOVERY_NAMESPACE&&String(name||"")===DISCOVERY_TOOL&&this.definitions.size)return DISCOVERY_DEFINITION;
+    return this.definitions.get(String(namespace||"")+"\0"+String(name||""))||null;
+  }
   hasTool(namespace,name){return Boolean(this.toolDefinition(namespace,name))}
   async call({namespace,name,arguments:args={},signal=null}={}){
+    if(String(namespace||"")===DISCOVERY_NAMESPACE&&String(name||"")===DISCOVERY_TOOL){
+      const result=this.discover(args||{});try{this.onToolsDiscovered?.(result.namespaces)}catch{}
+      this.event("native.mcp.progressive_discovery","completed",{query:String(args?.query||"").slice(0,500),matchCount:result.matches.length,namespaces:result.namespaces.map(item=>item.name)});
+      return {success:true,contentItems:[{type:"inputText",text:JSON.stringify({query:result.query,tools:result.matches,note:result.matches.length?"Matching MCP tool schemas are now available for the next model step.":"No configured MCP tools matched this query."})}]};
+    }
     const definition=this.toolDefinition(namespace,name);if(!definition)throw new Error(`Unknown Native MCP tool: ${namespace}/${name}`);
     const entry=this.entries.find(item=>item.server.id===definition.rawDefinition.serverId&&item.namespace===namespace);if(!entry?.client)throw new Error("Native MCP server is not connected.");
     this.event("native.mcp.tool_started","running",{serverId:entry.server.id,namespace,name,toolName:definition.rawDefinition.toolName});
