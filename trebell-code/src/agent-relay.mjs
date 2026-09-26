@@ -585,6 +585,14 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     journal?.record?.({runtime:thread?.runtime||runtimeManager.activeRuntime(),provider:meta.runtimeInstanceId||null,environmentId:meta.environmentId??state?.settings?.().activeEnvironmentId??null,threadId,category:"budget",name:"goal.budget_blocked",status:"blocked",data:{goalStatus:goal?.status||null,tokenBudget:goal?.tokenBudget??null,tokensUsed:goal?.tokensUsed??0,timeBudgetMinutes:goal?.timeBudgetMinutes??null,timeUsedSeconds:goal?.timeUsedSeconds??0,turnBudget:goal?.turnBudget??null,turnsUsed:goal?.turnsUsed??0,toolCallBudget:goal?.toolCallBudget??null,toolCallsUsed:goal?.toolCallsUsed??0,toolCallTelemetryComplete:goal?.toolCallTelemetryComplete??true,childAgentBudget:goal?.childAgentBudget??null,childAgentsUsed:goal?.childAgentsUsed??null,childAgentTelemetryComplete:goal?.childAgentTelemetryComplete??false,costBudgetUsd:goal?.costBudgetUsd??null,costUsedUsd:goal?.costUsedUsd??null,costTelemetryComplete:goal?.costTelemetryComplete??true,tokenExhausted:gate.tokenExhausted,timeExhausted:gate.timeExhausted,turnExhausted:gate.turnExhausted,toolCallExhausted:gate.toolCallExhausted,childAgentExhausted:gate.childAgentExhausted,costExhausted:gate.costExhausted}});
     throw Object.assign(new Error(gate.reason),{code:-32001});
   }
+  function nativeGoalPromptOptions(goal){
+    const options={};if(!goal)return options;
+    if(goal.turnBudgetRemaining!=null)options.maxModelTurns=Math.max(1,Math.min(500,Math.floor(Number(goal.turnBudgetRemaining)||1)));
+    if(goal.timeBudgetRemainingMinutes!=null)options.maxWallTimeMs=Math.max(1,Math.floor(Number(goal.timeBudgetRemainingMinutes)*60_000));
+    if(goal.toolCallBudget!=null&&goal.toolCallTelemetryComplete!==false)options.maxToolCalls=Math.max(0,Number(goal.toolCallBudget)-Number(goal.toolCallsUsed||0));
+    if(goal.tokenBudgetRemaining!=null)options.maxOutputTokens=Math.max(1,Math.floor(Number(goal.tokenBudgetRemaining)||1));
+    return options;
+  }
   function reserveDelegation(threadId){
     const goal=durableGoal(threadId),pending=Math.max(0,Number(pendingDelegations.get(threadId))||0);
     if(goal?.childAgentBudget!=null&&Number(goal.childAgentsUsed||0)+pending>=Number(goal.childAgentBudget)){
@@ -696,6 +704,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         ],onEvent:event=>{
           const current=threadStore.get(thread.id)||thread,providerId=current?.providerMeta?.modelProvider||state?.settings?.().modelProvider||null;
           const category=String(event?.name||"").startsWith("native.model.")?"model":String(event?.name||"").startsWith("native.tool.")?"tool":"turn";
+          if(event?.name==="native.model.requested"){
+            const active=[...(current?.turns||[])].reverse().find(item=>item?.status==="inProgress"),count=Math.max(0,Math.floor(Number(event?.data?.modelTurn)||0));
+            if(active&&count>Number(active.modelTurns||0))threadStore.updateTurn(thread.id,active.id,{modelTurns:count});
+          }
           journal?.record?.({runtime:"native",provider:providerId,environmentId:current?.providerMeta?.environmentId??null,threadId:thread.id,category,name:event.name,status:event.status,data:event.data||{}});
         },
       });
@@ -754,8 +766,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const usage=usageFromPromptResult(result,session.__usage);if(!usage)return;const current=threadStore.get(thread.id)||thread;
       state?.recordUsage?.({runtime:current.runtime||runtimeManager.activeRuntime(),provider:agentProviderIdentity(current),model:current.model||model||null,environmentId:current.providerMeta?.environmentId??null,threadId:thread.id,turnId:turn.id,usage:usage.usage,cost:usage.cost,at:usage.at||Date.now()});
     };
+    const persistModelTurns=value=>{
+      if(thread.runtime!=="native")return;const count=Number(value);if(!Number.isFinite(count)||count<0)return;
+      threadStore.updateTurn(thread.id,turn.id,{modelTurns:Math.max(0,Math.floor(count))});
+    };
     promptPromise.then(result=>{
-      persistUsage(result);
+      persistUsage(result);persistModelTurns(result?.raw?.modelTurns);
       const providerMessageId=result?.providerMessageId||result?.userMessageId||null;
       const providerUserMessageId=result?.userMessageId||null;
       if(providerMessageId||providerUserMessageId)threadStore.updateTurn(thread.id,turn.id,{...(providerMessageId?{providerMessageId}:{}),...(providerUserMessageId?{providerUserMessageId}:{})});
@@ -773,7 +789,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
           return;
         }
       }
-      persistUsage(null);
+      persistUsage(null);persistModelTurns(error?.nativeModelTurns);
       const completed=threadStore.finishTurn(thread.id,turn.id,{status:"failed",error:{message:error.message}});emit("error",{threadId:thread.id,turnId:turn.id,message:error.message});emit("turn/completed",{threadId:thread.id,turn:completed});
     }).finally(()=>{clearLiveToolOutput(thread.id);recoveryInFlight.delete(thread.id)});
   }
@@ -784,12 +800,12 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const recovery=thread.recovery;if(!recovery?.pending||!thread.providerSessionId||recoveryInFlight.has(thread.id))continue;
       recoveryInFlight.add(thread.id);
       try{
-        const session=await ensureSession(thread,context,{model:thread.model||null});const turn=threadStore.restartTurn(thread.id,recovery.turnId);
+        const goal=assertGoalBudget(thread.id),session=await ensureSession(thread,context,{model:thread.model||null});const turn=threadStore.restartTurn(thread.id,recovery.turnId);
         if(!turn)throw new Error("Interrupted turn was not found");
         session.__assistant="";session.__usage=null;emit("turn/started",{threadId:thread.id,turn});emit("thread/status/changed",{threadId:thread.id,status:{type:"active",activeFlags:[]}});
         const continueText="Continue where you left off.";
         const prompt=await contextualAgentPrompt([{type:"text",text:continueText}],await withDurableContext(thread.id,{},continueText));
-        settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,{messageId:randomUUID(),agent:thread.agent||null}),model:thread.model||null,context});
+        settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,{messageId:randomUUID(),agent:thread.agent||null,...(thread.runtime==="native"?nativeGoalPromptOptions(goal):{})}),model:thread.model||null,context});
       }catch(error){
         const failed=threadStore.finishTurn(thread.id,recovery.turnId,{status:"failed",error:{message:`Could not continue after restart: ${error.message}`}});emit("error",{threadId:thread.id,turnId:recovery.turnId,message:error.message});if(failed)emit("turn/completed",{threadId:thread.id,turn:failed});recoveryInFlight.delete(thread.id);
       }
@@ -1247,8 +1263,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       if(selectedAgent!==thread.agent)threadStore.update(thread.id,{agent:selectedAgent});
       const promptOptions={messageId:randomUUID(),agent:selectedAgent};
       if(session instanceof NativeAgentSession&&Array.isArray(params.toolAllowlist)&&params.toolAllowlist.length)promptOptions.toolAllowlist=params.toolAllowlist.map(item=>String(item||"").trim()).filter(Boolean).slice(0,100);
-      if(session instanceof NativeAgentSession&&turnGoal?.toolCallBudget!=null&&turnGoal.toolCallTelemetryComplete!==false)promptOptions.maxToolCalls=Math.max(0,Number(turnGoal.toolCallBudget)-Number(turnGoal.toolCallsUsed||0));
-      if(session instanceof NativeAgentSession&&turnGoal?.tokenBudgetRemaining!=null)promptOptions.maxOutputTokens=Math.max(1,Math.floor(Number(turnGoal.tokenBudgetRemaining)||1));
+      if(session instanceof NativeAgentSession)Object.assign(promptOptions,nativeGoalPromptOptions(turnGoal));
       settlePrompt({thread,turn,session,promptPromise:session.prompt(prompt,promptOptions),model:params.model||thread.model||null,context});
       return {turn};
     }

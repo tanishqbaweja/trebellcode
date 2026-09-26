@@ -103,7 +103,9 @@ export function enrichGoal(goal,{usage=null,turns=[],toolCallsUsed=null,toolCall
     if(turn?.status==="inProgress")return total+Math.max(0,now-started*1000);
     const completed=Number(turn?.completedAt)||0;return total+(completed?Math.max(0,(completed-started)*1000):0);
   },0);
-  const tokensUsed=Math.max(0,Number(usage?.totalTokens)||0),timeUsedSeconds=Math.floor(timeMs/1000),turnsUsed=relevantTurns.length;
+  const tokensUsed=Math.max(0,Number(usage?.totalTokens)||0),timeUsedSeconds=Math.floor(timeMs/1000),turnsUsed=relevantTurns.reduce((total,turn)=>{
+    const exact=Number(turn?.modelTurns);return total+(Number.isFinite(exact)&&exact>=0?Math.floor(exact):1);
+  },0);
   const derivedToolCalls=toolCallsFromTurns(relevantTurns),resolvedToolCalls=toolCallsUsed==null?derivedToolCalls:Math.max(0,Number(toolCallsUsed)||0),resolvedChildAgents=childAgentsUsed==null?null:Math.max(0,Number(childAgentsUsed)||0);
   const tokenBudget=Number(goal.tokenBudget)||null,timeBudgetMinutes=Number(goal.timeBudgetMinutes)||null,turnBudget=Number(goal.turnBudget)||null,toolCallBudget=Number(goal.toolCallBudget)||null,childAgentBudget=goal.childAgentBudget==null?null:Number(goal.childAgentBudget),costBudgetUsd=Number(goal.costBudgetUsd)||null;
   const usageRecords=Math.max(0,Number(usage?.records??usage?.turns)||0),costKnown=Math.max(0,Number(usage?.costKnown)||0),knownCost=Math.max(0,Number(usage?.costUsd)||0);

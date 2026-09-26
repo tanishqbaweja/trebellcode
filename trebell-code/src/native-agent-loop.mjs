@@ -86,26 +86,36 @@ async function retryDelay(ms,signal){
 }
 
 export function nativeAgentBudget(options={}){
+  const wallTime=Number(options.maxWallTimeMs);
   return {
     maxModelTurns:boundedInteger(options.maxModelTurns,24,{min:1,max:500}),
     maxToolCalls:boundedInteger(options.maxToolCalls,100,{min:0,max:5000}),
+    maxWallTimeMs:Number.isFinite(wallTime)&&wallTime>0?Math.floor(wallTime):null,
   };
 }
 
 export async function runNativeAgentTurn({
   providerTurn,executeTool,model,messages=[],tools=[],provider=null,toolChoice="auto",
-  maxOutputTokens=null,temperature=null,parallelToolCalls=true,maxModelTurns=24,maxToolCalls=100,
+  maxOutputTokens=null,temperature=null,parallelToolCalls=true,maxModelTurns=24,maxToolCalls=100,maxWallTimeMs=null,
   maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,signal=null,onEvent=null,metadata=null,
 }={}){
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
-  const budget=nativeAgentBudget({maxModelTurns,maxToolCalls}),conversation=[...(Array.isArray(messages)?messages:[])];
+  const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])];
   let modelTurns=0,toolCalls=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0},lastResponse=null;
-  const startedAt=Date.now(),started=nowMs();
-  emit(onEvent,{name:"native.turn.started",status:"running",model:String(model),provider:provider||null,data:{...metadata,maxModelTurns:budget.maxModelTurns,maxToolCalls:budget.maxToolCalls}});
+  const startedAt=Date.now(),started=nowMs(),wallController=budget.maxWallTimeMs!=null?new AbortController():null,deadlineAt=budget.maxWallTimeMs==null?null:Date.now()+budget.maxWallTimeMs;
+  let wallTimer=null;
+  const armWallTimer=()=>{
+    if(!wallController||wallController.signal.aborted||deadlineAt==null)return;
+    const remaining=deadlineAt-Date.now();if(remaining<=0){wallController.abort("native-wall-time-budget");return}
+    wallTimer=setTimeout(armWallTimer,Math.min(remaining,2_147_000_000));
+  };
+  armWallTimer();
+  const turnSignal=wallController?(signal?AbortSignal.any([signal,wallController.signal]):wallController.signal):signal;
+  emit(onEvent,{name:"native.turn.started",status:"running",model:String(model),provider:provider||null,data:{...metadata,maxModelTurns:budget.maxModelTurns,maxToolCalls:budget.maxToolCalls,maxWallTimeMs:budget.maxWallTimeMs}});
   try{for(;;){
-    throwIfAborted(signal);
+    throwIfAborted(turnSignal);
     applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_model"});
     if(modelTurns>=budget.maxModelTurns){
       const error=new Error(`Native agent model-turn budget exhausted (${modelTurns}/${budget.maxModelTurns}).`);error.code="native_model_turn_budget";
@@ -117,7 +127,7 @@ export async function runNativeAgentTurn({
     const providerAttempts=boundedInteger(maxProviderAttempts,3,{min:1,max:8});let response=null;
     for(let attempt=1;attempt<=providerAttempts;attempt++){
       try{
-        response=await providerTurn({model,provider,messages:conversation,tools,toolChoice,maxOutputTokens,temperature,parallelToolCalls,signal});break;
+        response=await providerTurn({model,provider,messages:conversation,tools,toolChoice,maxOutputTokens,temperature,parallelToolCalls,signal:turnSignal});break;
       }catch(error){
         if(error?.nativeSteered){
           if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"model_request_interrupted"})){
@@ -127,16 +137,16 @@ export async function runNativeAgentTurn({
           }
           throw error;
         }
-        if(signal?.aborted||error?.name==="AbortError")throw abortError(signal);
+        if(turnSignal?.aborted||error?.name==="AbortError")throw abortError(turnSignal);
         const retryable=nativeProviderRetryable(error),last=attempt>=providerAttempts;
         if(!retryable||last)throw error;
         const delay=Math.max(0,Math.min(10_000,Math.trunc(Number(retryBaseDelayMs)||0)*2**(attempt-1)));
         emit(onEvent,{name:"native.model.retrying",status:"retrying",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,attempt,nextAttempt:attempt+1,maxAttempts:providerAttempts,delayMs:delay,status:Number(error.status||error.statusCode||0)||null,code:error.code||null,message:String(error.message||error).slice(0,500)}});
-        await retryDelay(delay,signal);
+        await retryDelay(delay,turnSignal);
       }
     }
     if(response==null)continue;
-    throwIfAborted(signal);lastResponse=response||{};usage=aggregateUsage(usage,lastResponse.usage||{});
+    throwIfAborted(turnSignal);lastResponse=response||{};usage=aggregateUsage(usage,lastResponse.usage||{});
     const calls=Array.isArray(lastResponse.toolCalls)?lastResponse.toolCalls:[];
     emit(onEvent,{name:"native.model.completed",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,durationMs:duration(requestStarted),toolCallCount:calls.length,finishReason:lastResponse.finishReason||null,usage:lastResponse.usage||null}});
     if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"after_model"}))continue;
@@ -153,7 +163,7 @@ export async function runNativeAgentTurn({
     let redirected=false;
     for(let callIndex=0;callIndex<calls.length;callIndex++){
       const call=calls[callIndex];
-      throwIfAborted(signal);
+      throwIfAborted(turnSignal);
       const steerNow=steeringMessages(consumeSteering);
       if(steerNow.length){
         for(const skipped of calls.slice(callIndex)){
@@ -175,11 +185,11 @@ export async function runNativeAgentTurn({
       emit(onEvent,{name:"native.tool.requested",status:"running",model:String(model),provider:provider||null,data:{toolCall:toolCalls,callId,namespace,name}});
       let output,success=true,errorMessage=null;
       try{
-        output=await executeTool({id:callId,namespace,name,arguments:args,rawArguments:call?.arguments??"{}",signal,modelTurn:modelTurns,toolCall:toolCalls});
-        throwIfAborted(signal);
+        output=await executeTool({id:callId,namespace,name,arguments:args,rawArguments:call?.arguments??"{}",signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
+        throwIfAborted(turnSignal);
         if(output?.success===false){success=false;errorMessage=String(output.error||output.message||"Tool execution failed.")}
       }catch(error){
-        if(signal?.aborted||error?.name==="AbortError")throw abortError(signal);
+        if(turnSignal?.aborted||error?.name==="AbortError")throw abortError(turnSignal);
         success=false;errorMessage=error?.message||String(error);output={success:false,error:errorMessage};
       }
       const content=resultContent(output)||(!success?errorMessage||"Tool execution failed.":"Tool completed without text output.");
@@ -187,10 +197,15 @@ export async function runNativeAgentTurn({
       conversation.push({role:"tool",toolCallId:callId,content});
     }
     if(redirected)continue;
-  }}catch(error){
+  }}catch(caught){
+    let error=caught;
+    if(wallController?.signal.aborted&&!signal?.aborted){
+      error=new Error(`Native agent wall-time budget exhausted (${budget.maxWallTimeMs}ms).`);error.code="native_wall_time_budget";
+      emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(model),provider:provider||null,data:{reason:error.code,modelTurns,toolCalls,maxWallTimeMs:budget.maxWallTimeMs}});
+    }
     if(error&&typeof error==="object"){
       error.nativeUsage={...usage};error.nativeModelTurns=modelTurns;error.nativeToolCalls=toolCalls;
     }
     throw error;
-  }
+  }finally{if(wallTimer)clearTimeout(wallTimer)}
 }

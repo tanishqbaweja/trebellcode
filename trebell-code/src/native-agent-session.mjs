@@ -146,7 +146,7 @@ export class NativeAgentSession{
       return {summary,usage:result.usage,model:result.model||this.model,provider:result.provider||this.provider,modelTurns:result.modelTurns,sourceMessageCount:requestMessages.length-1};
     }finally{this.controller=null}
   }
-  async prompt(prompt,{messageId=null,maxModelTurns=24,maxToolCalls=100,maxOutputTokens=null,toolAllowlist=null}={}){
+  async prompt(prompt,{messageId=null,maxModelTurns=24,maxToolCalls=100,maxOutputTokens=null,maxWallTimeMs=null,toolAllowlist=null}={}){
     if(this.closed)throw new Error("Native session is closed");if(!this.model)throw new Error("Trebell Native requires a model");
     if(this.turnActive)throw new Error("Trebell Native already has a running turn");
     this.controller=new AbortController();this.turnActive=true;this.pendingSteering=[];const user=promptMessage(prompt),base=[...this.messages,user];
@@ -160,7 +160,7 @@ export class NativeAgentSession{
     };
     try{
       const result=await runNativeAgentTurn({
-        provider:this.provider,model:this.model,messages:base,tools:this.tools,maxModelTurns,maxToolCalls,maxOutputTokens,signal:this.controller.signal,onEvent:this.onEvent,
+        provider:this.provider,model:this.model,messages:base,tools:this.tools,maxModelTurns,maxToolCalls,maxOutputTokens,maxWallTimeMs,signal:this.controller.signal,onEvent:this.onEvent,
         consumeSteering:()=>this.pendingSteering.splice(0),
         providerTurn:async request=>{
           const modelController=new AbortController();this.modelController=modelController;

@@ -81,6 +81,20 @@ test("native agent enforces model-turn and tool-call budgets before extra work s
   assert.equal(turns,2);
 });
 
+test("native agent wall-time budget aborts in-flight provider work and reports a budget failure",async()=>{
+  const events=[];let providerAborted=false;
+  await assert.rejects(()=>runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"take too long"}],maxWallTimeMs:30,onEvent:event=>events.push(event),
+    providerTurn:async({signal})=>new Promise((resolve,reject)=>{
+      const aborted=()=>{providerAborted=true;const error=new Error("provider aborted");error.name="AbortError";reject(error)};
+      if(signal.aborted)return aborted();signal.addEventListener("abort",aborted,{once:true});
+      setTimeout(()=>resolve({text:"too late",toolCalls:[],usage:{}}),5_000);
+    }),
+    executeTool:async()=>"",
+  }),error=>error?.code==="native_wall_time_budget"&&/wall-time budget exhausted/i.test(error.message));
+  assert.equal(providerAborted,true);const blocked=events.find(event=>event.name==="native.turn.blocked"&&event.data?.reason==="native_wall_time_budget");assert.ok(blocked);assert.equal(blocked.data.maxWallTimeMs,30);
+});
+
 test("native agent cancellation stops before provider or later tool work",async()=>{
   const pre=new AbortController();pre.abort();let providerCalls=0;
   await assert.rejects(()=>runNativeAgentTurn({model:"test-model",messages:[],signal:pre.signal,providerTurn:async()=>{providerCalls++;return{text:"done",toolCalls:[]}},executeTool:async()=>""}),error=>error?.name==="AbortError");
@@ -129,6 +143,6 @@ test("native agent cancellation during provider retry backoff prevents the next 
 });
 
 test("native agent budget normalization stays bounded",()=>{
-  assert.deepEqual(nativeAgentBudget({maxModelTurns:0,maxToolCalls:-5}),{maxModelTurns:1,maxToolCalls:0});
-  assert.deepEqual(nativeAgentBudget({maxModelTurns:9999,maxToolCalls:99999}),{maxModelTurns:500,maxToolCalls:5000});
+  assert.deepEqual(nativeAgentBudget({maxModelTurns:0,maxToolCalls:-5}),{maxModelTurns:1,maxToolCalls:0,maxWallTimeMs:null});
+  assert.deepEqual(nativeAgentBudget({maxModelTurns:9999,maxToolCalls:99999,maxWallTimeMs:1234.9}),{maxModelTurns:500,maxToolCalls:5000,maxWallTimeMs:1234});
 });

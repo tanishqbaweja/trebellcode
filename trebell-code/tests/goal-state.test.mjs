@@ -21,6 +21,17 @@ test("goal metrics reconstruct token and agent-work time from persisted evidence
   assert.equal(enriched.turnsUsed,2);assert.equal(enriched.turnBudgetRemaining,0);assert.equal(enriched.toolCallsUsed,2);assert.equal(enriched.toolCallBudgetRemaining,0);assert.equal(enriched.childAgentsUsed,2);assert.equal(enriched.childAgentBudgetRemaining,0);assert.equal(enriched.costUsedUsd,2.5);assert.equal(enriched.costTelemetryComplete,true);assert.equal(enriched.costBudgetRemainingUsd,0);assert.equal(enriched.budgetExhausted,true);
 });
 
+test("goal model-turn budget uses exact Native telemetry while legacy turns conservatively count as one",()=>{
+  const goal={threadId:"thread-native",objective:"Bound model work",status:"active",createdAt:1_000,turnBudget:5};
+  const enriched=enrichGoal(goal,{turns:[
+    {id:"legacy",startedAt:2,status:"completed"},
+    {id:"native-a",startedAt:3,status:"completed",modelTurns:2},
+    {id:"native-b",startedAt:4,status:"completed",modelTurns:1},
+  ]});
+  assert.equal(enriched.turnsUsed,4);assert.equal(enriched.turnBudgetRemaining,1);assert.equal(enriched.budgetExhausted,false);
+  const exhausted=enrichGoal({...goal,turnBudget:4},{turns:[{startedAt:2,status:"completed",modelTurns:4}]});assert.equal(exhausted.turnsUsed,4);assert.equal(exhausted.budgetExhausted,true);
+});
+
 test("goal budgets reject invalid values instead of silently inventing state",()=>{
   assert.throws(()=>normalizeGoal({threadId:"t",patch:{objective:"x",tokenBudget:-1}}),/positive whole number/i);
   assert.throws(()=>normalizeGoal({threadId:"t",patch:{objective:"x",costBudgetUsd:0}}),/positive number/i);
