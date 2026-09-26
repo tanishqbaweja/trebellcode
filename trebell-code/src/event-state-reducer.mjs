@@ -78,8 +78,9 @@ export function reduceThreadEvents(events=[],options={}){
     }else if(name==="delegation.started"){
       state.delegation.started++;state.delegation.lastChildThreadId=text(data.childThreadId,300)||null;state.delegation.lastAt=at;
     }
-    if(["failed","error","blocked"].includes(String(event?.status||"").toLowerCase())&&!["turn.completed","verification.completed","goal.budget_blocked","policy.decision","error"].includes(name)){
-      failure(event,data.message||data.reason||name,event.category||"event");
+    if(["failed","error","blocked","uncertain"].includes(String(event?.status||"").toLowerCase())&&!["turn.completed","verification.completed","goal.budget_blocked","policy.decision","error"].includes(name)){
+      const uncertain=String(event?.status||"").toLowerCase()==="uncertain";
+      failure(event,data.error||data.message||data.reason||name,uncertain?"uncertain":event.category||"event");
     }
   }
   return state;

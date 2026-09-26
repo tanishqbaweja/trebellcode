@@ -33,6 +33,15 @@ test("thread event reducer reconstructs budget blocks and bounded unique failure
   assert.equal(state.policy.blockedCount,1);assert.equal(state.recentFailures.filter(item=>item.message==="Provider disconnected").length,1);
 });
 
+test("thread event reducer preserves uncertain external tool outcomes as reviewable evidence",()=>{
+  const state=reduceThreadEvents([
+    {at:1,threadId:"thread-uncertain",turnId:"turn-1",name:"turn/started",status:"running"},
+    {at:2,threadId:"thread-uncertain",turnId:"turn-1",category:"tool",name:"native.tool.completed",status:"uncertain",data:{callId:"push-1",namespace:"trebell_source_control",name:"push",uncertain:true,retrySafe:false,error:"Outcome uncertain: connection reset after dispatch."}},
+    {at:3,threadId:"thread-uncertain",turnId:"turn-1",name:"turn/completed",status:"completed",data:{turn:{id:"turn-1",status:"completed"}}},
+  ]);
+  assert.equal(state.status,"idle");assert.equal(state.recentFailures.length,1);assert.equal(state.recentFailures[0].kind,"uncertain");assert.match(state.recentFailures[0].message,/connection reset after dispatch/i);
+});
+
 test("event journal reducer materializes independent thread states",()=>{
   const materialized=reduceEventJournal([
     {at:1,threadId:"a",turnId:"a1",name:"turn/started"},

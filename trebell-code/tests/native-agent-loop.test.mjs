@@ -48,6 +48,23 @@ test("native agent turns tool failures into bounded observations instead of cras
   assert.equal(result.text,"I handled the tool error.");assert.equal(result.modelTurns,2);assert.equal(result.toolCalls,1);
 });
 
+test("native agent trace preserves uncertain external tool outcomes",async()=>{
+  let turns=0;const events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"send it"}],onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"call-uncertain",namespace:"trebell_browser",name:"click",arguments:'{"ref":"send"}'}],usage:{}};
+      const observation=request.messages.at(-1);assert.equal(observation.role,"tool");assert.match(observation.content,/outcome uncertain/i);assert.match(observation.content,/retrySafe/i);
+      return {text:"I will inspect state before retrying.",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>({success:false,error:"Outcome uncertain: RPC timed out. Inspect the real-world state before repeating this action.",uncertain:true,retrySafe:false}),
+  });
+  const completed=events.find(event=>event.name==="native.tool.completed");
+  assert.equal(completed.status,"uncertain");assert.equal(completed.data.success,false);assert.equal(completed.data.uncertain,true);assert.equal(completed.data.retrySafe,false);
+  assert.equal(result.text,"I will inspect state before retrying.");
+});
+
 test("native agent preserves image tool observations for the next model turn",async()=>{
   let turns=0;
   const result=await runNativeAgentTurn({

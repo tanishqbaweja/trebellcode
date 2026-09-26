@@ -184,17 +184,17 @@ export async function runNativeAgentTurn({
       const callId=String(call?.id||`native-tool-${toolCalls}`),namespace=call?.namespace?String(call.namespace):null,name=String(call?.name||"tool"),args=safeArguments(call?.arguments);
       const toolStarted=nowMs();
       emit(onEvent,{name:"native.tool.requested",status:"running",model:String(model),provider:provider||null,data:{toolCall:toolCalls,callId,namespace,name}});
-      let output,success=true,errorMessage=null;
+      let output,success=true,errorMessage=null,uncertain=false,retrySafe=false;
       try{
         output=await executeTool({id:callId,namespace,name,arguments:args,rawArguments:call?.arguments??"{}",signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
         throwIfAborted(turnSignal);
-        if(output?.success===false){success=false;errorMessage=String(output.error||output.message||"Tool execution failed.")}
+        if(output?.success===false){success=false;errorMessage=String(output.error||output.message||"Tool execution failed.");uncertain=output?.uncertain===true;retrySafe=output?.retrySafe===true}
       }catch(error){
         if(turnSignal?.aborted||error?.name==="AbortError")throw abortError(turnSignal);
         success=false;errorMessage=error?.message||String(error);output={success:false,error:errorMessage};
       }
       const content=resultContent(output)||(!success?errorMessage||"Tool execution failed.":"Tool completed without text output.");
-      emit(onEvent,{name:"native.tool.completed",status:success?"completed":"failed",model:String(model),provider:provider||null,data:{toolCall:toolCalls,callId,namespace,name,durationMs:duration(toolStarted),success,error:errorMessage}});
+      emit(onEvent,{name:"native.tool.completed",status:success?"completed":uncertain?"uncertain":"failed",model:String(model),provider:provider||null,data:{toolCall:toolCalls,callId,namespace,name,durationMs:duration(toolStarted),success,uncertain,retrySafe,error:errorMessage}});
       conversation.push({role:"tool",toolCallId:callId,content});
     }
     if(redirected)continue;
