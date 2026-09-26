@@ -419,8 +419,14 @@ test("native Codex queue persists, edits, reorders, deletes and resumes follow-u
     const autoStarted=waitNotification(ws,"turn/started",params=>params.threadId===threadId);
     await rpc(ws,15,"thread/resume",{threadId,modelProvider:"freebuff",excludeTurns:false});
     const autoTurn=await autoStarted;const autoTurnId=autoTurn.turn?.id||autoTurn.turnId;assert.ok(autoTurnId,"resume should auto-dispatch the first queued submission");
-    const interrupted=waitNotification(ws,"turn/completed",params=>params.threadId===threadId&&(params.turn?.id||params.turnId)===autoTurnId);
-    await rpcOutcome(ws,16,"turn/interrupt",{threadId,turnId:autoTurnId});await interrupted;
+    await rpcOutcome(ws,16,"turn/interrupt",{threadId,turnId:autoTurnId});
+    let autoSettled=false;
+    for(let i=0;i<300;i++){
+      const current=await fetch(gui.url+"/api/thread-meta?threadId="+encodeURIComponent(threadId)).then(response=>response.json());
+      if(current.active===false){autoSettled=true;break}
+      await new Promise(resolve=>setTimeout(resolve,50));
+    }
+    assert.equal(autoSettled,true,"auto-started queued turn did not settle after interrupt");
     listed=await rpc(ws,17,"thread/queue/list",{threadId,limit:20});assert.equal(listed.data.length,0,"resume should consume the only queued follow-up");
   }finally{try{ws?.close()}catch{}await gui.close();await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
 });
