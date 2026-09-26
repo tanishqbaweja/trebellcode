@@ -512,13 +512,26 @@ function formQuestions(params){
   }));
 }
 
-export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,state,environments=null,contextEngine=null,repositoryKnowledge=null,nativeProviderTurn=null,nativeModelContextWindow=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null,journal=null,prepareDelegationWorkspace=null,cleanupDelegationWorkspace=null}={}){
+export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,state,environments=null,contextEngine=null,repositoryKnowledge=null,nativeProviderTurn=null,nativeModelContextWindow=null,version="0.0.0",path="/api/agent/ws",log=()=>{},onThreadDeleted=null,journal=null,checkpoints=null,prepareDelegationWorkspace=null,cleanupDelegationWorkspace=null}={}){
   const wss=new WebSocketServer({noServer:true});
   const sessions=new Map();
   const socketContexts=new Set();
   const recoveryInFlight=new Set();
   const liveToolOutput=new Map();
   const pendingDelegations=new Map();
+  async function createVerificationCheckpoint(thread,label){
+    if(!checkpoints?.create||!thread?.cwd||thread.providerMeta?.environmentId)return null;
+    try{
+      const checkpoint=await checkpoints.create({cwd:thread.cwd,threadId:thread.id,label});
+      journal?.record?.({runtime:thread.runtime||runtime,provider:thread.providerMeta?.modelProvider||thread.providerMeta?.runtimeInstanceId||null,environmentId:thread.providerMeta?.environmentId??null,threadId:thread.id,category:"checkpoint",name:checkpoint?.supported===false?"checkpoint.skipped":"checkpoint.created",status:checkpoint?.supported===false?"unsupported":"completed",data:{checkpointId:checkpoint?.id||null,root:checkpoint?.root||null,label:checkpoint?.label||null,reason:checkpoint?.reason||null}});
+      return checkpoint?.supported===false?null:checkpoint;
+    }catch(error){journal?.record?.({runtime:thread.runtime||runtime,provider:thread.providerMeta?.modelProvider||thread.providerMeta?.runtimeInstanceId||null,environmentId:thread.providerMeta?.environmentId??null,threadId:thread.id,category:"checkpoint",name:"checkpoint.create_failed",status:"error",data:{message:redactSecretText(error?.message||String(error),{environment:runtimeManager.env||process.env})}});return null}
+  }
+  function linkVerificationCheckpoint(thread,checkpoint,turnId){
+    if(!checkpoints?.link||!checkpoint?.id||!turnId)return null;
+    try{const linked=checkpoints.link(checkpoint.id,{turnId});journal?.record?.({runtime:thread.runtime||runtime,provider:thread.providerMeta?.modelProvider||thread.providerMeta?.runtimeInstanceId||null,environmentId:thread.providerMeta?.environmentId??null,threadId:thread.id,turnId,category:"checkpoint",name:"checkpoint.linked",status:"completed",data:{checkpointId:checkpoint.id}});return linked}
+    catch(error){journal?.record?.({runtime:thread.runtime||runtime,provider:thread.providerMeta?.modelProvider||thread.providerMeta?.runtimeInstanceId||null,environmentId:thread.providerMeta?.environmentId??null,threadId:thread.id,turnId,category:"checkpoint",name:"checkpoint.link_failed",status:"error",data:{checkpointId:checkpoint.id,message:redactSecretText(error?.message||String(error),{environment:runtimeManager.env||process.env})}});return null}
+  }
   const nativeQueueStarting=new Set();
   const nativeBackgroundProcesses=new NativeBackgroundProcessManager({
     environments,environment:runtimeManager?.env||process.env,platform:runtimeManager?.platform||process.platform,
@@ -986,12 +999,13 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       if(!repairAttempt.allowed)throw Object.assign(new Error(`Automatic verification repair stopped after ${repairAttempt.limit} attempts. Review the remaining failure before continuing.`),{code:-32001});
       if(!automationAttempt.allowed)throw Object.assign(new Error(`Automatic verification workflow stopped after ${automationAttempt.limit} actions. Review the remaining verification state before continuing.`),{code:-32001});
       const repairContext=verificationRepairContext(prepared),repairPrompt=verificationRepairPrompt();
+      const checkpoint=await createVerificationCheckpoint(thread,"Verification repair before "+String(record.id||"").slice(0,80));
       const started=await request(context,"turn/start",{
         threadId:thread.id,model:thread.model||undefined,
         ...(thread.runtime==="native"&&thread.providerMeta?.modelProvider?{modelProvider:thread.providerMeta.modelProvider}:{}),
         input:[{type:"text",text:repairPrompt}],additionalContext:{"trebell.verification_repair":{kind:"application",value:repairContext}},
       });
-      if(started?.turn?.id)state?.updateThreadMeta?.(thread.id,{verificationRepairChain:verificationRepairChainState(repairAttempt,started.turn.id),...(params.auto?{verificationAutomationChain:verificationAutomationChainState(automationAttempt,started.turn.id)}:{})});
+      if(started?.turn?.id){linkVerificationCheckpoint(thread,checkpoint,started.turn.id);state?.updateThreadMeta?.(thread.id,{verificationRepairChain:verificationRepairChainState(repairAttempt,started.turn.id),...(params.auto?{verificationAutomationChain:verificationAutomationChainState(automationAttempt,started.turn.id)}:{})})}
       journal?.record?.({runtime:thread.runtime||runtime,provider:thread.providerMeta?.modelProvider||thread.providerMeta?.runtimeInstanceId||null,environmentId:thread.providerMeta?.environmentId??null,threadId:thread.id,turnId:started?.turn?.id||null,category:"verification",name:"verification.repair_started",status:"running",data:{recordId:record.id,nextAction:nextAction.action,failedSteps:nextAction.failedSteps||[],automatic:Boolean(params.auto),attempt:repairAttempt.attempts}});
       return {record,nextAction,turn:started?.turn||null};
     }

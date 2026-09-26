@@ -52,6 +52,7 @@ import { activityWindow, nextActivityWindowEnd, previousActivityWindowEnd } from
 import { startVisibilityPoll } from "./visibility-poll.js";
 import { specializedToolSelection } from "./lazy-tool-exposure.js";
 import { maybeStartAutomaticVerificationRepair } from "./auto-verification-repair.js";
+import { maybeStartAutomaticVerificationContinuation } from "./auto-verification-continuation.js";
 
 const TerminalPanel=lazy(()=>import("./components/TerminalPanel.jsx"));
 const WorkspacePanel=lazy(()=>import("./components/WorkspacePanel.jsx"));
@@ -599,7 +600,7 @@ export default function App(){
   const [threadTelemetry,setThreadTelemetry]=useState({});const threadTelemetryRef=useRef({});
   const [paletteOpen,setPaletteOpen]=useState(false); const [initialLoaded,setInitialLoaded]=useState(false); const [initialLoadError,setInitialLoadError]=useState(""); const [initialLoadRevision,setInitialLoadRevision]=useState(0);
   const [paletteProjects,setPaletteProjects]=useState([]); const [paletteEnvironmentNames,setPaletteEnvironmentNames]=useState({local:"Local machine"}); const [paletteDataError,setPaletteDataError]=useState("");
-  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const pendingRuntimeThreadRef=useRef(null); const catalogPersistRef=useRef(new Map()); const automaticVerificationRepairSeenRef=useRef(new Set()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
+  const rpcRef=useRef(null); const activeThreadRef=useRef(null); const modelRefreshSeqRef=useRef(0); const backgroundThreadsRef=useRef(new Set()); const threadUndoRef=useRef(null); const threadUndoTimerRef=useRef(null); const actionErrorTimerRef=useRef(null); const backgroundSyncErrorRef=useRef({settlements:"",branchReviews:""}); const threadMessageSearchCacheRef=useRef(new Map()); const navigationHistoryRef=useRef({entries:[],index:-1,expectedKey:null}); const skillOverridesRef=useRef(new Map()); const compactionWaitersRef=useRef(new Map()); const contextTaskRef=useRef(new Map()); const pendingRuntimeThreadRef=useRef(null); const catalogPersistRef=useRef(new Map()); const automaticVerificationRepairSeenRef=useRef(new Set()); const automaticVerificationContinuationSeenRef=useRef(new Set()); const timezone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC",[]);
   const conversationScrollRef=useRef(null);const threadScrollPositionsRef=useRef(new Map());const pendingThreadScrollRestoreRef=useRef(null);const pendingHistoryPrependRef=useRef(null);const followConversationEndRef=useRef(true);const modelCatalogScopeRef=useRef(null);const threadFindInputRef=useRef(null);const threadFindSeqRef=useRef(0);
   const autoSettleCandidates=useMemo(()=>hasAutoSettleCandidates(threads,threadMeta),[threads,threadMeta]);
   function resetAssistantStream(){assistantStreamBufferRef.current?.reset();commandStreamBufferRef.current?.reset();diffEventBufferRef.current?.reset();assistantTextRef.current="";commandOutputRef.current.clear();mcpProgressRef.current.clear();activityTimelineRef.current?.resetStreams()}
@@ -1783,6 +1784,13 @@ export default function App(){
           if(repair.started&&activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous.filter(item=>item.id!=="verification-auto-repair-"+repair.recordId),{id:"verification-auto-repair-"+repair.recordId,kind:"verification",title:"Verification failed · automatic same-thread repair started",status:"running",raw:{recordId:repair.recordId,turnId:repair.turn?.id||null}}]);
         }catch(error){
           if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-auto-repair-error-"+String(result.record?.id||turnId),kind:"error",title:"Automatic verification repair stopped: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId,recordId:result.record?.id||null}}]);
+        }
+      }else if(result?.nextAction?.action==="verify"&&rpcRef.current){
+        try{
+          const continuation=await maybeStartAutomaticVerificationContinuation({rpc:rpcRef.current,threadId,result,seen:automaticVerificationContinuationSeenRef.current});
+          if(continuation.started&&activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous.filter(item=>item.id!=="verification-auto-continue-"+continuation.recordId+"-"+continuation.nextStepId),{id:"verification-auto-continue-"+continuation.recordId+"-"+continuation.nextStepId,kind:"verification",title:"Verification incomplete · automatic same-thread check started · "+continuation.nextStepId,status:"running",raw:{recordId:continuation.recordId,nextStepId:continuation.nextStepId,turnId:continuation.turn?.id||null}}]);
+        }catch(error){
+          if(activeThreadRef.current?.id===threadId)setEvents(previous=>[...previous,{id:"verification-auto-continue-error-"+String(result.record?.id||turnId),kind:"error",title:"Automatic verification continuation stopped: "+(error?.message||String(error)),status:"done",raw:{threadId,turnId,recordId:result.record?.id||null,nextStepId:result.nextAction?.nextStep?.id||null}}]);
         }
       }
     }catch(error){

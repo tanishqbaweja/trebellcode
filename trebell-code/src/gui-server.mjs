@@ -57,6 +57,9 @@ import { continuityAdditionalContext, continuitySnapshot, normalizeContinuityNot
 import { verificationRepairAttempt, verificationRepairChainState, verificationRepairContext, verificationRepairPrompt, verificationRepairState } from "./verification-repair.mjs";
 import { collectVerificationEvidence } from "./verification-evidence-collector.mjs";
 import { runAutomaticVerificationEvidence } from "./verification-auto-runner.mjs";
+import { mergeVerificationEvidence } from "./verification-loop.mjs";
+import { verificationContinuationAttempt, verificationContinuationChainState, verificationContinuationContext, verificationContinuationPrompt, verificationContinuationState } from "./verification-continuation.mjs";
+import { verificationAutomationAttempt, verificationAutomationChainState } from "./verification-automation.mjs";
 import { delegationContextValue, delegationGoalPatch, delegationPolicies } from "./delegation-state.mjs";
 import { executeDelegation } from "./delegation-executor.mjs";
 import { resolveCodexApprovalByPolicy } from "./codex-policy-adapter.mjs";
@@ -1000,14 +1003,28 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     if(!records.length)return {record:null,nextAction:null};
     return verificationRepairState(records,recordId);
   }
+  async function createCodexVerificationCheckpoint(threadId,label){
+    const meta=state.threadMeta(threadId);if(!meta?.cwd||meta.environmentId)return null;
+    try{
+      const checkpoint=await checkpoints.create({cwd:meta.cwd,threadId,label});
+      recordCheckpointTrace(checkpoint?.supported===false?"checkpoint.skipped":"checkpoint.created",checkpoint?.supported===false?"unsupported":"completed",checkpoint,{threadId,reason:checkpoint?.reason||null});
+      return checkpoint?.supported===false?null:checkpoint;
+    }catch(error){recordCheckpointTrace("checkpoint.create_failed","error",null,{threadId,message:error.message});return null}
+  }
+  function linkCodexVerificationCheckpoint(checkpoint,turnId){
+    if(!checkpoint?.id||!turnId)return null;
+    try{const linked=checkpoints.link(checkpoint.id,{turnId});recordCheckpointTrace("checkpoint.linked","completed",linked,{checkpointId:checkpoint.id,turnId});return linked}
+    catch(error){recordCheckpointTrace("checkpoint.link_failed","error",checkpoint,{checkpointId:checkpoint.id,turnId,message:error.message});return null}
+  }
   async function repairCodexVerification(threadId,params,requestUpstream){
     const meta=state.threadMeta(threadId);if(meta.active)throw new Error("Stop the running turn before starting verification repair.");
     assertCodexGoalBudget(threadId);
     const {record,nextAction}=codexVerificationState(threadId,params.recordId||null);
     if(!record)throw new Error("No persisted verification record is available for this thread.");
     if(nextAction.action!=="repair")throw new Error("Latest verification does not require repair (next action: "+nextAction.action+").");
-    const repairAttempt=verificationRepairAttempt(meta?.verificationRepairChain,record,{automatic:Boolean(params.auto)});
+    const repairAttempt=verificationRepairAttempt(meta?.verificationRepairChain,record,{automatic:Boolean(params.auto)}),automationAttempt=verificationAutomationAttempt(meta?.verificationAutomationChain,record,{automatic:Boolean(params.auto),action:"repair"});
     if(!repairAttempt.allowed)throw Object.assign(new Error(`Automatic verification repair stopped after ${repairAttempt.limit} attempts. Review the remaining failure before continuing.`),{code:-32001});
+    if(!automationAttempt.allowed)throw Object.assign(new Error(`Automatic verification workflow stopped after ${automationAttempt.limit} actions. Review the remaining verification state before continuing.`),{code:-32001});
     const repairContext=verificationRepairContext({record,nextAction});
     const withGoal=goalAdditionalContext({},durableCodexGoal(threadId));
     const withContinuity=continuityAdditionalContext(withGoal,durableCodexContinuity(threadId));
@@ -1018,9 +1035,25 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       input:[{type:"text",text:verificationRepairPrompt(),textElements:[]}],additionalContext,...(model?{model}:{}),
     };
     for(const key of Object.keys(turnParams))if(turnParams[key]===undefined)delete turnParams[key];
+    const checkpoint=await createCodexVerificationCheckpoint(threadId,"Verification repair before "+String(record.id||"").slice(0,80));
     const started=await requestUpstream("turn/start",turnParams,{routeMessage:{method:"thread/read",params:{threadId}},timeoutMs:120_000});
-    if(started?.turn?.id)state.updateThreadMeta(threadId,{verificationRepairChain:verificationRepairChainState(repairAttempt,started.turn.id)});
+    if(started?.turn?.id){linkCodexVerificationCheckpoint(checkpoint,started.turn.id);state.updateThreadMeta(threadId,{verificationRepairChain:verificationRepairChainState(repairAttempt,started.turn.id),...(params.auto?{verificationAutomationChain:verificationAutomationChainState(automationAttempt,started.turn.id)}:{})})}
     eventJournal.record({runtime:"codex",provider:selectedProvider,environmentId:meta?.environmentId??null,threadId,turnId:started?.turn?.id||null,category:"verification",name:"verification.repair_started",status:"running",data:{recordId:record.id,nextAction:nextAction.action,failedSteps:nextAction.failedSteps||[],automatic:Boolean(params.auto),attempt:repairAttempt.attempts}});
+    return {record,nextAction,turn:started?.turn||null};
+  }
+  async function continueCodexVerification(threadId,params,requestUpstream){
+    const meta=state.threadMeta(threadId);if(meta.active)throw new Error("Stop the running turn before continuing verification.");
+    assertCodexGoalBudget(threadId);
+    const records=state.verificationRecords({threadId,limit:50}),prepared=verificationContinuationState(records,params.recordId||null),{record,nextAction}=prepared;
+    if(nextAction.action!=="verify"||!nextAction.nextStep)throw new Error("Latest verification does not require another verification step (next action: "+nextAction.action+").");
+    const continuationAttempt=verificationContinuationAttempt(meta?.verificationContinuationChain,record,{automatic:Boolean(params.auto)}),automationAttempt=verificationAutomationAttempt(meta?.verificationAutomationChain,record,{automatic:Boolean(params.auto),action:"verify"});
+    if(!continuationAttempt.allowed)throw Object.assign(new Error(`Automatic verification continuation stopped after ${continuationAttempt.limit} attempts. Review the remaining verification state before continuing.`),{code:-32001});
+    if(!automationAttempt.allowed)throw Object.assign(new Error(`Automatic verification workflow stopped after ${automationAttempt.limit} actions. Review the remaining verification state before continuing.`),{code:-32001});
+    const continuationContext=verificationContinuationContext(prepared),withGoal=goalAdditionalContext({},durableCodexGoal(threadId)),withContinuity=continuityAdditionalContext(withGoal,durableCodexContinuity(threadId)),additionalContext={...(withContinuity||{}),"trebell.verification_continue":{kind:"application",value:continuationContext}},model=codexThreadModels.get(threadId)||null;
+    const turnParams={threadId,cwd:meta?.cwd||undefined,approvalPolicy:params.approvalPolicy,sandboxPolicy:params.sandboxPolicy,input:[{type:"text",text:verificationContinuationPrompt(),textElements:[]}],additionalContext,...(model?{model}:{})};for(const key of Object.keys(turnParams))if(turnParams[key]===undefined)delete turnParams[key];
+    const started=await requestUpstream("turn/start",turnParams,{routeMessage:{method:"thread/read",params:{threadId}},timeoutMs:120_000});
+    if(started?.turn?.id)state.updateThreadMeta(threadId,{verificationContinuationChain:verificationContinuationChainState(continuationAttempt,started.turn.id),...(params.auto?{verificationAutomationChain:verificationAutomationChainState(automationAttempt,started.turn.id)}:{})});
+    eventJournal.record({runtime:"codex",provider:selectedProvider,environmentId:meta?.environmentId??null,threadId,turnId:started?.turn?.id||null,category:"verification",name:"verification.continuation_started",status:"running",data:{recordId:record.id,nextStepId:nextAction.nextStep?.id||null,automatic:Boolean(params.auto),attempt:continuationAttempt.attempts}});
     return {record,nextAction,turn:started?.turn||null};
   }
   function assertCodexGoalBudget(threadId){
@@ -2508,6 +2541,17 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       try{
         const body=await readJsonBody(req,2*1024*1024),threadId=String(body.threadId||"").trim(),turnId=String(body.turnId||"").trim();
         if(!threadId||!turnId)return json(res,400,{error:"threadId and turnId are required"});
+        const meta=state.threadMeta(threadId),continuationChain=meta?.verificationContinuationChain||null;
+        if(continuationChain?.lastContinuationTurnId&&String(continuationChain.lastContinuationTurnId)===turnId&&continuationChain.sourceRecordId){
+          const sourceRecord=state.verificationRecords({threadId,limit:100}).find(item=>String(item?.id||"")===String(continuationChain.sourceRecordId))||null;
+          if(sourceRecord){
+            const environmentId=meta?.environmentId??null,root=sourceRecord.projectPath||meta?.cwd||process.cwd(),remote=remoteEnvironmentProfile(environmentId),verificationIo=remote?createRemoteContextIo({environments,environmentId,root}):null,agentTurn=agentThreads.get(threadId)?.turns?.find(turn=>String(turn?.id||"")===turnId)||null,traces=eventJournal.list({threadId,turnId,limit:500});
+            const observed=collectVerificationEvidence({plan:sourceRecord.plan,turnItems:agentTurn?.items||[],traces}),merged=mergeVerificationEvidence(sourceRecord.evidence,observed),automatic=await runAutomaticVerificationEvidence({contextEngine,plan:sourceRecord.plan,evidence:merged,root,io:verificationIo}),assessment=contextEngine.assessVerification({plan:sourceRecord.plan,evidence:automatic.evidence});
+            const record=state.recordVerification({environmentId,projectPath:root,threadId,turnId,plan:sourceRecord.plan,evidence:automatic.evidence,assessment}),nextAction=contextEngine.nextVerificationAction({plan:record.plan,evidence:record.evidence});
+            eventJournal.record({environmentId,threadId,turnId,category:"verification",name:"verification.continuation_evaluated",status:assessment.status,data:{recordId:record.id,sourceRecordId:sourceRecord.id,evidenceCount:record.evidence.length,newEvidenceCount:observed.length,nextAction:nextAction.action,nextStepId:nextAction.nextStep?.id||null}});
+            return json(res,200,{supported:true,continuation:true,sourceRecordId:sourceRecord.id,checkpointId:null,threadId,turnId,changedPaths:[],record,nextAction});
+          }
+        }
         const checkpoint=checkpoints.list(threadId).filter(item=>String(item.turnId||"")===turnId).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0))[0]||null;
         if(!checkpoint)return json(res,200,{supported:false,reason:"checkpoint_unavailable",threadId,turnId,changedPaths:[],record:null,nextAction:null});
         const changed=await checkpoints.changedPaths(checkpoint.id,{threadId});
@@ -2515,7 +2559,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           eventJournal.record({environmentId:state.threadMeta(threadId)?.environmentId??null,threadId,turnId,category:"verification",name:"verification.skipped",status:"completed",data:{checkpointId:checkpoint.id,reason:"no_workspace_changes"}});
           return json(res,200,{supported:true,checkpointId:checkpoint.id,threadId,turnId,changedPaths:[],record:null,nextAction:{action:"complete",reason:"No workspace file changes were detected since the pre-turn checkpoint."}});
         }
-        const meta=state.threadMeta(threadId),environmentId=meta?.environmentId??null,remote=remoteEnvironmentProfile(environmentId),verificationIo=remote?createRemoteContextIo({environments,environmentId,root:changed.root}):null,riskHints=Array.isArray(body.riskHints)?body.riskHints.map(String).filter(Boolean).slice(0,20):[];
+        const environmentId=meta?.environmentId??null,remote=remoteEnvironmentProfile(environmentId),verificationIo=remote?createRemoteContextIo({environments,environmentId,root:changed.root}):null,riskHints=Array.isArray(body.riskHints)?body.riskHints.map(String).filter(Boolean).slice(0,20):[];
         const plan=await contextEngine.verificationPlan({root:changed.root,paths:changed.paths,riskHints,capabilities:{diagnostics:body.diagnostics!==false,semanticDiagnostics:Boolean(body.semanticDiagnostics)},io:verificationIo});
         const agentTurn=agentThreads.get(threadId)?.turns?.find(turn=>String(turn?.id||"")===turnId)||null;
         const traces=eventJournal.list({threadId,turnId,limit:500}),collectedEvidence=collectVerificationEvidence({plan,turnItems:agentTurn?.items||[],traces});
@@ -2970,6 +3014,10 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         if(!threadId)throw Object.assign(new Error("threadId is required"),{code:-32602});
         return {handled:true,result:await repairCodexVerification(threadId,params,requestUpstream)};
       }
+      if(message.method==="thread/verification/continue"){
+        if(!threadId)throw Object.assign(new Error("threadId is required"),{code:-32602});
+        return {handled:true,result:await continueCodexVerification(threadId,params,requestUpstream)};
+      }
       if(message.method==="thread/delegate")return {handled:true,result:await delegateCodexThread(params,requestUpstream)};
       if(((message.method==="turn/start"&&params.turnTrigger!=="trebell-restart-continuation")||message.method==="thread/queue/start")&&threadId)assertCodexGoalBudget(threadId);
       if(message.method==="thread/runtimeInstances/list")return {handled:true,result:await codexThreadProfiles(message.params?.threadId)};
@@ -3039,6 +3087,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       log:(message)=>appServer?.logs?.push({at:Date.now(),stream:"agent-relay",text:safeLogText(String(message)+"\n")}),
     onThreadDeleted:thread=>thread?.cwd?worktreeCleanup.sweep({reason:"thread-delete",path:thread.cwd}):null,
     journal:eventJournal,
+    checkpoints,
     prepareDelegationWorkspace:({parentThreadId,parentThread,spec})=>prepareCodexDelegationWorkspace(parentThreadId,spec,parentThread),
     cleanupDelegationWorkspace:async({workspace,parentThread})=>{if(workspace?.worktree)await removeWorktree(parentThread?.cwd||workspace.cwd,workspace.cwd,{force:true}).catch(()=>{})},
   });

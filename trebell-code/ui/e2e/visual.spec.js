@@ -235,13 +235,35 @@ test("failed turn verification automatically starts one same-thread repair",asyn
     await page.route(/\/api\/verification\/plan-turn$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({supported:true,changedPaths:["src/parser.js"],record:{id:"verification-auto-1",threadId:thread.id,turnId:"failed-turn",risk:"medium",plan:{risk:"medium",steps:[{id:"tests",kind:"tests",required:true}]},evidence:[{stepId:"tests",status:"failed",exitCode:1}],assessment:{status:"failed",risk:"medium",summary:{required:1,passed:0,failed:1,blocked:0,missing:0}}},nextAction:{action:"repair",failedSteps:["tests"]}})}));
     await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
     await page.goto("/");
-    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Auto verification repair fixture"]')});await expect(row).toBeVisible();await row.click();await expect(page.getByTestId("composer")).toBeVisible();
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Auto verification repair fixture"]')});await expect(row).toBeVisible();await row.click();await expect(row).toHaveClass(/active/);await expect(page.getByTestId("composer")).toBeVisible();
     harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"failed-turn",status:"completed",completedAt:Date.now()/1000,durationMs:100}}});
     await page.waitForTimeout(500);expect(requestMethods).toContain("thread/continuity/get");expect(requestMethods).toContain("thread/verification/repair");
     await expect.poll(()=>repairRequests.length).toBe(1);expect(repairRequests[0]).toMatchObject({threadId:thread.id,recordId:"verification-auto-1",auto:true});
     await expect(page.getByText("Verification failed · automatic same-thread repair started",{exact:true})).toBeVisible();
     await page.setViewportSize({width:1280,height:800});const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await page.screenshot({path:auditDir+"automatic-verification-repair-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
+test("missing test verification automatically starts one same-thread check",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"auto-verification-continue-thread",name:"Auto verification continuation fixture",preview:"Missing check should continue",cwd:process.cwd(),createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
+  const continuationRequests=[];
+  const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
+    if(message.method==="thread/verification/continue"){
+      continuationRequests.push(message.params||{});ws.send(JSON.stringify({id:message.id,result:{record:{id:"verification-continue-1"},nextAction:{action:"verify",nextStep:{id:"project_tests",kind:"tests"}},turn:{id:"auto-verification-turn",status:"inProgress"}}}));setTimeout(()=>ws.send(JSON.stringify({method:"turn/started",params:{threadId:thread.id,turn:{id:"auto-verification-turn",status:"inProgress"}}})),10);return true;
+    }
+    return false;
+  }});
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"auto-verification-continue-fixture");
+    await page.route(/\/api\/verification\/plan-turn$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({supported:true,changedPaths:["src/parser.js"],record:{id:"verification-continue-1",threadId:thread.id,turnId:"completed-turn",risk:"medium",plan:{risk:"medium",steps:[{id:"project_tests",kind:"tests",required:true,command:"npm test"}]},evidence:[],assessment:{status:"incomplete",risk:"medium",summary:{required:1,passed:0,failed:0,blocked:0,missing:1}}},nextAction:{action:"verify",nextStep:{id:"project_tests",kind:"tests",required:true,command:"npm test"},remainingSteps:["project_tests"]}})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Auto verification continuation fixture"]')});await expect(row).toBeVisible();await row.click();await expect(row).toHaveClass(/active/);await expect(page.getByTestId("composer")).toBeVisible();
+    harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"completed-turn",status:"completed",completedAt:Date.now()/1000,durationMs:100}}});
+    await expect.poll(()=>continuationRequests.length).toBe(1);expect(continuationRequests[0]).toMatchObject({threadId:thread.id,recordId:"verification-continue-1",auto:true});
+    await expect(page.getByText(/Verification incomplete · automatic same-thread check started · project_tests/)).toBeVisible();
+    await page.setViewportSize({width:1280,height:800});const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({path:auditDir+"automatic-verification-continuation-1280x800.png",fullPage:true});
   }finally{await harness.close()}
 });
 
