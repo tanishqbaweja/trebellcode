@@ -576,7 +576,7 @@ export default function App(){
     }),
   });
   const [historyPage,setHistoryPage]=useState({threadId:null,nextCursor:null,paginated:false,loading:false});
-  const [threadHistory,setThreadHistory]=useState({runtime:null,items:[],nextCursor:null,loading:false,error:""});
+  const [threadHistory,setThreadHistory]=useState({runtime:null,runtimeSource:null,runtimeExhausted:false,items:[],nextCursor:null,loading:false,error:""});
   const [threadCatalogCursor,setThreadCatalogCursor]=useState(null);
   const [threadFind,setThreadFind]=useState({open:false,query:"",results:[],index:-1,nextCursor:null,loading:false,error:"",activeItemId:null});
   const [running,setRunning]=useState(false); const [submitting,setSubmitting]=useState(false); const [queued,setQueued]=useState([]); const [queueMode,setQueueMode]=useState("unknown"); const [queuedEditId,setQueuedEditId]=useState(null);
@@ -1129,12 +1129,16 @@ export default function App(){
       setThreadHistory(current=>({...current,runtime:"all",items:threads,nextCursor:null,loading:false,error:""}));
       return;
     }
-    setThreadHistory(current=>({...current,runtime:"all",items:mergeThreadCatalog(current.items?.length?current.items:threads,[],{threadMeta}),nextCursor:current.nextCursor||null,loading:true,error:""}));
+    const sourceKey=[agentRuntime,settings.agentRuntimeInstanceId||"",bootstrap.wsUrl||""].join("\0");
+    setThreadHistory(current=>({...current,runtime:"all",runtimeSource:sourceKey,runtimeExhausted:current.runtimeSource===sourceKey?current.runtimeExhausted:false,items:mergeThreadCatalog(current.items?.length?current.items:threads,[],{threadMeta}),nextCursor:current.runtimeSource===sourceKey&&current.runtimeExhausted?null:(current.nextCursor||null),loading:true,error:""}));
     rpc.request("thread/list",threadListParams(100)).then(result=>{
       if(cancelled)return;
       const incoming=result?.data||[];rememberThreadCatalog(incoming);
       setThreads(previous=>mergeThreadCatalog(previous,incoming,{runtime:agentRuntime,provider,threadMeta}));
-      setThreadHistory(current=>({...current,runtime:"all",items:mergeThreadCatalog(current.items,incoming,{runtime:agentRuntime,provider,threadMeta}),nextCursor:result?.nextCursor||null,loading:false,error:""}));
+      setThreadHistory(current=>{
+        const sameSource=current.runtimeSource===sourceKey,alreadyExhausted=sameSource&&current.runtimeExhausted,nextCursor=result?.nextCursor||null;
+        return {...current,runtime:"all",runtimeSource:sourceKey,runtimeExhausted:alreadyExhausted||!nextCursor,items:mergeThreadCatalog(current.items,incoming,{runtime:agentRuntime,provider,threadMeta}),nextCursor:alreadyExhausted?null:nextCursor,loading:false,error:""};
+      });
     }).catch(error=>{
       if(cancelled)return;
       setThreadHistory(current=>({...current,runtime:"all",items:current.items?.length?current.items:threads,loading:false,error:error?.message||String(error)}));
@@ -1159,7 +1163,17 @@ export default function App(){
     if(Object.keys(catalogMeta).length)setThreadMeta(previous=>({...previous,...catalogMeta}));
     if(incoming.length||catalogThreads.length)setThreads(previous=>mergeThreadCatalog(previous,[...incoming,...catalogThreads],{runtime:agentRuntime,provider,threadMeta:mergedMeta}));
     if(catalogCursor&&catalogResult.status==="fulfilled")setThreadCatalogCursor(catalogPage?.nextCursor||null);
-    setThreadHistory(current=>({...current,runtime:"all",items:mergeThreadCatalog(current.items,[...incoming,...catalogThreads],{runtime:agentRuntime,provider,threadMeta:mergedMeta}),nextCursor:runtimeCursor?(nativeResult.status==="fulfilled"?(nativePage?.nextCursor||null):runtimeCursor):current.nextCursor,loading:false,error:errors.join(" · ")}));
+    const sourceKey=[agentRuntime,settings.agentRuntimeInstanceId||"",bootstrap.wsUrl||""].join("\0");
+    setThreadHistory(current=>({
+      ...current,
+      runtime:"all",
+      runtimeSource:sourceKey,
+      runtimeExhausted:runtimeCursor&&nativeResult.status==="fulfilled"?!nativePage?.nextCursor:current.runtimeExhausted,
+      items:mergeThreadCatalog(current.items,[...incoming,...catalogThreads],{runtime:agentRuntime,provider,threadMeta:mergedMeta}),
+      nextCursor:runtimeCursor?(nativeResult.status==="fulfilled"?(nativePage?.nextCursor||null):runtimeCursor):current.nextCursor,
+      loading:false,
+      error:errors.join(" · "),
+    }));
   }
   async function loadCollaborationModes(client=rpcRef.current){
     if(!runtimeCapabilities.collaborationModes||!client){

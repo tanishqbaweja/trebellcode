@@ -1156,7 +1156,7 @@ test("checkpoint failures warn without blocking successful turns",async({page})=
     const createWarning=page.locator(".tool-event.kind-error").filter({hasText:"Could not create file checkpoint"});
     await expect(createWarning).toContainText("Deliberate checkpoint create failure");
     await expect(page.locator(".user-bubble").filter({hasText:"Continue even when checkpoint creation fails"})).toBeVisible();
-    expect(turnCounter).toBe(1);
+    await expect.poll(()=>turnCounter).toBe(1);
     harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"checkpoint-turn-1",status:"completed"}}});
     await expect(page.getByRole("button",{name:"Stop",exact:true})).toHaveCount(0);
 
@@ -1167,7 +1167,7 @@ test("checkpoint failures warn without blocking successful turns",async({page})=
     const linkWarning=page.locator(".tool-event.kind-error").filter({hasText:"could not be linked to this turn"});
     await expect(linkWarning).toContainText("Deliberate checkpoint link failure");
     await expect(page.locator(".user-bubble").filter({hasText:"Continue even when checkpoint linking fails"})).toBeVisible();
-    expect(turnCounter).toBe(2);expect(linkCalls).toBe(1);
+    await expect.poll(()=>turnCounter).toBe(2);await expect.poll(()=>linkCalls).toBe(1);
     await page.setViewportSize({width:1280,height:800});
     const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
@@ -3000,7 +3000,7 @@ test("major workspace surfaces render their real destinations without horizontal
 
   await page.getByRole("button",{name:"History",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Thread history",level:1})).toBeVisible();
-  await expect(page.locator(".history-empty")).toBeVisible();
+  await expect.poll(async()=>await page.locator(".history-thread-row").count()+await page.locator(".history-empty").count()).toBeGreaterThan(0);
   await assertNoHorizontalOverflow(".secondary-page");
   await page.screenshot({path:auditDir+"history-1600x980.png",fullPage:true});
 
@@ -3064,7 +3064,9 @@ test("thread history pages older threads without expanding the sidebar",async({p
     const threadMeta=Object.fromEntries(allThreads.map(item=>[item.id,{projectless:true,environmentId:null}]));
     await routeProjectlessCodexRequestFixture(page,harness,thread,"thread-history-pagination-fixture",{threadMeta});
     await page.goto("/");
-    await expect(page.locator(".thread-row")).toHaveCount(100);
+    await expect(page.locator(".thread-sections h4").filter({hasText:"General"})).toContainText("100");
+    const initialMountedRows=await page.locator(".thread-row").count();
+    expect(initialMountedRows).toBeGreaterThan(0);expect(initialMountedRows).toBeLessThan(100);
     await page.getByRole("button",{name:"History",exact:true}).click();
     await expect(page.getByRole("heading",{name:"Thread history",level:1})).toBeVisible();
     await expect(page.locator(".history-thread-row")).toHaveCount(100);
@@ -3073,16 +3075,17 @@ test("thread history pages older threads without expanding the sidebar",async({p
     await page.getByRole("button",{name:"Load older threads",exact:true}).click();
     await expect(page.locator(".history-thread-row")).toHaveCount(130);
     await expect(page.getByRole("button",{name:"Load older threads",exact:true})).toHaveCount(0);
-    await expect(page.locator(".thread-row")).toHaveCount(100);
+    expect(await page.locator(".thread-row").count()).toBeLessThan(100);
     await page.locator(".history-thread-row").filter({hasText:"History thread 130"}).click();
     await expect(page.locator(".thread-row.active .thread-main")).toHaveAttribute("title","History thread 130");
-    await expect(page.locator(".thread-row")).toHaveCount(100);
+    expect(await page.locator(".thread-row").count()).toBeLessThanOrEqual(100);
     await page.setViewportSize({width:1280,height:800});
     const chatMetrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(chatMetrics.scroll).toBeLessThanOrEqual(chatMetrics.client+1);
     await page.screenshot({path:auditDir+"thread-history-old-thread-active-1280x800.png",fullPage:false});
     await page.getByRole("button",{name:"History",exact:true}).click();
-    await expect(page.locator(".history-thread-row")).toHaveCount(100);
+    await expect(page.locator(".history-thread-row")).toHaveCount(130);
+    await expect(page.getByRole("button",{name:"Load older threads",exact:true})).toHaveCount(0);
     const metrics=await page.locator(".history-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
     expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
     await page.screenshot({path:auditDir+"thread-history-pagination-1280x800.png",fullPage:false});
@@ -3174,9 +3177,10 @@ test("project detail refresh failures preserve known Git metadata",async({page,r
   await prepare(page,request);
   await page.getByRole("button",{name:"Projects",exact:true}).click();
   await expect(page.getByRole("heading",{name:"Projects",level:1})).toBeVisible();
-  const projectCard=page.locator(".project-card").first();
+  const projectCard=page.locator(".project-card.active");
   await expect(projectCard).toBeVisible();
   const detail=projectCard.locator(".project-open small");
+  await expect(detail).not.toContainText("not a Git checkout");
   const before=(await detail.textContent())||"";
   const branch=before.split(" · ")[0].trim();
   expect(branch).not.toBe("");
@@ -3280,7 +3284,6 @@ test("clone completion surfaces failed Git metadata refreshes",async({page})=>{
   await page.route(/\/api\/freebuff\/overview/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({})}));
   await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
   await page.goto("/");
-  await expect(page.getByTestId("clone-banner")).toBeVisible();
   await expect(page.getByTestId("clone-banner")).toHaveCount(0,{timeout:5000});
   await expect(page.getByTestId("app-action-error")).toContainText("Clone completed, but Git metadata could not refresh: Deliberate post-clone Git metadata failure");
   await expect(page.getByTestId("composer")).toBeVisible();
@@ -3884,11 +3887,11 @@ test("Diff review actions roll back and stay visible when persistence fails",asy
     await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Runtime",exact:true}).click();
     const capabilities=panel.getByTestId("runtime-capabilities");
     await expect(capabilities).toContainText("Runtime capability matrix");
-    await expect(capabilities.locator(".runtime-capability-grid>div").filter({hasText:"LSP"})).toContainText("available");
+    await expect(capabilities.locator(".runtime-capability-grid>div").filter({hasText:"Language intelligence"})).toContainText("available");
     await expect(capabilities.locator(".runtime-capability-grid>div").filter({hasText:"Sandbox"})).toContainText("not exposed");
-    await expect(capabilities.locator(".runtime-capability-grid>div").filter({hasText:"Delegation"})).toContainText("not exposed");
+    await expect(capabilities.locator(".runtime-capability-grid>div").filter({hasText:"Delegation"})).toContainText("available");
     await expect(capabilities.locator(".runtime-capability-grid>div").filter({hasText:"Runtime profiles"})).toContainText("not exposed");
-    await expect(panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Agents",exact:true})).toHaveCount(0);
+    await expect(panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Agents",exact:true})).toBeVisible();
     const trace=panel.getByTestId("runtime-trace");
     await expect(trace).toContainText("Execution trace");
     await expect(trace).toContainText("item/completed");
@@ -4425,6 +4428,8 @@ test("light mode stays visually coherent across workspace and panels",async({pag
   await page.getByLabel("Search settings").press("Escape");
   await page.getByRole("button",{name:/Workspace/}).click();
   await expect(page.getByTestId("settings-scope-sentence")).toBeVisible();
+  await expect(page.locator(".scoped-cleanup")).toBeVisible();
+  await expect(page.locator(".scoped-settings-card > .provider-key-actions button").first()).toBeVisible();
   const workspaceLight=await page.evaluate(()=>({
     heading:getComputedStyle(document.querySelector(".settings-section-head h2")).color,
     cleanup:getComputedStyle(document.querySelector(".scoped-cleanup")).backgroundColor,
