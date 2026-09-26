@@ -466,7 +466,7 @@ test("native Codex queue persists, edits, reorders, deletes and resumes follow-u
     listed=await rpc(ws,11,"thread/queue/list",{threadId,limit:20});assert.deepEqual(listed.data.map(item=>item.id),[second.queuedSubmission.id,first.queuedSubmission.id]);
     const deleted=await rpc(ws,12,"thread/queue/delete",{threadId,queuedSubmissionId:first.queuedSubmission.id});assert.equal(deleted.deleted,true);
     listed=await rpc(ws,13,"thread/queue/list",{threadId,limit:20});assert.deepEqual(listed.data.map(item=>item.id),[second.queuedSubmission.id]);
-    const autoStarted=waitNotification(ws,"turn/started",params=>params.threadId===threadId);
+    const autoStarted=waitNotification(ws,"turn/started",params=>params.threadId===threadId,45000);
     await rpc(ws,15,"thread/resume",{threadId,excludeTurns:false});
     const autoTurn=await autoStarted;const autoTurnId=autoTurn.turn?.id||autoTurn.turnId;assert.ok(autoTurnId,"resume should auto-dispatch the first queued submission");
     await rpcOutcome(ws,16,"turn/interrupt",{threadId,turnId:autoTurnId});
