@@ -56,6 +56,7 @@ import { recordCodexRecoveryItemEvidence, staleCodexRecoveryState } from "./code
 import { continuityAdditionalContext, continuitySnapshot, normalizeContinuityNotes } from "./continuity-state.mjs";
 import { verificationRepairAttempt, verificationRepairChainState, verificationRepairContext, verificationRepairPrompt, verificationRepairState } from "./verification-repair.mjs";
 import { collectVerificationEvidence } from "./verification-evidence-collector.mjs";
+import { runAutomaticVerificationEvidence } from "./verification-auto-runner.mjs";
 import { delegationContextValue, delegationGoalPatch, delegationPolicies } from "./delegation-state.mjs";
 import { executeDelegation } from "./delegation-executor.mjs";
 import { resolveCodexApprovalByPolicy } from "./codex-policy-adapter.mjs";
@@ -2514,13 +2515,15 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           eventJournal.record({environmentId:state.threadMeta(threadId)?.environmentId??null,threadId,turnId,category:"verification",name:"verification.skipped",status:"completed",data:{checkpointId:checkpoint.id,reason:"no_workspace_changes"}});
           return json(res,200,{supported:true,checkpointId:checkpoint.id,threadId,turnId,changedPaths:[],record:null,nextAction:{action:"complete",reason:"No workspace file changes were detected since the pre-turn checkpoint."}});
         }
-        const meta=state.threadMeta(threadId),riskHints=Array.isArray(body.riskHints)?body.riskHints.map(String).filter(Boolean).slice(0,20):[];
-        const plan=await contextEngine.verificationPlan({root:changed.root,paths:changed.paths,riskHints,capabilities:{diagnostics:body.diagnostics!==false,semanticDiagnostics:Boolean(body.semanticDiagnostics)}});
+        const meta=state.threadMeta(threadId),environmentId=meta?.environmentId??null,remote=remoteEnvironmentProfile(environmentId),verificationIo=remote?createRemoteContextIo({environments,environmentId,root:changed.root}):null,riskHints=Array.isArray(body.riskHints)?body.riskHints.map(String).filter(Boolean).slice(0,20):[];
+        const plan=await contextEngine.verificationPlan({root:changed.root,paths:changed.paths,riskHints,capabilities:{diagnostics:body.diagnostics!==false,semanticDiagnostics:Boolean(body.semanticDiagnostics)},io:verificationIo});
         const agentTurn=agentThreads.get(threadId)?.turns?.find(turn=>String(turn?.id||"")===turnId)||null;
-        const traces=eventJournal.list({threadId,turnId,limit:500}),evidence=collectVerificationEvidence({plan,turnItems:agentTurn?.items||[],traces}),assessment=contextEngine.assessVerification({plan,evidence});
+        const traces=eventJournal.list({threadId,turnId,limit:500}),collectedEvidence=collectVerificationEvidence({plan,turnItems:agentTurn?.items||[],traces});
+        const automatic=await runAutomaticVerificationEvidence({contextEngine,plan,evidence:collectedEvidence,root:changed.root,io:verificationIo}),evidence=automatic.evidence,assessment=contextEngine.assessVerification({plan,evidence});
         const record=state.recordVerification({environmentId:meta?.environmentId??null,projectPath:changed.root,threadId,turnId,plan,evidence,assessment});
         const nextAction=contextEngine.nextVerificationAction({plan:record.plan,evidence:record.evidence});
-        eventJournal.record({environmentId:meta?.environmentId??null,threadId,turnId,category:"verification",name:"verification.planned",status:assessment.status,data:{recordId:record.id,checkpointId:checkpoint.id,projectPath:changed.root,risk:assessment.risk,changedPathCount:changed.paths.length,changedPaths:changed.paths.slice(0,100),evidenceCount:evidence.length,nextAction:nextAction.action,nextStepId:nextAction.nextStep?.id||null}});
+        if(automatic.attempted.length)eventJournal.record({environmentId,threadId,turnId,category:"verification",name:"diagnostics.generated",status:record.evidence.find(item=>item.stepId==="diagnostics")?.status||assessment.status,data:{recordId:record.id,checkpointId:checkpoint.id,pathCount:automatic.attempted.length,errorCount:Number(record.evidence.find(item=>item.stepId==="diagnostics")?.errorCount)||0,semantic:Boolean(plan.steps.find(step=>step.id==="diagnostics")?.semantic)}});
+        eventJournal.record({environmentId:meta?.environmentId??null,threadId,turnId,category:"verification",name:"verification.planned",status:assessment.status,data:{recordId:record.id,checkpointId:checkpoint.id,projectPath:changed.root,risk:assessment.risk,changedPathCount:changed.paths.length,changedPaths:changed.paths.slice(0,100),evidenceCount:evidence.length,automaticEvidenceCount:automatic.attempted.length,nextAction:nextAction.action,nextStepId:nextAction.nextStep?.id||null}});
         return json(res,200,{supported:true,checkpointId:checkpoint.id,threadId,turnId,changedPaths:changed.paths,record,nextAction});
       }catch(error){return json(res,400,{error:error.message});}
     }

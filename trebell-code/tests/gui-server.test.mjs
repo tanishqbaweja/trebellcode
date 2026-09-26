@@ -105,14 +105,16 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(plannedTurnResponse.status,200);
     const plannedTurn=await plannedTurnResponse.json();
     assert.equal(plannedTurn.supported,true);assert.deepEqual(plannedTurn.changedPaths,["fixture.txt","ui/panel.jsx"]);
-    assert.equal(plannedTurn.record.status,"incomplete");assert.equal(plannedTurn.record.risk,"medium");assert.equal(plannedTurn.nextAction.action,"verify");assert.equal(plannedTurn.nextAction.nextStep.id,"diagnostics");
+    assert.equal(plannedTurn.record.status,"incomplete");assert.equal(plannedTurn.record.risk,"medium");assert.equal(plannedTurn.nextAction.action,"verify");assert.equal(plannedTurn.nextAction.nextStep.id,"browser_runtime");
+    const automaticDiagnostics=plannedTurn.record.evidence.find(item=>item.stepId==="diagnostics");assert.equal(automaticDiagnostics?.status,"passed");assert.equal(automaticDiagnostics?.source,"harness-diagnostics");
     assert.ok(plannedTurn.record.plan.steps.some(step=>step.id==="browser_interaction"&&step.required===true));
     assert.ok(plannedTurn.record.plan.steps.some(step=>step.id==="visual"&&step.required===true));
     const plannedHistory=await fetch(gui.url+"/api/verification-records?"+new URLSearchParams({threadId:"checkpoint-trace-thread"})).then(r=>r.json());
     assert.equal(plannedHistory.records.length,1);assert.equal(plannedHistory.records[0].turnId,"trace-turn");
     const plannedTraces=await fetch(gui.url+"/api/traces?"+new URLSearchParams({threadId:"checkpoint-trace-thread",limit:"20"})).then(r=>r.json());
     const plannedTrace=plannedTraces.items.find(item=>item.name==="verification.planned");
-    assert.ok(plannedTrace);assert.equal(plannedTrace.data.changedPathCount,2);assert.equal(plannedTrace.data.nextStepId,"diagnostics");assert.equal(Object.prototype.hasOwnProperty.call(plannedTrace.data,"evidence"),false);
+    assert.ok(plannedTrace);assert.equal(plannedTrace.data.changedPathCount,2);assert.equal(plannedTrace.data.nextStepId,"browser_runtime");assert.equal(plannedTrace.data.automaticEvidenceCount,1);assert.equal(Object.prototype.hasOwnProperty.call(plannedTrace.data,"evidence"),false);
+    assert.ok(plannedTraces.items.some(item=>item.name==="diagnostics.generated"&&item.status==="passed"&&item.data?.recordId===plannedTurn.record.id));
     const checkpointTraces=await fetch(gui.url+"/api/traces?limit=100").then(r=>r.json());
     const checkpointEvents=checkpointTraces.items.filter(item=>item.category==="checkpoint"&&item.data?.checkpointId===checkpoint.id);
     assert.ok(checkpointEvents.some(item=>item.name==="checkpoint.created"&&item.status==="completed"));
