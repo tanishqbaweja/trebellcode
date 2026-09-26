@@ -18,6 +18,8 @@ import { createClaudeRepositoryMcp } from "./claude-repository-tools.mjs";
 import { enrichGoal, goalAdditionalContext, goalBudgetGate, normalizeGoal } from "./goal-state.mjs";
 import { continuityAdditionalContext, continuitySnapshot, normalizeContinuityNotes } from "./continuity-state.mjs";
 import { verificationRepairAttempt, verificationRepairChainState, verificationRepairContext, verificationRepairPrompt, verificationRepairState } from "./verification-repair.mjs";
+import { verificationContinuationAttempt, verificationContinuationChainState, verificationContinuationContext, verificationContinuationPrompt, verificationContinuationState } from "./verification-continuation.mjs";
+import { verificationAutomationAttempt, verificationAutomationChainState } from "./verification-automation.mjs";
 import { delegationContextValue, delegationGoalPatch, delegationPolicies } from "./delegation-state.mjs";
 import { executeDelegation } from "./delegation-executor.mjs";
 import { normalizePermissionMode } from "./permission-policy.mjs";
@@ -980,16 +982,34 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       if(!records.length)throw new Error("No persisted verification record is available for this thread.");
       const prepared=verificationRepairState(records,params.recordId||null),{record,nextAction}=prepared;
       if(nextAction.action!=="repair")throw new Error("Latest verification does not require repair (next action: "+nextAction.action+").");
-      const repairAttempt=verificationRepairAttempt(state?.threadMeta?.(thread.id)?.verificationRepairChain,record,{automatic:Boolean(params.auto)});
+      const meta=state?.threadMeta?.(thread.id)||{},repairAttempt=verificationRepairAttempt(meta.verificationRepairChain,record,{automatic:Boolean(params.auto)}),automationAttempt=verificationAutomationAttempt(meta.verificationAutomationChain,record,{automatic:Boolean(params.auto),action:"repair"});
       if(!repairAttempt.allowed)throw Object.assign(new Error(`Automatic verification repair stopped after ${repairAttempt.limit} attempts. Review the remaining failure before continuing.`),{code:-32001});
+      if(!automationAttempt.allowed)throw Object.assign(new Error(`Automatic verification workflow stopped after ${automationAttempt.limit} actions. Review the remaining verification state before continuing.`),{code:-32001});
       const repairContext=verificationRepairContext(prepared),repairPrompt=verificationRepairPrompt();
       const started=await request(context,"turn/start",{
         threadId:thread.id,model:thread.model||undefined,
         ...(thread.runtime==="native"&&thread.providerMeta?.modelProvider?{modelProvider:thread.providerMeta.modelProvider}:{}),
         input:[{type:"text",text:repairPrompt}],additionalContext:{"trebell.verification_repair":{kind:"application",value:repairContext}},
       });
-      if(started?.turn?.id)state?.updateThreadMeta?.(thread.id,{verificationRepairChain:verificationRepairChainState(repairAttempt,started.turn.id)});
+      if(started?.turn?.id)state?.updateThreadMeta?.(thread.id,{verificationRepairChain:verificationRepairChainState(repairAttempt,started.turn.id),...(params.auto?{verificationAutomationChain:verificationAutomationChainState(automationAttempt,started.turn.id)}:{})});
       journal?.record?.({runtime:thread.runtime||runtime,provider:thread.providerMeta?.modelProvider||thread.providerMeta?.runtimeInstanceId||null,environmentId:thread.providerMeta?.environmentId??null,threadId:thread.id,turnId:started?.turn?.id||null,category:"verification",name:"verification.repair_started",status:"running",data:{recordId:record.id,nextAction:nextAction.action,failedSteps:nextAction.failedSteps||[],automatic:Boolean(params.auto),attempt:repairAttempt.attempts}});
+      return {record,nextAction,turn:started?.turn||null};
+    }
+    if(method==="thread/verification/continue"){
+      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      if(thread.status?.type==="active")throw new Error("Stop the running turn before continuing verification.");
+      const records=state?.verificationRecords?.({threadId:thread.id,limit:50})||[];if(!records.length)throw new Error("No persisted verification record is available for this thread.");
+      const prepared=verificationContinuationState(records,params.recordId||null),{record,nextAction}=prepared;if(nextAction.action!=="verify"||!nextAction.nextStep)throw new Error("Latest verification does not require another verification step (next action: "+nextAction.action+").");
+      const meta=state?.threadMeta?.(thread.id)||{},continuationAttempt=verificationContinuationAttempt(meta.verificationContinuationChain,record,{automatic:Boolean(params.auto)}),automationAttempt=verificationAutomationAttempt(meta.verificationAutomationChain,record,{automatic:Boolean(params.auto),action:"verify"});
+      if(!continuationAttempt.allowed)throw Object.assign(new Error(`Automatic verification continuation stopped after ${continuationAttempt.limit} attempts. Review the remaining verification state before continuing.`),{code:-32001});
+      if(!automationAttempt.allowed)throw Object.assign(new Error(`Automatic verification workflow stopped after ${automationAttempt.limit} actions. Review the remaining verification state before continuing.`),{code:-32001});
+      const verificationContext=verificationContinuationContext(prepared),verificationPrompt=verificationContinuationPrompt(),started=await request(context,"turn/start",{
+        threadId:thread.id,model:thread.model||undefined,
+        ...(thread.runtime==="native"&&thread.providerMeta?.modelProvider?{modelProvider:thread.providerMeta.modelProvider}:{}),
+        input:[{type:"text",text:verificationPrompt}],additionalContext:{"trebell.verification_continue":{kind:"application",value:verificationContext}},
+      });
+      if(started?.turn?.id)state?.updateThreadMeta?.(thread.id,{verificationContinuationChain:verificationContinuationChainState(continuationAttempt,started.turn.id),...(params.auto?{verificationAutomationChain:verificationAutomationChainState(automationAttempt,started.turn.id)}:{})});
+      journal?.record?.({runtime:thread.runtime||runtime,provider:thread.providerMeta?.modelProvider||thread.providerMeta?.runtimeInstanceId||null,environmentId:thread.providerMeta?.environmentId??null,threadId:thread.id,turnId:started?.turn?.id||null,category:"verification",name:"verification.continuation_started",status:"running",data:{recordId:record.id,nextStepId:nextAction.nextStep?.id||null,automatic:Boolean(params.auto),attempt:continuationAttempt.attempts}});
       return {record,nextAction,turn:started?.turn||null};
     }
     if(method==="thread/delegate"){

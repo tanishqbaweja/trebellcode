@@ -241,6 +241,26 @@ test("Trebell Native verification repair reuses the same thread and persisted fa
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
 });
 
+test("Trebell Native verification continuation reuses the same thread and only the next missing check",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-verify-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);const providerRequests=[];
+  const nativeProviderTurn=async request=>{providerRequests.push(structuredClone({...request,signal:undefined}));return {id:"verify-answer",provider:request.provider,model:request.model,text:"Ran the requested test only.",toolCalls:[],finishReason:"stop",usage:{}}};
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
+  try{
+    const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;
+    const plan={risk:"medium",steps:[{id:"diagnostics",kind:"diagnostics",scope:"changed",required:true,cost:"low",reason:"Check syntax"},{id:"tests",kind:"tests",scope:"affected",required:true,cost:"medium",command:"npm test",reason:"Run tests"}]};
+    state.recordVerification({id:"native-verify-record",threadId:thread.id,turnId:"user-turn",projectPath:repo,plan,evidence:[{stepId:"diagnostics",status:"passed",rawOutput:"SHOULD_NOT_BE_IN_VERIFY_CONTEXT"}]});
+    const current=await rpc.request("thread/verification/get",{threadId:thread.id});assert.equal(current.record.id,"native-verify-record");assert.equal(current.nextAction.action,"verify");assert.equal(current.nextAction.nextStep.id,"tests");
+    const continued=await rpc.request("thread/verification/continue",{threadId:thread.id,recordId:"native-verify-record",auto:true});assert.equal(continued.record.id,"native-verify-record");assert.equal(continued.nextAction.nextStep.id,"tests");assert.ok(continued.turn?.id);
+    await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===continued.turn.id);
+    assert.equal(providerRequests.length,1);const prompt=JSON.stringify(providerRequests[0].messages.at(-1)?.content||"");assert.match(prompt,/Continue verification/i);assert.match(prompt,/npm test/);assert.match(prompt,/single next required verification step/i);assert.doesNotMatch(prompt,/SHOULD_NOT_BE_IN_VERIFY_CONTEXT/);
+    const meta=state.threadMeta(thread.id);assert.equal(meta.verificationContinuationChain?.lastContinuationTurnId,continued.turn.id);assert.equal(meta.verificationAutomationChain?.lastAutomaticTurnId,continued.turn.id);assert.equal(meta.verificationAutomationChain?.lastAction,"verify");
+    const persisted=(await rpc.request("thread/read",{threadId:thread.id})).thread;assert.equal(persisted.id,thread.id);assert.equal(persisted.turns.length,1);assert.ok(persisted.turns[0].items.some(item=>item.type==="agentMessage"&&/requested test only/.test(item.text)));
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
+});
+
 test("Trebell Native compaction keeps full transcript but restarts from the durable brief boundary",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-compact-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
