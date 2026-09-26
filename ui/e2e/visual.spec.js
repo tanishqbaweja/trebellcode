@@ -660,7 +660,7 @@ test("composer file mentions use fuzzy shared workspace search",async({page,requ
     await expect(menu).not.toContainText("compareUsers.js");
     await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"chat-fuzzy-file-mention-1280x800.png",fullPage:true});
     await match.click();await expect(page.getByTestId("context-chips")).toContainText("UserCard.jsx");await expect(composer).toHaveValue(/Inspect @src[\\/]components[\\/]UserCard\.jsx /);
-  }finally{await rm(dir,{recursive:true,force:true})}
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
 });
 
 test("workspace panel refreshes from live RPC file-change notifications",async({page,request})=>{
@@ -681,7 +681,7 @@ test("workspace panel refreshes from live RPC file-change notifications",async({
     await request.post("/api/settings",{data:{appearance:"light",appearanceMode:"light"}});
     await page.reload();await page.getByTestId("right-panel-toggle").click();await expect(page.getByTestId("right-panel")).toContainText("agent-created.txt");
     await page.screenshot({path:auditDir+"workspace-live-file-refresh-light-1280x800.png",fullPage:true});
-  }finally{await rm(dir,{recursive:true,force:true})}
+  }finally{await rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100})}
 });
 
 test("navigation history shortcuts visibly restore prior app surfaces",async({page,request})=>{
@@ -2561,6 +2561,13 @@ test("settings page visual audit",async({page,request})=>{
   await expect(page.getByRole("button",{name:/General/})).toHaveAttribute("aria-current","page");
   await expect(page.getByRole("heading",{name:"Follow-up behavior"})).toBeVisible();
   await expect(page.getByRole("heading",{name:"Context management"})).toBeVisible();
+  const typeScale=await page.evaluate(()=>{
+    const px=selector=>parseFloat(getComputedStyle(document.querySelector(selector)).fontSize)||0;
+    return {sidebar:px(".thread-main strong"),settingsBody:px(".settings-card p"),settingsNav:px(".settings-nav button strong"),sectionHeading:px(".settings-section-head h2")};
+  });
+  expect(typeScale.settingsBody).toBeGreaterThanOrEqual(typeScale.sidebar*.85);
+  expect(typeScale.settingsNav).toBeGreaterThanOrEqual(10);
+  expect(typeScale.sectionHeading).toBeGreaterThanOrEqual(17);
   const autoCompactToggle=page.getByLabel("Compact long threads automatically");
   await expect(autoCompactToggle).toBeChecked();
   const autoCompactBox=await autoCompactToggle.boundingBox();
@@ -2883,7 +2890,7 @@ test("Trebell Native is a built-in provider-backed runtime in Settings",async({p
   await expect(nativeOption.getByText("Active",{exact:true})).toBeVisible();
   await expect(nativeOption).toContainText("Built into Trebell Code");
   const profiles=page.locator('[data-setting-target="agents-profiles"]');
-  await expect(profiles.getByRole("button",{name:"Add profile",exact:true})).toBeDisabled();
+  await expect(profiles).toHaveCount(0);
   const providerCard=page.getByTestId("provider-settings-card");
   await expect(providerCard).toBeVisible();
   await expect(providerCard).toContainText("inference service used by Trebell Native");

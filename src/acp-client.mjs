@@ -51,6 +51,7 @@ export class AcpClient extends EventEmitter{
     this.nextId=1;
     this.pending=new Map();
     this.child=null;
+    this.stdoutReader=null;
     this.started=false;
     this.closed=false;
     this.stderrTail="";
@@ -64,7 +65,8 @@ export class AcpClient extends EventEmitter{
       ?this.spawnProcess({command:this.command,args:this.args,cwd:this.cwd,env:this.env,stdio:["pipe","pipe","pipe"]})
       :spawn(this.command,this.args,{cwd:this.cwd,env:this.env,windowsHide:true,stdio:["pipe","pipe","pipe"]});
     this.child=child;
-    readline.createInterface({input:child.stdout,crlfDelay:Infinity}).on("line",line=>this.#handleLine(line));
+    this.stdoutReader=readline.createInterface({input:child.stdout,crlfDelay:Infinity});
+    this.stdoutReader.on("line",line=>this.#handleLine(line));
     child.stderr?.on("data",chunk=>{
       const text=String(chunk);
       this.stderrTail=appendAcpStderrTail(this.stderrTail,text);
@@ -104,12 +106,12 @@ export class AcpClient extends EventEmitter{
     this.#write({jsonrpc:"2.0",method,params});
   }
 
-  async initialize({name="trebell-code",title="Trebell Code",version="0.0.0",capabilities=null}={}){
+  async initialize({name="trebell-code",title="Trebell Code",version="0.0.0",capabilities=null,timeoutMs=30_000}={}){
     return this.request("initialize",{
       protocolVersion:1,
       clientInfo:{name,title,version},
       clientCapabilities:capabilities||defaultAcpClientCapabilities(),
-    },30_000);
+    },timeoutMs);
   }
 
   createSession({cwd=this.cwd,mcpServers=[]}={}){return this.request("session/new",{cwd,mcpServers})}
@@ -117,7 +119,7 @@ export class AcpClient extends EventEmitter{
   resumeSession({sessionId,cwd=this.cwd,mcpServers=[]}={}){return this.request("session/resume",{sessionId,cwd,mcpServers})}
   listSessions(params={}){return this.request("session/list",params)}
   forkSession({sessionId,cwd=this.cwd,mcpServers=[]}={}){return this.request("session/fork",{sessionId,cwd,mcpServers})}
-  closeSession(sessionId){return this.request("session/close",{sessionId})}
+  closeSession(sessionId,{timeoutMs=5000}={}){return this.request("session/close",{sessionId},timeoutMs)}
   setModel(sessionId,modelId){return this.request("session/set_model",{sessionId,modelId})}
   setMode(sessionId,modeId){return this.request("session/set_mode",{sessionId,modeId})}
   setConfigOption(sessionId,configId,value){return this.request("session/set_config_option",{sessionId,configId,value})}
@@ -127,22 +129,27 @@ export class AcpClient extends EventEmitter{
   logout(){return this.request("logout",{})}
 
   async stop(){
-    if(this.closed)return;
+    if(this.closed&&!this.child)return;
     this.closed=true;
     for(const [id,pending] of this.pending){clearTimeout(pending.timer);pending.reject(new Error("ACP runtime stopped"));this.pending.delete(id)}
     const child=this.child;
     if(child&&child.exitCode===null){
-      try{child.kill("SIGTERM")}catch{}
-      await Promise.race([
-        new Promise(resolve=>child.once("exit",resolve)),
-        new Promise(resolve=>setTimeout(resolve,1200)),
-      ]).catch(()=>{});
-      if(child.exitCode===null){
-        if(process.platform==="win32"&&child.pid){
-          try{spawn("taskkill",["/PID",String(child.pid),"/T","/F"],{windowsHide:true,stdio:"ignore"}).unref()}catch{}
-        }else try{child.kill("SIGKILL")}catch{}
+      if(process.platform==="win32"&&child.pid){
+        // Kill the whole Windows process tree while the launcher PID is still
+        // alive. Killing only the launcher first can orphan helper processes.
+        await new Promise(resolve=>{
+          let settled=false;const done=()=>{if(settled)return;settled=true;resolve()};
+          try{const killer=spawn("taskkill",["/PID",String(child.pid),"/T","/F"],{windowsHide:true,stdio:"ignore"});killer.once("exit",done);killer.once("error",done);setTimeout(done,3000).unref?.()}catch{done()}
+        });
+      }else{
+        try{child.kill("SIGTERM")}catch{}
+        await Promise.race([new Promise(resolve=>child.once("exit",resolve)),new Promise(resolve=>setTimeout(resolve,1200))]).catch(()=>{});
+        if(child.exitCode===null)try{child.kill("SIGKILL")}catch{}
       }
     }
+    try{this.stdoutReader?.close()}catch{}this.stdoutReader=null;
+    try{child?.stdin?.destroy()}catch{}try{child?.stdout?.destroy()}catch{}try{child?.stderr?.destroy()}catch{}
+    this.child=null;
   }
 
   #write(message){

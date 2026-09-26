@@ -35,6 +35,22 @@ test("ACP edits mode never fabricates approval when the provider exposes no allo
   assert.equal(acpPermissionChoice(rejectOnly,"edits","edit"),null);
 });
 
+test("ACP process cwd can differ from the coding workspace cwd",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-acp-process-cwd-")),runtimeDir=join(root,"runtime"),workspace=join(root,"workspace"),fixture=join(runtimeDir,"fake-acp.mjs");
+  const { mkdir }=await import("node:fs/promises");await mkdir(runtimeDir,{recursive:true});await mkdir(workspace,{recursive:true});
+  await writeFile(fixture,String.raw`
+import readline from "node:readline";
+function send(value){process.stdout.write(JSON.stringify(value)+"\n")}
+readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",line=>{const message=JSON.parse(line);if(message.method==="initialize")return send({jsonrpc:"2.0",id:message.id,result:{protocolVersion:1,agentInfo:{name:"fixture",version:process.cwd()},agentCapabilities:{sessionCapabilities:{close:{}}}}});if(message.method==="session/new")return send({jsonrpc:"2.0",id:message.id,result:{sessionId:"cwd-fixture",meta:{requestedCwd:message.params.cwd},models:{currentModelId:"fixture",availableModels:[]},configOptions:[],modes:{currentModeId:"build",availableModes:[]}}});if(message.method==="session/close")return send({jsonrpc:"2.0",id:message.id,result:{}})});
+`,"utf8");
+  const session=new AcpAgentSession({runtime:"fixture",command:process.execPath,args:[fixture],cwd:workspace,processCwd:runtimeDir,terminals:new TerminalManager({persist:false})});
+  try{
+    const started=await session.start();
+    assert.equal(started.initialize.agentInfo.version,runtimeDir);
+    assert.equal(started.session.meta.requestedCwd,workspace);
+  }finally{const terminals=session.terminals;await session.close().catch(()=>{});await terminals.shutdown().catch(()=>{});await rm(root,{recursive:true,force:true})}
+});
+
 test("ACP terminal execution is denied in edits mode unless Trebell approval allows it",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-acp-permission-")),fixture=join(root,"fake-acp.mjs"),marker=join(root,"executed.txt");
   await writeFile(fixture,String.raw`

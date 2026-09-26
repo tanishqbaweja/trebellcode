@@ -3,7 +3,7 @@ import { createServer as createTcpServer } from "node:net";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createReadStream, statfsSync } from "node:fs";
 import { cpus, freemem, totalmem, tmpdir, loadavg, homedir } from "node:os";
-import { basename, extname, isAbsolute, join, normalize, posix, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, normalize, posix, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { randomUUID, randomBytes } from "node:crypto";
 import { attachCodexRelay, probeCodexReady, waitForCodexReady } from "./codex-relay.mjs";
@@ -24,6 +24,7 @@ import { TrebellStateStore } from "./trebell-state.mjs";
 import { CheckpointService } from "./checkpoint-service.mjs";
 import { TerminalManager } from "./terminal-manager.mjs";
 import { EnvironmentManager, remoteTransportEnvironment } from "./environment-manager.mjs";
+import { interactiveTerminalCommand } from "./terminal-command.mjs";
 import { startRemoteAppServer } from "./environment-app-server.mjs";
 import { ProviderManager, normalizeProviderId } from "./provider-manager.mjs";
 import { modelContextWindowFromMetadata, modelContextWindowKey } from "./model-context-window.mjs";
@@ -31,6 +32,8 @@ import { withNormalizedModelCapabilities } from "./model-capabilities.mjs";
 import { normalizeChatTurnResponse, providerTurnToChat } from "./provider-turn.mjs";
 import { startProviderBridge } from "./provider-bridge.mjs";
 import { AgentRuntimeManager, normalizeAgentRuntime } from "./agent-runtime-manager.mjs";
+import { AcpClient } from "./acp-client.mjs";
+import { configureAntigravityAuth } from "./antigravity-runtime-installer.mjs";
 import { AgentThreadStore } from "./agent-thread-store.mjs";
 import { importClaudeHistory, publicHistoryCandidate, scanLocalAgentHistory } from "./agent-history-import.mjs";
 import { agentPermissionModeFromStart, attachAgentRelay } from "./agent-relay.mjs";
@@ -1622,16 +1625,40 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         const instance=agentRuntimes.instances().find(item=>item.id===String(body.instanceId||""))
           ||agentRuntimes.instances().find(item=>item.kind===String(body.runtime||""))
           ||agentRuntimes.activeInstance();
-        const auth=agentRuntimes.authCommand(instance,{action:"login"});
         const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")
           ?requestedEnvironmentId(body.environmentId,{fallback:false})
           :requestedEnvironmentId(null);
         const cwd=agentRuntimes.runtimeCwd(body.cwd||process.cwd(),environmentId);
+        if(instance.kind==="antigravity"){
+          if(mock)return json(res,200,{ok:true,authenticated:true,auth:{runtime:"antigravity",instanceId:instance.id,methodId:"oauth-personal",methodName:"Log in with Google",methods:[{id:"oauth-personal",name:"Log in with Google"}]}});
+          if(environmentId)throw new Error("Antigravity ACP sign-in is currently supported on the local machine only.");
+          const command=agentRuntimes.executable(instance),client=new AcpClient({command,args:agentRuntimes.acpArgs(instance,"supervised",cwd),cwd:dirname(command),env:agentRuntimes.childEnv(instance)});
+          let sessionId=null;
+          try{
+            await client.start();
+            const initialized=await client.initialize({version:TREBELL_VERSION,timeoutMs:90_000});
+            const methods=Array.isArray(initialized?.authMethods)?initialized.authMethods:[];
+            const requested=String(body.authMethodId||"").trim();
+            const method=(requested&&methods.find(item=>item.id===requested))||methods.find(item=>item.id==="oauth-personal")||methods[0];
+            if(!method?.id)throw new Error("Antigravity ACP did not advertise a supported authentication method.");
+            await configureAntigravityAuth(method.id,{env:agentRuntimes.childEnv(instance)});
+            await client.authenticate(method.id);
+            const verified=await client.createSession({cwd,mcpServers:[]});sessionId=verified?.sessionId||null;
+            if(!sessionId)throw new Error("Antigravity authentication finished, but a verified ACP session could not be created.");
+            return json(res,200,{ok:true,authenticated:true,auth:{runtime:"antigravity",instanceId:instance.id,methodId:method.id,methodName:method.name||method.id,methods:methods.map(item=>({id:item.id,name:item.name||item.id}))}});
+          }finally{
+            if(sessionId)await client.closeSession(sessionId).catch(()=>{});
+            await client.stop().catch(()=>{});
+          }
+        }
+        const auth=agentRuntimes.authCommand(instance,{action:"login",environmentId});
         if(mock){
           return json(res,200,{ok:true,auth,session:{id:"mock-runtime-auth",name:auth.name+" sign in",cwd,environmentId:environmentId||null,environmentName:"Mock environment",environmentType:environmentId?"remote":"local",running:true}});
         }
-        const spec=environments.terminalArgvSpec(environmentId,{command:auth.command,args:auth.args,cwd});
         const authProfile=environmentId?environments.get(environmentId):null,remoteAuth=Boolean(authProfile&&authProfile.type!=="local");
+        const spec=remoteAuth
+          ?environments.terminalArgvSpec(environmentId,{command:auth.command,args:auth.args,cwd})
+          :environments.terminalSpec(environmentId,{cwd});
         const session=await terminals.create({
           cwd:spec.cwd,
           displayCwd:cwd,
@@ -1639,13 +1666,14 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           rows:32,
           name:auth.name+" sign in",
           env:remoteAuth?remoteTransportEnvironment(env,{platform:process.platform}):agentRuntimes.childEnv(instance),
-          replaceEnv:remoteAuth,
+          replaceEnv:true,
           shell:spec.shell,
           args:spec.args,
           environmentId:spec.environmentId,
           environmentName:spec.environmentName,
           environmentType:spec.environmentType,
         });
+        if(!remoteAuth)await terminals.write(session.id,interactiveTerminalCommand(auth.command,auth.args,{platform:process.platform})+"\r");
         return json(res,200,{ok:true,auth,session});
       }catch(error){return json(res,400,{ok:false,error:error.message});}
     }
@@ -2822,9 +2850,13 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     if(url.pathname==="/api/update/check"){
       try{
         const response=await fetchImpl("https://api.github.com/repos/tanishqbaweja/trebellcode/releases/latest",{headers:{"User-Agent":"Trebell-Code/"+TREBELL_VERSION},signal:AbortSignal.timeout(8000)});
-        const item=await response.json();
-        return json(res,response.ok?200:502,{current:TREBELL_VERSION,latest:item.tag_name||null,url:item.html_url||null,name:item.name||null});
-      }catch(error){return json(res,502,{current:TREBELL_VERSION,error:error.message});}
+        const item=await response.json().catch(()=>({}));
+        if(!response.ok){
+          const detail=String(item?.message||"").trim();
+          return json(res,502,{current:TREBELL_VERSION,error:`GitHub release check failed (${response.status})${detail?": "+detail:""}`});
+        }
+        return json(res,200,{current:TREBELL_VERSION,latest:item.tag_name||null,url:item.html_url||null,name:item.name||null});
+      }catch(error){return json(res,502,{current:TREBELL_VERSION,error:"Could not reach GitHub releases: "+(error?.message||String(error))});}
     }
     if(url.pathname==="/api/licenses"&&req.method==="GET"){
       try{return json(res,200,await listLicenses({query:url.searchParams.get("q")||""}))}
@@ -3012,7 +3044,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         if(startedThread.model)codexThreadModels.set(startedThread.id,startedThread.model);
         const routedServer=route?.targetKey?codexAppServers.get(route.targetKey):null;
         if(routedServer)codexThreadServerKeys.set(startedThread.id,routedServer.poolKey);
-        state.updateThreadMeta(startedThread.id,{cwd:startedThread.cwd||null,runtime:"codex",runtimeInstanceId:routedServer?.runtimeInstanceId||agentRuntimes.activeInstance().id,environmentId:routedServer?.environmentId??state.settings().activeEnvironmentId??null,deletedAt:null,active:false,...codexPermissionProfilePatch(route?.requestParams||{})});
+        const ephemeral=Boolean(route?.requestParams?.ephemeral);
+        state.updateThreadMeta(startedThread.id,{cwd:startedThread.cwd||null,runtime:"codex",runtimeInstanceId:routedServer?.runtimeInstanceId||agentRuntimes.activeInstance().id,environmentId:routedServer?.environmentId??state.settings().activeEnvironmentId??null,deletedAt:null,active:false,ephemeral,catalogHidden:ephemeral,...codexPermissionProfilePatch(route?.requestParams||{})});
       }
       if(message?.method==="thread/deleted"&&params.threadId){
         codexThreadModels.delete(params.threadId);const meta=state.threadMeta(params.threadId);state.removeThreadMeta(params.threadId);

@@ -23,7 +23,26 @@ test("explicit inherited variable names expose values without persisting them in
   assert.ok(runtimeEnvironmentKeys("opencode",{approved}).includes("AWS_SECRET_ACCESS_KEY"));
 });
 
+test("OpenCode receives supported upstream provider variables without inheriting unrelated credentials",()=>{
+  const parent={PATH:"/bin",HF_TOKEN:"hf-value",NVIDIA_API_KEY:"nv-value",OPENAI_API_KEY:"oa-value",GEMINI_API_KEY:"gem-value",GITHUB_TOKEN:"github-value",CI_DEPLOY_TOKEN:"ci-value"};
+  const env=buildRuntimeEnvironment("opencode",{parent,platform:"linux"});
+  assert.equal(env.HF_TOKEN,"hf-value");assert.equal(env.NVIDIA_API_KEY,"nv-value");assert.equal(env.OPENAI_API_KEY,"oa-value");assert.equal(env.GEMINI_API_KEY,"gem-value");
+  assert.equal(env.GITHUB_TOKEN,undefined);assert.equal(env.CI_DEPLOY_TOKEN,undefined);
+});
+
+test("Antigravity receives Google authentication inputs without inheriting unrelated secrets",()=>{
+  const parent={PATH:"/bin",HOME:"/home/me",GOOGLE_API_KEY:"google-value",GOOGLE_CLOUD_PROJECT:"project-a",GOOGLE_APPLICATION_CREDENTIALS:"/home/me/adc.json",OPENAI_API_KEY:"other-provider",GITHUB_TOKEN:"unrelated"};
+  const env=buildRuntimeEnvironment("antigravity",{parent,platform:"linux"});
+  assert.equal(env.GOOGLE_API_KEY,"google-value");assert.equal(env.GOOGLE_CLOUD_PROJECT,"project-a");assert.equal(env.GOOGLE_APPLICATION_CREDENTIALS,"/home/me/adc.json");
+  assert.equal(env.OPENAI_API_KEY,undefined);assert.equal(env.GITHUB_TOKEN,undefined);
+});
+
 test("Windows runtime environment lookup handles Path casing without copying unrelated variables",()=>{
   const env=buildRuntimeEnvironment("cursor",{parent:{Path:"C:\\Tools",USERPROFILE:"C:\\Users\\me",CURSOR_AUTH_TOKEN:"cursor-secret",RANDOM_TOKEN:"nope"},platform:"win32"});
   assert.equal(env.PATH,"C:\\Tools");assert.equal(env.USERPROFILE,"C:\\Users\\me");assert.equal(env.CURSOR_AUTH_TOKEN,"cursor-secret");assert.equal(env.RANDOM_TOKEN,undefined);
+});
+
+test("Antigravity inherits only its explicit Google auth lane plus the OS baseline",()=>{
+  const env=buildRuntimeEnvironment("antigravity",{parent:{PATH:"/bin",GEMINI_HOME:"/tmp/gemini",GEMINI_API_KEY:"gem-value",GOOGLE_CLOUD_PROJECT:"project-value",OPENAI_API_KEY:"nope",GITHUB_TOKEN:"nope"},platform:"linux"});
+  assert.equal(env.GEMINI_HOME,"/tmp/gemini");assert.equal(env.GEMINI_API_KEY,"gem-value");assert.equal(env.GOOGLE_CLOUD_PROJECT,"project-value");assert.equal(env.OPENAI_API_KEY,undefined);assert.equal(env.GITHUB_TOKEN,undefined);
 });

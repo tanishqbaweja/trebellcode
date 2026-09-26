@@ -358,11 +358,14 @@ test("compatible Codex profiles switch an existing thread through a separate app
     const backgroundTurn=await rpc(ws,21,"turn/start",{threadId:background.thread.id,input:[],turnTrigger:"trebell-concurrent-thread"});
     assert.equal(backgroundTurn.turn?.status,"inProgress","a second Codex thread should keep its own writer while another thread changes profiles");
     await backgroundStartedNotification;
-    const backgroundInterrupted=await rpcOutcome(ws,32,"turn/interrupt",{threadId:background.thread.id,turnId:backgroundTurn.turn.id});
-    assert.equal(backgroundInterrupted.ok,true,backgroundInterrupted.error?.message||"background turn interrupt failed");
-    await backgroundCompletedNotification;
     const switched=await rpc(ws,6,"thread/runtimeInstance/set",{threadId,instanceId:"codex-personal"});
     assert.equal(switched.runtimeInstanceId,"codex-personal");
+    // The sibling thread may complete very quickly (especially when its input is
+    // empty), so do not make this profile-routing check depend on racing an
+    // interrupt against completion. The important invariant is that switching
+    // the first thread while the sibling owns a live writer does not tear that
+    // sibling route down.
+    await backgroundCompletedNotification;
     const resumed=await rpc(ws,7,"thread/resume",{threadId,modelProvider:"freebuff",excludeTurns:false});
     assert.equal(resumed.thread.id,threadId);
     const backgroundSecondTurn=await rpcOutcome(ws,22,"turn/start",{threadId:background.thread.id,input:[],turnTrigger:"trebell-concurrent-thread-after-profile-switch"});

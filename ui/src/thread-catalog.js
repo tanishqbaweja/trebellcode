@@ -1,5 +1,10 @@
 const RUNTIMES=new Set(["native","codex","claude","opencode","cursor","grok","antigravity"]);
 
+export function missingRuntimeThreadError(error){
+  const detail=error?.message||String(error||"");
+  return /no rollout found|thread .*not found|thread .*does not exist/i.test(detail);
+}
+
 function text(value,max=4000){return String(value??"").trim().slice(0,max)}
 function runtime(value,fallback=null){const key=String(value||"").trim().toLowerCase();return RUNTIMES.has(key)?key:fallback}
 function runtimeFromInstance(value){
@@ -37,7 +42,7 @@ export function threadCatalogSnapshot(thread,{runtime:runtimeHint=null,provider=
 }
 
 export function threadFromCatalogMeta(threadId,meta={}){
-  if(meta?.deletedAt||meta?.archived)return null;
+  if(meta?.deletedAt||meta?.archived||meta?.ephemeral||meta?.catalogHidden)return null;
   const snapshot=meta?.threadSnapshot&&typeof meta.threadSnapshot==="object"?meta.threadSnapshot:null;
   const owner=runtime(meta?.runtime||snapshot?.runtime||meta?.trebellContext?.runtime,runtimeFromInstance(meta?.runtimeInstanceId));
   if(!snapshot&&!owner)return null;
@@ -73,11 +78,12 @@ export function mergeThreadCatalog(existing=[],incoming=[],{runtime:runtimeHint=
   const map=new Map();
   for(const thread of existing||[]){
     if(!thread?.id)continue;
-    const meta=threadMeta?.[thread.id]||{};if(meta.deletedAt||meta.archived)continue;
+    const meta=threadMeta?.[thread.id]||{};if(meta.deletedAt||meta.archived||meta.ephemeral||meta.catalogHidden)continue;
     map.set(String(thread.id),thread);
   }
   for(const raw of incoming||[]){
     if(!raw?.id)continue;
+    const meta=threadMeta?.[raw.id]||{};if(meta.deletedAt||meta.archived||meta.ephemeral||meta.catalogHidden)continue;
     const thread=decorateCatalogThread(raw,{runtime:runtimeHint,provider}),previous=map.get(String(thread.id));
     map.set(String(thread.id),previous?{...previous,...thread}:thread);
   }

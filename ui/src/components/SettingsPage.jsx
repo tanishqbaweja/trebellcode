@@ -6,6 +6,8 @@ import { KEYBINDING_COMMANDS, normalizeKeybindingRules } from "../keybindings.js
 import { searchSettings } from "../settings-search.js";
 import { normalizeCustomTheme } from "../theme-utils.js";
 import { sharedRuntimeCapabilities } from "../../../src/runtime-capabilities.mjs";
+import { runtimeStatusForKind } from "../runtime-status.js";
+import { freebuffSessionLabel, freebuffSessionUnavailable } from "../freebuff-status.js";
 import ScopedSettingsCard from "./ScopedSettingsCard.jsx";
 
 const PROVIDER_LABELS={
@@ -16,7 +18,7 @@ const PROVIDER_LABELS={
   vyceai:"VyceAi",
 };
 
-export default function SettingsPage({settings,onSettings,onProviderChanging,onProviderUpdated,runtime,runtimeCapabilities={},rpcStatus,loggedIn,login,logout,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes}){
+export default function SettingsPage({settings,onSettings,onProviderChanging,onProviderUpdated,runtime,runtimeCapabilities={},rpcStatus,loggedIn,freebuff=null,login,logout,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes}){
   const [settingsSection,setSettingsSection]=useState("general");
   const [settingsSearch,setSettingsSearch]=useState("");
   const [workspaceScope,setWorkspaceScope]=useState({environmentId:settings.activeEnvironmentId||"local",projectId:""});
@@ -35,6 +37,8 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   const [freebuffAuthError,setFreebuffAuthError]=useState(false);
   const [agentInfo,setAgentInfo]=useState(null);
   const [agentMessage,setAgentMessage]=useState("");
+  const [agentMessageTarget,setAgentMessageTarget]=useState(null);
+  const [agentSelectionOverride,setAgentSelectionOverride]=useState(null);
   const [installingAgent,setInstallingAgent]=useState(null);
   const [authenticatingAgent,setAuthenticatingAgent]=useState(null);
   const [instanceDraft,setInstanceDraft]=useState(null);
@@ -55,7 +59,8 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   const [themeMessage,setThemeMessage]=useState("");
   const themeImportRef=useRef(null);
   const selected=settings.modelProvider||"freebuff";
-  const selectedAgent=settings.agentRuntime||runtime?.agentRuntime||"codex";
+  const freebuffUnavailable=selected==="freebuff"&&freebuffSessionUnavailable(freebuff);
+  const selectedAgent=agentSelectionOverride||settings.agentRuntime||runtime?.agentRuntime||agentInfo?.selectedRuntime||"codex";
   const selectedManagedInference=Boolean(sharedRuntimeCapabilities(selectedAgent).managedInference);
   const keybindingRules=normalizeKeybindingRules(settings);
   function updateKeybinding(command,patch){
@@ -88,6 +93,8 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     }
   }
   async function selectAgentRuntime(kind,instanceId=null){
+    setAgentSelectionOverride(kind);
+    setAgentMessageTarget(kind);
     setAgentMessage("Switching…");
     try{
       const result=await api("/api/agent-runtimes",{method:"POST",body:{action:"select",runtime:kind,instanceId}});
@@ -96,6 +103,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       setAgentMessage(`${result.selected?.status?.name||kind} selected.`);
       await onProviderUpdated?.({agentRuntime:result.selectedRuntime||kind,provider:selected,resetThread:true});
     }catch(error){setAgentMessage(error.message)}
+    finally{setAgentSelectionOverride(null)}
   }
   function editInstance(instance=null){
     setInstanceDraft(instance?{...instance}:{
@@ -104,6 +112,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   }
   async function saveInstance(){
     if(!instanceDraft)return;
+    setAgentMessageTarget(instanceDraft.kind||selectedAgent);
     setAgentMessage("Saving runtime profile…");
     try{
       const instance={...instanceDraft};delete instance.environmentKeys;
@@ -114,6 +123,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   }
   async function removeInstance(instance){
     if(!instance||instance.id===`${instance.kind}-default`)return;
+    setAgentMessageTarget(instance.kind||selectedAgent);
     setAgentMessage("Removing runtime profile…");
     try{
       const result=await api("/api/agent-runtimes?id="+encodeURIComponent(instance.id),{method:"DELETE"});
@@ -124,7 +134,11 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   async function installAgentRuntime(kind){
     const definition=(agentInfo?.definitions||[]).find(item=>item.id===kind);if(!definition?.installable)return;
     const label=definition.name||kind;const packageName=definition.packageName||"the official package";
-    if(!confirm("Install or update "+label+" in the selected environment?\n\nTrebell will run: npm install -g "+packageName))return;
+    const confirmation=kind==="antigravity"
+      ?"Install or update "+label+" ACP runtime on this machine?\n\nTrebell will download Google's published Antigravity ACP runtime through the official Agent Client Protocol registry."
+      :"Install or update "+label+" in the selected environment?\n\nTrebell will run: npm install -g "+packageName;
+    if(!confirm(confirmation))return;
+    setAgentMessageTarget(kind);
     setInstallingAgent(kind);setAgentMessage("Installing "+label+"…");
     try{
       const result=await api("/api/agent-runtimes",{method:"POST",body:{action:"install",runtime:kind,environmentId:settings.activeEnvironmentId||null}});
@@ -136,11 +150,17 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   }
   async function authenticateAgentRuntime(kind,instanceId){
     const definition=(agentInfo?.definitions||[]).find(item=>item.id===kind);if(!definition?.canAuthenticate)return;
+    setAgentMessageTarget(kind);
     setAuthenticatingAgent(instanceId||kind);setAgentMessage("Opening "+(definition.name||kind)+" sign in…");
     try{
       const result=await api("/api/agent-runtime-auth",{method:"POST",body:{action:"login",runtime:kind,instanceId:instanceId||null,environmentId:runtimeEnvironmentId||null,cwd:projectPath||null}});
-      setAgentMessage("Complete sign in in the terminal, then refresh runtime status.");
-      onOpenRuntimeAuthTerminal?.(result.session);
+      if(result?.authenticated){
+        setAgentMessage((definition.name||kind)+" sign in verified.");
+        await loadAgentRuntimes();
+      }else{
+        setAgentMessage("Complete sign in in the terminal, then refresh runtime status.");
+        if(result?.session)onOpenRuntimeAuthTerminal?.(result.session);
+      }
     }catch(error){setAgentMessage(error.message)}
     finally{setAuthenticatingAgent(null)}
   }
@@ -462,7 +482,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   const updateStatusLabel={idle:"Ready to check",checking:"Checking…",available:"Update available",downloading:"Downloading…",downloaded:"Ready to install",installing:"Restarting…",current:"Up to date",error:"Update failed",development:"Development build"}[desktopUpdate?.status]||desktopUpdate?.status||"idle";
 
   const selectedStatus=providerInfo?.providers?.find(p=>p.id===selected)||providerInfo?.status;
-  const selectedAgentStatus=agentInfo?.statuses?.find(item=>item.id===agentInfo?.selectedInstanceId)||agentInfo?.statuses?.find(item=>item.kind===selectedAgent);
+  const selectedAgentStatus=runtimeStatusForKind(agentInfo,selectedAgent,{preferSelected:true});
   const selectedAgentDefinition=(agentInfo?.definitions||[]).find(item=>item.id===selectedAgent)||null;
   const selectedAgentCapabilities=Object.keys(runtimeCapabilities||{}).length?runtimeCapabilities:(selectedAgentDefinition?.capabilities||(agentInfo?.selectedRuntime===selectedAgent?agentInfo?.capabilities:null)||{});
   const desktopTools=desktopBridgeToolAvailability(window.trebellDesktop);
@@ -541,16 +561,17 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
         <h3>Agent harness</h3>
         <p>Choose the coding-agent runtime. Only installed and ready runtimes can be activated.</p>
         <div className="agent-runtime-list">{(agentInfo?.definitions||[]).map(def=>{
-          const status=(selectedAgent===def.id?agentInfo?.statuses?.find(item=>item.id===agentInfo?.selectedInstanceId):null)||agentInfo?.statuses?.find(item=>item.kind===def.id&&item.available)||agentInfo?.statuses?.find(item=>item.kind===def.id);
+          const status=runtimeStatusForKind(agentInfo,def.id,{preferSelected:selectedAgent===def.id});
           const active=selectedAgent===def.id;
           const compatibility=status?.compatibility;const incompatible=["broken","unsupported"].includes(compatibility?.status);
           const unverified=status?.authenticated==null&&["cursor","grok","opencode"].includes(def.id)&&status?.message;
           const statusText=incompatible?(compatibility.message||"Incompatible runtime version"):unverified?status.message:status?.available?status?.version||status?.message||"Ready":status?.message||"Unavailable";
+          const actionText=active?(incompatible||unverified?"Needs setup":"Active"):status?.available?(incompatible||unverified?"Needs setup":"Switch"):status?.installed?"Not ready":"Not installed";
           return <div className="agent-runtime-option" key={def.id}><button className={active?"active":""} disabled={!active&&!status?.available} onClick={()=>!active&&status?.available&&selectAgentRuntime(def.id,status.id)}>
-            <Bot size={14}/><span><strong>{def.name}</strong><small>{statusText}</small></span><em>{active?(incompatible||unverified?"Warning":"Active"):status?.available?(incompatible||unverified?"Warning":"Use"):"Unavailable"}</em>
+            <Bot size={14}/><span><strong>{def.name}</strong><small>{statusText}</small></span><em>{actionText}</em>
           </button>{def.canAuthenticate&&status?.installed&&status?.authenticated!==true&&<button className="agent-runtime-install" disabled={!!authenticatingAgent} onClick={()=>authenticateAgentRuntime(def.id,status?.id)}>{authenticatingAgent===(status?.id||def.id)?"Opening…":"Sign in"}</button>}{def.installable&&<button className="agent-runtime-install" disabled={installingAgent===def.id} onClick={()=>installAgentRuntime(def.id)}>{installingAgent===def.id?"Installing…":status?.installed?"Update":"Install"}</button>}</div>;
         })}</div>
-        <div className="runtime-profiles" {...targetProps("agents-profiles")}>
+        {selectedAgentDefinition?.multipleInstances!==false&&<div className="runtime-profiles" {...targetProps("agents-profiles")}>
           <div className="runtime-profiles-head"><strong>Profiles</strong><button onClick={()=>editInstance()} disabled={selectedAgentDefinition?.multipleInstances===false||selectedAgent==="antigravity"}>Add profile</button></div>
           {selectedInstances.map(instance=>{
             const status=agentInfo?.statuses?.find(item=>item.id===instance.id);const active=agentInfo?.selectedInstanceId===instance.id;
@@ -561,7 +582,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
               {instance.id!==`${instance.kind}-default`&&<button onClick={()=>removeInstance(instance)}>Remove</button>}
             </div>;
           })}
-        </div>
+        </div>}
         {instanceDraft&&<div className="runtime-profile-editor">
           <label>Profile name<input value={instanceDraft.displayName||""} onChange={e=>setInstanceDraft({...instanceDraft,displayName:e.target.value})}/></label>
           <label>Executable path<input value={instanceDraft.binaryPath||""} onChange={e=>setInstanceDraft({...instanceDraft,binaryPath:e.target.value})} placeholder="Leave blank to use the detected CLI"/></label>
@@ -573,7 +594,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
           <p>Trebell passes only a safe OS baseline, this runtime's own credential variables, and the names listed here. Values are read from the parent process at launch time and are not stored in the profile.</p>
           <div className="provider-key-actions"><button className="setting-action" onClick={saveInstance}>Save profile</button><button onClick={()=>setInstanceDraft(null)}>Cancel</button></div>
         </div>}
-        <p className={selectedAgentStatus?.available?"provider-note":"provider-status-error"}><strong>{selectedAgentStatus?.name||selectedAgent}</strong> · {selectedAgentStatus?.authenticated==null&&selectedAgentStatus?.message?selectedAgentStatus.message:selectedAgentStatus?.available?"ready":selectedAgentStatus?.message||"setup required"}{agentMessage?" · "+agentMessage:""} <button onClick={loadAgentRuntimes} disabled={!!authenticatingAgent}><RefreshCw size={11}/> Refresh</button></p>
+        <p className={selectedAgentStatus?.available?"provider-note":"provider-status-error"}><strong>{selectedAgentStatus?.name||selectedAgent}</strong> · {selectedAgentStatus?.authenticated==null&&selectedAgentStatus?.message?selectedAgentStatus.message:selectedAgentStatus?.available?"ready":selectedAgentStatus?.message||"setup required"}{agentMessage&&(!agentMessageTarget||agentMessageTarget===selectedAgent)?" · "+agentMessage:""} <button onClick={loadAgentRuntimes} disabled={!!authenticatingAgent}><RefreshCw size={11}/> Refresh</button></p>
       </div>}
       {settingsSection==="agents"&&selectedManagedInference&&<div className="settings-card provider-settings-card" {...targetProps("agents-provider")} data-testid="provider-settings-card" aria-busy={providerSwitching?"true":"false"}>
         <h3>Model provider</h3>
@@ -588,7 +609,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
           </select>
         </label>
         {selected==="freebuff"?<>
-          <p>{loggedIn?"Signed in to Freebuff.":"Sign in to use Freebuff inference."}</p>
+          <p>{loggedIn?(freebuffUnavailable?`Signed in, but Freebuff inference is unavailable (${freebuffSessionLabel(freebuff)}).`:"Signed in to Freebuff."):"Sign in to use Freebuff inference."}</p>
           <button className="setting-action" onClick={changeFreebuffAuth} disabled={freebuffAuthBusy}>{freebuffAuthBusy?(loggedIn?"Signing out…":"Waiting for sign-in…"):(loggedIn?"Sign out":"Sign in to Freebuff")}</button>
         </>:<>
           <label>API key
@@ -600,7 +621,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
           </div>
           <p className="provider-note">{selected==="agentrouter"?"Models are loaded live from AgentRouter /v1/models for this key.":selected==="vyceai"?"Models are loaded live from Vyce AI /v1/models for this key.":selected==="justworker"?"Available model: claude-opus-4-8.":"Available model: glm-5.3."}</p>
         </>}
-        <p data-testid="provider-status" className={modelError||freebuffAuthError?"provider-status-error":""}><strong>{PROVIDER_LABELS[selected]}</strong> · {providerSwitching?"switching provider…":selectedStatus?.hasKey||selected==="freebuff"?(modelError||freebuffAuthError?"provider error":(providerInfo?.ready?"ready":"configured")):"API key required"}{providerMessage?" · "+providerMessage:""}{modelError?" · "+modelError:""}</p>
+        <p data-testid="provider-status" className={modelError||freebuffAuthError||freebuffUnavailable?"provider-status-error":""}><strong>{PROVIDER_LABELS[selected]}</strong> · {providerSwitching?"switching provider…":selectedStatus?.hasKey||selected==="freebuff"?(modelError||freebuffAuthError||freebuffUnavailable?"provider error":(providerInfo?.ready?"ready":"configured")):"API key required"}{providerMessage?" · "+providerMessage:""}{modelError?" · "+modelError:""}</p>
       </div>}
       {settingsSection==="agents"&&["codex","claude","opencode"].includes(selectedAgent)&&<div className="settings-card custom-model-settings" {...targetProps("agents-models")}>
         <h3>Custom models</h3>
@@ -634,7 +655,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
         {!scopedMcpServers.length&&!mcpDraft&&<p className="provider-note">No Trebell-managed MCP servers are configured for this runtime and environment.</p>}
         {mcpMessage&&<p className={/failed|error/i.test(mcpMessage)?"provider-status-error":"provider-note"}>{mcpMessage}</p>}
       </div>}
-      {settingsSection==="agents"&&<div className="settings-card" {...targetProps("agents-runtime")}><h3>Runtime</h3><p>Harness connection: <strong>{rpcStatus}</strong><br/>Agent: <strong>{selectedAgentStatus?.name||selectedAgent}</strong><br/>Agent runtime: <strong>{runtime?.agentRuntimeStatus?.available?"ready":"not ready"}</strong>{selectedManagedInference&&<><br/>{selectedAgent==="codex"&&<>Codex app-server: <strong>{runtime?.appServerReady?"ready":"not ready"}</strong><br/></>}Inference: <strong>{PROVIDER_LABELS[runtime?.provider||selected]||runtime?.provider||selected}</strong>{(runtime?.provider||selected)==="freebuff"&&<><br/>Freebuff bridge: <strong>{runtime?.bridgeReady?"ready":"not ready"}</strong></>}</>}</p><button onClick={()=>refresh({reportErrors:true})} disabled={loading}><RefreshCw size={13}/> {loading?"Refreshing…":"Refresh diagnostics"}</button></div>}
+      {settingsSection==="agents"&&<div className="settings-card" {...targetProps("agents-runtime")}><h3>Runtime</h3><p>Harness connection: <strong>{rpcStatus}</strong><br/>Agent: <strong>{selectedAgentStatus?.name||selectedAgent}</strong><br/>Agent runtime: <strong>{runtime?.agentRuntimeStatus?.available?"ready":"not ready"}</strong>{selectedManagedInference&&<><br/>{selectedAgent==="codex"&&<>Codex app-server: <strong>{runtime?.appServerReady?"ready":"not ready"}</strong><br/></>}Inference: <strong>{PROVIDER_LABELS[runtime?.provider||selected]||runtime?.provider||selected}</strong>{(runtime?.provider||selected)==="freebuff"&&<><br/>Freebuff bridge: <strong>{runtime?.bridgeReady?"ready":"not ready"}</strong><br/>Freebuff account: <strong>{freebuffUnavailable?freebuffSessionLabel(freebuff):loggedIn?"ready":"signed out"}</strong></>}</>}</p><button onClick={()=>refresh({reportErrors:true})} disabled={loading}><RefreshCw size={13}/> {loading?"Refreshing…":"Refresh diagnostics"}</button></div>}
       {settingsSection==="general"&&<div className="settings-card" {...targetProps("general-followups")}><h3>Follow-up behavior</h3>{selectedAgentCapabilities.steering?<label>While the agent is working<select value={settings.followUpMode||"queue"} onChange={e=>save({followUpMode:e.target.value})}><option value="queue">Queue after current turn</option><option value="steer">{selectedAgent==="native"?"Steer current turn at the next safe boundary":"Steer current turn immediately"}</option></select></label>:<p>Follow-ups are queued until the current {selectedAgentStatus?.name||selectedAgent} turn finishes. This runtime does not expose in-flight steering.</p>}</div>}
       {settingsSection==="general"&&<div className="settings-card" {...targetProps("general-context-management")}>
         <h3>Context management</h3>

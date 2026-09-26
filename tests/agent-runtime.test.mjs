@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
-import { AgentRuntimeManager, parseCursorAboutResult, parseGrokModelsAuth, parseOpenCodeAuthList, runtimeCapabilities, runtimeCompatibility } from "../src/agent-runtime-manager.mjs";
+import { AgentRuntimeManager, parseCursorAboutResult, parseGrokModelsAuth, parseOpenCodeAuthList, runtimeCapabilities, runtimeCompatibility, runtimeExecutableCandidates } from "../src/agent-runtime-manager.mjs";
 import { runtimeCapabilityKinds, sharedRuntimeCapabilities } from "../src/runtime-capabilities.mjs";
 import { AcpAgentSession } from "../src/acp-agent-session.mjs";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
@@ -103,6 +103,16 @@ test("runtime launch flags preserve Trebell permission-mode boundaries",()=>{
   assert.deepEqual(manager.acpArgs(grok,"edits"),["--permission-mode","acceptEdits","agent","stdio"]);
   assert.deepEqual(manager.acpArgs(grok,"auto"),["--permission-mode","auto","agent","stdio"]);
   assert.deepEqual(manager.acpArgs(grok,"full"),["agent","--always-approve","stdio"]);
+});
+
+test("Windows runtime discovery includes current installer locations even when PATH is stale",()=>{
+  const env={USERPROFILE:"C:\\Users\\me",LOCALAPPDATA:"C:\\Users\\me\\AppData\\Local",APPDATA:"C:\\Users\\me\\AppData\\Roaming"};
+  assert.ok(runtimeExecutableCandidates("grok",{env,platform:"win32"}).some(path=>path.endsWith("xAI.GrokBuild_Microsoft.Winget.Source_8wekyb3d8bbwe\\grok.exe")));
+  assert.ok(runtimeExecutableCandidates("claude",{env,platform:"win32"}).some(path=>path.endsWith(".local\\bin\\claude.exe")));
+  const openCodeCandidates=runtimeExecutableCandidates("opencode",{env,platform:"win32"});
+  assert.ok(openCodeCandidates[0].endsWith("AppData\\Roaming\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe"));
+  assert.ok(openCodeCandidates.some(path=>path.endsWith("AppData\\Roaming\\npm\\opencode.cmd")));
+  assert.deepEqual(runtimeExecutableCandidates("grok",{env,platform:"linux"}),[]);
 });
 
 test("runtime child environments do not inherit unrelated parent secrets",async()=>{
@@ -290,7 +300,7 @@ test("provider auth probes distinguish authenticated, unauthenticated and unknow
 test("runtime auth commands use the provider's real interactive CLI flow",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-runtime-auth-command-"));const env={...process.env,TREBELL_HOME:home};
   try{
-    const state=new TrebellStateStore(env);const manager=new AgentRuntimeManager({state,env});
+    const state=new TrebellStateStore(env);const manager=new AgentRuntimeManager({state,env,platform:"linux"});
     assert.deepEqual(manager.authCommand("claude"),{runtime:"claude",instanceId:"claude-default",name:"Claude Code",command:"claude",args:["auth","login"]});
     assert.deepEqual(manager.authCommand("cursor"),{runtime:"cursor",instanceId:"cursor-default",name:"Cursor",command:"cursor-agent",args:["login"]});
     assert.deepEqual(manager.authCommand("grok"),{runtime:"grok",instanceId:"grok-default",name:"Grok Build",command:"grok",args:["login"]});

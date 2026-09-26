@@ -1,4 +1,5 @@
 import { access, readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, posix, resolve } from "node:path";
 import spawn from "cross-spawn";
@@ -8,6 +9,8 @@ import { readAgentRuntimeUsage } from "./agent-usage-limits.mjs";
 import { sharedRuntimeCapabilities } from "./runtime-capabilities.mjs";
 import { withoutSecretEnvironment } from "./secret-redactor.mjs";
 import { buildRuntimeEnvironment, normalizeApprovedEnvironmentKeys, runtimeEnvironmentKeys } from "./runtime-environment.mjs";
+import { installAntigravityRuntime, readAntigravityAuthState, readAntigravityInstall } from "./antigravity-runtime-installer.mjs";
+import { discoverOpenCodeModelCatalog } from "./opencode-agent-session.mjs";
 
 const RUNTIMES=Object.freeze({
   native:{id:"native",name:"Trebell Native",protocol:"native",command:null,multipleInstances:false,managed:true},
@@ -16,7 +19,7 @@ const RUNTIMES=Object.freeze({
   cursor:{id:"cursor",name:"Cursor",protocol:"acp",command:"cursor-agent",multipleInstances:true},
   grok:{id:"grok",name:"Grok Build",protocol:"acp",command:"grok",multipleInstances:true},
   opencode:{id:"opencode",name:"OpenCode",protocol:"sdk",command:"opencode",multipleInstances:true},
-  antigravity:{id:"antigravity",name:"Antigravity",protocol:"acp",command:null,multipleInstances:true,managed:true},
+  antigravity:{id:"antigravity",name:"Antigravity",protocol:"acp",command:null,multipleInstances:false,managed:true},
 });
 
 export function runtimeCapabilities(kind){
@@ -41,6 +44,15 @@ const RUNTIME_COMPATIBILITY=Object.freeze({
 function parsedSemver(value){
   const match=String(value||"").match(/(?:^|[^0-9])v?(\d+)\.(\d+)\.(\d+)(?![0-9.-])/i);
   return match?{raw:match[0].trim().replace(/^v/i,""),major:Number(match[1]),minor:Number(match[2]),patch:Number(match[3])}:null;
+}
+async function terminateProcessTree(child){
+  if(!child)return;
+  if(process.platform==="win32"&&child.pid){
+    await new Promise(resolve=>{
+      let settled=false;const done=()=>{if(settled)return;settled=true;resolve()};
+      try{const killer=spawn("taskkill",["/PID",String(child.pid),"/T","/F"],{windowsHide:true,stdio:"ignore"});killer.once("exit",done);killer.once("error",done);setTimeout(done,2000).unref?.()}catch{done()}
+    });
+  }else try{child.kill()}catch{}
 }
 function compareSemver(a,b){
   for(const key of ["major","minor","patch"]){if(a[key]!==b[key])return a[key]<b[key]?-1:1}
@@ -113,7 +125,7 @@ export function normalizeAgentRuntime(value){
 
 async function run(command,args=[],{env=process.env,cwd=process.cwd(),timeoutMs=5000}={}){
   return await new Promise(resolve=>{
-    let stdout="",stderr="",settled=false;
+    let stdout="",stderr="",settled=false,timedOut=false;
     let child;
     try{
       child=spawn(command,args,{cwd,env,windowsHide:true,stdio:["ignore","pipe","pipe"]});
@@ -121,15 +133,43 @@ async function run(command,args=[],{env=process.env,cwd=process.cwd(),timeoutMs=
     const finish=(code,error=null)=>{if(settled)return;settled=true;clearTimeout(timer);resolve({ok:code===0,code,error:error?.message||null,stdout,stderr})};
     child.stdout?.on("data",chunk=>{stdout+=String(chunk);if(stdout.length>512_000)stdout=stdout.slice(-512_000)});
     child.stderr?.on("data",chunk=>{stderr+=String(chunk);if(stderr.length>512_000)stderr=stderr.slice(-512_000)});
-    child.once("error",error=>finish(null,error));child.once("exit",code=>finish(code));
-    const timer=setTimeout(()=>{try{child.kill()}catch{}finish(null,new Error("probe timed out"))},timeoutMs);
+    child.once("error",error=>{if(!timedOut)finish(null,error)});child.once("exit",code=>{if(!timedOut)finish(code)});
+    const timer=setTimeout(()=>{timedOut=true;void terminateProcessTree(child).finally(()=>finish(null,new Error("probe timed out")))},timeoutMs);
   });
 }
 
 function defaultInstance(kind){return {id:`${kind}-default`,kind,displayName:RUNTIMES[kind].name,enabled:true,binaryPath:null,homePath:null,shadowHomePath:null,serverUrl:null,autoCompactWindow:null,environment:{}}}
 
+export function runtimeExecutableCandidates(kind,{env=process.env,platform=process.platform}={}){
+  if(platform!=="win32")return [];
+  const user=String(env.USERPROFILE||env.HOME||"").trim(),local=String(env.LOCALAPPDATA||"").trim(),appData=String(env.APPDATA||"").trim();
+  const values=[];
+  if(kind==="grok"){
+    if(user)values.push(join(user,".grok","bin","grok.exe"));
+    if(local)values.push(join(local,"Microsoft","WinGet","Packages","xAI.GrokBuild_Microsoft.Winget.Source_8wekyb3d8bbwe","grok.exe"));
+  }
+  if(kind==="cursor"){
+    if(user)values.push(join(user,".cursor","bin","cursor-agent.exe"));
+    if(local)values.push(join(local,"Programs","cursor","resources","app","bin","cursor-agent.exe"));
+  }
+  if(kind==="claude"){
+    if(user)values.push(join(user,".local","bin","claude.exe"));
+    if(appData)values.push(join(appData,"npm","claude.cmd"));
+  }
+  if(appData&&kind==="opencode"){
+    // Prefer the native binary behind npm's Windows shim. Some OpenCode npm
+    // shims use CALL/SETLOCAL and can stay attached when spawned by a long-lived
+    // desktop process, which made a healthy install look missing after Trebell's
+    // bounded probe timed out.
+    values.push(join(appData,"npm","node_modules","opencode-ai","bin","opencode.exe"));
+    values.push(join(appData,"npm","node_modules","@opencode","cli","bin","opencode.exe"));
+    values.push(join(appData,"npm","opencode.cmd"));
+  }
+  return values;
+}
+
 export class AgentRuntimeManager{
-  constructor({state,env=process.env,environments=null,platform=process.platform,fetchImpl=globalThis.fetch}={}){this.state=state;this.env=env;this.environments=environments;this.platform=platform;this.fetchImpl=fetchImpl}
+  constructor({state,env=process.env,environments=null,platform=process.platform,arch=process.arch,fetchImpl=globalThis.fetch}={}){this.state=state;this.env=env;this.environments=environments;this.platform=platform;this.arch=arch;this.fetchImpl=fetchImpl}
   definitions(){return Object.values(RUNTIMES).map(item=>({...item,capabilities:runtimeCapabilities(item.id)}))}
   capabilities(instanceOrKind=this.activeInstance()){
     const kind=typeof instanceOrKind==="string"
@@ -216,10 +256,14 @@ export class AgentRuntimeManager{
     if(settings.agentRuntimeInstanceId===id){resetTo=`${target.kind}-default`;patch.agentRuntimeInstanceId=resetTo}
     this.state.updateSettings(patch);return {ok:true,resetTo,kind:target.kind};
   }
-  executable(instance){
+  executable(instance,{environmentId=undefined}={}){
     if(instance?.binaryPath?.trim())return instance.binaryPath.trim();
     const def=RUNTIMES[instance?.kind];
-    if(instance?.kind==="antigravity")return join(trebellHome(this.env),"agent-runtimes","antigravity","current","agy_acp_server.exe");
+    const profile=this.activeEnvironment(environmentId);
+    if(profile&&profile.type!=="local")return def?.command||null;
+    if(instance?.kind==="antigravity")return join(trebellHome(this.env),"agent-runtimes","antigravity","current",this.platform==="win32"?"agy_acp_server.exe":"agy_acp_server.par");
+    const discovered=runtimeExecutableCandidates(instance?.kind,{env:this.env,platform:this.platform}).find(candidate=>existsSync(candidate));
+    if(discovered)return discovered;
     return def?.command||null;
   }
   childEnv(instance){
@@ -247,7 +291,7 @@ export class AgentRuntimeManager{
   processSpawner(instance,environmentId=undefined){
     const profile=this.activeEnvironment(environmentId);if(!profile||profile.type==="local"||!this.environments)return null;
     const environmentNames=this.childEnvironmentKeys(instance);
-    return options=>this.environments.spawnArgv(profile.id,{command:this.executable(instance),args:options.args||[],cwd:options.cwd||profile.cwd||null,stdio:options.stdio||["pipe","pipe","pipe"],environmentNames});
+    return options=>this.environments.spawnArgv(profile.id,{command:this.executable(instance,{environmentId:profile.id}),args:options.args||[],cwd:options.cwd||profile.cwd||null,stdio:options.stdio||["pipe","pipe","pipe"],environmentNames});
   }
   remoteIo(cwd,environmentId=undefined){
     const profile=this.activeEnvironment(environmentId);if(!profile||profile.type==="local"||!this.environments)return null;
@@ -277,7 +321,7 @@ export class AgentRuntimeManager{
   async #run(instance,args,{timeoutMs=6000,cwd=null,environmentId=undefined}={}){
     const profile=this.activeEnvironment(environmentId);
     if(profile&&profile.type!=="local"&&this.environments){
-      const result=await this.environments.executeArgv(profile.id,{command:this.executable(instance),args,cwd:cwd||profile.cwd||"",timeoutMs,environmentNames:this.childEnvironmentKeys(instance)});
+      const result=await this.environments.executeArgv(profile.id,{command:this.executable(instance,{environmentId:profile.id}),args,cwd:cwd||profile.cwd||"",timeoutMs,environmentNames:this.childEnvironmentKeys(instance)});
       return {ok:result.exitCode===0,code:result.exitCode,error:result.timedOut?"probe timed out":null,stdout:result.stdout||"",stderr:result.stderr||""};
     }
     return run(this.executable(instance),args,{env:this.childEnv(instance),cwd:cwd||process.cwd(),timeoutMs});
@@ -292,9 +336,10 @@ export class AgentRuntimeManager{
   }
   installable(kind){
     const runtime=normalizeAgentRuntime(kind);const packageName=INSTALLABLE_PACKAGES[runtime]||null;
+    if(runtime==="antigravity")return {runtime,managed:"acp-registry"};
     return packageName?{runtime,packageName}:null;
   }
-  authCommand(instanceOrKind,{action="login"}={}){
+  authCommand(instanceOrKind,{action="login",environmentId=undefined}={}){
     const instance=typeof instanceOrKind==="string"
       ?(this.instances().find(item=>item.id===instanceOrKind)||this.instances().find(item=>item.kind===normalizeAgentRuntime(instanceOrKind))||defaultInstance(normalizeAgentRuntime(instanceOrKind)))
       :instanceOrKind;
@@ -306,11 +351,18 @@ export class AgentRuntimeManager{
       :instance.kind==="opencode"?["auth","login"]
       :null;
     if(!args)throw new Error((RUNTIMES[instance.kind]?.name||instance.kind)+" does not expose an interactive Trebell sign-in command.");
-    return {runtime:instance.kind,instanceId:instance.id,name:RUNTIMES[instance.kind]?.name||instance.kind,command:this.executable(instance),args};
+    return {runtime:instance.kind,instanceId:instance.id,name:RUNTIMES[instance.kind]?.name||instance.kind,command:this.executable(instance,{environmentId}),args};
   }
   async install(kind,{environmentId=undefined}={}){
     const target=this.installable(kind);const normalized=normalizeAgentRuntime(kind);
     if(!target)throw new Error((RUNTIMES[normalized]?.name||String(kind||"Harness"))+" is not installable from Trebell Code");
+    if(target.runtime==="antigravity"){
+      if(this.activeEnvironment(environmentId))throw new Error("Managed Antigravity ACP installation is currently available only on the local machine");
+      const installed=await installAntigravityRuntime({env:this.env,fetchImpl:this.fetchImpl,platform:this.platform,arch:this.arch});
+      const instance=this.instances().find(item=>item.kind==="antigravity"&&item.id==="antigravity-default")||defaultInstance("antigravity");
+      const status=await this.probe(instance,{environmentId:null});
+      return {ok:true,runtime:"antigravity",managed:"acp-registry",targetVersion:installed.version,status};
+    }
     const npm=await this.#runCommand("npm",["--version"],{timeoutMs:8000,environmentId});
     if(!npm.ok)throw new Error("npm is required to install this harness in the selected environment. Install Node.js/npm there first.");
     let packageSpec=target.packageName,targetVersion=null,compatibility=null;
@@ -344,7 +396,7 @@ export class AgentRuntimeManager{
       return ["--permission-mode","default","agent","stdio"];
     }
     if(instance.kind==="opencode")return [];
-    if(instance.kind==="antigravity")return [];
+    if(instance.kind==="antigravity")return this.platform==="linux"?["--uid="]:[];
     return [];
   }
   async probe(instanceOrKind,{environmentId=undefined}={}){
@@ -358,7 +410,20 @@ export class AgentRuntimeManager{
     }
     const command=this.executable(instance);
     if(instance.kind==="antigravity"&&!this.activeEnvironment(environmentId)){
-      try{await access(command)}catch{return {id:instance.id,kind:instance.kind,name:def.name,available:false,installed:false,authenticated:false,protocol:def.protocol,managed:true,message:"Antigravity runtime is not installed"}}
+      try{await access(command)}catch{
+        const desktopCandidates=this.platform==="win32"&&this.env.LOCALAPPDATA?[join(this.env.LOCALAPPDATA,"Programs","antigravity","Antigravity.exe")]:this.platform==="darwin"?["/Applications/Antigravity.app"]:[];
+        let companionInstalled=false;for(const candidate of desktopCandidates){try{await access(candidate);companionInstalled=true;break}catch{}}
+        return {id:instance.id,kind:instance.kind,name:def.name,available:false,installed:false,authenticated:false,protocol:def.protocol,managed:true,companionInstalled,message:companionInstalled?"Antigravity desktop is installed. Install the ACP runtime to use Antigravity inside Trebell Code.":"Antigravity ACP runtime is not installed"};
+      }
+      const install=await readAntigravityInstall({env:this.env});
+      if(install?.version&&!instance.binaryPath?.trim()){
+        const auth=await readAntigravityAuthState({env:this.childEnv(instance)}),oauth=/^oauth-/.test(String(auth.methodId||""));
+        const authenticated=auth.configured?(oauth?auth.tokenPresent:null):false;
+        const message=authenticated===true?"Managed Antigravity ACP runtime is installed and signed in."
+          :authenticated===false?"Antigravity ACP is installed but needs its own sign-in before Trebell can use it."
+          :`Antigravity ACP is configured for ${auth.methodId}; authentication will be verified when a session starts.`;
+        return {id:instance.id,kind:instance.kind,name:def.name,available:authenticated!==false,installed:true,authenticated,protocol:def.protocol,managed:true,version:String(install.version),binary:command,account:auth.methodId?{authMethod:auth.methodId}:null,message};
+      }
     }
     const versionArgs=instance.kind==="antigravity"?["--version"]:["--version"];
     const versionResult=await this.#run(instance,versionArgs,{timeoutMs:6000,environmentId});
@@ -408,6 +473,10 @@ export class AgentRuntimeManager{
     if(instance.kind==="codex")return {models:[],metadata:[],source:"codex"};
     const status=await this.probe(instance,{environmentId});if(!status.available)return {models:[],metadata:[],source:"unavailable",error:status.message};
     if(instance.kind==="opencode"){
+      if(!this.activeEnvironment(environmentId)){
+        const catalog=await discoverOpenCodeModelCatalog({command:this.executable(instance,{environmentId}),cwd:process.cwd(),env:this.childEnv(instance),serverUrl:instance.serverUrl||null});
+        return {models:catalog.models,metadata:catalog.metadata,source:catalog.source,preferred:catalog.preferred,connectedProviders:catalog.connectedProviders};
+      }
       const result=await this.#run(instance,["models"],{timeoutMs:30_000,environmentId});
       const models=(result.stdout||"").split(/\r?\n/).map(line=>line.trim()).filter(line=>/^[^\s]+\/[^\s]+$/.test(line));
       return {models:[...new Set(models)],metadata:[...new Set(models)].map(id=>({id,provider:"opencode",agent:"OpenCode"})),source:"live"};
@@ -456,7 +525,7 @@ export class AgentRuntimeManager{
       const {environment,...safe}=instance;
       return {...safe,environmentKeys:Object.keys(environment||{}),approvedEnvironmentKeys:normalizeApprovedEnvironmentKeys(instance.approvedEnvironmentKeys)};
     });
-    const definitions=this.definitions().map(def=>({...def,installable:Boolean(INSTALLABLE_PACKAGES[def.id]),packageName:INSTALLABLE_PACKAGES[def.id]||null,canAuthenticate:["claude","cursor","grok","opencode"].includes(def.id)}));
+    const definitions=this.definitions().map(def=>({...def,installable:Boolean(this.installable(def.id)),packageName:INSTALLABLE_PACKAGES[def.id]||null,canAuthenticate:["claude","cursor","grok","opencode","antigravity"].includes(def.id)}));
     const active=this.activeInstance();return {selectedRuntime:this.activeRuntime(),selectedInstanceId:active.id,compatibleInstanceIds:this.compatibleInstanceIds(active),capabilities:this.capabilities(active),definitions,instances:publicInstances,statuses};
   }
 }

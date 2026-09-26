@@ -1715,6 +1715,70 @@ Measure:
 
 Optimization should be evidence-based.
 
+### 26.7 Model-agent efficiency is a product feature
+
+Trebell's coding harness must be optimized around this north-star outcome:
+
+> Maximum successful autonomous coding work per unit of model compute, context, latency, network traffic, and cost without starving the model of information it needs for correctness.
+
+A smaller prompt or cheaper request is not automatically an improvement. Changes count as optimizations only when task success and coding quality are preserved or improved.
+
+For every model inference, development telemetry should make it possible to inspect, where the provider exposes the data:
+
+- provider, model, API path, request/session identity, turn number, and tool-loop iteration,
+- logical input, fresh input, cached input, cache-write input, output, and reasoning tokens,
+- estimated system-prompt, tool-schema, history, user-message, tool-result, and compacted-context contribution,
+- request/response bytes,
+- response-headers latency, time to first token where observable, total model latency, tool latency, and end-to-end iteration latency,
+- context-window utilization, cache-hit rate, estimated cost, compaction, and truncation events.
+
+Secrets, API keys, OAuth credentials, and unrelated environment variables must never enter this telemetry.
+
+The hot model context should have explicit lifetimes rather than growing as an append-only transcript. Distinguish at least:
+
+- immutable/base instructions,
+- project/repository facts,
+- session facts,
+- task facts,
+- recent working conversation,
+- compacted durable memory,
+- and ephemeral tool output.
+
+Large command/log output must remain outside hot context by default. The model should receive bounded structured evidence plus a handle for targeted range/search retrieval. Repeated unchanged file contents, directory listings, repository facts, and successful repetitive command noise should not be retransmitted blindly.
+
+Provider caching is an architectural concern, not a checkbox. Preserve stable prompt prefixes wherever practical: deterministic system/developer instructions, stable tool ordering and schemas, deterministic serialization, and stable project instructions. Do not mutate historical messages or inject volatile noise near otherwise-cacheable prefixes without a concrete reason. Provider-native caching, continuation, persistent connections, compaction, and usage accounting are separate capabilities and must be measured rather than inferred from protocol compatibility.
+
+Tool design should minimize inference round trips as well as schema tokens. Prefer a small stable core, grouped/deferred capability discovery, batch reads/searches, parallel execution of truly independent reads, structured shell output, and deterministic local computation for facts the harness can calculate perfectly. Do not dynamically reshuffle tools in ways that save a few schema tokens while destroying cacheability or tool-call accuracy.
+
+Long-session compaction must preserve the user's real goal, constraints, architectural decisions, files changed, important identifiers, unresolved failures, test results, meaningful commands, Git state, assumptions, pending actions, relevant output handles, and decision rationale where it matters. Compaction quality must be benchmarked, not judged by summary length.
+
+### 26.8 Reproducible agent-efficiency benchmarks
+
+Maintain repeatable benchmarks that cover at least:
+
+- a simple one-file bug,
+- unfamiliar-repository investigation,
+- a multi-file feature or refactor,
+- failing-test diagnosis,
+- large noisy log debugging,
+- repeated edits to previously read files,
+- a long session under context pressure,
+- a task with many tool calls,
+- and a build/test/fix loop.
+
+Capture, when observable:
+
+- success and final verification,
+- total/fresh/cached/output tokens,
+- inference calls and tool calls,
+- repeated reads/searches/tool calls,
+- raw tool-output size versus the amount shown to the model,
+- compaction count,
+- elapsed time and approximate cost,
+- and cache-hit rate.
+
+Use controlled A/B tests for optimizations. If an optimization reduces context or cost but causes the agent to miss a dependency, introduce regressions, or require more repair loops, it failed. Real-model Native verification is mandatory for material changes to the model-agent loop; mocks alone cannot prove provider routing, tool execution, caching, continuation, context growth, or final coding behavior.
+
 ---
 
 ## 27. UI and Interaction Design

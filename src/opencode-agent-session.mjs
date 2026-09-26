@@ -16,6 +16,10 @@ function unwrap(result,label="OpenCode request"){
 async function freePort(){
   const server=createNetServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port;
 }
+async function cleanupWithin(promise,timeoutMs=1500){
+  if(!promise)return;
+  let timer;try{await Promise.race([Promise.resolve(promise).catch(()=>{}),new Promise(resolve=>{timer=setTimeout(resolve,timeoutMs)})])}finally{if(timer)clearTimeout(timer)}
+}
 
 async function startServer({command="opencode",cwd,env=process.env,serverUrl=null}={}){
   if(serverUrl)return {url:serverUrl,close(){}};
@@ -41,6 +45,35 @@ function toProviderModel(value,map){
   if(map.has(value))return map.get(value);
   const raw=String(value||"");const index=raw.indexOf("/");if(index>0)return {providerID:raw.slice(0,index),modelID:raw.slice(index+1)};
   return null;
+}
+
+export function connectedOpenCodeModels(providers={}){
+  const connected=new Set(Array.isArray(providers.connected)?providers.connected.map(String):[]),models=[];
+  const visible=(providers.all||[]).filter(provider=>!connected.size||connected.has(String(provider.id)));
+  for(const provider of visible)for(const entry of Object.values(provider.models||{}))models.push({id:`${provider.id}/${entry.id}`,providerID:String(provider.id),modelID:String(entry.id),context:Number(entry.limit?.context)||0});
+  const ids=new Set(models.map(item=>item.id));
+  const preferred=[...connected].map(providerID=>providers.default?.[providerID]?`${providerID}/${providers.default[providerID]}`:null).find(id=>id&&ids.has(id))||models[0]?.id||null;
+  return {models,preferred};
+}
+
+export async function discoverOpenCodeModelCatalog({command="opencode",cwd=process.cwd(),env=process.env,serverUrl=null}={}){
+  const server=await startServer({command,cwd,env,serverUrl});
+  const client=createOpencodeClient({baseUrl:server.url,directory:cwd});
+  try{
+    const providers=unwrap(await client.provider.list({query:{directory:cwd}}),"provider list")||{};
+    const catalog=connectedOpenCodeModels(providers);
+    const ordered=catalog.preferred?[catalog.models.find(item=>item.id===catalog.preferred),...catalog.models.filter(item=>item.id!==catalog.preferred)].filter(Boolean):catalog.models;
+    return {
+      models:ordered.map(item=>item.id),
+      metadata:ordered.map(item=>({id:item.id,provider:"opencode",agent:"OpenCode",upstreamProvider:item.providerID,...(item.context?{contextWindow:item.context}:{})})),
+      preferred:catalog.preferred,
+      connectedProviders:Array.isArray(providers.connected)?providers.connected.map(String):[],
+      source:"live-connected",
+    };
+  }finally{
+    server.close?.();
+    await cleanupWithin(client?.instance?.dispose?.({query:{directory:cwd}}),1500);
+  }
 }
 
 function permissionResponse(decision){return decision==="acceptForSession"?"always":decision==="accept"?"once":"reject"}
@@ -87,8 +120,9 @@ export class OpenCodeAgentSession{
     this.v2Client=createOpencodeV2Client({baseUrl:this.server.url,directory:this.cwd});
     if(this.repositoryMcp)this.repositoryMcpStatus=await configureOpenCodeMcpServers(this.client,{cwd:this.cwd,servers:[{name:this.repositoryMcp.name,config:this.repositoryMcp.openCode}]});
     const providers=unwrap(await this.client.provider.list({query:{directory:this.cwd}}),"provider list")||{};
-    for(const provider of providers.all||[]){for(const entry of Object.values(provider.models||{})){const id=`${provider.id}/${entry.id}`;this.modelMap.set(id,{providerID:provider.id,modelID:entry.id});if(entry.limit?.context)this.contextByModel.set(id,Number(entry.limit.context))}}
-    this.model=model&&toProviderModel(model,this.modelMap)?model:(providers.default?Object.entries(providers.default).map(([providerID,modelID])=>`${providerID}/${modelID}`)[0]:this.modelMap.keys().next().value||null);
+    const catalog=connectedOpenCodeModels(providers);
+    for(const entry of catalog.models){this.modelMap.set(entry.id,{providerID:entry.providerID,modelID:entry.modelID});if(entry.context)this.contextByModel.set(entry.id,entry.context)}
+    this.model=model&&toProviderModel(model,this.modelMap)?model:catalog.preferred;
     let info=null;
     if(providerSessionId)info=unwrap(await this.client.session.get({path:{id:providerSessionId},query:{directory:this.cwd}}),"session get");
     if(!info)info=unwrap(await this.client.session.create({query:{directory:this.cwd},body:{title:"Trebell task"}}),"session create");
@@ -134,16 +168,20 @@ export class OpenCodeAgentSession{
     if(this.closed)return;
     this.closed=true;
     this.eventAbort.abort();
-    if(this.client&&this.sessionId)await this.client.session.abort({path:{id:this.sessionId},query:{directory:this.cwd}}).catch(()=>{});
-    await this.client?.instance?.dispose?.({query:{directory:this.cwd}}).catch(()=>{});
+    if(this.client&&this.sessionId)await cleanupWithin(this.client.session.abort({path:{id:this.sessionId},query:{directory:this.cwd}}),750);
+    // Stop the Trebell-owned server before best-effort SDK disposal. Some
+    // OpenCode versions keep the event stream / instance-dispose request open,
+    // which used to leave a hidden opencode serve process behind after a
+    // harness switch or app shutdown.
     this.server?.close?.();
+    await cleanupWithin(this.client?.instance?.dispose?.({query:{directory:this.cwd}}),750);
     await Promise.race([this.eventTask||Promise.resolve(),new Promise(resolve=>setTimeout(resolve,1000))]).catch(()=>{});
   }
 
   #startEvents(){
     this.eventTask=(async()=>{
       try{
-        const result=await this.client.event.subscribe({query:{directory:this.cwd},signal:this.eventAbort.signal});
+        const result=await this.client.event.subscribe({query:{directory:this.cwd},signal:this.eventAbort.signal,sseMaxRetryAttempts:0});
         for await(const event of result.stream){if(this.closed)break;await this.#event(event)}
       }catch(error){if(!this.closed)this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message:error?.message||String(error)}})}
     })();

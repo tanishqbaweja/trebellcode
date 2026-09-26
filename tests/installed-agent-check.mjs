@@ -79,7 +79,7 @@ const fixture=createServer((_req,res)=>{
 
 await new Promise((resolve,reject)=>fixture.listen(fixturePort,"127.0.0.1",resolve).once("error",reject));
 
-let browser=null,ws=null;
+let browser=null,ws=null,rpc=null,createdThreadId=null;
 const workspace=await mkdtemp(join(tmpdir(),"trebell-installed-agent-"));
 try{
   for(let attempt=0;attempt<40&&!browser;attempt++){
@@ -110,7 +110,7 @@ try{
   const toolCalls=[];let assistant="";
   ws=new WebSocket(boot.wsUrl,{origin:"http://trebell-installed-agent.local"});
   await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error("packaged Codex websocket timed out")),15000);ws.once("open",()=>{clearTimeout(timer);resolve()});ws.once("error",reject)});
-  const rpc=new RpcClient(ws,async msg=>{
+  rpc=new RpcClient(ws,async msg=>{
     const p=msg.params||{};
     if(msg.method==="item/tool/call"){
       const args=typeof p.arguments==="string"?JSON.parse(p.arguments||"{}"):p.arguments||{};
@@ -141,6 +141,7 @@ try{
   ws.send(JSON.stringify({method:"initialized",params:{}}));
   const thread=await rpc.request("thread/start",{model,modelProvider:"vyceai",cwd:workspace,approvalPolicy:"never",sandbox:"danger-full-access",ephemeral:true,threadSource:"trebell-installed-agent",dynamicTools,developerInstructions:"This is an automated packaged Trebell validation. Use the requested tools exactly and verify observed values instead of guessing."});
   assert.ok(thread.thread?.id,"thread/start did not return a thread id");
+  createdThreadId=thread.thread.id;
   const fixtureUrl=`http://127.0.0.1:${fixturePort}`;
   const expected=`${proof}:model-ok`;
   async function timeoutDiagnostics(error,label){
@@ -197,6 +198,7 @@ try{
   for(const call of ["trebell_computer/screenshot","trebell_browser/open","trebell_browser/snapshot","trebell_browser/type","trebell_browser/click"])assert.ok(toolCalls.includes(call),`Model did not call ${call}`);
   console.log(JSON.stringify({ok:true,model,turnStatus:fileTurn.completed.params?.turn?.status,toolCalls,fileProof,capabilityTurns:6},null,2));
 }finally{
+  if(rpc&&createdThreadId)await rpc.request("thread/delete",{threadId:createdThreadId}).catch(()=>{});
   try{ws?.close()}catch{}
   try{await browser?.close()}catch{}
   await new Promise(resolve=>fixture.close(()=>resolve()));

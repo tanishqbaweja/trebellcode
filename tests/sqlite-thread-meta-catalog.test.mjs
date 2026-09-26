@@ -38,7 +38,9 @@ test("thread metadata catalog backfills old SQLite rows and excludes active-thre
     assert.equal(full.trebellContext.selectedFiles.length,100);
     assert.equal(full.reviewedFiles.length,1000);
 
+    state.updateThreadMeta("thread-old",{ephemeral:true,catalogHidden:true});
     const catalog=state.snapshot({includeCollections:false,threadMetaView:"catalog"}).threadMeta["thread-old"];
+    assert.equal(catalog.ephemeral,true);assert.equal(catalog.catalogHidden,true);
     assert.equal(catalog.__catalogOnly,true);assert.equal(catalog.runtime,"native");assert.equal(catalog.runtimeInstanceId,"native-default");assert.equal(catalog.branch,"feature/catalog");
     assert.equal(catalog.threadSnapshot.name,"Catalog thread");assert.equal(catalog.delegation.parentThreadId,"parent-1");
     assert.equal(catalog.linkedPullRequests[0].identity.number,17);

@@ -121,13 +121,21 @@ test("Codex thread history opens from bounded item pages and loads older items o
     await findBar.getByRole("button",{name:"Close find"}).click();await expect(findBar).toBeHidden();
     const scroller=page.locator(".conversation-scroll");await scroller.evaluate(node=>{node.scrollTop=0});
     await page.screenshot({path:auditDir+"chat-paginated-history-1600x980.png",fullPage:true});
-    const before=await scroller.evaluate(node=>({top:node.scrollTop,height:node.scrollHeight}));
+    const before=await scroller.evaluate(node=>{
+      const root=node.getBoundingClientRect();
+      const anchor=[...node.querySelectorAll("[data-message-id]")].find(row=>{const rect=row.getBoundingClientRect();return rect.bottom>root.top&&rect.top<root.bottom});
+      return {top:node.scrollTop,height:node.scrollHeight,anchorId:anchor?.dataset?.messageId||null,anchorOffset:anchor?anchor.getBoundingClientRect().top-root.top:null};
+    });
     await page.getByRole("button",{name:"Load earlier messages"}).click();
     await expect(page.getByText(/User Message 1 history/)).toBeVisible();await expect(page.getByRole("button",{name:"Load earlier messages"})).toHaveCount(0);
     expect((await page.locator("[data-message-id]").evaluateAll(nodes=>nodes.map(node=>node.dataset.messageId))).slice(0,4)).toEqual(["user-1","assistant-1","user-2","assistant-2"]);
     const itemsCall=calls.find(call=>call.method==="thread/items/list"&&call.params?.cursor==="older-items");expect(itemsCall?.params).toEqual({threadId:thread.id,cursor:"older-items",limit:100,sortDirection:"desc"});
-    const after=await scroller.evaluate(node=>({top:node.scrollTop,height:node.scrollHeight}));
-    expect(after.height).toBeGreaterThan(before.height);expect(after.top).toBeGreaterThan(0);expect(Math.abs(after.top-(after.height-before.height))).toBeLessThan(80);
+    const after=await scroller.evaluate((node,anchorId)=>{
+      const root=node.getBoundingClientRect();
+      const anchor=[...node.querySelectorAll("[data-message-id]")].find(row=>String(row.dataset?.messageId||"")===String(anchorId||""));
+      return {top:node.scrollTop,height:node.scrollHeight,anchorFound:Boolean(anchor),anchorOffset:anchor?anchor.getBoundingClientRect().top-root.top:null};
+    },before.anchorId);
+    expect(after.height).toBeGreaterThan(before.height);expect(after.top).toBeGreaterThan(0);expect(after.anchorFound).toBe(true);expect(Math.abs(Number(after.anchorOffset)-Number(before.anchorOffset))).toBeLessThan(4);
     await page.setViewportSize({width:1280,height:800});await page.screenshot({path:auditDir+"chat-paginated-history-loaded-1280x800.png",fullPage:true});
 
     await page.getByRole("button",{name:/Legacy history fixture/}).click();

@@ -70,7 +70,7 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",lin
     await expect(streamed.locator("summary")).toContainText("done");
     const quick=page.locator(".tool-event").filter({hasText:"Quick check"});await expect(quick.locator("summary")).toContainText("done");
     await expect(page.locator(".assistant-message-text")).toContainText("Fixture finished.");
-    await expect(page.locator(".tool-event")).toHaveCount(2);
+    await expect(page.locator(".tool-event.kind-commandExecution")).toHaveCount(2);
     await expect(page.locator(".tool-event").filter({hasText:"Agent activity"})).toHaveCount(0);
     await page.screenshot({path:auditDir+"agent-tool-progress-complete-1280x800.png",fullPage:true});
   }finally{

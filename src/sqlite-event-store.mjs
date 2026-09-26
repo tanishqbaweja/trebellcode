@@ -56,14 +56,21 @@ export class SqliteEventStore{
         status=excluded.status,data_json=excluded.data_json,byte_size=excluded.byte_size
     `);
     this.countStatement=this.db.prepare("SELECT COUNT(*) AS count, COALESCE(SUM(byte_size),0) AS bytes FROM events");
+    this.byteSizeStatement=this.db.prepare("SELECT byte_size FROM events WHERE id=?");
+    const initial=this.countStatement.get()||{};
+    this.recordCount=Number(initial.count)||0;
+    this.logicalBytes=Number(initial.bytes)||0;
   }
   insert(record){
     const dataJson=JSON.stringify(record.data??{}),byteSize=Buffer.byteLength(JSON.stringify(record))+1;
+    const previous=Number(this.byteSizeStatement.get(record.id)?.byte_size)||0;
     this.insertStatement.run(
       record.id,record.at,record.runtime,record.provider,record.environmentId,record.threadId,record.turnId,
       record.category,record.name,record.status,dataJson,byteSize,
     );
-    this.#prune();
+    if(!previous)this.recordCount++;
+    this.logicalBytes+=byteSize-previous;
+    if(this.recordCount>this.maxRecords||this.logicalBytes>this.maxBytes)this.#prune();
   }
   import(records=[]){
     if(!Array.isArray(records)||!records.length)return;
@@ -88,24 +95,25 @@ export class SqliteEventStore{
     return this.db.prepare("SELECT id,at,runtime,provider,environment_id,thread_id,turn_id,category,name,status,data_json FROM events ORDER BY at DESC, seq DESC LIMIT ?").all(max).map(rowRecord).reverse();
   }
   stats(){
-    const row=this.countStatement.get()||{},walPath=this.path+"-wal";
-    return {records:Number(row.count)||0,logicalBytes:Number(row.bytes)||0,fileBytes:(existsSync(this.path)?statSync(this.path).size:0)+(existsSync(walPath)?statSync(walPath).size:0)};
+    const walPath=this.path+"-wal";
+    return {records:this.recordCount,logicalBytes:this.logicalBytes,fileBytes:(existsSync(this.path)?statSync(this.path).size:0)+(existsSync(walPath)?statSync(walPath).size:0)};
   }
   close(){this.db.close()}
   #prune(){
-    const stats=this.countStatement.get()||{};let count=Number(stats.count)||0,bytes=Number(stats.bytes)||0;
-    if(count>this.maxRecords){
-      const excess=count-this.maxRecords;
+    let removed=false;
+    if(this.recordCount>this.maxRecords){
+      const excess=this.recordCount-this.maxRecords;
       this.db.prepare("DELETE FROM events WHERE seq IN (SELECT seq FROM events ORDER BY at ASC, seq ASC LIMIT ?)").run(excess);
-      const next=this.countStatement.get()||{};count=Number(next.count)||0;bytes=Number(next.bytes)||0;
+      this.#refreshStats();removed=true;
     }
-    while(bytes>this.maxBytes&&count>1){
-      const remove=Math.max(1,Math.min(100,Math.ceil(count*0.05)));
+    while(this.logicalBytes>this.maxBytes&&this.recordCount>1){
+      const remove=Math.max(1,Math.min(100,Math.ceil(this.recordCount*0.05)));
       this.db.prepare("DELETE FROM events WHERE seq IN (SELECT seq FROM events ORDER BY at ASC, seq ASC LIMIT ?)").run(remove);
-      const next=this.countStatement.get()||{};count=Number(next.count)||0;bytes=Number(next.bytes)||0;
+      this.#refreshStats();removed=true;
     }
-    try{this.db.exec("PRAGMA incremental_vacuum(100);")}catch{}
+    if(removed)try{this.db.exec("PRAGMA incremental_vacuum(100);")}catch{}
   }
+  #refreshStats(){const row=this.countStatement.get()||{};this.recordCount=Number(row.count)||0;this.logicalBytes=Number(row.bytes)||0}
 }
 
 export function sqliteEventStoreAvailable(){return Boolean(databaseSync())}

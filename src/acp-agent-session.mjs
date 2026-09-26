@@ -29,17 +29,17 @@ function decisionChoice(options=[],decision="decline"){
 }
 
 export class AcpAgentSession{
-  constructor({runtime,command,args=[],cwd,env=process.env,terminals,permissionMode="supervised",onUpdate,onPermission,onElicitation,version="0.0.0",spawnProcess=null,remoteIo=null,mcpServers=[]}={}){
+  constructor({runtime,command,args=[],cwd,processCwd=null,env=process.env,terminals,permissionMode="supervised",onUpdate,onPermission,onElicitation,version="0.0.0",spawnProcess=null,remoteIo=null,mcpServers=[]}={}){
     this.runtime=runtime;this.command=command;this.args=args;this.cwd=remoteIo?String(cwd||remoteIo.root||"/"):resolve(cwd||process.cwd());this.env=env;this.terminals=terminals;
     this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onPermission=onPermission;this.onElicitation=onElicitation;this.version=version;
-    this.spawnProcess=spawnProcess;this.remoteIo=remoteIo;
+    this.spawnProcess=spawnProcess;this.remoteIo=remoteIo;this.processCwd=processCwd?resolve(processCwd):null;
     this.mcpServers=Array.isArray(mcpServers)?mcpServers.map(server=>({...server,args:[...(server.args||[])],env:(server.env||[]).map(item=>({...item}))})):[];
     this.client=null;this.sessionId=null;this.initializeResult=null;this.sessionSetup=null;this.terminalIds=new Set();
     this.remoteTerminals=new Map();
   }
 
   async start({providerSessionId=null,model=null}={}){
-    const client=new AcpClient({command:this.command,args:this.args,cwd:this.cwd,env:this.env,spawnProcess:this.spawnProcess,onRequest:(method,params)=>this.#clientRequest(method,params)});
+    const client=new AcpClient({command:this.command,args:this.args,cwd:this.processCwd||this.cwd,env:this.env,spawnProcess:this.spawnProcess,onRequest:(method,params)=>this.#clientRequest(method,params)});
     this.client=client;
     client.on("sessionUpdate",params=>this.onUpdate?.(params));
     client.on("notification",message=>{
@@ -48,7 +48,7 @@ export class AcpAgentSession{
     client.on("protocolWarning",warning=>this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"protocol_warning",...warning}}));
     client.on("terminated",error=>this.onUpdate?.({sessionId:this.sessionId,update:{sessionUpdate:"runtime_error",message:error.message}}));
     await client.start();
-    this.initializeResult=await client.initialize({version:this.version});
+    this.initializeResult=await client.initialize({version:this.version,timeoutMs:this.runtime==="antigravity"?90_000:30_000});
     let setup;
     if(providerSessionId){
       const caps=this.initializeResult?.agentCapabilities?.sessionCapabilities||{};

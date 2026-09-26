@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { catalogMetaPatch, mergeThreadCatalog, threadCatalogRuntime, threadsFromCatalogMeta } from "../ui/src/thread-catalog.js";
+import { catalogMetaPatch, mergeThreadCatalog, missingRuntimeThreadError, threadCatalogRuntime, threadsFromCatalogMeta } from "../ui/src/thread-catalog.js";
 
 test("thread catalog preserves rows from other runtimes when the active runtime reloads",()=>{
   const existing=[
@@ -19,6 +19,12 @@ test("provider changes inside the same runtime cannot erase the existing convers
   assert.equal(merged.length,1);assert.equal(merged[0].id,"codex-provider-thread");assert.equal(merged[0].trebellRuntime,"codex");
 });
 
+test("hidden or ephemeral runtime rows stay out even when the provider lists them again",()=>{
+  const incoming=[{id:"phantom",name:"Phantom",updatedAt:50},{id:"validation",name:"Validation",updatedAt:60},{id:"real",name:"Real",updatedAt:70}];
+  const merged=mergeThreadCatalog([],incoming,{runtime:"codex",provider:"vyceai",threadMeta:{phantom:{catalogHidden:true},validation:{ephemeral:true}}});
+  assert.deepEqual(merged.map(item=>item.id),["real"]);
+});
+
 test("Trebell Native thread identity stays separate from the inference provider",()=>{
   const existing=[{id:"native-thread",name:"Keep Native history",updatedAt:35,trebellRuntime:"native",trebellProvider:"agentrouter"}];
   const merged=mergeThreadCatalog(existing,[],{runtime:"native",provider:"hcnsec"});
@@ -32,6 +38,8 @@ test("thread catalog reconstructs durable rows from thread metadata and omits ar
     a:{runtime:"claude",cwd:"C:/repo",threadSnapshot:{id:"a",name:"Remembered task",preview:"Fix parser",updatedAt:50,model:"claude-x",runtime:"claude"}},
     b:{runtime:"codex",archived:true,threadSnapshot:{id:"b",name:"Archived",updatedAt:60}},
     c:{runtime:"codex",deletedAt:100,threadSnapshot:{id:"c",name:"Deleted",updatedAt:70}},
+    d:{runtime:"codex",ephemeral:true,threadSnapshot:{id:"d",name:"Ephemeral validation",updatedAt:80}},
+    e:{runtime:"codex",catalogHidden:true,threadSnapshot:{id:"e",name:"Stale shortcut",updatedAt:90}},
   });
   assert.deepEqual(rows.map(item=>item.id),["a"]);assert.equal(rows[0].trebellRuntime,"claude");assert.equal(rows[0].cwd,"C:/repo");
 });
@@ -51,4 +59,10 @@ test("legacy metadata can recover runtime ownership without a modern thread snap
   assert.equal(rows.find(item=>item.id==="claudeLegacy").trebellRuntime,"claude");
   assert.equal(rows.find(item=>item.id==="codexLegacy").trebellRuntime,"codex");
   assert.equal(rows.find(item=>item.id==="nativeLegacy").trebellRuntime,"native");
+});
+
+test("missing runtime thread errors recognize Codex rollout loss even for durable catalog rows",()=>{
+  assert.equal(missingRuntimeThreadError(new Error("no rollout found for thread id 01a0dea1")),true);
+  assert.equal(missingRuntimeThreadError(new Error("Thread abc not found")),true);
+  assert.equal(missingRuntimeThreadError(new Error("network connection failed")),false);
 });

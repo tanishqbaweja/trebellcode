@@ -33,7 +33,7 @@ import { redactSecretText } from "./secret-redactor.mjs";
 import { providerFeatureEnabled } from "./provider-capabilities.mjs";
 import { NativeToolOutputStore } from "./native-tool-output-store.mjs";
 import { trebellHome } from "./paths.mjs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const IMAGE_MIME={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".gif":"image/gif",".webp":"image/webp",".bmp":"image/bmp"};
 const LIVE_TOOL_OUTPUT_LIMIT=256*1024;
@@ -785,8 +785,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       ?(remoteIo
         ?new AcpAgentSession({...common,runtime:"opencode",command:runtimeManager.executable(instance),args:["acp"],terminals,spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers})
         :new OpenCodeAgentSession({...common,command:runtimeManager.executable(instance),serverUrl:instance.serverUrl||null,repositoryMcp}))
-      :new AcpAgentSession({...common,runtime:instance.kind,command:runtimeManager.executable(instance),args:runtimeManager.acpArgs(instance,effectivePermissionMode,runtimeCwd),terminals,spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers});
-    const started=await runtime.start({providerSessionId:thread.providerSessionId||null,model:model||thread.model||null});
+      :new AcpAgentSession({...common,runtime:instance.kind,command:runtimeManager.executable(instance),args:runtimeManager.acpArgs(instance,effectivePermissionMode,runtimeCwd),processCwd:instance.kind==="antigravity"&&!remoteIo?dirname(runtimeManager.executable(instance)):null,terminals,spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers});
+    let started;
+    try{started=await runtime.start({providerSessionId:thread.providerSessionId||null,model:model||thread.model||null})}
+    catch(error){await runtime.close().catch(()=>{});throw error}
     const discoveredMeta=threadStore.get(thread.id)?.providerMeta||{};
     threadStore.update(thread.id,{providerSessionId:started.session.sessionId,providerMeta:{...discoveredMeta,initialize:started.initialize,setup:started.session},model:model||started.session.models?.currentModelId||thread.model||null});
     sessions.set(thread.id,runtime);return runtime;

@@ -32,13 +32,14 @@ function exactEnvironmentSecrets(environment={}){
   return [...new Set(values)].sort((a,b)=>b.length-a.length);
 }
 
-export function redactSecretText(text,{environment=process.env,redactHomes=false,trim=false}={}){
+export function redactSecretText(text,{environment=process.env,redactHomes=false,trim=false,_environmentSecrets=null}={}){
   let result=String(text??"").replaceAll("\0","");
   if(redactHomes){
     const homes=[environment?.HOME,environment?.USERPROFILE,homedir()].filter(value=>typeof value==="string"&&value.length>1);
     for(const home of new Set(homes))result=result.split(home).join("~");
   }
-  for(const secret of exactEnvironmentSecrets(environment))result=result.split(secret).join("[redacted]");
+  const environmentSecrets=Array.isArray(_environmentSecrets)?_environmentSecrets:exactEnvironmentSecrets(environment);
+  for(const secret of environmentSecrets)result=result.split(secret).join("[redacted]");
   result=result
     .replace(PAIRING_URL_PATTERN,"[pairing-url]")
     .replace(URL_USERINFO_PATTERN,"$1[redacted]@")
@@ -51,19 +52,20 @@ export function redactSecretText(text,{environment=process.env,redactHomes=false
   return trim?result.trim():result;
 }
 
-export function redactSecretValue(value,{environment=process.env,maxDepth=10,maxArray=100,maxFields=200}={},depth=0){
+export function redactSecretValue(value,{environment=process.env,maxDepth=10,maxArray=100,maxFields=200,_environmentSecrets=null}={},depth=0){
   if(depth>maxDepth)return "[bounded]";
-  if(typeof value==="string")return redactSecretText(value,{environment});
+  if(typeof value==="string")return redactSecretText(value,{environment,_environmentSecrets});
   if(value==null||typeof value==="number"||typeof value==="boolean")return value;
+  const environmentSecrets=Array.isArray(_environmentSecrets)?_environmentSecrets:exactEnvironmentSecrets(environment);
   if(Array.isArray(value))return value.slice(0,maxArray).map((item,index,array)=>{
     if(index>0&&isSecretCliFlag(array[index-1]))return "[redacted]";
-    return redactSecretValue(item,{environment,maxDepth,maxArray,maxFields},depth+1);
+    return redactSecretValue(item,{environment,maxDepth,maxArray,maxFields,_environmentSecrets:environmentSecrets},depth+1);
   });
-  if(typeof value!=="object")return redactSecretText(String(value),{environment});
+  if(typeof value!=="object")return redactSecretText(String(value),{environment,_environmentSecrets:environmentSecrets});
   const out={};
   for(const [key,item] of Object.entries(value).slice(0,maxFields)){
     if(SENSITIVE_KEYS.has(normalizedKey(key))){out[key]="[redacted]";continue}
-    out[key]=redactSecretValue(item,{environment,maxDepth,maxArray,maxFields},depth+1);
+    out[key]=redactSecretValue(item,{environment,maxDepth,maxArray,maxFields,_environmentSecrets:environmentSecrets},depth+1);
   }
   return out;
 }

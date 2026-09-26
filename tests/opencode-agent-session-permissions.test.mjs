@@ -1,6 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { OpenCodeAgentSession, configureOpenCodeMcpServers, openCodePermissionDisposition } from "../src/opencode-agent-session.mjs";
+import { OpenCodeAgentSession, configureOpenCodeMcpServers, connectedOpenCodeModels, openCodePermissionDisposition } from "../src/opencode-agent-session.mjs";
+
+test("OpenCode model selection stays inside connected providers instead of picking the first global provider",()=>{
+  const catalog=connectedOpenCodeModels({
+    connected:["huggingface","nvidia","opencode"],
+    default:{deepinfra:"zai/should-not-be-used",huggingface:"zai-org/GLM-5.3-Flash",nvidia:"z-ai/glm-5.3-flash",opencode:"big-pickle"},
+    all:[
+      {id:"deepinfra",models:{bad:{id:"zai/should-not-be-used"}}},
+      {id:"huggingface",models:{good:{id:"zai-org/GLM-5.3-Flash",limit:{context:131072}}}},
+      {id:"nvidia",models:{other:{id:"z-ai/glm-5.3-flash"}}},
+      {id:"opencode",models:{free:{id:"big-pickle"}}},
+    ],
+  });
+  assert.equal(catalog.preferred,"huggingface/zai-org/GLM-5.3-Flash");
+  assert.equal(catalog.models.some(item=>item.providerID==="deepinfra"),false);
+  assert.deepEqual(new Set(catalog.models.map(item=>item.providerID)),new Set(["huggingface","nvidia","opencode"]));
+});
 
 test("OpenCode permission events follow Trebell shared policy using provider permission types",()=>{
   assert.equal(openCodePermissionDisposition("full","bash"),"allow");

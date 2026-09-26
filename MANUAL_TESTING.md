@@ -4,6 +4,12 @@ This file tracks the gap between **implemented + automated-tested** and **proven
 
 Current release target: **v1.3.3**
 
+Current automated regression baseline on **2026-09-27**:
+
+- npm test: **824 passed, 0 failed**.
+- Full Playwright UI suite in **headless Google Chrome**: **193 passed, 0 failed**.
+- Production UI build succeeds.
+
 ## How to record results
 
 For every test, mark **Pass / Fail / Blocked** and capture:
@@ -54,6 +60,14 @@ Providers:
 - [ ] JustWorker.icu
 - [ ] HCNSec.cn
 - [ ] VyceAi
+
+Live provider transport smoke on **2026-09-27** (npm run test:providers:live):
+
+- **JustWorker.icu + claude-opus-4-8:** Pass — real model response returned through the configured provider path.
+- **HCNSec.cn + glm-5.3:** Pass — real model response returned; observed latency was about 160 s, so short smoke timeouts can misclassify this provider as broken.
+- **VyceAi + deepseek-v4-flash:** Pass — real model response returned.
+- **AgentRouter + gpt-6-astra:** Blocked by upstream account state — HTTP 402 reported that the configured budget pool quota was exhausted.
+- This transport smoke does **not** replace the Settings persistence/remove-key checks above.
 
 Failure checks:
 
@@ -155,6 +169,12 @@ Efficiency observation to revisit manually on larger tasks:
 
 ## 6. OpenCode
 
+Live adapter smoke on **2026-09-27** (npm run test:external-harnesses:live):
+
+- Pass with OpenCode **1.18.32** and opencode/muse-spark-1.3-contributor-free.
+- Trebell opened a real OpenCode session, the model used coding tools to create a proof file, and Trebell independently verified the file contents.
+- The previously preferred Hugging Face route was also detected correctly but was blocked by depleted monthly inference credits; the smoke now prefers Muse Spark 1.3 so provider quota does not masquerade as an OpenCode harness failure.
+
 - [ ] Install/authenticate OpenCode.
 - [ ] Select OpenCode.
 - [ ] Start a project thread.
@@ -177,6 +197,11 @@ Efficiency observation to revisit manually on larger tasks:
 
 ## 8. Grok Build
 
+Live adapter smoke on **2026-09-27**:
+
+- Pass with Grok CLI **1.0.41 (4220f3b224a6)** and grok-4.7.
+- Trebell opened a real ACP session, the model used coding tools to create a proof file, and Trebell independently verified the file contents.
+
 - [ ] Connect/install Grok Build.
 - [ ] Start a project thread.
 - [ ] Perform a small repository change.
@@ -187,6 +212,11 @@ Efficiency observation to revisit manually on larger tasks:
 ---
 
 ## 9. Antigravity
+
+Live adapter smoke on **2026-09-27**:
+
+- Pass with managed Antigravity ACP **1.2.1** and gemini-3.8-flash-high.
+- Trebell detected the installed runtime, opened a real authenticated ACP session, the model used coding tools to create a proof file, and Trebell independently verified the file contents.
 
 - [ ] Connect/install Antigravity.
 - [ ] Start a text-only coding task.
