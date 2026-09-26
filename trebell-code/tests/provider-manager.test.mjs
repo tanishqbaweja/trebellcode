@@ -284,6 +284,25 @@ test("normalized provider turns expose retryability for transient HTTP failures 
   await assert.rejects(()=>manager.turn("hcnsec",{model:"glm-5.3",messages:[{role:"user",content:"hello"}]}),error=>error?.status===401&&error?.retryable===false);
 });
 
+test("provider error bodies redact stored keys and parent environment secrets",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-")),providerSecret="ar-provider-secret-value",runtimeSecret="runtime-private-secret-value";
+  const manager=new ProviderManager({
+    env:{...process.env,TREBELL_HOME:root,RUNTIME_PRIVATE_SECRET:runtimeSecret},
+    fetchFn:async()=>new Response(`provider=${providerSecret}; runtime=${runtimeSecret}; upstream failed`,{status:502}),
+  });
+  manager.setKey("agentrouter",providerSecret);
+  const runs=[
+    ()=>manager.models("agentrouter"),
+    ()=>manager.turn("agentrouter",{model:"gpt-5.6",messages:[{role:"user",content:"hello"}]}),
+    ()=>manager.directChat("agentrouter",{model:"gpt-5.6",prompt:"hello"}),
+  ];
+  for(const run of runs){
+    await assert.rejects(run,error=>{
+      const message=String(error?.message||error);assert.doesNotMatch(message,new RegExp(providerSecret));assert.doesNotMatch(message,new RegExp(runtimeSecret));assert.match(message,/\[redacted\]/);return true;
+    });
+  }
+});
+
 test("provider inference transports keep their request timeout when a caller signal exists", async () => {
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
   const seen=[];

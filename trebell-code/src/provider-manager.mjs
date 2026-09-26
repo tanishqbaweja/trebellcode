@@ -4,6 +4,7 @@ import { normalizeChatTurnResponse, normalizeResponsesTurnResponse, providerTurn
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { trebellHome } from "./paths.mjs";
+import { redactSecretText } from "./secret-redactor.mjs";
 
 export const MODEL_PROVIDERS = Object.freeze({
   freebuff: {
@@ -75,6 +76,10 @@ function clone(value) {
 
 const AGENTROUTER_CLIENT_VERSION = "0.149.1";
 const DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS = 300_000;
+function providerErrorExcerpt(value,{environment={},secret="",maxChars=1200}={}){
+  const max=Math.max(120,Math.min(4000,Math.trunc(Number(maxChars)||1200))),scan=String(value??"").slice(0,Math.max(max*4,max+4096));
+  return redactSecretText(scan,{environment:{...environment,TREBELL_PROVIDER_ERROR_SECRET:String(secret||"")}}).slice(0,max);
+}
 const AGENTROUTER_CLIENT_HEADERS = Object.freeze({
   "User-Agent": `codex_cli_rs/${AGENTROUTER_CLIENT_VERSION}`,
   originator: "codex_cli_rs",
@@ -225,7 +230,7 @@ export class ProviderManager {
     });
     const raw = await response.text();
     if (!response.ok) {
-      throw new Error(`${provider.name} model list failed with HTTP ${response.status}: ${raw.slice(0, 500)}`);
+      throw new Error(`${provider.name} model list failed with HTTP ${response.status}: ${providerErrorExcerpt(raw,{environment:this.env,secret:key,maxChars:500})}`);
     }
     let parsed;
     try {
@@ -316,7 +321,7 @@ export class ProviderManager {
       :await this.forwardChat(provider.id,providerTurnToChat({...request,model}),{signal});
     const raw=await upstream.text();
     if(!upstream.ok){
-      const error=new Error(`${provider.name} HTTP ${upstream.status}: ${raw.slice(0,1200)}`);
+      const error=new Error(`${provider.name} HTTP ${upstream.status}: ${providerErrorExcerpt(raw,{environment:this.env,secret:this.key(provider.id),maxChars:1200})}`);
       error.status=upstream.status;
       error.retryable=[408,409,425,429].includes(upstream.status)||(upstream.status>=500&&upstream.status<=599);
       throw error;
@@ -335,7 +340,7 @@ export class ProviderManager {
       stream: false,
     });
     const raw = await response.text();
-    if (!response.ok) throw new Error(`${provider.name} HTTP ${response.status}: ${raw.slice(0, 1200)}`);
+    if (!response.ok) throw new Error(`${provider.name} HTTP ${response.status}: ${providerErrorExcerpt(raw,{environment:this.env,secret:this.key(provider.id),maxChars:1200})}`);
     const parsed = JSON.parse(raw);
     return {
       text: parsed?.choices?.[0]?.message?.content ?? "",
