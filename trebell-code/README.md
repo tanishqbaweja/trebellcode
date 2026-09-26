@@ -1,8 +1,20 @@
 # Trebell Code
 
-Trebell Code uses Codex strictly as the local agentic harness: threads, planning, tools, shell execution, filesystem edits, approvals, MCP, diffs, and history. Model inference is selectable in Settings: **Freebuff, AgentRouter, JustWorker.icu, HCNSec.cn, or VyceAi**.
+Trebell Code is a desktop coding harness that keeps projects, repository intelligence, files, terminals, Git/worktrees, browser verification, source control, continuity, verification, and agent history in one workspace.
 
-The user-facing command is `trebell` (or `trebell-code`) and Trebell configuration lives under `~/.trebell-code`. Freebuff sign-in uses the bundled **freebuff2api** compatibility bridge; the other providers use their own API keys.
+Trebell is **multi-harness**. The active agent runtime can be:
+
+- **Trebell Native**
+- **Codex**
+- **Claude Code**
+- **Cursor**
+- **Grok Build**
+- **OpenCode**
+- **Antigravity**
+
+Capabilities are runtime-gated. Trebell does not pretend every harness exposes the same queue, fork, rewind, sandbox, MCP, delegation, or profile-switching features.
+
+The user-facing command is `trebell` (or `trebell-code`). Trebell-owned configuration and state live under `~/.trebell-code` unless `TREBELL_HOME` is set.
 
 ## Install
 
@@ -12,135 +24,217 @@ npm link
 trebell
 ```
 
-Requirements: Node.js 22 or newer.
+Requirements for source installs: Node.js 22 or newer.
 
-When Freebuff is selected, the first `trebell` run starts Freebuff sign-in automatically. Other providers are configured from the desktop Settings page with an API key.
-
-```bash
-trebell signup
-trebell login
-trebell models
-trebell --provider agentrouter --model gpt-5.6-sol
-trebell --provider justworker --model claude-opus-4-8
-trebell --provider hcnsec --model glm-5.3
-trebell --provider vyceai --model claude-sonnet-4-6
-```
-
-## Provider contract
-
-**Codex is the harness, not the model provider.** Trebell Code configures Codex to use exactly the provider selected in Settings.
-
-| Provider | Codex-facing base URL | Upstream |
-| --- | --- | --- |
-| Freebuff | local `freebuff2api` bridge | authenticated Freebuff |
-| AgentRouter | local Trebell Responses bridge | `https://co.agentrouter.org/v1/chat/completions` |
-| JustWorker.icu | local Trebell Responses bridge | Anthropic-compatible `https://api.justwoker.icu/v1/messages` |
-| HCNSec.cn | local Trebell Responses bridge | `https://api.hcnsec.cn/v1/chat/completions` |
-| VyceAi | local Trebell Responses bridge | `https://vyceai.com/v1/chat/completions` |
-
-Current Codex no longer accepts `wire_api = "chat"`. Trebell therefore always configures Codex with `wire_api = "responses"`. The loopback compatibility service accepts Codex `/v1/responses` requests and translates them to each upstream protocol: AgentRouter/HCNSec/VyceAi use Chat Completions, while JustWorker uses its Anthropic-compatible Messages endpoint. Trebell then translates streamed text and function/tool calls back into the full Responses API event lifecycle.
-
-The GUI model selector is replaced whenever the provider changes, so models from another provider cannot remain selected. Non-Freebuff API keys are stored separately from normal UI settings and are used only by Trebell's provider layer; the keys are not written into Codex `config.toml` or returned by the provider-status API.
-
-## What happens when you run it
-
-1. Trebell Code creates `~/.trebell-code/codex/config.toml` for the selected inference provider.
-2. For Freebuff, it starts the bundled freebuff2api bridge on localhost and uses the authenticated Freebuff session under `~/.trebell-code/freebuff2api`.
-3. For AgentRouter, JustWorker, HCNSec, or VyceAi, Trebell starts a loopback Responses compatibility bridge on `127.0.0.1:23334`. Codex sends modern Responses API traffic there and the bridge forwards translated Chat Completions requests upstream with the saved provider key.
-4. Changing provider or provider credentials retargets the compatibility bridge, restarts the isolated Codex app-server, and reconnects the desktop JSON-RPC relay.
-5. The runtime keeps Codex filesystem, shell, approval, MCP, diff, history, and agent behavior regardless of which inference provider is active.\n\nFor compatibility testing, Trebell preserves Freebuff-compatible protocol behavior while deliberately attaching the stable upstream header `x-trebell-client: Trebell-Code/0.5.0`. This keeps the client explicitly attributable instead of relying on hidden behavioral differences.
-
-By default Trebell sets `PUBLIC_UPSTREAM_ENABLED=false`, so the bundled bridge uses the authenticated Freebuff route rather than freebuff2api's optional third-party public model routes.
-
-## Useful commands
-
-```text
-trebell                 start Trebell Code
-trebell login           Freebuff device-code login
-trebell login --force   refresh/switch the Freebuff login
-trebell signup          open Freebuff sign-up/login in a browser
-trebell logout          remove the local credential
-trebell models          show models for the active provider
-trebell --provider ID    override the saved provider for this CLI run
-trebell doctor          check installation
-```
-
-Set `TREBELL_HOME` to relocate all Trebell state. Set `TREBELL_MODEL` to choose a default model.
-
-## Licensing
-
-Trebell Code's wrapper code is Apache-2.0.
-
-The agent runtime is OpenAI Codex, Apache-2.0 licensed. Trebell Code retains the required upstream notices and does not claim ownership of that upstream implementation.
-
-The bundled Freebuff compatibility bridge is derived from **chenjh16/freebuff2api**, MIT licensed. Its original license is retained under `vendor/freebuff2api/LICENSE`.
-
-See `NOTICE` and `THIRD_PARTY_NOTICES.md`.
-
-
-## Graphical harness
-
-Trebell Code includes a local React/Vite agent interface inspired by modern desktop coding agents.
-
-```bash
-npm install
-npm run ui:build
-trebell gui
-```
-
-The GUI talks directly to Codex app-server over localhost WebSocket JSON-RPC, so thread history,
-turns, plan updates, shell commands, file changes, diffs, approvals, MCP activity, stop/interrupt,
-and tool events are surfaced from the real Codex runtime rather than simulated by the UI.
-The GUI's model picker is scoped to the active provider. Freebuff is loaded from the local bridge, AgentRouter uses its supported five-model catalog, VyceAi uses its authenticated live `/v1/models` endpoint, and JustWorker/HCNSec use their documented single-model catalogs.
-
-For frontend-only development:
+For frontend development:
 
 ```bash
 npm run gui:server
 npm run ui:dev
 ```
 
-The Vite dev server proxies `/api` to the local GUI server.
+For a production-style local GUI:
 
+```bash
+npm run ui:build
+trebell gui
+```
 
-## Desktop installer
+## Runtime and provider model
 
-Trebell Code is also packaged as a native Windows desktop application. End users do not need
-Node.js, npm, or a terminal. The installer bundles Electron, the production Trebell GUI, the
-native Codex harness binary, and the Freebuff compatibility bridge.
+Trebell separates two ideas that older builds mixed together:
 
-After installation, launch **Trebell Code** from the Start Menu or Desktop shortcut. Codex
-remains the local agentic harness only; model inference is routed through the provider selected
-in Settings.
+1. **Agent runtime** — the coding harness that owns the agent session and protocol.
+2. **Inference provider** — the model API used by Trebell-owned inference paths such as Trebell Native and Codex compatibility routing.
 
+External harnesses such as Claude Code, Cursor, Grok Build, OpenCode, and Antigravity keep their own authentication/model semantics. Trebell integrates them through their supported protocol/runtime interfaces rather than forcing them through the Codex provider bridge.
 
-## Windows installer and GitHub release
+### Trebell-managed inference providers
 
-Windows packaging is intentionally done on a real Windows machine rather than on Railway.
+Where the selected runtime uses Trebell's inference layer, currently supported provider integrations include:
 
-From `trebell-code`:
+- **Freebuff**
+- **AgentRouter**
+- **JustWorker.icu**
+- **HCNSec.cn**
+- **VyceAi**
+
+Provider credentials are kept separate from normal UI state and are not exposed through provider-status APIs.
+
+For Codex compatibility, Trebell configures the bundled Codex runtime to use the Responses API. Providers that expose Chat Completions or Anthropic-compatible Messages are translated through Trebell's loopback compatibility layer and converted back into the Responses event lifecycle.
+
+## Agent runtime behavior
+
+Trebell keeps shared product responsibilities outside individual harnesses wherever practical:
+
+- project and environment identity,
+- repository context and structural intelligence,
+- files and terminal surfaces,
+- Git/worktree workflows,
+- source-control integration,
+- browser/runtime verification evidence,
+- durable goals and continuity,
+- history and metadata,
+- permissions and policy,
+- checkpoints,
+- verification and recovery,
+- usage/trace surfaces.
+
+A runtime keeps its own native strengths when they exist. Trebell does not build duplicate infrastructure merely for symmetry, and it does not require all runtimes to expose identical controls.
+
+## Desktop product scope
+
+Trebell is a **desktop coding harness**.
+
+It supports desktop-controlled local and remote development environments, including local workspaces, WSL, and SSH where configured.
+
+Mobile-device orchestration is intentionally **not** part of the current product scope. Older 1.3.0 work briefly included Android emulator/iOS simulator control surfaces; those were retired and are covered by regression tests to prevent them from silently returning.
+
+## Core workspace
+
+The desktop workspace includes:
+
+- provider-independent conversation history,
+- project and environment management,
+- resizable chat/sidebar/right-panel/terminal surfaces,
+- files, diff, Git, runtime, goal, browser, and agent panels,
+- command palette and keyboard navigation,
+- project/worktree settings,
+- background work and bounded delegation where the runtime supports it,
+- thread history pagination and search,
+- checkpoints and rewind/fork where supported,
+- light/dark/custom themes,
+- failure-visible UI instead of fake empty/default states.
+
+Basic capabilities such as normal research are not exposed as meaningless composer toggles. Heavier specialized tool namespaces are exposed only when useful and supported.
+
+## Browser and desktop verification
+
+Trebell includes an isolated Agent Browser for supported browser workflows, with navigation, DOM interaction, screenshots, responsive viewport checks, annotations, and localhost preview discovery.
+
+Desktop screenshot context is supported, and Windows desktop mouse/keyboard control is capability- and permission-gated. Trebell uses explicit access boundaries rather than silently escalating control.
+
+## Projects, Git, and worktrees
+
+Trebell supports:
+
+- project-scoped settings,
+- local and remote environments,
+- branch/status/diff workflows,
+- managed worktrees,
+- background task isolation,
+- safe cleanup rules,
+- source-control provider detection,
+- pull-request workflows,
+- checkpoints,
+- review state,
+- repository-aware verification.
+
+Conversation identity is independent of inference provider. Changing provider must not make existing chats disappear.
+
+## MCP, skills, plugins, and harness capabilities
+
+Harness-specific capabilities are exposed only when the active runtime actually supports them.
+
+Codex exposes its native skills/plugins/apps/hooks/configuration surfaces through Trebell's Harness Tools UI. Other runtimes use their supported MCP/tool integration paths without Trebell fabricating unsupported parity.
+
+## Useful commands
+
+```text
+trebell                         start Trebell Code
+trebell login                   Freebuff login
+trebell login --force           refresh/switch the Freebuff login
+trebell signup                  open Freebuff sign-up/login in a browser
+trebell logout                  remove the local Freebuff credential
+trebell models                  show models for the active Trebell-managed provider
+trebell --provider ID           override the saved provider for this CLI run
+trebell --model ID              choose a model for this CLI run
+trebell doctor                  check installation
+```
+
+Examples for Trebell-managed provider routing:
+
+```bash
+trebell --provider agentrouter --model gpt-5.6-sol
+trebell --provider justworker --model claude-opus-4-8
+trebell --provider hcnsec --model glm-5.3
+trebell --provider vyceai --model claude-sonnet-4-6
+```
+
+Set `TREBELL_HOME` to relocate Trebell-owned state. Set `TREBELL_MODEL` to choose a default model for compatible CLI flows.
+
+## Testing
+
+Deterministic suite:
+
+```bash
+npm test
+```
+
+Build the frontend:
+
+```bash
+npm run ui:build
+```
+
+Full Playwright UI suite:
+
+```bash
+npm run ui:test
+```
+
+Focused suites:
+
+```bash
+npm run ui:test:workspace
+npm run ui:test:capabilities
+npm run ui:test:visual
+```
+
+Playwright's local test harness runs offline by default and blocks external provider traffic unless network access is explicitly enabled for a live test.
+
+Live-provider scripts are separate and opt-in. They may load credentials from `../.env`; do not invent or commit secrets.
+
+## Desktop packaging
+
+Electron packaging targets exist for Windows, macOS, and Linux where the required native dependencies are available.
+
+Windows is the primary release flow:
 
 ```bat
 make-exe.cmd
 ```
 
-That installs dependencies, runs the test suite, builds the provider bridge and UI, materializes the official Trebell icon, and creates:
+That prepares the icon, provider bridge, production UI, and Windows installer.
 
-```
-desktop-dist\Trebell-Code-Setup-<version>.exe
-desktop-dist\release.json
-```
-
-To build **and publish** the installer to the GitHub Release for the package version:
+To build and publish the Windows release for the package version:
 
 ```bat
 make-exe.cmd publish
 ```
 
-Publishing requires GitHub CLI (`gh`) and a logged-in account with release permission:
+Publishing requires GitHub CLI authentication with release permission.
 
-```bat
-gh auth login
+Equivalent npm commands are:
+
+```text
+npm run release:windows
+npm run release:windows:publish
 ```
 
-Equivalent npm commands are `npm run release:windows` and `npm run release:windows:publish`.
+Additional packaging targets:
+
+```text
+npm run desktop:dist:mac
+npm run desktop:dist:linux
+```
+
+## Licensing
+
+Trebell Code's wrapper code is Apache-2.0.
+
+The bundled OpenAI Codex runtime is Apache-2.0 licensed. Trebell retains the required upstream notices and does not claim ownership of that implementation.
+
+The bundled Freebuff compatibility bridge is derived from **chenjh16/freebuff2api**, MIT licensed. Its original license is retained under `vendor/freebuff2api/LICENSE`.
+
+See `NOTICE` and `THIRD_PARTY_NOTICES.md`.

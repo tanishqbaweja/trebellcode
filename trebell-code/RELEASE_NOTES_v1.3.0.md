@@ -38,7 +38,7 @@ Trebell Code 1.3 is the large post-1.2 parity and reliability release. It expand
 - Isolated Agent Browser with navigation, DOM snapshots, click/type, screenshots, responsive viewport controls, cookies, recording permission, annotations, and localhost preview discovery.
 - One-time browser-profile import for **Firefox** and **Helium** on Windows. Other Chromium browsers remain intentionally excluded because their cookies use app-bound encryption that Trebell does not bypass.
 - Desktop screenshot context plus explicit full-access mouse, keyboard, scroll, and typing controls for agent computer use.
-- Android emulator and iOS simulator discovery/control surfaces, with separate opt-in agent access.
+- Android emulator and iOS simulator discovery/control surfaces shipped in 1.3.0, but were subsequently retired. They are not part of Trebell's current desktop-harness scope.
 - Global SnapShot shortcut with optional accessibility-text capture and local pending-capture recovery.
 
 ## Terminal, source control, and review workflow
