@@ -585,6 +585,8 @@ Native also has one bounded recovery for an exact tool call the user explicitly 
 
 A separate attempt to shrink the baseline Native repository manifest to only `search_code` was rejected. Removing direct baseline access to `search_symbols`, `search_files`, and `read_source` broke three focused Native repository/executor regressions, including direct symbol/source observations. Trebell therefore keeps those small deterministic repository primitives exposed until a measured migration proves that hiding them behind `discover`/`invoke` preserves behavior and lowers total cost rather than merely shrinking the first request.
 
+A separate Native system-prompt compression experiment was also rejected. The shorter wording remained functionally correct in focused prompt tests, but the same multi-file live benchmark regressed from the earlier **11,583 input tokens / 5 model turns / 8 tool calls** to **14,219 input / 6 turns / 10 calls**. Trebell therefore keeps the clearer prompt wording: shaving prompt characters is not an optimization when the model spends more turns and tokens compensating for reduced guidance.
+
 ### Same-task live harness comparison
 
 `npm run bench:harnesses:live` gives each available harness its own disposable copy of the same small repository bug-fix task, requires the harness to edit code and run `node verify.mjs`, and then reruns that verification independently outside the harness. Set `TREBELL_HARNESS_COMPARE_ONLY` to a comma-separated runtime list to run a bounded subset. The command is explicitly live/opt-in and should not be used as a background benchmark tournament.

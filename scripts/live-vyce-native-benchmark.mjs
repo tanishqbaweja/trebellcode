@@ -8,6 +8,7 @@ import { ContextEngine } from "../src/context-engine.mjs";
 import { contextualAgentPrompt } from "../src/agent-relay.mjs";
 import { createNativeBuiltins } from "../src/native-builtins.mjs";
 import { NativeAgentSession } from "../src/native-agent-session.mjs";
+import { nativeRequestMetrics } from "../src/native-request-metrics.mjs";
 import { nativeSystemPrompt } from "../src/native-system-prompt.mjs";
 import { createNativeToolExecutor } from "../src/native-tool-executor.mjs";
 import { NativeToolOutputStore } from "../src/native-tool-output-store.mjs";
@@ -174,8 +175,16 @@ async function runScenario(scenario){
       cwd:root,provider:"vyceai",model,tools,toolOutputStore:outputStore,executeTool:executor,
       initialMessages:[{role:"system",content:nativeSystemPrompt({tools,permissionMode:"full",projectless:false})}],
       providerTurn:async request=>{
+        const requestMessages=Array.isArray(request.messages)?request.messages:[],requestTools=Array.isArray(request.tools)?request.tools:[];
+        const record={
+          messageChars:JSON.stringify(requestMessages).length,
+          toolSchemaChars:JSON.stringify(requestTools).length,
+          functionCount:requestTools.reduce((sum,item)=>sum+(Array.isArray(item?.tools)?item.tools.length:1),0),
+          requestMetrics:nativeRequestMetrics(requestMessages,requestTools),
+        };
+        providerRequests.push(record);
         const response=await manager.turn("vyceai",{...request,provider:"vyceai",model},{signal:request.signal});
-        providerRequests.push({usage:response.usage,telemetry:response.telemetry,toolCalls:response.toolCalls||[]});
+        record.usage=response.usage;record.telemetry=response.telemetry;record.toolCalls=response.toolCalls||[];
         return response;
       },
       onEvent:event=>events.push(event),onUpdate:update=>updates.push(update),
@@ -201,6 +210,7 @@ async function runScenario(scenario){
     let independentVerificationPassed=true,independentVerificationError=null;
     try{await scenario.verify(root)}catch(error){independentVerificationPassed=false;independentVerificationError=String(error?.stderr||error?.message||error).slice(0,2000)}
     const completed=events.filter(event=>event.name==="native.model.completed"),toolUpdates=updates.filter(item=>item.update?.sessionUpdate==="tool_call_update");
+    const firstRequest=providerRequests[0]||{};
     const repairedToolCalls=events.filter(event=>event.name==="native.tool.call_repaired").length;
     const failedToolCalls=toolUpdates.filter(item=>item.update?.status==="failed").length;
     const aggregate=providerRequests.reduce((out,item)=>({
@@ -235,6 +245,8 @@ async function runScenario(scenario){
       stablePrefixVariants:new Set(completed.map(event=>event.data?.requestMetrics?.stablePrefixHash).filter(Boolean)).size,
       toolSchemaVariants:new Set(completed.map(event=>event.data?.requestMetrics?.toolSchemaHash).filter(Boolean)).size,
       firstSchemaEstimatedTokens:completed[0]?.data?.requestMetrics?.toolSchemas?.estimatedTokens||0,
+      firstSchemaChars:Number(firstRequest.toolSchemaChars||0),
+      firstFunctionCount:Number(firstRequest.functionCount||0),
       finalLogicalEstimatedTokens:completed.at(-1)?.data?.requestMetrics?.totalLogical?.estimatedTokens||0,
       virtualizedOutputs:virtualized.length,repairedToolCalls,failedToolCalls,
       virtualizedBytes:virtualized.reduce((sum,item)=>sum+Number(item.totalBytes||0),0),
