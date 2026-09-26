@@ -64,3 +64,34 @@ test("inactivity cleanup accepts only the configured retention window",{timeout:
     const recent=await inspectManagedWorktree({...project,lastOpenedAt:Date.now()-5*86400000},{settings:f.state.settings(),now:Date.now()});assert.equal(recent.eligible,false);assert.equal(recent.reason,"no_rule_matched");
   }finally{await rm(f.home,{recursive:true,force:true})}
 });
+
+test("remote managed worktree cleanup and restore stay inside the pinned environment",async()=>{
+  const root="/srv/repo",worktree="/srv/repo-trebell-feature",environmentId="ssh-1",calls=[];let removed=false;
+  let project={id:"remote-project",path:worktree,environmentId,lastOpenedAt:Date.now(),worktreeCleanup:{mode:"custom",rules:{worktreeAfterDays:null,worktreeOnMerge:false,worktreeOnDelete:false,worktreeUnchanged:true}},managedWorktree:{root,branch:"feature",baseBranch:"main",submodules:"none",createdAt:Date.now(),cleanedAt:null,cleanupReason:null}};
+  const state={
+    settings:()=>({}),projectSettings:()=>({effective:{worktreeCleanup:project.worktreeCleanup}}),projects:()=>[structuredClone(project)],
+    touchProject:(_path,patch)=>{project={...project,...patch,managedWorktree:patch.managedWorktree?{...patch.managedWorktree}:project.managedWorktree};return structuredClone(project)},
+  };
+  const environments={
+    get:id=>id===environmentId?{id,type:"ssh",cwd:root}:null,
+    executeArgv:async(id,request)=>{
+      assert.equal(id,environmentId);assert.equal(request.command,"git");calls.push(structuredClone(request));const args=request.args||[],command=args[0];
+      if(command==="rev-parse"&&args[1]==="--show-toplevel"){
+        if(removed&&request.cwd===worktree)return {exitCode:128,stdout:"",stderr:"not a git repository"};
+        return {exitCode:0,stdout:(request.cwd===worktree?worktree:root)+"\n",stderr:""};
+      }
+      if(command==="branch")return {exitCode:0,stdout:(request.cwd===worktree?"feature":"main")+"\n",stderr:""};
+      if(command==="status")return {exitCode:0,stdout:`## ${request.cwd===worktree?"feature":"main"}\n`,stderr:""};
+      if(command==="worktree"&&args[1]==="list")return {exitCode:0,stdout:`worktree ${root}\nHEAD rootsha\nbranch refs/heads/main\n\n${removed?"":`worktree ${worktree}\nHEAD same-sha\nbranch refs/heads/feature\n\n`}`,stderr:""};
+      if(command==="rev-parse")return {exitCode:0,stdout:"same-sha\n",stderr:""};
+      if(command==="rev-list")return {exitCode:0,stdout:"0\n",stderr:""};
+      if(command==="worktree"&&args[1]==="remove"){assert.equal(request.cwd,root);assert.equal(args.at(-1),worktree);removed=true;return {exitCode:0,stdout:"",stderr:""}}
+      if(command==="worktree"&&args[1]==="add"){assert.equal(request.cwd,root);assert.deepEqual(args.slice(0,4),["worktree","add",worktree,"feature"]);removed=false;return {exitCode:0,stdout:"",stderr:""}}
+      throw new Error(`unexpected remote git ${args.join(" ")} in ${request.cwd}`);
+    },
+  };
+  const service=new WorktreeCleanupService({state,environments});
+  const cleaned=await service.sweep();assert.equal(cleaned.removed,1);assert.equal(removed,true);assert.ok(project.managedWorktree.cleanedAt);assert.equal(project.managedWorktree.cleanupReason,"unchanged");
+  const restored=await service.ensure(worktree,environmentId);assert.equal(restored.restored,true);assert.equal(removed,false);assert.equal(project.managedWorktree.cleanedAt,null);
+  assert.equal(calls.some(call=>/^[A-Za-z]:\\/.test(String(call.cwd||""))),false,"remote cleanup must not reinterpret remote paths as local Windows paths");
+});

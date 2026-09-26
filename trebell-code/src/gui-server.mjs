@@ -917,7 +917,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     return {activePaths,referencedPaths};
   }
   const cleanupLogs=[];
-  const worktreeCleanup=new WorktreeCleanupService({state,getUsage:worktreeUsage,log:message=>{cleanupLogs.push({at:Date.now(),stream:"cleanup",text:safeLogText(String(message)+"\n")});if(cleanupLogs.length>100)cleanupLogs.splice(0,cleanupLogs.length-100)}});
+  const worktreeCleanup=new WorktreeCleanupService({state,environments,getUsage:worktreeUsage,log:message=>{cleanupLogs.push({at:Date.now(),stream:"cleanup",text:safeLogText(String(message)+"\n")});if(cleanupLogs.length>100)cleanupLogs.splice(0,cleanupLogs.length-100)}});
   const storageCleanup=new StorageCleanupService({state,env,terminals,worktreeCleanup,log:message=>{cleanupLogs.push({at:Date.now(),stream:"storage-cleanup",text:safeLogText(String(message)+"\n")});if(cleanupLogs.length>100)cleanupLogs.splice(0,cleanupLogs.length-100)}});
   const cloneJobs=new CloneJobService({state,environments,env,log:message=>appServer?.logs?.push({at:Date.now(),stream:"clone",text:safeLogText(String(message)+"\n")})});
   await cloneJobs.recoverInterrupted();
