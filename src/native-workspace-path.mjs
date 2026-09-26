@@ -2,7 +2,11 @@ export function rootRelativeFallback(value){
   const text=String(value??"");
   if(!/^[\\/]/.test(text))return null;
   if(/^[a-zA-Z]:[\\/]/.test(text)||/^\\\\/.test(text))return null;
-  const stripped=text.replace(/^[\\/]+/,"");
+  let stripped=text.replace(/^[\\/]+/,"");
+  // Models commonly use /workspace as the conventional virtual repository root.
+  // Trebell's workspace tools are already root-relative, so accept that spelling
+  // instead of wasting a tool round-trip on a literal "workspace" subdirectory.
+  if(/^workspace(?:[\\/]|$)/i.test(stripped))stripped=stripped.replace(/^workspace(?:[\\/]+|$)/i,"");
   return stripped||".";
 }
 

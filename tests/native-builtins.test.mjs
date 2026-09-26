@@ -18,7 +18,9 @@ test("Native workspace built-ins read, list, write, and replace exact text insid
     const replaced=await execute({namespace:"trebell_workspace",name:"replace_text",arguments:{path:"src/app.js",old_text:"value = 1",new_text:"value = 2"}});assert.equal(replaced.replacements,1);assert.equal(await readFile(join(root,"src","app.js"),"utf8"),"const value = 2;\n");
     const written=await execute({namespace:"trebell_workspace",name:"write_file",arguments:{path:"src/new.js",content:"export const ready = true;\n"}});assert.equal(written.createdOrReplaced,true);assert.equal(await readFile(join(root,"src","new.js"),"utf8"),"export const ready = true;\n");
     const rooted=await execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"/src/app.js"}});assert.equal(rooted.content,"const value = 2;\n");
+    const virtualRooted=await execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"/workspace/src/app.js"}});assert.equal(virtualRooted.content,"const value = 2;\n");
     const rootList=await execute({namespace:"trebell_workspace",name:"list",arguments:{path:"/",depth:2,limit:20}});assert.ok(rootList.entries.some(item=>item.name==="src"));
+    const virtualRootList=await execute({namespace:"trebell_workspace",name:"list",arguments:{path:"/workspace",depth:2,limit:20}});assert.ok(virtualRootList.entries.some(item=>item.name==="src"));
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
@@ -42,6 +44,8 @@ test("Native terminal uses a least-privilege environment and workspace cwd",asyn
     const script='process.stdout.write(JSON.stringify({cwd:process.cwd(),secret:process.env.NATIVE_TEST_SECRET_TOKEN||null}))';
     const result=await execute({namespace:"trebell_terminal",name:"run",arguments:{command:process.execPath,args:["-e",script],cwd:"src",timeout_ms:5000,max_output_bytes:65536}});
     assert.equal(result.exitCode,0);assert.equal(result.timedOut,false);const parsed=JSON.parse(result.stdout);assert.equal(parsed.cwd,join(root,"src"));assert.equal(parsed.secret,null);
+    const virtualRoot=await execute({namespace:"trebell_terminal",name:"run",arguments:{command:process.execPath,args:["-e","process.stdout.write(process.cwd())"],cwd:"/workspace/src",timeout_ms:5000,max_output_bytes:65536}});
+    assert.equal(virtualRoot.exitCode,0);assert.equal(virtualRoot.stdout,join(root,"src"));
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
