@@ -4100,7 +4100,6 @@ test("right panel tabs are functional and visually bounded",async({page,request}
     ["Diff","diff"],
     ["Browser","browser"],
     ["Git","git"],
-    ["Device","device"],
     ["Agents","agents"],
     ["Goal","goal"],
     ["Runtime","runtime"],
@@ -4139,7 +4138,6 @@ test("right panel tabs are functional and visually bounded",async({page,request}
       await expect(panel.locator(".source-provider-field")).toBeVisible();
       await expect(panel.locator(".pr-empty-state")).toBeVisible();
     }
-    if(label==="Device")await expect(panel.locator(".device-panel")).toBeVisible();
     if(label==="Goal"){
       await expect(panel).toContainText("No active thread");
       await expect(panel).not.toContainText("Codex");
@@ -4158,15 +4156,6 @@ test("right panel tabs are functional and visually bounded",async({page,request}
   await page.screenshot({path:auditDir+"panel-browser-1280x800.png",fullPage:true});
   await page.setViewportSize({width:1600,height:980});
   await page.evaluate(()=>{document.documentElement.dataset.mode="light"});
-  await tabStrip.getByRole("button",{name:"Device",exact:true}).click();
-  const deviceLight=await panel.evaluate(node=>({
-    panel:getComputedStyle(node.querySelector(".device-panel")).backgroundColor,
-    tooling:getComputedStyle(node.querySelector(".device-tooling")).backgroundColor,
-    select:getComputedStyle(node.querySelector(".device-toolbar select")).backgroundColor,
-    button:getComputedStyle(node.querySelector(".device-tooling button")).backgroundColor,
-  }));
-  for(const value of Object.values(deviceLight))expect(value).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
-  await page.screenshot({path:auditDir+"panel-device-light-1600x980.png",fullPage:true});
   await tabStrip.getByRole("button",{name:"Agents",exact:true}).click();
   const agentsLight=await panel.evaluate(node=>({
     collaboration:getComputedStyle(node.querySelector(".collaboration-card")).backgroundColor,
@@ -4176,65 +4165,6 @@ test("right panel tabs are functional and visually bounded",async({page,request}
   }));
   for(const value of Object.values(agentsLight))expect(value).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
   await page.screenshot({path:auditDir+"panel-agents-light-1600x980.png",fullPage:true});
-});
-
-test("failed device typing keeps the text available for retry",async({page,request})=>{
-  test.setTimeout(30_000);
-  await page.route(/\/api\/devices$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
-    capabilities:{android:{available:true,sdkManagerAvailable:false,tools:[]},ios:{available:false}},
-    devices:[{id:"emulator-5554",name:"Pixel Fixture",platform:"android",state:"device",running:true}],
-    avds:[],
-  })}));
-  await page.route(/\/api\/device\/screenshot\?/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({width:1080,height:1920,dataUrl:null})}));
-  await page.route(/\/api\/device\/action$/,route=>route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate device typing failure"})}));
-  await prepare(page,request);
-  await page.getByTestId("right-panel-toggle").click();
-  const panel=page.getByTestId("right-panel");
-  await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Device",exact:true}).click();
-  const input=panel.getByPlaceholder("Type into focused emulator control");
-  await expect(input).toBeVisible();
-  await input.fill("retry this text");
-  await panel.locator(".device-type").getByRole("button",{name:"Send",exact:true}).click();
-  await expect(panel.locator(".inline-status")).toContainText("Deliberate device typing failure");
-  await expect(input).toHaveValue("retry this text");
-  await page.setViewportSize({width:1280,height:800});
-  const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
-  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"device-type-error-1280x800.png",fullPage:true});
-});
-
-test("successful device tool updates stay applied when status refresh fails",async({page,request})=>{
-  test.setTimeout(30_000);
-  let failStatus=false;
-  await page.route(/\/api\/devices$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({
-    capabilities:{android:{available:true,sdkManagerAvailable:true,tools:[{id:"platform-tools",label:"Platform-Tools",installed:true,version:"34.0.5"}]},ios:{available:false}},
-    devices:[],avds:[],
-  })}));
-  await page.route(/\/api\/device\/tool-updates$/,route=>{
-    if(failStatus)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate device tool status refresh failure"})});
-    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({available:true,updates:[{id:"platform-tools",label:"Platform-Tools",availableVersion:"35.0.2"}]})});
-  });
-  await page.route(/\/api\/device\/tool-update$/,route=>{
-    failStatus=true;
-    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true})});
-  });
-  await prepare(page,request);
-  await page.getByTestId("right-panel-toggle").click();
-  const panel=page.getByTestId("right-panel");
-  await panel.locator(".context-panel-tab-scroll").getByRole("button",{name:"Device",exact:true}).click();
-  const device=panel.locator(".device-panel");
-  await expect(device).toBeVisible();
-  await device.getByRole("button",{name:"Check updates",exact:true}).click();
-  const toolRow=device.locator(".device-tool-list>div").filter({hasText:"Platform-Tools"});
-  await expect(toolRow).toContainText("35.0.2 available");
-  await toolRow.getByRole("button",{name:"Update",exact:true}).click();
-  await expect(toolRow.getByRole("button",{name:"Update",exact:true})).toHaveCount(0);
-  await expect(toolRow).toContainText("Ready");
-  await expect(device.locator(".inline-status")).toContainText("Platform-Tools updated successfully, but could not refresh tool update status: Deliberate device tool status refresh failure");
-  await page.setViewportSize({width:1280,height:800});
-  const metrics=await panel.locator(".context-panel-body").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
-  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"device-tool-update-refresh-error-1280x800.png",fullPage:true});
 });
 
 test("Agent Browser action failures stay visible instead of disappearing",async({page,request})=>{
