@@ -53,6 +53,8 @@ test("Native session keeps large tool output outside hot provider history behind
     const observation=requests[1].messages.at(-1);assert.equal(observation.role,"tool");assert.match(observation.content,/trebell_output\/read/);assert.ok(observation.content.length<20_000);
     const persisted=updates.find(entry=>entry.update?.sessionUpdate==="tool_call_update")?.update?.rawOutput;assert.ok(persisted?._trebell_output?.handle);assert.ok(JSON.stringify(persisted).length<20_000);
     const read=await store.read({handle:persisted._trebell_output.handle,start_line:1,max_chars:48000});assert.match(read.content,/x{1000}/);
+    await session.prompt([{type:"text",text:"continue from the prior failure"}]);
+    const nextTurnObservation=requests[2].messages.find(message=>message.role==="tool");assert.ok(nextTurnObservation);assert.match(nextTurnObservation.content,new RegExp(persisted._trebell_output.handle));assert.match(nextTurnObservation.content,/FAIL important/);assert.ok(nextTurnObservation.content.length<observation.content.length/2);assert.doesNotMatch(nextTurnObservation.content,/x{3000}/);
   }finally{await rm(root,{recursive:true,force:true})}
 });
 

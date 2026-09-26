@@ -579,6 +579,8 @@ That run totaled **17 model turns / 53,389 input tokens / 2,676 output tokens**,
 
 A targeted rerun of the multi-file scenario after teaching Native to trust already-relevant paths named by Trebell's repository seed used **5 model turns / 11,583 input tokens / 8 tool calls**, down from the immediately preceding **6 turns / 14,591 input / 9 tool calls** while still passing independent verification. The model still performed one initial workspace list, so this is a measured improvement rather than a claim that redundant discovery is fully solved.
 
+The large-output path was then tightened across user turns: once a virtualized tool result has already been shown in the hot turn, later turns keep only a compact receipt, the searchable output handle, and bounded high-signal failure lines instead of replaying the original preview again. On the same 92 KB noisy-output scenario this reduced provider input from **29,696 to 23,063 tokens** (about **22%**) while keeping the same **7 model turns / 6 tool calls**, **0 failed tool calls**, no output-handle reread, and independent verification. Relative to the preserved v1.3.3 noisy-output baseline of **37,526 input tokens**, the measured reduction is about **38.5%**.
+
 ### Same-task live harness comparison
 
 `npm run bench:harnesses:live` gives each available harness its own disposable copy of the same small repository bug-fix task, requires the harness to edit code and run `node verify.mjs`, and then reruns that verification independently outside the harness. Set `TREBELL_HARNESS_COMPARE_ONLY` to a comma-separated runtime list to run a bounded subset. The command is explicitly live/opt-in and should not be used as a background benchmark tournament.
