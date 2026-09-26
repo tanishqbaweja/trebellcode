@@ -98,6 +98,26 @@ test("tool execution failures are normalized and secret-redacted",async()=>{
   assert.equal(result.success,false);assert.equal(result.decision,POLICY_ALLOW);assert.doesNotMatch(result.error,new RegExp(secret));assert.match(result.error,/\[redacted\]/);
 });
 
+test("non-idempotent external actions report transport failures as uncertain instead of ordinary failure",async()=>{
+  const events=[];
+  const gateway=createSharedToolGateway({
+    confirm:async()=>true,onEvent:event=>events.push(event),
+    execute:async()=>{throw new DOMException("RPC timed out after dispatch","TimeoutError")},
+  });
+  const result=await gateway.invoke({namespace:"trebell_source_control",name:"push",arguments:{}},{permissionProfile:"auto",workspace:"/repo",projectAvailable:true});
+  assert.equal(result.success,false);assert.equal(result.uncertain,true);assert.equal(result.retrySafe,false);assert.match(result.error,/Outcome uncertain/i);assert.match(result.error,/Inspect the real-world state before repeating/i);
+  assert.equal(events.at(-1).status,"uncertain");assert.equal(events.at(-1).data.uncertain,true);
+});
+
+test("validation failures and idempotent transport failures do not masquerade as uncertain side effects",async()=>{
+  const validation=createSharedToolGateway({confirm:async()=>true,execute:async()=>{throw new Error("remote rejected push: protected branch")}});
+  const rejected=await validation.invoke({namespace:"trebell_source_control",name:"push",arguments:{}},{permissionProfile:"auto",workspace:"/repo",projectAvailable:true});
+  assert.equal(rejected.success,false);assert.equal(rejected.uncertain,false);assert.equal(rejected.retrySafe,false);
+  const read=createSharedToolGateway({execute:async()=>{throw Object.assign(new Error("connection reset"),{code:"ECONNRESET"})}});
+  const status=await read.invoke({namespace:"trebell_source_control",name:"status",arguments:{}},{permissionProfile:"read-only",workspace:"/repo",projectAvailable:true});
+  assert.equal(status.success,false);assert.equal(status.uncertain,false);assert.equal(status.retrySafe,true);
+});
+
 test("Native terminal policy classifies argv content instead of trusting a static medium-risk label",()=>{
   const ordinary=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"npm",args:["test"],cwd:"."}},{permissionProfile:"auto",workspace:"/repo",runtime:"native"});
   assert.equal(ordinary.decision,POLICY_ALLOW);assert.equal(ordinary.action.riskLevel,"medium");

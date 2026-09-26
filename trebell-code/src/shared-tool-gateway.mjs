@@ -90,6 +90,22 @@ function confirmationAllowed(value){
 
 function event(onEvent,event){try{onEvent?.({...event,at:Date.now()})}catch{}}
 
+function transportOutcomeUncertain(error){
+  if(error?.uncertain===true)return true;
+  if(error?.name==="TimeoutError")return true;
+  const status=Number(error?.status||error?.statusCode||0);if(status===408||status>=500)return true;
+  const code=String(error?.code||error?.cause?.code||"").toUpperCase();
+  if(["ETIMEDOUT","ESOCKETTIMEDOUT","ECONNRESET","EPIPE","ENETDOWN","ENETUNREACH","EHOSTUNREACH"].includes(code))return true;
+  const message=String(error?.message||error||"").toLowerCase();
+  return /(?:timed? out|timeout|connection reset|socket hang up|network error|fetch failed|connection (?:closed|lost)|disconnected|websocket (?:closed|disconnected)|rpc (?:closed|disconnected)|unable to access .*failed to connect)/i.test(message);
+}
+
+function uncertainExternalOutcome(authorization,value){
+  const action=authorization?.action||authorization?.definition?.policy||{};
+  if(!action.externalSideEffect||action.idempotent===true)return false;
+  return value?.uncertain===true||transportOutcomeUncertain(value);
+}
+
 export function createSharedToolGateway({execute,confirm=null,environment=process.env,onEvent=null,contextForCall=null,resolveDefinition=platformToolDefinition}={}){
   if(typeof execute!=="function")throw new Error("Shared tool gateway requires an execute function.");
   return {
@@ -121,12 +137,14 @@ export function createSharedToolGateway({execute,confirm=null,environment=proces
         });
         const result=redactSecretValue(raw,{environment,maxDepth:12,maxArray:500,maxFields:1000});
         const success=result?.success!==false;
-        event(onEvent,{name:"shared_tool.completed",status:success?"completed":"failed",data:{...trace,durationMs:Number((performance.now()-started).toFixed(3)),success}});
-        return {success,decision:authorization.decision,authorization,result,...(!success?{error:String(result?.error||result?.message||"Tool execution failed.")}:{})};
+        const uncertain=!success&&uncertainExternalOutcome(authorization,result);
+        event(onEvent,{name:"shared_tool.completed",status:success?"completed":uncertain?"uncertain":"failed",data:{...trace,durationMs:Number((performance.now()-started).toFixed(3)),success,uncertain}});
+        return {success,decision:authorization.decision,authorization,result,...(!success?{error:String(result?.error||result?.message||"Tool execution failed."),uncertain,retrySafe:!uncertain&&authorization.action?.idempotent===true}:{})};
       }catch(error){
         const message=String(error?.message||error),safeMessage=redactSecretValue(message,{environment});
-        event(onEvent,{name:"shared_tool.completed",status:"failed",data:{...trace,durationMs:Number((performance.now()-started).toFixed(3)),success:false,error:safeMessage}});
-        return {success:false,decision:authorization.decision,authorization,error:safeMessage};
+        const uncertain=uncertainExternalOutcome(authorization,error),errorMessage=uncertain?`Outcome uncertain: ${safeMessage} Inspect the real-world state before repeating this action.`:safeMessage;
+        event(onEvent,{name:"shared_tool.completed",status:uncertain?"uncertain":"failed",data:{...trace,durationMs:Number((performance.now()-started).toFixed(3)),success:false,uncertain,error:safeMessage}});
+        return {success:false,decision:authorization.decision,authorization,error:errorMessage,uncertain,retrySafe:!uncertain&&authorization.action?.idempotent===true};
       }
     },
   };

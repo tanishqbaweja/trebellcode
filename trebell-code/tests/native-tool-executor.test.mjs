@@ -46,6 +46,15 @@ test("Native supervised tools require explicit confirmation before delegated exe
   assert.equal(await confirmed({namespace:"trebell_browser",name:"snapshot",arguments:{}}),"ok");assert.equal(executions,1);
 });
 
+test("Native tool observations preserve uncertain external outcomes so the model does not blindly repeat them",async()=>{
+  const executor=createNativeToolExecutor({
+    policyContext:{permissionProfile:"full",runtime:"native",desktopAvailable:true},
+    executeShared:async()=>{throw Object.assign(new Error("desktop connection lost after click"),{code:"ECONNRESET"})},
+  });
+  const result=await executor({namespace:"trebell_browser",name:"click",arguments:{ref:"send-button"}});
+  assert.equal(result.success,false);assert.equal(result.uncertain,true);assert.equal(result.retrySafe,false);assert.match(result.error,/Inspect the real-world state before repeating/i);
+});
+
 test("Native agent loop receives only the repository observation, not gateway internals",async()=>{
   const root=await fixture();
   try{

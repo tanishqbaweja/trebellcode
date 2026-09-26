@@ -35,7 +35,7 @@ export function createNativeToolExecutor({
   });
   const executor=async(call,context={})=>{
     const detailed=await gateway.invoke(call,context);
-    return detailed.success?detailed.result:{success:false,error:detailed.error||"Tool execution failed.",decision:detailed.decision,confirmationRequired:Boolean(detailed.confirmationRequired)};
+    return detailed.success?detailed.result:{success:false,error:detailed.error||"Tool execution failed.",decision:detailed.decision,confirmationRequired:Boolean(detailed.confirmationRequired),uncertain:Boolean(detailed.uncertain),retrySafe:Boolean(detailed.retrySafe)};
   };
   executor.invokeDetailed=(call,context={})=>gateway.invoke(call,context);
   executor.authorize=(call,context={})=>gateway.authorize(call,context);
