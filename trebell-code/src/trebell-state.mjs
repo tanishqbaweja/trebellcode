@@ -156,9 +156,9 @@ export class TrebellStateStore {
     this.collections=null;
     try{
       const collections=new SqliteStateCollections(env);
-      const legacy={checkpoints:this.state.checkpoints,usageRecords:this.state.usageRecords,verificationRecords:this.state.verificationRecords,repositoryKnowledge:this.state.repositoryKnowledge};
+      const legacy={threadMeta:this.state.threadMeta,checkpoints:this.state.checkpoints,usageRecords:this.state.usageRecords,verificationRecords:this.state.verificationRecords,repositoryKnowledge:this.state.repositoryKnowledge};
       const migrated=collections.importLegacy(legacy);this.collections=collections;
-      this.state.checkpoints=[];this.state.usageRecords=[];this.state.verificationRecords=[];this.state.repositoryKnowledge=[];
+      this.state.threadMeta={};this.state.checkpoints=[];this.state.usageRecords=[];this.state.verificationRecords=[];this.state.repositoryKnowledge=[];
       if(migrated||this.legacyCollectionsPresent)this.needsRewrite=true;
     }catch{this.collections=null}
     if(this.needsRewrite)this.#save();
@@ -166,7 +166,7 @@ export class TrebellStateStore {
   #load(){
     try{
       const parsed=JSON.parse(readFileSync(this.path,"utf8"));
-      this.legacyCollectionsPresent=["checkpoints","usageRecords","verificationRecords","repositoryKnowledge"].some(key=>Object.prototype.hasOwnProperty.call(parsed,key));
+      this.legacyCollectionsPresent=["threadMeta","checkpoints","usageRecords","verificationRecords","repositoryKnowledge"].some(key=>Object.prototype.hasOwnProperty.call(parsed,key));
       const rawSettings=parsed.settings&&typeof parsed.settings==="object"?parsed.settings:{};
       const projects=Array.isArray(parsed.projects)?parsed.projects.map(project=>({
         ...project,
@@ -211,12 +211,12 @@ export class TrebellStateStore {
   #save(){
     const tmp=this.path+".tmp";
     const persisted=this.collections?{...this.state}:this.state;
-    if(this.collections){delete persisted.checkpoints;delete persisted.usageRecords;delete persisted.verificationRecords;delete persisted.repositoryKnowledge}
+    if(this.collections){delete persisted.threadMeta;delete persisted.checkpoints;delete persisted.usageRecords;delete persisted.verificationRecords;delete persisted.repositoryKnowledge}
     writeFileSync(tmp,JSON.stringify(persisted,null,2),{encoding:"utf8",mode:0o600});
     renameSync(tmp,this.path);
   }
   snapshot({includeCollections=true}={}){
-    const out=clone(this.state);if(!includeCollections){delete out.checkpoints;delete out.usageRecords;delete out.verificationRecords;delete out.repositoryKnowledge;return out}if(!this.collections)return out;
+    const out=clone(this.state);if(this.collections)out.threadMeta=this.collections.threadMetaMap();if(!includeCollections){delete out.checkpoints;delete out.usageRecords;delete out.verificationRecords;delete out.repositoryKnowledge;return out}if(!this.collections)return out;
     out.checkpoints=this.collections.checkpoints();out.usageRecords=this.collections.usage({since:0,limit:5000});out.verificationRecords=this.collections.verificationRecords({limit:1000});out.repositoryKnowledge=this.collections.knowledge({limit:5000});return out;
   }
   settings(){ return clone(this.state.settings); }
@@ -395,17 +395,19 @@ export class TrebellStateStore {
     this.#save();
   }
   threadMeta(threadId){
+    if(this.collections)return clone(this.collections.threadMeta(threadId)||{});
     return clone(this.state.threadMeta[threadId]||{});
   }
   updateThreadMeta(threadId,patch={}){
-    const current=this.state.threadMeta[threadId]||{};
+    const current=this.collections?(this.collections.threadMeta(threadId)||{}):(this.state.threadMeta[threadId]||{});
     const next={...current,...patch,updatedAt:Date.now()};
     for(const [key,value] of Object.entries(next)) if(value===undefined) delete next[key];
+    if(this.collections){this.collections.putThreadMeta(threadId,next);return clone(next)}
     this.state.threadMeta[threadId]=next;
     this.#save();
     return clone(next);
   }
-  listThreadMeta(){ return clone(this.state.threadMeta); }
+  listThreadMeta(){ return clone(this.collections?this.collections.threadMetaMap():this.state.threadMeta); }
   addStash({text="",attachments=[],contextChips=[],projectPath=null}={}){
     const stash={id:randomUUID(),text,attachments,contextChips,projectPath,createdAt:Date.now()};
     this.state.stashes.unshift(stash);

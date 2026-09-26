@@ -17,6 +17,12 @@ export class SqliteStateCollections{
     this.#withDb(db=>{
       db.exec("PRAGMA auto_vacuum=INCREMENTAL; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;");
       db.exec(`
+        CREATE TABLE IF NOT EXISTS state_thread_meta (
+          thread_id TEXT PRIMARY KEY, runtime TEXT, environment_id TEXT, updated_at INTEGER NOT NULL, payload_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS state_thread_meta_updated_idx ON state_thread_meta(updated_at DESC);
+        CREATE INDEX IF NOT EXISTS state_thread_meta_runtime_idx ON state_thread_meta(runtime,updated_at DESC);
+        CREATE INDEX IF NOT EXISTS state_thread_meta_environment_idx ON state_thread_meta(environment_id,updated_at DESC);
         CREATE TABLE IF NOT EXISTS state_checkpoints (
           id TEXT PRIMARY KEY, thread_id TEXT, created_at INTEGER NOT NULL, payload_json TEXT NOT NULL
         );
@@ -50,9 +56,12 @@ export class SqliteStateCollections{
     finally{db.close()}
   }
   #prune(db,table,orderColumn,limit){db.prepare(`DELETE FROM ${table} WHERE id IN (SELECT id FROM ${table} ORDER BY ${orderColumn} DESC LIMIT -1 OFFSET ?)` ).run(limit)}
-  importLegacy({checkpoints=[],usageRecords=[],verificationRecords=[],repositoryKnowledge=[]}={}){
-    if(![checkpoints,usageRecords,verificationRecords,repositoryKnowledge].some(items=>Array.isArray(items)&&items.length))return false;
+  importLegacy({threadMeta={},checkpoints=[],usageRecords=[],verificationRecords=[],repositoryKnowledge=[]}={}){
+    const threadEntries=threadMeta&&typeof threadMeta==="object"&&!Array.isArray(threadMeta)?Object.entries(threadMeta):[];
+    if(!threadEntries.length&&![checkpoints,usageRecords,verificationRecords,repositoryKnowledge].some(items=>Array.isArray(items)&&items.length))return false;
     this.#withDb(db=>{
+      const thread=db.prepare("INSERT OR IGNORE INTO state_thread_meta(thread_id,runtime,environment_id,updated_at,payload_json) VALUES(?,?,?,?,?)");
+      for(const [threadId,item] of threadEntries)if(threadId&&item&&typeof item==="object")thread.run(String(threadId),item.runtime||null,normalizedEnvironment(item.environmentId),Number(item.updatedAt)||Date.now(),JSON.stringify(item));
       const checkpoint=db.prepare("INSERT OR IGNORE INTO state_checkpoints(id,thread_id,created_at,payload_json) VALUES(?,?,?,?)");
       for(const item of checkpoints||[])if(item?.id)checkpoint.run(String(item.id),item.threadId?String(item.threadId):null,Number(item.createdAt)||Date.now(),JSON.stringify(item));
       const usage=db.prepare("INSERT OR IGNORE INTO state_usage(id,runtime,provider,model,environment_id,thread_id,turn_id,at,payload_json) VALUES(?,?,?,?,?,?,?,?,?)");
@@ -64,6 +73,9 @@ export class SqliteStateCollections{
       this.#prune(db,"state_checkpoints","created_at",LIMITS.checkpoints);this.#prune(db,"state_usage","at",LIMITS.usage);this.#prune(db,"state_verification","updated_at",LIMITS.verification);this.#prune(db,"state_knowledge","updated_at",LIMITS.knowledge);
     },{write:true});return true;
   }
+  threadMeta(threadId){return this.#withDb(db=>payload(db.prepare("SELECT payload_json FROM state_thread_meta WHERE thread_id=?").get(String(threadId))))}
+  putThreadMeta(threadId,item){return this.#withDb(db=>{db.prepare("INSERT INTO state_thread_meta(thread_id,runtime,environment_id,updated_at,payload_json) VALUES(?,?,?,?,?) ON CONFLICT(thread_id) DO UPDATE SET runtime=excluded.runtime,environment_id=excluded.environment_id,updated_at=excluded.updated_at,payload_json=excluded.payload_json").run(String(threadId),item?.runtime||null,normalizedEnvironment(item?.environmentId),Number(item?.updatedAt)||Date.now(),JSON.stringify(item||{}));return item},{write:true})}
+  threadMetaMap(){return this.#withDb(db=>Object.fromEntries(db.prepare("SELECT thread_id,payload_json FROM state_thread_meta ORDER BY updated_at DESC").all().map(row=>[String(row.thread_id),payload(row)||{}])))}
   checkpoint(id){return this.#withDb(db=>payload(db.prepare("SELECT payload_json FROM state_checkpoints WHERE id=?").get(String(id))))}
   putCheckpoint(item){return this.#withDb(db=>{db.prepare("INSERT INTO state_checkpoints(id,thread_id,created_at,payload_json) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET thread_id=excluded.thread_id,created_at=excluded.created_at,payload_json=excluded.payload_json").run(String(item.id),item.threadId?String(item.threadId):null,Number(item.createdAt)||Date.now(),JSON.stringify(item));this.#prune(db,"state_checkpoints","created_at",LIMITS.checkpoints);return item},{write:true})}
   checkpoints(threadId=null){return this.#withDb(db=>{const rows=threadId?db.prepare("SELECT payload_json FROM state_checkpoints WHERE thread_id=? ORDER BY created_at DESC LIMIT ?").all(String(threadId),LIMITS.checkpoints):db.prepare("SELECT payload_json FROM state_checkpoints ORDER BY created_at DESC LIMIT ?").all(LIMITS.checkpoints);return rows.map(payload).filter(Boolean)})}
