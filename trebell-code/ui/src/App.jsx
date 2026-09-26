@@ -1052,7 +1052,8 @@ export default function App(){
         try{await window.trebellDesktop.background.set(Boolean(state.settings.backgroundMode))}
         catch(error){partialErrors.push("desktop background mode: "+(error?.message||String(error)))}
       }
-      if(["native","codex"].includes(state.settings?.agentRuntime||boot.agentRuntime||"codex")&&(state.settings?.modelProvider||boot.provider||"freebuff")==="freebuff"&&initialModel){
+      const initialRuntime=state.settings?.agentRuntime||boot.agentRuntime||"codex";
+      if(sharedRuntimeCapabilities(initialRuntime).managedInference&&(state.settings?.modelProvider||boot.provider||"freebuff")==="freebuff"&&initialModel){
         const p=new URLSearchParams({timezone,model:initialModel});
         try{const fb=await api("/api/freebuff/overview?"+p);if(fb&&!cancelled)setFreebuff(fb)}
         catch(error){partialErrors.push("Freebuff account state: "+(error?.message||String(error)))}
