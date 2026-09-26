@@ -33,7 +33,7 @@ test("legacy agent thread JSON imports once into normalized SQLite thread and tu
     const second=new AgentThreadStore(env);
     assert.equal(second.get("late-legacy-thread"),null,"legacy JSON must not become an active second source of truth after migration");
     const created=second.create({runtime:"native",cwd:home,providerSessionId:"native-new"});second.addTurn(created.id,{id:"native-turn",inputText:"Persist me"});second.finishTurn(created.id,"native-turn");
-    const third=new AgentThreadStore(env);assert.equal(third.get(created.id).turns[0].status,"completed");
+    const third=new AgentThreadStore(env);assert.equal(third.list().find(item=>item.id===created.id)?.turns?.length,0,"startup catalog must not hydrate transcript turns");assert.equal(third.get(created.id).turns[0].status,"completed");
     const retiredAgain=JSON.parse(await readFile(legacyPath,"utf8"));assert.equal(retiredAgain.migratedTo,"trebell.sqlite");assert.equal(Object.prototype.hasOwnProperty.call(retiredAgain,"threads"),false,"a recreated legacy file must be retired instead of becoming a second source of truth");
   }finally{await rm(home,{recursive:true,force:true})}
 });

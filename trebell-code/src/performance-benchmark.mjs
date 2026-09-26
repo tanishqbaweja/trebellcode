@@ -142,13 +142,13 @@ export function benchmarkAgentThreadSearch({env,threadCount=1000,queryCount=100}
     store.addItem(thread.id,turn.id,{id:"bench-agent-"+index,type:"agentMessage",text:"Synthetic completed result "+index});
     store.finishTurn(thread.id,turn.id);
   }
-  const writeMs=performance.now()-writeStart,queryStart=performance.now();let returned=0,hydratedTurns=0;
+  const writeMs=performance.now()-writeStart,restartStart=performance.now(),restarted=new AgentThreadStore(env),catalog=restarted.list(),restartMs=performance.now()-restartStart,catalogHydratedTurns=catalog.reduce((sum,item)=>sum+(item.turns?.length||0),0),queryStart=performance.now();let returned=0,hydratedTurns=0;
   for(let index=0;index<queries;index++){
-    const matches=store.searchCandidates("native","target-group-"+(index%50));returned+=matches.length;hydratedTurns+=matches.reduce((sum,item)=>sum+(item.turns?.length||0),0);
+    const matches=restarted.searchCandidates("native","target-group-"+(index%50));returned+=matches.length;hydratedTurns+=matches.reduce((sum,item)=>sum+(item.turns?.length||0),0);
   }
   const queryMs=performance.now()-queryStart,after=memory();
   return {
-    threads:count,queries,returned,hydratedTurns,writeMs:Number(writeMs.toFixed(3)),queryMs:Number(queryMs.toFixed(3)),
+    threads:count,queries,returned,hydratedTurns,catalogThreads:catalog.length,catalogHydratedTurns,restartMs:Number(restartMs.toFixed(3)),writeMs:Number(writeMs.toFixed(3)),queryMs:Number(queryMs.toFixed(3)),
     avgWriteUs:Number((writeMs*1000/count).toFixed(3)),avgQueryUs:Number((queryMs*1000/queries).toFixed(3)),memoryDeltaBytes:delta(after,before),
   };
 }

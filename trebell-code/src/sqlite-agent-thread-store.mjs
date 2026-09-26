@@ -113,6 +113,15 @@ export class SqliteAgentThreadStore{
       return rows.map(row=>threadFromRow(row,this.#turnsForDb(db,row.id)));
     });
   }
+  listMetadata(runtime=null){
+    return this.#withDb(db=>{
+      const rows=runtime?db.prepare("SELECT * FROM agent_threads WHERE runtime=? ORDER BY updated_at DESC").all(String(runtime)):db.prepare("SELECT * FROM agent_threads ORDER BY updated_at DESC").all();
+      return rows.map(row=>threadFromRow(row,[]));
+    });
+  }
+  activeThreadIds(){
+    return this.#withDb(db=>db.prepare("SELECT DISTINCT thread_id FROM agent_turns WHERE lower(COALESCE(status,'')) IN ('inprogress','running','starting')").all().map(row=>String(row.thread_id)));
+  }
   searchCandidates({runtime=null,term="",archived=false}={}){
     const needle=String(term||"").trim();if(!needle)return [];
     return this.#withDb(db=>{

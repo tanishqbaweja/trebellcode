@@ -46,14 +46,21 @@ export class AgentThreadStore{
     this.storage=new SqliteAgentThreadStore(env);
     this.path=this.storage.path;
     this.legacyPath=this.storage.legacyPath;
-    this.data={version:2,threads:this.storage.list()};
+    this.data={version:2,threads:this.storage.listMetadata()};
   }
   #safe(value){return redactSecretValue(value,{environment:this.env,maxDepth:20,maxArray:10000,maxFields:5000})}
   #persistThread(thread,{replaceTurns=false}={}){this.storage.putThread(this.#safe(thread),{replaceTurns})}
   #persistTurn(thread,turn){this.storage.putThreadAndTurn(this.#safe({...thread,turns:undefined}),this.#safe(turn))}
+  #metadata(thread){const next={...thread,turns:[]};return next}
+  #cacheMetadata(thread){
+    const next=this.#metadata(thread),index=this.data.threads.findIndex(item=>item.id===thread.id);
+    if(index>=0)this.data.threads[index]=next;else this.data.threads.unshift(next);return next;
+  }
   reconcileRestart({continueAfterRestart=false}={}){
-    const now=Math.floor(Date.now()/1000);const recoverable=[],changed=[];
-    for(const thread of this.data.threads){
+    const now=Math.floor(Date.now()/1000),recoverable=[],changed=[],candidateIds=new Set(this.storage.activeThreadIds());
+    for(const thread of this.data.threads)if(thread.status?.type==="active")candidateIds.add(thread.id);
+    for(const id of candidateIds){
+      const thread=this.storage.get(id);if(!thread)continue;
       const activeTurn=[...(thread.turns||[])].reverse().find(turn=>["inProgress","running","starting"].includes(turn?.status));
       const stale=thread.status?.type==="active"||Boolean(activeTurn);
       if(!stale)continue;
@@ -73,16 +80,16 @@ export class AgentThreadStore{
       }
       thread.updatedAt=now;
     }
-    for(const thread of changed)this.#persistThread(thread,{replaceTurns:true});return clone(recoverable);
+    for(const thread of changed){this.#persistThread(thread,{replaceTurns:true});this.#cacheMetadata(thread)}return clone(recoverable);
   }
   list(runtime=null){
     return clone(this.data.threads.filter(thread=>!runtime||thread.runtime===runtime).sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0)));
   }
   searchCandidates(runtime,searchTerm,{archived=false}={}){return clone(this.storage.searchCandidates({runtime,term:searchTerm,archived}))}
-  get(id){return clone(this.data.threads.find(thread=>thread.id===id)||null)}
+  get(id){return clone(this.storage.get(id))}
   findProviderSession(runtime,providerSessionId){
     const id=String(providerSessionId||"");if(!id)return null;
-    return clone(this.data.threads.find(thread=>thread.runtime===runtime&&thread.providerSessionId===id)||null);
+    return clone(this.storage.findProviderSession(runtime,id));
   }
   create({runtime,cwd,providerSessionId,model=null,agent=null,name=null,preview=null,providerMeta=null}={}){
     const now=Math.floor(Date.now()/1000);
@@ -91,7 +98,7 @@ export class AgentThreadStore{
       model:model||null,agent:agent||null,name:name||null,preview:preview||null,providerMeta:providerMeta||null,createdAt:now,updatedAt:now,
       status:{type:"idle"},turns:[],archived:false,section:null,
     };
-    this.data.threads.unshift(thread);this.#persistThread(thread,{replaceTurns:true});return clone(thread);
+    this.#cacheMetadata(thread);this.#persistThread(thread,{replaceTurns:true});return clone(thread);
   }
   importHistory({runtime,cwd,providerSessionId,model=null,agent=null,name=null,preview=null,providerMeta=null,turns=[],createdAt=null,updatedAt=null}={}){
     const existing=this.findProviderSession(runtime,providerSessionId);if(existing)return existing;
@@ -103,43 +110,43 @@ export class AgentThreadStore{
       model:model||null,agent:agent||null,name:name||null,preview:preview||null,providerMeta:providerMeta||null,createdAt:created,updatedAt:updated,
       status:{type:"idle"},turns:clone(turns).map(turn=>({...turn,status:"completed"})),archived:false,section:null,
     };
-    this.data.threads.unshift(thread);this.#persistThread(thread,{replaceTurns:true});return clone(thread);
+    this.#cacheMetadata(thread);this.#persistThread(thread,{replaceTurns:true});return clone(thread);
   }
   update(id,patch={}){
-    const thread=this.data.threads.find(item=>item.id===id);if(!thread)return null;
-    Object.assign(thread,patch,{updatedAt:Math.floor(Date.now()/1000)});this.#persistThread(thread,{replaceTurns:Object.prototype.hasOwnProperty.call(patch,"turns")});return clone(thread);
+    const thread=this.storage.get(id);if(!thread)return null;
+    Object.assign(thread,patch,{updatedAt:Math.floor(Date.now()/1000)});this.#persistThread(thread,{replaceTurns:Object.prototype.hasOwnProperty.call(patch,"turns")});this.#cacheMetadata(thread);return clone(thread);
   }
   delete(id){const before=this.data.threads.length;this.data.threads=this.data.threads.filter(thread=>thread.id!==id);if(this.data.threads.length!==before)this.storage.delete(id);return before!==this.data.threads.length}
   addTurn(threadId,{id=randomUUID(),inputText="",items=[],status="inProgress",startedAt=Math.floor(Date.now()/1000)}={}){
-    const thread=this.data.threads.find(item=>item.id===threadId);if(!thread)return null;
+    const thread=this.storage.get(threadId);if(!thread)return null;
     const turn={id,status,startedAt,completedAt:null,durationMs:null,error:null,items:[
       ...(inputText?[{type:"userMessage",id:`user-${id}`,clientId:null,content:[{type:"text",text:redactSecretText(inputText,{environment:this.env})}]}]:[]),
       ...items,
     ]};
-    thread.turns.push(turn);thread.status={type:"active",activeFlags:[]};thread.updatedAt=Math.floor(Date.now()/1000);this.#persistTurn(thread,turn);return clone(turn);
+    thread.turns.push(turn);thread.status={type:"active",activeFlags:[]};thread.updatedAt=Math.floor(Date.now()/1000);this.#persistTurn(thread,turn);this.#cacheMetadata(thread);return clone(turn);
   }
   updateTurn(threadId,turnId,patch={}){
-    const thread=this.data.threads.find(item=>item.id===threadId);const turn=thread?.turns?.find(item=>item.id===turnId);if(!turn)return null;
-    Object.assign(turn,patch);thread.updatedAt=Math.floor(Date.now()/1000);this.#persistTurn(thread,turn);return clone(turn);
+    const thread=this.storage.get(threadId),turn=thread?.turns?.find(item=>item.id===turnId);if(!turn)return null;
+    Object.assign(turn,patch);thread.updatedAt=Math.floor(Date.now()/1000);this.#persistTurn(thread,turn);this.#cacheMetadata(thread);return clone(turn);
   }
   restartTurn(threadId,turnId){
-    const thread=this.data.threads.find(item=>item.id===threadId);const turn=thread?.turns?.find(item=>item.id===turnId);if(!turn)return null;
+    const thread=this.storage.get(threadId),turn=thread?.turns?.find(item=>item.id===turnId);if(!turn)return null;
     turn.status="inProgress";turn.completedAt=null;turn.durationMs=null;turn.error=null;thread.status={type:"active",activeFlags:[]};
     if(thread.recovery)thread.recovery={...thread.recovery,pending:false,startedAt:Math.floor(Date.now()/1000)};
-    thread.updatedAt=Math.floor(Date.now()/1000);this.#persistTurn(thread,turn);return clone(turn);
+    thread.updatedAt=Math.floor(Date.now()/1000);this.#persistTurn(thread,turn);this.#cacheMetadata(thread);return clone(turn);
   }
   addItem(threadId,turnId,item){
-    const thread=this.data.threads.find(entry=>entry.id===threadId);const turn=thread?.turns?.find(entry=>entry.id===turnId);if(!turn)return null;
+    const thread=this.storage.get(threadId),turn=thread?.turns?.find(entry=>entry.id===turnId);if(!turn)return null;
     const index=turn.items.findIndex(entry=>entry.id===item.id);
     const stored=persistedItem(index>=0?{...turn.items[index],...item}:item,this.env);
     if(index>=0)turn.items[index]=stored;else turn.items.push(stored);
-    thread.updatedAt=Math.floor(Date.now()/1000);this.#persistTurn(thread,turn);return clone(stored);
+    thread.updatedAt=Math.floor(Date.now()/1000);this.#persistTurn(thread,turn);this.#cacheMetadata(thread);return clone(stored);
   }
   finishTurn(threadId,turnId,{status="completed",error=null}={}){
-    const thread=this.data.threads.find(item=>item.id===threadId);const turn=thread?.turns?.find(item=>item.id===turnId);if(!turn)return null;
+    const thread=this.storage.get(threadId),turn=thread?.turns?.find(item=>item.id===turnId);if(!turn)return null;
     const completedAt=Math.floor(Date.now()/1000);turn.status=status;turn.error=error;turn.completedAt=completedAt;
     turn.durationMs=turn.startedAt?Math.max(0,(completedAt-turn.startedAt)*1000):null;
-    thread.status=status==="failed"?{type:"systemError"}:{type:"idle"};delete thread.recovery;thread.updatedAt=completedAt;this.#persistTurn(thread,turn);return clone(turn);
+    thread.status=status==="failed"?{type:"systemError"}:{type:"idle"};delete thread.recovery;thread.updatedAt=completedAt;this.#persistTurn(thread,turn);this.#cacheMetadata(thread);return clone(turn);
   }
   rename(id,name){return this.update(id,{name:String(name||"").trim()||null})}
 }
