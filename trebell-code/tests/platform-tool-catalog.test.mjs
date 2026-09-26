@@ -12,8 +12,8 @@ test("platform tool catalog adapts repository policy without duplicating reposit
 test("platform dynamic tools compose repository intelligence with only enabled shared capability groups",()=>{
   const names=platformDynamicToolNamespaces({repository:true,workspaceTools:true,terminal:true,browser:true,sourceControl:false}).map(item=>item.name);
   assert.deepEqual(names,["trebell_repo","trebell_workspace","trebell_terminal","trebell_browser"]);
-  const withoutRepo=platformDynamicToolNamespaces({repository:false,device:true,sourceControl:false}).map(item=>item.name);
-  assert.deepEqual(withoutRepo,["trebell_device"]);
+  const withoutRepo=platformDynamicToolNamespaces({repository:false,sourceControl:false}).map(item=>item.name);
+  assert.deepEqual(withoutRepo,[]);
   const catalog=platformToolCatalog({repository:true,sourceControl:false});
   const repo=catalog.find(item=>item.name==="trebell_repo");assert.ok(repo.tools.length>10);assert.ok(repo.tools.every(item=>item.platform?.source==="repository"));
 });

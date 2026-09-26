@@ -20,11 +20,9 @@ test("shared tool authorization combines catalog requirements with unified polic
   assert.equal(guardedComputer.decision,POLICY_REJECT);assert.match(guardedComputer.reason,/full access/i);
 });
 
-test("project, device, delegation and unknown tool requirements fail closed",()=>{
+test("project, delegation and unknown tool requirements fail closed",()=>{
   const sourceControl=authorizeSharedToolCall({namespace:"trebell_source_control",name:"link_pull_request",arguments:{url:"https://example.test/pr/1"}},{permissionProfile:"full",workspace:"/repo",projectAvailable:false});
   assert.equal(sourceControl.decision,POLICY_REJECT);assert.match(sourceControl.reason,/active project/i);
-  const device=authorizeSharedToolCall({namespace:"trebell_device",name:"list",arguments:{}},{permissionProfile:"read-only",deviceAccess:false});
-  assert.equal(device.decision,POLICY_REJECT);assert.match(device.reason,/device access is disabled/i);
   const delegation=authorizeSharedToolCall({namespace:"trebell_delegate",name:"delegate",arguments:{task:"test"}},{permissionProfile:"full",workspace:"/repo",projectAvailable:true,delegationAvailable:false});
   assert.equal(delegation.decision,POLICY_REJECT);assert.match(delegation.reason,/delegation is unavailable/i);
   const unknown=authorizeSharedToolCall({namespace:"trebell_browser",name:"teleport",arguments:{}},{permissionProfile:"full",desktopAvailable:true});
