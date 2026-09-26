@@ -26,6 +26,7 @@ test("provider keys are stored separately and never returned by definitions", ()
   assert.equal(manager.childEnv("agentrouter",{}).AGENTROUTER_API_KEY,"ar-secret");
   const def=manager.definitions().find(x=>x.id==="agentrouter");
   assert.equal(def.hasKey,true);
+  assert.deepEqual(def.protocolCompatibility,["openai-responses"]);
   assert.equal("apiKey" in def,false);
   const stored=readFileSync(join(root,"provider-secrets.json"),"utf8");
   assert.match(stored,/ar-secret/);
@@ -66,6 +67,7 @@ test("AgentRouter validates the key and loads its live model catalog", async () 
   assert.equal(seen.headers.version,"0.149.1");
   assert.deepEqual(result.models,["claude-opus-4-8","glm-5.1","gpt-5.5","kimi-k2.6"]);
   assert.equal(result.source,"live");
+  assert.ok(result.metadata.every(model=>model.protocolCompatibility?.[0]==="openai-responses"));
 });
 
 test("AgentRouter chat always uses the required Codex fingerprint", async () => {
@@ -92,6 +94,8 @@ test("JustWorker and HCNSec expose only their configured model", async () => {
   const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root}});
   assert.deepEqual((await manager.models("justworker")).models,["claude-opus-4-8"]);
   assert.deepEqual((await manager.models("hcnsec")).models,["glm-5.3"]);
+  assert.deepEqual((await manager.models("justworker")).metadata[0].protocolCompatibility,["anthropic-messages"]);
+  assert.deepEqual((await manager.models("hcnsec")).metadata[0].protocolCompatibility,["openai-chat-completions"]);
   manager.setKey("justworker","jw");
   manager.setKey("hcnsec","hc");
   assert.equal((await manager.models("justworker")).error,undefined);

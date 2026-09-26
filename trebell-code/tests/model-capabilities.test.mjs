@@ -5,14 +5,14 @@ import { normalizeModelCapabilities, withNormalizedModelCapabilities } from "../
 test("model capabilities normalize explicit provider facts without inventing unknown support",()=>{
   const normalized=normalizeModelCapabilities({
     context_window:128000,max_output_tokens:"8192",supports_vision:true,supports_tools:false,computer_use:true,
-    capabilities:{reasoning_controls:true,async_tools:false,prompt_caching:true},supports_streaming:true,status:"available",
+    capabilities:{reasoning_controls:true,async_tools:false,prompt_caching:true,protocols:["OpenAI-Responses","Anthropic-Messages","openai-responses"]},supports_streaming:true,status:"available",
     pricing:{input:"1.25",output:5,currency:"USD",note:"tiered"},
   });
-  assert.deepEqual(normalized,{contextWindow:128000,maxOutputTokens:8192,vision:true,toolCalling:false,computerUse:true,reasoningControls:true,asyncTools:false,streaming:true,caching:true,availability:"available",pricing:{input:1.25,output:5,currency:"USD"}});
+  assert.deepEqual(normalized,{contextWindow:128000,maxOutputTokens:8192,vision:true,toolCalling:false,computerUse:true,reasoningControls:true,asyncTools:false,streaming:true,protocolCompatibility:["openai-responses","anthropic-messages"],caching:true,availability:"available",pricing:{input:1.25,output:5,currency:"USD"}});
 });
 
 test("model capabilities infer vision only from explicit input modalities and keep absent fields unknown",()=>{
-  assert.deepEqual(normalizeModelCapabilities({input_modalities:["text","image"]}),{contextWindow:null,maxOutputTokens:null,vision:true,toolCalling:null,computerUse:null,reasoningControls:null,asyncTools:null,streaming:null,caching:null,availability:null,pricing:null});
+  assert.deepEqual(normalizeModelCapabilities({input_modalities:["text","image"]}),{contextWindow:null,maxOutputTokens:null,vision:true,toolCalling:null,computerUse:null,reasoningControls:null,asyncTools:null,streaming:null,protocolCompatibility:null,caching:null,availability:null,pricing:null});
   assert.equal(normalizeModelCapabilities({input_modalities:["text"]}).vision,false);
   assert.equal(normalizeModelCapabilities({name:"mystery"}).toolCalling,null);
 });

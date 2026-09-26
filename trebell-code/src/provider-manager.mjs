@@ -11,6 +11,7 @@ export const MODEL_PROVIDERS = Object.freeze({
     name: "Freebuff",
     baseUrl: null,
     wireApi: "responses",
+    protocolCompatibility: ["openai-responses"],
     envKey: null,
     requiresKey: false,
   },
@@ -19,6 +20,7 @@ export const MODEL_PROVIDERS = Object.freeze({
     name: "AgentRouter",
     baseUrl: "https://agentrouter.org/v1",
     wireApi: "responses",
+    protocolCompatibility: ["openai-responses"],
     envKey: "AGENTROUTER_API_KEY",
     requiresKey: true,
   },
@@ -29,6 +31,7 @@ export const MODEL_PROVIDERS = Object.freeze({
     // "justwoker". Keep the configured API URL exact instead of guessing.
     baseUrl: "https://api.justwoker.icu/v1",
     wireApi: "chat",
+    protocolCompatibility: ["anthropic-messages"],
     envKey: "JUSTWORKER_API_KEY",
     envKeys: ["JUSTWORKER_API_KEY", "JUST_WORKER_API_KEY"],
     requiresKey: true,
@@ -39,6 +42,7 @@ export const MODEL_PROVIDERS = Object.freeze({
     name: "HCNSec.cn",
     baseUrl: "https://api.hcnsec.cn/v1",
     wireApi: "chat",
+    protocolCompatibility: ["openai-chat-completions"],
     envKey: "HCNSEC_API_KEY",
     envKeys: ["HCNSEC_API_KEY", "HNSEC_API_KEY"],
     requiresKey: true,
@@ -49,6 +53,7 @@ export const MODEL_PROVIDERS = Object.freeze({
     name: "VyceAi",
     baseUrl: "https://vyceai.com/v1",
     wireApi: "chat",
+    protocolCompatibility: ["openai-chat-completions"],
     envKey: "VYCEAI_API_KEY",
     envKeys: ["VYCEAI_API_KEY", "VYCE_API_KEY"],
     requiresKey: true,
@@ -137,6 +142,7 @@ export class ProviderManager {
       name: provider.name,
       baseUrl: provider.baseUrl,
       wireApi: provider.wireApi,
+      protocolCompatibility: [...(provider.protocolCompatibility || [])],
       requiresKey: provider.requiresKey,
       hasKey: provider.requiresKey ? this.hasKey(provider.id) : true,
     }));
@@ -185,6 +191,7 @@ export class ProviderManager {
       name: provider.name,
       baseUrl: provider.baseUrl,
       wireApi: provider.wireApi,
+      protocolCompatibility: [...(provider.protocolCompatibility || [])],
       requiresKey: provider.requiresKey,
       hasKey: provider.requiresKey ? this.hasKey(provider.id) : true,
       ready: provider.requiresKey ? this.hasKey(provider.id) : true,
@@ -198,7 +205,7 @@ export class ProviderManager {
       return {
         models: [...provider.staticModels],
         source: "static",
-        metadata: provider.staticModels.map((id) => ({ id, provider: provider.id })),
+        metadata: provider.staticModels.map((id) => ({ id, provider: provider.id, protocolCompatibility: [...(provider.protocolCompatibility || [])] })),
         ...(provider.requiresKey && !this.hasKey(provider.id) ? { error: "API key required" } : {}),
       };
     }
@@ -233,7 +240,11 @@ export class ProviderManager {
       source: "live",
       metadata: rows
         .filter((item) => item && typeof item === "object" && item.id)
-        .map((item) => ({ ...clone(item), id: String(item.id), provider: provider.id })),
+        .map((item) => {
+          const metadata={ ...clone(item), id: String(item.id), provider: provider.id };
+          if(metadata.protocolCompatibility==null)metadata.protocolCompatibility=[...(provider.protocolCompatibility||[])];
+          return metadata;
+        }),
     };
   }
 

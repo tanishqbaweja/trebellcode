@@ -12,6 +12,12 @@ function integer(value){const number=Number(value);return Number.isFinite(number
 function explicitBoolean(source,paths=[]){const value=firstValue(source,paths);return typeof value==="boolean"?value:null}
 function stringValue(value){const text=String(value??"").trim();return text||null}
 function arrayValue(value){return Array.isArray(value)?value.map(item=>String(item||"").trim().toLowerCase()).filter(Boolean):null}
+function stringArrayValue(value){
+  const values=Array.isArray(value)?value:(typeof value==="string"?[value]:null);
+  if(!values)return null;
+  const normalized=[...new Set(values.map(item=>String(item??"").trim().toLowerCase()).filter(Boolean))];
+  return normalized.length?normalized:null;
+}
 function capabilityFromModalities(source){
   const modalities=arrayValue(firstValue(source,[["input_modalities"],["inputModalities"],["modalities","input"],["capabilities","input_modalities"],["capabilities","inputModalities"]]));
   return modalities?modalities.some(item=>item==="image"||item==="vision"):null;
@@ -37,9 +43,10 @@ export function normalizeModelCapabilities(metadata={}){
   const reasoningControls=explicitBoolean(source,[["reasoningControls"],["reasoning_controls"],["supportsReasoningControls"],["supports_reasoning_controls"],["capabilities","reasoningControls"],["capabilities","reasoning_controls"]]);
   const asyncTools=explicitBoolean(source,[["asyncTools"],["async_tools"],["supportsAsyncTools"],["supports_async_tools"],["capabilities","asyncTools"],["capabilities","async_tools"]]);
   const streaming=explicitBoolean(source,[["streaming"],["supportsStreaming"],["supports_streaming"],["capabilities","streaming"]]);
+  const protocolCompatibility=stringArrayValue(firstValue(source,[["protocolCompatibility"],["protocol_compatibility"],["protocols"],["capabilities","protocolCompatibility"],["capabilities","protocol_compatibility"],["capabilities","protocols"]]));
   const caching=explicitBoolean(source,[["caching"],["promptCaching"],["prompt_caching"],["supportsCaching"],["supports_caching"],["capabilities","caching"],["capabilities","promptCaching"],["capabilities","prompt_caching"]]);
   const availability=stringValue(firstValue(source,[["availability"],["status"],["state"]]));
-  return {contextWindow,maxOutputTokens,vision,toolCalling,computerUse,reasoningControls,asyncTools,streaming,caching,availability,pricing:pricing(source)};
+  return {contextWindow,maxOutputTokens,vision,toolCalling,computerUse,reasoningControls,asyncTools,streaming,protocolCompatibility,caching,availability,pricing:pricing(source)};
 }
 
 export function withNormalizedModelCapabilities(metadata={}){
