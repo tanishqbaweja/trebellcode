@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { trebellHome } from "./paths.mjs";
 import { normalizeMcpServers } from "./mcp-registry.mjs";
-import { withoutSecretEnvironment } from "./secret-redactor.mjs";
+import { redactSecretValue, withoutSecretEnvironment } from "./secret-redactor.mjs";
 import { normalizeRecipes } from "./recipes.mjs";
 import { normalizeProjectHooks } from "./project-hooks.mjs";
 import { SqliteStateCollections } from "./sqlite-state-collections.mjs";
@@ -149,6 +149,7 @@ function normalizeScopedObject(value={}){
 
 export class TrebellStateStore {
   constructor(env=process.env){
+    this.env=env;
     this.path=join(trebellHome(env),"ui-state.json");
     mkdirSync(dirname(this.path),{recursive:true});
     this.needsRewrite=false;
@@ -156,7 +157,7 @@ export class TrebellStateStore {
     this.collections=null;
     try{
       const collections=new SqliteStateCollections(env);
-      const legacy={threadMeta:this.state.threadMeta,checkpoints:this.state.checkpoints,usageRecords:this.state.usageRecords,verificationRecords:this.state.verificationRecords,repositoryKnowledge:this.state.repositoryKnowledge};
+      const legacy={threadMeta:redactSecretValue(this.state.threadMeta,{environment:env,maxDepth:20,maxArray:10000,maxFields:5000}),checkpoints:this.state.checkpoints,usageRecords:this.state.usageRecords,verificationRecords:this.state.verificationRecords,repositoryKnowledge:this.state.repositoryKnowledge};
       const migrated=collections.importLegacy(legacy);this.collections=collections;
       this.state.threadMeta={};this.state.checkpoints=[];this.state.usageRecords=[];this.state.verificationRecords=[];this.state.repositoryKnowledge=[];
       if(migrated||this.legacyCollectionsPresent)this.needsRewrite=true;
@@ -400,7 +401,7 @@ export class TrebellStateStore {
   }
   updateThreadMeta(threadId,patch={}){
     const current=this.collections?(this.collections.threadMeta(threadId)||{}):(this.state.threadMeta[threadId]||{});
-    const next={...current,...patch,updatedAt:Date.now()};
+    const next=redactSecretValue({...current,...patch,updatedAt:Date.now()},{environment:this.env,maxDepth:20,maxArray:10000,maxFields:5000});
     for(const [key,value] of Object.entries(next)) if(value===undefined) delete next[key];
     if(this.collections){this.collections.putThreadMeta(threadId,next);return clone(next)}
     this.state.threadMeta[threadId]=next;
