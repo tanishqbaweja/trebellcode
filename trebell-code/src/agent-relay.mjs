@@ -509,6 +509,14 @@ export function restoreClaudeRejectedRewind(threadStore,threadId,error){
   });
 }
 
+export function claudeRewindCheckpoint(thread,beforeTurnId){
+  const turns=Array.isArray(thread?.turns)?thread.turns:[],index=turns.findIndex(item=>item.id===beforeTurnId);
+  if(index<0)throw new Error("Claude rewind target turn was not found.");
+  const prior=index>0?turns[index-1]:null,target=turns[index]||null,providerMessageId=prior?.providerMessageId||null;
+  if(!providerMessageId)throw new Error("Claude Code cannot rewind before the first persisted user message in this thread.");
+  return {index,providerMessageId,dropsTurn:target?.providerUserMessageId||null};
+}
+
 function formQuestions(params){
   const schema=params?.requestedSchema||params?.schema||params?.form||{};
   const properties=schema.properties||{};
@@ -1313,9 +1321,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         await session.revert(providerMessageId);const index=thread.turns.findIndex(item=>item.id===params.beforeTurnId);threadStore.update(thread.id,{turns:index>=0?thread.turns.slice(0,index):thread.turns});emit("thread/reverted",{threadId:thread.id});return {thread:threadStore.get(thread.id)};
       }
       if(session instanceof ClaudeAgentSession){
-        const index=thread.turns.findIndex(item=>item.id===params.beforeTurnId);const prior=index>0?thread.turns[index-1]:null;const providerMessageId=prior?.providerMessageId||null;
-        if(!providerMessageId)throw new Error("Claude Code cannot rewind before the first persisted user message in this thread.");
-        const forked=await session.rewindConversation(providerMessageId,{dropsTurn:turn?.providerUserMessageId||null});
+        const {index,providerMessageId,dropsTurn}=claudeRewindCheckpoint(thread,params.beforeTurnId);
+        const forked=await session.rewindConversation(providerMessageId,{dropsTurn});
         const currentMeta=threadStore.get(thread.id)?.providerMeta||{};
         threadStore.update(thread.id,{providerSessionId:forked.sessionId,turns:thread.turns.slice(0,index),providerMeta:{...currentMeta,...(forked.lazyFork?{claudeFork:forked.lazyFork}:{}),claudeRewindBackup:{sourceSessionId:thread.providerSessionId,retainedCount:index,removedTurns:thread.turns.slice(index),createdAt:Date.now()}}});
         emit("thread/reverted",{threadId:thread.id});return {thread:threadStore.get(thread.id)};

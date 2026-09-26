@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { WebSocket } from "ws";
 import { AgentThreadStore } from "../src/agent-thread-store.mjs";
-import { acpPlanEvent,agentPermissionModeFromStart,agentPermissionPolicyDecision,agentPermissionProfilePatch,agentPermissionTraceData,agentThreadResumePayload,agentToolLifecycle,attachAgentRelay,contextualAgentPrompt,materializeAgentFork,paginateAgentAttachments,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
+import { acpPlanEvent,agentPermissionModeFromStart,agentPermissionPolicyDecision,agentPermissionProfilePatch,agentPermissionTraceData,agentThreadResumePayload,agentToolLifecycle,attachAgentRelay,claudeRewindCheckpoint,contextualAgentPrompt,materializeAgentFork,paginateAgentAttachments,paginateAgentQueue,paginateAgentThreadItems,paginateAgentThreads,paginateAgentThreadTurns,restoreClaudeRejectedRewind,searchAgentThreadOccurrences,searchAgentThreads } from "../src/agent-relay.mjs";
 
 test("permission trace metadata excludes raw tool arguments",()=>{
   const trace=agentPermissionTraceData({toolCall:{toolCallId:"tool-1",title:"Run deployment",kind:"execute",rawInput:{command:"do-not-persist"}},options:[{kind:"allow_once"},{kind:"allow_once"},{kind:"reject_once"}]});
@@ -92,6 +92,17 @@ test("rejected Claude rewind restores the original provider session and removed 
     assert.equal(Object.prototype.hasOwnProperty.call(restored.providerMeta,"claudeFork"),false);
     assert.equal(Object.prototype.hasOwnProperty.call(restored.providerMeta,"claudeRewindBackup"),false);
   }finally{await rm(home,{recursive:true,force:true})}
+});
+
+test("Claude rewind uses the prior assistant checkpoint and drops the target user prompt",()=>{
+  const thread={turns:[
+    {id:"turn-1",providerMessageId:"assistant-1",providerUserMessageId:"user-1"},
+    {id:"turn-2",providerMessageId:"assistant-2",providerUserMessageId:"user-2"},
+    {id:"turn-3",providerMessageId:"assistant-3",providerUserMessageId:"user-3"},
+  ]};
+  assert.deepEqual(claudeRewindCheckpoint(thread,"turn-3"),{index:2,providerMessageId:"assistant-2",dropsTurn:"user-3"});
+  assert.throws(()=>claudeRewindCheckpoint(thread,"turn-1"),/cannot rewind before the first persisted user message/i);
+  assert.throws(()=>claudeRewindCheckpoint(thread,"missing"),/target turn was not found/i);
 });
 
 test("agent thread item pagination uses stable bounded cursors in both directions",()=>{
