@@ -5,7 +5,7 @@ import { PassThrough, Writable } from "node:stream";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { EnvironmentManager, remoteEnvironmentCommand } from "../src/environment-manager.mjs";
+import { EnvironmentManager, remoteEnvironmentCommand, remoteTransportEnvironment } from "../src/environment-manager.mjs";
 
 function stateFor(profiles){
   return {
@@ -34,6 +34,16 @@ test("local environment capabilities report the actual host platform",async()=>{
   const capabilities=await manager.capabilities();
   assert.equal(capabilities.local.available,true);
   assert.equal(capabilities.local.platform,"linux");
+});
+
+test("remote transport helpers keep OS and SSH-agent essentials without unrelated host secrets",()=>{
+  const env=remoteTransportEnvironment({
+    PATH:"/usr/bin",HOME:"/home/me",SSH_AUTH_SOCK:"/tmp/ssh-agent.sock",SSH_AGENT_PID:"123",WSLENV:"SAFE_FLAG/u",
+    GITHUB_TOKEN:"must-not-reach-transport",TREBELL_PRIVATE_SECRET:"hidden",
+  },{platform:"linux"});
+  assert.equal(env.PATH,"/usr/bin");assert.equal(env.HOME,"/home/me");
+  assert.equal(env.SSH_AUTH_SOCK,"/tmp/ssh-agent.sock");assert.equal(env.SSH_AGENT_PID,"123");assert.equal(env.WSLENV,"SAFE_FLAG/u");
+  assert.equal(env.GITHUB_TOKEN,undefined);assert.equal(env.TREBELL_PRIVATE_SECRET,undefined);
 });
 
 test("prepareAttachment keeps local files local",async()=>{

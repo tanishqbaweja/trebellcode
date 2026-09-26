@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TerminalManager } from "../src/terminal-manager.mjs";
+import { buildRuntimeEnvironment } from "../src/runtime-environment.mjs";
 
 test("persistent terminal worker starts a PTY and retains output",{timeout:20000},async()=>{
   const terminals=new TerminalManager({persist:false});
@@ -37,6 +38,18 @@ test("terminal manager can await a dedicated command PTY",{timeout:20000},async(
     assert.match(terminals.snapshot(session.id).buffer,new RegExp(marker));
     assert.equal(terminals.snapshot(session.id).running,false);
   }finally{await terminals.shutdown();}
+});
+
+test("exact terminal environments do not re-inherit secrets from the terminal worker",{timeout:20000},async()=>{
+  const secret="terminal-worker-secret-"+Date.now(),env={...process.env,TERMINAL_PRIVATE_SECRET:secret};
+  const terminals=new TerminalManager({env,persist:false});
+  try{
+    const childEnv=buildRuntimeEnvironment("native",{parent:env,platform:process.platform});
+    const source="process.stdout.write(JSON.stringify({secret:process.env.TERMINAL_PRIVATE_SECRET||null,hasPath:Boolean(process.env.PATH||process.env.Path)}))";
+    const session=await terminals.create({cwd:process.cwd(),shell:process.execPath,args:["-e",source],env:childEnv,replaceEnv:true,name:"Exact env"});
+    const completion=await terminals.waitForExit(session.id,{timeoutMs:10000});assert.equal(completion.exitCode,0);
+    const output=terminals.snapshot(session.id).buffer;assert.doesNotMatch(output,new RegExp(secret));assert.match(output,/"secret":null/);assert.match(output,/"hasPath":true/);
+  }finally{await terminals.shutdown()}
 });
 
 test("terminal scrollback survives manager restart as stopped history",{timeout:30000},async()=>{

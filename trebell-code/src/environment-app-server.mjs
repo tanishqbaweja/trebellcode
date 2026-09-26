@@ -1,7 +1,7 @@
 import { createServer as createTcpServer, connect as tcpConnect } from "node:net";
 import { spawn } from "node:child_process";
 import { DEFAULT_PORT, PROVIDER_COMPAT_PORT } from "./config.mjs";
-import { remoteToolPathPrelude } from "./environment-manager.mjs";
+import { remoteToolPathPrelude, remoteTransportEnvironment } from "./environment-manager.mjs";
 import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
 
@@ -127,12 +127,13 @@ export async function startRemoteAppServer({
   provider,
   localProviderPort=null,
   runtimeInstance=null,
+  hostEnvironment=process.env,
   debug=false,
 }={}){
   const profile=environments?.get(environmentId);
   if(!profile||profile.type==="local")return null;
   const logs=[];
-  const logEnvironment={...process.env,...(runtimeInstance?.environment||{})};
+  const logEnvironment={...hostEnvironment,...(runtimeInstance?.environment||{})};
   const resolvedProviderPort=providerPort(provider,localProviderPort);
   const runtime=remoteCodexProfileSetup({profile,runtimeInstance});
 
@@ -180,7 +181,7 @@ export async function startRemoteAppServer({
     ];
     if(profile.identityFile)args.push("-i",profile.identityFile);
     args.push(profile.user?profile.user+"@"+profile.host:profile.host,remoteCommand);
-    const child=spawn(executable,args,{env:process.env,windowsHide:true,stdio:["ignore","pipe","pipe"]});
+    const child=spawn(executable,args,{env:remoteTransportEnvironment(hostEnvironment),windowsHide:true,stdio:["ignore","pipe","pipe"]});
     attachLogs(child,logs,{debug,environment:logEnvironment});
     return {
       child,

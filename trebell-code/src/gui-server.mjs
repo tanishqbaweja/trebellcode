@@ -23,7 +23,7 @@ import { getFreebuffOverview } from "./freebuff-product.mjs";
 import { TrebellStateStore } from "./trebell-state.mjs";
 import { CheckpointService } from "./checkpoint-service.mjs";
 import { TerminalManager } from "./terminal-manager.mjs";
-import { EnvironmentManager } from "./environment-manager.mjs";
+import { EnvironmentManager, remoteTransportEnvironment } from "./environment-manager.mjs";
 import { startRemoteAppServer } from "./environment-app-server.mjs";
 import { createRemoteControlServer } from "./remote-control.mjs";
 import { RemoteAuthStore } from "./remote-auth-store.mjs";
@@ -255,6 +255,7 @@ async function startAppServer({appPort,env=process.env,mock=false,provider="free
           provider,
           localProviderPort:providerPort,
           runtimeInstance,
+          hostEnvironment:env,
           debug:env.TREBELL_GUI_DEBUG==="1",
         });
         return {...remote,appPort,runtimeInstanceId:runtimeInstance?.id||"codex-default"};
@@ -614,6 +615,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   function terminalOptions({environmentId=null,cwd=null,name=null,cols=120,rows=32,terminalEnv=null}={}){
     const spec=environments.terminalSpec(environmentId,{cwd});
     const profile=environmentId?environments.get(environmentId):null;
+    const remoteTransport=Boolean(profile&&profile.type!=="local");
     const displayCwd=String(cwd||profile?.cwd||process.cwd());
     return {
       cwd:spec.cwd,
@@ -621,7 +623,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       cols,
       rows,
       name:name||"Terminal",
-      env:terminalEnv||null,
+      env:remoteTransport?{...remoteTransportEnvironment(env,{platform:process.platform}),...(terminalEnv||{})}:(terminalEnv||null),
+      replaceEnv:remoteTransport,
       shell:spec.shell,
       args:spec.args,
       environmentId:spec.environmentId,
@@ -1684,13 +1687,15 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           return json(res,200,{ok:true,auth,session:{id:"mock-runtime-auth",name:auth.name+" sign in",cwd,environmentId:environmentId||null,environmentName:"Mock environment",environmentType:environmentId?"remote":"local",running:true}});
         }
         const spec=environments.terminalArgvSpec(environmentId,{command:auth.command,args:auth.args,cwd});
+        const authProfile=environmentId?environments.get(environmentId):null,remoteAuth=Boolean(authProfile&&authProfile.type!=="local");
         const session=await terminals.create({
           cwd:spec.cwd,
           displayCwd:cwd,
           cols:120,
           rows:32,
           name:auth.name+" sign in",
-          env:environmentId?null:agentRuntimes.childEnv(instance),
+          env:remoteAuth?remoteTransportEnvironment(env,{platform:process.platform}):agentRuntimes.childEnv(instance),
+          replaceEnv:remoteAuth,
           shell:spec.shell,
           args:spec.args,
           environmentId:spec.environmentId,

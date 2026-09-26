@@ -14,9 +14,10 @@ async function handle(msg){
   try{
     if(action==="create"){
       const spec=shellSpec();
+      const baseEnv=msg.replaceEnv?{}:process.env;
       const term=pty.spawn(msg.shell||spec.file,msg.args||spec.args,{
         name:"xterm-256color",cols:msg.cols||120,rows:msg.rows||32,cwd:msg.cwd||process.cwd(),
-        env:{...process.env,...(msg.env||{}),TERM:"xterm-256color"},
+        env:{...baseEnv,...(msg.env||{}),TERM:"xterm-256color"},
       });
       sessions.set(msg.id,term);
       term.onData(data=>send({type:"output",id:msg.id,data}));

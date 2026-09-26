@@ -4,12 +4,14 @@ import { createReadStream } from "node:fs";
 import { lstat, readFile, readdir, stat } from "node:fs/promises";
 import { basename, join, resolve, posix } from "node:path";
 import { trebellHome } from "./paths.mjs";
+import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
 
 const MAX_OUTPUT=2*1024*1024;
 const MAX_THEME_FILES=32;
 const MAX_THEME_FILE_BYTES=32*1024;
 const MAX_THEME_TOTAL_BYTES=192*1024;
 const RESERVED_THEME_IDS=new Set(["system","light","dark","midnight","black"]);
+const REMOTE_TRANSPORT_ENV_KEYS=["SSH_AUTH_SOCK","SSH_AGENT_PID","SSH_SK_PROVIDER","WSLENV","WSL_UTF8"];
 
 function cleanText(value=""){
   return String(value).replace(/\u0000/g,"").replace(/\r/g,"").trimEnd();
@@ -35,6 +37,9 @@ function isolatedRemoteEnvironment(command,names=[],environment={}){
 }
 
 export function remoteEnvironmentCommand(command,names=[],environment={}){return isolatedRemoteEnvironment(String(command||""),names,environment)}
+export function remoteTransportEnvironment(parent=process.env,{platform=process.platform}={}){
+  return buildRuntimeEnvironment("native",{parent,approved:REMOTE_TRANSPORT_ENV_KEYS,platform});
+}
 
 const REMOTE_TOOL_PATH_SCRIPT=`trebell_prepend_path() {
   if [ -d "$1" ]; then
@@ -180,11 +185,12 @@ export class EnvironmentManager {
   }
 
   remove(id){ return this.state.removeEnvironment(id); }
+  #transportEnv(){return remoteTransportEnvironment(this.env,{platform:this.platform})}
 
   async capabilities(){
     let ssh={available:false,version:null,error:null};
     try{
-      const result=await runProcess(this.platform==="win32"?"ssh.exe":"ssh",["-V"],{env:this.env,timeoutMs:5000});
+      const result=await runProcess(this.platform==="win32"?"ssh.exe":"ssh",["-V"],{env:this.#transportEnv(),timeoutMs:5000});
       const version=(result.stderr||result.stdout||"").split("\n")[0]||null;
       ssh={available:result.exitCode===0||Boolean(version),version,error:result.exitCode===0?null:(result.stderr||null)};
     }catch(error){ssh={available:false,version:null,error:error.message};}
@@ -192,7 +198,7 @@ export class EnvironmentManager {
     let wsl={available:false,distros:[],error:null};
     if(this.platform==="win32"){
       try{
-        const result=await runProcess("wsl.exe",["--list","--quiet"],{env:this.env,timeoutMs:8000});
+        const result=await runProcess("wsl.exe",["--list","--quiet"],{env:this.#transportEnv(),timeoutMs:8000});
         const distros=cleanText(result.stdout).split("\n").map(x=>x.trim()).filter(Boolean);
         wsl={available:result.exitCode===0,distros,error:result.exitCode===0?null:(result.stderr||"WSL is unavailable")};
       }catch(error){wsl={available:false,distros:[],error:error.message};}
@@ -284,7 +290,7 @@ export class EnvironmentManager {
       args=[];
       if(profile.distro) args.push("-d",profile.distro);
       args.push("--","bash","-lc",remoteShellCommand(text,working));
-      return spawn(executable,args,{env:this.env,windowsHide:true,stdio});
+      return spawn(executable,args,{env:this.#transportEnv(),windowsHide:true,stdio});
     }
     if(profile.type==="ssh"){
       executable=this.platform==="win32"?"ssh.exe":"ssh";
@@ -292,7 +298,7 @@ export class EnvironmentManager {
       if(profile.identityFile) args.push("-i",profile.identityFile);
       const target=profile.user?(profile.user+"@"+profile.host):profile.host;
       args.push(target,remoteShellCommand(text,working));
-      return spawn(executable,args,{env:this.env,windowsHide:true,stdio});
+      return spawn(executable,args,{env:this.#transportEnv(),windowsHide:true,stdio});
     }
     throw new Error("Unsupported environment type");
   }
@@ -417,6 +423,7 @@ export class EnvironmentManager {
     }else{
       throw new Error("Unsupported environment type");
     }
+    if(profile.type!=="local")options.env=this.#transportEnv();
 
     const startedAt=Date.now();
     const result=await runProcess(executable,args,options);
