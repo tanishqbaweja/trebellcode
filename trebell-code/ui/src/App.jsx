@@ -30,7 +30,7 @@ import { nativeThreadSearchMatches, threadListParams } from "./thread-list-query
 import { resizeTextarea } from "./textarea-size.js";
 import { guardianActionSummary, guardianDeniedEvent } from "./guardian-review.js";
 import { collaborationModePayload, normalizeCollaborationModes } from "./collaboration-mode.js";
-import { ensureCodexProject, sameWorkspacePath } from "./codex-projects.js";
+import { ensureRuntimeProject, sameWorkspacePath } from "./codex-projects.js";
 import { writeClipboardText } from "./clipboard.js";
 import { createKeyedTextFrameBuffer, createTextFrameBuffer } from "./text-frame-buffer.js";
 import { createLatestValueBuffer } from "./latest-value-buffer.js";
@@ -2272,18 +2272,18 @@ export default function App(){
       }else{setMessages(historyFromThread(resumed.thread,map));setHistoryPage({threadId:resumed.thread.id,nextCursor:null,paginated:false,loading:false})}
       setProjectPath(resumed.thread.cwd||projectPath);setProviderAgent(resumed.thread.agent||"");if(agentRuntime!=="codex"){const meta=resumed.thread.providerMeta||{};applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}
     }
-    if(agentRuntime==="codex"&&!bootstrap.mock&&resumed?.thread&&!projectless&&!threadEnvironmentId&&resumed.thread.cwd){
+    if(runtimeCapabilities.projectOwnership&&!bootstrap.mock&&resumed?.thread&&!projectless&&!threadEnvironmentId&&resumed.thread.cwd){
       let listed={projects:[]};
       try{listed=await api("/api/projects")}
-      catch(error){showActionError(error,"Could not sync Codex project identity")}
+      catch(error){showActionError(error,"Could not sync runtime project identity")}
       const trebellProject=(listed.projects||[]).find(project=>!project.environmentId&&sameWorkspacePath(project.path,resumed.thread.cwd))||null;
       let nativeProject=null;
-      try{nativeProject=await ensureCodexProject(client,{trebellProject,cwd:resumed.thread.cwd})}
-      catch(error){showActionError(error,"Could not sync Codex project identity")}
+      try{nativeProject=await ensureRuntimeProject(client,{trebellProject,cwd:resumed.thread.cwd})}
+      catch(error){showActionError(error,"Could not sync runtime project identity")}
       if(nativeProject?.id&&resumed.thread.projectId!==nativeProject.id){
         let updated=null;
         try{updated=await client.request("thread/metadata/update",{threadId:resumed.thread.id,projectId:nativeProject.id})}
-        catch(error){showActionError(error,"Could not sync Codex project identity")}
+        catch(error){showActionError(error,"Could not sync runtime project identity")}
         if(updated?.thread){
           activeThreadRef.current=updated.thread;setActiveThread(updated.thread);
           setThreads(prev=>prev.map(item=>item.id===updated.thread.id?updated.thread:item));
@@ -2556,16 +2556,16 @@ export default function App(){
       ?"This is a Trebell General chat with no attached project or repository. The working directory is an app-managed scratch workspace. Do not assume it is a codebase, repository, or user project. "+researchInstruction
       :researchInstruction;
     let nativeProjectId=null;
-    if(agentRuntime==="codex"&&!bootstrap.mock&&!projectless&&!workspaceEnvironmentId){
+    if(runtimeCapabilities.projectOwnership&&!bootstrap.mock&&!projectless&&!workspaceEnvironmentId){
       let trebellProject=currentProject&&sameWorkspacePath(currentProject.path,cwd)?currentProject:null;
       if(!trebellProject){
         let listed={projects:[]};
         try{listed=await api("/api/projects")}
-        catch(error){showActionError(error,"Could not sync Codex project identity")}
+        catch(error){showActionError(error,"Could not sync runtime project identity")}
         trebellProject=(listed.projects||[]).find(project=>!project.environmentId&&sameWorkspacePath(project.path,cwd))||null;
       }
-      try{nativeProjectId=(await ensureCodexProject(rpc,{trebellProject,cwd}))?.id||null}
-      catch(error){showActionError(error,"Could not sync Codex project identity")}
+      try{nativeProjectId=(await ensureRuntimeProject(rpc,{trebellProject,cwd}))?.id||null}
+      catch(error){showActionError(error,"Could not sync runtime project identity")}
     }
     const result=await rpc.request("thread/start",{model:modelId,modelProvider:provider,cwd,projectless,...(agentRuntime!=="codex"?{agent:providerAgent||null}:{}),...(nativeProjectId?{projectId:nativeProjectId}:{}),approvalPolicy:p.approvalPolicy,sandbox:p.sandbox,ephemeral:false,threadSource:"trebell-code",dynamicTools,developerInstructions});
     if(agentRuntime!=="codex"&&result.thread?.providerMeta){setProviderAgent(result.thread.agent||providerAgent||"");const meta=result.thread.providerMeta;applyProviderInventory(meta.session_info_update||meta.available_commands_update||{})}

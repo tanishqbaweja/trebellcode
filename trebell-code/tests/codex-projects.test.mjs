@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {ensureCodexProject,matchingCodexProject,sameWorkspacePath} from "../ui/src/codex-projects.js";
+import {ensureCodexProject,ensureRuntimeProject,matchingCodexProject,matchingRuntimeProject,sameWorkspacePath} from "../ui/src/codex-projects.js";
 
 test("Codex project matching handles Windows path separators and case",()=>{
   assert.equal(sameWorkspacePath("C:\\Repo\\Trebell","c:/repo/trebell/"),true);
@@ -26,4 +26,8 @@ test("Codex project bridge creates one idempotent native project when none exist
   const project=await ensureCodexProject(client,{trebellProject:{id:"trebell-1",name:"Repo"},cwd:"C:\\repo"});
   assert.equal(project.id,"native-new");
   assert.deepEqual(calls[1],{method:"project/create",params:{name:"Repo",roots:[{path:"C:\\repo"}],metadata:{trebellManaged:"true",trebellProjectId:"trebell-1"},idempotencyKey:"trebell-code:trebell-1"}});
+});
+
+test("runtime project helpers keep Codex compatibility aliases",()=>{
+  assert.equal(ensureCodexProject,ensureRuntimeProject);assert.equal(matchingCodexProject,matchingRuntimeProject);
 });
