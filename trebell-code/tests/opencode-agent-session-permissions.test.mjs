@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { OpenCodeAgentSession, openCodePermissionDisposition } from "../src/opencode-agent-session.mjs";
+import { OpenCodeAgentSession, configureOpenCodeMcpServers, openCodePermissionDisposition } from "../src/opencode-agent-session.mjs";
 
 test("OpenCode permission events follow Trebell shared policy using provider permission types",()=>{
   assert.equal(openCodePermissionDisposition("full","bash"),"allow");
@@ -45,4 +45,20 @@ test("OpenCode advertised controls surface SDK failures instead of pretending su
   await assert.rejects(()=>session.revert("message-1"),/rewind rejected/i);
   await assert.rejects(()=>session.compact(),/summary failed/i);
   session.model="unknown";session.modelMap.clear();await assert.rejects(()=>session.compact(),/select a model/i);
+});
+
+test("OpenCode repository MCP setup uses the SDK MCP endpoint and reports setup failures honestly",async()=>{
+  const calls=[],client={mcp:{add:async request=>{
+    calls.push(request);
+    if(request.body.name==="broken")return {error:{message:"MCP launch failed"}};
+    return {data:{[request.body.name]:{status:"connected"}}};
+  }}};
+  const local={type:"local",command:["node","repo.mjs"],environment:{TREBELL_REPOSITORY_ROOT:"/repo"},enabled:true,timeout:15_000};
+  const results=await configureOpenCodeMcpServers(client,{cwd:"/repo",servers:[{name:"trebell_repository",config:local},{name:"broken",config:local}]});
+  assert.deepEqual(calls,[
+    {query:{directory:"/repo"},body:{name:"trebell_repository",config:local}},
+    {query:{directory:"/repo"},body:{name:"broken",config:local}},
+  ]);
+  assert.deepEqual(results[0],{name:"trebell_repository",configured:true,status:{status:"connected"}});
+  assert.equal(results[1].configured,false);assert.match(results[1].error,/MCP launch failed/);
 });

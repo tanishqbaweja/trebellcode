@@ -45,6 +45,19 @@ function toProviderModel(value,map){
 
 function permissionResponse(decision){return decision==="acceptForSession"?"always":decision==="accept"?"once":"reject"}
 
+export async function configureOpenCodeMcpServers(client,{cwd,servers=[]}={}){
+  if(!client?.mcp?.add)return [];
+  const results=[];
+  for(const server of Array.isArray(servers)?servers:[]){
+    if(!server?.name||!server?.config)continue;
+    try{
+      const response=unwrap(await client.mcp.add({query:{directory:cwd},body:{name:String(server.name),config:server.config}}),`MCP ${server.name}`),status=response?.[server.name]||null;
+      results.push({name:String(server.name),configured:true,status});
+    }catch(error){results.push({name:String(server.name),configured:false,error:String(error?.message||error).slice(0,2000)})}
+  }
+  return results;
+}
+
 export function openCodePermissionDisposition(mode,type){
   return permissionDisposition(mode,normalizePermissionKind(type),{readOnlyAllowsRead:false});
 }
@@ -62,16 +75,17 @@ function toolTitle(tool,stateTitle){
 }
 
 export class OpenCodeAgentSession{
-  constructor({command="opencode",cwd,env=process.env,serverUrl=null,permissionMode="supervised",onUpdate,onPermission}={}){
+  constructor({command="opencode",cwd,env=process.env,serverUrl=null,permissionMode="supervised",onUpdate,onPermission,repositoryMcp=null}={}){
     this.command=command;this.cwd=cwd;this.env=env;this.serverUrl=serverUrl;this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onPermission=onPermission;
     this.server=null;this.client=null;this.v2Client=null;this.sessionId=null;this.sessionSetup=null;this.initializeResult={agentCapabilities:{loadSession:true,sessionCapabilities:{fork:{},resume:{},close:{}}},agentInfo:{name:"OpenCode"}};
     this.model=null;this.modelMap=new Map();this.contextByModel=new Map();this.partText=new Map();this.closed=false;this.eventAbort=new AbortController();this.eventTask=null;
-    this.messageRoles=new Map();
+    this.messageRoles=new Map();this.repositoryMcp=repositoryMcp;this.repositoryMcpStatus=[];
   }
   async start({providerSessionId=null,model=null}={}){
     this.server=await startServer({command:this.command,cwd:this.cwd,env:this.env,serverUrl:this.serverUrl});
     this.client=createOpencodeClient({baseUrl:this.server.url,directory:this.cwd});
     this.v2Client=createOpencodeV2Client({baseUrl:this.server.url,directory:this.cwd});
+    if(this.repositoryMcp)this.repositoryMcpStatus=await configureOpenCodeMcpServers(this.client,{cwd:this.cwd,servers:[{name:this.repositoryMcp.name,config:this.repositoryMcp.openCode}]});
     const providers=unwrap(await this.client.provider.list({query:{directory:this.cwd}}),"provider list")||{};
     for(const provider of providers.all||[]){for(const entry of Object.values(provider.models||{})){const id=`${provider.id}/${entry.id}`;this.modelMap.set(id,{providerID:provider.id,modelID:entry.id});if(entry.limit?.context)this.contextByModel.set(id,Number(entry.limit.context))}}
     this.model=model&&toProviderModel(model,this.modelMap)?model:(providers.default?Object.entries(providers.default).map(([providerID,modelID])=>`${providerID}/${modelID}`)[0]:this.modelMap.keys().next().value||null);
@@ -80,7 +94,7 @@ export class OpenCodeAgentSession{
     if(!info)info=unwrap(await this.client.session.create({query:{directory:this.cwd},body:{title:"Trebell task"}}),"session create");
     this.sessionId=info.id;
     const availableModels=[...this.modelMap.keys()];if(this.model&&!availableModels.includes(this.model))availableModels.push(this.model);
-    this.sessionSetup={sessionId:this.sessionId,models:{currentModelId:this.model,availableModels:availableModels.map(modelId=>({modelId,name:modelId}))},configOptions:[],modes:{currentModeId:"build",availableModes:[]}};
+    this.sessionSetup={sessionId:this.sessionId,models:{currentModelId:this.model,availableModels:availableModels.map(modelId=>({modelId,name:modelId}))},configOptions:[],modes:{currentModeId:"build",availableModes:[]},trebellRepositoryMcp:this.repositoryMcpStatus[0]||null};
     const [commands,skills,agents]=await Promise.all([
       this.client.command.list({directory:this.cwd}).then(result=>unwrap(result,"command list")||[]).catch(()=>[]),
       this.v2Client.app.skills({directory:this.cwd}).then(result=>unwrap(result,"skill list")||[]).catch(()=>[]),

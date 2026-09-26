@@ -15,6 +15,7 @@ import { platformDynamicToolNamespaces } from "./platform-tool-catalog.mjs";
 import { acpMcpServersForSession, claudeMcpServersForSession, nativeMcpServersForSession } from "./mcp-registry.mjs";
 import { createRemoteContextIo } from "./context-engine.mjs";
 import { createClaudeRepositoryMcp } from "./claude-repository-tools.mjs";
+import { mergeAcpMcpServers, repositoryMcpProcessConfig } from "./repository-mcp-process.mjs";
 import { enrichGoal, goalAdditionalContext, goalBudgetGate, normalizeGoal } from "./goal-state.mjs";
 import { continuityAdditionalContext, continuitySnapshot, normalizeContinuityNotes } from "./continuity-state.mjs";
 import { verificationRepairAttempt, verificationRepairChainState, verificationRepairContext, verificationRepairPrompt, verificationRepairState } from "./verification-repair.mjs";
@@ -725,7 +726,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       threadStore.update(thread.id,{providerSessionId:started.session.sessionId,providerMeta:{...discoveredMeta,initialize:started.initialize,setup:started.session,nativeMcp:{namespaces:mcpTools.map(item=>item.name),failures:mcpBroker.failures()}},model:model||started.session.models?.currentModelId||thread.model||null});
       sessions.set(thread.id,runtime);return runtime;
     }
-    const acpMcpServers=acpMcpServersForSession(state?.settings?.().mcpServers||[],{runtime:instance.kind,environmentId});
+    const projectless=Boolean(thread.providerMeta?.projectless),repositoryMcp=!projectless&&!remoteIo&&contextEngine?repositoryMcpProcessConfig({root:runtimeCwd,env:runtimeManager.env||process.env}):null;
+    const acpMcpServers=mergeAcpMcpServers(acpMcpServersForSession(state?.settings?.().mcpServers||[],{runtime:instance.kind,environmentId}),repositoryMcp);
     const claudeMcpServers=claudeMcpServersForSession(state?.settings?.().mcpServers||[],{environmentId});
     if(instance.kind==="claude"&&contextEngine){
       const repoIo=remoteIo?createRemoteContextIo({environments,environmentId,root:runtimeCwd}):null;
@@ -736,7 +738,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       :instance.kind==="opencode"
       ?(remoteIo
         ?new AcpAgentSession({...common,runtime:"opencode",command:runtimeManager.executable(instance),args:["acp"],terminals,spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers})
-        :new OpenCodeAgentSession({...common,command:runtimeManager.executable(instance),serverUrl:instance.serverUrl||null}))
+        :new OpenCodeAgentSession({...common,command:runtimeManager.executable(instance),serverUrl:instance.serverUrl||null,repositoryMcp}))
       :new AcpAgentSession({...common,runtime:instance.kind,command:runtimeManager.executable(instance),args:runtimeManager.acpArgs(instance,effectivePermissionMode,runtimeCwd),terminals,spawnProcess,remoteIo,version,onElicitation:request=>context.elicitation(thread,request),mcpServers:acpMcpServers});
     const started=await runtime.start({providerSessionId:thread.providerSessionId||null,model:model||thread.model||null});
     const discoveredMeta=threadStore.get(thread.id)?.providerMeta||{};
