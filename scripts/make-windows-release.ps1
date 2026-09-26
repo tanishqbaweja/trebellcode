@@ -130,8 +130,26 @@ $OldAppPort = $env:TREBELL_APP_SERVER_PORT
 $OldCdpUrl = $env:TREBELL_CDP_URL
 $OldFixturePort = $env:TREBELL_BROWSER_FIXTURE_PORT
 $OldTestHidden = $env:TREBELL_TEST_HIDDEN
+$OldTrebellHome = $env:TREBELL_HOME
+$SmokeHome = Join-Path ([IO.Path]::GetTempPath()) ("trebell-release-smoke-" + [Guid]::NewGuid().ToString("N"))
 $DesktopProcess = $null
 try {
+  # Packaged validation must not inherit whichever harness/provider the
+  # developer happened to select in their normal Trebell profile. Start from a
+  # fresh deterministic home so the bundled Codex path is what this release
+  # smoke actually validates.
+  New-Item -ItemType Directory -Path $SmokeHome -Force | Out-Null
+  $SeedState = @{
+    version = 2
+    settings = @{
+      onboardingComplete = $true
+      agentRuntime = "codex"
+      agentRuntimeInstanceId = "codex-default"
+      modelProvider = "freebuff"
+    }
+  } | ConvertTo-Json -Depth 5
+  [IO.File]::WriteAllText((Join-Path $SmokeHome "ui-state.json"),$SeedState,[Text.UTF8Encoding]::new($false))
+  $env:TREBELL_HOME = $SmokeHome
   $env:TREBELL_GUI_PORT = [string]$GuiPort
   $env:TREBELL_APP_SERVER_PORT = [string]$AppPort
   $env:TREBELL_CDP_URL = "http://127.0.0.1:$CdpPort"
@@ -149,7 +167,7 @@ try {
     if ($DesktopProcess.HasExited) { throw "Unpacked Trebell Code exited before the smoke test could connect." }
     try {
       $Boot = Invoke-RestMethod -Uri "http://127.0.0.1:$GuiPort/api/bootstrap" -TimeoutSec 1
-      if ($Boot.appServerReady -eq $true) {
+      if ($Boot.agentRuntime -eq "codex" -and $Boot.appServerReady -eq $true) {
         $RuntimeReady = $true
         break
       }
@@ -203,6 +221,10 @@ try {
   $env:TREBELL_CDP_URL = $OldCdpUrl
   $env:TREBELL_BROWSER_FIXTURE_PORT = $OldFixturePort
   $env:TREBELL_TEST_HIDDEN = $OldTestHidden
+  $env:TREBELL_HOME = $OldTrebellHome
+  if (Test-Path $SmokeHome) {
+    Remove-Item $SmokeHome -Recurse -Force -ErrorAction SilentlyContinue
+  }
 }
 
 Write-Host "`n[7/8] Building Windows x64 NSIS installer..." -ForegroundColor Cyan

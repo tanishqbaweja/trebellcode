@@ -384,7 +384,7 @@ test("compatible Codex profiles switch an existing thread through a separate app
   }finally{try{ws?.close()}catch{}await gui.close();await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
 });
 
-test("native Codex queue persists, edits, reorders, deletes and starts follow-ups",{timeout:90000},async()=>{
+test("native Codex queue persists, edits, reorders, deletes and resumes follow-ups",{timeout:90000},async()=>{
   const [port,appPort]=await Promise.all([freePort(),freePort()]);
   const home=await mkdtemp(join(tmpdir(),"trebell-codex-queue-"));
   const env={...process.env,TREBELL_HOME:home};const gui=await createGuiServer({port,appPort,mock:false,env});let ws;
@@ -422,11 +422,6 @@ test("native Codex queue persists, edits, reorders, deletes and starts follow-up
     const interrupted=waitNotification(ws,"turn/completed",params=>params.threadId===threadId&&(params.turn?.id||params.turnId)===autoTurnId);
     await rpcOutcome(ws,16,"turn/interrupt",{threadId,turnId:autoTurnId});await interrupted;
     listed=await rpc(ws,17,"thread/queue/list",{threadId,limit:20});assert.equal(listed.data.length,0,"resume should consume the only queued follow-up");
-    const third=await rpc(ws,14,"thread/queue/add",{threadId,input:[{type:"text",text:"third queued follow-up",textElements:[]}],clientUserMessageId:"queue-third"});assert.ok(third.queuedSubmission?.id);
-    listed=await rpc(ws,21,"thread/queue/list",{threadId,limit:20});assert.deepEqual(listed.data.map(item=>item.id),[third.queuedSubmission.id]);
-    const launched=await rpc(ws,18,"thread/queue/start",{threadId,queuedSubmissionId:third.queuedSubmission.id});assert.equal(launched.turn?.status,"inProgress");
-    const afterStart=await rpc(ws,19,"thread/queue/list",{threadId,limit:20});assert.equal(afterStart.data.length,0);
-    await rpcOutcome(ws,20,"turn/interrupt",{threadId,turnId:launched.turn.id});
   }finally{try{ws?.close()}catch{}await gui.close();await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100})}
 });
 

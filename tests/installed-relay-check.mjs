@@ -25,6 +25,7 @@ async function rpc(ws,id,method,params={}) {
 
 const boot=await fetch(base+"/api/bootstrap").then(r=>r.json());
 assert.equal(boot.version,packageVersion);
+assert.equal(boot.agentRuntime,"codex","packaged relay smoke must run against the deterministic Codex release profile");
 assert.equal(boot.appServerReady,true);
 assert.match(boot.wsUrl,/\/api\/codex\/ws$/);
 
