@@ -95,3 +95,18 @@ test("remote managed worktree cleanup and restore stay inside the pinned environ
   const restored=await service.ensure(worktree,environmentId);assert.equal(restored.restored,true);assert.equal(removed,false);assert.equal(project.managedWorktree.cleanedAt,null);
   assert.equal(calls.some(call=>/^[A-Za-z]:\\/.test(String(call.cwd||""))),false,"remote cleanup must not reinterpret remote paths as local Windows paths");
 });
+
+test("named local worktree environments keep local Git mechanics",{timeout:30000},async()=>{
+  const f=await fixture("named-local");
+  try{
+    const managed={...f.project.managedWorktree},project=f.state.touchProject(f.worktree,{environmentId:"local-named",managedWorktree:managed});let environmentExecutions=0;
+    const environments={get:id=>id==="local-named"?{id,type:"local",cwd:f.worktree}:null,executeArgv:async()=>{environmentExecutions++;throw new Error("named local worktrees should use local Git")}};
+    const inspection=await new WorktreeCleanupService({state:f.state,environments}).inspect(project);assert.equal(inspection.eligible,true);assert.ok(inspection.triggers.includes("unchanged"));assert.equal(environmentExecutions,0);
+  }finally{await rm(f.home,{recursive:true,force:true})}
+});
+
+test("managed worktrees never fall back local when their pinned environment disappeared",async()=>{
+  const project={id:"missing-env",path:"/srv/worktree",environmentId:"gone",managedWorktree:{root:"/srv/repo",branch:"feature",baseBranch:"main",createdAt:1},worktreeCleanup:{mode:"custom",rules:{worktreeUnchanged:true}}};
+  const state={settings:()=>({}),projectSettings:()=>({effective:{worktreeCleanup:project.worktreeCleanup}})};
+  await assert.rejects(()=>new WorktreeCleanupService({state,environments:{get:()=>null}}).inspect(project),/environment could not be found/i);
+});
