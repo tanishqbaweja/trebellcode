@@ -15,6 +15,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
   const defaultMergeMethod=["squash","merge","rebase"].includes(sourceControlSettings?.sourceControlMergeMethod)?sourceControlSettings.sourceControlMergeMethod:"squash";
   const [stackMergeMethod,setStackMergeMethod]=useState(defaultMergeMethod);
   const [linkedThreads,setLinkedThreads]=useState([]);
+  const [linkedThreadsKey,setLinkedThreadsKey]=useState(null);
   const [viewed,setViewed]=useState({prNumber:null,store:null,files:[],loading:false});
   const [busy,setBusy]=useState("");
   const [error,setError]=useState("");
@@ -53,7 +54,7 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     }
     return true;
   }
-  useEffect(()=>{setSourceProvider("");setSelectedPr(null);onSelectedPrChange?.(null);setViewed({prNumber:null,store:null,files:[],loading:false});refresh("")},[projectPath,environmentId]);
+  useEffect(()=>{setSourceProvider("");setSelectedPr(null);onSelectedPrChange?.(null);setViewed({prNumber:null,store:null,files:[],loading:false});setLinkedThreads([]);setLinkedThreadsKey(null);refresh("")},[projectPath,environmentId]);
   useEffect(()=>{setStackMergeMethod(defaultMergeMethod)},[defaultMergeMethod]);
   useEffect(()=>{setStatusLimit(SOURCE_CONTROL_PAGE_SIZE);setPrLimit(SOURCE_CONTROL_PAGE_SIZE)},[projectPath,environmentId,sourceProvider]);
   useEffect(()=>{setFileLimit(SOURCE_CONTROL_PAGE_SIZE)},[selectedPr?.number]);
@@ -92,9 +93,10 @@ export default function SourceControlPanel({projectPath,environmentId=null,remot
     const viewedError=await loadViewed(item,d?.provider||sourceProvider||item.provider);if(viewedError)nextError=viewedError;
     if(item?.identity){
       const params=new URLSearchParams({provider:item.identity.provider||"",host:item.identity.host||"",repository:item.identity.repository||"",number:String(item.identity.number||item.number)});
-      try{const reverse=await api("/api/source-control/thread-link?"+params);setLinkedThreads(reverse.threads||[])}
-      catch(error){setLinkedThreads([]);nextError=error.message||String(error)||"Could not load linked threads."}
-    }else setLinkedThreads([]);
+      const linkKey=params.toString();
+      try{const reverse=await api("/api/source-control/thread-link?"+params);setLinkedThreads(reverse.threads||[]);setLinkedThreadsKey(linkKey)}
+      catch(error){if(linkedThreadsKey!==linkKey){setLinkedThreads([]);setLinkedThreadsKey(linkKey)}nextError=error.message||String(error)||"Could not load linked threads."}
+    }else{setLinkedThreads([]);setLinkedThreadsKey(null)}
     setError(nextError);
   }
   async function syncLinkedPullRequests(reportErrors=false){
