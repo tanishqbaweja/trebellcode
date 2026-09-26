@@ -53,6 +53,7 @@ import { startVisibilityPoll } from "./visibility-poll.js";
 import { specializedToolSelection } from "./lazy-tool-exposure.js";
 import { maybeStartAutomaticVerificationRepair } from "./auto-verification-repair.js";
 import { maybeStartAutomaticVerificationContinuation } from "./auto-verification-continuation.js";
+import { browserVerificationReceipt } from "../../src/browser-verification-evidence.mjs";
 
 const TerminalPanel=lazy(()=>import("./components/TerminalPanel.jsx"));
 const WorkspacePanel=lazy(()=>import("./components/WorkspacePanel.jsx"));
@@ -94,6 +95,12 @@ function useLatestCallback(callback){
   const ref=useRef(callback);
   useLayoutEffect(()=>{ref.current=callback});
   return useCallback((...args)=>ref.current?.(...args),[]);
+}
+
+async function recordBrowserVerificationEvidence(client,params,tool,result,success=true){
+  const threadId=String(params?.threadId||"").trim(),turnId=String(params?.turnId||"").trim();if(!client?.request||!threadId||!turnId)return;
+  const evidence=browserVerificationReceipt({tool,result,success,callId:params?.callId||params?.toolCallId||null});if(!evidence)return;
+  await client.request("thread/verification/evidence/record",{threadId,turnId,evidence}).catch(()=>null);
 }
 
 const MAX_COMPOSER_ATTACHMENTS=100;
@@ -1660,13 +1667,18 @@ export default function App(){
             else if(p.tool==="snapshot")result=await window.trebellDesktop.browser.snapshot();
             else if(p.tool==="click")result=await window.trebellDesktop.browser.click(p.arguments?.ref);
             else if(p.tool==="type")result=await window.trebellDesktop.browser.type(p.arguments?.ref,p.arguments?.text);
+            else if(p.tool==="runtime")result=await window.trebellDesktop.browser.runtime();
+            else if(p.tool==="set_viewport")result=await window.trebellDesktop.browser.setViewport(p.arguments?.width,p.arguments?.height);
             else if(p.tool==="screenshot"){
               const shot=await window.trebellDesktop.browser.screenshot();
-              client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_browser",[{type:"inputImage",imageUrl:shot.dataUrl},{type:"inputText",text:JSON.stringify({url:shot.url,title:shot.title})}]),success:true});
+              await recordBrowserVerificationEvidence(client,p,p.tool,shot,true);
+              client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_browser",[{type:"inputImage",imageUrl:shot.dataUrl},{type:"inputText",text:JSON.stringify({url:shot.url,title:shot.title,width:shot.width,height:shot.height})}]),success:true});
               return;
             }else throw new Error("Unknown Trebell browser tool: "+p.tool);
+            await recordBrowserVerificationEvidence(client,p,p.tool,result,true);
             client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_browser",[{type:"inputText",text:JSON.stringify(result)}]),success:true});
           }catch(error){
+            await recordBrowserVerificationEvidence(client,p,p.tool,null,false);
             client.respond(message.id,{contentItems:[{type:"inputText",text:error.message||String(error)}],success:false});
           }
         })();

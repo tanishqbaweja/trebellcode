@@ -35,3 +35,33 @@ test("diagnostics evidence stays incomplete until every changed source target wa
   const turnItems=[{type:"dynamicToolCall",id:"diag-a",namespace:"trebell_repo",tool:"diagnostics",status:"completed",arguments:{path:"src/a.ts"},rawOutput:{path:"src/a.ts",diagnostics:[]}}];
   assert.deepEqual(collectVerificationEvidence({plan,turnItems}),[]);
 });
+
+test("verification evidence collector converts sanitized browser receipts into planned browser evidence",()=>{
+  const plan={steps:[
+    {id:"browser_interaction",kind:"browser",required:true},
+    {id:"browser_runtime",kind:"browser-runtime",required:true},
+    {id:"visual",kind:"visual",required:true,evidence:["screenshot","responsive-viewport"]},
+  ]};
+  const traces=[
+    {name:"verification.browser_evidence",data:{namespace:"trebell_browser",tool:"open",success:true,interaction:true,passed:true,callId:"open-1",url:"https://should-not-survive.invalid"}},
+    {name:"verification.browser_evidence",data:{namespace:"trebell_browser",tool:"click",success:false,interaction:true,passed:false,callId:"click-stale"}},
+    {name:"verification.browser_evidence",data:{namespace:"trebell_browser",tool:"click",success:true,interaction:true,passed:true,callId:"click-2"}},
+    {name:"verification.browser_evidence",data:{namespace:"trebell_browser",tool:"set_viewport",success:true,viewport:true,width:390,height:844,callId:"viewport-mobile"}},
+    {name:"verification.browser_evidence",data:{namespace:"trebell_browser",tool:"screenshot",success:true,screenshot:true,width:390,height:844,callId:"shot-mobile",dataUrl:"TOP_SECRET_IMAGE"}},
+    {name:"verification.browser_evidence",data:{namespace:"trebell_browser",tool:"set_viewport",success:true,viewport:true,width:1280,height:800,callId:"viewport-desktop"}},
+    {name:"verification.browser_evidence",data:{namespace:"trebell_browser",tool:"screenshot",success:true,screenshot:true,width:1280,height:800,callId:"shot-desktop"}},
+    {name:"verification.browser_evidence",data:{namespace:"trebell_browser",tool:"runtime",success:true,consoleErrorCount:0,networkFailureCount:0,viewportCount:2,callId:"runtime-1",consoleErrors:["PRIVATE_CONSOLE"]}},
+  ];
+  const evidence=collectVerificationEvidence({plan,traces});
+  assert.deepEqual(evidence,[
+    {stepId:"browser_interaction",status:"passed",passed:true,source:"browser-receipt",interactionCount:3,toolCallIds:["open-1","click-stale","click-2"]},
+    {stepId:"browser_runtime",status:"passed",consoleErrorCount:0,networkFailureCount:0,source:"browser-receipt",toolCallId:"runtime-1"},
+    {stepId:"visual",screenshots:2,viewports:2,source:"browser-receipt",toolCallIds:["shot-mobile","shot-desktop","viewport-mobile","viewport-desktop"]},
+  ]);
+  assert.doesNotMatch(JSON.stringify(evidence),/should-not-survive|TOP_SECRET_IMAGE|PRIVATE_CONSOLE/);
+});
+
+test("failed browser runtime receipt cannot look like a clean runtime check",()=>{
+  const plan={steps:[{id:"browser_runtime",kind:"browser-runtime",required:true}]},traces=[{name:"verification.browser_evidence",data:{namespace:"trebell_browser",tool:"runtime",success:false,consoleErrorCount:0,networkFailureCount:0,callId:"runtime-failed"}}];
+  assert.deepEqual(collectVerificationEvidence({plan,traces}),[{stepId:"browser_runtime",status:"failed",source:"browser-receipt",toolCallId:"runtime-failed"}]);
+});

@@ -60,6 +60,7 @@ import { runAutomaticVerificationEvidence } from "./verification-auto-runner.mjs
 import { mergeVerificationEvidence } from "./verification-loop.mjs";
 import { verificationContinuationAttempt, verificationContinuationChainState, verificationContinuationContext, verificationContinuationPrompt, verificationContinuationState } from "./verification-continuation.mjs";
 import { verificationAutomationAttempt, verificationAutomationChainState } from "./verification-automation.mjs";
+import { normalizeBrowserVerificationReceipt } from "./browser-verification-evidence.mjs";
 import { delegationContextValue, delegationGoalPatch, delegationPolicies } from "./delegation-state.mjs";
 import { executeDelegation } from "./delegation-executor.mjs";
 import { resolveCodexApprovalByPolicy } from "./codex-policy-adapter.mjs";
@@ -3010,6 +3011,10 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         relay.broadcast("thread/continuity/updated",{threadId,continuity});return {handled:true,result:{ok:true,continuity}};
       }
       if(message.method==="thread/verification/get")return {handled:true,result:threadId?codexVerificationState(threadId,params.recordId||null):{record:null,nextAction:null}};
+      if(message.method==="thread/verification/evidence/record"){
+        if(!threadId)throw Object.assign(new Error("threadId is required"),{code:-32602});const turnId=String(params.turnId||"").trim();if(!turnId)throw Object.assign(new Error("turnId is required"),{code:-32602});
+        const evidence=normalizeBrowserVerificationReceipt(params.evidence||{}),meta=state.threadMeta(threadId);eventJournal.record({runtime:"codex",provider:selectedProvider,environmentId:meta?.environmentId??null,threadId,turnId,category:"verification",name:"verification.browser_evidence",status:evidence.success?"completed":"failed",data:evidence});return {handled:true,result:{ok:true}};
+      }
       if(message.method==="thread/verification/repair"){
         if(!threadId)throw Object.assign(new Error("threadId is required"),{code:-32602});
         return {handled:true,result:await repairCodexVerification(threadId,params,requestUpstream)};

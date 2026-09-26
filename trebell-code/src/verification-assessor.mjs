@@ -15,7 +15,7 @@ function evidenceTypes(entry){
     const type=typeof artifact==="string"?artifact:artifact?.type;if(type)types.add(String(type));
   }
   if(number(entry?.screenshots)>0)types.add("screenshot");
-  if(number(entry?.viewports)>0)types.add("responsive-viewport");
+  if(number(entry?.viewports)>=2)types.add("responsive-viewport");
   return types;
 }
 
@@ -31,6 +31,7 @@ function assessEntry(step,entry){
   if(step.kind==="browser-runtime"){
     const consoleErrors=array(entry.consoleErrors),networkFailures=array(entry.networkFailures??entry.networkErrors),hasObservations=Array.isArray(entry.consoleErrors)||Array.isArray(entry.networkFailures)||Array.isArray(entry.networkErrors);
     if(hasObservations){const count=consoleErrors.length+networkFailures.length;return count===0?{status:"passed",reason:"Browser console and network checks were clean."}:{status:"failed",reason:`Browser runtime recorded ${count} console/network failure${count===1?"":"s"}.`}}
+    const consoleErrorCount=number(entry.consoleErrorCount),networkFailureCount=number(entry.networkFailureCount);if(consoleErrorCount!==null||networkFailureCount!==null){const count=Math.max(0,consoleErrorCount||0)+Math.max(0,networkFailureCount||0);return count===0?{status:"passed",reason:"Browser console and network checks were clean."}:{status:"failed",reason:`Browser runtime recorded ${count} console/network failure${count===1?"":"s"}.`}}
   }
   if(step.kind==="visual"){
     const types=evidenceTypes(entry),required=array(step.evidence),missing=required.filter(type=>!types.has(type));

@@ -16,6 +16,7 @@ let windowRef=null;
 let gui=null;
 let quitting=false;
 let agentBrowser=null;
+let agentBrowserRuntime={startedAt:Date.now(),consoleErrors:[],networkFailures:[],viewports:[]};
 let tray=null;
 let backgroundEnabled=false;
 let snapshotConfig={...DEFAULT_SNAPSHOT_CONFIG};
@@ -374,7 +375,17 @@ async function ensureAgentBrowser({show=false}={}){
     backgroundColor:"#0a0d14",autoHideMenuBar:true,
     webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,partition:"persist:trebell-agent-browser"},
   });
+  resetBrowserRuntime();
   agentBrowser.removeMenu();
+  const pushBounded=(key,value)=>{const list=agentBrowserRuntime[key];if(!Array.isArray(list))return;list.push(value);if(list.length>60)list.splice(0,list.length-60)};
+  agentBrowser.webContents.on("console-message",(_event,...args)=>{
+    const details=args.length===1&&args[0]&&typeof args[0]==="object"?args[0]:{level:args[0],message:args[1],lineNumber:args[2],sourceId:args[3]};
+    const level=String(details?.level||"").toLowerCase();if(!["error","3"].includes(level))return;
+    pushBounded("consoleErrors",{level:"error",message:String(details?.message||"").slice(0,1000),source:String(details?.sourceId||"").slice(0,500),line:Number(details?.lineNumber)||null,at:Date.now()});
+  });
+  const webRequest=agentBrowser.webContents.session.webRequest;
+  webRequest.onErrorOccurred(details=>pushBounded("networkFailures",{url:String(details?.url||"").slice(0,1000),method:String(details?.method||""),error:String(details?.error||"").slice(0,500),resourceType:String(details?.resourceType||""),at:Date.now()}));
+  webRequest.onCompleted(details=>{const status=Number(details?.statusCode)||0;if(status>=400)pushBounded("networkFailures",{url:String(details?.url||"").slice(0,1000),method:String(details?.method||""),statusCode:status,resourceType:String(details?.resourceType||""),at:Date.now()})});
   agentBrowser.webContents.setWindowOpenHandler(({url})=>{
     agentBrowser.loadURL(url).catch(()=>{});
     return {action:"deny"};
@@ -394,6 +405,17 @@ function browserState(){
   return {open:true,url:agentBrowser.webContents.getURL(),title:agentBrowser.webContents.getTitle(),canGoBack:history.canGoBack(),canGoForward:history.canGoForward(),loading:agentBrowser.webContents.isLoading(),width,height};
 }
 
+function resetBrowserRuntime(){agentBrowserRuntime={startedAt:Date.now(),consoleErrors:[],networkFailures:[],viewports:[]}}
+function recordBrowserViewport(width,height){
+  const normalized={width:Math.max(1,Math.trunc(Number(width)||0)),height:Math.max(1,Math.trunc(Number(height)||0)),at:Date.now()};
+  if(!agentBrowserRuntime.viewports.some(item=>item.width===normalized.width&&item.height===normalized.height))agentBrowserRuntime.viewports.push(normalized);
+  if(agentBrowserRuntime.viewports.length>40)agentBrowserRuntime.viewports.splice(0,agentBrowserRuntime.viewports.length-40);
+}
+function browserRuntime(){
+  const state=browserState(),viewports=[...new Map((agentBrowserRuntime.viewports||[]).map(item=>[`${item.width}x${item.height}`,item])).values()].slice(-12);
+  return {url:state.url,title:state.title,width:state.width,height:state.height,startedAt:agentBrowserRuntime.startedAt,consoleErrors:[...(agentBrowserRuntime.consoleErrors||[])],networkFailures:[...(agentBrowserRuntime.networkFailures||[])],viewports};
+}
+
 async function browserNavigateHistory(direction){
   const browser=await ensureAgentBrowser();const history=browser.webContents.navigationHistory;
   const event=direction==="reload"?"did-stop-loading":"did-navigate";
@@ -408,7 +430,7 @@ async function browserNavigateHistory(direction){
 
 async function browserViewport(payload={}){
   const browser=await ensureAgentBrowser();const width=Math.max(320,Math.min(3840,Math.round(Number(payload.width)||1280)));const height=Math.max(240,Math.min(2160,Math.round(Number(payload.height)||800)));
-  browser.setContentSize(width,height,true);return browserState();
+  browser.setContentSize(width,height,true);recordBrowserViewport(width,height);return browserState();
 }
 
 async function browserSnapshot(){
@@ -437,7 +459,9 @@ async function browserType(ref,text){
 async function browserScreenshot(){
   const browser=await ensureAgentBrowser();
   const image=await browser.webContents.capturePage();
-  return {dataUrl:"data:image/png;base64,"+image.toPNG().toString("base64"),url:browser.webContents.getURL(),title:browser.webContents.getTitle()};
+  const [width,height]=browser.getContentSize();
+  recordBrowserViewport(width,height);
+  return {dataUrl:"data:image/png;base64,"+image.toPNG().toString("base64"),url:browser.webContents.getURL(),title:browser.webContents.getTitle(),width,height};
 }
 
 async function desktopScreenshot(){
@@ -829,6 +853,7 @@ if(!lock){
   ipcMain.handle("workspace:openIn",async(_event,payload={})=>openWorkspaceIn(payload.path,payload.editorId));
   ipcMain.handle("browser:navigate",async(_event,url)=>{
     const browser=await ensureAgentBrowser();
+    resetBrowserRuntime();
     await browser.loadURL(normalizeBrowserUrl(url));
     return {ok:true,url:browser.webContents.getURL(),title:browser.webContents.getTitle()};
   });
@@ -840,6 +865,7 @@ if(!lock){
   ipcMain.handle("browser:click",async(_event,ref)=>browserClick(ref));
   ipcMain.handle("browser:type",async(_event,payload)=>browserType(payload?.ref,payload?.text));
   ipcMain.handle("browser:screenshot",async()=>browserScreenshot());
+  ipcMain.handle("browser:runtime",async()=>browserRuntime());
   ipcMain.handle("browser:state",async()=>browserState());
   ipcMain.handle("browser:history",async(_event,direction)=>browserNavigateHistory(direction));
   ipcMain.handle("browser:viewport",async(_event,payload)=>browserViewport(payload));

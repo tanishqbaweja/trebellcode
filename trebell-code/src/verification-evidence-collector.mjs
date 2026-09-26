@@ -46,6 +46,43 @@ function diagnosticsEvidence(plan,turnItems=[]){
   return {stepId:step.id,status:errorCount===0?"passed":"failed",errorCount,source:"turn-tool",toolCallIds:records.map(item=>item.id).filter(Boolean),coveredPaths:targets.slice(0,80)};
 }
 
+function browserReceipts(traces=[]){
+  const rows=[];
+  for(const trace of array(traces)){
+    if(trace?.name!=="verification.browser_evidence")continue;
+    const data=trace?.data;if(!data||data.namespace!=="trebell_browser"||!String(data.tool||"").trim())continue;
+    rows.push(data);
+  }
+  return rows.slice(-120);
+}
+
+function browserEvidence(plan,traces=[]){
+  const receipts=browserReceipts(traces);if(!receipts.length)return [];
+  const evidence=[];
+  for(const step of array(plan?.steps)){
+    if(step?.kind==="browser"){
+      const interactions=receipts.filter(item=>item.interaction===true);if(!interactions.length)continue;
+      const latest=interactions.at(-1),passed=latest.success!==false&&latest.passed!==false;
+      evidence.push({stepId:step.id,status:passed?"passed":"failed",passed,source:"browser-receipt",interactionCount:interactions.length,toolCallIds:interactions.map(item=>item.callId).filter(Boolean).slice(-40)});
+      continue;
+    }
+    if(step?.kind==="browser-runtime"){
+      const latest=receipts.filter(item=>item.tool==="runtime").at(-1);if(!latest)continue;
+      if(latest.success===false){evidence.push({stepId:step.id,status:"failed",source:"browser-receipt",toolCallId:latest.callId||null});continue}
+      evidence.push({stepId:step.id,status:"passed",consoleErrorCount:Math.max(0,Number(latest.consoleErrorCount)||0),networkFailureCount:Math.max(0,Number(latest.networkFailureCount)||0),source:"browser-receipt",toolCallId:latest.callId||null});
+      continue;
+    }
+    if(step?.kind==="visual"){
+      const screenshots=receipts.filter(item=>item.tool==="screenshot"&&item.success!==false&&item.screenshot===true),viewportKeys=new Set();
+      for(const item of receipts){if(item.success===false)continue;const width=Number(item.width),height=Number(item.height);if(width>0&&height>0&&["set_viewport","screenshot"].includes(item.tool))viewportKeys.add(`${Math.trunc(width)}x${Math.trunc(height)}`)}
+      const runtimeViewportCount=Math.max(0,...receipts.filter(item=>item.tool==="runtime"&&item.success!==false).map(item=>Number(item.viewportCount)||0)),viewports=Math.max(viewportKeys.size,runtimeViewportCount);
+      if(!screenshots.length&&!viewports)continue;
+      evidence.push({stepId:step.id,screenshots:screenshots.length,viewports,source:"browser-receipt",toolCallIds:[...screenshots,...receipts.filter(item=>item.tool==="set_viewport"&&item.success!==false)].map(item=>item.callId).filter(Boolean).slice(-40)});
+    }
+  }
+  return evidence;
+}
+
 export function collectVerificationEvidence({plan,turnItems=[],traces=[]}={}){
   const evidence=[],diagnostics=diagnosticsEvidence(plan,turnItems);if(diagnostics)evidence.push(diagnostics);
   const commands=commandCandidates(turnItems,traces);
@@ -54,5 +91,6 @@ export function collectVerificationEvidence({plan,turnItems=[],traces=[]}={}){
     const match=[...commands].reverse().find(item=>commandMatches(item.command,step.command));if(!match)continue;
     evidence.push({stepId:step.id,status:match.exitCode===0?"passed":"failed",exitCode:match.exitCode,source:match.source,toolCallId:match.id});
   }
+  evidence.push(...browserEvidence(plan,traces));
   return evidence;
 }

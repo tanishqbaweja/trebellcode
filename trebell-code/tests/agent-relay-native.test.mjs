@@ -72,6 +72,19 @@ test("Trebell Native relay executes repository tools and switches inference prov
   }
 });
 
+test("Trebell Native browser evidence RPC journals only sanitized bounded facts",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-browser-evidence-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env),events=[],journal={record:event=>events.push(structuredClone(event)),recordProtocol:()=>{}};
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn:async()=>({id:"unused",provider:"agentrouter",model:"model-a",text:"",toolCalls:[],finishReason:"stop",usage:{}}),version:"test",journal});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
+  try{
+    const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;
+    const result=await rpc.request("thread/verification/evidence/record",{threadId:thread.id,turnId:"browser-turn",evidence:{namespace:"trebell_browser",tool:"screenshot",success:true,callId:"shot-1",screenshot:true,width:390,height:844,dataUrl:"TOP_SECRET_IMAGE",url:"https://private.invalid/?token=SECRET",unknown:"PRIVATE_FIELD"}});assert.equal(result.ok,true);
+    const recorded=events.find(event=>event.name==="verification.browser_evidence"&&event.turnId==="browser-turn");assert.ok(recorded);assert.equal(recorded.status,"completed");assert.deepEqual(recorded.data,{namespace:"trebell_browser",tool:"screenshot",success:true,callId:"shot-1",screenshot:true,width:390,height:844});assert.doesNotMatch(JSON.stringify(recorded),/TOP_SECRET_IMAGE|private\.invalid|SECRET|PRIVATE_FIELD/);
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
 test("Trebell Native exposes Trebell semantic language intelligence directly to the model loop",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-language-relay-")),home=join(root,"home"),repo=join(root,"repo");
   await mkdir(join(repo,"src"),{recursive:true});await mkdir(join(repo,"node_modules","typescript","lib"),{recursive:true});

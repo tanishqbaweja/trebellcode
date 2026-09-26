@@ -42,3 +42,25 @@ test("turn verification automatically records deterministic syntax failures and 
     const traces=await fetch(gui.url+"/api/traces?"+new URLSearchParams({threadId:"diagnostics-thread",turnId:"diagnostics-turn",limit:"20"})).then(r=>r.json());assert.ok(traces.items.some(item=>item.name==="diagnostics.generated"&&item.status==="failed"&&item.data?.errorCount>0));
   }finally{await gui.close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:100})}
 });
+
+test("turn verification consumes sanitized browser receipts and completes frontend evidence",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-verification-browser-")),repo=join(home,"repo"),env={...process.env,TREBELL_HOME:home};await mkdir(join(repo,"ui"),{recursive:true});
+  await git(repo,["init"]);await git(repo,["config","user.email","verification@example.invalid"]);await git(repo,["config","user.name","Verification Test"]);await writeFile(join(repo,"ui","styles.css"),".card { display: block; }\n");await git(repo,["add","."]);await git(repo,["commit","-m","seed"]);
+  const gui=await createGuiServer({port:await freePort(),appPort:await freePort(),mock:true,env});let evidenceJournal=null;
+  try{
+    const checkpoint=await fetch(gui.url+"/api/checkpoints",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({cwd:repo,threadId:"browser-thread",label:"before frontend edit"})}).then(r=>r.json());assert.equal(checkpoint.supported,true);
+    await fetch(gui.url+"/api/checkpoints/link",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id:checkpoint.id,patch:{turnId:"browser-turn"}})}).then(r=>r.json());
+    await writeFile(join(repo,"ui","styles.css"),".card { display: grid; gap: 1rem; }\n");
+    evidenceJournal=new EventJournal(env);const record=data=>evidenceJournal.record({runtime:"codex",threadId:"browser-thread",turnId:"browser-turn",category:"verification",name:"verification.browser_evidence",status:data.success===false?"failed":"completed",data});
+    record({namespace:"trebell_browser",tool:"open",success:true,interaction:true,passed:true,callId:"open-1",url:"https://private.invalid/?token=SECRET"});
+    record({namespace:"trebell_browser",tool:"set_viewport",success:true,viewport:true,width:390,height:844,callId:"viewport-mobile"});
+    record({namespace:"trebell_browser",tool:"screenshot",success:true,screenshot:true,width:390,height:844,callId:"shot-mobile",dataUrl:"TOP_SECRET_IMAGE"});
+    record({namespace:"trebell_browser",tool:"set_viewport",success:true,viewport:true,width:1280,height:800,callId:"viewport-desktop"});
+    record({namespace:"trebell_browser",tool:"screenshot",success:true,screenshot:true,width:1280,height:800,callId:"shot-desktop"});
+    record({namespace:"trebell_browser",tool:"runtime",success:true,consoleErrorCount:0,networkFailureCount:0,viewportCount:2,callId:"runtime-1",consoleErrors:["PRIVATE_CONSOLE"]});await evidenceJournal.flush();
+    const planned=await fetch(gui.url+"/api/verification/plan-turn",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId:"browser-thread",turnId:"browser-turn"})}).then(r=>r.json());
+    assert.equal(planned.supported,true);assert.equal(planned.record.assessment.status,"verified");assert.equal(planned.nextAction.action,"complete");
+    assert.equal(planned.record.evidence.find(item=>item.stepId==="browser_interaction")?.passed,true);assert.equal(planned.record.evidence.find(item=>item.stepId==="browser_runtime")?.consoleErrorCount,0);
+    const visual=planned.record.evidence.find(item=>item.stepId==="visual");assert.equal(visual?.screenshots,2);assert.equal(visual?.viewports,2);assert.doesNotMatch(JSON.stringify(planned.record.evidence),/private\.invalid|TOP_SECRET_IMAGE|PRIVATE_CONSOLE|SECRET/);
+  }finally{await evidenceJournal?.close();await gui.close();await rm(home,{recursive:true,force:true,maxRetries:20,retryDelay:100})}
+});

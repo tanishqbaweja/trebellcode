@@ -20,6 +20,7 @@ import { continuityAdditionalContext, continuitySnapshot, normalizeContinuityNot
 import { verificationRepairAttempt, verificationRepairChainState, verificationRepairContext, verificationRepairPrompt, verificationRepairState } from "./verification-repair.mjs";
 import { verificationContinuationAttempt, verificationContinuationChainState, verificationContinuationContext, verificationContinuationPrompt, verificationContinuationState } from "./verification-continuation.mjs";
 import { verificationAutomationAttempt, verificationAutomationChainState } from "./verification-automation.mjs";
+import { normalizeBrowserVerificationReceipt } from "./browser-verification-evidence.mjs";
 import { delegationContextValue, delegationGoalPatch, delegationPolicies } from "./delegation-state.mjs";
 import { executeDelegation } from "./delegation-executor.mjs";
 import { normalizePermissionMode } from "./permission-policy.mjs";
@@ -667,7 +668,8 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
             }
             catch(error){journal?.record?.({runtime:"native",provider:thread.providerMeta?.modelProvider||null,environmentId,threadId:thread.id,category:"source-control",name:`source_control.${call.name}`,status:"failed",data:{tool:call.name,durationMs:Date.now()-startedAt,message:redactSecretText(error?.message||String(error),{environment:runtimeManager.env||process.env})}});throw error}
           }
-          return context.serverRequest("item/tool/call",{threadId:thread.id,callId:call.id||randomUUID(),namespace:call.namespace,tool:call.name,arguments:call.arguments});
+          const liveThread=threadStore.get(thread.id)||thread,activeTurn=[...(liveThread.turns||[])].reverse().find(item=>item?.status==="inProgress")||null;
+          return context.serverRequest("item/tool/call",{threadId:thread.id,turnId:activeTurn?.id||null,callId:call.id||randomUUID(),namespace:call.namespace,tool:call.name,arguments:call.arguments});
         },
         confirm:async({call,authorization})=>{
           const result=await context.serverRequest("item/tool/requestApproval",{threadId:thread.id,reason:authorization.reason||"Trebell Native requests permission",toolCall:{toolCallId:call.id||randomUUID(),title:`${call.namespace}/${call.name}`,kind:authorization.action?.kind||"other",rawInput:call.arguments,policy:{riskLevel:authorization.action?.riskLevel,reversibility:authorization.action?.reversibility,externalSideEffect:authorization.action?.externalSideEffect}}});
@@ -987,6 +989,10 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const records=state?.verificationRecords?.({threadId:thread.id,limit:50})||[];
       if(!records.length)return {record:null,nextAction:null};
       return verificationRepairState(records,params.recordId||null);
+    }
+    if(method==="thread/verification/evidence/record"){
+      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");const turnId=String(params.turnId||"").trim();if(!turnId)throw new Error("turnId is required");
+      const evidence=normalizeBrowserVerificationReceipt(params.evidence||{});journal?.record?.({runtime:thread.runtime||runtime,provider:thread.providerMeta?.modelProvider||thread.providerMeta?.runtimeInstanceId||null,environmentId:thread.providerMeta?.environmentId??null,threadId:thread.id,turnId,category:"verification",name:"verification.browser_evidence",status:evidence.success?"completed":"failed",data:evidence});return {ok:true};
     }
     if(method==="thread/verification/repair"){
       const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
