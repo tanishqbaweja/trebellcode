@@ -1,5 +1,7 @@
 import { nextVerificationAction } from "./verification-loop.mjs";
 
+export const MAX_AUTOMATIC_VERIFICATION_REPAIRS=3;
+
 function array(value){return Array.isArray(value)?value:[]}
 function text(value,max=1200){return String(value??"").trim().slice(0,max)}
 function scalar(value){return value==null?null:(typeof value==="string"?text(value,800):typeof value==="number"||typeof value==="boolean"?value:null)}
@@ -42,4 +44,18 @@ export function verificationRepairContext({record,nextAction}={}){
 
 export function verificationRepairPrompt(){
   return "Repair the failed verification for this task. Use the Trebell verification evidence attached to this turn, make only the changes needed to address the failed checks, then rerun the relevant verification.";
+}
+
+export function verificationRepairAttempt(previous,record,{automatic=false,limit=MAX_AUTOMATIC_VERIFICATION_REPAIRS}={}){
+  if(!record?.id)throw new Error("A persisted verification record is required before starting repair.");
+  const prior=previous&&typeof previous==="object"?previous:{},continuation=Boolean(prior.lastRepairTurnId&&String(record.turnId||"")===String(prior.lastRepairTurnId));
+  const attempts=continuation?Math.max(0,Number(prior.attempts)||0)+1:1,cap=Math.max(1,Math.trunc(Number(limit)||MAX_AUTOMATIC_VERIFICATION_REPAIRS));
+  return {
+    allowed:!automatic||attempts<=cap,automatic:Boolean(automatic),attempts,limit:cap,
+    rootRecordId:continuation?(prior.rootRecordId||prior.sourceRecordId||String(record.id)):String(record.id),sourceRecordId:String(record.id),
+  };
+}
+
+export function verificationRepairChainState(attempt,turnId){
+  return {rootRecordId:attempt.rootRecordId,sourceRecordId:attempt.sourceRecordId,lastRepairTurnId:String(turnId||""),attempts:attempt.attempts,lastAutomatic:Boolean(attempt.automatic),updatedAt:Date.now()};
 }

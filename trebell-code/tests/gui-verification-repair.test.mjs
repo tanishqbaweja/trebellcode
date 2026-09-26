@@ -26,11 +26,11 @@ function rpcClient(ws){
   });
 }
 async function fakeCodexAppServer(port){
-  const http=createServer(),wss=new WebSocketServer({noServer:true}),requests=[];
+  const http=createServer(),wss=new WebSocketServer({noServer:true}),requests=[];let repairStarts=0;
   http.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
   wss.on("connection",ws=>ws.on("message",raw=>{
     const message=JSON.parse(String(raw));if(message.id==null||!message.method)return;requests.push(message);
-    if(message.method==="turn/start")return ws.send(JSON.stringify({id:message.id,result:{turn:{id:"repair-turn",status:"inProgress"}}}));
+    if(message.method==="turn/start"){repairStarts++;const id=repairStarts===1?"repair-turn":`repair-turn-${repairStarts}`;return ws.send(JSON.stringify({id:message.id,result:{turn:{id,status:"inProgress"}}}))}
     ws.send(JSON.stringify({id:message.id,result:{}}));
   }));
   await new Promise((resolve,reject)=>http.listen(port,"127.0.0.1",resolve).once("error",reject));
@@ -74,4 +74,23 @@ test("Codex verification repair starts the same-thread repair turn with sanitize
   }finally{
     try{ws?.close()}catch{}await gui.close();await upstream.close();await rm(home,{recursive:true,force:true});
   }
+});
+
+test("Codex automatic verification repair stops after three chained attempts but manual repair remains available",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-verification-repair-limit-")),[port,appPort]=await Promise.all([freePort(),freePort()]);
+  const upstream=await fakeCodexAppServer(appPort);const gui=await createGuiServer({port,appPort,mock:true,env:{...process.env,TREBELL_HOME:home}});const threadId="verification-repair-limit-thread";let ws;
+  const plan={risk:"medium",steps:[{id:"tests",kind:"tests",scope:"affected",required:true,cost:"low",reason:"Changed code has related tests."}]};
+  async function failRecord(id,turnId){return fetch(gui.url+"/api/verification-records",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id,threadId,turnId,projectPath:home,plan,evidence:[{stepId:"tests",exitCode:1,status:"failed",reason:"Still failing"}]})}).then(response=>response.json())}
+  try{
+    await fetch(gui.url+"/api/thread-meta",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId,patch:{runtime:"codex",runtimeInstanceId:"codex-default",cwd:home,active:false}})});
+    ws=await connect(gui.url.replace(/^http/,"ws")+"/api/codex/ws");const rpc=rpcClient(ws);
+    await failRecord("repair-limit-1","user-turn");const first=await rpc("thread/verification/repair",{threadId,recordId:"repair-limit-1",auto:true});assert.equal(first.turn.id,"repair-turn");
+    await failRecord("repair-limit-2","repair-turn");const second=await rpc("thread/verification/repair",{threadId,recordId:"repair-limit-2",auto:true});assert.equal(second.turn.id,"repair-turn-2");
+    await failRecord("repair-limit-3","repair-turn-2");const third=await rpc("thread/verification/repair",{threadId,recordId:"repair-limit-3",auto:true});assert.equal(third.turn.id,"repair-turn-3");
+    await failRecord("repair-limit-4","repair-turn-3");await assert.rejects(rpc("thread/verification/repair",{threadId,recordId:"repair-limit-4",auto:true}),/stopped after 3 attempts/i);
+    assert.equal(upstream.requests.filter(message=>message.method==="turn/start").length,3);
+    const manual=await rpc("thread/verification/repair",{threadId,recordId:"repair-limit-4"});assert.equal(manual.turn.id,"repair-turn-4");
+    const traces=await fetch(gui.url+"/api/traces?threadId="+encodeURIComponent(threadId)+"&category=verification&limit=20").then(response=>response.json());
+    const automatic=traces.items.filter(item=>item.name==="verification.repair_started"&&item.data?.automatic===true);assert.deepEqual(automatic.map(item=>item.data.attempt).sort((a,b)=>a-b),[1,2,3]);
+  }finally{try{ws?.close()}catch{}await gui.close();await upstream.close();await rm(home,{recursive:true,force:true})}
 });

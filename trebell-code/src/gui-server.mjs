@@ -54,7 +54,7 @@ import { enrichGoal, goalAdditionalContext, goalBudgetGate, normalizeGoal } from
 import { recordCodexBudgetEvidence, recordCodexChildAgentEvidence } from "./codex-budget-evidence.mjs";
 import { recordCodexRecoveryItemEvidence, staleCodexRecoveryState } from "./codex-recovery-evidence.mjs";
 import { continuityAdditionalContext, continuitySnapshot, normalizeContinuityNotes } from "./continuity-state.mjs";
-import { verificationRepairContext, verificationRepairPrompt, verificationRepairState } from "./verification-repair.mjs";
+import { verificationRepairAttempt, verificationRepairChainState, verificationRepairContext, verificationRepairPrompt, verificationRepairState } from "./verification-repair.mjs";
 import { collectVerificationEvidence } from "./verification-evidence-collector.mjs";
 import { delegationContextValue, delegationGoalPatch, delegationPolicies } from "./delegation-state.mjs";
 import { executeDelegation } from "./delegation-executor.mjs";
@@ -1005,6 +1005,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     const {record,nextAction}=codexVerificationState(threadId,params.recordId||null);
     if(!record)throw new Error("No persisted verification record is available for this thread.");
     if(nextAction.action!=="repair")throw new Error("Latest verification does not require repair (next action: "+nextAction.action+").");
+    const repairAttempt=verificationRepairAttempt(meta?.verificationRepairChain,record,{automatic:Boolean(params.auto)});
+    if(!repairAttempt.allowed)throw Object.assign(new Error(`Automatic verification repair stopped after ${repairAttempt.limit} attempts. Review the remaining failure before continuing.`),{code:-32001});
     const repairContext=verificationRepairContext({record,nextAction});
     const withGoal=goalAdditionalContext({},durableCodexGoal(threadId));
     const withContinuity=continuityAdditionalContext(withGoal,durableCodexContinuity(threadId));
@@ -1016,7 +1018,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     };
     for(const key of Object.keys(turnParams))if(turnParams[key]===undefined)delete turnParams[key];
     const started=await requestUpstream("turn/start",turnParams,{routeMessage:{method:"thread/read",params:{threadId}},timeoutMs:120_000});
-    eventJournal.record({runtime:"codex",provider:selectedProvider,environmentId:meta?.environmentId??null,threadId,turnId:started?.turn?.id||null,category:"verification",name:"verification.repair_started",status:"running",data:{recordId:record.id,nextAction:nextAction.action,failedSteps:nextAction.failedSteps||[]}});
+    if(started?.turn?.id)state.updateThreadMeta(threadId,{verificationRepairChain:verificationRepairChainState(repairAttempt,started.turn.id)});
+    eventJournal.record({runtime:"codex",provider:selectedProvider,environmentId:meta?.environmentId??null,threadId,turnId:started?.turn?.id||null,category:"verification",name:"verification.repair_started",status:"running",data:{recordId:record.id,nextAction:nextAction.action,failedSteps:nextAction.failedSteps||[],automatic:Boolean(params.auto),attempt:repairAttempt.attempts}});
     return {record,nextAction,turn:started?.turn||null};
   }
   function assertCodexGoalBudget(threadId){

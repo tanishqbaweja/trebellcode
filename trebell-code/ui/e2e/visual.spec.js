@@ -218,6 +218,33 @@ test("browser tasks add only the browser specialized tool group",async({page})=>
   }finally{await harness.close()}
 });
 
+test("failed turn verification automatically starts one same-thread repair",async({page})=>{
+  test.setTimeout(35_000);
+  const thread={id:"auto-verification-repair-thread",name:"Auto verification repair fixture",preview:"Failed check should repair",cwd:process.cwd(),createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000,turns:[]};
+  const repairRequests=[],requestMethods=[];
+  const harness=await startCodexRequestHarness(thread,{onRequest:async(message,ws)=>{
+    requestMethods.push(message.method);
+    if(message.method==="thread/verification/repair"){
+      repairRequests.push(message.params||{});
+      ws.send(JSON.stringify({id:message.id,result:{record:{id:"verification-auto-1"},nextAction:{action:"repair",failedSteps:["tests"]},turn:{id:"auto-repair-turn",status:"inProgress"}}}));return true;
+    }
+    return false;
+  }});
+  try{
+    await routeProjectlessCodexRequestFixture(page,harness,thread,"auto-verification-repair-fixture");
+    await page.route(/\/api\/verification\/plan-turn$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({supported:true,changedPaths:["src/parser.js"],record:{id:"verification-auto-1",threadId:thread.id,turnId:"failed-turn",risk:"medium",plan:{risk:"medium",steps:[{id:"tests",kind:"tests",required:true}]},evidence:[{stepId:"tests",status:"failed",exitCode:1}],assessment:{status:"failed",risk:"medium",summary:{required:1,passed:0,failed:1,blocked:0,missing:0}}},nextAction:{action:"repair",failedSteps:["tests"]}})}));
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    const row=page.locator(".thread-row").filter({has:page.locator('.thread-main[title="Auto verification repair fixture"]')});await expect(row).toBeVisible();await row.click();await expect(page.getByTestId("composer")).toBeVisible();
+    harness.emit({method:"turn/completed",params:{threadId:thread.id,turn:{id:"failed-turn",status:"completed",completedAt:Date.now()/1000,durationMs:100}}});
+    await page.waitForTimeout(500);expect(requestMethods).toContain("thread/continuity/get");expect(requestMethods).toContain("thread/verification/repair");
+    await expect.poll(()=>repairRequests.length).toBe(1);expect(repairRequests[0]).toMatchObject({threadId:thread.id,recordId:"verification-auto-1",auto:true});
+    await expect(page.getByText("Verification failed · automatic same-thread repair started",{exact:true})).toBeVisible();
+    await page.setViewportSize({width:1280,height:800});const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+    await page.screenshot({path:auditDir+"automatic-verification-repair-1280x800.png",fullPage:true});
+  }finally{await harness.close()}
+});
+
 test("chat workspace is visually bounded and panes resize",async({page,request})=>{
   test.setTimeout(45_000);
   await prepare(page,request);
