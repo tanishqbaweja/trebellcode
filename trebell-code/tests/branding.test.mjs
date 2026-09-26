@@ -13,6 +13,14 @@ function canonicalBase64(){
     .join("");
 }
 
+function scriptChainIncludes(scripts,name,wanted,seen=new Set()){
+  if(seen.has(name))return false;seen.add(name);
+  const script=String(scripts?.[name]||"");
+  if(new RegExp(`(?:^|\\s)npm\\s+run\\s+${wanted.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")}(?:\\s|$)`).test(script))return true;
+  for(const match of script.matchAll(/(?:^|\s)npm\s+run\s+([\w:-]+)/g))if(scriptChainIncludes(scripts,match[1],wanted,seen))return true;
+  return false;
+}
+
 test("canonical Trebell icon drives Windows packaging, favicon and every in-app brand surface",()=>{
   const encoded=canonicalBase64();
   const png=Buffer.from(encoded,"base64");
@@ -30,7 +38,7 @@ test("canonical Trebell icon drives Windows packaging, favicon and every in-app 
   assert.equal(pkg.build?.nsis?.installerIcon,"build/icon.ico");
   assert.equal(pkg.build?.nsis?.uninstallerIcon,"build/icon.ico");
   assert.equal(pkg.build?.nsis?.installerHeaderIcon,"build/icon.ico");
-  assert.match(pkg.scripts?.["desktop:dist"]||"",/prepare:icon/,"Desktop packaging must materialize the canonical icon before electron-builder.");
+  assert.equal(scriptChainIncludes(pkg.scripts,"desktop:dist","prepare:icon"),true,"Desktop packaging must materialize the canonical icon before electron-builder, directly or through its platform build script.");
 
   const index=readFileSync(join(root,"ui","index.html"),"utf8");
   const app=readFileSync(join(root,"ui","src","App.jsx"),"utf8");
