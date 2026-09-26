@@ -66,7 +66,10 @@ test("Codex plugin discovery exposes native search, details, skill contents and 
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
     await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
-    await page.goto("/");await page.getByRole("button",{name:/Plugin fixture/}).click();await page.getByRole("button",{name:"Tools",exact:true}).click();
+    await page.goto("/");
+    const threadRow=page.locator(".thread-row").filter({hasText:"Plugin fixture"});
+    await threadRow.locator(".thread-main").click();await expect(threadRow).toHaveClass(/active/);
+    await page.getByRole("button",{name:"Tools",exact:true}).click();
     const diagnostics=page.locator(".capability-card").filter({hasText:"Codex runtime health"});await expect(diagnostics).toContainText("PID 4242");await expect(diagnostics).toContainText("256 MB");await expect(diagnostics).toContainText("Loaded sessions");await expect(diagnostics).toContainText("2");await expect(diagnostics).toContainText("Live threads");await expect(diagnostics).toContainText("3");
     expect(calls.some(call=>call.method==="server/diagnostics")).toBe(true);expect(calls.find(call=>call.method==="thread/loaded/list")?.params).toEqual({limit:100});
     await page.setViewportSize({width:1280,height:800});await diagnostics.scrollIntoViewIfNeeded();await page.screenshot({path:auditDir+"tools-runtime-health-1280x800.png",fullPage:false});

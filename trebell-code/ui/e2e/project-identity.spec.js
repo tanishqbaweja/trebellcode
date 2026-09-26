@@ -116,7 +116,7 @@ test("Codex project identity sync failures warn without blocking thread open or 
     await existingRow.locator(".thread-main").click();
     await expect(existingRow).toHaveClass(/active/);
     const alert=page.getByTestId("app-action-error");
-    await expect(alert).toContainText("Could not sync Codex project identity: Deliberate Codex project sync failure");
+    await expect(alert).toContainText("Could not sync runtime project identity: Deliberate Codex project sync failure");
     await expect(alert).toBeInViewport();
     await expect(page.getByTestId("composer")).toBeVisible();
     await page.setViewportSize({width:1280,height:800});
@@ -131,7 +131,7 @@ test("Codex project identity sync failures warn without blocking thread open or 
     expect(started?.params?.projectId).toBeUndefined();
     await expect(page.locator(".thread-row.active")).toContainText("New thread without native project");
     await expect(page.getByTestId("composer")).toBeVisible();
-    await expect(alert).toContainText("Could not sync Codex project identity: Deliberate Codex project sync failure");
+    await expect(alert).toContainText("Could not sync runtime project identity: Deliberate Codex project sync failure");
     await page.screenshot({path:auditDir+"codex-project-sync-new-thread-error-1280x800.png",fullPage:true});
   }finally{relay.close();for(const socket of sockets)try{socket.terminate()}catch{}upstreamWss.close();await Promise.all([new Promise(resolve=>relayHttp.close(resolve)),new Promise(resolve=>upstreamHttp.close(resolve))])}
 });

@@ -51,7 +51,9 @@ test("Codex memory status and controls use native app-server RPCs",async({page})
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
     await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
     await page.goto("/");
-    await page.getByRole("button",{name:/Codex memory fixture/}).click();await page.getByRole("button",{name:"Tools",exact:true}).click();
+    const threadRow=page.locator(".thread-row").filter({hasText:"Codex memory fixture"});
+    await threadRow.locator(".thread-main").click();await expect(threadRow).toHaveClass(/active/);
+    await page.getByRole("button",{name:"Tools",exact:true}).click();
     const card=page.locator(".capability-card").filter({hasText:"Codex memory"});await expect(card).toContainText("17");await expect(card).toContainText("Building");
     await card.getByRole("button",{name:"Disable for this thread"}).click();await expect(card).toContainText("Memory disabled for this thread.");
     await expect.poll(()=>calls.some(call=>call.method==="thread/memoryMode/set"&&call.params?.mode==="disabled")).toBe(true);

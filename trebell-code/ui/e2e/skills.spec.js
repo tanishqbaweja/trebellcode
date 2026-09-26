@@ -61,7 +61,10 @@ test("Codex skills expose disabled entries, persistent toggles and runtime extra
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
     await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
-    await page.goto("/");await page.getByRole("button",{name:/Skills fixture/}).click();await page.getByRole("button",{name:"Tools",exact:true}).click();
+    await page.goto("/");
+    const threadRow=page.locator(".thread-row").filter({hasText:"Skills fixture"});
+    await threadRow.locator(".thread-main").click();await expect(threadRow).toHaveClass(/active/);
+    await page.getByRole("button",{name:"Tools",exact:true}).click();
     const card=page.locator(".capability-card").filter({hasText:"Skills"});await expect(card).toContainText("Alpha helper");await expect(card).toContainText("Beta helper");
     const alpha=card.locator(".skill-list>div").filter({hasText:"Alpha helper"});const beta=card.locator(".skill-list>div").filter({hasText:"Beta helper"});
     await expect(alpha.getByRole("button",{name:"On"})).toBeVisible();await expect(beta.getByRole("button",{name:"Off"})).toBeVisible();
