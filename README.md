@@ -534,7 +534,7 @@ The v1.3.3 Native audit run passed with `deepseek-v4.1` and explicitly reported 
 That live test also drove concrete Native efficiency work. Advanced repository and MCP capabilities use stable discovery/invocation manifests instead of injecting every specialized schema on every model step. On the latest audit fixture:
 
 - baseline tool functions dropped from **31 to 11**;
-- first-request tool-schema JSON dropped from roughly **14.3 KB to 5.1 KB**;
+- first-request tool-schema JSON dropped from roughly **14.3 KB to 4.9 KB**;
 - the first real model request used roughly **2.66k provider input tokens**;
 - the complete small coding task finished in **4 model turns / 12,006 input tokens**, down from the first measured run of roughly **40.4k input tokens**;
 - all four requests kept one stable prefix and one stable tool-schema hash;
@@ -542,11 +542,17 @@ That live test also drove concrete Native efficiency work. Advanced repository a
 
 The exact token count varies by model behavior and conversation history, so these are audit measurements rather than a promised fixed cost.
 
-The Native system prompt itself is intentionally compact: the latest live trace measured roughly **527 estimated tokens**. The larger recurring costs are tool schemas and accumulated conversation/tool evidence, so Native progressively exposes advanced capabilities, deduplicates byte-identical file observations, virtualizes large tool output behind searchable handles, and uses a compact repository seed in the UI instead of replaying full source excerpts on every model/tool round trip.
+The Native system prompt itself is intentionally compact: the current release candidate measures roughly **532 estimated tokens**. The larger recurring costs are tool schemas and accumulated conversation/tool evidence, so Native progressively exposes advanced capabilities, deduplicates byte-identical file observations, virtualizes large tool output behind searchable handles, and uses a compact repository seed in the UI instead of replaying full source excerpts on every model/tool round trip.
 
 The controlled `test:vyce:cache` experiment sent repeated stable ~9k-token prefixes and observed **0 cached input tokens** from the current Vyce Chat Completions route. Trebell therefore records provider cache/state capabilities explicitly and does not assume that an OpenAI-compatible endpoint also implements prompt caching or stateful Responses continuation.
 
-For broader real-model regression work, `npm run bench:vyce:native` exercises disposable repositories covering multi-file refactoring, failing-test repair, and large noisy tool output with independent verification and per-scenario token/latency/tool metrics.
+For broader real-model regression work, `npm run bench:vyce:native` exercises disposable repositories covering multi-file refactoring, failing-test repair, and large noisy tool output with independent verification and per-scenario token/latency/tool metrics. The final v1.3.3 benchmark passed all three scenarios:
+
+- multi-file refactor: **6 model turns / 20,343 input tokens**;
+- failure-driven repair: **6 model turns / 22,055 input tokens**;
+- 92 KB noisy-output repair: **7 model turns / 36,566 input tokens**, with the full command output virtualized outside hot context while retaining failure evidence in the preview.
+
+Across those three live tasks, Trebell used **19 model turns / 78,964 input tokens** total. Vyce reported **0 cached input tokens**, so long/noisy tool loops remain a measured optimization target rather than being hidden behind assumed prompt caching.
 
 ---
 

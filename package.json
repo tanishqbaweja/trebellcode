@@ -33,7 +33,6 @@
     "test:vyce:native": "node --env-file-if-exists=.env scripts/live-vyce-native-agent-test.mjs --live",
     "bench:vyce:native": "node --env-file-if-exists=.env scripts/live-vyce-native-benchmark.mjs --live",
     "test:vyce:cache": "node --env-file-if-exists=.env scripts/live-vyce-cache-test.mjs --live",
-    "bench:native:vyce": "node --env-file-if-exists=.env scripts/live-vyce-native-benchmark.mjs --live",
     "test:vyce:background": "node --env-file-if-exists=.env scripts/live-vyce-background-test.mjs --live",
     "test:vyce:fanout": "node --env-file-if-exists=.env scripts/live-vyce-fanout-test.mjs --live",
     "test:runtime-profiles:live": "node --env-file-if-exists=.env scripts/live-runtime-profile-smoke.mjs --live",

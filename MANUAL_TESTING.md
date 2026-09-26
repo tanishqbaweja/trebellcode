@@ -85,6 +85,14 @@ Additional live engineering checks:
 - `npm run test:vyce:cache` — repeated-prefix cache experiment for the current Vyce route;
 - `npm run bench:vyce:native` — multi-file refactor, failure-repair, and large-output benchmark scenarios.
 
+Final v1.3.3 benchmark baseline on VyceAi + `deepseek-v4.1`:
+
+- multi-file refactor: 6 model turns / 20,343 input tokens;
+- failure-driven repair: 6 model turns / 22,055 input tokens;
+- 92 KB noisy-output repair: 7 model turns / 36,566 input tokens;
+- all three scenarios independently verified after the Native turn;
+- Vyce reported 0 cached input tokens.
+
 The checklist below is still required for broader real-world confidence:
 
 - [ ] Select Trebell Native.

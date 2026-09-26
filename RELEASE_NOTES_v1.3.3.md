@@ -16,7 +16,7 @@ Version 1.3.3 hardens Trebell Native as a real first-party coding harness and ad
 - The prompt teaches evidence-driven coding, permission boundaries, verification discipline, untrusted tool-data handling, minimal coherent edits, and honest failure reporting.
 - It tells the model to use exact paths/commands supplied by the user or tools instead of rediscovering them.
 - It encourages batching independent read-only tool calls to reduce unnecessary model round trips.
-- The latest live trace measured the system prompt at roughly 527 estimated tokens; prompt size is not the dominant Native cost.
+- The current release candidate measures the system prompt at roughly 532 estimated tokens; prompt size is not the dominant Native cost.
 
 ## Progressive repository tools
 
@@ -25,7 +25,7 @@ Version 1.3.3 hardens Trebell Native as a real first-party coding harness and ad
 - Generic discovery queries such as “repository structure and project layout” no longer inflate the advanced schema set.
 - Discovery returns capability metadata as data instead of mutating the provider-visible schema manifest.
 - Native MCP follows the same stable-manifest idea with generic discovery/call/resource tools while policy still resolves the real target tool.
-- On the measured coding path, baseline functions dropped from 31 to 11 and first-request tool-schema JSON dropped from about 14.3 KB to about 5.1 KB.
+- On the measured coding path, baseline functions dropped from 31 to 11 and first-request tool-schema JSON dropped from about 14.3 KB to about 4.9 KB.
 
 ## Native context efficiency
 
@@ -55,7 +55,13 @@ Version 1.3.3 hardens Trebell Native as a real first-party coding harness and ad
 
 The first measured real Native coding run consumed roughly **40.4k input tokens** for the small validation fixture. The latest equivalent run completed successfully in **4 model turns / 12,006 input tokens / 373 output tokens**, with no failed tool calls, one stable prefix, one stable tool-schema hash, and independent post-turn verification.
 
-A new `bench:vyce:native` live benchmark also covers multi-file refactoring, failing-test repair, and large noisy command output in disposable repositories with independent verification and per-scenario token/latency/tool metrics. Large-output work remains an optimization area: virtualizing output materially bounds retained context, but model/tool-loop decisions can still dominate total cost.
+A new `bench:vyce:native` live benchmark also covers multi-file refactoring, failing-test repair, and large noisy command output in disposable repositories with independent verification and per-scenario token/latency/tool metrics. The final v1.3.3 benchmark passed all three scenarios:
+
+- multi-file refactor: **6 turns / 20,343 input tokens**;
+- failing-test repair: **6 turns / 22,055 input tokens**;
+- 92 KB noisy-output repair: **7 turns / 36,566 input tokens** with virtualized command output.
+
+The three tasks totaled **19 model turns / 78,964 input tokens**. Large-output work remains an optimization area: virtualization materially bounds retained context and preserves useful failure signals, but model/tool-loop decisions can still dominate total cost.
 
 ## Release validation
 
