@@ -180,9 +180,12 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       :`MCP server ${action}. New or resumed sessions will receive the change.`;
   }
   async function addMcpServer(){
-    if(!mcpDraft?.name?.trim()||!mcpDraft?.command?.trim())return;
+    const type=mcpDraft?.type==="http"?"http":"stdio";
+    if(!mcpDraft?.name?.trim()||(type==="http"?!mcpDraft?.url?.trim():!mcpDraft?.command?.trim()))return;
     const environmentId=settings.activeEnvironmentId||null;
-    const entry={id:`mcp-${crypto.randomUUID()}`,name:mcpDraft.name.trim(),runtime:selectedAgent,environmentId,enabled:true,type:"stdio",command:mcpDraft.command.trim(),args:mcpArgs(mcpDraft.argsText),env:[]};
+    const entry=type==="http"
+      ?{id:`mcp-${crypto.randomUUID()}`,name:mcpDraft.name.trim(),runtime:selectedAgent,environmentId:null,enabled:true,type:"http",url:mcpDraft.url.trim(),bearerTokenEnv:mcpDraft.bearerTokenEnv?.trim()||null}
+      :{id:`mcp-${crypto.randomUUID()}`,name:mcpDraft.name.trim(),runtime:selectedAgent,environmentId,enabled:true,type:"stdio",command:mcpDraft.command.trim(),args:mcpArgs(mcpDraft.argsText),env:[]};
     try{
       await save({mcpServers:[...(settings.mcpServers||[]),entry]});
       setMcpDraft(null);setMcpMessage(mcpSavedMessage("saved"));
@@ -608,13 +611,20 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       </div>}
       {settingsSection==="agents"&&["native","claude","cursor","grok","antigravity"].includes(selectedAgent)&&<div className="settings-card custom-model-settings" {...targetProps("agents-mcp")}>
         <h3><PlugZap size={14}/> MCP servers</h3>
-        <p>{selectedAgent==="native"?"Connect stdio MCP servers directly to Trebell Native":`Inject stdio MCP servers into ${selectedAgent==="claude"?"Claude Code":"ACP"} sessions`} on <strong>{mcpEnvironmentId?"the active remote environment":"Local machine"}</strong>. Trebell strips secret-looking stored arguments and environment values; prefer the server's own authentication flow or inherited runtime credentials.</p>
-        <div className="custom-model-list">{scopedMcpServers.map(server=><div key={server.id}><span><strong>{server.name}</strong><small>{server.command}{server.args?.length?" · "+server.args.join(" "):""}</small></span><button onClick={()=>toggleMcpServer(server)}>{server.enabled===false?"Enable":"Disable"}</button><button onClick={()=>removeMcpServer(server)}>Remove</button></div>)}</div>
-        {!mcpDraft?<button className="setting-action" onClick={()=>{setMcpDraft({name:"",command:"",argsText:""});setMcpMessage("")}}>Add MCP server</button>:<div className="custom-model-editor">
+        <p>{selectedAgent==="native"&&!mcpEnvironmentId?"Connect local stdio or Streamable HTTP MCP servers directly to Trebell Native":selectedAgent==="native"?"Connect stdio MCP servers directly inside the active remote environment":`Inject stdio MCP servers into ${selectedAgent==="claude"?"Claude Code":"ACP"} sessions`} on <strong>{mcpEnvironmentId?"the active remote environment":"Local machine"}</strong>. Trebell strips secret-looking stored arguments and values. HTTP bearer auth stores only an approved runtime environment-variable name, never the token.</p>
+        <div className="custom-model-list">{scopedMcpServers.map(server=><div key={server.id}><span><strong>{server.name}</strong><small>{server.type==="http"?`${server.url}${server.bearerTokenEnv?` · bearer from ${server.bearerTokenEnv}`:""}`:`${server.command}${server.args?.length?" · "+server.args.join(" "):""}`}</small></span><button onClick={()=>toggleMcpServer(server)}>{server.enabled===false?"Enable":"Disable"}</button><button onClick={()=>removeMcpServer(server)}>Remove</button></div>)}</div>
+        {!mcpDraft?<button className="setting-action" onClick={()=>{setMcpDraft({name:"",type:"stdio",command:"",argsText:"",url:"",bearerTokenEnv:""});setMcpMessage("")}}>Add MCP server</button>:<div className="custom-model-editor">
           <label>Name<input aria-label="MCP server name" value={mcpDraft.name||""} onChange={e=>setMcpDraft({...mcpDraft,name:e.target.value})} placeholder="Workspace tools"/></label>
-          <label>Executable<input aria-label="MCP server executable" value={mcpDraft.command||""} onChange={e=>setMcpDraft({...mcpDraft,command:e.target.value})} placeholder={mcpEnvironmentId?"/usr/local/bin/my-mcp":"Absolute executable path"}/></label>
-          <label>Arguments · one per line<textarea aria-label="MCP server arguments" value={mcpDraft.argsText||""} onChange={e=>setMcpDraft({...mcpDraft,argsText:e.target.value})} placeholder={"--stdio\n--workspace"}/></label>
-          <div className="provider-key-actions"><button className="setting-action" onClick={addMcpServer} disabled={!mcpDraft.name?.trim()||!mcpDraft.command?.trim()}>Save MCP server</button><button onClick={()=>setMcpDraft(null)}>Cancel</button></div>
+          {selectedAgent==="native"&&!mcpEnvironmentId&&<label>Transport<select aria-label="MCP server transport" value={mcpDraft.type||"stdio"} onChange={e=>setMcpDraft({...mcpDraft,type:e.target.value})}><option value="stdio">Local process (stdio)</option><option value="http">Streamable HTTP</option></select></label>}
+          {(mcpDraft.type||"stdio")==="http"?<>
+            <label>Server URL<input aria-label="MCP server URL" value={mcpDraft.url||""} onChange={e=>setMcpDraft({...mcpDraft,url:e.target.value})} placeholder="https://mcp.example.com/mcp"/></label>
+            <label>Bearer token environment variable · optional<input aria-label="MCP bearer token environment variable" value={mcpDraft.bearerTokenEnv||""} onChange={e=>setMcpDraft({...mcpDraft,bearerTokenEnv:e.target.value})} placeholder="MCP_ACCESS_TOKEN"/></label>
+            <p className="provider-note">For bearer auth, add this variable to the Native runtime profile's approved environment keys and provide its value in the runtime environment. Trebell stores only the variable name.</p>
+          </>:<>
+            <label>Executable<input aria-label="MCP server executable" value={mcpDraft.command||""} onChange={e=>setMcpDraft({...mcpDraft,command:e.target.value})} placeholder={mcpEnvironmentId?"/usr/local/bin/my-mcp":"Absolute executable path"}/></label>
+            <label>Arguments · one per line<textarea aria-label="MCP server arguments" value={mcpDraft.argsText||""} onChange={e=>setMcpDraft({...mcpDraft,argsText:e.target.value})} placeholder={"--stdio\n--workspace"}/></label>
+          </>}
+          <div className="provider-key-actions"><button className="setting-action" onClick={addMcpServer} disabled={!mcpDraft.name?.trim()||((mcpDraft.type||"stdio")==="http"?!mcpDraft.url?.trim():!mcpDraft.command?.trim())}>Save MCP server</button><button onClick={()=>setMcpDraft(null)}>Cancel</button></div>
         </div>}
         {!scopedMcpServers.length&&!mcpDraft&&<p className="provider-note">No Trebell-managed MCP servers are configured for this runtime and environment.</p>}
         {mcpMessage&&<p className={/failed|error/i.test(mcpMessage)?"provider-status-error":"provider-note"}>{mcpMessage}</p>}

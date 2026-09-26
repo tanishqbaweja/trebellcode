@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NativeMcpBroker, mcpToolPolicy } from "../src/native-mcp-broker.mjs";
@@ -11,6 +12,14 @@ import { NativeAgentSession } from "../src/native-agent-session.mjs";
 const root=resolve(fileURLToPath(new URL("..",import.meta.url)));
 const fixture=resolve(root,"tests/fixtures/native-mcp-server.mjs");
 const resourceOnlyFixture=resolve(root,"tests/fixtures/native-mcp-resource-only-server.mjs");
+const httpFixture=resolve(root,"tests/fixtures/native-mcp-http-server.mjs");
+
+async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
+async function startHttpFixture(){
+  const port=await freePort(),secret="fixture-http-secret",child=spawn(process.execPath,[httpFixture],{cwd:root,env:{...process.env,MCP_HTTP_PORT:String(port),EXPECTED_BEARER:secret},stdio:["ignore","pipe","pipe"],windowsHide:true});
+  await new Promise((resolveReady,reject)=>{let stdout="",stderr="";const timer=setTimeout(()=>reject(new Error("HTTP MCP fixture did not start: "+stderr)),5000);child.stdout.on("data",chunk=>{stdout+=String(chunk);if(/READY/.test(stdout)){clearTimeout(timer);resolveReady()}});child.stderr.on("data",chunk=>{stderr+=String(chunk)});child.once("error",error=>{clearTimeout(timer);reject(error)});child.once("exit",code=>{if(code!==null&&code!==0){clearTimeout(timer);reject(new Error(`HTTP MCP fixture exited ${code}: ${stderr}`))}})});
+  return {port,secret,async close(){if(child.exitCode!=null)return;child.kill();await Promise.race([new Promise(resolveClose=>child.once("exit",resolveClose)),new Promise(resolveClose=>setTimeout(resolveClose,1500))]);if(child.exitCode==null)child.kill("SIGKILL")}};
+}
 
 function servers(){
   return nativeMcpServersForSession(normalizeMcpServers([{
@@ -89,6 +98,24 @@ test("Native MCP keeps resource-only servers available without fabricating tool 
     const found=await broker.call({namespace:"trebell_mcp",name:"discover_resources",arguments:{query:"status"}});const payload=JSON.parse(found.contentItems[0].text);assert.equal(payload.resources[0].namespace,"mcp_resource-only");assert.equal(payload.resources[0].uri,"fixture-only://status");
     const read=await broker.call({namespace:"trebell_mcp",name:"read_resource",arguments:{namespace:"mcp_resource-only",uri:"fixture-only://status"}});assert.match(read.contentItems[0].text,/resource-only-ok/);
   }finally{await broker.close()}
+});
+
+test("Native MCP connects to authenticated Streamable HTTP using an approved bearer-token environment reference",async()=>{
+  const http=await startHttpFixture(),configured=nativeMcpServersForSession(normalizeMcpServers([{id:"http-fixture",name:"HTTP Fixture",runtime:"native",type:"http",url:`http://127.0.0.1:${http.port}/mcp`,bearerTokenEnv:"HTTP_MCP_TOKEN",enabled:true}]));
+  const broker=new NativeMcpBroker({servers:configured,cwd:root,localEnvironment:{HTTP_MCP_TOKEN:http.secret},version:"test"});
+  try{
+    const [namespace]=await broker.connect();assert.equal(namespace.name,"mcp_http-fixture");assert.deepEqual(namespace.tools.map(tool=>tool.name),["http-echo"]);assert.equal(broker.failures().length,0);
+    const tool=await broker.call({namespace:namespace.name,name:"http-echo",arguments:{text:"secure"}});assert.match(tool.contentItems[0].text,/http:secure/);
+    const resources=await broker.call({namespace:"trebell_mcp",name:"discover_resources",arguments:{query:"guide"}});const payload=JSON.parse(resources.contentItems[0].text);assert.equal(payload.resources[0].uri,"http-fixture://guide");
+    const read=await broker.call({namespace:"trebell_mcp",name:"read_resource",arguments:{namespace:namespace.name,uri:"http-fixture://guide"}});assert.match(read.contentItems[0].text,/authenticated-http-resource/);
+    assert.doesNotMatch(JSON.stringify(configured),new RegExp(http.secret));
+  }finally{await broker.close();await http.close()}
+});
+
+test("Native HTTP MCP fails closed when its bearer-token environment reference is unavailable",async()=>{
+  const http=await startHttpFixture(),configured=nativeMcpServersForSession(normalizeMcpServers([{id:"http-missing-token",name:"Missing Token",runtime:"native",type:"http",url:`http://127.0.0.1:${http.port}/mcp`,bearerTokenEnv:"HTTP_MCP_TOKEN"}])),broker=new NativeMcpBroker({servers:configured,cwd:root,localEnvironment:{},version:"test"});
+  try{const namespaces=await broker.connect();assert.deepEqual(namespaces,[]);const [failure]=broker.failures();assert.match(failure.error,/HTTP_MCP_TOKEN is unavailable/);assert.doesNotMatch(JSON.stringify(failure),new RegExp(http.secret))}
+  finally{await broker.close();await http.close()}
 });
 
 test("Native MCP tools pass through Trebell policy instead of bypassing it",async()=>{

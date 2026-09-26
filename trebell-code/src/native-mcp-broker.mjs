@@ -1,5 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ReadBuffer, serializeMessage } from "@modelcontextprotocol/sdk/shared/stdio.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
@@ -152,7 +153,12 @@ export class NativeMcpBroker{
       const namespace=uniqueName(safeName("mcp_"+(server.id||server.name),{prefix:"mcp",max:60}),namespaceNames,60),entry={server,namespace,client:null,transport:null,tools:[],resources:[],resourceTemplates:[],resourceError:null,error:null};this.entries.push(entry);
       try{
         const explicit=environmentObject(server.env),profile=this.environmentId&&this.environments?this.environments.get(this.environmentId):null;
-        const transport=profile&&profile.type!=="local"
+        let transport;
+        if(server.type==="http"){
+          if(this.environmentId)throw new Error("HTTP MCP servers are available only in local Trebell Native sessions.");
+          const headers={};if(server.bearerTokenEnv){const token=String(this.localEnvironment?.[server.bearerTokenEnv]||"").trim();if(!token)throw new Error(`MCP bearer-token environment variable ${server.bearerTokenEnv} is unavailable to this Native runtime.`);headers.Authorization=`Bearer ${token}`}
+          transport=new StreamableHTTPClientTransport(new URL(server.url),{requestInit:Object.keys(headers).length?{headers}:undefined});
+        }else transport=profile&&profile.type!=="local"
           ?new EnvironmentStdioClientTransport({environments:this.environments,environmentId:this.environmentId,command:server.command,args:server.args||[],cwd:this.cwd,environmentNames:this.remoteEnvironmentNames,environment:explicit})
           :new StdioClientTransport({command:server.command,args:server.args||[],cwd:this.cwd||undefined,env:{...this.localEnvironment,...explicit},stderr:"pipe"});
         const client=new Client({name:"trebell-native",version:this.version},{capabilities:{elicitation:{form:{},url:{}}}});entry.transport=transport;entry.client=client;
