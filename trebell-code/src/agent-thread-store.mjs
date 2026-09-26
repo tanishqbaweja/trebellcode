@@ -30,15 +30,15 @@ export function interruptedTurnRecoverySafety(turn={}){
 }
 function persistedItem(item,environment){
   const next={...item};
-  if(Object.prototype.hasOwnProperty.call(next,"aggregatedOutput")&&next.aggregatedOutput!=null)next.aggregatedOutput=boundDiagnosticText(redactSecretText(next.aggregatedOutput,{environment}),256*1024);
-  if(Object.prototype.hasOwnProperty.call(next,"rawInput"))next.rawInput=boundDiagnosticValue(redactSecretValue(next.rawInput,{environment,maxDepth:12,maxArray:200,maxFields:768}),{maxChars:128*1024,maxFields:768,maxDepth:12});
+  if(Object.prototype.hasOwnProperty.call(next,"aggregatedOutput")&&next.aggregatedOutput!=null)next.aggregatedOutput=redactSecretText(boundDiagnosticText(next.aggregatedOutput,256*1024),{environment});
+  if(Object.prototype.hasOwnProperty.call(next,"rawInput"))next.rawInput=redactSecretValue(boundDiagnosticValue(next.rawInput,{maxChars:128*1024,maxFields:768,maxDepth:12}),{environment,maxDepth:12,maxArray:200,maxFields:768});
   if(Object.prototype.hasOwnProperty.call(next,"rawOutput")){
     next.rawOutput=typeof next.rawOutput==="string"
-      ?boundDiagnosticText(redactSecretText(next.rawOutput,{environment}),256*1024)
-      :boundDiagnosticValue(redactSecretValue(next.rawOutput,{environment,maxDepth:12,maxArray:200,maxFields:1024}),{maxChars:256*1024,maxFields:1024,maxDepth:12});
+      ?redactSecretText(boundDiagnosticText(next.rawOutput,256*1024),{environment})
+      :redactSecretValue(boundDiagnosticValue(next.rawOutput,{maxChars:256*1024,maxFields:1024,maxDepth:12}),{environment,maxDepth:12,maxArray:200,maxFields:1024});
   }
-  if(Object.prototype.hasOwnProperty.call(next,"arguments"))next.arguments=boundDiagnosticValue(redactSecretValue(next.arguments,{environment,maxDepth:12,maxArray:200,maxFields:768}),{maxChars:128*1024,maxFields:768,maxDepth:12});
-  if(Object.prototype.hasOwnProperty.call(next,"contentItems"))next.contentItems=boundDiagnosticValue(redactSecretValue(next.contentItems,{environment,maxDepth:12,maxArray:200,maxFields:768}),{maxChars:128*1024,maxFields:768,maxDepth:12});
+  if(Object.prototype.hasOwnProperty.call(next,"arguments"))next.arguments=redactSecretValue(boundDiagnosticValue(next.arguments,{maxChars:128*1024,maxFields:768,maxDepth:12}),{environment,maxDepth:12,maxArray:200,maxFields:768});
+  if(Object.prototype.hasOwnProperty.call(next,"contentItems"))next.contentItems=redactSecretValue(boundDiagnosticValue(next.contentItems,{maxChars:128*1024,maxFields:768,maxDepth:12}),{environment,maxDepth:12,maxArray:200,maxFields:768});
   return next;
 }
 
