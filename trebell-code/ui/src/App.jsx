@@ -911,12 +911,21 @@ export default function App(){
     const seq=++modelRefreshSeqRef.current;
     const targetProvider=expectedProvider||provider;
     const targetRuntime=expectedRuntime||agentRuntime;
-    if(targetProvider!==provider||targetRuntime!==agentRuntime){setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("")}
-    const [bootResult,d]=await Promise.all([
+    const sameScope=targetProvider===provider&&targetRuntime===agentRuntime;
+    if(!sameScope){setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("")}
+    const [bootResult,modelResult]=await Promise.all([
       api("/api/bootstrap").then(value=>({value,error:null}),error=>({value:null,error})),
-      api("/api/models").catch(error=>({models:[],error:error.message})),
+      api("/api/models").then(value=>({value,error:null}),error=>({value:null,error})),
     ]);
-    if(seq!==modelRefreshSeqRef.current)return d;
+    if(seq!==modelRefreshSeqRef.current)return modelResult.value;
+    if(modelResult.error){
+      const message=modelResult.error.message||String(modelResult.error);
+      if(bootResult.value)setBootstrap(bootResult.value);
+      else if(bootResult.error)showActionError(bootResult.error,"Model catalog and provider status could not refresh");
+      setModelError(message);
+      return {provider:targetProvider,agentRuntime:targetRuntime,models:sameScope?models:[],metadata:sameScope?{models:Object.entries(modelMeta).map(([id,item])=>({id,...item}))}:null,error:message,stale:sameScope};
+    }
+    const d=modelResult.value||{models:[]};
     if((d?.provider&&d.provider!==targetProvider)||(d?.agentRuntime&&d.agentRuntime!==targetRuntime))return d;
     if(bootResult.value)setBootstrap(bootResult.value);
     else if(bootResult.error)showActionError(bootResult.error,"Models refreshed, but provider status could not refresh");
