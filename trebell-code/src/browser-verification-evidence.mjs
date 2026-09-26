@@ -4,7 +4,7 @@ function text(value,max=300){const out=String(value??"").trim();return out?out.s
 
 export function browserVerificationReceipt({tool,result=null,success=true,callId=null}={}){
   const name=String(tool||"").trim();if(!name)return null;const base={namespace:"trebell_browser",tool:name,success:Boolean(success)};if(callId)base.callId=text(callId,240);
-  if(["open","click","type"].includes(name))return {...base,interaction:true,passed:Boolean(success&&result?.ok!==false)};
+  if(["open","back","forward","reload","click","type"].includes(name))return {...base,interaction:true,passed:Boolean(success&&result?.ok!==false)};
   if(name==="runtime")return {...base,consoleErrorCount:array(result?.consoleErrors).length,networkFailureCount:array(result?.networkFailures).length,width:integer(result?.width,{min:1,max:10000}),height:integer(result?.height,{min:1,max:10000}),viewportCount:array(result?.viewports).length};
   if(name==="screenshot")return {...base,screenshot:Boolean(success),width:integer(result?.width,{min:1,max:10000}),height:integer(result?.height,{min:1,max:10000})};
   if(name==="set_viewport")return {...base,viewport:Boolean(success),width:integer(result?.width,{min:1,max:10000}),height:integer(result?.height,{min:1,max:10000})};

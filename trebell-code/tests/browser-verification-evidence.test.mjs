@@ -10,6 +10,7 @@ test("browser verification receipts keep bounded facts and drop screenshot bytes
 
 test("browser verification receipts distinguish interaction success from failed browser work",()=>{
   assert.equal(browserVerificationReceipt({tool:"click",success:true,result:{ok:true}}).passed,true);assert.equal(browserVerificationReceipt({tool:"click",success:true,result:{ok:false}}).passed,false);assert.equal(browserVerificationReceipt({tool:"open",success:false}).passed,false);
+  for(const tool of ["back","forward","reload"]){const receipt=browserVerificationReceipt({tool,success:true,result:{url:"https://example.test"}});assert.equal(receipt.interaction,true,tool);assert.equal(receipt.passed,true,tool)}
 });
 
 test("browser evidence normalization rejects other namespaces and ignores unknown fields",()=>{

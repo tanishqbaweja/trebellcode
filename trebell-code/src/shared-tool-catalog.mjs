@@ -50,6 +50,9 @@ export const SHARED_TOOL_NAMESPACE_CATALOG=freeze([
   ],{workspace:true}),
   namespace("trebell_browser","Control Trebell Code's isolated desktop browser session for web research and testing.",[
     tool("open","Navigate the Trebell browser to a URL.",{type:"object",properties:{url:{type:"string"}},required:["url"],additionalProperties:false},{kind:"fetch",riskLevel:"low",reversibility:"full"},{desktop:true}),
+    tool("back","Navigate the isolated browser back one history entry when available.",emptyObjectSchema,{kind:"read",riskLevel:"low",reversibility:"full",idempotent:false,asyncSafe:true},{desktop:true}),
+    tool("forward","Navigate the isolated browser forward one history entry when available.",emptyObjectSchema,{kind:"read",riskLevel:"low",reversibility:"full",idempotent:false,asyncSafe:true},{desktop:true}),
+    tool("reload","Reload the current isolated browser page.",emptyObjectSchema,{kind:"fetch",riskLevel:"low",reversibility:"full",idempotent:true,asyncSafe:true},{desktop:true}),
     tool("snapshot","Inspect current page text and interactive elements. Returns refs for click/type.",emptyObjectSchema,{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,asyncSafe:true},{desktop:true}),
     tool("click","Click an element from the latest snapshot by ref.",{type:"object",properties:{ref:{type:"string"}},required:["ref"],additionalProperties:false},{kind:"other",riskLevel:"medium",reversibility:"partial",externalSideEffect:true},{desktop:true}),
     tool("type","Set text in an input or editable element from the latest snapshot.",{type:"object",properties:{ref:{type:"string"},text:{type:"string"}},required:["ref","text"],additionalProperties:false},{kind:"other",riskLevel:"medium",reversibility:"partial",externalSideEffect:true},{desktop:true}),

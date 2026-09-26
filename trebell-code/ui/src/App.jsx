@@ -1665,6 +1665,9 @@ export default function App(){
             if(!window.trebellDesktop?.browser)throw new Error("Agent browser is only available in the desktop app.");
             let result;
             if(p.tool==="open")result=await window.trebellDesktop.browser.navigate(p.arguments?.url);
+            else if(p.tool==="back")result=await window.trebellDesktop.browser.back();
+            else if(p.tool==="forward")result=await window.trebellDesktop.browser.forward();
+            else if(p.tool==="reload")result=await window.trebellDesktop.browser.reload();
             else if(p.tool==="snapshot")result=await window.trebellDesktop.browser.snapshot();
             else if(p.tool==="click")result=await window.trebellDesktop.browser.click(p.arguments?.ref);
             else if(p.tool==="type")result=await window.trebellDesktop.browser.type(p.arguments?.ref,p.arguments?.text);

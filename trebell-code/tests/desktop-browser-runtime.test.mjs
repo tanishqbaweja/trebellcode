@@ -18,6 +18,8 @@ test("desktop isolated browser reports bounded runtime failures and responsive v
   const fixture=createServer((req,res)=>{
     if(req.url==="/missing"){res.writeHead(404,{"content-type":"text/plain"});res.end("missing");return}
     if(req.url==="/clean"){res.writeHead(200,{"content-type":"text/html"});res.end("<!doctype html><title>Clean fixture</title><main>clean</main>");return}
+    if(req.url==="/one"){res.writeHead(200,{"content-type":"text/html"});res.end("<!doctype html><title>History one</title><main>one</main>");return}
+    if(req.url==="/two"){res.writeHead(200,{"content-type":"text/html"});res.end("<!doctype html><title>History two</title><main>two</main>");return}
     res.writeHead(200,{"content-type":"text/html"});res.end("<!doctype html><title>Runtime fixture</title><script>console.error('PRIVATE_FIXTURE_ERROR');fetch('/missing').catch(()=>{});</script><button id='ok'>fixture</button>");
   });
   const fixturePort=await listen(fixture),guiPort=await freePort(),appPort=await freePort();let app=null;
@@ -35,6 +37,14 @@ test("desktop isolated browser reports bounded runtime failures and responsive v
     assert.deepEqual(evidence.runtime.viewports.map(item=>[item.width,item.height]),[[390,844],[1280,800]]);assert.ok(evidence.runtime.consoleErrors.length>=1);assert.ok(evidence.runtime.networkFailures.length>=1);
     const reset=await window.evaluate(async url=>{await window.trebellDesktop.browser.navigate(url);await new Promise(resolve=>setTimeout(resolve,120));return window.trebellDesktop.browser.runtime()},`http://127.0.0.1:${fixturePort}/clean`);
     assert.equal(reset.consoleErrors.length,0);assert.equal(reset.networkFailures.length,0);assert.equal(reset.viewports.length,0);
+    const history=await window.evaluate(async({one,two})=>{
+      await window.trebellDesktop.browser.navigate(one);await window.trebellDesktop.browser.navigate(two);
+      const atTwo=await window.trebellDesktop.browser.state(),back=await window.trebellDesktop.browser.back(),forward=await window.trebellDesktop.browser.forward(),reloaded=await window.trebellDesktop.browser.reload();
+      return {atTwo,back,forward,reloaded};
+    },{one:`http://127.0.0.1:${fixturePort}/one`,two:`http://127.0.0.1:${fixturePort}/two`});
+    assert.match(history.atTwo.url,/\/two$/);assert.equal(history.atTwo.canGoBack,true);
+    assert.match(history.back.url,/\/one$/);assert.equal(history.back.canGoForward,true);
+    assert.match(history.forward.url,/\/two$/);assert.equal(history.reloaded.url,history.forward.url);assert.equal(history.reloaded.title,"History two");
   }finally{
     if(app){
       const child=app.process(),closing=app.close().catch(()=>{});await Promise.race([closing,new Promise(resolve=>setTimeout(resolve,3000))]);

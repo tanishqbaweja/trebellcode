@@ -28,6 +28,9 @@ test("shared Trebell tool catalog owns unique schemas and policy metadata",()=>{
   }
   const click=sharedToolDefinition("trebell_computer","click");assert.equal(click.policy.riskLevel,"high");assert.equal(click.policy.externalSideEffect,true);assert.equal(click.requirements.fullAccess,true);
   const snapshot=sharedToolDefinition("trebell_browser","snapshot");assert.equal(snapshot.policy.kind,"read");assert.equal(snapshot.policy.idempotent,true);
+  const back=sharedToolDefinition("trebell_browser","back");assert.equal(back.policy.kind,"read");assert.equal(back.policy.idempotent,false);assert.equal(back.requirements.desktop,true);
+  const forward=sharedToolDefinition("trebell_browser","forward");assert.equal(forward.policy.kind,"read");assert.equal(forward.policy.idempotent,false);
+  const reload=sharedToolDefinition("trebell_browser","reload");assert.equal(reload.policy.kind,"fetch");assert.equal(reload.policy.idempotent,true);
   const terminal=sharedToolDefinition("trebell_terminal","run");assert.equal(terminal.policy.kind,"execute");assert.equal(terminal.policy.classifyFromInput,true);assert.equal(terminal.requirements.workspace,true);
   const background=sharedToolDefinition("trebell_terminal","start_background");assert.equal(background.policy.kind,"execute");assert.equal(background.policy.classifyFromInput,true);
   assert.equal(sharedToolDefinition("trebell_terminal","background_status").policy.kind,"read");assert.equal(sharedToolDefinition("trebell_terminal","stop_background").policy.kind,"execute");
@@ -45,7 +48,7 @@ test("untrusted desktop tool output carries a compact provenance marker without 
 
 test("dynamic tool serialization strips harness-only metadata",()=>{
   const browser=dynamicToolNamespace(sharedToolNamespace("trebell_browser"));
-  assert.equal(browser.type,"namespace");assert.equal(browser.name,"trebell_browser");assert.ok(browser.tools.some(item=>item.name==="snapshot"));
+  assert.equal(browser.type,"namespace");assert.equal(browser.name,"trebell_browser");for(const name of ["snapshot","back","forward","reload"])assert.ok(browser.tools.some(item=>item.name===name),name);
   assert.equal(Object.prototype.hasOwnProperty.call(browser,"requirements"),false);
   assert.equal(Object.prototype.hasOwnProperty.call(browser.tools[0],"policy"),false);
   assert.equal(Object.prototype.hasOwnProperty.call(browser.tools[0],"requirements"),false);
