@@ -424,7 +424,8 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(health.ok,true);
 
     const retiredDeviceApi=await fetch(gui.url+"/api/devices");
-    assert.notEqual(retiredDeviceApi.headers.get("content-type"),"application/json; charset=utf-8","retired mobile-device control must not remain an API surface");
+    assert.equal(retiredDeviceApi.status,404,"retired mobile-device control must not remain an API surface");
+    assert.deepEqual(await retiredDeviceApi.json(),{error:"API route not found"});
   } finally {
     await gui.close();
     await rm(home,{recursive:true,force:true,maxRetries:30,retryDelay:100});

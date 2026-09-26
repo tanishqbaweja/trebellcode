@@ -67,6 +67,8 @@ The three tasks totaled **19 model turns / 78,964 input tokens**. Large-output w
 
 ## Release validation
 
+- Explicit `TREBELL_HOME` values now isolate Electron `userData` too, preventing single-instance/prefs collisions in isolated release and desktop-browser validation.
+- Unknown `/api/*` routes now return an explicit 404 instead of falling through to frontend assets; the retired mobile-device API is verified absent regardless of whether `ui/dist` already exists.
 - **808 / 808** deterministic tests passed.
 - **138 / 138** full visual/screenshot tests passed in offline provider-safe mode.
 - **2 / 2** targeted Native UI E2E tests passed (compact context seed + thread-owned background process/runtime UI).

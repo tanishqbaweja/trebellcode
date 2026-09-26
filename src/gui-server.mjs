@@ -2847,6 +2847,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     }
     if(url.pathname==="/api/stats") return json(res,200,statsSnapshot());
     if(url.pathname==="/api/health") return json(res,200,{ok:true});
+    if(url.pathname.startsWith("/api/")) return json(res,404,{error:"API route not found"});
 
     let path=url.pathname==="/" ? "/index.html" : url.pathname;
     path=normalize(path).replace(/^([.][.][/\\])+/, "");

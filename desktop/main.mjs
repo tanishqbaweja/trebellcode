@@ -14,6 +14,9 @@ import { bundledCodexPath } from "./bundled-codex.mjs";
 const require=createRequire(import.meta.url);
 const { autoUpdater }=require("electron-updater");
 
+const explicitTrebellHome=String(process.env.TREBELL_HOME||"").trim();
+if(explicitTrebellHome)app.setPath("userData",join(explicitTrebellHome,"desktop"));
+
 let windowRef=null;
 let gui=null;
 let quitting=false;
