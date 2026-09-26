@@ -82,7 +82,10 @@ export default function ProjectsPage({currentPath,currentEnvironmentId=null,onOp
     commitProjects(enriched);
     if(reportErrors){
       const summary=summarizeProjectRefreshErrors(refreshErrors);
-      setError(summary?"Projects refreshed with partial errors: "+summary:"");
+      setError(current=>{
+        if(summary)return "Projects refreshed with partial errors: "+summary;
+        return /^(Could not refresh projects:|Projects refreshed with partial errors:)/.test(current)?"":current;
+      });
     }
     else setError(current=>/^Could not refresh projects:/.test(current)?"":current);
     return true;

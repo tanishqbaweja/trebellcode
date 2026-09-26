@@ -43,6 +43,7 @@ Version 1.3.3 hardens Trebell Native as a real first-party coding harness and ad
 - Added schema validation for Trebell-owned tool arguments before policy evaluation/execution.
 - Invalid or unexpected tool arguments fail closed instead of reaching the executor.
 - Long-running server/watcher control lives behind lazy `trebell_process` tools instead of bloating the always-present one-shot terminal schema.
+- Project-list background refreshes no longer erase unrelated user-action errors, so failed cross-environment activation remains visibly reported after Trebell safely rolls the environment back.
 
 ## Native inference telemetry and provider capabilities
 
