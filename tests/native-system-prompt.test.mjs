@@ -20,6 +20,7 @@ test("Native system prompt teaches evidence-driven coding without inventing unav
   assert.match(prompt,/Batch independent read-only/i);
   assert.match(prompt,/explicit user ordering constraints/i);
   assert.match(prompt,/exposed repository tools/i);
+  assert.match(prompt,/repository seed already names likely relevant paths/i);
   assert.match(prompt,/semantic refactors/i);
   assert.match(prompt,/trebell_repo\/discover/i);
   assert.match(prompt,/trebell_repo\/invoke/i);

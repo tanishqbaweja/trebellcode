@@ -569,18 +569,28 @@ The post-split rerun also passed all three scenarios with independent verificati
 
 Across the post-split benchmark Trebell used **18 model turns / 58,408 input tokens / 2,612 output tokens**. That is about **12.9% less total input** than the v1.3.3 three-scenario baseline despite two additional model turns. All scenarios kept stable schemas within a user turn and again reported **0 cached input tokens**, so the measured gain comes from context/tool-loop efficiency rather than provider prompt-cache credits.
 
+A later current-tree rerun after normalizing the conventional `/workspace/...` model path to Trebell's active workspace root passed all three scenarios again:
+
+- multi-file refactor: **6 model turns / 14,591 input tokens**;
+- failure-driven repair: **4 model turns / 9,102 input tokens**;
+- 92 KB noisy-output repair: **7 model turns / 29,696 input tokens**, with the 92,129-byte command output still virtualized outside hot context.
+
+That run totaled **17 model turns / 53,389 input tokens / 2,676 output tokens**, about **20.3% less input** than the preserved v1.3.3 baseline and about **8.6% less** than the earlier post-split rerun. It recorded **0 failed tool calls**, **0 repaired malformed tool calls**, stable schemas within each user turn, and **0 provider-reported cached input tokens**. The per-scenario counts remain stochastic, so the important signal is repeated independent verification plus lower aggregate context/tool-loop cost rather than any single lucky run.
+
+A targeted rerun of the multi-file scenario after teaching Native to trust already-relevant paths named by Trebell's repository seed used **5 model turns / 11,583 input tokens / 8 tool calls**, down from the immediately preceding **6 turns / 14,591 input / 9 tool calls** while still passing independent verification. The model still performed one initial workspace list, so this is a measured improvement rather than a claim that redundant discovery is fully solved.
+
 ### Same-task live harness comparison
 
 `npm run bench:harnesses:live` gives each available harness its own disposable copy of the same small repository bug-fix task, requires the harness to edit code and run `node verify.mjs`, and then reruns that verification independently outside the harness. Set `TREBELL_HARNESS_COMPARE_ONLY` to a comma-separated runtime list to run a bounded subset. The command is explicitly live/opt-in and should not be used as a background benchmark tournament.
 
-One 2026-09-27 Windows run after the Native/external-harness architecture split measured:
+One reproduced 2026-09-27 Windows run after the Native/external-harness architecture split measured:
 
 | Harness path | Model | Result | Task latency |
 | --- | --- | --- | ---: |
-| Trebell Native → VyceAi | `deepseek-v4.1` | independent verification passed; 4 model turns, 7,932 input / 340 output tokens | 14.98 s |
-| Codex native account | `gpt-6-luna` | independent verification passed | 16.42 s |
-| OpenCode | `opencode/muse-spark-1.3-contributor-free` | independent verification passed | 10.87 s |
-| Antigravity ACP | `gemini-3.8-flash-high` | independent verification passed | 20.23 s |
+| Trebell Native → VyceAi | `deepseek-v4.1` | independent verification passed; 4 model turns, 7,888 input / 281 output tokens | 12.93 s |
+| Codex native account | `gpt-6-luna` | independent verification passed | 12.57 s |
+| OpenCode | `opencode/muse-spark-1.3-contributor-free` | independent verification passed | 10.92 s |
+| Antigravity ACP | `gemini-3.8-flash-high` | independent verification passed | 16.61 s |
 | Grok ACP | runtime reached, but the provider returned `Rate limited` before the task could run | not verified | — |
 
 These are integration measurements from one task/run, not a general quality ranking. Models, service load, provider routing, and stochastic tool choices can materially change latency and token counts. Claude Code remained installed but unauthenticated on this machine, and the Cursor launcher was unavailable, so neither is represented as a successful live comparison.
