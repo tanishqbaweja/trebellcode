@@ -527,9 +527,9 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
   const liveToolOutput=new Map();
   const pendingDelegations=new Map();
   async function createVerificationCheckpoint(thread,label){
-    if(!checkpoints?.create||!thread?.cwd||thread.providerMeta?.environmentId)return null;
+    if(!checkpoints?.create||!thread?.cwd)return null;
     try{
-      const checkpoint=await checkpoints.create({cwd:thread.cwd,threadId:thread.id,label});
+      const checkpoint=await checkpoints.create({cwd:thread.cwd,threadId:thread.id,label,environmentId:thread.providerMeta?.environmentId??null});
       journal?.record?.({runtime:thread.runtime||runtime,provider:thread.providerMeta?.modelProvider||thread.providerMeta?.runtimeInstanceId||null,environmentId:thread.providerMeta?.environmentId??null,threadId:thread.id,category:"checkpoint",name:checkpoint?.supported===false?"checkpoint.skipped":"checkpoint.created",status:checkpoint?.supported===false?"unsupported":"completed",data:{checkpointId:checkpoint?.id||null,root:checkpoint?.root||null,label:checkpoint?.label||null,reason:checkpoint?.reason||null}});
       return checkpoint?.supported===false?null:checkpoint;
     }catch(error){journal?.record?.({runtime:thread.runtime||runtime,provider:thread.providerMeta?.modelProvider||thread.providerMeta?.runtimeInstanceId||null,environmentId:thread.providerMeta?.environmentId??null,threadId:thread.id,category:"checkpoint",name:"checkpoint.create_failed",status:"error",data:{message:redactSecretText(error?.message||String(error),{environment:runtimeManager.env||process.env})}});return null}

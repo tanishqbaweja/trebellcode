@@ -32,6 +32,7 @@ export class CheckpointService{
   }
   #durable(args){return [...CHECKPOINT_DURABLE_WRITE,...args]}
   #remoteProfile(environmentId){return environmentId?this.environments?.get?.(environmentId)||null:null}
+  #usesRemoteIo(environmentId){return Boolean(environmentId&&this.#remoteProfile(environmentId)?.type!=="local")}
   async #remoteExec(environmentId,{command,args=[],cwd=null,allowFailure=false,timeoutMs=120000,maxOutput=8*1024*1024}={}){
     if(!this.#remoteProfile(environmentId))throw new Error("Remote checkpoint environment is unavailable");
     const result=await this.environments.executeArgv(environmentId,{command,args,cwd,timeoutMs,maxOutput});
@@ -111,7 +112,8 @@ export class CheckpointService{
     }finally{await this.#cleanupRemoteTemp(environmentId,tmpDir,info.root)}
   }
   async create({cwd,threadId=null,label=null,environmentId=null}){
-    if(environmentId)return this.#createRemote({cwd,threadId,label,environmentId});
+    if(environmentId&&!this.#remoteProfile(environmentId))throw new Error("Checkpoint environment is unavailable");
+    if(this.#usesRemoteIo(environmentId))return this.#createRemote({cwd,threadId,label,environmentId});
     const info=await this.gitInfoFn(cwd);
     if(!info.isGit) return {supported:false,reason:"not_git"};
     const id=randomUUID();
@@ -129,7 +131,7 @@ export class CheckpointService{
       const commit=(await this.#captureGit(info.root,this.#durable(args),{env:childEnv})).stdout.trim();
       const ref=`refs/trebell/checkpoints/${id}`;
       await this.#captureGit(info.root,this.#durable(["update-ref",ref,commit]));
-      const item=this.state.addCheckpoint({id,threadId,root:info.root,commit,ref,label:label||null,environmentId:null});
+      const item=this.state.addCheckpoint({id,threadId,root:info.root,commit,ref,label:label||null,environmentId:environmentId||null});
       return {supported:true,...item};
     }finally{
       await rm(indexPath,{force:true}).catch(()=>{});
@@ -156,7 +158,7 @@ export class CheckpointService{
     const cp=this.state.checkpoints().find(item=>item.id===id);
     if(!cp)throw new Error("Checkpoint not found");
     if(threadId&&cp.threadId!==threadId)throw new Error("Checkpoint change inspection is allowed only from the thread that created this checkpoint.");
-    if(cp.environmentId)return this.#changedPathsRemote(cp);
+    if(this.#usesRemoteIo(cp.environmentId))return this.#changedPathsRemote(cp);
     const info=await this.gitInfoFn(cp.root);
     if(!info.isGit)throw new Error("Checkpoint repository is unavailable");
     const tmpDir=join(trebellHome(this.env),"checkpoints");
@@ -233,7 +235,7 @@ export class CheckpointService{
   async restore(id,{threadId=null}={}){
     const cp=this.state.checkpoints().find(item=>item.id===id);
     if(!cp) throw new Error("Checkpoint not found");
-    if(cp.environmentId)return this.#restoreRemote(cp,threadId);
+    if(this.#usesRemoteIo(cp.environmentId))return this.#restoreRemote(cp,threadId);
     await this.#assertRestoreIsolation(cp,threadId);
     const info=await this.gitInfoFn(cp.root);
     if(!info.isGit) throw new Error("Checkpoint repository is unavailable");
