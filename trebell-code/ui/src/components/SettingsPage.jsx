@@ -14,7 +14,7 @@ const PROVIDER_LABELS={
   vyceai:"VyceAi",
 };
 
-export default function SettingsPage({settings,onSettings,onProviderChanging,onProviderUpdated,runtime,rpcStatus,loggedIn,login,logout,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes}){
+export default function SettingsPage({settings,onSettings,onProviderChanging,onProviderUpdated,runtime,runtimeCapabilities={},rpcStatus,loggedIn,login,logout,projectPath,runtimeEnvironmentId=null,onOpenRuntimeAuthTerminal,projectScripts=[],modelError,onOpenLicenses,models=[],onScopedSettingsChanged,environmentThemeCatalog={environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]},environmentThemes=[],onRefreshEnvironmentThemes}){
   const [settingsSection,setSettingsSection]=useState("general");
   const [settingsSearch,setSettingsSearch]=useState("");
   const [workspaceScope,setWorkspaceScope]=useState({environmentId:settings.activeEnvironmentId||"local",projectId:""});
@@ -461,6 +461,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   const selectedStatus=providerInfo?.providers?.find(p=>p.id===selected)||providerInfo?.status;
   const selectedAgentStatus=agentInfo?.statuses?.find(item=>item.id===agentInfo?.selectedInstanceId)||agentInfo?.statuses?.find(item=>item.kind===selectedAgent);
   const selectedAgentDefinition=(agentInfo?.definitions||[]).find(item=>item.id===selectedAgent)||null;
+  const selectedAgentCapabilities=Object.keys(runtimeCapabilities||{}).length?runtimeCapabilities:(selectedAgentDefinition?.capabilities||(agentInfo?.selectedRuntime===selectedAgent?agentInfo?.capabilities:null)||{});
   const selectedInstances=(agentInfo?.instances||[]).filter(item=>item.kind===selectedAgent);
   const customModels=(settings.customModels||[]).filter(item=>item.runtime===selectedAgent&&(!["native","codex"].includes(selectedAgent)||item.provider===selected));
   const mcpEnvironmentId=settings.activeEnvironmentId||null;
@@ -630,7 +631,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
         {mcpMessage&&<p className={/failed|error/i.test(mcpMessage)?"provider-status-error":"provider-note"}>{mcpMessage}</p>}
       </div>}
       {settingsSection==="agents"&&<div className="settings-card" {...targetProps("agents-runtime")}><h3>Runtime</h3><p>Harness connection: <strong>{rpcStatus}</strong><br/>Agent: <strong>{selectedAgentStatus?.name||selectedAgent}</strong><br/>Agent runtime: <strong>{runtime?.agentRuntimeStatus?.available||selectedAgent==="codex"?"ready":"not ready"}</strong>{["native","codex"].includes(selectedAgent)&&<><br/>{selectedAgent==="codex"&&<>Codex app-server: <strong>{runtime?.appServerReady?"ready":"not ready"}</strong><br/></>}Inference: <strong>{PROVIDER_LABELS[runtime?.provider||selected]||runtime?.provider||selected}</strong>{(runtime?.provider||selected)==="freebuff"&&<><br/>Freebuff bridge: <strong>{runtime?.bridgeReady?"ready":"not ready"}</strong></>}</>}</p><button onClick={()=>refresh({reportErrors:true})} disabled={loading}><RefreshCw size={13}/> {loading?"Refreshing…":"Refresh diagnostics"}</button></div>}
-      {settingsSection==="general"&&<div className="settings-card" {...targetProps("general-followups")}><h3>Follow-up behavior</h3>{["native","codex"].includes(selectedAgent)?<label>While the agent is working<select value={settings.followUpMode||"queue"} onChange={e=>save({followUpMode:e.target.value})}><option value="queue">Queue after current turn</option><option value="steer">{selectedAgent==="native"?"Steer current turn at the next safe boundary":"Steer current turn immediately"}</option></select></label>:<p>Follow-ups are queued until the current {selectedAgentStatus?.name||selectedAgent} turn finishes. ACP does not define in-flight steering.</p>}</div>}
+      {settingsSection==="general"&&<div className="settings-card" {...targetProps("general-followups")}><h3>Follow-up behavior</h3>{selectedAgentCapabilities.steering?<label>While the agent is working<select value={settings.followUpMode||"queue"} onChange={e=>save({followUpMode:e.target.value})}><option value="queue">Queue after current turn</option><option value="steer">{selectedAgent==="native"?"Steer current turn at the next safe boundary":"Steer current turn immediately"}</option></select></label>:<p>Follow-ups are queued until the current {selectedAgentStatus?.name||selectedAgent} turn finishes. This runtime does not expose in-flight steering.</p>}</div>}
       {settingsSection==="general"&&<div className="settings-card" {...targetProps("general-context-management")}>
         <h3>Context management</h3>
         <p>When the selected harness supports compaction, Trebell can compact an existing thread just before sending the next message. It waits for compaction to finish before the new turn starts.</p>
