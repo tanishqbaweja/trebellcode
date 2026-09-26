@@ -256,13 +256,15 @@ test("context engine exposes bounded code search, source ranges, and Git context
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
-test("context engine exposes honest bounded JavaScript TypeScript and Python syntax diagnostics",async()=>{
+test("context engine exposes honest bounded JavaScript TypeScript Python and Go syntax diagnostics",async()=>{
   const root=await fixture();
   try{
     await writeFile(join(root,"src","broken.ts"),"export const broken: string = ;\n","utf8");
     await writeFile(join(root,"src","typed.ts"),"export const typed: string = 1;\n","utf8");
     await writeFile(join(root,"src","tool.py"),"def tool():\n    return True\n","utf8");
     await writeFile(join(root,"src","broken.py"),"def broken(:\n    return True\n","utf8");
+    await writeFile(join(root,"src","tool.go"),"package fixture\nfunc Add(a int, b int) int { return a + b }\n","utf8");
+    await writeFile(join(root,"src","broken.go"),"package fixture\nfunc Broken( {\n","utf8");
     const engine=new ContextEngine(),broken=await engine.diagnostics({root,path:"src/broken.ts"});
     assert.equal(broken.supported,true);assert.equal(broken.engine,"babel-parser");assert.equal(broken.semantic,false);assert.ok(broken.diagnostics.length>=1);
     assert.equal(broken.diagnostics[0].severity,"error");assert.ok(broken.diagnostics[0].line>=1);assert.ok(broken.diagnostics[0].column>=1);
@@ -274,6 +276,11 @@ test("context engine exposes honest bounded JavaScript TypeScript and Python syn
       const pythonBroken=await engine.diagnostics({root,path:"src/broken.py"});
       assert.equal(pythonBroken.supported,true);assert.equal(pythonBroken.engine,"python-ast");assert.equal(pythonBroken.diagnostics[0].code,"PY_SYNTAX");assert.equal(pythonBroken.diagnostics[0].severity,"error");assert.ok(pythonBroken.diagnostics[0].line>=1);
     }else assert.match(pythonValid.reason,/python interpreter/i);
+    const goValid=await engine.diagnostics({root,path:"src/tool.go",semantic:true});
+    if(goValid.supported){
+      assert.equal(goValid.engine,"gofmt");assert.equal(goValid.semantic,false);assert.equal(goValid.semanticRequested,true);assert.deepEqual(goValid.diagnostics,[]);
+      const goBroken=await engine.diagnostics({root,path:"src/broken.go"});assert.equal(goBroken.supported,true);assert.equal(goBroken.engine,"gofmt");assert.equal(goBroken.diagnostics[0].code,"GO_SYNTAX");assert.equal(goBroken.diagnostics[0].severity,"error");assert.ok(goBroken.diagnostics[0].line>=1);assert.ok(goBroken.diagnostics[0].column>=1);
+    }else assert.match(goValid.reason,/gofmt/i);
     await mkdir(join(root,"node_modules","pyright"),{recursive:true});
     await writeFile(join(root,"node_modules","pyright","index.js"),`const target=process.argv.at(-1);process.stdout.write(JSON.stringify({version:"fixture-pyright",generalDiagnostics:[{file:target,severity:"error",message:"Fixture Python type mismatch",rule:"reportAssignmentType",range:{start:{line:0,character:4},end:{line:0,character:8}}}],summary:{filesAnalyzed:1,errorCount:1,warningCount:0,informationCount:0}}));\n`,"utf8");
     const pyright=await engine.diagnostics({root,path:"src/tool.py",semantic:true});
@@ -424,6 +431,8 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
     ["src/auth/session.js",'import { rotateRefreshToken } from "./token.js";\nexport class RefreshSession {\n  refresh(token) { return rotateRefreshToken(token); }\n}\n'],
     ["src/server.js",'import { RefreshSession } from "./auth/session.js";\nexport function startServer() { return new RefreshSession(); }\n'],
     ["src/tool.py","def tool(:\n    return True\n"],
+    ["src/tool.go","package fixture\nfunc Tool() bool { return true }\n"],
+    ["src/broken.go","package fixture\nfunc Broken( {\n"],
     ["tests/auth-refresh.test.js",'import { RefreshSession } from "../src/auth/session.js";\nexport function testRefresh() { return new RefreshSession().refresh("x"); }\n'],
   ]);
   const versions=new Map([...files.keys()].map(path=>[path,"v1"]));let status="",metadataCalls=0,contentCalls=0;
@@ -442,6 +451,9 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
       if(command==="git"&&args.includes("diff"))return ok(status?"diff --git a/src/auth/session.js b/src/auth/session.js\n":"");
       if(command==="git"&&args.includes("rev-parse"))return ok("remote-head-1\n");
       if(command==="python3"||command==="python")return ok(JSON.stringify({available:true,version:"3.fixture",diagnostics:[{severity:"error",code:"PY_SYNTAX",message:"invalid syntax",line:1,column:10,endLine:1,endColumn:11}]}));
+      if(command==="gofmt"){
+        const target=String(args[0]||"");return target.endsWith("broken.go")?{exitCode:2,stdout:"",stderr:`${target}:2:14: expected ')', found '{'`,timedOut:false}:ok("package fixture\n\nfunc Tool() bool { return true }\n");
+      }
       if(command==="node"&&args[0]==="-e"){
         if(String(args[1]||"").includes("node_modules\",\"pyright"))return ok(JSON.stringify({available:true,configured:true,version:"remote-pyright",diagnostics:[{path:"src/tool.py",severity:"error",code:"reportArgumentType",message:"Remote Pyright fixture",line:1,column:1,endLine:1,endColumn:4}],projectDiagnosticCount:1,truncated:false,summary:{filesAnalyzed:1,errorCount:1}}));
         if(String(args[1]||"").includes("getCodeFixesAtPosition"))return ok(JSON.stringify({available:true,configured:true,version:"remote-ts",included:true,diagnostics:[{code:"TS9000",severity:"error",line:2,column:1,length:14,message:"Remote semantic fixture"}],actions:[{fixName:"remoteFix",description:"Fix remote fixture",requiresCommand:false,commands:[],changes:[{file:"src/auth/session.js",isNewFile:false,textChanges:[{path:"src/auth/session.js",line:2,column:1,length:14,newText:"export class FixedSession",newTextTruncated:false}]}]}],truncated:false,requestedCodes:[9000]}));
@@ -506,6 +518,8 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
   assert.equal(remoteDiagnostics.supported,true);assert.deepEqual(remoteDiagnostics.diagnostics,[]);
   const remotePythonDiagnostics=await engine.diagnostics({root,io,path:"src/tool.py",semantic:true});
   assert.equal(remotePythonDiagnostics.supported,true);assert.equal(remotePythonDiagnostics.engine,"python-ast");assert.equal(remotePythonDiagnostics.diagnostics[0].code,"PY_SYNTAX");assert.equal(remotePythonDiagnostics.semantic,true);assert.equal(remotePythonDiagnostics.semanticEngine,"pyright");assert.equal(remotePythonDiagnostics.semanticInfo.version,"remote-pyright");assert.equal(remotePythonDiagnostics.semanticDiagnostics[0].code,"reportArgumentType");
+  const remoteGoDiagnostics=await engine.diagnostics({root,io,path:"src/tool.go",semantic:true});assert.equal(remoteGoDiagnostics.supported,true);assert.equal(remoteGoDiagnostics.engine,"gofmt");assert.equal(remoteGoDiagnostics.semantic,false);assert.deepEqual(remoteGoDiagnostics.diagnostics,[]);
+  const remoteGoBroken=await engine.diagnostics({root,io,path:"src/broken.go"});assert.equal(remoteGoBroken.supported,true);assert.equal(remoteGoBroken.diagnostics[0].code,"GO_SYNTAX");assert.equal(remoteGoBroken.diagnostics[0].line,2);assert.equal(remoteGoBroken.diagnostics[0].column,14);
   const remoteSemantic=await engine.diagnostics({root,io,path:"src/auth/session.js",semantic:true});
   assert.equal(remoteSemantic.semantic,true);assert.equal(remoteSemantic.semanticInfo.version,"remote-ts");assert.equal(remoteSemantic.semanticDiagnostics[0].code,"TS9000");
   const remoteDefinition=await engine.languageSymbol({root,io,path:"src/auth/session.js",line:2,column:14,operation:"definition"});

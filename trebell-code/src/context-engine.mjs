@@ -12,6 +12,7 @@ const SKIP=new Set([".git","node_modules","target","dist","build",".next",".cach
 const SOURCE_EXTENSIONS=new Set([".js",".jsx",".ts",".tsx",".mjs",".cjs",".py",".rs",".go",".java",".kt",".kts",".cs",".c",".h",".cc",".cpp",".cxx",".hpp",".hh",".rb",".php",".swift",".vue",".svelte"]);
 const BABEL_SOURCE_EXTENSIONS=new Set([".js",".jsx",".ts",".tsx",".mjs",".cjs"]);
 const PYTHON_SOURCE_EXTENSIONS=new Set([".py",".pyi"]);
+const GO_SOURCE_EXTENSIONS=new Set([".go"]);
 const RESOLVE_EXTENSIONS=[".js",".jsx",".ts",".tsx",".mjs",".cjs",".py",".rs",".go",".java",".kt",".cs"];
 const INSTRUCTION_NAMES=new Set(["AGENTS.md","CLAUDE.md"]);
 const STOP_WORDS=new Set(["the","and","for","with","that","this","from","into","when","where","what","which","while","your","trebell","code","make","need","should","would","could","have","has","had","are","was","were","will","fix","add","use","using","work","working"]);
@@ -464,6 +465,27 @@ function parsePythonDiagnosticsOutput(stdout){
   try{return JSON.parse(String(stdout||"{}"))}catch{return {available:false,failed:true,reason:"Python diagnostic adapter returned invalid output"}}
 }
 
+function parseGofmtDiagnostics(stderr,{limit=100}={}){
+  const capped=Math.max(1,Math.min(200,Number(limit)||100)),rows=[];
+  for(const raw of String(stderr||"").split(/\r?\n/)){
+    const line=raw.trim();if(!line)continue;const match=line.match(/^(.+):(\d+):(\d+):\s*(.+)$/);if(!match)continue;
+    rows.push({severity:"error",code:"GO_SYNTAX",message:match[4].trim(),line:Number(match[2])||1,column:Number(match[3])||1});if(rows.length>=capped)break;
+  }
+  return rows;
+}
+
+async function localGoDiagnostics(root,{path,limit=100}={}){
+  const target=resolve(root,String(path||""));
+  try{
+    await execFileAsync("gofmt",[target],{cwd:resolve(root),windowsHide:true,maxBuffer:2*1024*1024,timeout:20_000});
+    return {available:true,diagnostics:[],truncated:false};
+  }catch(error){
+    if(error?.code==="ENOENT")return {available:false,failed:false,reason:"gofmt was not available for Go syntax diagnostics"};
+    const diagnostics=parseGofmtDiagnostics(error?.stderr,{limit});if(diagnostics.length)return {available:true,diagnostics,truncated:false};
+    return {available:false,failed:true,reason:error?.killed?"gofmt diagnostics timed out":String(error?.stderr||error?.message||"gofmt diagnostics failed").slice(0,2000)};
+  }
+}
+
 async function localPythonDiagnostics(root,{path,limit=100}={}){
   const target=resolve(root,String(path||"")),commands=process.platform==="win32"?["python","python3"]:["python3","python"],failures=[];
   for(const command of commands){
@@ -571,6 +593,7 @@ function localContextIo(root){
     searchPaths:options=>localMatchingFiles(absolute,options),
     gitHistory:options=>localGitHistory(absolute,options),
     gitBlame:options=>localGitBlame(absolute,options),
+    goDiagnostics:options=>localGoDiagnostics(absolute,options),
     pythonDiagnostics:options=>localPythonDiagnostics(absolute,options),
     pyrightDiagnostics:options=>localPyrightDiagnostics(absolute,options),
     typeScriptDiagnostics:options=>localTypeScriptDiagnostics(absolute,options),
@@ -676,6 +699,13 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     if(result.exitCode!==0)throw new Error(result.stderr||"Could not read remote Git blame");
     return parseGitBlame(result.stdout).slice(0,cap);
   };
+  const goDiagnostics=async({path,limit=100}={})=>{
+    const target=posix.join(absolute,String(path||"").replace(/^\.\//,"")),result=await run({command:"gofmt",args:[target],cwd:absolute,timeoutMs:25_000,maxOutput:2*1024*1024});
+    if(result.exitCode===0)return {available:true,diagnostics:[],truncated:false};
+    const diagnostics=parseGofmtDiagnostics(result.stderr,{limit});if(diagnostics.length)return {available:true,diagnostics,truncated:false};
+    const missing=Number(result.exitCode)===127||/not found|not recognized|is not recognized|command not found/i.test(String(result.stderr||result.stdout||""));
+    return missing?{available:false,failed:false,reason:"gofmt was not available for Go syntax diagnostics"}:{available:false,failed:true,reason:result.timedOut?"gofmt diagnostics timed out":String(result.stderr||result.stdout||"Remote gofmt diagnostics failed").slice(0,2000)};
+  };
   const pythonDiagnostics=async({path,limit=100}={})=>{
     const target=posix.join(absolute,String(path||"").replace(/^\.\//,"")),capped=Math.max(1,Math.min(200,Number(limit)||100)),failures=[];
     for(const command of ["python3","python"]){
@@ -724,6 +754,7 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     searchPaths,
     gitHistory,
     gitBlame,
+    goDiagnostics,
     pythonDiagnostics,
     pyrightDiagnostics,
     typeScriptDiagnostics,
@@ -1173,6 +1204,12 @@ export class ContextEngine{
     const {contextIo,index}=await this.#indexed(root,io),requested=contextIo.relativeFocus(path)||slash(String(path||"").replace(/^\.\//,""));
     const entry=index.files.get(requested);if(!entry)throw new Error(`Context file is not indexed: ${path}`);
     const extension=extname(requested).toLowerCase(),capped=Math.max(1,Math.min(200,Number(limit)||100));
+    if(GO_SOURCE_EXTENSIONS.has(extension)){
+      let syntaxResult={available:false,reason:"Go syntax diagnostics are unavailable for this workspace"};
+      if(typeof contextIo.goDiagnostics==="function")try{syntaxResult=await contextIo.goDiagnostics({path:requested,limit:capped})}catch(error){syntaxResult={available:false,failed:true,reason:String(error?.message||error)}}
+      const ready=Boolean(syntaxResult?.available&&!syntaxResult?.failed),diagnostics=Array.isArray(syntaxResult?.diagnostics)?syntaxResult.diagnostics.slice(0,capped):[];
+      return {path:requested,supported:ready,engine:ready?"gofmt":null,semantic:false,semanticRequested:Boolean(semantic),semanticEngine:null,semanticInfo:null,semanticDiagnostics:[],diagnostics,truncated:Boolean(syntaxResult?.truncated),reason:ready?null:(syntaxResult?.reason||"gofmt diagnostics are unavailable")};
+    }
     if(PYTHON_SOURCE_EXTENSIONS.has(extension)){
       let syntaxResult={available:false,reason:"Python syntax diagnostics are unavailable for this workspace"};
       if(typeof contextIo.pythonDiagnostics==="function")try{syntaxResult=await contextIo.pythonDiagnostics({path:requested,limit:capped})}catch(error){syntaxResult={available:false,failed:true,reason:String(error?.message||error)}}

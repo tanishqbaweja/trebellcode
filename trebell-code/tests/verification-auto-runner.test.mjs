@@ -32,3 +32,9 @@ test("automatic verification runs Python diagnostics through the existing Contex
   const plan={paths:["src/service.py","src/types.pyi","README.md"],steps:[{id:"diagnostics",kind:"diagnostics",cost:"low",required:true}]};
   const result=await runAutomaticVerificationEvidence({contextEngine,plan,root:"/repo"});assert.deepEqual(calls.map(item=>item.path),["src/service.py","src/types.pyi"]);assert.equal(result.evidence[0].status,"passed");assert.deepEqual(result.evidence[0].coveredPaths,["src/service.py","src/types.pyi"]);assert.deepEqual(result.evidence[0].engines,["python-ast"]);assert.equal(result.nextAction.action,"complete");
 });
+
+test("automatic verification runs Go syntax diagnostics without executing project commands",async()=>{
+  const calls=[],contextEngine={diagnostics:async args=>{calls.push(args);return {supported:true,engine:"gofmt",semantic:false,diagnostics:[],semanticDiagnostics:[]}}};
+  const plan={paths:["cmd/server/main.go","README.md"],steps:[{id:"diagnostics",kind:"diagnostics",cost:"low",required:true},{id:"project_tests",kind:"tests",cost:"medium",required:false,command:"go test ./..."}]};
+  const result=await runAutomaticVerificationEvidence({contextEngine,plan,root:"/repo"});assert.deepEqual(calls.map(item=>item.path),["cmd/server/main.go"]);assert.equal(result.evidence[0].status,"passed");assert.deepEqual(result.evidence[0].engines,["gofmt"]);assert.equal(result.nextAction.action,"complete");
+});

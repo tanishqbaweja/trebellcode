@@ -42,6 +42,12 @@ test("diagnostics evidence collector includes Python source targets",()=>{
   assert.deepEqual(collectVerificationEvidence({plan,turnItems}),[{stepId:"diagnostics",status:"passed",errorCount:0,source:"turn-tool",toolCallIds:["diag-python"],coveredPaths:["src/service.py"]}]);
 });
 
+test("diagnostics evidence collector includes Go source targets",()=>{
+  const plan={paths:["cmd/server/main.go"],steps:[{id:"diagnostics",kind:"diagnostics",required:true}]};
+  const turnItems=[{type:"dynamicToolCall",id:"diag-go",namespace:"trebell_repo",tool:"diagnostics",status:"completed",arguments:{path:"cmd/server/main.go"},rawOutput:{path:"cmd/server/main.go",diagnostics:[],semanticDiagnostics:[]}}];
+  assert.deepEqual(collectVerificationEvidence({plan,turnItems}),[{stepId:"diagnostics",status:"passed",errorCount:0,source:"turn-tool",toolCallIds:["diag-go"],coveredPaths:["cmd/server/main.go"]}]);
+});
+
 test("verification evidence collector converts sanitized browser receipts into planned browser evidence",()=>{
   const plan={steps:[
     {id:"browser_interaction",kind:"browser",required:true},

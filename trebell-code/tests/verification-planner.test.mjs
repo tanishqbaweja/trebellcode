@@ -59,3 +59,10 @@ test("Python changes use deterministic diagnostics and discovered project tests"
   const diagnostics=plan.steps.find(step=>step.id==="diagnostics");assert.ok(diagnostics);assert.equal(diagnostics.semantic,true);assert.match(diagnostics.reason,/Python syntax/i);
   const tests=plan.steps.find(step=>step.id==="project_tests");assert.ok(tests);assert.equal(tests.command,"python -m pytest");
 });
+
+test("Go changes use gofmt diagnostics before discovered project tests",()=>{
+  const plan=planVerification({changedPaths:["cmd/server/main.go"],projectCommands:{conventional:[{name:"test",command:"go test ./...",kind:"test",confidence:"convention"}]},capabilities:{diagnostics:true,semanticDiagnostics:true}});
+  assert.equal(plan.categories.go,true);assert.equal(plan.risk,"medium");assert.match(plan.reasons.join(" "),/gofmt syntax diagnostics/i);
+  const diagnostics=plan.steps.find(step=>step.id==="diagnostics");assert.ok(diagnostics);assert.equal(diagnostics.semantic,false);assert.match(diagnostics.reason,/Go syntax/i);
+  const tests=plan.steps.find(step=>step.id==="project_tests");assert.ok(tests);assert.equal(tests.command,"go test ./...");
+});
