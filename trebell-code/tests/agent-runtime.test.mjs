@@ -86,6 +86,8 @@ test("runtime capabilities describe adapter behavior without pretending unsuppor
   assert.equal(acp.fork,"runtime","ACP forking must stay conditional on what the connected runtime advertises");
   assert.equal(acp.rewind,false);
   assert.equal(acp.delegation,true,"manual Trebell delegation stays available even when the runtime cannot invoke dynamic tools itself");
+  assert.equal(acp.videoAttachments,true);
+  assert.equal(runtimeCapabilities("antigravity").videoAttachments,false,"Antigravity attachment limits belong in the capability contract, not UI runtime-name checks");
 });
 
 test("runtime launch flags preserve Trebell permission-mode boundaries",()=>{

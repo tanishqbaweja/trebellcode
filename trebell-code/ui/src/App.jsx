@@ -2788,7 +2788,7 @@ export default function App(){
     if(!runtimeCapabilities.multiModelFanout)return false;
     const workspaceError=fanoutWorkspaceError(gitInfo);if(workspaceError){setEvents(prev=>[...prev,{id:"fanout-workspace-"+Date.now(),kind:"error",title:workspaceError,status:"done",raw:{}}]);return true}
     if(prompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"fanout-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{}}]);return true}
-    if(agentRuntime==="antigravity"&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"fanout-video-"+Date.now(),kind:"error",title:"Antigravity does not accept video attachments",status:"done",raw:{}}]);return true}
+    if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"fanout-video-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return true}
     try{await validateAttachmentPaths(attachments)}catch(error){setEvents(prev=>[...prev,{id:"fanout-attachment-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return true}
     const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd};
     setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);setEvents([]);resetAssistantStream();setSection("chat");
@@ -2886,7 +2886,7 @@ export default function App(){
     const text=prompt.trim();if(!text)return;
     if(prompt.length>MAX_COMPOSER_CHARS){setEvents(prev=>[...prev,{id:"prompt-too-long-"+Date.now(),kind:"error",title:`Message exceeds the ${MAX_COMPOSER_CHARS.toLocaleString()} character limit`,status:"done",raw:{length:prompt.length}}]);return}
     if(text.startsWith("/")){const special=await handleSpecial(text);if(special===true){setPrompt("");return}}
-    if(agentRuntime==="antigravity"&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:"Antigravity does not accept video attachments",status:"done",raw:{}}]);return}
+    if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return}
     if(runtimeCapabilities.nativeQueue&&queuedEditId&&rpc&&activeThread&&queueMode!=="local"){
       const draft={text,attachments:[...attachments],contextChips:[...contextChips]};setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);
       try{
@@ -2944,7 +2944,7 @@ export default function App(){
     try{await waitForActiveClone()}catch(error){setEvents(prev=>[...prev,{id:"clone-wait-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
     if(await sendModelFanout(text))return;
     if(bootstrap.mock||!rpc||rpcStatus!=="connected"){await send();return}
-    if(agentRuntime==="antigravity"&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:"Antigravity does not accept video attachments",status:"done",raw:{}}]);return}
+    if(runtimeCapabilities.videoAttachments===false&&attachments.some(isVideoAttachment)){setEvents(prev=>[...prev,{id:"video-unsupported-"+Date.now(),kind:"error",title:agentRuntimeLabel+" does not accept video attachments",status:"done",raw:{}}]);return}
     try{await validateAttachmentPaths(attachments)}catch(error){setEvents(prev=>[...prev,{id:"background-attachment-error-"+Date.now(),kind:"error",title:error.message,status:"done",raw:{}}]);return}
     const draft={text,attachments:[...attachments],contextChips:[...contextChips],projectPath:projectPath||bootstrap.cwd,model,projectless:projectlessMode};
     setPrompt("");setPromptHistoryIndex(-1);setAttachments([]);setContextChips([]);setEvents([]);resetAssistantStream();setSection("chat");

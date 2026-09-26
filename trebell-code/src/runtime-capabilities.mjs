@@ -27,6 +27,7 @@ const BASE_RUNTIME_CAPABILITIES=Object.freeze({
   steering:false,
   runtimeProfileSwitching:false,
   projectOwnership:false,
+  videoAttachments:true,
 });
 
 const RUNTIME_CAPABILITY_OVERRIDES=Object.freeze({
@@ -42,7 +43,7 @@ const RUNTIME_CAPABILITY_OVERRIDES=Object.freeze({
   opencode:Object.freeze({fork:true,rewind:true,compaction:true,nativeLsp:true,languageIntelligence:true,usageReporting:true,detachedTasks:true,multiModelFanout:true,delegation:true}),
   cursor:Object.freeze({fork:"runtime",mcpInjection:true,clientFilesystem:true,clientTerminal:true,detachedTasks:true,multiModelFanout:true,delegation:true}),
   grok:Object.freeze({fork:"runtime",mcpInjection:true,clientFilesystem:true,clientTerminal:true,detachedTasks:true,multiModelFanout:true,delegation:true}),
-  antigravity:Object.freeze({fork:"runtime",mcpInjection:true,clientFilesystem:true,clientTerminal:true,detachedTasks:true,multiModelFanout:true,delegation:true}),
+  antigravity:Object.freeze({fork:"runtime",mcpInjection:true,clientFilesystem:true,clientTerminal:true,detachedTasks:true,multiModelFanout:true,delegation:true,videoAttachments:false}),
 });
 
 export function sharedRuntimeCapabilities(kind){

@@ -17,7 +17,7 @@ test("stopping restores queued text, attachments and context without duplicates"
   assert.deepEqual(restored.contextChips.map(item=>[item.path,item.label]),[["context.txt","Updated context"],["review.txt","Review"]]);
 });
 
-test("Antigravity video attachment detection covers common video extensions",()=>{
+test("video attachment detection covers common video extensions",()=>{
   for(const path of ["clip.mp4","movie.MOV","demo.webm","x.mkv","y.m4v"])assert.equal(isVideoAttachment(path),true,path);
   for(const path of ["image.png","notes.md","audio.mp3"])assert.equal(isVideoAttachment(path),false,path);
 });
