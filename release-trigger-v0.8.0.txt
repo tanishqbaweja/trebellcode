@@ -1,2 +1,0 @@
-Publish Trebell Code Desktop v0.8.0
-Validated source parent: 47337532381f1733bfd703bc001aa1629f126791

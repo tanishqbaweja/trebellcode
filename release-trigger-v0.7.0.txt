@@ -1,2 +1,0 @@
-Trebell Code Desktop v0.7.0 release trigger
-Validated Windows installer: c4bf229144b7ddcfb955fc4b5730444bf518c6b069a2dbf0188102426418b019

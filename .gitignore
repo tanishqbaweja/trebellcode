@@ -1,100 +1,42 @@
-# deps
-# Node.js dependencies
-node_modules
-.pnpm-store
-.pnpm-debug.log
+# Dependencies
+node_modules/
+.pnpm-store/
 
-# Keep pnpm-lock.yaml
-!pnpm-lock.yaml
-
-# build
-dist/
-bazel-*
-user.bazelrc
-build/
-out/
-storybook-static/
-
-# ignore README for publishing
-codex-cli/README.md
-
-# ignore Nix derivation results
-result
-
-# editor
-.vscode/
-.idea/
-.history/
-.zed/
-*.swp
-*~
-
-# cli tools
-CLAUDE.md
-.claude/
-AGENTS.override.md
-
-# caches
-.cache/
-.turbo/
-.parcel-cache/
-.eslintcache
-.nyc_output/
-.jest/
-*.tsbuildinfo
-
-# logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# env
-.env*
+# Local developer/test secrets. Trebell users configure API keys in Settings.
+.env
+.env.*
 !.env.example
-.venv/
 
-# package
-*.tgz
+# Generated frontend/provider bundles
+ui/dist/
+vendor/freebuff2api/dist/
 
-# ci
-.vercel/
-.netlify/
-/.tmp/sdk-ci/
-/upstream-rusty-v8/
-
-# patches
-apply_patch/
-
-# coverage
+# Test and visual artifacts
+test-results/
+visual-audit/
+playwright-report/
 coverage/
 
-# Trebell Code test artifacts
-/trebell-code/test-results/
-/trebell-code/visual-audit/
+# Desktop packaging output
+desktop-dist/
+release-artifacts/
 
-# personal files
-personal/
+# Generated icon formats (build/icon.svg is source-controlled)
+build/icon.ico
+build/icon.icns
+build/icon.png
 
-# os
+# Local Trebell worktree / scratch state
+.trebell-rename-worktree/
+
+# Logs and caches
+*.log
+npm-debug.log*
+.cache/
+.tmp/
+
+# OS / editor noise
 .DS_Store
 Thumbs.db
-Icon?
-.Spotlight-V100/
-
-# Unwanted package managers
-.yarn/
-yarn.lock
-
-# release
-package.json-e
-session.ts-e
-CHANGELOG.ignore.md
-
-# nix related
-.direnv
-.envrc
-
-# Python bytecode files
-__pycache__/
-*.pyc
+.idea/
+.vscode/
