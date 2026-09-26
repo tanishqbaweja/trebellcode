@@ -69,6 +69,7 @@ import { executeDelegation } from "./delegation-executor.mjs";
 import { resolveCodexApprovalByPolicy } from "./codex-policy-adapter.mjs";
 import { resolveRecipeExecution } from "./recipes.mjs";
 import { runProjectHooks, verificationHookSteps } from "./project-hooks.mjs";
+import { buildRuntimeEnvironment } from "./runtime-environment.mjs";
 
 const TREBELL_VERSION = await readFile(join(packageRoot,"package.json"),"utf8")
   .then(text=>String(JSON.parse(text).version||"0.0.0"))
@@ -229,6 +230,18 @@ async function stopChildProcess(child){
   try{child.stderr?.destroy();}catch{}
 }
 
+export function codexAppServerEnvironment({env=process.env,runtimeInstance=null,runtimeHome=null,platform=process.platform}={}){
+  return {
+    ...buildRuntimeEnvironment("codex",{
+      parent:env,
+      approved:runtimeInstance?.approvedEnvironmentKeys,
+      overrides:runtimeInstance?.environment,
+      platform,
+    }),
+    ...(runtimeHome?{CODEX_HOME:runtimeHome}:{}),
+  };
+}
+
 async function startAppServer({appPort,env=process.env,mock=false,provider="freebuff",providerPort=null,environments=null,environmentId=null,runtimeInstance=null}){
   if(mock) return { child:null, logs:[], targetUrl:null, readyUrl:null, environment:null, appPort, runtimeInstanceId:runtimeInstance?.id||"codex-default" };
   if(environmentId&&environments){
@@ -266,7 +279,7 @@ async function startAppServer({appPort,env=process.env,mock=false,provider="free
   const homeLayout=await prepareCodexHome({homePath:runtimeInstance?.homePath?.trim()||codexHome(env),shadowHomePath:runtimeInstance?.shadowHomePath?.trim()||null,defaultHome:codexHome(env)});
   const runtimeHome=homeLayout.effectiveHomePath||homeLayout.sharedHomePath;
   await mkdir(runtimeHome,{recursive:true});
-  const runtimeEnv={...env,...(runtimeInstance?.environment||{}),CODEX_HOME:runtimeHome};
+  const runtimeEnv=codexAppServerEnvironment({env,runtimeInstance,runtimeHome});
   const args=[...codexProviderOverrides({port:inferencePort,provider}),"app-server","--listen",`ws://127.0.0.1:${appPort}`];
   const logs=[];
   const pushLog=(chunk,stream)=>{
