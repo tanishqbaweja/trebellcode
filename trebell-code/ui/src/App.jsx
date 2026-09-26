@@ -1150,7 +1150,7 @@ export default function App(){
     }
   }
   async function loadCollaborationModes(client=rpcRef.current){
-    if(agentRuntime!=="codex"||!client){
+    if(!runtimeCapabilities.collaborationModes||!client){
       setCollaborationModes([]);setCollaborationMode("default");return[];
     }
     let result;
@@ -1162,18 +1162,18 @@ export default function App(){
     return modes;
   }
   function selectedCollaborationMode(modelId=model){
-    return agentRuntime==="codex"?collaborationModePayload(collaborationModes,collaborationMode,modelId):null;
+    return runtimeCapabilities.collaborationModes?collaborationModePayload(collaborationModes,collaborationMode,modelId):null;
   }
   async function changeCollaborationMode(nextMode){
     if(!collaborationModes.some(item=>item.mode===nextMode))return;
     const previous=collaborationMode;setCollaborationMode(nextMode);
-    if(agentRuntime!=="codex"||!rpc||rpcStatus!=="connected"||!activeThread?.id||running)return;
+    if(!runtimeCapabilities.collaborationModes||!rpc||rpcStatus!=="connected"||!activeThread?.id||running)return;
     const payload=collaborationModePayload(collaborationModes,nextMode,model);if(!payload)return;
     setCollaborationModeBusy(true);
     try{await rpc.request("thread/settings/update",{threadId:activeThread.id,collaborationMode:payload})}
     catch(error){
       setCollaborationMode(previous);
-      setEvents(prev=>[...prev,{id:"collaboration-mode-error-"+Date.now(),kind:"error",title:"Could not change Codex mode: "+(error.message||String(error)),status:"done",raw:{}}]);
+      setEvents(prev=>[...prev,{id:"collaboration-mode-error-"+Date.now(),kind:"error",title:`Could not change ${agentRuntimeLabel} mode: `+(error.message||String(error)),status:"done",raw:{}}]);
     }finally{setCollaborationModeBusy(false)}
   }
   async function loadThreadRuntimeProfiles(client=rpc,threadId=activeThreadRef.current?.id){
@@ -2275,7 +2275,7 @@ export default function App(){
     if(cp)setCheckpointByTurn(map);
     if(resumed?.thread){
       activeThreadRef.current=resumed.thread;pendingThreadScrollRestoreRef.current=resumed.thread.id;setActiveThread(resumed.thread);
-      if(agentRuntime==="codex"&&resumed.collaborationMode?.mode&&collaborationModes.some(item=>item.mode===resumed.collaborationMode.mode))setCollaborationMode(resumed.collaborationMode.mode);
+      if(runtimeCapabilities.collaborationModes&&resumed.collaborationMode?.mode&&collaborationModes.some(item=>item.mode===resumed.collaborationMode.mode))setCollaborationMode(resumed.collaborationMode.mode);
       if(resumed.__trebellHistoryPage&&!resumed.__trebellFullHistoryFallback){
         const page=resumed.__trebellHistoryPage;
         const history=page.kind==="items"?historyFromItemEntries([...(page.data||[])].reverse(),map):historyFromTurns([...(page.data||[])].reverse(),map);
