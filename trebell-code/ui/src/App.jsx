@@ -3431,7 +3431,7 @@ export default function App(){
     ...(activeThread?.id?[{id:"goal",label:"Thread goal",detail:goal?.objective||"Set a durable objective",onRun:()=>openRightPanel("goal")}]:[]),
     ...(activeThread?.id&&gitInfo?.isGit?[{id:"review",label:"Review changes",detail:`Ask ${agentRuntimeLabel} to review uncommitted changes`,onRun:()=>startReview()}]:[]),
     ...(runtimeCapabilities.harnessTools?[{id:"tools",label:"Harness capabilities",detail:"Skills, MCP, plugins, apps and hooks",onRun:()=>setSection("tools")}]:[]),
-    {id:"environments",label:"Environments",detail:"Local, WSL, SSH and remote access",onRun:()=>setSection("environments")},
+    {id:"environments",label:"Environments",detail:"Local, WSL and SSH",onRun:()=>setSection("environments")},
     {id:"usage",label:"Usage",detail:"Tokens and cost across recorded turns",onRun:()=>setSection("usage")},
     {id:"licenses",label:"Open source licenses",detail:"Third-party packages and installed license notices",onRun:()=>setSection("licenses")},
     {id:"appearance-system",label:"Appearance: System",detail:"Follow the operating system light/dark setting",shortcut:"Ctrl+Alt+Shift+A",onRun:()=>saveAppSettings({appearanceMode:"system"})},

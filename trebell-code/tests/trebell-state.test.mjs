@@ -32,20 +32,23 @@ test("legacy implicit System appearance migrates to Dark once",async()=>{
   }finally{await rm(home,{recursive:true,force:true})}
 });
 
-test("retired mobile-device control settings are scrubbed from legacy state",async()=>{
+test("retired mobile companion and device-control settings are scrubbed from legacy state",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-state-device-retirement-")),env={...process.env,TREBELL_HOME:home};
   try{
     await writeFile(join(home,"ui-state.json"),JSON.stringify({
       version:2,
       projects:[{id:"project-1",path:"C:/repo",settingsOverrides:{agentDeviceAccess:true,autoPull:true}}],
       threadMeta:{},
-      settings:{agentDeviceAccess:true,environmentDefaults:{"ssh-a":{agentDeviceAccess:true,defaultPermissionMode:"full"}}},
+      settings:{agentDeviceAccess:true,remoteAccessEnabled:true,remoteAccessPort:4321,remoteAccessToken:"retired-secret",environmentDefaults:{"ssh-a":{agentDeviceAccess:true,defaultPermissionMode:"full"}}},
     }));
     const state=new TrebellStateStore(env);
     assert.equal(Object.prototype.hasOwnProperty.call(state.settings(),"agentDeviceAccess"),false);
+    assert.equal(Object.prototype.hasOwnProperty.call(state.settings(),"remoteAccessEnabled"),false);
+    assert.equal(Object.prototype.hasOwnProperty.call(state.settings(),"remoteAccessPort"),false);
+    assert.equal(Object.prototype.hasOwnProperty.call(state.settings(),"remoteAccessToken"),false);
     assert.equal(Object.prototype.hasOwnProperty.call(state.environmentDefaults("ssh-a"),"agentDeviceAccess"),false);
     assert.equal(Object.prototype.hasOwnProperty.call(state.projects()[0].settingsOverrides,"agentDeviceAccess"),false);
-    const persisted=await readFile(join(home,"ui-state.json"),"utf8");assert.doesNotMatch(persisted,/agentDeviceAccess/);
+    const persisted=await readFile(join(home,"ui-state.json"),"utf8");assert.doesNotMatch(persisted,/agentDeviceAccess|remoteAccessEnabled|remoteAccessPort|remoteAccessToken|retired-secret/);
   }finally{await rm(home,{recursive:true,force:true})}
 });
 

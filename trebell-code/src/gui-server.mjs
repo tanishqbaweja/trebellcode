@@ -25,10 +25,6 @@ import { CheckpointService } from "./checkpoint-service.mjs";
 import { TerminalManager } from "./terminal-manager.mjs";
 import { EnvironmentManager, remoteTransportEnvironment } from "./environment-manager.mjs";
 import { startRemoteAppServer } from "./environment-app-server.mjs";
-import { createRemoteControlServer } from "./remote-control.mjs";
-import { RemoteAuthStore } from "./remote-auth-store.mjs";
-import { RemoteAccessSecretStore } from "./remote-access-secret-store.mjs";
-import { REMOTE_SCOPES, normalizeRemoteScopes } from "./remote-scopes.mjs";
 import { ProviderManager, normalizeProviderId } from "./provider-manager.mjs";
 import { modelContextWindowFromMetadata, modelContextWindowKey } from "./model-context-window.mjs";
 import { withNormalizedModelCapabilities } from "./model-capabilities.mjs";
@@ -476,10 +472,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   const fetchImpl=offlineE2E?offlineE2eFetch(globalThis.fetch):globalThis.fetch;
   const bootId=randomUUID();
   const dist=String(env.TREBELL_UI_DIST||"").trim()?resolve(String(env.TREBELL_UI_DIST).trim()):resolve(packageRoot,"ui","dist");
-  const remoteAccessSecrets=new RemoteAccessSecretStore(env);remoteAccessSecrets.migrateLegacyUiState();
   const state=new TrebellStateStore(env);
   const eventJournal=new EventJournal(env);
-  const remoteAuth=new RemoteAuthStore(env);
   const providers=new ProviderManager({env,fetchFn:fetchImpl});
   const environments=new EnvironmentManager({state,env});
   const storedActiveEnvironmentId=state.settings().activeEnvironmentId||null;
@@ -1004,7 +998,6 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     try{return await releasing}finally{if(codexThreadReleases.get(id)===releasing)codexThreadReleases.delete(id)}
   }
   let appServer=await ensureCodexAppServer(agentRuntimes.activeRuntime()==="codex"?agentRuntimes.activeInstance().id:null,{preferredPort:appPort,ownerKey:"catalog"});
-  let remoteControl=null;
 
   function providerReady(providerId=selectedProvider){
     return providerId==="freebuff" ? (mock || isLoggedIn(env)) : (mock || providers.hasKey(providerId));
@@ -1419,61 +1412,6 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     return finish({models:result.models||[],metadata:{provider:selectedProvider,source:result.source,models:result.metadata||[]},error:result.error||null});
   }
 
-  function newRemoteToken(){ return randomBytes(24).toString("base64url"); }
-  function remoteInfo(){
-    const settings=state.settings();
-    return {
-      enabled:Boolean(settings.remoteAccessEnabled),
-      running:Boolean(remoteControl),
-      port:Number(settings.remoteAccessPort||3211),
-      urls:remoteControl?.urls||[],
-      availableScopes:[...REMOTE_SCOPES],
-      devices:remoteAuth.listDevices(),
-    };
-  }
-  async function syncRemoteControl(){
-    const settings=state.settings();
-    if(!settings.remoteAccessEnabled){
-      if(remoteControl){await remoteControl.close().catch(()=>{});remoteControl=null}
-      return remoteInfo();
-    }
-    let token=remoteAccessSecrets.getToken();
-    if(!token){
-      token=newRemoteToken();
-      remoteAccessSecrets.setToken(token);
-    }
-    if(remoteControl){await remoteControl.close().catch(()=>{});remoteControl=null}
-    const remotePort=Math.max(1024,Math.min(65535,Number(settings.remoteAccessPort)||3211));
-    remoteControl=await createRemoteControlServer({
-      port:remotePort,
-      token,
-      version:TREBELL_VERSION,
-      appPort,
-      targetUrl:()=>selectedAgentRuntime==="codex"
-        ? `ws://127.0.0.1:${port}/api/codex/ws`
-        : `ws://127.0.0.1:${port}/api/agent/ws`,
-      enabled:()=>selectedAgentRuntime==="codex" ? (mock || Boolean(appServer?.child && appServer.child.exitCode===null)) : true,
-      environments,
-      authStore:remoteAuth,
-      getStatus:async()=>{
-        const catalog=await selectedModels().catch(()=>({models:[]}));
-        const agentStatus=selectedAgentRuntime==="codex"?null:await agentRuntimes.probe(agentRuntimes.activeInstance()).catch(()=>null);
-        return {
-          cwd:process.cwd(),
-          loggedIn:mock||isLoggedIn(env),
-          agentRuntime:selectedAgentRuntime,
-          agentRuntimeStatus:agentStatus,
-          provider:selectedProvider,
-          providerReady:["native","codex"].includes(selectedAgentRuntime)?providerReady():Boolean(agentStatus?.available),
-          appServerReady:mock||await appServerReady(appServer,appPort),
-          model:catalog.models?.[0]||null,
-          projects:state.projects(),
-        };
-      },
-    });
-    return remoteInfo();
-  }
-
   async function ensureBridge(){
     if(mock) return null;
     if(await health(DEFAULT_PORT)) return bridge;
@@ -1602,8 +1540,9 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       if(req.method==="POST"){
         try{
           const patch=await readJsonBody(req);
-          const remoteAccessTokenProvided=Object.prototype.hasOwnProperty.call(patch,"remoteAccessToken");
-          if(remoteAccessTokenProvided){remoteAccessSecrets.setToken(patch.remoteAccessToken);delete patch.remoteAccessToken}
+          if(Object.prototype.hasOwnProperty.call(patch,"remoteAccessToken"))delete patch.remoteAccessToken;
+          if(Object.prototype.hasOwnProperty.call(patch,"remoteAccessEnabled"))delete patch.remoteAccessEnabled;
+          if(Object.prototype.hasOwnProperty.call(patch,"remoteAccessPort"))delete patch.remoteAccessPort;
           if("modelProvider" in patch) patch.modelProvider=normalizeProviderId(patch.modelProvider);
           if("agentRuntime" in patch) patch.agentRuntime=normalizeAgentRuntime(patch.agentRuntime);
           const previous=selectedProvider;
@@ -1622,7 +1561,6 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           const next=state.updateSettings(patch);
           if("modelProvider" in patch && patch.modelProvider!==previous) await restartAppServer(patch.modelProvider);
           if(runtimeSelection?.runtime==="codex"&&previous===selectedProvider&&(previousAgentRuntime!=="codex"||previousAgentInstanceId!==runtimeSelection.instance.id))await restartAppServer(selectedProvider);
-          if("remoteAccessEnabled" in patch||"remoteAccessPort" in patch||remoteAccessTokenProvided) await syncRemoteControl();
           return json(res,200,next);
         }catch(error){return json(res,400,{error:error.message});}
       }
@@ -1867,38 +1805,6 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         before:url.searchParams.get("before")||null,
         after:url.searchParams.get("after")||null,
       }),journal:eventJournal.status()});
-    }
-    if(url.pathname==="/api/remote-access"){
-      if(req.method==="GET") return json(res,200,remoteInfo());
-      if(req.method==="POST"){
-        try{
-          const body=await readJsonBody(req);
-          const patch={};
-          if("enabled" in body) patch.remoteAccessEnabled=Boolean(body.enabled);
-          if("port" in body){
-            const remotePort=Number(body.port);
-            if(!Number.isInteger(remotePort)||remotePort<1024||remotePort>65535) throw new Error("Remote access port must be between 1024 and 65535");
-            patch.remoteAccessPort=remotePort;
-          }
-          if(body.regenerateToken||(!remoteAccessSecrets.getToken()&&body.enabled)) remoteAccessSecrets.setToken(newRemoteToken());
-          if(Object.keys(patch).length) state.updateSettings(patch);
-          return json(res,200,await syncRemoteControl());
-        }catch(error){return json(res,400,{error:error.message});}
-      }
-    }
-    if(url.pathname==="/api/remote-access/pair"&&req.method==="POST"){
-      try{
-        if(!state.settings().remoteAccessEnabled)return json(res,400,{error:"Enable remote access before creating a pairing link"});
-        if(!remoteControl)await syncRemoteControl();
-        const body=await readJsonBody(req),hasScopes=Object.prototype.hasOwnProperty.call(body,"scopes");
-        const scopes=hasScopes?normalizeRemoteScopes(body.scopes,{fallback:[]}):null;
-        if(hasScopes&&!scopes.length)throw new Error("Choose at least one remote access scope");
-        return json(res,200,remoteControl.createPairing(hasScopes?{scopes}:{}));
-      }catch(error){return json(res,400,{error:error.message});}
-    }
-    if(url.pathname==="/api/remote-access/device"&&req.method==="DELETE"){
-      const id=url.searchParams.get("id");if(!id)return json(res,400,{error:"id is required"});
-      return json(res,200,{ok:remoteAuth.revokeDevice(id),devices:remoteAuth.listDevices()});
     }
     if(url.pathname==="/api/projects"){
       if(req.method==="GET") return json(res,200,{projects:state.projects().map(projectWithEnvironment)});
@@ -3187,10 +3093,6 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     setTimeout(()=>sweepAutoPull().catch(()=>{}),7000).unref?.();
     autoPullTimer=setInterval(()=>sweepAutoPull().catch(()=>{}),5*60_000);autoPullTimer.unref?.();
   }
-  if(state.settings().remoteAccessEnabled) await syncRemoteControl().catch(error=>{
-      appServer?.logs?.push({at:Date.now(),stream:"remote",text:safeLogText("remote access failed: "+error.message+"\n")});
-  });
-
   return {
     url:`http://${host==="0.0.0.0"?"127.0.0.1":host}:${port}`,
     server,
@@ -3204,13 +3106,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       await Promise.allSettled([
         cloneJobs.shutdown(),
         terminals?.shutdown(),
-        remoteControl?.close(),
         stopCodexAppServers(),
         stopChildProcess(bridge?.child),
         providerBridge?.close(),
         eventJournal.close(),
       ]);
-      remoteControl=null;
       await new Promise(resolve=>server.close(resolve));
     },
   };

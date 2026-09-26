@@ -76,16 +76,13 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
 
     const publicSettings=await fetch(gui.url+"/api/settings").then(r=>r.json());
     const publicState=await fetch(gui.url+"/api/state").then(r=>r.json());
-    assert.equal(Object.prototype.hasOwnProperty.call(publicSettings,"remoteAccessToken"),false);
-    assert.equal(Object.prototype.hasOwnProperty.call(publicState.settings||{},"remoteAccessToken"),false);
+    for(const retired of ["remoteAccessToken","remoteAccessEnabled","remoteAccessPort"])assert.equal(Object.prototype.hasOwnProperty.call(publicSettings,retired),false);
+    for(const retired of ["remoteAccessToken","remoteAccessEnabled","remoteAccessPort"])assert.equal(Object.prototype.hasOwnProperty.call(publicState.settings||{},retired),false);
     for(const key of ["checkpoints","usageRecords","verificationRecords","repositoryKnowledge"])assert.equal(Object.prototype.hasOwnProperty.call(publicState,key),false,key+" should be queried through its indexed API instead of the general state payload");
     const compatibilityToken=["older","client","remote","credential"].join("-");
-    const updatedSettings=await fetch(gui.url+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({remoteAccessToken:compatibilityToken})}).then(r=>r.json());
-    assert.equal(Object.prototype.hasOwnProperty.call(updatedSettings,"remoteAccessToken"),false);
-    const savedUiState=await readFile(join(home,"ui-state.json"),"utf8");
-    assert.doesNotMatch(savedUiState,new RegExp(compatibilityToken));
-    const savedRemoteSecret=JSON.parse(await readFile(join(home,"remote-access-secret.json"),"utf8"));
-    assert.equal(savedRemoteSecret.token,compatibilityToken);
+    const updatedSettings=await fetch(gui.url+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({remoteAccessToken:compatibilityToken,remoteAccessEnabled:true,remoteAccessPort:4555})}).then(r=>r.json());
+    for(const retired of ["remoteAccessToken","remoteAccessEnabled","remoteAccessPort"])assert.equal(Object.prototype.hasOwnProperty.call(updatedSettings,retired),false);
+    assert.doesNotMatch(await readFile(join(home,"ui-state.json"),"utf8"),new RegExp(compatibilityToken));
 
     await fetch(gui.url+"/api/thread-meta",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({threadId:"catalog-meta-fixture",patch:{runtime:"native",runtimeInstanceId:"native-default",cwd:home,projectless:true,branch:"feature/catalog",threadSnapshot:{id:"catalog-meta-fixture",name:"Catalog fixture",preview:"Compact bootstrap row",cwd:home,updatedAt:100,createdAt:90,status:{type:"idle"},runtime:"native"},delegation:{parentThreadId:"parent",task:"Child fixture",status:"running",ownership:["src/app.js"]},goal:{objective:"Heavy goal"},trebellQueue:[{id:"queue-heavy",input:[{type:"text",text:"heavy queued input"}]}],trebellContext:{task:"active-only",exactInjectedContext:"large context that should not be bootstrapped"},reviewedFiles:["src/app.js"]}})});
     const compactState=await fetch(gui.url+"/api/state").then(r=>r.json()),compactMeta=compactState.threadMeta["catalog-meta-fixture"];

@@ -1,27 +1,9 @@
-import React,{useEffect,useRef,useState} from "react";
-import { Globe2, Laptop2, Plus, RefreshCw, Server, Trash2 } from "lucide-react";
+import React,{useEffect,useState} from "react";
+import { Laptop2, Plus, RefreshCw, Server, Trash2 } from "lucide-react";
 import { api } from "../api.js";
-import { writeClipboardText } from "../clipboard.js";
-
-const FALLBACK_REMOTE_SCOPES=["status","threads:read","threads:write","approvals","environments:read","environments:execute"];
-const READ_ONLY_REMOTE_SCOPES=["status","threads:read"];
-const THREAD_REMOTE_SCOPES=["status","threads:read","threads:write","approvals"];
-const REMOTE_SCOPE_LABELS={
-  status:"View host status",
-  "threads:read":"View threads",
-  "threads:write":"Start, steer and stop threads",
-  approvals:"Approve agent requests",
-  "environments:read":"View environments",
-  "environments:execute":"Run environment commands",
-};
-function scopeLabel(scope){return REMOTE_SCOPE_LABELS[scope]||scope}
 
 export default function EnvironmentsPage(){
   const [data,setData]=useState({profiles:[],activeEnvironmentId:null,activeEnvironment:null,capabilities:{local:{available:true},ssh:{available:false},wsl:{available:false,distros:[]}}});
-  const [remote,setRemote]=useState({enabled:false,running:false,port:3211,urls:[],devices:[],availableScopes:FALLBACK_REMOTE_SCOPES});
-  const confirmedRemoteRef=useRef({enabled:false,port:3211});
-  const [pairing,setPairing]=useState(null);
-  const [pairScopes,setPairScopes]=useState(READ_ONLY_REMOTE_SCOPES);
   const [draft,setDraft]=useState({type:"local",name:"",cwd:"",distro:"",host:"",user:"",port:22,identityFile:"",codexPath:"codex",themeDirectory:""});
   const [busy,setBusy]=useState("");
   const [message,setMessage]=useState("");
@@ -29,17 +11,8 @@ export default function EnvironmentsPage(){
   const localPlatformLabel={win32:"Windows",linux:"Linux",darwin:"macOS"}[localPlatform]||"Local";
 
   async function refresh({reportErrors=false}={}){
-    const [environmentResult,remoteResult]=await Promise.allSettled([api("/api/environments"),api("/api/remote-access")]);
-    if(environmentResult.status==="fulfilled")setData(environmentResult.value);
-    if(remoteResult.status==="fulfilled"){
-      setRemote(remoteResult.value);
-      confirmedRemoteRef.current={enabled:Boolean(remoteResult.value?.enabled),port:Number(remoteResult.value?.port)||3211};
-    }
-    const failures=[];
-    if(environmentResult.status==="rejected")failures.push("environments: "+(environmentResult.reason?.message||String(environmentResult.reason)));
-    if(remoteResult.status==="rejected")failures.push("remote access: "+(remoteResult.reason?.message||String(remoteResult.reason)));
-    if(reportErrors)setMessage(failures.length?"Could not refresh "+failures.join(" · "):"");
-    return failures.length===0;
+    try{setData(await api("/api/environments"));if(reportErrors)setMessage("");return true}
+    catch(error){if(reportErrors)setMessage("Could not refresh environments: "+(error?.message||String(error)));return false}
   }
   useEffect(()=>{refresh({reportErrors:true})},[]);
 
@@ -88,40 +61,8 @@ export default function EnvironmentsPage(){
     try{const r=await api("/api/environment/probe",{method:"POST",body:{id}});setMessage((r.ok?"Connected":"Probe failed")+" · "+(r.stdout||r.stderr||"").trim())}
     catch(e){setMessage(e.message)}finally{setBusy("")}
   }
-  async function saveRemote(patch){
-    setBusy("remote");setMessage("");
-    const confirmed=confirmedRemoteRef.current;
-    try{
-      const r=await api("/api/remote-access",{method:"POST",body:patch});
-      setRemote(r);
-      confirmedRemoteRef.current={enabled:Boolean(r?.enabled),port:Number(r?.port)||3211};
-    }
-    catch(e){
-      const rollback={};
-      if(Object.prototype.hasOwnProperty.call(patch,"enabled"))rollback.enabled=confirmed.enabled;
-      if(Object.prototype.hasOwnProperty.call(patch,"port"))rollback.port=confirmed.port;
-      setRemote(current=>({...current,...rollback}));
-      setMessage(e.message);
-    }finally{setBusy("")}
-  }
-  async function createPairing(){
-    setBusy("pair");setMessage("");
-    try{
-      const available=new Set((remote.availableScopes?.length?remote.availableScopes:FALLBACK_REMOTE_SCOPES)),scopes=pairScopes.filter(scope=>available.has(scope));
-      if(!scopes.length)throw new Error("Choose at least one remote access capability.");
-      const result=await api("/api/remote-access/pair",{method:"POST",body:{scopes}});setPairing(result);const first=result.urls?.[0];if(first){const copied=await writeClipboardText(first);setMessage(copied?"Pairing link created and copied. It can be used once before it expires.":"Pairing link created. Copy it below before it expires.")}
-    }
-    catch(e){setMessage(e.message)}finally{setBusy("")}
-  }
-  function togglePairScope(scope){setPairScopes(current=>current.includes(scope)?current.filter(item=>item!==scope):[...current,scope])}
-  async function revokeDevice(id){
-    setBusy("device:"+id);setMessage("");
-    try{const result=await api("/api/remote-access/device?id="+encodeURIComponent(id),{method:"DELETE"});setRemote(current=>({...current,devices:result.devices||[]}));setMessage(result.ok?"Remote device revoked.":"Device was already removed.")}
-    catch(e){setMessage(e.message)}finally{setBusy("")}
-  }
-
   return <div className="environments-page">
-    <div className="capabilities-toolbar"><div><h2>Environments & remote access</h2><p>Run the active coding-agent runtime on this {localPlatformLabel} host, inside WSL when available, or on an SSH machine. LAN remote control pairs another device with a one-time link and gives it a revocable session.</p></div><button onClick={()=>refresh({reportErrors:true})} disabled={!!busy}><RefreshCw size={13}/> Refresh</button></div>
+    <div className="capabilities-toolbar"><div><h2>Environments</h2><p>Run the active coding-agent runtime on this {localPlatformLabel} host, inside WSL when available, or on an SSH machine.</p></div><button onClick={()=>refresh({reportErrors:true})} disabled={!!busy}><RefreshCw size={13}/> Refresh</button></div>
     {message&&<div className="inline-status" role="status" aria-live="polite">{message}</div>}
     <div className="environment-grid">
       <section className="capability-card">
@@ -141,21 +82,6 @@ export default function EnvironmentsPage(){
         {draft.type!=="local"&&<label>Codex executable<input value={draft.codexPath||"codex"} onChange={e=>setDraft(d=>({...d,codexPath:e.target.value}))} placeholder="/usr/local/bin/codex"/></label>}
         {draft.type==="ssh"&&<><label>Host<input value={draft.host} onChange={e=>setDraft(d=>({...d,host:e.target.value}))} placeholder="dev.example.com"/></label><div className="environment-two"><label>User<input value={draft.user} onChange={e=>setDraft(d=>({...d,user:e.target.value}))}/></label><label>Port<input type="number" value={draft.port} onChange={e=>setDraft(d=>({...d,port:Number(e.target.value)||22}))}/></label></div><label>Identity file<input value={draft.identityFile} onChange={e=>setDraft(d=>({...d,identityFile:e.target.value}))} placeholder="C:\\Users\\me\\.ssh\\id_ed25519"/></label></>}
         <button className="primary" onClick={add} disabled={!!busy||(draft.type==="ssh"&&!draft.host.trim())}><Plus size={13}/> Add environment</button>
-      </section>
-      <section className="capability-card remote-access-card">
-        <div className="capability-card-head"><span><Globe2 size={15}/><strong>LAN remote control</strong></span><em className={remote.running?"ok":""}>{remote.running?"running":"off"}</em></div>
-        <label className="toggle-line"><input type="checkbox" checked={remote.enabled} onChange={e=>saveRemote({enabled:e.target.checked})}/> Enable remote access</label>
-        <label>Port<input type="number" min="1024" max="65535" value={remote.port||3211} onChange={e=>setRemote(r=>({...r,port:Number(e.target.value)||3211}))} onBlur={()=>remote.enabled&&saveRemote({port:remote.port})}/></label>
-        {remote.enabled&&<>
-          <div className="remote-scope-panel">
-            <div className="remote-scope-head"><span><strong>New device access</strong><small>Start read-only, then grant only what this device needs.</small></span><div><button className={pairScopes.length===READ_ONLY_REMOTE_SCOPES.length&&READ_ONLY_REMOTE_SCOPES.every(scope=>pairScopes.includes(scope))?"active":""} onClick={()=>setPairScopes([...READ_ONLY_REMOTE_SCOPES])}>Read only</button><button className={pairScopes.length===THREAD_REMOTE_SCOPES.length&&THREAD_REMOTE_SCOPES.every(scope=>pairScopes.includes(scope))?"active":""} onClick={()=>setPairScopes([...THREAD_REMOTE_SCOPES])}>Thread control</button><button className={pairScopes.length===(remote.availableScopes?.length||FALLBACK_REMOTE_SCOPES.length)?"active":""} onClick={()=>setPairScopes([...(remote.availableScopes?.length?remote.availableScopes:FALLBACK_REMOTE_SCOPES)])}>Full control</button></div></div>
-            <div className="remote-scope-grid">{(remote.availableScopes?.length?remote.availableScopes:FALLBACK_REMOTE_SCOPES).map(scope=><label key={scope}><input type="checkbox" checked={pairScopes.includes(scope)} onChange={()=>togglePairScope(scope)}/><span>{scopeLabel(scope)}</span><code>{scope}</code></label>)}</div>
-          </div>
-          <div className="capability-actions"><button onClick={createPairing} disabled={!!busy||!pairScopes.length}>Create one-time pairing link</button></div>
-          {pairing&&<div className="remote-pairing"><span>Expires {new Date(pairing.expiresAt).toLocaleTimeString()} · Granted {(pairing.scopes||[]).map(scopeLabel).join(" · ")}</span>{(pairing.urls||[]).map(url=><div key={url}><code>{url}</code><button onClick={async()=>setMessage(await writeClipboardText(url)?"Pairing link copied.":"Copy failed. Select the pairing link and copy it manually.")}>Copy</button></div>)}</div>}
-          <div className="remote-devices"><strong>Paired devices</strong>{(remote.devices||[]).length?(remote.devices||[]).map(device=><div key={device.id}><span><b>{device.name}</b><small>Last seen {new Date(device.lastSeenAt||device.createdAt).toLocaleString()}</small><small>Access · {(device.scopes||[]).map(scopeLabel).join(" · ")||"No capabilities"}</small></span><button className="danger" onClick={()=>revokeDevice(device.id)} disabled={!!busy}><Trash2 size={12}/> Revoke</button></div>):<p>No paired devices yet.</p>}</div>
-          <div className="remote-urls">{(remote.urls||[]).map(url=><code key={url}>{url}</code>)}</div>
-        </>}
       </section>
       <section className="capability-card">
         <div className="capability-card-head"><span><Server size={15}/><strong>Host capabilities</strong></span></div>

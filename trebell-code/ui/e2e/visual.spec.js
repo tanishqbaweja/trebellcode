@@ -3017,7 +3017,7 @@ test("major workspace surfaces render their real destinations without horizontal
   await page.screenshot({path:auditDir+"tools-1600x980.png",fullPage:true});
 
   await page.getByRole("button",{name:"Environments",exact:true}).click();
-  await expect(page.getByRole("heading",{name:"Environments & remote access",level:2})).toBeVisible();
+  await expect(page.getByRole("heading",{name:"Environments",level:2})).toBeVisible();
   await expect(page.locator(".environments-page")).toContainText("Run the active coding-agent runtime");
   const addEnvironment=page.locator(".environment-create .primary");
   await expect(addEnvironment).toBeVisible();
@@ -3125,10 +3125,6 @@ test("project and environment configuration forms stay readable when expanded",a
       profiles:[],activeEnvironmentId:null,activeEnvironment:null,
       capabilities:{local:{available:true},wsl:{available:true,distros:["Ubuntu-24.04"]},ssh:{available:true,version:"OpenSSH_for_Windows_9.5"}},
     })});
-  });
-  await page.route(/\/api\/remote-access$/,async route=>{
-    if(route.request().method()!=="GET")return route.continue();
-    await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,running:false,port:3211,urls:[],devices:[]})});
   });
   await page.getByRole("button",{name:"Environments",exact:true}).click();
   const addCard=page.locator(".environment-create");
@@ -3670,7 +3666,7 @@ test("environment refresh and removal failures preserve the existing environment
   await prepare(page,request);
   await request.post("/api/environments",{data:{id:"failure-ssh",name:"Failure SSH",type:"ssh",host:"failure.example.invalid",user:"dev",cwd:"/srv/failure",port:22}});
   await page.getByRole("button",{name:"Environments",exact:true}).click();
-  await expect(page.getByRole("heading",{name:"Environments & remote access",level:2})).toBeVisible();
+  await expect(page.getByRole("heading",{name:"Environments",level:2})).toBeVisible();
   const environmentRow=page.locator(".environment-list>div").filter({hasText:"Failure SSH"});
   await expect(environmentRow).toBeVisible();
 
@@ -3692,57 +3688,6 @@ test("environment refresh and removal failures preserve the existing environment
   const metrics=await page.locator(".environments-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
   await page.screenshot({path:auditDir+"environments-action-error-1280x800.png",fullPage:true});
-});
-
-test("remote access port rolls back when persistence fails",async({page,request})=>{
-  test.setTimeout(30_000);
-  let failSave=false;const saves=[];
-  await page.route(/\/api\/remote-access$/,route=>{
-    if(route.request().method()==="POST"){saves.push(route.request().postDataJSON()||{});if(failSave)return route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate remote access save failure"})})}
-    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:true,running:true,port:3211,urls:["http://127.0.0.1:3211"],devices:[]})});
-  });
-  await prepare(page,request);
-  await page.getByRole("button",{name:"Environments",exact:true}).click();
-  const card=page.locator(".remote-access-card");
-  await expect(card).toBeVisible();
-  const port=card.getByLabel("Port");
-  await expect(port).toHaveValue("3211");
-  await expect(card.getByLabel("Enable remote access")).toBeChecked();
-  failSave=true;
-  await port.focus();
-  await port.fill("4545");
-  await expect(port).toBeFocused();
-  await page.keyboard.press("Tab");
-  await expect(port).not.toBeFocused();
-  await expect.poll(()=>saves.length).toBeGreaterThan(0);
-  expect(saves.at(-1)).toMatchObject({port:4545});
-  const status=page.getByRole("status");
-  await expect(status).toContainText("Deliberate remote access save failure");
-  await expect(port).toHaveValue("3211");
-  await expect(card.getByLabel("Enable remote access")).toBeChecked();
-  await page.setViewportSize({width:1280,height:800});
-  const metrics=await page.locator(".environments-page").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
-  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await status.scrollIntoViewIfNeeded();
-  await expect(status).toBeInViewport();
-  await page.screenshot({path:auditDir+"remote-access-save-error-1280x800.png",fullPage:true});
-});
-
-test("remote pairing defaults to least privilege and visibly preserves granted scopes",async({page,request})=>{
-  test.setTimeout(30_000);
-  const scopes=["status","threads:read","threads:write","approvals","environments:read","environments:execute"],pairBodies=[];
-  const remote={enabled:true,running:true,port:3211,urls:["http://127.0.0.1:3211"],availableScopes:scopes,devices:[{id:"phone-1",name:"Existing read-only phone",createdAt:Date.now()-60_000,lastSeenAt:Date.now()-5_000,scopes:["status","threads:read"]}]};
-  await page.route(/\/api\/remote-access\/pair$/,route=>{pairBodies.push(route.request().postDataJSON()||{});const body=pairBodies.at(-1);return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({id:"pair-1",token:"fixture-pair-token",createdAt:Date.now(),expiresAt:Date.now()+600_000,scopes:body.scopes||[],urls:["http://127.0.0.1:3211/#pair=fixture-pair-token"]})})});
-  await page.route(/\/api\/remote-access$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(remote)}));
-  await prepare(page,request);await page.getByRole("button",{name:"Environments",exact:true}).click();
-  const card=page.locator(".remote-access-card");await expect(card).toBeVisible();await expect(card.getByLabel("Enable remote access")).toBeChecked();
-  await expect(card.getByLabel("View host status")).toBeChecked();await expect(card.getByLabel("View threads")).toBeChecked();await expect(card.getByLabel("Start, steer and stop threads")).not.toBeChecked();await expect(card.getByLabel("Approve agent requests")).not.toBeChecked();
-  await card.getByRole("button",{name:"Thread control",exact:true}).click();await expect(card.getByLabel("Start, steer and stop threads")).toBeChecked();await expect(card.getByLabel("Approve agent requests")).toBeChecked();await expect(card.getByLabel("Run environment commands")).not.toBeChecked();
-  await card.getByRole("button",{name:"Read only",exact:true}).click();await card.getByRole("button",{name:"Create one-time pairing link",exact:true}).click();
-  await expect.poll(()=>pairBodies.length).toBe(1);expect(pairBodies[0]).toEqual({scopes:["status","threads:read"]});await expect(card.locator(".remote-pairing")).toContainText("Granted View host status · View threads");
-  const existing=card.locator(".remote-devices>div").filter({hasText:"Existing read-only phone"});await expect(existing).toContainText("Access · View host status · View threads");
-  await page.setViewportSize({width:1280,height:800});const panel=card.locator(".remote-scope-panel"),metrics=await panel.evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await card.screenshot({path:auditDir+"remote-pairing-scopes-dark-1280x800.png"});
-  await page.evaluate(()=>{document.documentElement.dataset.mode="light"});const lightSurfaces=await card.evaluate(node=>({pairing:getComputedStyle(node.querySelector(".remote-pairing>div")).backgroundColor,device:getComputedStyle(node.querySelector(".remote-devices>div")).backgroundColor,unchecked:getComputedStyle(node.querySelector('.remote-scope-grid input:not(:checked)')).backgroundColor}));expect(lightSurfaces.pairing).not.toBe("rgb(12, 15, 18)");expect(lightSurfaces.device).not.toBe("rgb(12, 15, 18)");expect(lightSurfaces.unchecked).not.toBe("rgb(18, 22, 27)");await card.screenshot({path:auditDir+"remote-pairing-scopes-light-1280x800.png"});
 });
 
 test("workspace file refresh and save failures stay visible without lying about state",async({page,request})=>{
@@ -4528,7 +4473,7 @@ test("light mode stays visually coherent across workspace and panels",async({pag
   expect(projectLight.general).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
   await page.screenshot({path:auditDir+"light-projects-1600x980.png",fullPage:true});
   await page.getByRole("button",{name:"Environments",exact:true}).click();
-  await expect(page.getByRole("heading",{name:"Environments & remote access",level:2})).toBeVisible();
+  await expect(page.getByRole("heading",{name:"Environments",level:2})).toBeVisible();
   const environmentLight=await page.locator(".environment-grid .capability-card").first().evaluate(node=>getComputedStyle(node).backgroundColor);
   expect(environmentLight).not.toMatch(/rgb\((?:1[0-9]|2[0-5]),/);
   await page.screenshot({path:auditDir+"light-environments-1600x980.png",fullPage:true});

@@ -43,8 +43,6 @@ const DEFAULT_STATE = Object.freeze({
     activeEnvironmentId: null,
     activeProjectId: null,
     environmentDefaults: {},
-    remoteAccessEnabled: false,
-    remoteAccessPort: 3211,
     agentRuntime: "codex",
     agentRuntimeInstanceId: "codex-default",
     agentRuntimeInstances: [],
@@ -167,10 +165,10 @@ export class TrebellStateStore {
       const parsed=JSON.parse(readFileSync(this.path,"utf8"));
       this.legacyCollectionsPresent=["threadMeta","checkpoints","usageRecords","verificationRecords","repositoryKnowledge"].some(key=>Object.prototype.hasOwnProperty.call(parsed,key));
       const rawSettings=parsed.settings&&typeof parsed.settings==="object"?parsed.settings:{};
-      const legacyDeviceControlSetting=Object.prototype.hasOwnProperty.call(rawSettings,"agentDeviceAccess")
+      const retiredCompanionSetting=["agentDeviceAccess","remoteAccessEnabled","remoteAccessPort","remoteAccessToken"].some(key=>Object.prototype.hasOwnProperty.call(rawSettings,key))
         ||Object.values(rawSettings.environmentDefaults||{}).some(value=>value&&typeof value==="object"&&Object.prototype.hasOwnProperty.call(value,"agentDeviceAccess"))
         ||(Array.isArray(parsed.projects)&&parsed.projects.some(project=>project?.settingsOverrides&&Object.prototype.hasOwnProperty.call(project.settingsOverrides,"agentDeviceAccess")));
-      if(legacyDeviceControlSetting)this.needsRewrite=true;
+      if(retiredCompanionSetting)this.needsRewrite=true;
       const projects=Array.isArray(parsed.projects)?parsed.projects.map(project=>({
         ...project,
         environmentId:normalizeEnvironmentId(project?.environmentId),
@@ -179,6 +177,8 @@ export class TrebellStateStore {
       })):[];
       const settings={...clone(DEFAULT_STATE.settings),...rawSettings};
       delete settings.remoteAccessToken;
+      delete settings.remoteAccessEnabled;
+      delete settings.remoteAccessPort;
       delete settings.agentDeviceAccess;
       settings.environmentDefaults=Object.fromEntries(Object.entries(rawSettings.environmentDefaults||{}).map(([id,value])=>[String(id),normalizeScopedObject(value)]));
       if(Number(parsed.version||1)<2&&rawSettings.appearanceMode==="system")settings.appearanceMode="dark";
@@ -284,6 +284,8 @@ export class TrebellStateStore {
   }
   updateSettings(patch={}){
     if("remoteAccessToken" in patch){patch={...patch};delete patch.remoteAccessToken}
+    if("remoteAccessEnabled" in patch){patch={...patch};delete patch.remoteAccessEnabled}
+    if("remoteAccessPort" in patch){patch={...patch};delete patch.remoteAccessPort}
     if("agentDeviceAccess" in patch){patch={...patch};delete patch.agentDeviceAccess}
     if("worktreeSubmodules" in patch&&!['recursive','top-level','none'].includes(String(patch.worktreeSubmodules)))patch={...patch,worktreeSubmodules:'recursive'};
     if("worktreeCleanup" in patch)patch={...patch,worktreeCleanup:normalizeWorktreeCleanup(patch.worktreeCleanup)};
