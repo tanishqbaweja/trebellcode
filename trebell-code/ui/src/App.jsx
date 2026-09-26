@@ -67,6 +67,7 @@ const FreebuffPage=lazy(()=>import("./components/FreebuffPage.jsx"));
 const HarnessToolsPage=lazy(()=>import("./components/HarnessToolsPage.jsx"));
 const EnvironmentsPage=lazy(()=>import("./components/EnvironmentsPage.jsx"));
 const GoalPanel=lazy(()=>import("./components/GoalPanel.jsx"));
+const DevicePanel=lazy(()=>import("./components/DevicePanel.jsx"));
 const UsagePage=lazy(()=>import("./components/UsagePage.jsx"));
 const LicensesPage=lazy(()=>import("./components/LicensesPage.jsx"));
 const ContextInspector=lazy(()=>import("./components/ContextInspector.jsx"));
@@ -3482,6 +3483,7 @@ export default function App(){
     if(rightPanelTab==="context")return <ContextInspector packet={activeThread?.id?threadMeta[activeThread.id]?.trebellContext||null:null} error={activeThread?.id?threadMeta[activeThread.id]?.trebellContextError||null:null} pressure={activeThread?.id?threadMeta[activeThread.id]?.trebellContextPressure||null:null} remote={workspaceRemote} root={projectPath||null} environmentId={workspaceEnvironmentId||null}/>;
     if(rightPanelTab==="preview")return previewSurface;
     if(rightPanelTab==="source")return projectlessMode?<div className="empty-state">General chats are not attached to source control.</div>:<SourceControlPanel projectPath={projectPath} environmentId={workspaceEnvironmentId} remote={workspaceRemote} environmentName={currentProject?.environment?.name||bootstrap.activeEnvironment?.name||"Local machine"} model={model} provider={provider} threadId={activeThread?.id||null} sourceControlSettings={currentProject?.effectiveSettings||effectiveProjectSettings} onProjectChange={onProjectOpen} onAttachPr={attachPr} onLinkPr={linkPr} onLinkPrUrl={linkPullRequestUrl} onOpenLinkedThread={openLinkedThread} onSelectedPrChange={setSourceSelectedPr} onLinkedPullRequestsChanged={links=>activeThread?.id&&applyThreadPullRequestLinks(activeThread.id,links)} linkedPullRequests={activeThread?.id?linkedPullRequests:[]}/>;
+    if(rightPanelTab==="device")return <DevicePanel/>;
     if(rightPanelTab==="agents"&&runtimeCapabilities.delegation)return <div className="panel-page"><AgentsPage threads={threads} threadMeta={threadMeta} activeThread={activeThread} onOpen={openThread} onAction={threadAction} onDelegate={delegateTask} onRefreshThreads={()=>rpc?loadThreads(rpc,{strict:true}):Promise.resolve([])} rpc={rpc} rpcStatus={rpcStatus} model={model} telemetry={threadTelemetry} canModelDelegate={Boolean(runtimeCapabilities.dynamicTools&&runtimeCapabilities.delegation)}/></div>;
     if(rightPanelTab==="goal")return <GoalPanel rpc={rpc} rpcStatus={rpcStatus} thread={activeThread} goal={goal} onGoal={setGoal} continuity={continuity} onContinuity={setContinuity}/>;
     return <div className="runtime-surface">

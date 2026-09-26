@@ -1,5 +1,5 @@
 import React from "react";
-import { BrainCircuit, Cpu, FileCode2, FileDiff, GitBranch, Globe2, Maximize2, Minimize2, Network, Target, X } from "lucide-react";
+import { BrainCircuit, Cpu, FileCode2, FileDiff, GitBranch, Globe2, Maximize2, Minimize2, Network, Smartphone, Target, X } from "lucide-react";
 
 const TABS=[
   ["files",FileCode2,"Files"],
@@ -7,6 +7,7 @@ const TABS=[
   ["context",Network,"Context"],
   ["preview",Globe2,"Browser"],
   ["source",GitBranch,"Git"],
+  ["device",Smartphone,"Device"],
   ["agents",BrainCircuit,"Agents"],
   ["goal",Target,"Goal"],
   ["runtime",Cpu,"Runtime"],

@@ -68,6 +68,21 @@ export const SHARED_TOOL_NAMESPACE_CATALOG=freeze([
     tool("type","Type text into the focused desktop application.",{type:"object",properties:{text:{type:"string"}},required:["text"],additionalProperties:false},{kind:"other",riskLevel:"high",reversibility:"partial",externalSideEffect:true},{desktop:true,fullAccess:true}),
     tool("key","Send a supported key or shortcut such as ENTER, TAB, ESC, CTRL+A, CTRL+C, CTRL+V, ALT+TAB, UP, DOWN, LEFT, RIGHT.",{type:"object",properties:{key:{type:"string"}},required:["key"],additionalProperties:false},{kind:"other",riskLevel:"high",reversibility:"partial",externalSideEffect:true},{desktop:true,fullAccess:true}),
   ],{desktop:true},{outputProvenance:"untrusted"}),
+  namespace("trebell_device","Inspect local Android emulators and iOS simulators. Android input uses adb. iOS input uses Meta IDB when installed; screenshots, logs and lifecycle remain available through Xcode simctl. Physical phones are never controlled by these tools.",[
+    tool("list","List available Android emulators and iOS simulators.",emptyObjectSchema,{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,asyncSafe:true},{deviceAccess:true}),
+    tool("screenshot","Capture a simulator screen as an image.",{type:"object",properties:{id:{type:"string"}},required:["id"],additionalProperties:false},{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,asyncSafe:true},{deviceAccess:true}),
+    tool("logs","Read bounded recent simulator logs. Android reads recent logcat lines; iOS reads the recent Simulator unified log on macOS.",{type:"object",properties:{id:{type:"string"},lines:{type:"integer",minimum:10,maximum:2000},minutes:{type:"integer",minimum:1,maximum:60}},required:["id"],additionalProperties:false},{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,asyncSafe:true},{deviceAccess:true}),
+    tool("packages","List bounded installed package or bundle identifiers in an Android emulator or iOS Simulator.",{type:"object",properties:{id:{type:"string"}},required:["id"],additionalProperties:false},{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,asyncSafe:true},{deviceAccess:true}),
+    tool("launch","Launch an installed Android emulator package or iOS Simulator bundle id.",{type:"object",properties:{id:{type:"string"},app:{type:"string",minLength:1,maxLength:255}},required:["id","app"],additionalProperties:false},{kind:"execute",riskLevel:"medium",reversibility:"partial",idempotent:false},{deviceAccess:true}),
+    tool("stop","Stop an installed Android emulator package or terminate an iOS Simulator app.",{type:"object",properties:{id:{type:"string"},app:{type:"string",minLength:1,maxLength:255}},required:["id","app"],additionalProperties:false},{kind:"execute",riskLevel:"medium",reversibility:"full",idempotent:true},{deviceAccess:true}),
+    tool("boot","Boot a stopped iOS simulator. Android AVD startup uses the Trebell device UI rather than this tool.",{type:"object",properties:{id:{type:"string"}},required:["id"],additionalProperties:false},{kind:"execute",riskLevel:"low",reversibility:"full",idempotent:true},{deviceAccess:true}),
+    tool("poweroff","Shut down a booted iOS simulator.",{type:"object",properties:{id:{type:"string"}},required:["id"],additionalProperties:false},{kind:"execute",riskLevel:"medium",reversibility:"full",idempotent:true},{deviceAccess:true}),
+    tool("tap","Tap simulator coordinates. Android uses screenshot pixels; iOS uses the input point-space dimensions returned by screenshot when Meta IDB is available.",{type:"object",properties:{id:{type:"string"},x:{type:"number",minimum:0,maximum:20000},y:{type:"number",minimum:0,maximum:20000}},required:["id","x","y"],additionalProperties:false},{kind:"other",riskLevel:"medium",reversibility:"partial"},{deviceAccess:true}),
+    tool("swipe","Swipe between simulator coordinates. Android uses screenshot pixels; iOS uses Simulator points when Meta IDB is available.",{type:"object",properties:{id:{type:"string"},x1:{type:"number",minimum:0,maximum:20000},y1:{type:"number",minimum:0,maximum:20000},x2:{type:"number",minimum:0,maximum:20000},y2:{type:"number",minimum:0,maximum:20000},duration:{type:"integer",minimum:50,maximum:5000}},required:["id","x1","y1","x2","y2"],additionalProperties:false},{kind:"other",riskLevel:"medium",reversibility:"partial"},{deviceAccess:true}),
+    tool("type","Type text into the focused simulator control. iOS requires Meta IDB.",{type:"object",properties:{id:{type:"string"},text:{type:"string",minLength:1,maxLength:4000}},required:["id","text"],additionalProperties:false},{kind:"other",riskLevel:"medium",reversibility:"partial"},{deviceAccess:true}),
+    tool("key","Send Android Back/Home/Recents/Enter. iOS supports Home and Enter when Meta IDB is available.",{type:"object",properties:{id:{type:"string"},key:{type:"string",enum:["back","home","recents","enter"]}},required:["id","key"],additionalProperties:false},{kind:"other",riskLevel:"medium",reversibility:"partial"},{deviceAccess:true}),
+    tool("foreground","Read the foreground Android emulator app/activity.",{type:"object",properties:{id:{type:"string"}},required:["id"],additionalProperties:false},{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,asyncSafe:true},{deviceAccess:true}),
+  ],{deviceAccess:true},{outputProvenance:"untrusted"}),
   namespace("trebell_source_control","Inspect and mutate the active project's Git state through Trebell policy, and link hosted pull requests to the current thread.",[
     tool("status","Read bounded Git branch, upstream, worktree, remote, and working-tree status for the active project.",emptyObjectSchema,{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,asyncSafe:true},{workspace:true,project:true}),
     tool("init","Initialize Git in the active project when it is not already a repository.",emptyObjectSchema,{kind:"edit",riskLevel:"medium",reversibility:"full",idempotent:true},{workspace:true,project:true}),
@@ -126,12 +141,13 @@ export function dynamicToolNamespace(namespaceDefinition){
   };
 }
 
-export function sharedDynamicToolNamespaces({workspaceTools=false,terminal=false,browser=false,computer=false,sourceControl=true,delegation=false}={}){
+export function sharedDynamicToolNamespaces({workspaceTools=false,terminal=false,browser=false,computer=false,device=false,sourceControl=true,delegation=false}={}){
   const enabled=new Set([
     ...(workspaceTools?["trebell_workspace"]:[]),
     ...(terminal?["trebell_terminal"]:[]),
     ...(browser?["trebell_browser"]:[]),
     ...(computer?["trebell_computer"]:[]),
+    ...(device?["trebell_device"]:[]),
     ...(sourceControl?["trebell_source_control"]:[]),
     ...(delegation?["trebell_delegate"]:[]),
   ]);
