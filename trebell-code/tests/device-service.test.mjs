@@ -53,3 +53,10 @@ test("device updates reject arbitrary sdkmanager package names before probing th
   const service=new DeviceService({platform:"win32",env:{}});
   await assert.rejects(()=>service.updateTool("system-images;android-36;google_apis;x86_64"),/Only Android Platform-Tools and Emulator updates are supported/i);
 });
+
+test("iOS simulator lifecycle actions fail honestly off macOS",async()=>{
+  const {DeviceService}=await import("../src/device-service.mjs");
+  const service=new DeviceService({platform:"win32",env:{}});
+  await assert.rejects(()=>service.action("ios:fixture-udid","boot"),/requires macOS/i);
+  await assert.rejects(()=>service.action("ios:fixture-udid","poweroff"),/requires macOS/i);
+});

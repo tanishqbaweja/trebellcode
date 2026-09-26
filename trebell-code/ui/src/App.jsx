@@ -1727,7 +1727,8 @@ export default function App(){
               client.respond(message.id,{contentItems:sharedToolResponseContent("trebell_device",[{type:"inputImage",imageUrl:shot.dataUrl},{type:"inputText",text:JSON.stringify({id:shot.id,platform:shot.platform,width:shot.width,height:shot.height})}]),success:true});return;
             }
             let result;
-            if(p.tool==="tap")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"tap",args:{x:args.x,y:args.y}}});
+            if(p.tool==="boot"||p.tool==="poweroff")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:p.tool,args:{}}});
+            else if(p.tool==="tap")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"tap",args:{x:args.x,y:args.y}}});
             else if(p.tool==="type")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"type",args:{text:args.text}}});
             else if(p.tool==="key")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"key",args:{key:args.key}}});
             else if(p.tool==="foreground")result=await api("/api/device/action",{method:"POST",body:{id:args.id,action:"foreground",args:{}}});

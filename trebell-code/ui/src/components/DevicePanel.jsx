@@ -22,13 +22,16 @@ export default function DevicePanel(){
   }
   async function refreshShot(){if(!selected)return;try{setShot(await api("/api/device/screenshot?id="+encodeURIComponent(selected)))}catch(error){setMessage(error.message)}}
   useEffect(()=>{const poll=startVisibilityPoll(refresh,{intervalMs:5000});return()=>poll.dispose()},[]);
-  useEffect(()=>{setShot(null);if(!selected)return;const poll=startVisibilityPoll(refreshShot,{intervalMs:1200});return()=>poll.dispose()},[selected]);
+  useEffect(()=>{setShot(null);if(!selected||current?.running===false)return;const poll=startVisibilityPoll(refreshShot,{intervalMs:1200});return()=>poll.dispose()},[selected,current?.running]);
 
   async function act(action,args={}){
     if(!selected)return false;setBusy(action);setMessage("");
     try{
       const result=await api("/api/device/action",{method:"POST",body:{id:selected,action,args}});
       if(action==="foreground")setMessage(result.foreground||"Foreground app unavailable");
+      if(action==="boot"||action==="poweroff"){
+        await refresh();if(action==="boot")await refreshShot();return true;
+      }
       await refreshShot();return true;
     }catch(error){setMessage(error.message);return false}
     finally{setBusy("")}
@@ -68,22 +71,23 @@ export default function DevicePanel(){
   }
   function tap(event){if(!shot?.width||!shot?.height||!imageRef.current||!selected)return;const rect=imageRef.current.getBoundingClientRect();const x=(event.clientX-rect.left)/rect.width*shot.width;const y=(event.clientY-rect.top)/rect.height*shot.height;act("tap",{x,y})}
   const androidTools=data.capabilities?.android?.tools||[];
+  const showAndroidTooling=Boolean(data.capabilities?.android?.available||data.capabilities?.android?.sdkManagerAvailable||androidTools.length);
   const updateByTool=useMemo(()=>Object.fromEntries((toolUpdates?.updates||[]).map(item=>[item.id,item])),[toolUpdates]);
 
   return <div className="device-panel">
     <div className="device-toolbar"><select value={selected} onChange={e=>setSelected(e.target.value)}><option value="">Choose simulator</option>{data.devices.map(device=><option value={device.id} key={device.id}>{device.name} · {device.platform} · {device.state}</option>)}</select><button onClick={refresh}><RefreshCw size={13}/></button></div>
-    <div className="device-tooling">
+    {showAndroidTooling&&<div className="device-tooling">
       <div className="device-tooling-head"><div><strong>Android tools</strong><span>Detected locally. Updates run only when you choose one.</span></div><button onClick={()=>checkToolUpdates()} disabled={!!toolBusy||!data.capabilities?.android?.sdkManagerAvailable}><RefreshCw size={12}/>{toolBusy==="check"?"Checking…":"Check updates"}</button></div>
       <div className="device-tool-list">{androidTools.map(tool=>{const update=updateByTool[tool.id];return <div key={tool.id}><span><strong>{tool.label}</strong><small>{tool.installed?(tool.version||"Installed"):"Not found"}{update?` · ${update.availableVersion} available`:""}</small></span>{update&&tool.id!=="sdkmanager"?<button onClick={()=>updateTool(tool.id)} disabled={!!toolBusy}><Download size={11}/>{toolBusy===tool.id?"Updating…":"Update"}</button>:<em>{tool.installed?"Ready":"Missing"}</em>}</div>})}</div>
       {!data.capabilities?.android?.sdkManagerAvailable&&<p>Install Android command-line tools (sdkmanager) to check or apply Platform-Tools and Emulator updates from Trebell.</p>}
-    </div>
+    </div>}
     {!data.capabilities?.android?.available&&!data.capabilities?.ios?.available&&<div className="device-setup"><Smartphone size={26}/><strong>No simulator tooling detected</strong><p>Android needs Platform-Tools (adb) and an emulator. iOS Simulator requires macOS with Xcode.</p></div>}
     {!selected&&data.avds?.length>0&&<div className="device-avds"><strong>Android virtual devices</strong>{data.avds.map(avd=><button key={avd} onClick={()=>startAvd(avd)} disabled={!!busy}><Play size={12}/> {avd}</button>)}</div>}
     {selected&&<>
-      <div className="device-screen-wrap">{shot?.dataUrl?<img ref={imageRef} src={shot.dataUrl} alt={current?.name||"Simulator"} onClick={tap}/>:<div className="device-loading">Loading simulator screen…</div>}</div>
+      <div className="device-screen-wrap">{current?.running===false?<div className="device-loading">Simulator is stopped.</div>:shot?.dataUrl?<img ref={imageRef} src={shot.dataUrl} alt={current?.name||"Simulator"} onClick={current?.platform==="android"?tap:undefined}/>:<div className="device-loading">Loading simulator screen…</div>}</div>
       <div className="device-controls">
         {current?.platform==="android"&&<><button onClick={()=>act("key",{key:"back"})}><Undo2 size={13}/> Back</button><button onClick={()=>act("key",{key:"home"})}><Home size={13}/> Home</button><button onClick={()=>act("key",{key:"recents"})}>Recents</button><button onClick={()=>act("rotate",{rotation:1})}><RotateCw size={13}/> Rotate</button><button onClick={()=>act("theme",{dark:true})}><Moon size={13}/></button><button onClick={()=>act("theme",{dark:false})}><Sun size={13}/></button><button onClick={()=>act("foreground")}>Foreground app</button></>}
-        {current?.platform==="ios"&&<button onClick={()=>act("poweroff")}><CircleStop size={13}/> Power off</button>}
+        {current?.platform==="ios"&&(current.running?<button onClick={()=>act("poweroff")}><CircleStop size={13}/> Power off</button>:<button onClick={()=>act("boot")}><Play size={13}/> Boot simulator</button>)}
       </div>
       {current?.platform==="android"&&<div className="device-type"><Keyboard size={13}/><input value={text} onChange={e=>setText(e.target.value)} onKeyDown={async e=>{if(e.key==="Enter"&&text&&await act("type",{text}))setText("")}} placeholder="Type into focused emulator control"/><button onClick={async()=>{if(text&&await act("type",{text}))setText("")}}>Send</button></div>}
     </>}
