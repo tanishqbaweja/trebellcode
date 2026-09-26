@@ -65,6 +65,22 @@ function Stop-GeneratedDesktopProcesses {
   Start-Sleep -Milliseconds 500
 }
 
+function Stop-DesktopProcessTree($Process) {
+  if ($Process -and -not $Process.HasExited) {
+    if ($env:OS -eq "Windows_NT") {
+      & taskkill.exe /PID $Process.Id /T /F *> $null
+    } else {
+      Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+    }
+  }
+  if ($Process) {
+    try { $null = $Process.WaitForExit(5000) } catch {}
+  }
+  # Electron may release its single-instance lock and listener handles just
+  # after the parent reports exit. Keep this teardown bounded but explicit.
+  Start-Sleep -Milliseconds 750
+}
+
 function Remove-GeneratedPath([string]$Path) {
   if (-not $Path -or -not (Test-Path $Path)) { return }
   for ($Attempt = 1; $Attempt -le 12; $Attempt++) {
@@ -266,14 +282,18 @@ try {
     # The desktop smoke connects over CDP and closes that remote browser when it
     # disconnects. Relaunch a fresh packaged app so model-driven validation gets
     # an independent runtime/browser session instead of inheriting a dead one.
-    if ($DesktopProcess -and -not $DesktopProcess.HasExited) {
-      if ($env:OS -eq "Windows_NT") {
-        & taskkill.exe /PID $DesktopProcess.Id /T /F *> $null
-      } else {
-        Stop-Process -Id $DesktopProcess.Id -Force -ErrorAction SilentlyContinue
-      }
-    }
+    Stop-DesktopProcessTree $DesktopProcess
     Stop-GeneratedDesktopProcesses
+    # The second packaged smoke gets fresh listeners so a late-closing socket
+    # from the first instance cannot masquerade as a runtime-start failure.
+    $GuiPort = Get-FreeTcpPort
+    $AppPort = Get-FreeTcpPort
+    $CdpPort = Get-FreeTcpPort
+    $FixturePort = Get-FreeTcpPort
+    $env:TREBELL_GUI_PORT = [string]$GuiPort
+    $env:TREBELL_APP_SERVER_PORT = [string]$AppPort
+    $env:TREBELL_CDP_URL = "http://127.0.0.1:$CdpPort"
+    $env:TREBELL_BROWSER_FIXTURE_PORT = [string]$FixturePort
     $DesktopProcess = Start-Process -FilePath $UnpackedExe -ArgumentList "--remote-debugging-port=$CdpPort" -PassThru
     $AgentRuntimeReady = $false
     for ($Attempt = 0; $Attempt -lt 120; $Attempt++) {
@@ -292,13 +312,7 @@ try {
     Invoke-Native "node" @("tests/installed-agent-check.mjs","http://127.0.0.1:$GuiPort")
   }
 } finally {
-  if ($DesktopProcess -and -not $DesktopProcess.HasExited) {
-    if ($env:OS -eq "Windows_NT") {
-      & taskkill.exe /PID $DesktopProcess.Id /T /F *> $null
-    } else {
-      Stop-Process -Id $DesktopProcess.Id -Force -ErrorAction SilentlyContinue
-    }
-  }
+  Stop-DesktopProcessTree $DesktopProcess
   Stop-GeneratedDesktopProcesses
   $env:TREBELL_GUI_PORT = $OldGuiPort
   $env:TREBELL_APP_SERVER_PORT = $OldAppPort
