@@ -232,7 +232,7 @@ export async function runNativeAgentTurn({
       if(turnSignal?.aborted||error?.name==="AbortError")throw abortError(turnSignal);
       success=false;errorMessage=error?.message||String(error);output={success:false,error:errorMessage};
     }
-    if(success&&output?.success!==false&&namespace==="trebell_terminal"&&name==="run"&&String(args.command||"").trim()&&Array.isArray(args.args)){
+    if(success&&output?.success!==false&&output?.timedOut!==true&&output?.signal==null&&namespace==="trebell_terminal"&&name==="run"&&String(args.command||"").trim()&&Array.isArray(args.args)){
       successfulTerminalRuns.push({command:String(args.command).trim(),args:args.args.map(value=>String(value)),cwd:String(args.cwd??"")});
     }
     const content=resultContent(output)||(!success?errorMessage||"Tool execution failed.":"Tool completed without text output.");

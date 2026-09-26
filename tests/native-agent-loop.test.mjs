@@ -133,11 +133,28 @@ test("native agent reuses one successful same-turn terminal command when a repea
       assert.match(String(prior.toolCalls.find(call=>call.id==="verify-after").arguments),/"command":"node"/);
       return {text:"done",toolCalls:[],usage:{}};
     },
-    executeTool:async call=>{executions.push(structuredClone(call));return {success:true,exitCode:0}},
+    executeTool:async call=>{executions.push(structuredClone(call));return {success:true,exitCode:executions.length===1?1:0,timedOut:false,signal:null}},
   });
   assert.equal(result.text,"done");assert.equal(result.modelTurns,3);assert.equal(result.toolCalls,2);
   assert.deepEqual(executions.map(call=>call.arguments.command),["node","node"]);
   assert.ok(events.some(event=>event.name==="native.tool.call_repaired"&&event.data?.reason==="repeated_terminal_command"));
+});
+
+test("native agent does not reuse a timed-out terminal command as a missing-command repair source",async()=>{
+  let turns=0;const executions=[],events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Run the verifier twice."}],onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"timeout",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"],"cwd":"."}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[{id:"missing",namespace:"trebell_terminal",name:"run",arguments:'{"args":["verify.mjs"],"cwd":"."}'}],usage:{}};
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executions.push(structuredClone(call));return executions.length===1?{exitCode:1,timedOut:true,signal:null}:{success:false,error:"command required"}},
+  });
+  assert.equal(result.text,"done");assert.equal(executions.at(-1).arguments.command,undefined);
+  assert.equal(events.some(event=>event.name==="native.tool.call_repaired"&&event.data?.reason==="repeated_terminal_command"),false);
 });
 
 test("native agent does not guess a missing terminal command without one unique same-turn match",async()=>{
