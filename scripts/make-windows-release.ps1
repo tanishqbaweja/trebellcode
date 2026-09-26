@@ -84,7 +84,8 @@ function Reset-ReleaseOutput {
 }
 
 function New-IsolatedPackagingOutput([string]$Prefix) {
-  $Base = [IO.Path]::GetTempPath()
+  $LocalAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+  $Base = if (-not [string]::IsNullOrWhiteSpace($LocalAppData)) { Join-Path $LocalAppData "Temp" } else { [IO.Path]::GetTempPath() }
   New-Item -ItemType Directory -Path $Base -Force | Out-Null
   $Output = Join-Path $Base ($Prefix + [Guid]::NewGuid().ToString("N"))
   New-Item -ItemType Directory -Path $Output -Force | Out-Null
