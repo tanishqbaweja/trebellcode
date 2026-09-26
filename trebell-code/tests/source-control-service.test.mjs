@@ -507,6 +507,25 @@ test("Bitbucket REST auth and requests come from the environment executor",async
   assert.match(requests[0].url,/api\.bitbucket\.org\/2\.0\/repositories\/acme\/widget\/pullrequests/);
 });
 
+test("Bitbucket prefers the scoped secret broker over generic environment access",async()=>{
+  const scopes=[],requests=[];const executor={
+    run:async(command,args)=>{
+      if(command==="git"&&args[0]==="rev-parse"&&args[1]==="--show-toplevel")return {ok:true,code:0,stdout:"/srv/app\n",stderr:""};
+      if(command==="git"&&args[0]==="branch")return {ok:true,code:0,stdout:"main\n",stderr:""};
+      if(command==="git"&&args[0]==="for-each-ref"&&args.includes("refs/heads"))return {ok:true,code:0,stdout:"main\n",stderr:""};
+      if(command==="git"&&args[0]==="for-each-ref")return {ok:true,code:0,stdout:"origin/main\n",stderr:""};
+      if(command==="git"&&args[0]==="status")return {ok:true,code:0,stdout:"## main...origin/main\n",stderr:""};
+      if(command==="git"&&args[0]==="remote")return {ok:true,code:0,stdout:"origin\thttps://bitbucket.org/acme/widget.git (fetch)\norigin\thttps://bitbucket.org/acme/widget.git (push)\n",stderr:""};
+      if(command==="git"&&args[0]==="worktree")return {ok:true,code:0,stdout:"worktree /srv/app\nHEAD abc\nbranch refs/heads/main\n",stderr:""};
+      return {ok:false,code:1,stdout:"",stderr:"unexpected command"};
+    },
+    secretValues:async scope=>{scopes.push(scope);return {TREBELL_BITBUCKET_ACCESS_TOKEN:"broker-token"}},
+    env:async()=>{throw new Error("generic environment reader must not be used when a broker is present")},
+    request:async(url,options)=>{requests.push({url:String(url),authorization:options.headers?.Authorization});return {ok:true,status:200,text:JSON.stringify({values:[]})}},
+  };
+  const result=await withSourceControlExecutor(executor,()=>listPullRequests("/srv/app"));assert.equal(result.provider,"bitbucket");assert.deepEqual(scopes,["source-control.bitbucket"]);assert.equal(requests[0].authorization,"Bearer broker-token");
+});
+
 test("GitHub PR editing, comment editing and waiting workflow approval use real CLI/API actions",async()=>{
   const calls=[];const stdinCalls=[];
   const gitResult=(args)=>{

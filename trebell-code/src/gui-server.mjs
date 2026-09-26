@@ -46,6 +46,7 @@ import { CloneJobService } from "./clone-job-service.mjs";
 import { prepareCodexHome } from "./codex-home-layout.mjs";
 import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
+import { ScopedSecretBroker } from "./secret-broker.mjs";
 import { ContextEngine, createRemoteContextIo } from "./context-engine.mjs";
 import { RepositoryKnowledgeService } from "./repository-knowledge-service.mjs";
 import { REPOSITORY_TOOL_DEFINITIONS, invokeRepositoryTool, parseRepositoryToolArguments, repositoryDynamicToolNamespace, repositoryToolHandlers } from "./repository-tool-catalog.mjs";
@@ -627,12 +628,12 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     }));
   }
   function sourceControlExecutor(environmentId){
-    const profile=environmentId?environments.get(environmentId):null;
+    const profile=environmentId?environments.get(environmentId):null,secretBroker=new ScopedSecretBroker({environment:env,environments,environmentId,platform:process.platform});
     const localRequest=async(url,options={})=>{
       const response=await fetchImpl(url,options);const text=await response.text();
       return {ok:response.ok,status:response.status,text};
     };
-    if(!profile||profile.type==="local")return {request:localRequest};
+    if(!profile||profile.type==="local")return {request:localRequest,secretValues:scope=>secretBroker.values(scope)};
     const normalized=result=>({
       ok:Number(result?.exitCode??1)===0&&!result?.timedOut,
       code:Number(result?.exitCode??1),
@@ -658,14 +659,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         if(result.exitCode!==0)throw new Error(result.stderr||"Could not read remote file");
         return result.stdout;
       },
-      env:async(names)=>{
-        const values={};
-        for(const name of names||[]){
-          const result=await environments.executeArgv(environmentId,{command:"printenv",args:[String(name)],cwd:"",timeoutMs:8000,maxOutput:64*1024});
-          if(result.exitCode===0)values[name]=String(result.stdout||"").trimEnd();
-        }
-        return values;
-      },
+      secretValues:scope=>secretBroker.values(scope),
       request:async(url,options={})=>{
         if(offlineE2E&&!loopbackHttpUrl(url))throw new Error("Offline browser E2E blocked external network request: "+String(url));
         const method=String(options.method||"GET").toUpperCase();
