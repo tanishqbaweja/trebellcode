@@ -46,6 +46,55 @@ test("Native session auto-reruns one uniquely proven verifier after a successful
   const autoEvent=events.find(event=>event.name==="native.verification.auto_rerun");assert.ok(autoEvent);assert.deepEqual(Object.keys(autoEvent.data).sort(),["editRevision","modelTurn","toolCalls"]);
 });
 
+test("Native session carries one adjacent-turn failed verifier into the next explicit fix-and-rerun request",async()=>{
+  let providerCalls=0,verifierRuns=0;const events=[],updates=[];
+  const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model-a",tools,onEvent:event=>events.push(event),onUpdate:update=>updates.push(update),
+    providerTurn:async()=>{
+      providerCalls++;
+      if(providerCalls===1)return {id:"verify",text:"",toolCalls:[{id:"verify-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      if(providerCalls===2)return {id:"first-final",text:"Verifier failed.",toolCalls:[],usage:{}};
+      if(providerCalls===3)return {id:"edit",text:"",toolCalls:[{id:"edit-1",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      throw new Error("The adjacent-turn verifier should replay deterministically after the edit.");
+    },
+    executeTool:async call=>{
+      if(call.namespace==="trebell_terminal"){verifierRuns++;return {exitCode:verifierRuns===1?1:0}}
+      return {path:"src/a.mjs",replacements:1};
+    },
+  });
+  await session.start({providerSessionId:"native-cross-turn-verifier",model:"model-a"});
+  const first=await session.prompt([{type:"text",text:"Run node verify.mjs now and report what happens."}]);
+  assert.equal(first.raw?.modelTurns,2);assert.equal(verifierRuns,1);
+  const second=await session.prompt([{type:"text",text:"Now fix the implementation and rerun node verify.mjs until it passes."}]);
+  assert.equal(providerCalls,3);assert.equal(second.raw?.modelTurns,1);assert.equal(second.raw?.toolCalls,2);assert.equal(verifierRuns,2);
+  assert.ok(events.some(event=>event.name==="native.verification.prior_terminal_evidence"&&event.data?.count===1));
+  assert.ok(events.some(event=>event.name==="native.verification.auto_rerun"));
+  assert.match(updates.filter(item=>item.update?.sessionUpdate==="agent_message_chunk").at(-1)?.update?.content?.text||"",/passes \(exit code 0\)/i);
+});
+
+test("Native session expires prior verifier evidence after an intervening turn with no terminal run",async()=>{
+  let providerCalls=0,verifierRuns=0;
+  const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model-a",tools,
+    providerTurn:async()=>{
+      providerCalls++;
+      if(providerCalls===1)return {text:"",toolCalls:[{id:"verify",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      if(providerCalls===2)return {text:"failed",toolCalls:[],usage:{}};
+      if(providerCalls===3)return {text:"noted",toolCalls:[],usage:{}};
+      if(providerCalls===4)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      return {text:"provider final",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{if(call.namespace==="trebell_terminal"){verifierRuns++;return {exitCode:1}}return {path:"src/a.mjs",replacements:1}},
+  });
+  await session.start({providerSessionId:"native-cross-turn-expiry",model:"model-a"});
+  await session.prompt([{type:"text",text:"Run node verify.mjs and report."}]);
+  await session.prompt([{type:"text",text:"Thanks, just note that."}]);
+  const third=await session.prompt([{type:"text",text:"Now fix it and rerun node verify.mjs until it passes."}]);
+  assert.equal(verifierRuns,1);assert.equal(third.raw?.modelTurns,2);assert.equal(providerCalls,5);
+});
+
 test("Native session preserves the exact post-verifier literal through contextual prompt provenance",async()=>{
   const updates=[],events=[];let turns=0;
   const tools=[

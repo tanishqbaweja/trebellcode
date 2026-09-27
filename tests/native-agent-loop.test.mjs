@@ -587,6 +587,46 @@ test("native session mode auto-reruns one exact failed verifier after a successf
   assert.equal(events.filter(event=>event.name==="native.verification.auto_rerun").length,1);
 });
 
+test("native agent can reuse one immediately prior failed verifier as bounded cross-turn evidence",async()=>{
+  let turns=0,verifierRuns=0;const events=[];
+  const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Now fix the implementation and rerun node verify.mjs until it passes."}],tools,autoRerunVerification:true,onEvent:event=>events.push(event),
+    priorTerminalRuns:[{arguments:{command:"node",args:["verify.mjs"]},exitCode:1}],
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      throw new Error("The prior failed verifier should be replayed without another provider turn.");
+    },
+    executeTool:async call=>{
+      if(call.namespace==="trebell_terminal"){verifierRuns++;return {exitCode:0}}
+      return {path:"src/a.mjs",replacements:1};
+    },
+  });
+  assert.equal(turns,1);assert.equal(result.modelTurns,1);assert.equal(result.toolCalls,2);assert.equal(verifierRuns,1);assert.match(result.text,/passes \(exit code 0\)/i);
+  assert.equal(events.filter(event=>event.name==="native.verification.prior_terminal_evidence").length,1);
+  assert.equal(events.filter(event=>event.name==="native.verification.auto_rerun").length,1);
+});
+
+test("native prior terminal evidence keeps only the latest result for one command",async()=>{
+  let turns=0,verifierRuns=0;
+  const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix it and rerun node verify.mjs until it passes."}],tools,autoRerunVerification:true,
+    priorTerminalRuns:[
+      {arguments:{command:"node",args:["verify.mjs"]},exitCode:1},
+      {arguments:{command:"node",args:["verify.mjs"]},exitCode:0},
+    ],
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      return {text:"provider final",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{if(call.namespace==="trebell_terminal")verifierRuns++;return {path:"src/a.mjs",replacements:1}},
+  });
+  assert.equal(turns,2);assert.equal(verifierRuns,0);assert.equal(result.text,"provider final");
+});
+
 test("native verifier auto-rerun never duplicates a verifier already present after the edit",async()=>{
   let turns=0,verifierRuns=0;const events=[];
   const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];

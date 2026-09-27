@@ -161,6 +161,42 @@ const scenarios=[
     verify:async root=>{await verifyNode(root,"verify.mjs","BENCH_IMPLICIT_PASS");assert.equal(await readFile(join(root,"src/config.mjs"),"utf8"),'export const mode="strict";\n')},
   },
   {
+    name:"cross-turn-verifier-replay",
+    default:false,
+    requireVerificationBeforeEdit:true,
+    forceOnlyToolSchema:true,
+    forceSingleToolCall:true,
+    forceToolSequence:[
+      {namespace:"trebell_terminal",name:"run"},
+      false,
+      {namespace:"trebell_workspace",name:"replace_text"},
+      {namespace:"trebell_terminal",name:"run"},
+      false,
+    ],
+    files:{
+      "src/config.mjs":"export const mode=\"legacy\";\n",
+      "verify.mjs":[
+        'import { mode } from "./src/config.mjs";',
+        'if(mode!=="strict") throw new Error("expected strict mode");',
+        'console.log("BENCH_CROSS_TURN_PASS");',
+        "",
+      ].join("\n"),
+    },
+    turns:[
+      {
+        prompt:"Run node verify.mjs now and report the failure. Do not edit anything in this turn.",
+        toolAllowlist:["trebell_terminal/run"],
+        maxModelTurns:4,maxToolCalls:4,
+      },
+      {
+        prompt:"Now replace only legacy with strict in src/config.mjs, then rerun node verify.mjs until it passes.",
+        toolAllowlist:["trebell_terminal/run","trebell_workspace/replace_text"],
+        maxModelTurns:5,maxToolCalls:6,
+      },
+    ],
+    verify:async root=>{await verifyNode(root,"verify.mjs","BENCH_CROSS_TURN_PASS");assert.equal(await readFile(join(root,"src/config.mjs"),"utf8"),'export const mode="strict";\n')},
+  },
+  {
     name:"large-tool-output-same-turn",
     default:false,
     requireVerificationBeforeEdit:true,
@@ -197,6 +233,41 @@ const scenarios=[
     },
     prompt:"Complete this exact workflow in one turn. First run node noisy-verify.mjs. Then read src/config.mjs. Then replace only legacy with strict in src/config.mjs. Then run node noisy-verify.mjs again. After the passing verifier, answer with a concise summary. Do not edit noisy-verify.mjs or TASK.md and do not use other files.",
     verify:async root=>{await verifyNode(root,"noisy-verify.mjs","BENCH_NOISY_PASS");assert.match(await readFile(join(root,"src/config.mjs"),"utf8"),/strict/)},
+  },
+  {
+    name:"cross-turn-verifier-replay",
+    default:false,
+    requireVerificationBeforeEdit:true,
+    forceOnlyToolSchema:true,
+    forceSingleToolCall:true,
+    forceToolSequence:[
+      {namespace:"trebell_terminal",name:"run"},
+      false,
+      {namespace:"trebell_workspace",name:"read_file"},
+      {namespace:"trebell_workspace",name:"replace_text"},
+      {namespace:"trebell_terminal",name:"run"},
+      false,
+    ],
+    files:{
+      "src/config.mjs":"export const mode=\"legacy\";\n",
+      "verify.mjs":[
+        'import { mode } from "./src/config.mjs";',
+        'if(mode!=="strict") throw new Error("expected strict mode");',
+        'console.log("BENCH_CROSS_TURN_PASS");',
+        "",
+      ].join("\n"),
+    },
+    turns:[
+      {
+        prompt:"Run node verify.mjs now. Do not read or edit project files in this turn. Report the result.",
+        toolAllowlist:["trebell_terminal/run"],maxModelTurns:4,maxToolCalls:8,
+      },
+      {
+        prompt:"Now read src/config.mjs, replace only legacy with strict, and rerun node verify.mjs until it passes.",
+        toolAllowlist:["trebell_terminal/run","trebell_workspace/read_file","trebell_workspace/replace_text"],maxModelTurns:6,maxToolCalls:12,
+      },
+    ],
+    verify:async root=>{await verifyNode(root,"verify.mjs","BENCH_CROSS_TURN_PASS");assert.equal(await readFile(join(root,"src/config.mjs"),"utf8"),'export const mode="strict";\n')},
   },
 ];
 
@@ -269,7 +340,7 @@ async function runScenario(scenario){
           const normalizedResponse=forcedChoice&&scenario.forceSingleToolCall===true&&Array.isArray(response.toolCalls)
             ?{...response,toolCalls:response.toolCalls.filter(call=>call?.namespace===forcedChoice.namespace&&call?.name===forcedChoice.name).slice(0,1)}
             :response;
-          record.usage=response.usage;record.telemetry=response.telemetry;record.toolCalls=normalizedResponse.toolCalls||[];
+          record.usage=response.usage;record.telemetry=response.telemetry;record.toolCalls=normalizedResponse.toolCalls||[];record.responseTextChars=String(normalizedResponse.text||"").length;record.finishReason=normalizedResponse.finishReason||null;
           return normalizedResponse;
         }catch(error){
           record.telemetry=error?.telemetry||null;record.error={status:Number(error?.status||0)||null,code:error?.code||null,retryable:Boolean(error?.retryable)};throw error;
@@ -357,6 +428,9 @@ async function runScenario(scenario){
         providerTotalLatencyMs:Number(item.telemetry?.totalLatencyMs||0),
         providerStreaming:Boolean(item.telemetry?.streaming),
         providerError:item.error||null,
+        providerResponseTextChars:Number(item.responseTextChars||0),
+        providerFinishReason:item.finishReason||null,
+        providerResponseEmpty:!Number(item.responseTextChars||0)&&!(Array.isArray(item.toolCalls)&&item.toolCalls.length),
         messageChars:Number(item.messageChars||0),
         schemaChars:Number(item.toolSchemaChars||0),
         systemTokens:Number(item.requestMetrics?.system?.estimatedTokens||0),
@@ -371,6 +445,9 @@ async function runScenario(scenario){
       virtualizedOutputs:virtualized.length,repairedToolCalls,failedToolCalls,
       sameTurnCooledOutputs:sameTurnCooling.reduce((sum,event)=>sum+Number(event.data?.count||0),0),
       sameTurnCooledChars:sameTurnCooling.reduce((sum,event)=>sum+Number(event.data?.savedChars||0),0),
+      priorTerminalEvidence:events.filter(event=>event.name==="native.verification.prior_terminal_evidence").reduce((sum,event)=>sum+Number(event.data?.count||0),0),
+      autoVerifierReruns:events.filter(event=>event.name==="native.verification.auto_rerun").length,
+      synthesizedVerificationCompletions:events.filter(event=>event.name==="native.verification.completion_synthesized").length,
       virtualizedBytes:virtualized.reduce((sum,item)=>sum+Number(item.totalBytes||0),0),
       usedOutputRetrieval:toolUpdates.some(item=>item.update?.namespace==="trebell_output"),
       turnFailure,independentVerificationPassed,independentVerificationError,verificationBeforeEdit,virtualizationSatisfied,

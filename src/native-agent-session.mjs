@@ -228,11 +228,11 @@ export class NativeAgentSession{
   constructor({cwd=process.cwd(),providerTurn,executeTool,toolOutputStore=null,provider=null,model=null,contextWindow=null,tools=[],permissionMode="supervised",onUpdate=()=>{},onEvent=null,onClose=null,initialMessages=[]}={}){
     if(typeof providerTurn!=="function")throw new Error("NativeAgentSession requires providerTurn");
     if(typeof executeTool!=="function")throw new Error("NativeAgentSession requires executeTool");
-    this.cwd=cwd;this.providerTurn=providerTurn;this.executeTool=executeTool;this.toolOutputStore=toolOutputStore;this.provider=provider;this.model=model;this.contextWindow=null;this.setContextWindow(contextWindow);this.tools=Array.isArray(tools)?tools:[];this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onEvent=onEvent;this.onClose=onClose;this.messages=[...(Array.isArray(initialMessages)?initialMessages:[])];this.sessionId=null;this.controller=null;this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.closed=false;this.observationCache=new Map();this.lastProviderResponseId=null;
+    this.cwd=cwd;this.providerTurn=providerTurn;this.executeTool=executeTool;this.toolOutputStore=toolOutputStore;this.provider=provider;this.model=model;this.contextWindow=null;this.setContextWindow(contextWindow);this.tools=Array.isArray(tools)?tools:[];this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onEvent=onEvent;this.onClose=onClose;this.messages=[...(Array.isArray(initialMessages)?initialMessages:[])];this.sessionId=null;this.controller=null;this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.closed=false;this.observationCache=new Map();this.lastProviderResponseId=null;this.previousTerminalRuns=[];
   }
   async start({providerSessionId=null,model=null}={}){
     if(this.closed)throw new Error("Native session is closed");
-    const nextSessionId=String(providerSessionId||this.sessionId||`native_${randomUUID()}`);if(this.sessionId&&nextSessionId!==this.sessionId)this.lastProviderResponseId=null;this.sessionId=nextSessionId;if(model){const next=String(model);if(next!==this.model)this.lastProviderResponseId=null;this.model=next}
+    const nextSessionId=String(providerSessionId||this.sessionId||`native_${randomUUID()}`);if(this.sessionId&&nextSessionId!==this.sessionId){this.lastProviderResponseId=null;this.previousTerminalRuns=[]}this.sessionId=nextSessionId;if(model){const next=String(model);if(next!==this.model)this.lastProviderResponseId=null;this.model=next}
     return {initialize:{protocolVersion:1,agentInfo:{name:"Trebell Native",version:"1"},agentCapabilities:{native:true}},session:{sessionId:this.sessionId,models:{currentModelId:this.model||null,availableModels:this.model?[this.model]:[]},modes:{currentModeId:this.permissionMode,availableModes:[]}}};
   }
   setProvider(provider){const next=provider?String(provider):null;if(next!==this.provider)this.lastProviderResponseId=null;this.provider=next}
@@ -274,14 +274,14 @@ export class NativeAgentSession{
       const modelSummary=String(result.text||"").trim();if(!modelSummary)throw new Error("Native context compaction returned an empty continuation brief.");
       const summary=[modelSummary,continuity&&("Deterministic Trebell state:\n"+continuity)].filter(Boolean).join("\n\n").slice(0,32_000);
       const persistent=sourceMessages.filter(message=>["system","developer"].includes(message?.role)&&!message?.trebellCompaction);
-      this.messages=[...persistent,nativeCompactionMessage(summary),...recent];this.observationCache.clear();
+      this.messages=[...persistent,nativeCompactionMessage(summary),...recent];this.observationCache.clear();this.previousTerminalRuns=[];
       return {summary,modelSummary,usage:result.usage,model:result.model||this.model,provider:result.provider||this.provider,modelTurns:result.modelTurns,sourceMessageCount:sourceMessages.length,retainedRecentMessageCount:recent.length,continuityChars:continuity.length};
     }finally{this.controller=null}
   }
   async prompt(prompt,{messageId=null,maxModelTurns=24,maxToolCalls=100,maxOutputTokens=null,maxWallTimeMs=null,toolAllowlist=null}={}){
     if(this.closed)throw new Error("Native session is closed");if(!this.model)throw new Error("Trebell Native requires a model");
     if(this.turnActive)throw new Error("Trebell Native already has a running turn");
-    this.controller=new AbortController();this.turnActive=true;this.pendingSteering=[];const user=promptMessage(prompt),observationSnapshot=new Map(this.observationCache),preserveCacheHistory=preserveCacheableProviderHistory(this.provider),userMeta=user[NATIVE_PROMPT_PROVENANCE],freshEntries=Array.isArray(userMeta?.contextEntries)?userMeta.contextEntries:[],hasFreshWorkingContext=Boolean(String(userMeta?.contextText||"").trim()&&freshEntries.length),exactWorkspaceContents=new Map(),postEditExpected=new Map();
+    this.controller=new AbortController();this.turnActive=true;this.pendingSteering=[];const user=promptMessage(prompt),observationSnapshot=new Map(this.observationCache),preserveCacheHistory=preserveCacheableProviderHistory(this.provider),userMeta=user[NATIVE_PROMPT_PROVENANCE],freshEntries=Array.isArray(userMeta?.contextEntries)?userMeta.contextEntries:[],hasFreshWorkingContext=Boolean(String(userMeta?.contextText||"").trim()&&freshEntries.length),exactWorkspaceContents=new Map(),postEditExpected=new Map(),priorTerminalRuns=this.previousTerminalRuns.slice(-16),currentTerminalRuns=[];
     const priorContext=preserveCacheHistory||!hasFreshWorkingContext?{messages:this.messages,count:0,savedChars:0,supersededEntries:0,retainedEntries:0}:coolSupersededWorkingContext(this.messages,freshEntries),base=[...priorContext.messages,user];
     if(priorContext.count)this.onEvent?.({name:"native.context.history_cooled",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{count:priorContext.count,savedChars:priorContext.savedChars,supersededEntries:Number(priorContext.supersededEntries||0),retainedEntries:Number(priorContext.retainedEntries||0)}});
     const wrappedExecutor=async call=>{
@@ -289,6 +289,10 @@ export class NativeAgentSession{
       this.onUpdate({update:{sessionUpdate:"tool_call",toolCallId:call.id,namespace:call.namespace||"native",tool:call.name,title:(call.namespace?call.namespace+" / ":"")+call.name,kind,rawInput:call.arguments,status:"in_progress"}});
       const toolContext={toolAllowlist:Array.isArray(toolAllowlist)?toolAllowlist:null};
       let output=await this.executeTool(call,toolContext);
+      if(call.namespace==="trebell_terminal"&&call.name==="run"&&output?.success!==false&&output?.timedOut!==true&&output?.signal==null&&Number.isFinite(Number(output?.exitCode))){
+        let args={};try{args=structuredClone(call.arguments&&typeof call.arguments==="object"?call.arguments:{})}catch{}
+        currentTerminalRuns.push({arguments:args,exitCode:Number(output.exitCode)});
+      }
       if(unindexedSourceFailure(call,output)&&exposesTool(this.tools,"trebell_workspace","read_file")){
         const fallback=await this.executeTool({
           id:String(call.id||"")+":workspace-fallback",namespace:"trebell_workspace",name:"read_file",signal:call.signal||null,
@@ -350,7 +354,7 @@ export class NativeAgentSession{
     try{
       const result=await runNativeAgentTurn({
         provider:this.provider,model:this.model,messages:base,tools:this.tools,maxModelTurns,maxToolCalls,maxOutputTokens,maxWallTimeMs,signal:this.controller.signal,onEvent:this.onEvent,
-        autoRerunVerification:true,
+        autoRerunVerification:true,priorTerminalRuns,
         metadata:{contextWindow:this.contextWindow,sessionId:this.sessionId},
         toolAllowlist:Array.isArray(toolAllowlist)?toolAllowlist:null,
         coolReadToolHistory:preserveCacheHistory?null:messages=>coolNativeProviderHistory(messages),
@@ -382,9 +386,11 @@ export class NativeAgentSession{
       }
       if(result.text)this.onUpdate({update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:result.text}}});
       this.onUpdate({update:{sessionUpdate:"usage_update",usage:{input_tokens:result.usage.inputTokens,output_tokens:result.usage.outputTokens,reasoning_tokens:result.usage.reasoningOutputTokens,cache_read_input_tokens:result.usage.cachedInputTokens,cache_write_input_tokens:result.usage.cacheWriteInputTokens},used:result.usage.totalTokens,size:this.contextWindow||0}});
+      this.previousTerminalRuns=currentTerminalRuns.slice(-16);
       return {stopReason:"end_turn",messageId,providerMessageId:result.lastResponse?.id||null,raw:{usage:result.usage,modelTurns:result.modelTurns,toolCalls:result.toolCalls,provider:result.provider,model:result.model}};
     }catch(error){
       this.observationCache=observationSnapshot;
+      this.previousTerminalRuns=[];
       if(error?.nativeUsage){
         const usage=error.nativeUsage;
         this.onUpdate({update:{sessionUpdate:"usage_update",usage:{input_tokens:usage.inputTokens,output_tokens:usage.outputTokens,reasoning_tokens:usage.reasoningOutputTokens,cache_read_input_tokens:usage.cachedInputTokens,cache_write_input_tokens:usage.cacheWriteInputTokens},used:usage.totalTokens,size:this.contextWindow||0}});

@@ -296,6 +296,17 @@ function terminalReplayArguments(args={}){
   return replay;
 }
 
+function priorTerminalEvidence(items=[]){
+  const latest=new Map();
+  for(const item of (Array.isArray(items)?items:[]).slice(-16)){
+    const argumentsForReplay=terminalReplayArguments(item?.arguments||{}),exitCode=Number(item?.exitCode);
+    if(!argumentsForReplay||!Number.isFinite(exitCode))continue;
+    const key=terminalRunKey(argumentsForReplay);if(!key)continue;
+    latest.set(key,{key,exitCode,editRevision:0,arguments:argumentsForReplay,priorTurn:true});
+  }
+  return [...latest.values()].filter(item=>item.exitCode!==0);
+}
+
 function verificationAutoRerunCandidate(request,terminalRuns=[],editRevision=0,currentCalls=[]){
   if(!request||editRevision<1)return null;
   const matching=new Map();
@@ -395,19 +406,20 @@ export async function runNativeAgentTurn({
   providerTurn,executeTool,model,messages=[],tools=[],provider=null,toolChoice="auto",
   maxOutputTokens=null,temperature=null,parallelToolCalls=true,maxModelTurns=24,maxToolCalls=100,maxWallTimeMs=null,
   maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,coolReadToolHistory=null,preserveToolSchemasOnFinalization=false,signal=null,onEvent=null,metadata=null,
-  autoRerunVerification=false,
+  autoRerunVerification=false,priorTerminalRuns=[],
 }={}){
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
   const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])];
   const explicitlyRequired=explicitlyRequestedTools(conversation,providerVisibleTools(tools,toolAllowlist)),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
-  const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalRuns=[],verifiedEdits=[];
+  const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
   const verificationFinalizationRequest=verificationCompletionRequest||(finalAfterVerifiedRequest?.target?finalAfterVerifiedRequest:null);
   const successfulTerminalRuns=[];
   let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
   const startedAt=Date.now(),started=nowMs(),wallController=budget.maxWallTimeMs!=null?new AbortController():null,deadlineAt=budget.maxWallTimeMs==null?null:Date.now()+budget.maxWallTimeMs;
   let wallTimer=null;
+  if(terminalRuns.length)emit(onEvent,{name:"native.verification.prior_terminal_evidence",status:"completed",model:String(model),provider:provider||null,data:{count:terminalRuns.length}});
   const armWallTimer=()=>{
     if(!wallController||wallController.signal.aborted||deadlineAt==null)return;
     const remaining=deadlineAt-Date.now();if(remaining<=0){wallController.abort("native-wall-time-budget");return}
