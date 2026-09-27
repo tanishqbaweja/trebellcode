@@ -122,6 +122,14 @@ test("Native session directly reports browser runtime health counts",async()=>{
   assert.equal(updates.find(item=>item.update?.sessionUpdate==="agent_message_chunk")?.update?.content?.text,"Browser runtime: 1 console error, 0 network failures.");assert.ok(events.some(event=>event.name==="native.browser.direct_runtime_status"));
 });
 
+test("Native session directly captures one browser screenshot",async()=>{
+  let providerCalls=0;const calls=[],updates=[],events=[];
+  const session=new NativeAgentSession({provider:"fixture",model:"model-a",tools:[{type:"namespace",name:"trebell_browser",tools:[{name:"screenshot"}]}],onUpdate:update=>updates.push(update),onEvent:event=>events.push(event),providerTurn:async()=>{providerCalls++;throw new Error("Exact browser screenshot should bypass provider inference.")},executeTool:async call=>{calls.push(structuredClone(call));return {dataUrl:"data:image/png;base64,AAAA",width:390,height:844}}});
+  await session.start({providerSessionId:"browser-screenshot",model:"model-a"});const result=await session.prompt([{type:"text",text:"Take a browser screenshot."}]);
+  assert.equal(providerCalls,0);assert.equal(result.raw?.modelTurns,0);assert.equal(result.raw?.toolCalls,1);assert.deepEqual(calls[0].arguments,{});
+  assert.equal(updates.find(item=>item.update?.sessionUpdate==="agent_message_chunk")?.update?.content?.text,"Browser screenshot captured.");assert.ok(events.some(event=>event.name==="native.browser.direct_screenshot"));
+});
+
 test("Native session keeps virtualized direct-status evidence persisted but collapses its first provider-facing view",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-terminal-report-cooling-")),requests=[],events=[];
   try{

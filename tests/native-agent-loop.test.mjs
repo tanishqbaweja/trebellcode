@@ -332,6 +332,34 @@ test("native browser runtime health shortcut fails closed for detailed or incomp
   }
 });
 
+test("native agent captures one browser screenshot without provider inference",async()=>{
+  for(const prompt of ["Take a browser screenshot.","Capture the current browser screenshot.","Take a screenshot of the browser."]){
+    let providerCalls=0;const executions=[],events=[];
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:prompt}],directBrowserScreenshot:true,onEvent:event=>events.push(event),
+      tools:[{type:"namespace",name:"trebell_browser",tools:[{name:"screenshot"}]}],
+      providerTurn:async()=>{providerCalls++;throw new Error("Exact browser screenshot should not call the provider.")},
+      executeTool:async call=>{executions.push(structuredClone(call));return {dataUrl:"data:image/png;base64,AAAA",width:1280,height:800}},
+    });
+    assert.equal(providerCalls,0,prompt);assert.equal(result.modelTurns,0,prompt);assert.equal(result.toolCalls,1,prompt);assert.equal(executions.length,1,prompt);
+    assert.equal(executions[0].namespace,"trebell_browser",prompt);assert.equal(executions[0].name,"screenshot",prompt);assert.deepEqual(executions[0].arguments,{},prompt);
+    assert.equal(result.text,"Browser screenshot captured.",prompt);assert.ok(events.some(event=>event.name==="native.browser.direct_screenshot"&&event.data?.width===1280&&event.data?.height===800),prompt);
+  }
+});
+
+test("native browser screenshot shortcut fails closed for richer or unproven requests",async()=>{
+  for(const [prompt,output,expectedExecutions] of [
+    ["Take a browser screenshot and analyze the layout.",{dataUrl:"data:image/png;base64,AAAA"},0],
+    ["Take a browser screenshot, then fix the CSS.",{dataUrl:"data:image/png;base64,AAAA"},0],
+    ["Take a browser screenshot.",{dataUrl:"not-an-image"},1],
+    ["Take a browser screenshot.",{success:false,error:"capture failed"},1],
+  ]){
+    let providerCalls=0,executions=0;
+    const result=await runNativeAgentTurn({model:"test-model",messages:[{role:"user",content:prompt}],directBrowserScreenshot:true,tools:[{type:"namespace",name:"trebell_browser",tools:[{name:"screenshot"}]}],providerTurn:async()=>{providerCalls++;return {text:"provider handled screenshot",toolCalls:[],usage:{}}},executeTool:async()=>{executions++;return output}});
+    assert.equal(providerCalls,1,prompt);assert.equal(executions,expectedExecutions,prompt);assert.equal(result.text,"provider handled screenshot",prompt);
+  }
+});
+
 test("native direct Git status fails closed for richer wording or incomplete evidence",async()=>{
   for(const prompt of ["Show git status and explain the changes.","Check the repo status.","Run git status and then fix anything wrong.","What branch am I on and what changed?"]){
     let providerCalls=0,executions=0;
