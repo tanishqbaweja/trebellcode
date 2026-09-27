@@ -113,15 +113,36 @@ test("native agent executes one exact replacement plus verifier status without p
   assert.ok(events.some(event=>event.name==="native.workspace.direct_exact_replacement_status"&&event.data?.exitCode===0));
 });
 
+test("native exact replacement status supports one explicit workspace-relative verifier cwd",async()=>{
+  for(const [prompt,cwd] of [
+    ["Replace exactly legacy with strict in packages/api/src/config.mjs, then run npm test in packages/api and report the result.","packages/api"],
+    ["Replace exactly `legacy` with `strict` in `packages/api/src/config.mjs`, then run `npm test` in `./packages/api/` and report the status.","packages/api"],
+    ["Replace exactly legacy with strict in api/src/config.mjs, then run npm test in `api` and report the result.","api"],
+  ]){
+    let providerCalls=0;const executions=[];
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:prompt}],directExactReplacementStatus:true,
+      tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+      providerTurn:async()=>{providerCalls++;throw new Error("Exact replacement cwd status should not call the provider.")},
+      executeTool:async call=>{executions.push(structuredClone(call));return call.namespace==="trebell_workspace"?{path:call.arguments.path,replacements:1}:{exitCode:0,stdout:"PASS"}},
+    });
+    assert.equal(providerCalls,0,prompt);assert.equal(result.modelTurns,0,prompt);assert.equal(result.toolCalls,2,prompt);
+    assert.deepEqual(executions[1].arguments,{command:"npm",args:["test"],cwd},prompt);assert.match(result.text,/completed successfully/i,prompt);
+  }
+});
+
 test("native exact replacement status fast path fails closed for ambiguous or richer instructions",async()=>{
   const prompts=[
     "Replace legacy with strict in src/config.mjs, then run node verify.mjs and report the result.",
     "Replace exactly legacy with strict in src/config.mjs, then run node verify.mjs and explain why it passes.",
     "Replace exactly legacy with strict in src/config.mjs, then run node verify.mjs && echo done and report the result.",
     'Replace exactly legacy with strict in src/config.mjs, then run node -e "console.log(1)" and report the result.',
-    "Replace exactly legacy with strict in src/config.mjs, then run node verify.mjs in packages/api and report the result.",
+    "Replace exactly legacy with strict in src/config.mjs, then run node verify.mjs in api and report the result.",
+    "Replace exactly legacy with strict in src/config.mjs, then run node verify.mjs in ../outside and report the result.",
+    "Replace exactly legacy with strict in src/config.mjs, then run node verify.mjs in C:\\outside and report the result.",
     "Replace exactly legacy with strict in ../outside.mjs, then run node verify.mjs and report the result.",
     "Replace exactly legacy with strict in C:\\outside.mjs, then run node verify.mjs and report the result.",
+    "Replace exactly legacy with strict in C:outside.mjs, then run node verify.mjs and report the result.",
     "Replace exactly legacy with strict in /tmp/outside.mjs, then run node verify.mjs and report the result.",
   ];
   for(const prompt of prompts){

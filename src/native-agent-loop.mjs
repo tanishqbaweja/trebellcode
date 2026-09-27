@@ -247,6 +247,13 @@ function directVerifierCommand(value,{cwd=null}={}){
   if(args.some(arg=>/^(?:-e|-c|--eval|--execute|--command|-command|-encodedcommand)$/i.test(String(arg))))return null;
   const direct={command,args,...(cwd?{cwd}:{})};return terminalRunLooksLikeVerifier(direct)?direct:null;
 }
+function directVerifierCommandWithOptionalCwd(value){
+  let raw=String(value||"").trim(),cwd=null;
+  const cwdSuffix=raw.match(/^(.+?)\s+(?:in|from|inside|within)\s+((?:`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+))$/i);
+  if(cwdSuffix){cwd=explicitDirectStatusCwd(cwdSuffix[2]);if(!cwd)return null;raw=String(cwdSuffix[1]||"").trim()}
+  else if(/\s+(?:in|from|inside|within)\s+/i.test(raw))return null;
+  return directVerifierCommand(raw,{cwd});
+}
 function explicitTerminalStatusCommand(messages=[]){
   if(!explicitTerminalStatusRequest(messages))return null;
   const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=lastUserInstructionText(user),run=[...text.matchAll(/\b(?:run|execute)\b/ig)][0];
@@ -292,7 +299,7 @@ function exactReplacementToken(value,{allowEmpty=false}={}){
 
 function explicitWorkspaceRelativeFile(value){
   const path=exactReplacementToken(value);if(path==null||path.length>300||/[\r\n\0]/.test(path))return null;
-  if(/^[\\/]/.test(path)||/^[A-Za-z]:[\\/]/.test(path)||/:\/\//.test(path))return null;
+  if(/^[\\/]/.test(path)||/^[A-Za-z]:/.test(path)||/:\/\//.test(path))return null;
   const normalized=path.replace(/\\/g,"/"),parts=normalized.split("/");
   if(parts.some(part=>!part||part==="."||part===".."))return null;
   return normalized;
@@ -304,7 +311,7 @@ function explicitExactReplacementStatus(messages=[]){
   if(/\b(?:diagnos(?:e|is)|fix|repair|debug|explain|analy[sz]e|investigate|root\s+cause|recommend|suggest|compare|summari[sz]e|read|inspect|search|list|create|delete|write|commit|push|browse)\b/i.test(text))return null;
   const match=text.match(/^(?:please\s+)?replace\s+(?:(?:exactly|only)\s+|the\s+exact\s+text\s+)(.+?)\s+with\s+(.+?)\s+in\s+(.+?)\s*[,;]?\s*(?:then|and\s+then)\s+(?:run|execute)\s+(.+?)\s+(?:and\s+)?(?:report|show)\s+(?:me\s+)?(?:the\s+)?(?:result|status|outcome)\s*[.!]?$/i);
   if(!match)return null;
-  const oldText=exactReplacementToken(match[1]),newText=exactReplacementToken(match[2],{allowEmpty:true}),path=explicitWorkspaceRelativeFile(match[3]),command=directVerifierCommand(match[4]);
+  const oldText=exactReplacementToken(match[1]),newText=exactReplacementToken(match[2],{allowEmpty:true}),path=explicitWorkspaceRelativeFile(match[3]),command=directVerifierCommandWithOptionalCwd(match[4]);
   if(oldText==null||newText==null||path==null||!command)return null;
   if(oldText===newText||oldText.length>200||newText.length>200||path.length>300)return null;
   return {path,oldText,newText,command};
