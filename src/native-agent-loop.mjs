@@ -10,6 +10,7 @@ import { NATIVE_CHAT_MESSAGE_CACHE_IDENTITY } from "./provider-turn.mjs";
 const NATIVE_TOOL_OBSERVATION_OUTPUT=Symbol("trebell.native.tool-observation-output");
 const DIRECT_EXACT_READ_MAX_BYTES=12*1024;
 const DIRECT_EXACT_LIST_MAX_BYTES=12*1024;
+const DIRECT_GIT_STATUS_MAX_BYTES=12*1024;
 
 function abortError(signal){
   const reason=signal?.reason;if(reason?.name==="AbortError")return reason;
@@ -336,6 +337,11 @@ function explicitImmediateWorkspaceListStatus(messages=[]){
   const match=prefixed||direct;if(!match)return null;const path=explicitWorkspaceRelativeDirectory(match[1]);return path?{path}:null;
 }
 
+function explicitGitStatusRequest(messages=[]){
+  const user=latestUserMessage(messages),text=lastUserInstructionText(user).trim();if(!text||/[\r\n]/.test(text))return false;
+  return /^(?:(?:please\s+)?(?:show(?:\s+me)?|report|give\s+me|display)\s+(?:the\s+)?git\s+status|(?:please\s+)?what(?:'s|\s+is)\s+(?:the\s+)?git\s+status|git\s+status)\s*[.!?]?$/i.test(text);
+}
+
 function explicitExactFileReadStatus(messages=[]){
   const user=latestUserMessage(messages),text=lastUserInstructionText(user).trim();if(!text||/[\r\n]/.test(text))return null;
   const file="(`[^`\\n]+`|\"[^\"\\n]+\"|'[^'\\n]+'|\\S+?)";
@@ -589,14 +595,14 @@ export async function runNativeAgentTurn({
   providerTurn,executeTool,model,messages=[],tools=[],provider=null,toolChoice="auto",
   maxOutputTokens=null,temperature=null,parallelToolCalls=true,maxModelTurns=24,maxToolCalls=100,maxWallTimeMs=null,
   maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,coolReadToolHistory=null,preserveToolSchemasOnFinalization=false,signal=null,onEvent=null,metadata=null,
-  autoRerunVerification=false,priorTerminalRuns=[],synthesizeTerminalReports=false,coolSyntheticTerminalReportOutput=true,directTerminalStatusCommands=false,directExactReplacementStatus=false,directExactWriteStatus=false,directExactReadStatus=false,directExactListStatus=false,prepareProviderMessages=null,
+  autoRerunVerification=false,priorTerminalRuns=[],synthesizeTerminalReports=false,coolSyntheticTerminalReportOutput=true,directTerminalStatusCommands=false,directExactReplacementStatus=false,directExactWriteStatus=false,directExactReadStatus=false,directExactListStatus=false,directGitStatus=false,prepareProviderMessages=null,
 }={}){
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
   const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])],visibleTools=providerVisibleTools(tools,toolAllowlist),directVisiblePairs=exposedToolPairs(visibleTools),requestMetricsToolCache=new WeakMap(),requestMetricsMessageCache=new WeakMap(),requestMetricsCurrentTurnCache=new WeakMap(),requestMetricsHistoryHashCache={},requestMetricsClassificationCache=typeof coolReadToolHistory==="function"?null:{},openAiContinuationIdentity={};
   const explicitlyRequired=explicitlyRequestedTools(conversation,visibleTools),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
-  const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalStatusRequested=explicitTerminalStatusRequest(conversation),directTerminalStatusCommand=directTerminalStatusCommands===true?explicitTerminalStatusCommand(conversation):null,directReplacementStatus=directExactReplacementStatus===true?explicitExactReplacementStatus(conversation):null,directWriteStatus=directExactWriteStatus===true?explicitExactFileWriteStatus(conversation):null,directReadStatus=directExactReadStatus===true?explicitExactFileReadStatus(conversation):null,directListStatus=directExactListStatus===true?explicitImmediateWorkspaceListStatus(conversation):null,terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
+  const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalStatusRequested=explicitTerminalStatusRequest(conversation),directTerminalStatusCommand=directTerminalStatusCommands===true?explicitTerminalStatusCommand(conversation):null,directReplacementStatus=directExactReplacementStatus===true?explicitExactReplacementStatus(conversation):null,directWriteStatus=directExactWriteStatus===true?explicitExactFileWriteStatus(conversation):null,directReadStatus=directExactReadStatus===true?explicitExactFileReadStatus(conversation):null,directListStatus=directExactListStatus===true?explicitImmediateWorkspaceListStatus(conversation):null,directGitStatusRequest=directGitStatus===true&&explicitGitStatusRequest(conversation),terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
   const verificationFinalizationRequest=verificationCompletionRequest||(finalAfterVerifiedRequest?.target?finalAfterVerifiedRequest:null);
   const successfulTerminalRuns=[];
   let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
@@ -670,6 +676,28 @@ export async function runNativeAgentTurn({
   };
   emit(onEvent,{name:"native.turn.started",status:"running",model:String(model),provider:provider||null,data:{...metadata,maxModelTurns:budget.maxModelTurns,maxToolCalls:budget.maxToolCalls,maxWallTimeMs:budget.maxWallTimeMs}});
   try{
+    const directGitStatusVisible=directGitStatusRequest&&budget.maxToolCalls>=1&&directVisiblePairs.some(item=>item.namespace==="trebell_source_control"&&item.name==="status");
+    if(directGitStatusVisible&&!applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_direct_git_status"})){
+      throwIfAborted(turnSignal);
+      const call={id:"native-direct-git-status-1",namespace:"trebell_source_control",name:"status",arguments:"{}"};
+      conversation.push({role:"assistant",content:"",toolCalls:[call]});toolCalls=1;const observation=await executeOneTool(call,toolCalls);conversation.push(observation);
+      const output=observation?.[NATIVE_TOOL_OBSERVATION_OUTPUT],status=Array.isArray(output?.status)?output.status:null;let statusBytes=Infinity;try{if(status)statusBytes=Buffer.byteLength(JSON.stringify({isGit:output?.isGit,branch:output?.branch,upstream:output?.upstream,statusHeader:output?.statusHeader,status}),"utf8")}catch{}
+      const complete=status!=null&&status.length<500&&statusBytes<=DIRECT_GIT_STATUS_MAX_BYTES&&output?.success!==false&&output?.uncertain!==true&&output?.virtualized!==true&&output?.truncated!==true,missingExplicit=explicitlyRequired.find(item=>!executedToolKeys.has(item.namespace+"/"+item.name));
+      if(complete&&!missingExplicit&&!applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"after_direct_git_status"})){
+        const clean=value=>redactSecretText(String(value||""),{trim:true}).replace(/[\r\n\t]+/g," ").slice(0,300);let text;
+        if(output?.isGit===false)text="Git status: this workspace is not a Git repository.";
+        else{
+          const header=clean(output?.statusHeader),branch=clean(output?.branch),upstream=clean(output?.upstream),lines=["Git status:"];
+          if(header)lines.push(header);else if(branch)lines.push(`Branch: ${branch}${upstream?` → ${upstream}`:""}`);
+          if(!status.length)lines.push("Working tree clean.");
+          else{lines.push("Changes:");for(const item of status){const code=clean(item?.code),path=clean(item?.path);if(path)lines.push(`- ${code||"??"} ${path}`)}}
+          text=lines.join("\n");
+        }
+        conversation.push({role:"assistant",content:text,toolCalls:[]});const result={text,model:String(model),provider:provider||null,messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse:null};
+        emit(onEvent,{name:"native.source_control.direct_status",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,isGit:output?.isGit!==false,changeCount:status.length}});
+        emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage,directGitStatus:true}});return result;
+      }
+    }
     const directListVisible=directListStatus&&budget.maxToolCalls>=1&&directVisiblePairs.some(item=>item.namespace==="trebell_workspace"&&item.name==="list");
     if(directListVisible&&!applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_direct_exact_list"})){
       throwIfAborted(turnSignal);

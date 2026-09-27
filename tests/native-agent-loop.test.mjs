@@ -221,6 +221,49 @@ test("native agent returns one exact immediate workspace listing without provide
   }
 });
 
+test("native agent returns exact Git status without provider inference",async()=>{
+  for(const prompt of ["git status","Show me git status.","What's the git status?"]){
+    let providerCalls=0;const executions=[],events=[];
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:prompt}],directGitStatus:true,onEvent:event=>events.push(event),
+      tools:[{type:"namespace",name:"trebell_source_control",tools:[{name:"status"}]}],
+      providerTurn:async()=>{providerCalls++;throw new Error("Git status should not call the provider.")},
+      executeTool:async call=>{executions.push(structuredClone(call));return {isGit:true,root:"C:/repo",branch:"main",upstream:"origin/main",statusHeader:"## main...origin/main [ahead 1]",status:[{code:" M",path:"src/a.mjs"},{code:"??",path:"notes.txt"}],remotes:[{url:"https://secret@example.invalid/repo.git"}],worktrees:[{path:"C:/repo"}]}},
+    });
+    assert.equal(providerCalls,0,prompt);assert.equal(result.modelTurns,0,prompt);assert.equal(result.toolCalls,1,prompt);assert.deepEqual(executions[0].arguments,{},prompt);
+    assert.equal(result.text,"Git status:\n## main...origin/main [ahead 1]\nChanges:\n- M src/a.mjs\n- ?? notes.txt",prompt);assert.ok(events.some(event=>event.name==="native.source_control.direct_status"),prompt);
+    assert.equal(result.text.includes("C:/repo"),false,prompt);assert.equal(result.text.includes("secret@example.invalid"),false,prompt);
+  }
+});
+
+test("native direct Git status reports a clean or non-Git workspace without inference",async()=>{
+  for(const fixture of [
+    {name:"clean",output:{isGit:true,branch:"main",upstream:null,statusHeader:"## main",status:[]},text:"Git status:\n## main\nWorking tree clean."},
+    {name:"non-git",output:{isGit:false,root:null,branch:null,statusHeader:"",status:[]},text:"Git status: this workspace is not a Git repository."},
+  ]){
+    let providerCalls=0;
+    const result=await runNativeAgentTurn({model:"test-model",messages:[{role:"user",content:"git status"}],directGitStatus:true,tools:[{type:"namespace",name:"trebell_source_control",tools:[{name:"status"}]}],providerTurn:async()=>{providerCalls++;throw new Error("Git status should bypass inference")},executeTool:async()=>fixture.output});
+    assert.equal(providerCalls,0,fixture.name);assert.equal(result.text,fixture.text,fixture.name);
+  }
+});
+
+test("native direct Git status fails closed for richer wording or incomplete evidence",async()=>{
+  for(const prompt of ["Show git status and explain the changes.","Check the repo status.","Run git status and then fix anything wrong."]){
+    let providerCalls=0,executions=0;
+    const result=await runNativeAgentTurn({model:"test-model",messages:[{role:"user",content:prompt}],directGitStatus:true,tools:[{type:"namespace",name:"trebell_source_control",tools:[{name:"status"}]}],providerTurn:async()=>{providerCalls++;return {text:"provider handled it",toolCalls:[],usage:{}}},executeTool:async()=>{executions++;return {isGit:true,status:[]}}});
+    assert.equal(providerCalls,1,prompt);assert.equal(executions,0,prompt);assert.equal(result.text,"provider handled it",prompt);
+  }
+  for(const fixture of [
+    {name:"missing-status",output:{isGit:true,branch:"main"}},
+    {name:"too-many",output:{isGit:true,branch:"main",status:Array.from({length:500},(_,i)=>({code:" M",path:`file-${i}.mjs`}))}},
+    {name:"failed",output:{success:false,error:"status denied"}},
+  ]){
+    let providerCalls=0,executions=0;
+    const result=await runNativeAgentTurn({model:"test-model",messages:[{role:"user",content:"git status"}],directGitStatus:true,tools:[{type:"namespace",name:"trebell_source_control",tools:[{name:"status"}]}],providerTurn:async()=>{providerCalls++;return {text:"provider handled status",toolCalls:[],usage:{}}},executeTool:async()=>{executions++;return fixture.output}});
+    assert.equal(executions,1,fixture.name);assert.equal(providerCalls,1,fixture.name);assert.equal(result.text,"provider handled status",fixture.name);
+  }
+});
+
 test("native exact immediate workspace list fails closed for ambiguous, unsafe, or richer instructions",async()=>{
   const prompts=[
     "List files in `src`.",
