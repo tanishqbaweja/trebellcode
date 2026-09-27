@@ -80,6 +80,69 @@ test("native agent can synthesize a narrow command-only status report without a 
   const synthesized=events.find(event=>event.name==="native.terminal.report_synthesized");assert.ok(synthesized);assert.equal(synthesized.data?.evidence,true);assert.ok(synthesized.data?.discardedPreToolTextChars>0);
 });
 
+test("native agent executes one explicit verifier status command without provider inference",async()=>{
+  let providerCalls=0;const executions=[],events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Run node verify.mjs and report the result."}],synthesizeTerminalReports:true,directTerminalStatusCommands:true,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{providerCalls++;throw new Error("Direct status execution should not call the provider.")},
+    executeTool:async call=>{executions.push(call);return {exitCode:1,stderr:"AssertionError: expected strict but received legacy"}},
+  });
+  assert.equal(providerCalls,0);assert.equal(result.modelTurns,0);assert.equal(result.toolCalls,1);assert.equal(executions.length,1);
+  assert.equal(executions[0].namespace,"trebell_terminal");assert.equal(executions[0].name,"run");assert.deepEqual(executions[0].arguments,{command:"node",args:["verify.mjs"]});
+  assert.match(result.text,/failed \(exit code 1\)/i);assert.match(result.text,/expected strict but received legacy/i);
+  assert.ok(events.some(event=>event.name==="native.terminal.direct_status_executed"));assert.ok(events.some(event=>event.name==="native.terminal.report_synthesized"&&event.data?.direct===true));
+});
+
+test("native direct terminal status execution fails closed for ambiguous or richer instructions",async()=>{
+  const prompts=[
+    "Run the tests and report the result.",
+    "Run node verify.mjs && echo hi and report the result.",
+    "In packages/api, run node verify.mjs and report the result.",
+    "Run node verify.mjs in packages/api and report the result.",
+    "Run node verify.mjs. Delete src/a. Report the result.",
+    'Run node -e "console.log(1)" and report the result.',
+  ];
+  for(const prompt of prompts){
+    let providerCalls=0,toolCalls=0;const events=[];
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:prompt}],synthesizeTerminalReports:true,directTerminalStatusCommands:true,onEvent:event=>events.push(event),
+      tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+      providerTurn:async()=>{providerCalls++;return {text:"provider handled it",toolCalls:[],usage:{}}},
+      executeTool:async()=>{toolCalls++;return {exitCode:0}},
+    });
+    assert.equal(providerCalls,1,prompt);assert.equal(toolCalls,0,prompt);assert.equal(result.text,"provider handled it",prompt);assert.equal(events.some(event=>event.name==="native.terminal.direct_status_executed"),false,prompt);
+  }
+});
+
+test("native direct terminal status execution requires an exposed terminal tool and remaining tool budget",async()=>{
+  for(const fixture of [
+    {name:"hidden",tools:[],maxToolCalls:4},
+    {name:"zero-budget",tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],maxToolCalls:0},
+  ]){
+    let providerCalls=0,executions=0;
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:"Run node verify.mjs and report the result."}],synthesizeTerminalReports:true,directTerminalStatusCommands:true,
+      tools:fixture.tools,maxToolCalls:fixture.maxToolCalls,
+      providerTurn:async()=>{providerCalls++;return {text:"provider fallback",toolCalls:[],usage:{}}},executeTool:async()=>{executions++;return {exitCode:0}},
+    });
+    assert.equal(providerCalls,1,fixture.name);assert.equal(executions,0,fixture.name);assert.equal(result.text,"provider fallback",fixture.name);
+  }
+});
+
+test("native direct terminal status falls back to the model when execution outcome is uncertain",async()=>{
+  let providerCalls=0,executions=0;const requests=[],events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Run node verify.mjs and report the result."}],synthesizeTerminalReports:true,directTerminalStatusCommands:true,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{providerCalls++;requests.push(structuredClone(request));return {text:"The command outcome is uncertain; I cannot claim a pass or failure.",toolCalls:[],usage:{}}},
+    executeTool:async()=>{executions++;return {success:false,uncertain:true,error:"connection dropped after launch"}},
+  });
+  assert.equal(executions,1);assert.equal(providerCalls,1);assert.equal(result.modelTurns,1);assert.equal(result.toolCalls,1);
+  assert.match(result.text,/uncertain/i);assert.equal(events.some(event=>event.name==="native.terminal.direct_status_executed"),false);
+  assert.ok(requests[0].messages.some(message=>message.role==="tool"&&/connection dropped after launch/i.test(String(message.content||""))));
+});
+
 test("native terminal report synthesis redacts evidence and reports successful commands exactly",async()=>{
   let turns=0;
   const result=await runNativeAgentTurn({

@@ -465,6 +465,7 @@ async function runScenario(scenario){
       sameTurnCooledOutputs:sameTurnCooling.reduce((sum,event)=>sum+Number(event.data?.count||0),0),
       sameTurnCooledChars:sameTurnCooling.reduce((sum,event)=>sum+Number(event.data?.savedChars||0),0),
       priorTerminalEvidence:events.filter(event=>event.name==="native.verification.prior_terminal_evidence").reduce((sum,event)=>sum+Number(event.data?.count||0),0),
+      directTerminalStatusExecutions:events.filter(event=>event.name==="native.terminal.direct_status_executed").length,
       autoVerifierReruns:events.filter(event=>event.name==="native.verification.auto_rerun").length,
       synthesizedVerificationCompletions:events.filter(event=>event.name==="native.verification.completion_synthesized").length,
       virtualizedBytes:virtualized.reduce((sum,item)=>sum+Number(item.totalBytes||0),0),
