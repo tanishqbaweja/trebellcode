@@ -71,13 +71,13 @@ test("native agent can synthesize a narrow command-only status report without a 
     tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
     providerTurn:async()=>{
       turns++;
-      if(turns===1)return {text:"",toolCalls:[{id:"verify",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      if(turns===1)return {text:"I’ll run the verifier now.",toolCalls:[{id:"verify",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
       throw new Error("Command-only reporting should not need a second provider inference.");
     },
     executeTool:async()=>({exitCode:1,stderr:"AssertionError: expected strict but received legacy"}),
   });
   assert.equal(turns,1);assert.equal(result.modelTurns,1);assert.equal(result.toolCalls,1);assert.match(result.text,/failed \(exit code 1\)/i);assert.match(result.text,/expected strict but received legacy/i);
-  assert.ok(events.some(event=>event.name==="native.terminal.report_synthesized"&&event.data?.evidence===true));
+  const synthesized=events.find(event=>event.name==="native.terminal.report_synthesized");assert.ok(synthesized);assert.equal(synthesized.data?.evidence,true);assert.ok(synthesized.data?.discardedPreToolTextChars>0);
 });
 
 test("native terminal report synthesis redacts evidence and reports successful commands exactly",async()=>{

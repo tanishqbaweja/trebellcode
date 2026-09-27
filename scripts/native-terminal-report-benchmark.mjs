@@ -16,7 +16,7 @@ function record(request={}){
 async function scenario({synthesizeTerminalReports}){
   let calls=0,toolsRun=0;const requests=[];
   const responses=[
-    {text:"",toolCalls:[{id:"verify",namespace:"trebell_terminal",name:"run",arguments:{command:"node",args:["verify.mjs"]}}],usage:{}},
+    {text:"I’ll run the verifier now.",toolCalls:[{id:"verify",namespace:"trebell_terminal",name:"run",arguments:{command:"node",args:["verify.mjs"]}}],usage:{}},
     {text:"The command failed with exit code 1 because strict mode was expected.",toolCalls:[],usage:{}},
   ];
   const result=await runNativeAgentTurn({
