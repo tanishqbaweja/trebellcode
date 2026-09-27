@@ -36,3 +36,17 @@ test("OpenAI continuation tracker is bounded and clearable",()=>{
   for(let index=1;index<=3;index++){const prep=tracker.prepare(body([{type:"message",role:"user",content:[{type:"input_text",text:String(index)}]}]));tracker.record("resp-"+index,prep,{model:"gpt-5.6",text:"ok"})}
   assert.equal(tracker.entries.size,2);assert.equal(tracker.prepare(body([]),"resp-1").used,false);tracker.clear();assert.equal(tracker.entries.size,0);
 });
+
+test("OpenAI continuation saved-byte telemetry matches exact full-body serialization",()=>{
+  const tracker=new OpenAiResponseContinuationTracker(),firstInput=[{type:"message",role:"user",content:[{type:"input_text",text:"Task"}]}],first=tracker.prepare(body(firstInput));
+  tracker.record("resp-1",first,{model:"gpt-5.6",text:"",toolCalls:[{id:"call-1",namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/a.mjs"}}]});
+  const priorOutput=openAiContinuationOutputItems({toolCalls:[{id:"call-1",namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/a.mjs"}}]}),toolOutput={type:"function_call_output",call_id:"call-1",output:"x".repeat(5000)},full=body([...firstInput,...priorOutput,toolOutput]),prepared=tracker.prepare(full,"resp-1");
+  const exact=Buffer.byteLength(JSON.stringify(full),"utf8")-Buffer.byteLength(JSON.stringify(prepared.body),"utf8");
+  assert.equal(prepared.used,true);assert.equal(prepared.savedRequestBytes,exact);
+});
+
+test("OpenAI continuation keeps exact saved-byte accounting for preexisting parent fields",()=>{
+  const tracker=new OpenAiResponseContinuationTracker(),user={type:"message",role:"user",content:[{type:"input_text",text:"Task"}]},first=tracker.prepare(body([user]));tracker.record("resp-1",first,{model:"gpt-5.6",text:"Done"});
+  const next={...body([user,...openAiContinuationOutputItems({text:"Done"}),{type:"message",role:"user",content:[{type:"input_text",text:"Next"}]}]),previous_response_id:"legacy-parent"},prepared=tracker.prepare(next,"resp-1"),exact=Buffer.byteLength(JSON.stringify(next),"utf8")-Buffer.byteLength(JSON.stringify(prepared.body),"utf8");
+  assert.equal(prepared.used,true);assert.equal(prepared.savedRequestBytes,exact);
+});

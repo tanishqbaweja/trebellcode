@@ -4,6 +4,26 @@ function digest(value){
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+function fingerprint(value){
+  const serialized=JSON.stringify(value);
+  return {digest:createHash("sha256").update(serialized).digest("hex"),bytes:Buffer.byteLength(serialized,"utf8")};
+}
+
+function serializedArrayBytes(items=[]){
+  if(!items.length)return 2;
+  return 2+(items.length-1)+items.reduce((total,item)=>total+Number(item?.bytes||0),0);
+}
+
+function continuationSavedRequestBytes(fullBody,fingerprints,prefixLength,parentId){
+  if(!Array.isArray(fullBody?.input)||Object.prototype.hasOwnProperty.call(fullBody||{},"previous_response_id")){
+    const candidate={...fullBody,input:(Array.isArray(fullBody?.input)?fullBody.input:[]).slice(prefixLength),previous_response_id:parentId};
+    return Math.max(0,Buffer.byteLength(JSON.stringify(fullBody),"utf8")-Buffer.byteLength(JSON.stringify(candidate),"utf8"));
+  }
+  const fullInputBytes=serializedArrayBytes(fingerprints),deltaInputBytes=serializedArrayBytes(fingerprints.slice(prefixLength));
+  const parentPropertyBytes=Buffer.byteLength(`,"previous_response_id":${JSON.stringify(parentId)}`,"utf8");
+  return Math.max(0,fullInputBytes-deltaInputBytes-parentPropertyBytes);
+}
+
 function flatToolName(namespace,name){
   return namespace?String(namespace)+"__"+String(name||"tool"):String(name||"tool");
 }
@@ -40,7 +60,7 @@ export class OpenAiResponseContinuationTracker{
 
   prepare(fullBody={},previousResponseId=""){
     const input=Array.isArray(fullBody?.input)?fullBody.input:[],parentId=String(previousResponseId||"").trim(),parent=parentId?this.entries.get(parentId):null;
-    const fullInputDigests=input.map(digest),base={
+    const fingerprints=input.map(fingerprint),fullInputDigests=fingerprints.map(item=>item.digest),base={
       body:fullBody,used:false,parentId:null,fullInputDigests,deltaInputCount:input.length,fullInputCount:input.length,savedRequestBytes:0,
     };
     if(!parent||String(parent.model||"")!==String(fullBody?.model||""))return base;
@@ -48,10 +68,9 @@ export class OpenAiResponseContinuationTracker{
     if(prefix.length>fullInputDigests.length)return base;
     for(let index=0;index<prefix.length;index++)if(prefix[index]!==fullInputDigests[index])return base;
     const delta=input.slice(prefix.length),candidate={...fullBody,input:delta,previous_response_id:parentId};
-    const fullBytes=Buffer.byteLength(JSON.stringify(fullBody),"utf8"),candidateBytes=Buffer.byteLength(JSON.stringify(candidate),"utf8");
     return {
       body:candidate,used:true,parentId,fullInputDigests,deltaInputCount:delta.length,fullInputCount:input.length,
-      savedRequestBytes:Math.max(0,fullBytes-candidateBytes),
+      savedRequestBytes:continuationSavedRequestBytes(fullBody,fingerprints,prefix.length,parentId),
     };
   }
 
