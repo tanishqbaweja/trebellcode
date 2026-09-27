@@ -335,7 +335,7 @@ function remainingProviderRequestMs(deadlineAt){
 }
 
 export class ProviderManager {
-  constructor({ env = process.env, fetchFn = fetch, requestTimeoutMs = DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS, openAiResponsesWebSocketFactory=null } = {}) {
+  constructor({ env = process.env, fetchFn = fetch, requestTimeoutMs = DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS, openAiResponsesWebSocketFactory=null, openAiResponsesWebSocketRetryMs=30_000, nowFn=Date.now } = {}) {
     this.env = env;
     this.fetchFn = fetchFn;
     const timeoutMs = Math.trunc(Number(requestTimeoutMs));
@@ -345,18 +345,26 @@ export class ProviderManager {
     this.secrets = this.#load();
     this.openAiResponseContinuations=new OpenAiResponseContinuationTracker();
     this.openAiResponsesWebSocketFactory=typeof openAiResponsesWebSocketFactory==="function"?openAiResponsesWebSocketFactory:options=>new OpenAiResponsesWebSocket(options);
-    this.openAiResponsesWebSocket=null;this.openAiResponsesWebSocketDisabled=false;
+    const retryMs=Math.trunc(Number(openAiResponsesWebSocketRetryMs));this.openAiResponsesWebSocketRetryMs=Number.isFinite(retryMs)&&retryMs>=0?retryMs:30_000;this.nowFn=typeof nowFn==="function"?nowFn:Date.now;
+    this.openAiResponsesWebSocket=null;this.openAiResponsesWebSocketDisabledUntil=0;this.openAiResponsesWebSocketPermanentlyDisabled=false;
+  }
+
+  #openAiWebSocketCircuitOpen(){
+    if(this.openAiResponsesWebSocketPermanentlyDisabled)return true;
+    const now=Number(this.nowFn()),until=Number(this.openAiResponsesWebSocketDisabledUntil||0);if(Number.isFinite(until)&&until>now)return true;
+    this.openAiResponsesWebSocketDisabledUntil=0;return false;
   }
 
   #resetOpenAiWebSocket(reason="reset"){
     this.openAiResponseContinuations.clear();
-    const normalized=String(reason||""),disable=!["abort","close"].includes(normalized),transport=this.openAiResponsesWebSocket;
-    if(disable)this.openAiResponsesWebSocketDisabled=true;
-    if(this.openAiResponsesWebSocketDisabled){this.openAiResponsesWebSocket=null;if(["protocol_failure","timeout_failure"].includes(normalized))try{transport?.close?.()}catch{}}
+    const normalized=String(reason||""),transport=this.openAiResponsesWebSocket,transient=["connect_failure","send_failure","transport_failure","timeout_failure"].includes(normalized),protocol=normalized==="protocol_failure";
+    if(protocol)this.openAiResponsesWebSocketPermanentlyDisabled=true;
+    if(transient)this.openAiResponsesWebSocketDisabledUntil=Math.max(Number(this.openAiResponsesWebSocketDisabledUntil||0),Number(this.nowFn())+this.openAiResponsesWebSocketRetryMs);
+    if(transient||protocol){this.openAiResponsesWebSocket=null;try{transport?.close?.()}catch{}}
   }
 
   #openAiWebSocketTransport(){
-    if(this.openAiResponsesWebSocketDisabled)return null;
+    if(this.#openAiWebSocketCircuitOpen())return null;
     if(this.openAiResponsesWebSocket)return this.openAiResponsesWebSocket;
     const key=this.key("openai");if(!key)return null;
     this.openAiResponsesWebSocket=this.openAiResponsesWebSocketFactory({
@@ -418,7 +426,7 @@ export class ProviderManager {
     if (key) this.secrets[provider.id] = key;
     else delete this.secrets[provider.id];
     this.#save();
-    if(provider.id==="openai"&&previousKey!==key){try{this.openAiResponsesWebSocket?.close?.()}catch{}this.openAiResponsesWebSocket=null;this.openAiResponsesWebSocketDisabled=false;this.openAiResponseContinuations.clear()}
+    if(provider.id==="openai"&&previousKey!==key){try{this.openAiResponsesWebSocket?.close?.()}catch{}this.openAiResponsesWebSocket=null;this.openAiResponsesWebSocketDisabledUntil=0;this.openAiResponsesWebSocketPermanentlyDisabled=false;this.openAiResponseContinuations.clear()}
     return { provider: provider.id, hasKey: Boolean(key) };
   }
 
@@ -595,7 +603,7 @@ export class ProviderManager {
     if(streamChat===true&&chatBody){chatBody.stream=true;chatBody.stream_options={include_usage:true}}
     let openAiWebSocketFallback=null;
     const openAiWebSocketStreamId=provider.id==="openai"&&streamResponses===true?openAiResponsesWebSocketStreamId(request?.metadata?.sessionId):null;
-    const openAiWebSocketEnabled=Boolean(openAiWebSocketStreamId)&&String(this.env.TREBELL_OPENAI_RESPONSES_WEBSOCKET||"1").trim()!=="0"&&!this.openAiResponsesWebSocketDisabled;
+    const openAiWebSocketEnabled=Boolean(openAiWebSocketStreamId)&&String(this.env.TREBELL_OPENAI_RESPONSES_WEBSOCKET||"1").trim()!=="0"&&!this.#openAiWebSocketCircuitOpen();
     if(openAiWebSocketEnabled){
       const transport=this.#openAiWebSocketTransport();
       if(transport){

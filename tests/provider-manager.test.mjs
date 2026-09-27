@@ -316,6 +316,25 @@ test("OpenAI WebSocket post-send transport failure is not replayed and later tur
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
+test("OpenAI WebSocket transient circuit breaker probes a fresh socket on a later turn after cooldown",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-cooldown-"));let now=1_000,factoryCalls=0,fetchCalls=0;
+  try{
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},nowFn:()=>now,openAiResponsesWebSocketRetryMs:50,openAiResponsesWebSocketFactory:options=>{factoryCalls++;if(factoryCalls===1)return {close:()=>{},request:async()=>{options.onReset?.({reason:"connect_failure"});const error=new Error("temporary connect failure");error.transportFailure=true;error.webSocketFailureKind="transport";error.replaySafe=true;error.retryable=false;error.webSocketTelemetry={requestBytes:0,responseBytes:0,timeToFirstTokenMs:null};throw error}};return {close:()=>{},request:async body=>({requestBytes:11,response:{id:"resp-ws-recovered",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"websocket recovered"}]}]},telemetry:{responseBytes:12,totalLatencyMs:1,timeToFirstTokenMs:1}})}},fetchFn:async(_url,init={})=>{fetchCalls++;const body=JSON.parse(init.body||"{}");return Response.json({id:`resp-http-${fetchCalls}`,model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"http"}]}],usage:{}})}});manager.setKey("openai","oa-key");const request={model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"native_cooldown"}};
+    const first=await manager.turn("openai",request,{streamResponses:true});assert.equal(first.text,"http");assert.equal(factoryCalls,1);assert.equal(fetchCalls,1);
+    const duringCooldown=await manager.turn("openai",request,{streamResponses:true});assert.equal(duringCooldown.text,"http");assert.equal(factoryCalls,1);assert.equal(fetchCalls,2);
+    now+=51;const recovered=await manager.turn("openai",request,{streamResponses:true});assert.equal(recovered.text,"websocket recovered");assert.equal(recovered.telemetry.persistentConnection,true);assert.equal(factoryCalls,2);assert.equal(fetchCalls,2);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("OpenAI WebSocket protocol circuit breaker stays closed for the process even after transient cooldown passes",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-protocol-breaker-"));let now=1_000,factoryCalls=0,fetchCalls=0;
+  try{
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},nowFn:()=>now,openAiResponsesWebSocketRetryMs:10,openAiResponsesWebSocketFactory:options=>{factoryCalls++;return {close:()=>{},request:async()=>{options.onReset?.({reason:"protocol_failure"});const error=new Error("bad protocol event");error.protocolFailure=true;error.webSocketFailureKind="protocol";error.replaySafe=false;error.retryable=false;error.webSocketTelemetry={requestBytes:44,responseBytes:9,timeToFirstTokenMs:null};throw error}}},fetchFn:async(_url,init={})=>{fetchCalls++;const body=JSON.parse(init.body||"{}");return Response.json({id:"resp-http",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"http after protocol failure"}]}],usage:{}})}});manager.setKey("openai","oa-key");const request={model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"native_protocol_breaker"}};
+    await assert.rejects(manager.turn("openai",request,{streamResponses:true}),error=>error?.protocolFailure===true&&error?.retryable===false);assert.equal(fetchCalls,0);now+=10_000;
+    const second=await manager.turn("openai",request,{streamResponses:true});assert.equal(second.text,"http after protocol failure");assert.equal(factoryCalls,1);assert.equal(fetchCalls,1);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
 test("OpenAI WebSocket response failure is not replayed and does not trip the socket circuit breaker",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-api-fail-"));let factoryCalls=0,fetchCalls=0,requests=0;
   try{
