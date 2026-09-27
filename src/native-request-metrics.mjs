@@ -74,7 +74,7 @@ export function nativeRequestMetrics(messages=[],tools=[],{toolSchemaCache=null}
   let cachedToolSchemas=toolSchemaCache&&typeof toolSchemaCache.get==="function"?toolSchemaCache.get(toolSchemas):null;
   if(!cachedToolSchemas){
     const value=serialized(toolSchemas),text=value.text,digestValue=value.jsonSafe?digest(text):null;
-    cachedToolSchemas={serialized:value,text,metric:metric(text),digest:digestValue};
+    cachedToolSchemas={serialized:value,text,metric:metric(text),digest:digestValue,functionCount:toolSchemas.reduce((sum,entry)=>sum+(Array.isArray(entry?.tools)?entry.tools.length:(entry?.type==="function"?1:0)),0),stablePrefix:null};
     if(value.jsonSafe&&toolSchemaCache&&typeof toolSchemaCache.set==="function")toolSchemaCache.set(toolSchemas,cachedToolSchemas);
   }
   const systemSerialized=serialized(system),developerSerialized=serialized(developer),toolSchemasSerialized=cachedToolSchemas.serialized,
@@ -83,10 +83,13 @@ export function nativeRequestMetrics(messages=[],tools=[],{toolSchemaCache=null}
   const currentBreakdown=currentTurnBreakdown(lastUser>=0?source[lastUser]:null);
   const prefix={system,developer,tools:toolSchemas};
   const stablePrefixJsonSafe=systemSerialized.jsonSafe&&developerSerialized.jsonSafe&&toolSchemasSerialized.jsonSafe;
+  const priorStablePrefix=cachedToolSchemas.stablePrefix,stablePrefixCacheHit=stablePrefixJsonSafe&&priorStablePrefix?.systemJson===systemJson&&priorStablePrefix?.developerJson===developerJson;
+  const systemMetric=stablePrefixCacheHit?priorStablePrefix.systemMetric:metric(systemJson),developerMetric=stablePrefixCacheHit?priorStablePrefix.developerMetric:metric(developerJson),systemHash=stablePrefixCacheHit?priorStablePrefix.systemHash:hash(systemJson),developerHash=stablePrefixCacheHit?priorStablePrefix.developerHash:hash(developerJson),stablePrefixHash=stablePrefixCacheHit?priorStablePrefix.stablePrefixHash:(stablePrefixJsonSafe?hashParts('{"system":',systemJson,',"developer":',developerJson,',"tools":',toolSchemasJson,"}"):hash(prefix));
+  if(stablePrefixJsonSafe&&!stablePrefixCacheHit)cachedToolSchemas.stablePrefix={systemJson,developerJson,systemMetric,developerMetric,systemHash,developerHash,stablePrefixHash};
   const result={
     estimation:"utf8_bytes_div_4",
-    system:metric(systemJson),
-    developer:metric(developerJson),
+    system:systemMetric,
+    developer:developerMetric,
     compactedContext:metric(compactedJson),
     conversationHistory:metric(historyJson),
     ...currentBreakdown,
@@ -95,10 +98,10 @@ export function nativeRequestMetrics(messages=[],tools=[],{toolSchemaCache=null}
     messages:messagesMetric,
     totalLogical:{bytes:messagesMetric.bytes+toolsMetric.bytes,estimatedTokens:estimate(messagesMetric.bytes+toolsMetric.bytes)},
     messageCount:source.length,
-    toolFunctionCount:toolSchemas.reduce((sum,entry)=>sum+(Array.isArray(entry?.tools)?entry.tools.length:(entry?.type==="function"?1:0)),0),
-    stablePrefixHash:stablePrefixJsonSafe?hashParts('{"system":',systemJson,',"developer":',developerJson,',"tools":',toolSchemasJson,"}"):hash(prefix),
-    systemHash:hash(systemJson),
-    developerHash:hash(developerJson),
+    toolFunctionCount:cachedToolSchemas.functionCount,
+    stablePrefixHash,
+    systemHash,
+    developerHash,
     toolSchemaHash:toolSchemaDigest?toolSchemaDigest.slice(0,16):hash(toolSchemasJson),
     conversationHistoryHash:hash(historyJson),
   };

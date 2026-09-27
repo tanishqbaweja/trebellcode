@@ -53,3 +53,10 @@ test("Native request metrics can reuse a stable tool-schema serialization within
   assert.equal(cachedFirst[NATIVE_TOOL_SCHEMA_FINGERPRINT],uncached[NATIVE_TOOL_SCHEMA_FINGERPRINT]);assert.equal(cachedSecond[NATIVE_TOOL_SCHEMA_FINGERPRINT],uncached[NATIVE_TOOL_SCHEMA_FINGERPRINT]);
   assert.equal(cache.has(tools),true);
 });
+
+test("Native request metrics invalidate cached stable-prefix hashes when instructions change",()=>{
+  const tools=[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file",description:"read",inputSchema:{type:"object",properties:{path:{type:"string"}}}}]}],cache=new WeakMap(),firstMessages=[{role:"system",content:"system-a"},{role:"developer",content:"developer-a"},{role:"user",content:"request"}],secondMessages=[{role:"system",content:"system-b"},{role:"developer",content:"developer-a"},{role:"user",content:"request"}];
+  const first=nativeRequestMetrics(firstMessages,tools,{toolSchemaCache:cache}),secondCached=nativeRequestMetrics(secondMessages,tools,{toolSchemaCache:cache}),secondUncached=nativeRequestMetrics(secondMessages,tools);
+  assert.deepEqual(secondCached,secondUncached);assert.notEqual(first.stablePrefixHash,secondCached.stablePrefixHash);assert.notEqual(first.systemHash,secondCached.systemHash);assert.equal(first.developerHash,secondCached.developerHash);
+  assert.equal(secondCached[NATIVE_TOOL_SCHEMA_FINGERPRINT],secondUncached[NATIVE_TOOL_SCHEMA_FINGERPRINT]);
+});

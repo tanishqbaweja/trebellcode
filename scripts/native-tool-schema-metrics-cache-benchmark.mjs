@@ -13,13 +13,23 @@ function median(values){const ordered=[...values].sort((a,b)=>a-b);return ordere
 function benchmark(name,tools,iterations){
   const expected=nativeRequestMetrics(messages,tools),cache=new WeakMap(),first=nativeRequestMetrics(messages,tools,{toolSchemaCache:cache}),second=nativeRequestMetrics(messages,tools,{toolSchemaCache:cache});
   assert.deepEqual(first,expected);assert.deepEqual(second,expected);assert.equal(first[NATIVE_TOOL_SCHEMA_FINGERPRINT],expected[NATIVE_TOOL_SCHEMA_FINGERPRINT]);assert.equal(second[NATIVE_TOOL_SCHEMA_FINGERPRINT],expected[NATIVE_TOOL_SCHEMA_FINGERPRINT]);
-  function measure(cached){global.gc?.();const localCache=cached?new WeakMap():null;if(cached)nativeRequestMetrics(messages,tools,{toolSchemaCache:localCache});const started=performance.now();let checksum=0;for(let index=0;index<iterations;index++){const result=nativeRequestMetrics(messages,tools,cached?{toolSchemaCache:localCache}:undefined);checksum+=result.totalLogical.bytes}return {durationMs:Number((performance.now()-started).toFixed(3)),checksum}}
-  for(let index=0;index<4;index++){measure(false);measure(true)}
-  const baselineRuns=[],cachedRuns=[];for(let round=0;round<rounds;round++){if(round%2===0){baselineRuns.push(measure(false));cachedRuns.push(measure(true))}else{cachedRuns.push(measure(true));baselineRuns.push(measure(false))}}
-  assert.ok(baselineRuns.every(run=>run.checksum===cachedRuns[0].checksum));assert.ok(cachedRuns.every(run=>run.checksum===baselineRuns[0].checksum));
-  const baselineMedian=median(baselineRuns.map(run=>run.durationMs)),cachedMedian=median(cachedRuns.map(run=>run.durationMs)),savedMs=Number((baselineMedian-cachedMedian).toFixed(3));
-  return {name,messages:messages.length,namespaces:tools.length,functions:tools.reduce((sum,entry)=>sum+(entry.tools?.length||0),0),toolSchemaBytes:expected.toolSchemas.bytes,iterationsPerRound:iterations,baseline:{medianDurationMs:baselineMedian,runsMs:baselineRuns.map(run=>run.durationMs)},cached:{medianDurationMs:cachedMedian,runsMs:cachedRuns.map(run=>run.durationMs)},savings:{medianDurationMs:savedMs,medianPercent:Number((savedMs/baselineMedian*100).toFixed(2))}};
+  function cacheFor(mode){
+    if(mode==="uncached")return null;
+    if(mode==="full")return new WeakMap();
+    const inner=new WeakMap();
+    return {get:key=>{const value=inner.get(key);return value?{...value,stablePrefix:null}:value},set:(key,value)=>inner.set(key,value)};
+  }
+  function measure(mode){global.gc?.();const localCache=cacheFor(mode);if(localCache)nativeRequestMetrics(messages,tools,{toolSchemaCache:localCache});const started=performance.now();let checksum=0;for(let index=0;index<iterations;index++){const result=nativeRequestMetrics(messages,tools,localCache?{toolSchemaCache:localCache}:undefined);checksum+=result.totalLogical.bytes}return {durationMs:Number((performance.now()-started).toFixed(3)),checksum}}
+  for(let index=0;index<4;index++){measure("uncached");measure("tool-schema-only");measure("full")}
+  const uncachedRuns=[],toolSchemaRuns=[],fullRuns=[];
+  for(let round=0;round<rounds;round++){
+    const order=round%2===0?["uncached","tool-schema-only","full"]:["full","tool-schema-only","uncached"];
+    for(const mode of order){const run=measure(mode);if(mode==="uncached")uncachedRuns.push(run);else if(mode==="tool-schema-only")toolSchemaRuns.push(run);else fullRuns.push(run)}
+  }
+  const checksum=uncachedRuns[0].checksum;assert.ok([...uncachedRuns,...toolSchemaRuns,...fullRuns].every(run=>run.checksum===checksum));
+  const uncachedMedian=median(uncachedRuns.map(run=>run.durationMs)),toolSchemaMedian=median(toolSchemaRuns.map(run=>run.durationMs)),fullMedian=median(fullRuns.map(run=>run.durationMs)),toolSaved=Number((uncachedMedian-toolSchemaMedian).toFixed(3)),prefixSaved=Number((toolSchemaMedian-fullMedian).toFixed(3));
+  return {name,messages:messages.length,namespaces:tools.length,functions:tools.reduce((sum,entry)=>sum+(entry.tools?.length||0),0),toolSchemaBytes:expected.toolSchemas.bytes,iterationsPerRound:iterations,uncached:{medianDurationMs:uncachedMedian,runsMs:uncachedRuns.map(run=>run.durationMs)},toolSchemaCached:{medianDurationMs:toolSchemaMedian,runsMs:toolSchemaRuns.map(run=>run.durationMs)},stablePrefixCached:{medianDurationMs:fullMedian,runsMs:fullRuns.map(run=>run.durationMs)},toolSchemaSavings:{medianDurationMs:toolSaved,medianPercent:Number((toolSaved/uncachedMedian*100).toFixed(2))},additionalStablePrefixSavings:{medianDurationMs:prefixSaved,medianPercent:Number((prefixSaved/toolSchemaMedian*100).toFixed(2))}};
 }
 
 const actual=benchmark("current-native-coding-surface",actualTools,300),stress=benchmark("large-schema-stress",stressTools,120);
-console.log(JSON.stringify({ok:true,benchmark:"native-tool-schema-metrics-cache",rounds,actual,stress,note:"Deterministic local telemetry benchmark. The candidate reuses the exact JSON-safe tool-schema serialization, metric, and full SHA-256 fingerprint within one Native agent turn; output metrics and fingerprints are asserted identical."},null,2));
+console.log(JSON.stringify({ok:true,benchmark:"native-tool-schema-metrics-cache",rounds,actual,stress,note:"Deterministic local telemetry benchmark. Tool-schema-only mode reuses the exact JSON-safe schema serialization/metric/full SHA-256 fingerprint but deliberately disables stable-prefix reuse. Full mode additionally reuses system/developer metrics and hashes plus the combined stable-prefix hash only when their exact serialized strings are unchanged. Output metrics and fingerprints are asserted identical."},null,2));
