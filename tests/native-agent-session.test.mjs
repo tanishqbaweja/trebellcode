@@ -95,6 +95,30 @@ test("Native session keeps large tool output outside hot provider history behind
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
+test("Native session cools a virtualized result after one hot same-turn model read",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-hot-output-session-"));const requests=[],events=[];
+  try{
+    const store=new NativeToolOutputStore({directory:root,maxHotBytes:4096});let calls=0;
+    const session=new NativeAgentSession({
+      model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_terminal",tools:[]},{type:"namespace",name:"trebell_workspace",tools:[]}],toolOutputStore:store,onEvent:event=>events.push(event),
+      providerTurn:async request=>{requests.push(structuredClone(request));calls++;return calls===1
+        ?{id:"tool-a",text:"",toolCalls:[{id:"big",namespace:"trebell_terminal",name:"run",arguments:'{"command":"test"}'}],usage:{}}
+        :calls===2
+          ?{id:"tool-b",text:"",toolCalls:[{id:"read",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/config.mjs"}'}],usage:{}}
+          :{id:"done",text:"done",toolCalls:[],usage:{}}},
+      executeTool:async call=>call.namespace==="trebell_terminal"
+        ?{exitCode:1,stdout:"noise\n".repeat(5000),stderr:"CRITICAL_ASSERTION expected strict but received legacy"}
+        :{path:"src/config.mjs",content:'export const mode="legacy";',size:27},
+    });
+    await session.start({providerSessionId:"native-hot-output",model:"model-a"});await session.prompt([{type:"text",text:"inspect the failure"}]);
+    const hot=requests[1].messages.find(message=>message.role==="tool"&&message.toolCallId==="big")?.content||"";
+    const cooled=requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="big")?.content||"";
+    const fresh=requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="read")?.content||"";
+    assert.ok(hot.length>4000);assert.ok(cooled.length<hot.length);assert.match(cooled,/CRITICAL_ASSERTION/);assert.match(cooled,/out_[a-zA-Z0-9-]+/);assert.match(fresh,/legacy/);
+    assert.ok(events.some(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="same_turn"&&event.data?.savedChars>1000&&event.data?.maxPreviewChars===2200));
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
 test("Native session deduplicates only byte-identical repeated hot file observations",async()=>{
   const requests=[],events=[];let providerCalls=0,content="A".repeat(4000);
   const session=new NativeAgentSession({

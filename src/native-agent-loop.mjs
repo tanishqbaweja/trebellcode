@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
 import { nativeRequestMetrics, NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 import { platformToolAllowedByAllowlist } from "./shared-tool-gateway.mjs";
+import { coolVirtualizedToolHistory } from "./native-tool-history.mjs";
 
 function abortError(signal){
   const reason=signal?.reason;if(reason?.name==="AbortError")return reason;
@@ -308,6 +309,11 @@ export async function runNativeAgentTurn({
       contextWindowUtilizationPercent:contextWindow>0&&inputTokens>0?Number(((inputTokens/contextWindow)*100).toFixed(2)):null,
       sessionId:metadata?.sessionId||null,compaction:Boolean(metadata?.compaction),
     }});
+    const cooledHot=coolVirtualizedToolHistory(conversation,{maxPreviewChars:2200});
+    if(cooledHot.count){
+      conversation.splice(0,conversation.length,...cooledHot.messages);
+      emit(onEvent,{name:"native.tool.history_cooled",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{phase:"same_turn",count:cooledHot.count,savedChars:cooledHot.savedChars,maxPreviewChars:2200}});
+    }
     if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"after_model"}))continue;
     const responseText=String(lastResponse.text||"");
     if(!calls.length&&!responseText.trim()){
