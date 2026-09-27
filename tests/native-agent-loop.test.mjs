@@ -299,6 +299,39 @@ test("native background process status shortcut fails closed for richer or unpro
   }
 });
 
+test("native agent reports browser console/network failure counts without provider inference",async()=>{
+  for(const [prompt,consoleErrors,networkFailures] of [
+    ["Are there any browser console errors or network failures?",[],[]],
+    ["Check browser runtime for console errors and network failures.",[{message:"PRIVATE_CONSOLE"}],[{url:"https://private.invalid",statusCode:500}]],
+  ]){
+    let providerCalls=0;const executions=[],events=[];
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:prompt}],directBrowserRuntimeStatus:true,onEvent:event=>events.push(event),
+      tools:[{type:"namespace",name:"trebell_browser",tools:[{name:"runtime"}]}],
+      providerTurn:async()=>{providerCalls++;throw new Error("Browser runtime health check should not call the provider.")},
+      executeTool:async call=>{executions.push(structuredClone(call));return {consoleErrors,networkFailures,viewports:[{width:1280,height:800}]}},
+    });
+    assert.equal(providerCalls,0,prompt);assert.equal(result.modelTurns,0,prompt);assert.equal(result.toolCalls,1,prompt);assert.equal(executions.length,1,prompt);
+    assert.equal(executions[0].namespace,"trebell_browser",prompt);assert.equal(executions[0].name,"runtime",prompt);assert.deepEqual(executions[0].arguments,{},prompt);
+    assert.equal(result.text,`Browser runtime: ${consoleErrors.length} console error${consoleErrors.length===1?"":"s"}, ${networkFailures.length} network failure${networkFailures.length===1?"":"s"}.`,prompt);
+    assert.ok(events.some(event=>event.name==="native.browser.direct_runtime_status"&&event.data?.consoleErrorCount===consoleErrors.length&&event.data?.networkFailureCount===networkFailures.length),prompt);
+    assert.equal(result.text.includes("PRIVATE_CONSOLE"),false,prompt);assert.equal(result.text.includes("private.invalid"),false,prompt);
+  }
+});
+
+test("native browser runtime health shortcut fails closed for detailed or incomplete requests",async()=>{
+  for(const [prompt,output,expectedExecutions] of [
+    ["Show me the browser console errors and network failures.",{consoleErrors:[],networkFailures:[]},0],
+    ["Check browser runtime errors and explain how to fix them.",{consoleErrors:[],networkFailures:[]},0],
+    ["Are there any browser console errors or network failures?",{consoleErrors:[]},1],
+    ["Are there any browser console errors or network failures?",{success:false,error:"browser unavailable"},1],
+  ]){
+    let providerCalls=0,executions=0;
+    const result=await runNativeAgentTurn({model:"test-model",messages:[{role:"user",content:prompt}],directBrowserRuntimeStatus:true,tools:[{type:"namespace",name:"trebell_browser",tools:[{name:"runtime"}]}],providerTurn:async()=>{providerCalls++;return {text:"provider handled browser runtime",toolCalls:[],usage:{}}},executeTool:async()=>{executions++;return output}});
+    assert.equal(providerCalls,1,prompt);assert.equal(executions,expectedExecutions,prompt);assert.equal(result.text,"provider handled browser runtime",prompt);
+  }
+});
+
 test("native direct Git status fails closed for richer wording or incomplete evidence",async()=>{
   for(const prompt of ["Show git status and explain the changes.","Check the repo status.","Run git status and then fix anything wrong.","What branch am I on and what changed?"]){
     let providerCalls=0,executions=0;

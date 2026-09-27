@@ -352,6 +352,11 @@ function explicitBackgroundProcessRunningRequest(messages=[]){
   return {processId};
 }
 
+function explicitBrowserRuntimeHealthRequest(messages=[]){
+  const user=latestUserMessage(messages),text=lastUserInstructionText(user).trim();if(!text||/[\r\n]/.test(text))return false;
+  return /^(?:(?:please\s+)?(?:check|report)\s+(?:the\s+)?browser\s+runtime\s+(?:for\s+)?(?:console\s+(?:errors?|failures?)\s+(?:and|or)\s+network\s+(?:errors?|failures?)|network\s+(?:errors?|failures?)\s+(?:and|or)\s+console\s+(?:errors?|failures?))|(?:are|is)\s+there\s+(?:any\s+)?(?:browser\s+)?(?:console\s+(?:errors?|failures?)\s+(?:or|and)\s+network\s+(?:errors?|failures?)|network\s+(?:errors?|failures?)\s+(?:or|and)\s+console\s+(?:errors?|failures?)))\s*[?!.]?$/i.test(text);
+}
+
 function explicitExactFileReadStatus(messages=[]){
   const user=latestUserMessage(messages),text=lastUserInstructionText(user).trim();if(!text||/[\r\n]/.test(text))return null;
   const file="(`[^`\\n]+`|\"[^\"\\n]+\"|'[^'\\n]+'|\\S+?)";
@@ -605,14 +610,14 @@ export async function runNativeAgentTurn({
   providerTurn,executeTool,model,messages=[],tools=[],provider=null,toolChoice="auto",
   maxOutputTokens=null,temperature=null,parallelToolCalls=true,maxModelTurns=24,maxToolCalls=100,maxWallTimeMs=null,
   maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,coolReadToolHistory=null,preserveToolSchemasOnFinalization=false,signal=null,onEvent=null,metadata=null,
-  autoRerunVerification=false,priorTerminalRuns=[],synthesizeTerminalReports=false,coolSyntheticTerminalReportOutput=true,directTerminalStatusCommands=false,directExactReplacementStatus=false,directExactWriteStatus=false,directExactReadStatus=false,directExactListStatus=false,directGitStatus=false,directProcessRunningStatus=false,prepareProviderMessages=null,
+  autoRerunVerification=false,priorTerminalRuns=[],synthesizeTerminalReports=false,coolSyntheticTerminalReportOutput=true,directTerminalStatusCommands=false,directExactReplacementStatus=false,directExactWriteStatus=false,directExactReadStatus=false,directExactListStatus=false,directGitStatus=false,directProcessRunningStatus=false,directBrowserRuntimeStatus=false,prepareProviderMessages=null,
 }={}){
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
   const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])],visibleTools=providerVisibleTools(tools,toolAllowlist),directVisiblePairs=exposedToolPairs(visibleTools),requestMetricsToolCache=new WeakMap(),requestMetricsMessageCache=new WeakMap(),requestMetricsCurrentTurnCache=new WeakMap(),requestMetricsHistoryHashCache={},requestMetricsClassificationCache=typeof coolReadToolHistory==="function"?null:{},openAiContinuationIdentity={};
   const explicitlyRequired=explicitlyRequestedTools(conversation,visibleTools),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
-  const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalStatusRequested=explicitTerminalStatusRequest(conversation),directTerminalStatusCommand=directTerminalStatusCommands===true?explicitTerminalStatusCommand(conversation):null,directReplacementStatus=directExactReplacementStatus===true?explicitExactReplacementStatus(conversation):null,directWriteStatus=directExactWriteStatus===true?explicitExactFileWriteStatus(conversation):null,directReadStatus=directExactReadStatus===true?explicitExactFileReadStatus(conversation):null,directListStatus=directExactListStatus===true?explicitImmediateWorkspaceListStatus(conversation):null,directGitStatusRequest=directGitStatus===true?explicitGitReadRequest(conversation):null,directProcessRunningRequest=directProcessRunningStatus===true?explicitBackgroundProcessRunningRequest(conversation):null,terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
+  const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalStatusRequested=explicitTerminalStatusRequest(conversation),directTerminalStatusCommand=directTerminalStatusCommands===true?explicitTerminalStatusCommand(conversation):null,directReplacementStatus=directExactReplacementStatus===true?explicitExactReplacementStatus(conversation):null,directWriteStatus=directExactWriteStatus===true?explicitExactFileWriteStatus(conversation):null,directReadStatus=directExactReadStatus===true?explicitExactFileReadStatus(conversation):null,directListStatus=directExactListStatus===true?explicitImmediateWorkspaceListStatus(conversation):null,directGitStatusRequest=directGitStatus===true?explicitGitReadRequest(conversation):null,directProcessRunningRequest=directProcessRunningStatus===true?explicitBackgroundProcessRunningRequest(conversation):null,directBrowserRuntimeRequest=directBrowserRuntimeStatus===true&&explicitBrowserRuntimeHealthRequest(conversation),terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
   const verificationFinalizationRequest=verificationCompletionRequest||(finalAfterVerifiedRequest?.target?finalAfterVerifiedRequest:null);
   const successfulTerminalRuns=[];
   let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
@@ -686,6 +691,20 @@ export async function runNativeAgentTurn({
   };
   emit(onEvent,{name:"native.turn.started",status:"running",model:String(model),provider:provider||null,data:{...metadata,maxModelTurns:budget.maxModelTurns,maxToolCalls:budget.maxToolCalls,maxWallTimeMs:budget.maxWallTimeMs}});
   try{
+    const directBrowserRuntimeVisible=directBrowserRuntimeRequest&&budget.maxToolCalls>=1&&directVisiblePairs.some(item=>item.namespace==="trebell_browser"&&item.name==="runtime");
+    if(directBrowserRuntimeVisible&&!applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_direct_browser_runtime"})){
+      throwIfAborted(turnSignal);
+      const call={id:"native-direct-browser-runtime-1",namespace:"trebell_browser",name:"runtime",arguments:"{}"};
+      conversation.push({role:"assistant",content:"",toolCalls:[call]});toolCalls=1;const observation=await executeOneTool(call,toolCalls);conversation.push(observation);
+      const output=observation?.[NATIVE_TOOL_OBSERVATION_OUTPUT],consoleErrors=Array.isArray(output?.consoleErrors)?output.consoleErrors:null,networkFailures=Array.isArray(output?.networkFailures)?output.networkFailures:null,missingExplicit=explicitlyRequired.find(item=>!executedToolKeys.has(item.namespace+"/"+item.name));
+      const complete=consoleErrors!=null&&networkFailures!=null&&consoleErrors.length<=1000&&networkFailures.length<=1000&&output?.success!==false&&output?.uncertain!==true&&output?.virtualized!==true&&output?.truncated!==true;
+      if(complete&&!missingExplicit&&!applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"after_direct_browser_runtime"})){
+        const consoleCount=consoleErrors.length,networkCount=networkFailures.length,text=`Browser runtime: ${consoleCount} console error${consoleCount===1?"":"s"}, ${networkCount} network failure${networkCount===1?"":"s"}.`;
+        conversation.push({role:"assistant",content:text,toolCalls:[]});const result={text,model:String(model),provider:provider||null,messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse:null};
+        emit(onEvent,{name:"native.browser.direct_runtime_status",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,consoleErrorCount:consoleCount,networkFailureCount:networkCount}});
+        emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage,directBrowserRuntimeStatus:true}});return result;
+      }
+    }
     const directProcessRunningVisible=directProcessRunningRequest&&budget.maxToolCalls>=1&&directVisiblePairs.some(item=>item.namespace==="trebell_process"&&item.name==="status");
     if(directProcessRunningVisible&&!applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_direct_process_status"})){
       throwIfAborted(turnSignal);

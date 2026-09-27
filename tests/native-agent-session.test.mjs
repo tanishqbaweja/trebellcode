@@ -114,6 +114,14 @@ test("Native session directly reports one background process running state",asyn
   assert.equal(updates.find(item=>item.update?.sessionUpdate==="agent_message_chunk")?.update?.content?.text,`Background process ${processId} is running.`);assert.ok(events.some(event=>event.name==="native.process.direct_status"));
 });
 
+test("Native session directly reports browser runtime health counts",async()=>{
+  let providerCalls=0;const calls=[],updates=[],events=[];
+  const session=new NativeAgentSession({provider:"fixture",model:"model-a",tools:[{type:"namespace",name:"trebell_browser",tools:[{name:"runtime"}]}],onUpdate:update=>updates.push(update),onEvent:event=>events.push(event),providerTurn:async()=>{providerCalls++;throw new Error("Browser runtime health should bypass provider inference.")},executeTool:async call=>{calls.push(structuredClone(call));return {consoleErrors:[{message:"private"}],networkFailures:[],viewports:[]}}});
+  await session.start({providerSessionId:"browser-runtime-health",model:"model-a"});const result=await session.prompt([{type:"text",text:"Are there any browser console errors or network failures?"}]);
+  assert.equal(providerCalls,0);assert.equal(result.raw?.modelTurns,0);assert.equal(result.raw?.toolCalls,1);assert.deepEqual(calls[0].arguments,{});
+  assert.equal(updates.find(item=>item.update?.sessionUpdate==="agent_message_chunk")?.update?.content?.text,"Browser runtime: 1 console error, 0 network failures.");assert.ok(events.some(event=>event.name==="native.browser.direct_runtime_status"));
+});
+
 test("Native session keeps virtualized direct-status evidence persisted but collapses its first provider-facing view",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-terminal-report-cooling-")),requests=[],events=[];
   try{
