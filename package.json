@@ -32,6 +32,7 @@
     "test:vyce:codex": "node --env-file-if-exists=.env scripts/live-vyce-agent-test.mjs --live",
     "test:vyce:native": "node --env-file-if-exists=.env scripts/live-vyce-native-agent-test.mjs --live",
     "bench:vyce:native": "node --env-file-if-exists=.env scripts/live-vyce-native-benchmark.mjs --live",
+    "bench:vyce:native:recovery": "node --env-file-if-exists=.env scripts/live-vyce-native-recovery-benchmark.mjs --live",
     "test:vyce:cache": "node --env-file-if-exists=.env scripts/live-vyce-cache-test.mjs --live",
     "test:vyce:background": "node --env-file-if-exists=.env scripts/live-vyce-background-test.mjs --live",
     "test:vyce:fanout": "node --env-file-if-exists=.env scripts/live-vyce-fanout-test.mjs --live",
