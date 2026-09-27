@@ -100,7 +100,7 @@ test("Trebell Native relay executes an explicit verifier status command in a wor
   const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
   try{
     const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;
-    const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",input:[{type:"text",text:"In packages/api, run node verify.mjs and report the result."}]})).turn;
+    const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",input:[{type:"text",text:"In ./packages/api/, run node verify.mjs and report the result."}]})).turn;
     const completed=await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);assert.equal(completed.params.turn.status,"completed");assert.equal(providerCalls,0);
     const saved=threadStore.get(thread.id).turns.find(item=>item.id===turn.id),terminal=saved.items.find(item=>item.type==="dynamicToolCall"&&item.namespace==="trebell_terminal"&&item.tool==="run");assert.ok(terminal);assert.deepEqual(terminal.arguments,{command:"node",args:["verify.mjs"],cwd:"packages/api"});
     const assistant=saved.items.find(item=>item.type==="agentMessage");assert.match(assistant?.text||"",/completed successfully/i);assert.match(assistant?.text||"",/DIRECT_CWD_PASS/);

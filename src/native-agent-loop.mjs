@@ -225,10 +225,13 @@ const DIRECT_STATUS_NATURAL_COMMANDS=new Set(["a","an","the","it","this","that",
 const DIRECT_STATUS_SHELLS=new Set(["sh","bash","zsh","fish","cmd","cmd.exe","powershell","powershell.exe","pwsh","pwsh.exe"]);
 function explicitDirectStatusCwd(value){
   let cwd=String(value||"").trim();
-  const quoted=cwd.match(/^(?:`([^`\n]+)`|"([^"\n]+)"|'([^'\n]+)')$/);if(quoted)cwd=String(quoted[1]||quoted[2]||quoted[3]||"").trim();
+  const quoted=cwd.match(/^(?:`([^`\n]+)`|"([^"\n]+)"|'([^'\n]+)')$/),wasQuoted=Boolean(quoted);if(quoted)cwd=String(quoted[1]||quoted[2]||quoted[3]||"").trim();
   if(!cwd||cwd.length>240||/[\r\n\0]/.test(cwd)||/^[\\/]/.test(cwd)||/^[A-Za-z]:[\\/]/.test(cwd)||/:\/\//.test(cwd))return null;
-  if(/\s/.test(cwd)||!/[\\/]/.test(cwd))return null;
-  const normalized=cwd.replace(/\\/g,"/"),parts=normalized.split("/");
+  const explicitDotRelative=/^\.([\\/])/.test(cwd),explicitTrailingSlash=/[\\/]$/.test(cwd);
+  if(/\s/.test(cwd))return null;
+  const normalized=cwd.replace(/\\/g,"/").replace(/^\.\/+/,"").replace(/\/+$/,"");if(!normalized)return null;
+  if(!wasQuoted&&!explicitDotRelative&&!explicitTrailingSlash&&!normalized.includes("/"))return null;
+  const parts=normalized.split("/");
   if(parts.some(part=>!part||part===".."||part==="."))return null;
   if(parts.some(part=>!/^[A-Za-z0-9._@+-]+$/.test(part)))return null;
   return normalized;
