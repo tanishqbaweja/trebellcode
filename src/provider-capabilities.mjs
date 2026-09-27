@@ -20,7 +20,7 @@ const COMMON_PROXY=Object.freeze({
 const CAPABILITIES=Object.freeze({
   openai:Object.freeze({
     ...COMMON_PROXY,
-    promptCaching:feature("supported","The direct OpenAI Responses route keeps a deterministic prompt_cache_key for the reusable model/instruction/tool/parallel-tool prefix rather than user-task text; Trebell records returned cached-input usage."),
+    promptCaching:feature("supported","The direct OpenAI Responses route keeps a deterministic prompt_cache_key for the reusable model/instruction/tool/parallel-tool prefix rather than user-task text; Trebell records returned cache usage and same-session cache diagnostics when the model supports them."),
     explicitCacheControl:feature("supported","For GPT-5.6 and later, Trebell keeps implicit caching enabled and adds explicit cache breakpoints to provider-visible tool results so growing agent prefixes can be reused; earlier models keep their legacy cache behavior."),
     previousResponseContinuation:feature("unsupported","Trebell Native currently carries its own durable conversation state instead of sending previous_response_id."),
     persistentConnection:feature("unsupported","The current Trebell Native OpenAI integration uses HTTPS Responses requests, not a persistent Responses WebSocket."),

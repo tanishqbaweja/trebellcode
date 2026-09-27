@@ -189,6 +189,22 @@ function withOpenAiToolResultCacheBreakpoints(input=[]){
     return {...item,output};
   });
 }
+function normalizedOpenAiPromptCacheDiagnostics(body={}){
+  const value=body?.prompt_cache_diagnostics;
+  if(!value||typeof value!=="object")return null;
+  const type=String(value.type||"").trim();if(!type)return null;
+  const reason=String(value.reason||"").trim();
+  const optionalCount=input=>{
+    if(input==null||input==="")return null;
+    const number=Number(input);return Number.isFinite(number)&&number>=0?number:null;
+  };
+  return {
+    type:type.slice(0,80),
+    reason:reason?reason.slice(0,120):null,
+    comparisonReusableTokens:optionalCount(value.comparison_reusable_tokens),
+    cacheMissedTokens:optionalCount(value.cache_missed_tokens),
+  };
+}
 function officialOpenAiResponsesBody(request={}){
   const body=providerTurnToResponses(request,{preserveInstructionOrder:true}),tools=[];
   for(const entry of Array.isArray(request.tools)?request.tools:[]){
@@ -210,7 +226,8 @@ function officialOpenAiResponsesBody(request={}){
     const next={...item,name:officialResponsesToolName(item.namespace,item.name)};delete next.namespace;return next;
   });
   if(officialOpenAiExplicitCacheBreakpointsSupported(body.model)){
-    body.prompt_cache_options={mode:"implicit"};
+    const comparisonResponseId=String(request.promptCacheComparisonResponseId||"").trim();
+    body.prompt_cache_options={mode:"implicit",...(comparisonResponseId?{comparison_response_id:comparisonResponseId}:{})};
     body.input=withOpenAiToolResultCacheBreakpoints(body.input);
   }
   body.prompt_cache_key=officialOpenAiPromptCacheKey(body);
@@ -553,7 +570,7 @@ export class ProviderManager {
       try{
         const streamed=await readOpenAiResponsesStream(upstream.body,{requestStartedAt:started}),bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
         const result=normalizeResponsesTurnResponse(streamed.response,provider.id,model);
-        result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null};
+        result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null,promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(streamed.response)};
         return result;
       }catch(error){
         const bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
@@ -603,6 +620,7 @@ export class ProviderManager {
     result.telemetry={
       ...baseTelemetry,
       providerResponseId:result.id||null,
+      ...(provider.id==="openai"?{promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(parsed)}:{}),
     };
     return result;
   }

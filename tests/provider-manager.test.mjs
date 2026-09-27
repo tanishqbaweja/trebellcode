@@ -289,11 +289,34 @@ test("official OpenAI adds tool-result cache breakpoints only for GPT-5.6 and la
   assert.equal(legacyOutput.output,"export const value = 1;");
 });
 
+test("official OpenAI requests same-session cache diagnostics and normalizes the result",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));let seen=null;
+  const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{
+    seen=JSON.parse(init.body||"{}");
+    return Response.json({
+      id:"resp-cache-current",model:seen.model,status:"completed",
+      output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"ok"}]}],
+      usage:{input_tokens:2000,input_tokens_details:{cached_tokens:1024},output_tokens:1,total_tokens:2001},
+      prompt_cache_diagnostics:{type:"cache_miss",reason:"tools_changed",comparison_reusable_tokens:1536,cache_missed_tokens:512},
+    });
+  }});
+  manager.setKey("openai","oa-key");
+  const result=await manager.turn("openai",{
+    model:"gpt-5.6",messages:[{role:"system",content:"Stable instructions"},{role:"user",content:"continue"}],tools:[],
+    promptCacheComparisonResponseId:"resp-cache-previous",
+  });
+  assert.deepEqual(seen.prompt_cache_options,{mode:"implicit",comparison_response_id:"resp-cache-previous"});
+  assert.equal(result.usage.cachedInputTokens,1024);
+  assert.deepEqual(result.telemetry.promptCacheDiagnostics,{
+    type:"cache_miss",reason:"tools_changed",comparisonReusableTokens:1536,cacheMissedTokens:512,
+  });
+});
+
 test("direct OpenAI Native streaming assembles the completed Responses result and records TTFT",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-openai-stream-"));let seen=null;
   try{
     const encoder=new TextEncoder(),event=value=>`event: ${value.type}\ndata: ${JSON.stringify(value)}\n\n`;
-    const completed={id:"resp-stream",model:"gpt-5.6",status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"hello world"}]}],usage:{input_tokens:8,output_tokens:2,total_tokens:10}};
+    const completed={id:"resp-stream",model:"gpt-5.6",status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"hello world"}]}],usage:{input_tokens:8,output_tokens:2,total_tokens:10},prompt_cache_diagnostics:{type:"cache_hit",comparison_reusable_tokens:2048}};
     const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root},fetchFn:async(url,init={})=>{
       seen={url,headers:init.headers,body:JSON.parse(init.body||"{}")};
       const stream=new ReadableStream({start(controller){
@@ -308,6 +331,7 @@ test("direct OpenAI Native streaming assembles the completed Responses result an
     const result=await manager.turn("openai",{model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[]},{streamResponses:true});
     assert.equal(seen.url,"https://api.openai.com/v1/responses");assert.equal(seen.body.stream,true);assert.match(seen.headers.Accept,/text\/event-stream/);
     assert.equal(result.text,"hello world");assert.equal(result.usage.inputTokens,8);assert.equal(result.telemetry.streaming,true);assert.equal(result.telemetry.providerRequestId,"req-stream");
+    assert.deepEqual(result.telemetry.promptCacheDiagnostics,{type:"cache_hit",reason:null,comparisonReusableTokens:2048,cacheMissedTokens:null});
     assert.ok(result.telemetry.timeToFirstTokenMs>=0);assert.ok(result.telemetry.responseBytes>0);assert.ok(result.telemetry.totalLatencyMs>=result.telemetry.timeToFirstTokenMs);
   }finally{rmSync(root,{recursive:true,force:true})}
 });

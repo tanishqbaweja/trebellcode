@@ -228,15 +228,15 @@ export class NativeAgentSession{
   constructor({cwd=process.cwd(),providerTurn,executeTool,toolOutputStore=null,provider=null,model=null,contextWindow=null,tools=[],permissionMode="supervised",onUpdate=()=>{},onEvent=null,onClose=null,initialMessages=[]}={}){
     if(typeof providerTurn!=="function")throw new Error("NativeAgentSession requires providerTurn");
     if(typeof executeTool!=="function")throw new Error("NativeAgentSession requires executeTool");
-    this.cwd=cwd;this.providerTurn=providerTurn;this.executeTool=executeTool;this.toolOutputStore=toolOutputStore;this.provider=provider;this.model=model;this.contextWindow=null;this.setContextWindow(contextWindow);this.tools=Array.isArray(tools)?tools:[];this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onEvent=onEvent;this.onClose=onClose;this.messages=[...(Array.isArray(initialMessages)?initialMessages:[])];this.sessionId=null;this.controller=null;this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.closed=false;this.observationCache=new Map();
+    this.cwd=cwd;this.providerTurn=providerTurn;this.executeTool=executeTool;this.toolOutputStore=toolOutputStore;this.provider=provider;this.model=model;this.contextWindow=null;this.setContextWindow(contextWindow);this.tools=Array.isArray(tools)?tools:[];this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onEvent=onEvent;this.onClose=onClose;this.messages=[...(Array.isArray(initialMessages)?initialMessages:[])];this.sessionId=null;this.controller=null;this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.closed=false;this.observationCache=new Map();this.lastProviderResponseId=null;
   }
   async start({providerSessionId=null,model=null}={}){
     if(this.closed)throw new Error("Native session is closed");
-    this.sessionId=String(providerSessionId||this.sessionId||`native_${randomUUID()}`);if(model)this.model=model;
+    const nextSessionId=String(providerSessionId||this.sessionId||`native_${randomUUID()}`);if(this.sessionId&&nextSessionId!==this.sessionId)this.lastProviderResponseId=null;this.sessionId=nextSessionId;if(model){const next=String(model);if(next!==this.model)this.lastProviderResponseId=null;this.model=next}
     return {initialize:{protocolVersion:1,agentInfo:{name:"Trebell Native",version:"1"},agentCapabilities:{native:true}},session:{sessionId:this.sessionId,models:{currentModelId:this.model||null,availableModels:this.model?[this.model]:[]},modes:{currentModeId:this.permissionMode,availableModes:[]}}};
   }
-  setProvider(provider){this.provider=provider?String(provider):null}
-  async setModel(model){this.model=String(model||"")||null;return {model:this.model}}
+  setProvider(provider){const next=provider?String(provider):null;if(next!==this.provider)this.lastProviderResponseId=null;this.provider=next}
+  async setModel(model){const next=String(model||"")||null;if(next!==this.model)this.lastProviderResponseId=null;this.model=next;return {model:this.model}}
   setContextWindow(value){const number=Number(value);this.contextWindow=Number.isFinite(number)&&number>0?Math.trunc(number):null;return {contextWindow:this.contextWindow}}
   setPermissionMode(mode){this.permissionMode=String(mode||"supervised")||"supervised";return {permissionMode:this.permissionMode}}
   steer(prompt){
@@ -359,7 +359,14 @@ export class NativeAgentSession{
         providerTurn:async request=>{
           const modelController=new AbortController();this.modelController=modelController;
           const signals=[request.signal,modelController.signal].filter(Boolean),signal=signals.length>1?AbortSignal.any(signals):signals[0];
-          try{return await this.providerTurn({...request,provider:this.provider,signal})}
+          try{
+            const comparisonResponseId=this.provider==="openai"?String(this.lastProviderResponseId||"").trim():"";
+            const response=await this.providerTurn({...request,provider:this.provider,signal,...(comparisonResponseId?{promptCacheComparisonResponseId:comparisonResponseId}:{})});
+            if(this.provider==="openai"){
+              const responseId=String(response?.telemetry?.providerResponseId||response?.id||"").trim();if(responseId)this.lastProviderResponseId=responseId;
+            }
+            return response;
+          }
           catch(error){
             if(modelController.signal.aborted&&!request.signal?.aborted){const steered=new Error("Native model request interrupted by steering");steered.code="NATIVE_STEER";steered.nativeSteered=true;throw steered}
             throw error;

@@ -129,6 +129,31 @@ test("Native session preserves prior generated working context for cache-capable
   assert.match(secondRequest,/OLD_CACHE_CONTEXT x{100}/);assert.match(secondRequest,/NEW_CACHE_CONTEXT y{100}/);assert.doesNotMatch(secondRequest,/prior generated working context omitted/i);
 });
 
+test("Native session chains OpenAI cache diagnostics only within the same provider and model",async()=>{
+  const requests=[];let calls=0;
+  const session=new NativeAgentSession({
+    provider:"openai",model:"gpt-5.6",
+    providerTurn:async request=>{requests.push(structuredClone(request));calls++;const id="resp-"+calls;return {id,provider:"openai",model:request.model,text:"done",toolCalls:[],usage:{},telemetry:{providerResponseId:id}}},
+    executeTool:async()=>{throw new Error("not used")},
+  });
+  await session.start({providerSessionId:"native-openai-cache-diagnostics",model:"gpt-5.6"});
+  await session.prompt([{type:"text",text:"first task"}]);
+  await session.prompt([{type:"text",text:"second task"}]);
+  assert.equal(Object.prototype.hasOwnProperty.call(requests[0],"promptCacheComparisonResponseId"),false);
+  assert.equal(requests[1].promptCacheComparisonResponseId,"resp-1");
+  await session.start({providerSessionId:"native-openai-cache-diagnostics-restarted",model:"gpt-5.6"});
+  await session.prompt([{type:"text",text:"new logical session"}]);
+  assert.equal(Object.prototype.hasOwnProperty.call(requests[2],"promptCacheComparisonResponseId"),false);
+  await session.setModel("gpt-6-astra");
+  await session.prompt([{type:"text",text:"after model switch"}]);
+  assert.equal(Object.prototype.hasOwnProperty.call(requests[3],"promptCacheComparisonResponseId"),false);
+  await session.prompt([{type:"text",text:"same new model"}]);
+  assert.equal(requests[4].promptCacheComparisonResponseId,"resp-4");
+  session.setProvider("anthropic");
+  await session.prompt([{type:"text",text:"after provider switch"}]);
+  assert.equal(Object.prototype.hasOwnProperty.call(requests[5],"promptCacheComparisonResponseId"),false);
+});
+
 test("Native session cools only replaced sources and preserves one-off prior context",async()=>{
   const requests=[];let calls=0;
   const session=new NativeAgentSession({
