@@ -51,18 +51,35 @@ function openAiContent(content){
   }).filter(Boolean);
 }
 
+function compactChatToolSchemaValue(value){
+  if(Array.isArray(value))return value.map(compactChatToolSchemaValue);
+  if(!value||typeof value!=="object")return value;
+  const out={};
+  for(const [key,child] of Object.entries(value)){
+    if(key==="maximum"&&child===Number.MAX_SAFE_INTEGER)continue;
+    out[key]=compactChatToolSchemaValue(child);
+  }
+  return out;
+}
+
+function compactChatToolSchema(value){
+  const schema=compactChatToolSchemaValue(value);
+  if(schema&&typeof schema==="object"&&!Array.isArray(schema)&&schema.additionalProperties===false)delete schema.additionalProperties;
+  return schema;
+}
+
 function toolDefinitionsToChat(tools=[]){
   const out=[];
   for(const entry of Array.isArray(tools)?tools:[]){
     if(entry?.type==="function"){
       const name=entry.function?.name||entry.name;if(!name)continue;
-      out.push({type:"function",function:{name:String(name),description:entry.function?.description||entry.description||"",parameters:entry.function?.parameters||entry.parameters||entry.inputSchema||{type:"object",properties:{}}}});
+      out.push({type:"function",function:{name:String(name),description:entry.function?.description||entry.description||"",parameters:compactChatToolSchema(entry.function?.parameters||entry.parameters||entry.inputSchema||{type:"object",properties:{}})}});
       continue;
     }
     if(entry?.type!=="namespace"||!entry.name||!Array.isArray(entry.tools))continue;
     for(const child of entry.tools){
       if(!child?.name)continue;
-      out.push({type:"function",function:{name:flatToolName(entry.name,child.name),description:child.description||entry.description||"",parameters:child.parameters||child.inputSchema||{type:"object",properties:{}}}});
+      out.push({type:"function",function:{name:flatToolName(entry.name,child.name),description:child.description||entry.description||"",parameters:compactChatToolSchema(child.parameters||child.inputSchema||{type:"object",properties:{}})}});
     }
   }
   return out;

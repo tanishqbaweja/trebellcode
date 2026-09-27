@@ -17,5 +17,10 @@ const current={
   baseEstimatedTokens:Number(metrics.totalLogical?.estimatedTokens||0),
 };
 const baseline={baseSchemaChars:4702,fullSchemaChars:5463,terminalSchemaChars:747,baseWireSchemaChars:4532,fullWireSchemaChars:5188,terminalWireSchemaChars:626,baseEstimatedTokens:1202};
+const preChatWireCompaction={baseWireSchemaChars:4394,fullWireSchemaChars:5027,terminalWireSchemaChars:616};
 for(const key of ["baseSchemaChars","fullSchemaChars","terminalSchemaChars","baseWireSchemaChars","fullWireSchemaChars","terminalWireSchemaChars","baseEstimatedTokens"])assert.ok(current[key]<baseline[key],key);
-console.log(JSON.stringify({ok:true,benchmark:"native-tool-schema-zero-latency",baseline,current,savings:Object.fromEntries(Object.keys(baseline).map(key=>[key,baseline[key]-current[key]]))},null,2));
+console.log(JSON.stringify({
+  ok:true,benchmark:"native-tool-schema-zero-latency",baseline,preChatWireCompaction,current,
+  savings:Object.fromEntries(Object.keys(baseline).map(key=>[key,baseline[key]-current[key]])),
+  chatWireCompactionSavings:Object.fromEntries(Object.keys(preChatWireCompaction).map(key=>[key,preChatWireCompaction[key]-current[key]])),
+},null,2));

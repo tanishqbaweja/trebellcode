@@ -30,6 +30,25 @@ test("provider turn converts one canonical conversation to Chat Completions with
   assert.equal(request.messages[3].tool_call_id,"call-1");
 });
 
+test("Chat tool schemas omit redundant root closure while preserving runtime-facing schema detail",()=>{
+  const schema={
+    type:"object",
+    properties:{
+      line:{type:"integer",minimum:1,maximum:Number.MAX_SAFE_INTEGER},
+      options:{type:"object",properties:{mode:{type:"string"}},additionalProperties:false},
+    },
+    additionalProperties:false,
+  };
+  const source=[{type:"function",name:"inspect",description:"Inspect",inputSchema:schema}];
+  const request=providerTurnToChat({model:"chat-model",tools:source});
+  const parameters=request.tools[0].function.parameters;
+  assert.equal(parameters.additionalProperties,undefined,"Chat wire schema should not repeat root unknown-field rejection enforced by Trebell");
+  assert.equal(parameters.properties.line.maximum,undefined,"implicit JavaScript max-safe bounds should not consume provider wire tokens");
+  assert.equal(parameters.properties.options.additionalProperties,false,"nested object closure still guides structured arguments");
+  assert.equal(schema.additionalProperties,false,"wire compaction must not mutate Trebell's canonical schema");
+  assert.equal(schema.properties.line.maximum,Number.MAX_SAFE_INTEGER);
+});
+
 test("provider turn converts the same conversation to Responses while preserving namespace identity",()=>{
   const request=providerTurnToResponses({
     model:"gpt-5.6",tools,maxOutputTokens:8192,
