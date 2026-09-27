@@ -209,12 +209,15 @@ test("native agent does not guess ordinary unknown tool names",async()=>{
 });
 
 test("native agent forces one exact exposed tool when the user explicitly names it and the model tries to skip it",async()=>{
-  let turns=0;const executions=[],choices=[],events=[];
+  let turns=0;const executions=[],choices=[],visible=[],events=[];
   const result=await runNativeAgentTurn({
     model:"test-model",messages:[{role:"user",content:"Call trebell_browser.open exactly once with https://example.test, inspect its result, then reply BROWSER_OK."}],onEvent:event=>events.push(event),
-    tools:[{type:"namespace",name:"trebell_browser",tools:[{name:"open",inputSchema:{type:"object",properties:{url:{type:"string"}},required:["url"]}}]}],
+    tools:[
+      {type:"namespace",name:"trebell_browser",tools:[{name:"open",inputSchema:{type:"object",properties:{url:{type:"string"}},required:["url"]}},{name:"snapshot"}]},
+      {type:"namespace",name:"trebell_computer",tools:[{name:"screenshot"}]},
+    ],
     providerTurn:async request=>{
-      turns++;choices.push(request.toolChoice);
+      turns++;choices.push(request.toolChoice);visible.push(request.tools.flatMap(namespace=>(namespace.tools||[]).map(tool=>namespace.name+"/"+tool.name)));
       if(turns===1)return {text:"BROWSER_OK",toolCalls:[],usage:{}};
       if(turns===2){assert.deepEqual(request.toolChoice,{namespace:"trebell_browser",name:"open"});return {text:"",toolCalls:[{id:"open-1",namespace:"trebell_browser",name:"open",arguments:'{"url":"https://example.test"}'}],usage:{}}}
       return {text:"BROWSER_OK",toolCalls:[],usage:{}};
@@ -223,6 +226,7 @@ test("native agent forces one exact exposed tool when the user explicitly names 
   });
   assert.equal(result.text,"BROWSER_OK");assert.equal(result.modelTurns,3);assert.equal(result.toolCalls,1);assert.equal(executions[0].name,"open");
   assert.equal(choices[0],"auto");assert.deepEqual(choices[1],{namespace:"trebell_browser",name:"open"});assert.equal(choices[2],"auto");
+  assert.deepEqual(visible[0],["trebell_browser/open","trebell_browser/snapshot","trebell_computer/screenshot"]);assert.deepEqual(visible[1],["trebell_browser/open"]);assert.deepEqual(visible[2],visible[0]);
   assert.ok(events.some(event=>event.name==="native.model.required_tool_recovery"));
 });
 

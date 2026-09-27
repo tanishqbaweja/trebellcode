@@ -265,7 +265,7 @@ export async function runNativeAgentTurn({
       emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(model),provider:provider||null,data:{reason:error.code,modelTurns,toolCalls}});throw error;
     }
     modelTurns++;
-    const requestStarted=nowMs(),requestTools=providerVisibleTools(tools,toolAllowlist);
+    const requestStarted=nowMs(),visibleTools=providerVisibleTools(tools,toolAllowlist),forcedAllowlist=forcedToolChoice?[forcedToolChoice.namespace?forcedToolChoice.namespace+"/"+forcedToolChoice.name:forcedToolChoice.name]:null,requestTools=forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):visibleTools;
     const requestMetrics=nativeRequestMetrics(conversation,requestTools);
     const inferenceId=(metadata?.sessionId?String(metadata.sessionId):"native")+":inference:"+modelTurns;
     emit(onEvent,{name:"native.model.requested",status:"running",model:String(model),provider:provider||null,data:{inferenceId,modelTurn:modelTurns,messageCount:conversation.length,toolCount:Array.isArray(requestTools)?requestTools.length:0,sessionId:metadata?.sessionId||null,compaction:Boolean(metadata?.compaction),requestMetrics}});
