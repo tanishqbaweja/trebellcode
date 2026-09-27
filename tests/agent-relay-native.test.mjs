@@ -73,6 +73,24 @@ test("Trebell Native relay executes repository tools and switches inference prov
   }
 });
 
+test("Trebell Native relay persists a direct verifier-status turn with zero provider inference",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-direct-status-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  await writeFile(join(repo,"verify.mjs"),'console.error("DIRECT_STATUS_EXPECTED strict but received legacy");\nprocess.exit(1);\n',"utf8");
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let providerCalls=0;
+  const nativeProviderTurn=async()=>{providerCalls++;throw new Error("Direct verifier status turn must not call the inference provider.")};
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
+  try{
+    const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"auto",dynamicTools:[]})).thread;
+    const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"auto",input:[{type:"text",text:"Run node verify.mjs and report the result."}]})).turn;
+    const completed=await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);assert.equal(completed.params.turn.status,"completed",JSON.stringify(completed.params.turn.error||null));assert.equal(providerCalls,0);
+    const persisted=threadStore.get(thread.id),saved=persisted.turns.find(item=>item.id===turn.id);assert.ok(saved);assert.equal(saved.modelTurns,0);assert.equal(saved.providerMessageId??null,null);
+    const terminal=saved.items.find(item=>item.type==="dynamicToolCall"&&item.namespace==="trebell_terminal"&&item.tool==="run");assert.ok(terminal);assert.equal(terminal.arguments?.command,"node");assert.deepEqual(terminal.arguments?.args,["verify.mjs"]);assert.equal(terminal.status,"completed");
+    const assistant=saved.items.find(item=>item.type==="agentMessage");assert.ok(assistant);assert.match(assistant.text,/failed \(exit code 1\)/i);assert.match(assistant.text,/DIRECT_STATUS_EXPECTED strict but received legacy/i);
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
 test("Trebell Native browser evidence RPC journals only sanitized bounded facts",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-browser-evidence-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
