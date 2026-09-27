@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProviderManager } from "../src/provider-manager.mjs";
+import { nativeRequestMetrics, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
 
 const BUNDLED_CODEX_VERSION=JSON.parse(readFileSync(new URL("../node_modules/@openai/codex/package.json",import.meta.url),"utf8")).version;
 
@@ -391,6 +392,24 @@ test("official OpenAI prompt cache key tracks the reusable instruction and tool 
   assert.notEqual(bodies[0].prompt_cache_key,bodies[3].prompt_cache_key);
   assert.notEqual(bodies[0].prompt_cache_key,bodies[4].prompt_cache_key);
   assert.notEqual(bodies[0].prompt_cache_key,bodies[5].prompt_cache_key);
+});
+
+test("official OpenAI Native tool-manifest cache preserves exact wire JSON and invalidates on schema changes",async()=>{
+  const tools=[{type:"namespace",name:"trebell_workspace",description:"Workspace tools",tools:[
+    {name:"read_file",description:"Read one file",inputSchema:{type:"object",properties:{path:{type:"string"}},required:["path"],additionalProperties:false}},
+    {name:"replace_text",description:"Replace exact text",inputSchema:{type:"object",properties:{path:{type:"string"},old_text:{type:"string"},new_text:{type:"string"}},required:["path","old_text","new_text"],additionalProperties:false}},
+  ]}],messages=[{role:"system",content:"stable"},{role:"user",content:"task"}];
+  const run=async cacheSize=>{
+    const root=mkdtempSync(join(tmpdir(),"trebell-provider-tool-cache-")),bodies=[],runTools=structuredClone(tools),fingerprint=nativeRequestMetrics(messages,runTools)[NATIVE_TOOL_SCHEMA_FINGERPRINT];
+    try{
+      const manager=new ProviderManager({env:{TREBELL_HOME:root},openAiToolManifestCacheSize:cacheSize,fetchFn:async(_url,init={})=>{bodies.push(String(init.body||""));const body=JSON.parse(init.body||"{}");return Response.json({id:"resp-"+bodies.length,model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"ok"}]}],usage:{}})}});manager.setKey("openai","oa-key");
+      const request={model:"gpt-5.6",messages,tools:runTools,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:fingerprint};await manager.turn("openai",request);await manager.turn("openai",request);
+      runTools[0].tools[0].description="Read one file exactly";const mutatedFingerprint=nativeRequestMetrics(messages,runTools)[NATIVE_TOOL_SCHEMA_FINGERPRINT];await manager.turn("openai",{...request,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:mutatedFingerprint});
+      return bodies;
+    }finally{rmSync(root,{recursive:true,force:true})}
+  };
+  const uncached=await run(0),cached=await run(8);assert.deepEqual(cached,uncached);assert.equal(cached[0],cached[1]);
+  const first=JSON.parse(cached[0]),mutated=JSON.parse(cached[2]);assert.notEqual(mutated.prompt_cache_key,first.prompt_cache_key);assert.equal(mutated.tools[0].description,"Read one file exactly");
 });
 
 test("official OpenAI keeps late developer finalization out of the stable instruction prefix",async()=>{

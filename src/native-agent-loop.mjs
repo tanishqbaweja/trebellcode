@@ -1,5 +1,5 @@
 import { performance } from "node:perf_hooks";
-import { nativeRequestMetrics, NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
+import { nativeRequestMetrics, NATIVE_PROMPT_PROVENANCE, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "./native-request-metrics.mjs";
 import { platformToolAllowedByAllowlist } from "./shared-tool-gateway.mjs";
 import { nativeCommandSemanticError, normalizeNativeCommandArguments } from "./native-command-argv.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
@@ -715,7 +715,7 @@ export async function runNativeAgentTurn({
     const providerAttempts=boundedInteger(maxProviderAttempts,3,{min:1,max:8});let response=null;
     for(let attempt=1;attempt<=providerAttempts;attempt++){
       try{
-        response=await providerTurn({model,provider,messages:providerMessages,tools:requestTools,toolChoice:requestToolChoice,maxOutputTokens,temperature,parallelToolCalls,signal:turnSignal,metadata});break;
+        response=await providerTurn({model,provider,messages:providerMessages,tools:requestTools,toolChoice:requestToolChoice,maxOutputTokens,temperature,parallelToolCalls,signal:turnSignal,metadata,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:requestMetrics[NATIVE_TOOL_SCHEMA_FINGERPRINT]||null});break;
       }catch(error){
         if(error?.nativeSteered){
           if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"model_request_interrupted"})){

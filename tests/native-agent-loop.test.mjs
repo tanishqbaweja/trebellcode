@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { nativeAgentBudget, nativeProviderRetryable, runNativeAgentTurn } from "../src/native-agent-loop.mjs";
-import { attachNativePromptProvenance } from "../src/native-request-metrics.mjs";
+import { attachNativePromptProvenance, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
 const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
 
 test("native agent completes a plain model turn without inventing tool work",async()=>{
@@ -20,13 +20,13 @@ test("native agent completes a plain model turn without inventing tool work",asy
 });
 
 test("native agent forwards internal session metadata to the provider transport without changing the conversation",async()=>{
-  let seen=null;const messages=[{role:"user",content:"hello"}],metadata={sessionId:"native_ws_lane",contextWindow:128000};
+  let seen=null,toolSchemaFingerprint=null;const messages=[{role:"user",content:"hello"}],metadata={sessionId:"native_ws_lane",contextWindow:128000};
   await runNativeAgentTurn({
     model:"test-model",provider:"openai",messages,tools:[],metadata,
-    providerTurn:async request=>{seen=structuredClone({...request,signal:undefined});return {text:"ok",toolCalls:[],usage:{}}},
+    providerTurn:async request=>{toolSchemaFingerprint=request[NATIVE_TOOL_SCHEMA_FINGERPRINT];seen=structuredClone({...request,signal:undefined});return {text:"ok",toolCalls:[],usage:{}}},
     executeTool:async()=>{throw new Error("not used")},
   });
-  assert.deepEqual(seen.metadata,metadata);assert.deepEqual(seen.messages,messages);assert.deepEqual(seen.tools,[]);
+  assert.deepEqual(seen.metadata,metadata);assert.deepEqual(seen.messages,messages);assert.deepEqual(seen.tools,[]);assert.match(toolSchemaFingerprint,/^[a-f0-9]{64}$/);
 });
 
 test("native agent gives one bounded recovery chance to an empty terminal provider response",async()=>{

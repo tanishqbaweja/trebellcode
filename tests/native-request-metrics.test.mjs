@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { attachNativePromptProvenance, nativeRequestMetrics } from "../src/native-request-metrics.mjs";
+import { attachNativePromptProvenance, nativeRequestMetrics, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
 
 test("Native request metrics separate user text from Trebell working context without changing wire-visible messages",()=>{
   const current=attachNativePromptProvenance({role:"user",content:"context block\nuser request"},{
@@ -29,6 +29,7 @@ test("Native request metrics separate user text from Trebell working context wit
   assert.ok(result.applicationContext.bytes>0);assert.ok(result.untrustedContext.bytes>0);
   assert.equal(typeof result.stablePrefixHash,"string");assert.equal(result.stablePrefixHash.length,16);
   assert.doesNotMatch(JSON.stringify(current),/userParts|contextEntries|contextText/);
+  assert.match(result[NATIVE_TOOL_SCHEMA_FINGERPRINT],/^[a-f0-9]{64}$/);
   assert.deepEqual({system:result.system,developer:result.developer,compactedContext:result.compactedContext,conversationHistory:result.conversationHistory,toolResults:result.toolResults,toolSchemas:result.toolSchemas,messages:result.messages,totalLogical:result.totalLogical,stablePrefixHash:result.stablePrefixHash,systemHash:result.systemHash,developerHash:result.developerHash,toolSchemaHash:result.toolSchemaHash,conversationHistoryHash:result.conversationHistoryHash},{system:{bytes:38,estimatedTokens:10},developer:{bytes:44,estimatedTokens:11},compactedContext:{bytes:83,estimatedTokens:21},conversationHistory:{bytes:85,estimatedTokens:22},toolResults:{bytes:65,estimatedTokens:17},toolSchemas:{bytes:191,estimatedTokens:48},messages:{bytes:367,estimatedTokens:92},totalLogical:{bytes:558,estimatedTokens:140},stablePrefixHash:"ee7416affa6acde1",systemHash:"cb8b7d8ecc01e973",developerHash:"9e21da67daca0313",toolSchemaHash:"1318ec39939924ff",conversationHistoryHash:"14bdd6f825c29235"});
 });
 

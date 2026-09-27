@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const NATIVE_PROMPT_PROVENANCE=Symbol.for("trebell.native.prompt.provenance");
+export const NATIVE_TOOL_SCHEMA_FINGERPRINT=Symbol.for("trebell.native.tool-schema.fingerprint");
 
 function serialized(value){try{return {text:JSON.stringify(value??null),jsonSafe:true}}catch{return {text:String(value??""),jsonSafe:false}}}
 function json(value){return serialized(value).text}
@@ -10,7 +11,8 @@ function metric(value){
   const serialized=typeof value==="string"?value:json(value),byteCount=bytes(serialized);
   return {bytes:byteCount,estimatedTokens:estimate(byteCount)};
 }
-function hash(value){return createHash("sha256").update(typeof value==="string"?value:json(value)).digest("hex").slice(0,16)}
+function digest(value){return createHash("sha256").update(typeof value==="string"?value:json(value)).digest("hex")}
+function hash(value){return digest(value).slice(0,16)}
 function hashParts(...parts){const state=createHash("sha256");for(const part of parts)state.update(String(part));return state.digest("hex").slice(0,16)}
 
 export function attachNativePromptProvenance(target,value){
@@ -59,11 +61,11 @@ export function nativeRequestMetrics(messages=[],tools=[]){
   const toolSchemas=Array.isArray(tools)?tools:[];
   const systemSerialized=serialized(system),developerSerialized=serialized(developer),toolSchemasSerialized=serialized(toolSchemas),
     systemJson=systemSerialized.text,developerJson=developerSerialized.text,compactedJson=json(compacted),historyJson=json(history),toolResultsJson=json(toolResults),toolSchemasJson=toolSchemasSerialized.text,messagesJson=json(source);
-  const messagesMetric=metric(messagesJson),toolsMetric=metric(toolSchemasJson);
+  const messagesMetric=metric(messagesJson),toolsMetric=metric(toolSchemasJson),toolSchemaDigest=toolSchemasSerialized.jsonSafe?digest(toolSchemasJson):null;
   const currentBreakdown=currentTurnBreakdown(lastUser>=0?source[lastUser]:null);
   const prefix={system,developer,tools:toolSchemas};
   const stablePrefixJsonSafe=systemSerialized.jsonSafe&&developerSerialized.jsonSafe&&toolSchemasSerialized.jsonSafe;
-  return {
+  const result={
     estimation:"utf8_bytes_div_4",
     system:metric(systemJson),
     developer:metric(developerJson),
@@ -79,7 +81,9 @@ export function nativeRequestMetrics(messages=[],tools=[]){
     stablePrefixHash:stablePrefixJsonSafe?hashParts('{"system":',systemJson,',"developer":',developerJson,',"tools":',toolSchemasJson,"}"):hash(prefix),
     systemHash:hash(systemJson),
     developerHash:hash(developerJson),
-    toolSchemaHash:hash(toolSchemasJson),
+    toolSchemaHash:toolSchemaDigest?toolSchemaDigest.slice(0,16):hash(toolSchemasJson),
     conversationHistoryHash:hash(historyJson),
   };
+  if(toolSchemaDigest)try{Object.defineProperty(result,NATIVE_TOOL_SCHEMA_FINGERPRINT,{value:toolSchemaDigest,enumerable:false,configurable:false})}catch{}
+  return result;
 }
