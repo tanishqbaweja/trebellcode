@@ -430,7 +430,7 @@ test("native agent can preserve tool schemas while disabling tool use during cac
   assert.equal(result.text,"done");assert.equal(result.toolCalls,1);assert.deepEqual(seen[1].tools,seen[0].tools);
 });
 
-test("native agent omits tools after an explicitly final verifier transitions from failure to success after an edit",async()=>{
+test("native agent synthesizes an explicit post-verifier summary without another model turn",async()=>{
   let turns=0;const seen=[],events=[];
   const tools=[
     {type:"namespace",name:"trebell_terminal",tools:[{name:"run",inputSchema:{type:"object",properties:{command:{type:"string"},args:{type:"array"}}}}]},
@@ -443,13 +443,13 @@ test("native agent omits tools after an explicitly final verifier transitions fr
       if(turns===1)return {text:"",toolCalls:[{id:"verify-1",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:["verify.mjs"]})}],usage:{}};
       if(turns===2)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:JSON.stringify({path:"src/a.mjs",old_text:"bad",new_text:"good"})}],usage:{}};
       if(turns===3)return {text:"",toolCalls:[{id:"verify-2",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:["verify.mjs"]})}],usage:{}};
-      assert.deepEqual(request.tools,[]);assert.equal(request.toolChoice,"none");assert.match(String(request.messages.at(-1)?.content||""),/same verifier command fail/i);
-      return {text:"done",toolCalls:[],usage:{}};
+      throw new Error("A fourth provider turn should not be needed for an explicit verification summary.");
     },
     executeTool:async call=>call.id==="verify-1"?{exitCode:1,stdout:"FAIL"}:call.id==="verify-2"?{exitCode:0,stdout:"PASS"}:{path:"src/a.mjs",replacements:1},
   });
-  assert.equal(result.text,"done");assert.equal(result.modelTurns,4);assert.equal(result.toolCalls,3);assert.ok(seen[0].tools.length>0);
+  assert.match(result.text,/same verifier command/i);assert.match(result.text,/src\/a\.mjs/);assert.doesNotMatch(result.text,/old_text|new_text|bad|good/);assert.equal(result.modelTurns,3);assert.equal(result.toolCalls,3);assert.equal(seen.length,3);assert.ok(seen[0].tools.length>0);
   assert.ok(events.some(event=>event.name==="native.verification.finalizing"));
+  assert.ok(events.some(event=>event.name==="native.verification.summary_synthesized"));
 });
 
 test("native verifier success does not disable tools without an explicit answer-after-pass instruction",async()=>{
@@ -469,11 +469,11 @@ test("native verifier success does not disable tools without an explicit answer-
   assert.equal(result.text,"done");assert.equal(seen.length,4);
 });
 
-test("cache-capable final verifier keeps the stable tool manifest but disables tool choice",async()=>{
+test("cache-capable non-summary final verifier keeps the stable tool manifest but disables tool choice",async()=>{
   let turns=0;const seen=[];
   const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
   await runNativeAgentTurn({
-    model:"test-model",messages:[{role:"user",content:"After the verifier passes, answer with a summary."}],tools,preserveToolSchemasOnFinalization:true,
+    model:"test-model",messages:[{role:"user",content:"After the verifier passes, answer with the root cause and next steps."}],tools,preserveToolSchemasOnFinalization:true,
     providerTurn:async request=>{
       turns++;seen.push(structuredClone(request));
       if(turns===1)return {text:"",toolCalls:[{id:"verify-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};

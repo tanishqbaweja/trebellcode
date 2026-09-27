@@ -157,6 +157,18 @@ function explicitFinalAnswerAfterVerification(messages=[]){
   return /\b(?:after|once|when)\b[^.\n]{0,220}\b(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful)\b[^.\n]{0,220}\b(?:answer|respond|reply|summari[sz](?:e|ing|ation)?|summary)\b/i.test(text);
 }
 
+function explicitSummaryAfterVerification(messages=[]){
+  const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=messageText(user);
+  if(!text)return false;
+  return /\b(?:after|once|when)\b[^.\n]{0,220}\b(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful)\b[^.\n]{0,220}\b(?:(?:concise|brief|short)\s+summary|summari[sz]e\s+(?:briefly|concisely)|(?:briefly|concisely)\s+summari[sz]e)\b/i.test(text);
+}
+
+function verifiedSummaryText(paths=[]){
+  const unique=[...new Set((Array.isArray(paths)?paths:[]).map(value=>String(value||"").replace(/[\r\n\t]+/g," ").trim().slice(0,240)).filter(Boolean))],shown=unique.slice(0,6);
+  const changed=shown.length?"\nChanged: "+shown.join(", ")+(unique.length>shown.length?` (+${unique.length-shown.length} more)`:"")+".":"";
+  return "Done.\nVerification: the same verifier command that failed before the edit now passes (exit code 0)."+changed;
+}
+
 function terminalRunKey(args={}){
   const normalized=normalizeNativeCommandArguments(args),command=String(normalized.command||"").trim(),argv=Array.isArray(normalized.args)?normalized.args.map(value=>String(value)):[],cwd=String(normalized.cwd??"");
   return command?JSON.stringify([command,argv,cwd]):null;
@@ -251,7 +263,7 @@ export async function runNativeAgentTurn({
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
   const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])];
   const explicitlyRequired=explicitlyRequestedTools(conversation,providerVisibleTools(tools,toolAllowlist)),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
-  const finalAfterVerifiedCommand=explicitFinalAnswerAfterVerification(conversation),terminalRuns=[];
+  const finalAfterVerifiedCommand=explicitFinalAnswerAfterVerification(conversation),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),terminalRuns=[],verifiedEditPaths=[];
   const successfulTerminalRuns=[];
   let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,verifiedFinalizationAllowed=finalAfterVerifiedCommand,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
   const startedAt=Date.now(),started=nowMs(),wallController=budget.maxWallTimeMs!=null?new AbortController():null,deadlineAt=budget.maxWallTimeMs==null?null:Date.now()+budget.maxWallTimeMs;
@@ -282,7 +294,9 @@ export async function runNativeAgentTurn({
     if(success&&output?.success!==false&&output?.timedOut!==true&&output?.signal==null&&namespace==="trebell_terminal"&&name==="run"&&String(args.command||"").trim()&&Array.isArray(args.args)){
       successfulTerminalRuns.push({command:String(args.command).trim(),args:args.args.map(value=>String(value)),cwd:String(args.cwd??"")});
     }
-    if(success&&output?.success!==false&&output?.uncertain!==true&&namespace==="trebell_workspace"&&["write_file","replace_text"].includes(name))editRevision++;
+    if(success&&output?.success!==false&&output?.uncertain!==true&&namespace==="trebell_workspace"&&["write_file","replace_text"].includes(name)){
+      editRevision++;const path=String(args.path||output?.path||"").trim();if(path)verifiedEditPaths.push(path);
+    }
     if(success&&output?.success!==false&&output?.timedOut!==true&&output?.signal==null&&namespace==="trebell_terminal"&&name==="run"){
       const key=terminalRunKey(args),exitCode=Number.isFinite(Number(output?.exitCode))?Number(output.exitCode):null;
       if(key&&exitCode!==null){
@@ -309,6 +323,14 @@ export async function runNativeAgentTurn({
       }
     }
     if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_model"})){verifiedFinalizationAllowed=false;verifiedFinalizationReady=false}
+    const missingExplicitTool=explicitlyRequired.find(item=>!executedToolKeys.has(item.namespace+"/"+item.name));
+    if(verifiedFinalizationReady&&verifiedFinalizationAllowed&&summaryAfterVerifiedCommand&&!missingExplicitTool){
+      const text=verifiedSummaryText(verifiedEditPaths);conversation.push({role:"assistant",content:text,toolCalls:[]});
+      const result={text,model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse:null};
+      emit(onEvent,{name:"native.verification.summary_synthesized",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,changedPaths:[...new Set(verifiedEditPaths)].slice(0,20)}});
+      emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage,syntheticFinalSummary:true}});
+      return result;
+    }
     if(modelTurns>=budget.maxModelTurns){
       const error=new Error(`Native agent model-turn budget exhausted (${modelTurns}/${budget.maxModelTurns}).`);error.code="native_model_turn_budget";
       emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(model),provider:provider||null,data:{reason:error.code,modelTurns,toolCalls}});throw error;
