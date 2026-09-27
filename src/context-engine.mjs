@@ -952,10 +952,15 @@ export class ContextEngine{
   async #index(root,contextIo,git,signal=null){
     throwIfContextAborted(signal);
     const started=Date.now(),io=contextIo||localContextIo(root,{environment:this.environment}),absolute=io.root,cacheKey=io.cacheKey||absolute;
-    const paths=(await io.discoverFiles({signal})).slice(0,20_000);throwIfContextAborted(signal);
     const previous=this.roots.get(cacheKey)||new Map(),previousGit=this.gitStates.get(cacheKey)||null,next=new Map();let reparsed=0,reused=0,skipped=0;
-    const sourcePaths=paths.filter(relativePath=>SOURCE_EXTENSIONS.has(extname(relativePath).toLowerCase()));
     const currentHead=String(git?.head||"").trim()||null,previousHead=String(previousGit?.head||"").trim()||null;
+    const currentChanged=git?.changed instanceof Set?git.changed:new Set(git?.changed||[]),previousChanged=previousGit?.changed instanceof Set?previousGit.changed:new Set(previousGit?.changed||[]);
+    const pathInventoryReused=Boolean(
+      git?.isGit&&previousGit?.isGit&&currentHead&&previousHead&&currentHead===previousHead
+      &&currentChanged.size===0&&previousChanged.size===0&&Array.isArray(previousGit?.paths)
+    );
+    const paths=(pathInventoryReused?previousGit.paths:await io.discoverFiles({signal})).slice(0,20_000);throwIfContextAborted(signal);
+    const sourcePaths=paths.filter(relativePath=>SOURCE_EXTENSIONS.has(extname(relativePath).toLowerCase()));
     const revisionChanged=Boolean(previous.size&&git?.isGit&&currentHead&&previousHead&&currentHead!==previousHead);
     const revisionUnknown=Boolean(previous.size&&git?.isGit&&(!currentHead||!previousHead));
     const dirtyPaths=new Set([...(git?.changed||[]),...(previousGit?.changed||[])]);
@@ -988,8 +993,8 @@ export class ContextEngine{
       next.set(relativePath,{relativePath,size:info.size,version:info.version,parserVersion:parserVersion(relativePath),sample:content.slice(0,64_000),parsed:parseSource(content,relativePath)});reparsed++;
     }
     throwIfContextAborted(signal);
-    this.roots.set(cacheKey,next);this.gitStates.set(cacheKey,{head:currentHead,changed:new Set(git?.changed||[])});
-    return {root:absolute,files:next,paths,reparsed,reused,skipped,inspected:inspect.length,durationMs:Date.now()-started,cacheKey,revisionChanged,revisionUnknown,revisionDiffUsed:Boolean(revisionChanged&&revisionPaths)};
+    this.roots.set(cacheKey,next);this.gitStates.set(cacheKey,{isGit:Boolean(git?.isGit),head:currentHead,changed:new Set(currentChanged),paths:[...paths]});
+    return {root:absolute,files:next,paths,reparsed,reused,skipped,inspected:inspect.length,durationMs:Date.now()-started,cacheKey,revisionChanged,revisionUnknown,revisionDiffUsed:Boolean(revisionChanged&&revisionPaths),pathInventoryReused};
   }
 
   async buildPacket({root,task="",focusPaths=[],maxTokens=null,maxFiles=null,tokensUsed=null,contextWindow=null,io=null,signal=null}={}){
@@ -1001,7 +1006,7 @@ export class ContextEngine{
       id:`ctx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`,
       root:contextIo.root,task:String(task||""),generatedAt:Date.now(),tokenEstimate:0,maxTokens:0,
       items:[],injection:"",instructionInjection:"",untrustedInjection:"",budget:budgetPlan,skipped:true,
-      stats:{filesIndexed:0,reparsed:0,reused:0,skipped:0,inspected:0,graphEdges:0,durationMs:0,remote:Boolean(io),skippedByPressure:true},
+      stats:{filesIndexed:0,reparsed:0,reused:0,skipped:0,inspected:0,graphEdges:0,durationMs:0,remote:Boolean(io),skippedByPressure:true,pathInventoryReused:false},
     };
     const budget=budgetPlan.maxTokens,fileLimit=budgetPlan.maxFiles;
     const git=await contextIo.gitState({signal});throwIfContextAborted(signal);
@@ -1051,7 +1056,7 @@ export class ContextEngine{
       id:`ctx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`,
       root:index.root,task:String(task||""),generatedAt:Date.now(),tokenEstimate:tokenEstimate(injection),maxTokens:budget,
       items:selected,injection,instructionInjection,untrustedInjection,budget:budgetPlan,
-      stats:{filesIndexed:files.length,reparsed:index.reparsed,reused:index.reused,skipped:index.skipped,inspected:index.inspected,graphEdges:edgeCount,durationMs:index.durationMs,remote:Boolean(io),revisionChanged:index.revisionChanged,revisionUnknown:index.revisionUnknown,revisionDiffUsed:index.revisionDiffUsed},
+      stats:{filesIndexed:files.length,reparsed:index.reparsed,reused:index.reused,skipped:index.skipped,inspected:index.inspected,graphEdges:edgeCount,durationMs:index.durationMs,remote:Boolean(io),revisionChanged:index.revisionChanged,revisionUnknown:index.revisionUnknown,revisionDiffUsed:index.revisionDiffUsed,pathInventoryReused:Boolean(index.pathInventoryReused)},
     };
   }
 

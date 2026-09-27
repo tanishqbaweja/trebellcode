@@ -112,6 +112,39 @@ test("cancelled indexing never publishes a partial cache",async()=>{
   assert.equal(retry.stats.filesIndexed,2);assert.equal(retry.stats.reparsed,2);assert.equal(retry.stats.reused,0);assert.equal(readCalls,2);
 });
 
+test("clean unchanged Git context reuses the discovered path inventory and invalidates it on dirty state",async()=>{
+  const engine=new ContextEngine(),contents=new Map([
+    ["src/a.js","export const alpha = 1;\n"],
+    ["src/b.js","export const beta = 2;\n"],
+  ]),versions=new Map([["src/a.js","v1"],["src/b.js","v1"]]);
+  let paths=["src/a.js","src/b.js"],changed=new Set(),discoverCalls=0;
+  const io={
+    root:"/srv/app",cacheKey:"fixture:/path-inventory",
+    discoverFiles:async()=>{discoverCalls++;return [...paths]},
+    metadata:async requested=>new Map(requested.filter(path=>contents.has(path)).map(path=>[path,{size:contents.get(path).length,version:versions.get(path)}])),
+    readMany:async requested=>new Map(requested.filter(path=>contents.has(path)).map(path=>[path,contents.get(path)])),
+    readText:async path=>contents.get(path)||"",
+    gitState:async()=>({isGit:true,head:"head-1",changed:new Set(changed),status:changed.size?"?? src/new.js\n":"",diff:""}),
+    changedSince:async()=>new Set(),
+    relativeFocus:path=>path,
+  };
+  const first=await engine.buildPacket({root:"/srv/app",io,task:"inspect alpha"});
+  assert.equal(first.stats.pathInventoryReused,false);assert.equal(discoverCalls,1);
+  const second=await engine.buildPacket({root:"/srv/app",io,task:"inspect beta"});
+  assert.equal(second.stats.pathInventoryReused,true);assert.equal(discoverCalls,1);
+
+  paths=[...paths,"src/new.js"];contents.set("src/new.js","export const gamma = 3;\n");versions.set("src/new.js","v1");changed=new Set(["src/new.js"]);
+  const dirty=await engine.buildPacket({root:"/srv/app",io,task:"inspect gamma"});
+  assert.equal(dirty.stats.pathInventoryReused,false);assert.equal(discoverCalls,2);assert.equal(dirty.stats.filesIndexed,3);
+
+  changed=new Set();
+  const cleanAgain=await engine.buildPacket({root:"/srv/app",io,task:"inspect gamma"});
+  assert.equal(cleanAgain.stats.pathInventoryReused,false,"the first clean packet after a dirty inventory must rediscover paths");
+  assert.equal(discoverCalls,3);
+  const stableAgain=await engine.buildPacket({root:"/srv/app",io,task:"inspect gamma"});
+  assert.equal(stableAgain.stats.pathInventoryReused,true);assert.equal(discoverCalls,3);
+});
+
 const execFileAsync=promisify(execFile);
 
 async function fixture(){
@@ -451,11 +484,11 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
     ["src/broken.go","package fixture\nfunc Broken( {\n"],
     ["tests/auth-refresh.test.js",'import { RefreshSession } from "../src/auth/session.js";\nexport function testRefresh() { return new RefreshSession().refresh("x"); }\n'],
   ]);
-  const versions=new Map([...files.keys()].map(path=>[path,"v1"]));let status="",metadataCalls=0,contentCalls=0;
+  const versions=new Map([...files.keys()].map(path=>[path,"v1"]));let status="",metadataCalls=0,contentCalls=0,discoverCalls=0;
   const ok=stdout=>({exitCode:0,stdout,stderr:"",timedOut:false});
   const environments={
     async executeArgv(_id,{command,args=[]}){
-      if(command==="git"&&args.includes("ls-files"))return ok([...files.keys()].join("\0")+"\0");
+      if(command==="git"&&args.includes("ls-files")){discoverCalls++;return ok([...files.keys()].join("\0")+"\0")}
       if(command==="git"&&args.includes("grep")){
         const pattern=String(args[args.indexOf("-e")+1]||"").toLowerCase();
         const matches=[...files].filter(([,content])=>String(content).toLowerCase().includes(pattern)).map(([path])=>path);
@@ -511,6 +544,7 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
   const afterFirstMetadata=metadataCalls,afterFirstContent=contentCalls;
   const second=await engine.buildPacket({root,io,task:"Fix the refresh token session bug",maxTokens:1800,maxFiles:8});
   assert.equal(second.stats.reparsed,0);assert.ok(second.stats.reused>=4);
+  assert.equal(second.stats.pathInventoryReused,true);assert.equal(discoverCalls,1,"clean remote packets should reuse the prior Git path inventory");
   assert.equal(metadataCalls,afterFirstMetadata,"clean Git state should not restat cached remote source files");
   assert.equal(contentCalls,afterFirstContent,"clean remote packets should reuse indexed source samples instead of rereading candidate files");
   const remoteSearch=await engine.searchCode({root,io,query:"rotateRefreshToken",limit:10});
@@ -560,7 +594,7 @@ test("remote context indexing uses bounded environment I/O and reuses unchanged 
   assert.equal(remoteBlame.data[0].author,"Remote Tester");
   files.set("src/auth/session.js",files.get("src/auth/session.js")+"export const changed = true;\n");versions.set("src/auth/session.js","v2");status=" M src/auth/session.js\n";
   const third=await engine.buildPacket({root,io,task:"refresh session",maxTokens:1800,maxFiles:8});
-  assert.equal(third.stats.reparsed,1);assert.ok(third.stats.reused>=3);
+  assert.equal(third.stats.reparsed,1);assert.ok(third.stats.reused>=3);assert.equal(third.stats.pathInventoryReused,false);assert.equal(discoverCalls,2);
   const remoteGit=await engine.gitContext({root,io});assert.equal(remoteGit.isGit,true);assert.ok(remoteGit.changed.includes("src/auth/session.js"));
 });
 
