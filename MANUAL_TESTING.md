@@ -2,11 +2,11 @@
 
 This file tracks the gap between **implemented + automated-tested** and **proven on real machines/accounts/services**.
 
-Current release target: **v1.3.5**
+Current release target: **v1.3.6**
 
 Current automated regression baseline on **2026-09-27**:
 
-- npm test: **829 passed, 0 failed**.
+- npm test: **836 passed, 0 failed**.
 - Full Playwright UI suite in **headless Google Chrome**: **193 passed, 0 failed**.
 - Production UI build succeeds.
 - Packaged Windows validation passed bundled Codex relay/desktop smoke plus a real Trebell Native model using packaged browser, computer and filesystem capabilities.
@@ -27,7 +27,7 @@ For every test, mark **Pass / Fail / Blocked** and capture:
 ## 1. Fresh Windows installer
 
 - [ ] Uninstall an older Trebell build if present.
-- [ ] Run **Trebell-Code-Setup-1.3.5.exe**.
+- [ ] Run **Trebell-Code-Setup-1.3.6.exe**.
 - [ ] Choose a non-default install directory.
 - [ ] Confirm Start Menu shortcut.
 - [ ] Launch Trebell from the installed shortcut.
@@ -536,9 +536,9 @@ Expected:
 
 ## 29. Release artifact integrity
 
-For v1.3.5:
+For v1.3.6:
 
-- [ ] Compare installer SHA-256 with release-artifacts/v1.3.5/release.json.
+- [ ] Compare installer SHA-256 with release-artifacts/v1.3.6/release.json.
 - [ ] Confirm byte size.
 - [ ] Confirm release.json Git commit matches the release commit.
 - [ ] Confirm GitHub release contains installer, latest.yml, release.json and blockmap.
