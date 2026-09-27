@@ -939,7 +939,17 @@ export function planContextBudget({task="",focusPaths=[],tokensUsed=null,context
 
 export class ContextEngine{
   constructor({maxFileBytes=256_000,env=process.env,platform=process.platform}={}){
-    this.maxFileBytes=maxFileBytes;this.environment=buildRuntimeEnvironment("native",{parent:env,platform});this.roots=new Map();this.gitStates=new Map();
+    this.maxFileBytes=maxFileBytes;this.environment=buildRuntimeEnvironment("native",{parent:env,platform});this.roots=new Map();this.gitStates=new Map();this.packetGraphs=new Map();
+  }
+
+  #packetGraph(cacheKey,files,{terms=[],changed=new Set(),focusSet=new Set()}={}){
+    const selector=JSON.stringify([terms,[...changed].sort(),[...focusSet].sort()]);
+    const sourceFingerprint=JSON.stringify(files.map(entry=>[entry.relativePath,entry.size,String(entry.version??""),entry.parserVersion]));
+    const cached=this.packetGraphs.get(cacheKey);
+    if(cached?.selector===selector&&cached.sourceFingerprint===sourceFingerprint)return {graph:cached.graph,reused:true};
+    const graph=repositoryGraph(files,{terms,changed,focusSet});
+    this.packetGraphs.set(cacheKey,{selector,sourceFingerprint,graph});
+    return {graph,reused:false};
   }
 
   async #indexed(root,io=null,signal=null){
@@ -1009,12 +1019,12 @@ export class ContextEngine{
       id:`ctx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`,
       root:contextIo.root,task:String(task||""),generatedAt:Date.now(),tokenEstimate:0,maxTokens:0,
       items:[],injection:"",instructionInjection:"",untrustedInjection:"",budget:budgetPlan,skipped:true,
-      stats:{filesIndexed:0,reparsed:0,reused:0,skipped:0,inspected:0,graphEdges:0,durationMs:0,remote:Boolean(io),skippedByPressure:true,pathInventoryReused:false},
+      stats:{filesIndexed:0,reparsed:0,reused:0,skipped:0,inspected:0,graphEdges:0,durationMs:0,remote:Boolean(io),skippedByPressure:true,pathInventoryReused:false,graphReused:false},
     };
     const budget=budgetPlan.maxTokens,fileLimit=budgetPlan.maxFiles;
     const git=await contextIo.gitState({signal});throwIfContextAborted(signal);
     const index=await this.#index(root,contextIo,git,signal);throwIfContextAborted(signal);const terms=taskTerms(task),files=[...index.files.values()],focusSet=new Set((focusPaths||[]).map(path=>contextIo.relativeFocus(path)).filter(Boolean));
-    const {edges,relevance,centrality,edgeCount}=repositoryGraph(files,{terms,changed:git.changed,focusSet});
+    const packetGraph=this.#packetGraph(index.cacheKey,files,{terms,changed:git.changed,focusSet}),{edges,relevance,centrality,edgeCount}=packetGraph.graph;
     const ranked=files.map(entry=>{
       const rel=relevance.get(entry.relativePath),central=centrality.get(entry.relativePath)||0;
       const combined=rel.score+central*250;return {entry,rel,central,combined};
@@ -1059,7 +1069,7 @@ export class ContextEngine{
       id:`ctx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`,
       root:index.root,task:String(task||""),generatedAt:Date.now(),tokenEstimate:tokenEstimate(injection),maxTokens:budget,
       items:selected,injection,instructionInjection,untrustedInjection,budget:budgetPlan,
-      stats:{filesIndexed:files.length,reparsed:index.reparsed,reused:index.reused,skipped:index.skipped,inspected:index.inspected,graphEdges:edgeCount,durationMs:index.durationMs,remote:Boolean(io),revisionChanged:index.revisionChanged,revisionUnknown:index.revisionUnknown,revisionDiffUsed:index.revisionDiffUsed,pathInventoryReused:Boolean(index.pathInventoryReused)},
+      stats:{filesIndexed:files.length,reparsed:index.reparsed,reused:index.reused,skipped:index.skipped,inspected:index.inspected,graphEdges:edgeCount,durationMs:index.durationMs,remote:Boolean(io),revisionChanged:index.revisionChanged,revisionUnknown:index.revisionUnknown,revisionDiffUsed:index.revisionDiffUsed,pathInventoryReused:Boolean(index.pathInventoryReused),graphReused:packetGraph.reused},
     };
   }
 

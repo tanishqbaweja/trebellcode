@@ -154,6 +154,40 @@ test("clean unchanged Git context reuses the discovered path inventory and inval
   assert.equal(stableAgain.stats.pathInventoryReused,true);assert.equal(discoverCalls,4);
 });
 
+test("context packet reuses an identical repository graph only while source structure and ranking inputs stay unchanged",async()=>{
+  const contents=new Map([
+    ["src/a.js","export const alpha = 1;\n"],
+    ["src/b.js","import { alpha } from './a.js';\nexport const beta = alpha + 1;\n"],
+  ]),versions=new Map([["src/a.js","v1"],["src/b.js","v1"]]);
+  let changed=new Set(),statusFingerprint="clean";
+  const io={
+    root:"/srv/app",cacheKey:"fixture:/graph-reuse",
+    discoverFiles:async()=>["src/a.js","src/b.js"],
+    metadata:async requested=>new Map(requested.map(path=>[path,{size:contents.get(path).length,version:versions.get(path)}])),
+    readMany:async requested=>new Map(requested.map(path=>[path,contents.get(path)])),
+    readText:async path=>contents.get(path)||"",
+    gitState:async()=>({isGit:true,head:"head-1",changed:new Set(changed),status:"",statusFingerprint,diff:""}),
+    changedSince:async()=>new Set(),
+    relativeFocus:path=>path,
+  };
+  const engine=new ContextEngine(),first=await engine.buildPacket({root:"/srv/app",io,task:"inspect beta"}),second=await engine.buildPacket({root:"/srv/app",io,task:"inspect beta"});
+  assert.equal(first.stats.graphReused,false);assert.equal(second.stats.graphReused,true);
+  assert.deepEqual(second.items,first.items);assert.equal(second.injection,first.injection);
+
+  const differentTask=await engine.buildPacket({root:"/srv/app",io,task:"inspect alpha"});
+  assert.equal(differentTask.stats.graphReused,false,"task relevance changes must invalidate personalized graph reuse");
+
+  contents.set("src/a.js","export const alpha = 2;\n");versions.set("src/a.js","v2");changed=new Set(["src/a.js"]);statusFingerprint="dirty:a";
+  const dirty=await engine.buildPacket({root:"/srv/app",io,task:"inspect alpha"});
+  assert.equal(dirty.stats.graphReused,false,"changed parsed source must invalidate graph reuse");
+  const dirtyStable=await engine.buildPacket({root:"/srv/app",io,task:"inspect alpha"});
+  assert.equal(dirtyStable.stats.graphReused,false,"a changed source may temporarily alter exact indexed iteration order while its reread is folded into cache state");
+  assert.deepEqual(dirtyStable.items,dirty.items);assert.equal(dirtyStable.injection,dirty.injection);
+  const dirtyStableAgain=await engine.buildPacket({root:"/srv/app",io,task:"inspect alpha"});
+  assert.equal(dirtyStableAgain.stats.graphReused,true,"once the exact dirty indexed source state is stable, the personalized graph should be reusable");
+  assert.deepEqual(dirtyStableAgain.items,dirtyStable.items);assert.equal(dirtyStableAgain.injection,dirtyStable.injection);
+});
+
 const execFileAsync=promisify(execFile);
 
 async function fixture(){
