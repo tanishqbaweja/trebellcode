@@ -195,6 +195,35 @@ function officialOpenAiResponsesBody(request={}){
   return body;
 }
 
+async function readOpenAiResponsesStream(source,{requestStartedAt=performance.now()}={}){
+  if(!source||typeof source.getReader!=="function")throw new Error("OpenAI Responses stream body is unavailable.");
+  const reader=source.getReader(),decoder=new TextDecoder();let buffer="",response=null,responseBytes=0,timeToFirstTokenMs=null;
+  const consume=block=>{
+    const data=String(block||"").split(/\r?\n/).filter(line=>line.startsWith("data:")).map(line=>line.slice(5).trimStart()).join("\n");
+    if(!data||data==="[DONE]")return;
+    let event;try{event=JSON.parse(data)}catch{throw new Error("OpenAI Responses stream returned an invalid JSON event.")}
+    if(event.type==="response.output_text.delta"&&event.delta&&timeToFirstTokenMs==null)timeToFirstTokenMs=Number((performance.now()-requestStartedAt).toFixed(3));
+    if((event.type==="response.completed"||event.type==="response.incomplete")&&event.response)response=event.response;
+    if(event.type==="response.failed"){
+      const error=new Error(event.response?.error?.message||event.error?.message||"OpenAI Responses stream failed.");error.code=event.response?.error?.code||event.error?.code||"openai_stream_failed";throw error;
+    }
+    if(event.type==="error"){
+      const error=new Error(event.message||event.error?.message||"OpenAI Responses stream failed.");error.code=event.code||event.error?.code||"openai_stream_error";throw error;
+    }
+  };
+  try{
+    for(;;){
+      const {done,value}=await reader.read();if(done)break;
+      responseBytes+=Number(value?.byteLength||0);buffer+=decoder.decode(value,{stream:true});
+      const blocks=buffer.split(/\r?\n\r?\n/);buffer=blocks.pop()||"";for(const block of blocks)consume(block);
+    }
+    buffer+=decoder.decode();if(buffer.trim())consume(buffer);
+  }catch(error){error.streamTelemetry={responseBytes,timeToFirstTokenMs};throw error}
+  finally{reader.releaseLock()}
+  if(!response)throw new Error("OpenAI Responses stream ended before a completed response was received.");
+  return {response,responseBytes,timeToFirstTokenMs};
+}
+
 function normalizeProviderKey(value) {
   let key = String(value || "")
     .replace(/[\u200B-\u200D\u2060\uFEFF]/g, "")
@@ -436,21 +465,37 @@ export class ProviderManager {
     });
   }
 
-  async turn(providerId, request={}, { signal, promptCaching=false } = {}) {
+  async turn(providerId, request={}, { signal, promptCaching=false, streamResponses=false } = {}) {
     const provider=this.get(providerId),model=String(request.model||"").trim();
     if(!model)throw new Error("Provider turn requires a model.");
     if(provider.id==="freebuff")throw new Error("Freebuff provider turns are served by the local Freebuff bridge, not ProviderManager.");
     const started=performance.now();let wire={endpoint:null,wireApi:null,requestBytes:0};
     const onWire=value=>{wire=value||wire};
+    const responsesBody=provider.wireApi==="responses"
+      ?(provider.id==="openai"?officialOpenAiResponsesBody({...request,model}):providerTurnToResponses({...request,model}))
+      :null;
+    if(provider.id==="openai"&&streamResponses===true&&responsesBody)responsesBody.stream=true;
     const upstream=provider.wireApi==="responses"
-      ?await this.forwardResponses(provider.id,provider.id==="openai"?officialOpenAiResponsesBody({...request,model}):providerTurnToResponses({...request,model}),{signal,onWire})
+      ?await this.forwardResponses(provider.id,responsesBody,{signal,onWire})
       :await this.forwardChat(provider.id,providerTurnToChat({...request,model}),{signal,onWire,promptCaching});
     const headersLatencyMs=Number((performance.now()-started).toFixed(3));
+    const providerRequestId=upstream.headers?.get?.("x-request-id")||upstream.headers?.get?.("request-id")||upstream.headers?.get?.("x-amzn-requestid")||null;
     const bodyStarted=performance.now();
+    const contentType=String(upstream.headers?.get?.("content-type")||"").toLowerCase();
+    if(upstream.ok&&provider.id==="openai"&&streamResponses===true&&upstream.body&&contentType.includes("text/event-stream")){
+      try{
+        const streamed=await readOpenAiResponsesStream(upstream.body,{requestStartedAt:started}),bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
+        const result=normalizeResponsesTurnResponse(streamed.response,provider.id,model);
+        result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null};
+        return result;
+      }catch(error){
+        const bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
+        error.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:Number(wire.requestBytes)||0,responseBytes:Number(error?.streamTelemetry?.responseBytes||0),responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:error?.streamTelemetry?.timeToFirstTokenMs??null,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:null};throw error;
+      }
+    }
     const raw=await upstream.text();
     const bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3));
     const totalLatencyMs=Number((performance.now()-started).toFixed(3));
-    const providerRequestId=upstream.headers?.get?.("x-request-id")||upstream.headers?.get?.("request-id")||upstream.headers?.get?.("x-amzn-requestid")||null;
     const baseTelemetry={
       endpoint:wire.endpoint,
       wireApi:wire.wireApi||provider.protocolCompatibility?.[0]||provider.wireApi,

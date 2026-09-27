@@ -238,6 +238,52 @@ test("official OpenAI prompt cache key stays stable as later history grows but s
   assert.notEqual(bodies[0].prompt_cache_key,bodies[3].prompt_cache_key);
 });
 
+test("direct OpenAI Native streaming assembles the completed Responses result and records TTFT",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-openai-stream-"));let seen=null;
+  try{
+    const encoder=new TextEncoder(),event=value=>`event: ${value.type}\ndata: ${JSON.stringify(value)}\n\n`;
+    const completed={id:"resp-stream",model:"gpt-5.6",status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"hello world"}]}],usage:{input_tokens:8,output_tokens:2,total_tokens:10}};
+    const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root},fetchFn:async(url,init={})=>{
+      seen={url,headers:init.headers,body:JSON.parse(init.body||"{}")};
+      const stream=new ReadableStream({start(controller){
+        controller.enqueue(encoder.encode(event({type:"response.created",response:{id:"resp-stream",status:"in_progress"}})));
+        controller.enqueue(encoder.encode(event({type:"response.output_text.delta",response_id:"resp-stream",output_index:0,content_index:0,delta:"hello"})));
+        controller.enqueue(encoder.encode(event({type:"response.output_text.delta",response_id:"resp-stream",output_index:0,content_index:0,delta:" world"})));
+        controller.enqueue(encoder.encode(event({type:"response.completed",response:completed})));controller.close();
+      }});
+      return new Response(stream,{status:200,headers:{"content-type":"text/event-stream","x-request-id":"req-stream"}});
+    }});
+    manager.setKey("openai","oa-stream-key");
+    const result=await manager.turn("openai",{model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[]},{streamResponses:true});
+    assert.equal(seen.url,"https://api.openai.com/v1/responses");assert.equal(seen.body.stream,true);assert.match(seen.headers.Accept,/text\/event-stream/);
+    assert.equal(result.text,"hello world");assert.equal(result.usage.inputTokens,8);assert.equal(result.telemetry.streaming,true);assert.equal(result.telemetry.providerRequestId,"req-stream");
+    assert.ok(result.telemetry.timeToFirstTokenMs>=0);assert.ok(result.telemetry.responseBytes>0);assert.ok(result.telemetry.totalLatencyMs>=result.telemetry.timeToFirstTokenMs);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("direct OpenAI streaming keeps completed function calls intact without inventing text TTFT",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-openai-tool-stream-"));
+  try{
+    const event=value=>`event: ${value.type}\ndata: ${JSON.stringify(value)}\n\n`,completed={id:"resp-tool-stream",model:"gpt-5.6",status:"completed",output:[{type:"function_call",call_id:"call-stream",name:"trebell_repo__search_symbols",arguments:'{"query":"Session"}'}],usage:{input_tokens:9,output_tokens:3,total_tokens:12}};
+    const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root},fetchFn:async()=>new Response(event({type:"response.output_item.added",response_id:"resp-tool-stream",output_index:0,item:{type:"function_call",call_id:"call-stream",name:"trebell_repo__search_symbols",arguments:""}})+event({type:"response.function_call_arguments.delta",response_id:"resp-tool-stream",output_index:0,item_id:"fc-1",delta:'{"query":"Session"}'})+event({type:"response.completed",response:completed}),{status:200,headers:{"content-type":"text/event-stream"}})});
+    manager.setKey("openai","oa-stream-key");
+    const result=await manager.turn("openai",{model:"gpt-5.6",messages:[{role:"user",content:"Find Session"}],tools:[{type:"namespace",name:"trebell_repo",tools:[{type:"function",name:"search_symbols",inputSchema:{type:"object",properties:{query:{type:"string"}}}}]}]},{streamResponses:true});
+    assert.deepEqual(result.toolCalls,[{id:"call-stream",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Session"}'}]);assert.equal(result.telemetry.streaming,true);assert.equal(result.telemetry.timeToFirstTokenMs,null);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("direct OpenAI streaming failures retain partial wire telemetry for retry diagnostics",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-openai-stream-failure-"));
+  try{
+    const event=value=>`event: ${value.type}\ndata: ${JSON.stringify(value)}\n\n`;
+    const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root},fetchFn:async()=>new Response(event({type:"response.output_text.delta",response_id:"resp-fail",output_index:0,content_index:0,delta:"partial"})+event({type:"error",code:"server_error",message:"stream broke"}),{status:200,headers:{"content-type":"text/event-stream","x-request-id":"req-stream-fail"}})});
+    manager.setKey("openai","oa-stream-key");
+    await assert.rejects(()=>manager.turn("openai",{model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[]},{streamResponses:true}),error=>{
+      assert.equal(error.code,"server_error");assert.equal(error.telemetry.streaming,true);assert.equal(error.telemetry.providerRequestId,"req-stream-fail");assert.ok(error.telemetry.responseBytes>0);assert.ok(error.telemetry.timeToFirstTokenMs>=0);return true;
+    });
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
 
 test("JustWorker uses the documented Anthropic-compatible messages endpoint", async () => {
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
