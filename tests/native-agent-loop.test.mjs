@@ -120,6 +120,9 @@ test("native exact replacement status fast path fails closed for ambiguous or ri
     "Replace exactly legacy with strict in src/config.mjs, then run node verify.mjs && echo done and report the result.",
     'Replace exactly legacy with strict in src/config.mjs, then run node -e "console.log(1)" and report the result.',
     "Replace exactly legacy with strict in src/config.mjs, then run node verify.mjs in packages/api and report the result.",
+    "Replace exactly legacy with strict in ../outside.mjs, then run node verify.mjs and report the result.",
+    "Replace exactly legacy with strict in C:\\outside.mjs, then run node verify.mjs and report the result.",
+    "Replace exactly legacy with strict in /tmp/outside.mjs, then run node verify.mjs and report the result.",
   ];
   for(const prompt of prompts){
     let providerCalls=0,executions=0;const events=[];

@@ -290,13 +290,21 @@ function exactReplacementToken(value,{allowEmpty=false}={}){
   return raw;
 }
 
+function explicitWorkspaceRelativeFile(value){
+  const path=exactReplacementToken(value);if(path==null||path.length>300||/[\r\n\0]/.test(path))return null;
+  if(/^[\\/]/.test(path)||/^[A-Za-z]:[\\/]/.test(path)||/:\/\//.test(path))return null;
+  const normalized=path.replace(/\\/g,"/"),parts=normalized.split("/");
+  if(parts.some(part=>!part||part==="."||part===".."))return null;
+  return normalized;
+}
+
 function explicitExactReplacementStatus(messages=[]){
   const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=lastUserInstructionText(user).trim();
   if(!text||/[\r\n]/.test(text))return null;
   if(/\b(?:diagnos(?:e|is)|fix|repair|debug|explain|analy[sz]e|investigate|root\s+cause|recommend|suggest|compare|summari[sz]e|read|inspect|search|list|create|delete|write|commit|push|browse)\b/i.test(text))return null;
   const match=text.match(/^(?:please\s+)?replace\s+(?:(?:exactly|only)\s+|the\s+exact\s+text\s+)(.+?)\s+with\s+(.+?)\s+in\s+(.+?)\s*[,;]?\s*(?:then|and\s+then)\s+(?:run|execute)\s+(.+?)\s+(?:and\s+)?(?:report|show)\s+(?:me\s+)?(?:the\s+)?(?:result|status|outcome)\s*[.!]?$/i);
   if(!match)return null;
-  const oldText=exactReplacementToken(match[1]),newText=exactReplacementToken(match[2],{allowEmpty:true}),path=exactReplacementToken(match[3]),command=directVerifierCommand(match[4]);
+  const oldText=exactReplacementToken(match[1]),newText=exactReplacementToken(match[2],{allowEmpty:true}),path=explicitWorkspaceRelativeFile(match[3]),command=directVerifierCommand(match[4]);
   if(oldText==null||newText==null||path==null||!command)return null;
   if(oldText===newText||oldText.length>200||newText.length>200||path.length>300)return null;
   return {path,oldText,newText,command};
