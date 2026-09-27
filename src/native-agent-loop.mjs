@@ -61,9 +61,9 @@ function exposedToolPairs(tools=[]){
   return out;
 }
 
-function protocolAliasMatches(namespace,name,tools=[]){
+function protocolAliasMatches(namespace,name,tools=[],exposedPairs=null){
   const rawNamespace=String(namespace||"").trim(),rawName=String(name||"").trim();if(!rawName)return [];
-  const pairs=exposedToolPairs(tools),namespaceExists=rawNamespace&&pairs.some(item=>item.namespace===rawNamespace);
+  const pairs=Array.isArray(exposedPairs)?exposedPairs:exposedToolPairs(tools),namespaceExists=rawNamespace&&pairs.some(item=>item.namespace===rawNamespace);
   return pairs.filter(item=>{
     if(namespaceExists&&item.namespace!==rawNamespace)return false;
     const aliases=new Set([
@@ -77,22 +77,22 @@ function protocolAliasMatches(namespace,name,tools=[]){
   });
 }
 
-function misplacedToolMatches(namespace,name,tools=[]){
-  const rawNamespace=String(namespace||"").trim(),rawName=String(name||"").trim(),pairs=exposedToolPairs(tools);
+function misplacedToolMatches(namespace,name,tools=[],exposedPairs=null){
+  const rawNamespace=String(namespace||"").trim(),rawName=String(name||"").trim(),pairs=Array.isArray(exposedPairs)?exposedPairs:exposedToolPairs(tools);
   if(!rawNamespace.startsWith("trebell_")||!rawName||!pairs.some(item=>item.namespace===rawNamespace))return [];
   if(pairs.some(item=>item.namespace===rawNamespace&&item.name===rawName))return [];
   return pairs.filter(item=>item.namespace.startsWith("trebell_")&&item.name===rawName);
 }
 
-function repairCorruptedToolCall(call,tools=[]){
+function repairCorruptedToolCall(call,tools=[],exposedPairs=null){
   const namespace=String(call?.namespace||"").trim(),name=String(call?.name||"").trim();
   if(!name)return {call,repaired:false};
-  const aliasMatches=protocolAliasMatches(namespace,name,tools);
+  const aliasMatches=protocolAliasMatches(namespace,name,tools,exposedPairs);
   if(aliasMatches.length===1){
     const target=aliasMatches[0];
     if(target.namespace!==namespace||target.name!==name)return {call:{...call,namespace:target.namespace||null,name:target.name},repaired:true,originalName:name,reason:"protocol_alias"};
   }
-  const misplacedMatches=misplacedToolMatches(namespace,name,tools);
+  const misplacedMatches=misplacedToolMatches(namespace,name,tools,exposedPairs);
   if(misplacedMatches.length===1){
     const target=misplacedMatches[0];
     return {call:{...call,namespace:target.namespace||null,name:target.name},repaired:true,originalName:name,reason:"unique_tool_namespace"};
@@ -743,8 +743,8 @@ export async function runNativeAgentTurn({
     lastProviderReadMessageCount=requestMessageCount;
     forcedToolChoice=null;
     throwIfAborted(turnSignal);lastResponse=response||{};usage=aggregateUsage(usage,lastResponse.usage||{});
-    const rawCalls=Array.isArray(lastResponse.toolCalls)?lastResponse.toolCalls:[],calls=rawCalls.map(call=>{
-      const normalized=repairCorruptedToolCall(call,requestTools);
+    const rawCalls=Array.isArray(lastResponse.toolCalls)?lastResponse.toolCalls:[],repairPairs=rawCalls.length?exposedToolPairs(requestTools):null,calls=rawCalls.map(call=>{
+      const normalized=repairCorruptedToolCall(call,requestTools,repairPairs);
       if(normalized.repaired)emit(onEvent,{name:"native.tool.call_repaired",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{namespace:String(call?.namespace||""),repairedNamespace:String(normalized.call?.namespace||""),malformedNameLength:String(normalized.originalName||"").length,name:String(normalized.call?.name||""),reason:normalized.reason||"corruption"}});
       const repairedArgs=repairRepeatedTerminalCommand(normalized.call,successfulTerminalRuns);
       if(repairedArgs.repaired)emit(onEvent,{name:"native.tool.call_repaired",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{namespace:"trebell_terminal",repairedNamespace:"trebell_terminal",malformedNameLength:0,name:"run",reason:repairedArgs.reason}});
