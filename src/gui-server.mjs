@@ -1467,7 +1467,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       const last=[...(request.messages||[])].reverse().find(message=>message?.role==="user"),content=typeof last?.content==="string"?last.content:"";
       return {id:"mock-native-"+randomUUID(),provider,model,text:`Mock Trebell Native reply: ${content}`.trim(),toolCalls:[],finishReason:"stop",status:"completed",usage:{inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0},raw:{mock:true}};
     }
-    if(provider!=="freebuff")return providers.turn(provider,request,{signal:request.signal});
+    if(provider!=="freebuff")return providers.turn(provider,request,{signal:request.signal,promptCaching:provider==="anthropic"});
     if(!isLoggedIn(env))throw new Error("Sign in to Freebuff first.");await ensureBridge();
     const signals=[request.signal,AbortSignal.timeout(300000)].filter(Boolean),signal=signals.length>1?AbortSignal.any(signals):signals[0];
     const response=await fetchImpl(`http://127.0.0.1:${DEFAULT_PORT}/v1/chat/completions`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(providerTurnToChat(request)),signal});

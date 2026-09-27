@@ -364,14 +364,14 @@ export class ProviderManager {
     };
   }
 
-  async forwardChat(providerId, chatBody, { signal, userAgent, onWire } = {}) {
+  async forwardChat(providerId, chatBody, { signal, userAgent, onWire, promptCaching=false } = {}) {
     const provider = this.get(providerId);
     if (provider.id === "freebuff") throw new Error("Freebuff chat is handled by the local freebuff2api bridge.");
     const key = this.key(provider.id);
     if (!key) throw new Error(`${provider.name} API key is not configured.`);
     if (provider.protocolCompatibility?.includes("anthropic-messages")) {
       const anthropicBody = chatToAnthropic(chatBody);
-      if(provider.id==="anthropic")anthropicBody.cache_control={type:"ephemeral"};
+      if(provider.id==="anthropic"&&promptCaching===true)anthropicBody.cache_control={type:"ephemeral"};
       const endpoint=provider.baseUrl + "/messages",body=JSON.stringify(anthropicBody);onWire?.({endpoint,wireApi:"anthropic-messages",requestBytes:Buffer.byteLength(body,"utf8")});
       const upstream = await this.fetchFn(endpoint, {
         method: "POST",
@@ -436,7 +436,7 @@ export class ProviderManager {
     });
   }
 
-  async turn(providerId, request={}, { signal } = {}) {
+  async turn(providerId, request={}, { signal, promptCaching=false } = {}) {
     const provider=this.get(providerId),model=String(request.model||"").trim();
     if(!model)throw new Error("Provider turn requires a model.");
     if(provider.id==="freebuff")throw new Error("Freebuff provider turns are served by the local Freebuff bridge, not ProviderManager.");
@@ -444,7 +444,7 @@ export class ProviderManager {
     const onWire=value=>{wire=value||wire};
     const upstream=provider.wireApi==="responses"
       ?await this.forwardResponses(provider.id,provider.id==="openai"?officialOpenAiResponsesBody({...request,model}):providerTurnToResponses({...request,model}),{signal,onWire})
-      :await this.forwardChat(provider.id,providerTurnToChat({...request,model}),{signal,onWire});
+      :await this.forwardChat(provider.id,providerTurnToChat({...request,model}),{signal,onWire,promptCaching});
     const headersLatencyMs=Number((performance.now()-started).toFixed(3));
     const bodyStarted=performance.now();
     const raw=await upstream.text();

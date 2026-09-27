@@ -404,10 +404,23 @@ test("direct Anthropic turns enable automatic prompt caching on the wire",async(
       return Response.json({id:"msg-cache",type:"message",role:"assistant",model:"claude-opus-4-8",content:[{type:"text",text:"done"}],stop_reason:"end_turn",usage:{input_tokens:11,cache_read_input_tokens:9,cache_creation_input_tokens:4,output_tokens:2}});
     }});
     manager.setKey("anthropic","anthropic-cache-key");
-    const result=await manager.turn("anthropic",{model:"claude-opus-4-8",messages:[{role:"user",content:"hello"}],tools:[]});
+    const result=await manager.turn("anthropic",{model:"claude-opus-4-8",messages:[{role:"user",content:"hello"}],tools:[]},{promptCaching:true});
     assert.equal(seen.url,"https://api.anthropic.com/v1/messages");
     assert.deepEqual(seen.body.cache_control,{type:"ephemeral"});
     assert.equal(result.usage.cachedInputTokens,9);assert.equal(result.usage.cacheWriteInputTokens,4);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("direct Anthropic one-shot turns do not write prompt caches unless the caller opts in",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-anthropic-no-cache-"));let seen=null;
+  try{
+    const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root},fetchFn:async(url,init)=>{
+      seen={url,body:JSON.parse(init.body)};
+      return Response.json({id:"msg-no-cache",type:"message",role:"assistant",model:"claude-opus-4-8",content:[{type:"text",text:"done"}],stop_reason:"end_turn",usage:{input_tokens:4,output_tokens:1}});
+    }});
+    manager.setKey("anthropic","anthropic-no-cache-key");
+    const result=await manager.turn("anthropic",{model:"claude-opus-4-8",messages:[{role:"user",content:"hello"}],tools:[]});
+    assert.equal(result.text,"done");assert.equal(seen.body.cache_control,undefined);
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
