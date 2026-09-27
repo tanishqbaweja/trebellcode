@@ -73,7 +73,7 @@ export function attachNativePromptProvenance(target,value){
 
 function provenance(value){return value&&typeof value==="object"?value[NATIVE_PROMPT_PROVENANCE]||null:null}
 
-function currentTurnBreakdown(message){
+function currentTurnBreakdown(message,cache=null){
   const meta=provenance(message);
   if(!meta||typeof meta!=="object")return {
     currentUser:metric(message?[message]:[]),
@@ -82,22 +82,25 @@ function currentTurnBreakdown(message){
     untrustedContext:metric([]),
     contextEnvelope:metric([]),
   };
-  const userParts=Array.isArray(meta.userParts)?meta.userParts:[],
-    contextText=String(meta.contextText||""),
-    application=(Array.isArray(meta.contextEntries)?meta.contextEntries:[]).filter(item=>item?.kind==="application").map(item=>item.value),
-    untrusted=(Array.isArray(meta.contextEntries)?meta.contextEntries:[]).filter(item=>item?.kind!=="application").map(item=>item.value),
-    entryText=(Array.isArray(meta.contextEntries)?meta.contextEntries:[]).map(item=>String(item?.value||"")).join("");
+  const userParts=Array.isArray(meta.userParts)?meta.userParts:[],contextEntries=Array.isArray(meta.contextEntries)?meta.contextEntries:[],contextText=String(meta.contextText||"");
+  const cached=message&&typeof message==="object"&&cache&&typeof cache.get==="function"?cache.get(message):null;
+  if(cached&&cached.meta===meta&&cached.userParts===userParts&&cached.contextEntries===contextEntries&&cached.contextText===contextText)return cached.value;
+  const application=contextEntries.filter(item=>item?.kind==="application").map(item=>item.value),
+    untrusted=contextEntries.filter(item=>item?.kind!=="application").map(item=>item.value),
+    entryText=contextEntries.map(item=>String(item?.value||"")).join("");
   const contextBytes=bytes(contextText),entryBytes=bytes(entryText);
-  return {
+  const value={
     currentUser:metric(userParts),
     workingContext:metric(contextText),
     applicationContext:metric(application),
     untrustedContext:metric(untrusted),
     contextEnvelope:{bytes:Math.max(0,contextBytes-entryBytes),estimatedTokens:estimate(Math.max(0,contextBytes-entryBytes))},
   };
+  if(message&&typeof message==="object"&&cache&&typeof cache.set==="function")cache.set(message,{meta,userParts,contextEntries,contextText,value});
+  return value;
 }
 
-export function nativeRequestMetrics(messages=[],tools=[],{toolSchemaCache=null,messageSerializationCache=null,historyHashCache=null,messageClassificationCache=null}={}){
+export function nativeRequestMetrics(messages=[],tools=[],{toolSchemaCache=null,messageSerializationCache=null,historyHashCache=null,messageClassificationCache=null,currentTurnBreakdownCache=null}={}){
   const source=Array.isArray(messages)?messages:[];let lastUser=-1;
   for(let index=source.length-1;index>=0;index--)if(source[index]?.role==="user"){lastUser=index;break}
   const classified=classifiedMessages(source,lastUser,messageSerializationCache,messageClassificationCache),{system,developer,compacted,toolResults,history}=classified;
@@ -110,7 +113,7 @@ export function nativeRequestMetrics(messages=[],tools=[],{toolSchemaCache=null,
   }
   const fragments=classified.fragments,systemJson=fragments?jsonArrayText(fragments.system):json(system),developerJson=fragments?jsonArrayText(fragments.developer):json(developer),systemSerialized=fragments?{text:systemJson,jsonSafe:true}:serialized(system),developerSerialized=fragments?{text:developerJson,jsonSafe:true}:serialized(developer),toolSchemasSerialized=cachedToolSchemas.serialized,toolSchemasJson=toolSchemasSerialized.text;
   const messagesMetric=fragments?jsonArrayMetric(fragments.messages):metric(source),compactedMetric=fragments?jsonArrayMetric(fragments.compacted):metric(compacted),historyMetric=fragments?jsonArrayMetric(fragments.history):metric(history),toolResultsMetric=fragments?jsonArrayMetric(fragments.toolResults):metric(toolResults),historyHash=fragments?cachedJsonArrayHash(fragments.history,historyHashCache):hash(history),toolsMetric=cachedToolSchemas.metric,toolSchemaDigest=cachedToolSchemas.digest;
-  const currentBreakdown=currentTurnBreakdown(lastUser>=0?source[lastUser]:null);
+  const currentBreakdown=currentTurnBreakdown(lastUser>=0?source[lastUser]:null,currentTurnBreakdownCache);
   const prefix={system,developer,tools:toolSchemas};
   const stablePrefixJsonSafe=systemSerialized.jsonSafe&&developerSerialized.jsonSafe&&toolSchemasSerialized.jsonSafe;
   const priorStablePrefix=cachedToolSchemas.stablePrefix,stablePrefixCacheHit=stablePrefixJsonSafe&&priorStablePrefix?.systemJson===systemJson&&priorStablePrefix?.developerJson===developerJson;

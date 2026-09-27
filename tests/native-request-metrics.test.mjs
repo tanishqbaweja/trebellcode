@@ -83,6 +83,14 @@ test("Native request metrics incrementally classify one append-only in-turn conv
   messages.push({role:"user",content:"steered request"});assert.deepEqual(cached(),nativeRequestMetrics(messages,[]));
 });
 
+test("Native request metrics can reuse the current user/context breakdown and invalidate on new provenance",()=>{
+  const user=attachNativePromptProvenance({role:"user",content:"Fix it"},{userParts:[{type:"text",text:"Fix it"}],contextText:"ctx:"+"x".repeat(4000),contextEntries:[{kind:"application",value:"app"},{kind:"untrusted",value:"repo"}]}),messages=[{role:"system",content:"stable"},user],cache=new WeakMap();
+  const baseline=nativeRequestMetrics(messages,[],{}),cached=nativeRequestMetrics(messages,[],{currentTurnBreakdownCache:cache});assert.deepEqual(cached,baseline);
+  const second=nativeRequestMetrics(messages,[],{currentTurnBreakdownCache:cache});assert.deepEqual(second,baseline);
+  attachNativePromptProvenance(user,{userParts:[{type:"text",text:"Fix it again"}],contextText:"replacement:"+"y".repeat(2000),contextEntries:[{kind:"application",value:"changed"}]});
+  const refreshed=nativeRequestMetrics(messages,[],{currentTurnBreakdownCache:cache}),uncached=nativeRequestMetrics(messages,[],{});assert.deepEqual(refreshed,uncached);assert.notEqual(refreshed.workingContext.bytes,baseline.workingContext.bytes);
+});
+
 test("Native request metrics classification cache falls back when appended JSON semantics become custom",()=>{
   const messages=[{role:"system",content:"system"},{role:"user",content:"request"}],messageCache=new WeakMap(),historyHashCache={},messageClassificationCache={};
   nativeRequestMetrics(messages,[],{messageSerializationCache:messageCache,historyHashCache,messageClassificationCache});
