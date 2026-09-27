@@ -584,6 +584,60 @@ test("native generic verification completion still accepts one proven verifier r
   assert.equal(turns,3);assert.equal(result.modelTurns,3);assert.match(result.text,/passes \(exit code 0\)/i);
 });
 
+test("native implicit rerun completion resolves one unique prior failing verifier",async()=>{
+  let turns=0;
+  const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Run node verify.mjs first. Fix the implementation, then rerun it until it passes."}],tools,
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"verify-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      if(turns===3)return {text:"",toolCalls:[{id:"verify-2",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      throw new Error("A fourth provider turn should not be needed for one uniquely resolved implicit verifier.");
+    },
+    executeTool:async call=>call.id==="verify-1"?{exitCode:1}:call.id==="verify-2"?{exitCode:0}:{path:"src/a.mjs",replacements:1},
+  });
+  assert.equal(turns,3);assert.equal(result.modelTurns,3);assert.match(result.text,/passes \(exit code 0\)/i);
+});
+
+test("native implicit rerun completion fails closed when more than one command failed before the edit",async()=>{
+  let turns=0;const events=[];
+  const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Run the checks first. Fix the implementation, then rerun it until it passes."}],tools,onEvent:event=>events.push(event),
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[
+        {id:"lint-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["lint.mjs"]}'},
+        {id:"verify-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'},
+      ],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      if(turns===3)return {text:"",toolCalls:[{id:"verify-2",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      return {text:"provider final",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.id==="lint-1"||call.id==="verify-1"?{exitCode:1}:call.id==="verify-2"?{exitCode:0}:{path:"src/a.mjs",replacements:1},
+  });
+  assert.equal(turns,4);assert.equal(result.text,"provider final");assert.equal(events.filter(event=>event.name==="native.verification.completion_synthesized").length,0);
+});
+
+test("native implicit rerun completion requires an earlier run or verifier reference",async()=>{
+  let turns=0;
+  const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation, then rerun it until it passes."}],tools,
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"verify-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      if(turns===3)return {text:"",toolCalls:[{id:"verify-2",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      return {text:"provider final",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.id==="verify-1"?{exitCode:1}:call.id==="verify-2"?{exitCode:0}:{path:"src/a.mjs",replacements:1},
+  });
+  assert.equal(turns,4);assert.equal(result.text,"provider final");
+});
+
 test("native generic verification completion rejects unrelated terminal reruns",async()=>{
   let turns=0;const events=[];
   const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
@@ -653,11 +707,11 @@ test("native rerun-until-pass completion does not trigger when work remains afte
   assert.equal(turns,4);assert.match(result.text,/Root cause:/);
 });
 
-test("native verifier success does not disable tools without an explicit answer-after-pass instruction",async()=>{
+test("native verifier success does not disable tools without an explicit completion instruction",async()=>{
   let turns=0;const seen=[];
   const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
   const result=await runNativeAgentTurn({
-    model:"test-model",messages:[{role:"user",content:"Run node verify.mjs, fix it, and rerun until it passes."}],tools,
+    model:"test-model",messages:[{role:"user",content:"Run node verify.mjs, fix it, and rerun it."}],tools,
     providerTurn:async request=>{
       turns++;seen.push(structuredClone(request));
       if(turns===1)return {text:"",toolCalls:[{id:"verify-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};

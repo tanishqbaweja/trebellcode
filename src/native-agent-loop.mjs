@@ -189,15 +189,26 @@ function explicitLiteralAfterVerification(messages=[]){
 function explicitVerificationCompletion(messages=[]){
   const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=lastUserInstructionText(user);
   if(!text)return null;
-  const match=text.match(/\bre-?run\b\s+([^\n]{1,180}?)\s+\buntil\b[^\n]{0,80}\bpass(?:es|ed|ing)?\b\s*[.!]?\s*$/i);
-  if(!match)return null;
-  const target=String(match[1]||"").trim();if(!target||/^(?:it|this|that|them|again)$/i.test(target))return null;
-  const prefix=text.slice(Math.max(0,Number(match.index||0)-48),Number(match.index||0));
+  const explicit=text.match(/\bre-?run\b\s+([^\n]{1,180}?)\s+\buntil\b[^\n]{0,80}\bpass(?:es|ed|ing)?\b\s*[.!]?\s*$/i);
+  if(explicit){
+    const target=String(explicit[1]||"").trim(),prefix=text.slice(Math.max(0,Number(explicit.index||0)-48),Number(explicit.index||0));
+    if(!/^(?:it|this|that|them|again)$/i.test(target)&&!/\b(?:do\s+not|don't|never)(?:\s+\w+){0,2}\s*$/i.test(prefix))return {target,implicit:false};
+  }
+  const implicit=text.match(/\bre-?run(?:\s+(?:it|this|that|them|again))?\s+\buntil\b[^\n]{0,80}\bpass(?:es|ed|ing)?\b\s*[.!]?\s*$/i);
+  if(!implicit)return null;
+  const prefix=text.slice(Math.max(0,Number(implicit.index||0)-48),Number(implicit.index||0));
   if(/\b(?:do\s+not|don't|never)(?:\s+\w+){0,2}\s*$/i.test(prefix))return null;
-  return {target};
+  const prior=text.slice(0,Number(implicit.index||0));
+  if(!/(?:\brun\b|\b(?:verification|verifier|tests?|checks?)\b)[\s\S]{0,400}$/i.test(prior))return null;
+  return {target:null,implicit:true};
 }
 
-function verificationCompletionMatchesRun(request,args={}){
+function verificationCompletionMatchesRun(request,args={},terminalRuns=[],editRevision=0){
+  const key=terminalRunKey(args);if(!key)return false;
+  if(request?.implicit){
+    const failedKeys=new Set((Array.isArray(terminalRuns)?terminalRuns:[]).filter(item=>item?.exitCode!==0&&item?.editRevision<editRevision).map(item=>item?.key).filter(Boolean));
+    return failedKeys.size===1&&failedKeys.has(key);
+  }
   if(!request?.target)return false;
   const target=String(request.target).replace(/[`'\"“”‘’]/g,"").replace(/\s+/g," ").trim().toLowerCase();
   if(!target)return false;
@@ -394,7 +405,7 @@ export async function runNativeAgentTurn({
       if(key&&exitCode!==null){
         const priorFailure=terminalRuns.findLast(item=>item.key===key&&item.exitCode!==0&&item.editRevision<editRevision);
         terminalRuns.push({key,exitCode,editRevision});
-        const completionTargetMatches=!verificationFinalizationRequest||verificationCompletionMatchesRun(verificationFinalizationRequest,args);
+        const completionTargetMatches=!verificationFinalizationRequest||verificationCompletionMatchesRun(verificationFinalizationRequest,args,terminalRuns,editRevision);
         if(verifiedFinalizationAllowed&&exitCode===0&&priorFailure&&completionTargetMatches){
           verifiedFinalizationReady=true;
           emit(onEvent,{name:"native.verification.finalizing",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision}});

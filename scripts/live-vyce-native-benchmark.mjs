@@ -135,6 +135,32 @@ const scenarios=[
     verify:async root=>{await verifyNode(root,"noisy-verify.mjs","BENCH_NOISY_PASS");assert.match(await readFile(join(root,"src/config.mjs"),"utf8"),/strict/)},
   },
   {
+    name:"implicit-rerun-completion",
+    default:false,
+    requireVerificationBeforeEdit:true,
+    forceOnlyToolSchema:true,
+    forceSingleToolCall:true,
+    forceToolSequence:[
+      {namespace:"trebell_terminal",name:"run"},
+      {namespace:"trebell_workspace",name:"read_file"},
+      {namespace:"trebell_workspace",name:"replace_text"},
+      {namespace:"trebell_terminal",name:"run"},
+      false,
+    ],
+    toolAllowlist:["trebell_terminal/run","trebell_workspace/read_file","trebell_workspace/replace_text"],
+    files:{
+      "src/config.mjs":"export const mode=\"legacy\";\n",
+      "verify.mjs":[
+        'import { mode } from "./src/config.mjs";',
+        'if(mode!=="strict") throw new Error("expected strict mode");',
+        'console.log("BENCH_IMPLICIT_PASS");',
+        "",
+      ].join("\n"),
+    },
+    prompt:"Do not edit verify.mjs or any other file. Run node verify.mjs first. Then read src/config.mjs, replace only legacy with strict, and rerun it until it passes.",
+    verify:async root=>{await verifyNode(root,"verify.mjs","BENCH_IMPLICIT_PASS");assert.equal(await readFile(join(root,"src/config.mjs"),"utf8"),'export const mode="strict";\n')},
+  },
+  {
     name:"large-tool-output-same-turn",
     default:false,
     requireVerificationBeforeEdit:true,
@@ -218,10 +244,17 @@ async function runScenario(scenario){
         const requestNumber=providerRequests.length+1;
         const forcedSequence=Array.isArray(scenario.forceToolSequence)?scenario.forceToolSequence:null;
         const forcedChoice=forcedSequence&&requestNumber<=forcedSequence.length?forcedSequence[requestNumber-1]:requestNumber===1&&scenario.forceFirstTool?scenario.forceFirstTool:null;
+        const forcedTools=forcedChoice&&scenario.forceOnlyToolSchema===true
+          ?(Array.isArray(request.tools)?request.tools:[]).flatMap(namespace=>{
+            if(namespace?.type!=="namespace"||namespace?.name!==forcedChoice.namespace)return [];
+            const selected=(Array.isArray(namespace.tools)?namespace.tools:[]).filter(tool=>tool?.name===forcedChoice.name);
+            return selected.length?[{...namespace,tools:selected}]:[];
+          })
+          :request.tools;
         const effectiveRequest=forcedChoice===false
           ?{...request,tools:[],toolChoice:"none",parallelToolCalls:false}
           :forcedChoice
-            ?{...request,toolChoice:forcedChoice,parallelToolCalls:false}
+            ?{...request,tools:forcedTools,toolChoice:forcedChoice,parallelToolCalls:false}
             :request;
         const requestMessages=Array.isArray(effectiveRequest.messages)?effectiveRequest.messages:[],requestTools=Array.isArray(effectiveRequest.tools)?effectiveRequest.tools:[];
         const record={
@@ -233,8 +266,11 @@ async function runScenario(scenario){
         providerRequests.push(record);
         try{
           const response=await manager.turn("vyceai",{...effectiveRequest,provider:"vyceai",model},{signal:request.signal,streamChat:streamVyce});
-          record.usage=response.usage;record.telemetry=response.telemetry;record.toolCalls=response.toolCalls||[];
-          return response;
+          const normalizedResponse=forcedChoice&&scenario.forceSingleToolCall===true&&Array.isArray(response.toolCalls)
+            ?{...response,toolCalls:response.toolCalls.filter(call=>call?.namespace===forcedChoice.namespace&&call?.name===forcedChoice.name).slice(0,1)}
+            :response;
+          record.usage=response.usage;record.telemetry=response.telemetry;record.toolCalls=normalizedResponse.toolCalls||[];
+          return normalizedResponse;
         }catch(error){
           record.telemetry=error?.telemetry||null;record.error={status:Number(error?.status||0)||null,code:error?.code||null,retryable:Boolean(error?.retryable)};throw error;
         }
