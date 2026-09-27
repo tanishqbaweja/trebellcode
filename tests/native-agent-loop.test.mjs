@@ -64,6 +64,88 @@ test("native agent feeds namespaced tool observations back into the same model l
   assert.deepEqual(result.usage,{inputTokens:24,outputTokens:8,totalTokens:32,cachedInputTokens:4,cacheWriteInputTokens:0,reasoningOutputTokens:2});
 });
 
+test("native agent can synthesize a narrow command-only status report without a second inference",async()=>{
+  let turns=0;const events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Run node verify.mjs and report the result."}],synthesizeTerminalReports:true,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"verify",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      throw new Error("Command-only reporting should not need a second provider inference.");
+    },
+    executeTool:async()=>({exitCode:1,stderr:"AssertionError: expected strict but received legacy"}),
+  });
+  assert.equal(turns,1);assert.equal(result.modelTurns,1);assert.equal(result.toolCalls,1);assert.match(result.text,/failed \(exit code 1\)/i);assert.match(result.text,/expected strict but received legacy/i);
+  assert.ok(events.some(event=>event.name==="native.terminal.report_synthesized"&&event.data?.evidence===true));
+});
+
+test("native terminal report synthesis redacts evidence and reports successful commands exactly",async()=>{
+  let turns=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Run node verify.mjs and report the status."}],synthesizeTerminalReports:true,
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{turns++;return {text:"",toolCalls:[{id:"verify",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}}},
+    executeTool:async()=>({exitCode:0,stdout:"VERIFY_OK API_KEY=terminal-report-secret"}),
+  });
+  assert.equal(turns,1);assert.match(result.text,/completed successfully \(exit code 0\)/i);assert.match(result.text,/VERIFY_OK/);assert.doesNotMatch(result.text,/terminal-report-secret/);assert.match(result.text,/\[redacted\]/i);
+});
+
+test("native terminal report synthesis refuses richer diagnosis or follow-up work",async()=>{
+  for(const prompt of ["Run node verify.mjs and explain why it fails.","Run node verify.mjs, then diagnose and fix the failure.","Read src/config.mjs, then run node verify.mjs and report the result.","Run npm test, then inspect the logs and report the result.","Run npm run lint, then run npm test and report the result."]){
+    let turns=0;
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:prompt}],synthesizeTerminalReports:true,
+      tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+      providerTurn:async()=>{turns++;return turns===1?{text:"",toolCalls:[{id:"verify",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}}:{text:"provider analysis",toolCalls:[],usage:{}}},
+      executeTool:async()=>({exitCode:1,stderr:"expected strict"}),
+    });
+    assert.equal(turns,2,prompt);assert.equal(result.text,"provider analysis",prompt);
+  }
+});
+
+test("native terminal report synthesis recognizes an explicit command-evidence-only turn",async()=>{
+  let turns=0;
+  const prompt="Run node noisy-verify.mjs now. Do not read or edit project files in this turn. Inspect only the command evidence Trebell returns; if output is virtualized, use the output handle only when the preview is insufficient.";
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:prompt}],synthesizeTerminalReports:true,tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{turns++;return {text:"",toolCalls:[{id:"verify",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["noisy-verify.mjs"]}'}],usage:{}}},
+    executeTool:async()=>({exitCode:1,preview:"...[important lines from omitted output]...\nline 1818: CRITICAL_ASSERTION expected mode=strict but received legacy; inspect src/config.mjs\n...[end important lines]..."}),
+  });
+  assert.equal(turns,1);assert.match(result.text,/CRITICAL_ASSERTION expected mode=strict but received legacy/i);
+});
+
+test("native terminal report synthesis requires a single terminal-only tool turn",async()=>{
+  let turns=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Run node verify.mjs and report the result."}],synthesizeTerminalReports:true,
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"}]}],
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"read",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"verify.mjs"}'},{id:"verify",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      return {text:"provider final",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.namespace==="trebell_terminal"?{exitCode:0,stdout:"PASS"}:{path:"verify.mjs",content:"test"},
+  });
+  assert.equal(turns,2);assert.equal(result.text,"provider final");
+});
+
+test("native terminal report synthesis yields to steering after command execution",async()=>{
+  let turns=0,steered=false,delivered=false;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Run node verify.mjs and report the result."}],synthesizeTerminalReports:true,
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    consumeSteering:()=>steered&&!delivered?(delivered=true,[{role:"user",content:"Actually explain the failure in detail."}]):[],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"verify",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      assert.ok(request.messages.some(message=>message.role==="user"&&/explain the failure/.test(String(message.content||""))));return {text:"detailed provider answer",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>{steered=true;return {exitCode:1,stderr:"expected strict"}},
+  });
+  assert.equal(turns,2);assert.equal(result.text,"detailed provider answer");
+});
+
 test("native agent repairs obvious protocol-corrupted names only for single-tool namespaces",async()=>{
   let turns=0;const executions=[],events=[];
   const result=await runNativeAgentTurn({

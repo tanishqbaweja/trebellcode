@@ -206,6 +206,40 @@ function explicitVerificationCompletion(messages=[]){
   return {target:null,implicit:true};
 }
 
+function explicitTerminalStatusRequest(messages=[]){
+  const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=lastUserInstructionText(user);
+  if(!text||/\buntil\b[^\n]{0,100}\bpass(?:es|ed|ing)?\b/i.test(text))return false;
+  const runs=[...text.matchAll(/\b(?:run|execute)\b/ig)];if(runs.length!==1)return false;
+  const beforeRun=text.slice(0,Number(runs[0].index||0));
+  if(/\b(?:read|inspect|open|search|list|edit|change|modify|write|create|delete|browse)\b/i.test(beforeRun))return false;
+  if(/\b(?:and|then|also|afterward|after\s+that)\s+(?:read|inspect|open|search|list|edit|change|modify|write|create|delete|commit|push|browse)\b/i.test(text))return false;
+  const positive=text.split(/[.!?\n]+/).filter(part=>!/\b(?:do\s+not|don't|never)\b/i.test(part)).join(" ");
+  if(/\b(?:diagnos(?:e|is)|fix|repair|debug|explain|analy[sz]e|investigate|root\s+cause|recommend|suggest|compare|summari[sz]e|next\s+steps?)\b/i.test(positive))return false;
+  if(/\b(?:report|show)\s+(?:me\s+)?(?:the\s+)?(?:result|status|outcome)\b/i.test(text))return true;
+  if(/\b(?:tell|let)\s+me\s+(?:know\s+)?(?:whether|if)\b[^\n]{0,100}\b(?:pass|fail|succeed|work)/i.test(text))return true;
+  return /\b(?:do\s+not|don't|never)\b[^.\n]{0,120}\b(?:read|edit|change|modify)\b/i.test(text)&&/\b(?:inspect|use)\b[^.\n]{0,140}\b(?:command|terminal)\b[^.\n]{0,80}\b(?:evidence|output|result)\b/i.test(text);
+}
+
+const TERMINAL_REPORT_SIGNAL=/\b(?:error|failed|failure|exception|assert(?:ion)?|traceback|panic|fatal|timeout|timed out|cannot|can't|invalid|expected|received|not found|undefined|mismatch)\b/i;
+function terminalReportEvidence(output={}){
+  const candidates=[output?.stderr,output?.error,output?.message,output?.preview,output?.stdout,output?.content];
+  for(const candidate of candidates){
+    if(typeof candidate!=="string"||!candidate.trim())continue;
+    const lines=candidate.split(/\r?\n/).map(line=>line.trim()).filter(Boolean),line=lines.find(value=>TERMINAL_REPORT_SIGNAL.test(value))||lines[0];
+    if(!line)continue;
+    const clean=redactSecretText(line.replace(/^line\s+\d+:\s*/i,""),{trim:true}).replace(/\s+/g," ").slice(0,360);
+    if(clean)return clean;
+  }
+  return null;
+}
+
+function terminalStatusText(run={}){
+  const exitCode=Number(run?.exitCode);if(!Number.isFinite(exitCode))return null;
+  const lines=[exitCode===0?"Command completed successfully (exit code 0).":`Command failed (exit code ${exitCode}).`];
+  const evidence=String(run?.reportEvidence||"").trim();if(evidence)lines.push((exitCode===0?"Output: ":"Evidence: ")+evidence);
+  return lines.join("\n");
+}
+
 function terminalRunLooksLikeVerifier(args={}){
   const normalized=normalizeNativeCommandArguments(args),command=String(normalized.command||"").trim(),argv=Array.isArray(normalized.args)?normalized.args.map(value=>String(value)):[];
   const rendered=[command,...argv].filter(Boolean).join(" ").replace(/\s+/g," ").trim().toLowerCase();
@@ -406,14 +440,14 @@ export async function runNativeAgentTurn({
   providerTurn,executeTool,model,messages=[],tools=[],provider=null,toolChoice="auto",
   maxOutputTokens=null,temperature=null,parallelToolCalls=true,maxModelTurns=24,maxToolCalls=100,maxWallTimeMs=null,
   maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,coolReadToolHistory=null,preserveToolSchemasOnFinalization=false,signal=null,onEvent=null,metadata=null,
-  autoRerunVerification=false,priorTerminalRuns=[],
+  autoRerunVerification=false,priorTerminalRuns=[],synthesizeTerminalReports=false,
 }={}){
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
   const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])];
   const explicitlyRequired=explicitlyRequestedTools(conversation,providerVisibleTools(tools,toolAllowlist)),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
-  const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
+  const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalStatusRequested=explicitTerminalStatusRequest(conversation),terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
   const verificationFinalizationRequest=verificationCompletionRequest||(finalAfterVerifiedRequest?.target?finalAfterVerifiedRequest:null);
   const successfulTerminalRuns=[];
   let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
@@ -453,7 +487,7 @@ export async function runNativeAgentTurn({
       const key=terminalRunKey(args),exitCode=Number.isFinite(Number(output?.exitCode))?Number(output.exitCode):null;
       if(key&&exitCode!==null){
         const priorFailure=terminalRuns.findLast(item=>item.key===key&&item.exitCode!==0&&item.editRevision<editRevision);
-        terminalRuns.push({key,exitCode,editRevision,arguments:terminalReplayArguments(args)});
+        terminalRuns.push({key,exitCode,editRevision,arguments:terminalReplayArguments(args),currentTurn:true,reportEvidence:terminalReportEvidence(output)});
         const completionTargetMatches=!verificationFinalizationRequest||verificationCompletionMatchesRun(verificationFinalizationRequest,args,terminalRuns,editRevision);
         if(verifiedFinalizationAllowed&&exitCode===0&&priorFailure&&completionTargetMatches){
           verifiedFinalizationReady=true;
@@ -646,6 +680,20 @@ export async function runNativeAgentTurn({
       callIndex+=batch.length;
     }
     if(redirected)continue;
+    const terminalStatusCall=calls.length===1&&calls[0]?.namespace==="trebell_terminal"&&calls[0]?.name==="run"?calls[0]:null;
+    const terminalStatusRun=terminalStatusCall?terminalRuns.findLast(item=>item?.currentTurn&&item.key===terminalRunKey(safeArguments(terminalStatusCall.arguments))):null;
+    const missingExplicitAfterTools=explicitlyRequired.find(item=>!executedToolKeys.has(item.namespace+"/"+item.name));
+    if(synthesizeTerminalReports===true&&terminalStatusRequested&&toolCalls===1&&terminalStatusRun&&!missingExplicitAfterTools&&!String(responseText||"").trim()){
+      if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_terminal_report"})){verifiedFinalizationAllowed=false;verifiedFinalizationReady=false;continue}
+      const text=terminalStatusText(terminalStatusRun);
+      if(text){
+        conversation.push({role:"assistant",content:text,toolCalls:[]});
+        const result={text,model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse:null};
+        emit(onEvent,{name:"native.terminal.report_synthesized",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,exitCode:terminalStatusRun.exitCode,evidence:Boolean(terminalStatusRun.reportEvidence)}});
+        emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage,syntheticTerminalReport:true}});
+        return result;
+      }
+    }
     const successfulEditOnlyBatch=calls.length>0&&calls.every(call=>call?.namespace==="trebell_workspace"&&["write_file","replace_text"].includes(call?.name))&&editRevision-editRevisionBeforeCalls===calls.length;
     if(autoRerunVerification===true&&successfulEditOnlyBatch&&verificationCompletionRequest&&verifiedFinalizationAllowed&&!verifiedFinalizationReady&&toolCalls<budget.maxToolCalls){
       if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_auto_verifier"})){verifiedFinalizationAllowed=false;verifiedFinalizationReady=false;continue}

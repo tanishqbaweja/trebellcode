@@ -23,6 +23,20 @@ test("Native session implements the relay start/prompt contract with usage updat
   const usage=updates.find(item=>item.update.sessionUpdate==="usage_update");assert.equal(usage.update.used,6);assert.equal(usage.update.usage.cache_read_input_tokens,1);
 });
 
+test("Native session uses deterministic command-only reporting when no richer work is requested",async()=>{
+  let providerCalls=0;const updates=[],events=[];
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model-a",tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],onUpdate:update=>updates.push(update),onEvent:event=>events.push(event),
+    providerTurn:async()=>{providerCalls++;return {id:"run",text:"",toolCalls:[{id:"verify",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}}},
+    executeTool:async()=>({exitCode:0,stdout:"VERIFY_OK"}),
+  });
+  await session.start({providerSessionId:"terminal-report",model:"model-a"});
+  const result=await session.prompt([{type:"text",text:"Run node verify.mjs and report the result."}]);
+  assert.equal(providerCalls,1);assert.equal(result.raw?.modelTurns,1);assert.equal(result.raw?.toolCalls,1);
+  assert.match(updates.find(item=>item.update?.sessionUpdate==="agent_message_chunk")?.update?.content?.text||"",/completed successfully/i);
+  assert.ok(events.some(event=>event.name==="native.terminal.report_synthesized"));
+});
+
 test("Native session auto-reruns one uniquely proven verifier after a successful edit",async()=>{
   let providerCalls=0,verifierRuns=0;const events=[],updates=[];
   const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];

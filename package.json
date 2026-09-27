@@ -44,6 +44,7 @@
     "bench:native:dedupe": "node scripts/native-observation-dedupe-benchmark.mjs",
     "bench:native:cache-history": "node scripts/native-cache-history-benchmark.mjs",
     "bench:native:cross-turn-verifier": "node scripts/native-cross-turn-verifier-benchmark.mjs",
+    "bench:native:terminal-report": "node scripts/native-terminal-report-benchmark.mjs",
     "bench:vyce:native:search-dedupe": "node --env-file-if-exists=.env scripts/live-vyce-native-search-dedupe-benchmark.mjs --live",
     "bench:vyce:native:budget-finalization": "node --env-file-if-exists=.env scripts/live-vyce-native-budget-finalization-benchmark.mjs --live",
     "bench:vyce:native:shell-hint": "node --env-file-if-exists=.env scripts/live-vyce-native-shell-hint-benchmark.mjs --live",
