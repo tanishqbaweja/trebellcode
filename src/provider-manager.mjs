@@ -8,7 +8,7 @@ import { trebellHome } from "./paths.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
 import { performance } from "node:perf_hooks";
 import { providerCapabilities } from "./provider-capabilities.mjs";
-import { OpenAiResponseContinuationTracker } from "./openai-response-continuation.mjs";
+import { NATIVE_OPENAI_CONTINUATION_IDENTITY, OpenAiResponseContinuationTracker } from "./openai-response-continuation.mjs";
 import { OpenAiResponsesWebSocket, openAiResponsesWebSocketStreamId } from "./openai-responses-websocket.mjs";
 import { NATIVE_TOOL_SCHEMA_FINGERPRINT } from "./native-request-metrics.mjs";
 
@@ -659,7 +659,7 @@ export class ProviderManager {
       ?(provider.id==="openai"?this.#officialOpenAiResponsesBody({...request,model}):providerTurnToResponses({...request,model}))
       :null;
     let openAiContinuation=provider.id==="openai"&&fullResponsesBody
-      ?this.openAiResponseContinuations.prepare(fullResponsesBody,request.promptCacheComparisonResponseId)
+      ?this.openAiResponseContinuations.prepare(fullResponsesBody,request.promptCacheComparisonResponseId,{messageRefs:Array.isArray(request.messages)?request.messages:null,identityToken:request?.[NATIVE_OPENAI_CONTINUATION_IDENTITY]||null})
       :null;
     let responsesBody=openAiContinuation?.body||fullResponsesBody;
     if(provider.id==="openai"&&streamResponses===true&&responsesBody){responsesBody.stream=true;if(fullResponsesBody)fullResponsesBody.stream=true}

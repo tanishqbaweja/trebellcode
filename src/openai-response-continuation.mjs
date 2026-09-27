@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+export const NATIVE_OPENAI_CONTINUATION_IDENTITY=Symbol.for("trebell.native.openai-continuation-identity");
+
 function digest(value){
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
@@ -58,10 +60,17 @@ export class OpenAiResponseContinuationTracker{
 
   clear(){this.entries.clear()}
 
-  prepare(fullBody={},previousResponseId=""){
+  prepare(fullBody={},previousResponseId="",{messageRefs=null,identityToken=null}={}){
     const input=Array.isArray(fullBody?.input)?fullBody.input:[],parentId=String(previousResponseId||"").trim(),parent=parentId?this.entries.get(parentId):null;
-    const fingerprints=input.map(fingerprint),fullInputDigests=fingerprints.map(item=>item.digest),base={
-      body:fullBody,used:false,parentId:null,fullInputDigests,deltaInputCount:input.length,fullInputCount:input.length,savedRequestBytes:0,
+    const refs=Array.isArray(messageRefs)?messageRefs:null;
+    let fingerprints=null,fastPrefixCount=0;
+    if(parent&&identityToken&&parent.identityToken===identityToken&&refs&&Array.isArray(parent.messageRefs)&&Array.isArray(parent.requestFingerprints)&&parent.requestFingerprints.length<=input.length&&parent.messageRefs.length<=refs.length){
+      let same=true;for(let index=0;index<parent.messageRefs.length;index++)if(parent.messageRefs[index]!==refs[index]){same=false;break}
+      if(same){fastPrefixCount=parent.requestFingerprints.length;fingerprints=[...parent.requestFingerprints,...input.slice(fastPrefixCount).map(fingerprint)]}
+    }
+    if(!fingerprints)fingerprints=input.map(fingerprint);
+    const fullInputDigests=fingerprints.map(item=>item.digest),base={
+      body:fullBody,used:false,parentId:null,fullInputDigests,requestFingerprints:fingerprints,messageRefs:refs,identityToken:identityToken||null,fastPrefixCount,deltaInputCount:input.length,fullInputCount:input.length,savedRequestBytes:0,
     };
     if(!parent||String(parent.model||"")!==String(fullBody?.model||""))return base;
     const prefix=Array.isArray(parent.conversationDigests)?parent.conversationDigests:[];
@@ -69,7 +78,7 @@ export class OpenAiResponseContinuationTracker{
     for(let index=0;index<prefix.length;index++)if(prefix[index]!==fullInputDigests[index])return base;
     const delta=input.slice(prefix.length),candidate={...fullBody,input:delta,previous_response_id:parentId};
     return {
-      body:candidate,used:true,parentId,fullInputDigests,deltaInputCount:delta.length,fullInputCount:input.length,
+      ...base,body:candidate,used:true,parentId,deltaInputCount:delta.length,
       savedRequestBytes:continuationSavedRequestBytes(fullBody,fingerprints,prefix.length,parentId),
     };
   }
@@ -79,7 +88,7 @@ export class OpenAiResponseContinuationTracker{
     const requestDigests=Array.isArray(preparation?.fullInputDigests)?preparation.fullInputDigests:[];
     const outputDigests=openAiContinuationOutputItems(turn).map(digest),conversationDigests=[...requestDigests,...outputDigests];
     this.entries.delete(id);
-    this.entries.set(id,{model:String(preparation?.body?.model||turn?.model||""),conversationDigests});
+    this.entries.set(id,{model:String(preparation?.body?.model||turn?.model||""),conversationDigests,requestFingerprints:Array.isArray(preparation?.requestFingerprints)?preparation.requestFingerprints:[],messageRefs:Array.isArray(preparation?.messageRefs)?preparation.messageRefs:null,identityToken:preparation?.identityToken||null});
     while(this.entries.size>this.maxEntries)this.entries.delete(this.entries.keys().next().value);
     return {responseId:id,inputItems:requestDigests.length,outputItems:outputDigests.length,conversationItems:conversationDigests.length};
   }

@@ -4,6 +4,7 @@ import { platformToolAllowedByAllowlist } from "./shared-tool-gateway.mjs";
 import { nativeCommandSemanticError, normalizeNativeCommandArguments } from "./native-command-argv.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
 import { coolVirtualizedToolContent } from "./native-tool-history.mjs";
+import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "./openai-response-continuation.mjs";
 
 function abortError(signal){
   const reason=signal?.reason;if(reason?.name==="AbortError")return reason;
@@ -549,7 +550,7 @@ export async function runNativeAgentTurn({
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
-  const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])],visibleTools=providerVisibleTools(tools,toolAllowlist),directVisiblePairs=exposedToolPairs(visibleTools),requestMetricsToolCache=new WeakMap(),requestMetricsMessageCache=new WeakMap(),requestMetricsHistoryHashCache={};
+  const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])],visibleTools=providerVisibleTools(tools,toolAllowlist),directVisiblePairs=exposedToolPairs(visibleTools),requestMetricsToolCache=new WeakMap(),requestMetricsMessageCache=new WeakMap(),requestMetricsHistoryHashCache={},openAiContinuationIdentity={};
   const explicitlyRequired=explicitlyRequestedTools(conversation,visibleTools),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
   const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalStatusRequested=explicitTerminalStatusRequest(conversation),directTerminalStatusCommand=directTerminalStatusCommands===true?explicitTerminalStatusCommand(conversation):null,directReplacementStatus=directExactReplacementStatus===true?explicitExactReplacementStatus(conversation):null,terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
   const verificationFinalizationRequest=verificationCompletionRequest||(finalAfterVerifiedRequest?.target?finalAfterVerifiedRequest:null);
@@ -721,7 +722,7 @@ export async function runNativeAgentTurn({
     const providerAttempts=boundedInteger(maxProviderAttempts,3,{min:1,max:8});let response=null;
     for(let attempt=1;attempt<=providerAttempts;attempt++){
       try{
-        response=await providerTurn({model,provider,messages:providerMessages,tools:requestTools,toolChoice:requestToolChoice,maxOutputTokens,temperature,parallelToolCalls,signal:turnSignal,metadata,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:requestMetrics[NATIVE_TOOL_SCHEMA_FINGERPRINT]||null});break;
+        response=await providerTurn({model,provider,messages:providerMessages,tools:requestTools,toolChoice:requestToolChoice,maxOutputTokens,temperature,parallelToolCalls,signal:turnSignal,metadata,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:requestMetrics[NATIVE_TOOL_SCHEMA_FINGERPRINT]||null,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:openAiContinuationIdentity});break;
       }catch(error){
         if(error?.nativeSteered){
           if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"model_request_interrupted"})){

@@ -50,3 +50,20 @@ test("OpenAI continuation keeps exact saved-byte accounting for preexisting pare
   const next={...body([user,...openAiContinuationOutputItems({text:"Done"}),{type:"message",role:"user",content:[{type:"input_text",text:"Next"}]}]),previous_response_id:"legacy-parent"},prepared=tracker.prepare(next,"resp-1"),exact=Buffer.byteLength(JSON.stringify(next),"utf8")-Buffer.byteLength(JSON.stringify(prepared.body),"utf8");
   assert.equal(prepared.used,true);assert.equal(prepared.savedRequestBytes,exact);
 });
+
+test("OpenAI continuation can reuse prior request fingerprints from stable Native message identity",()=>{
+  const fast=new OpenAiResponseContinuationTracker(),slow=new OpenAiResponseContinuationTracker(),token={},userRef={role:"user",content:"Task"},assistantRef={role:"assistant",content:""},toolRef={role:"tool",content:"failed"},firstInput=[{type:"message",role:"user",content:[{type:"input_text",text:"Task"}]}];
+  const firstFast=fast.prepare(body(firstInput),"",{messageRefs:[userRef],identityToken:token}),firstSlow=slow.prepare(body(firstInput));
+  fast.record("resp-fast",firstFast,{model:"gpt-5.6",text:"",toolCalls:[{id:"call-1",namespace:"trebell_terminal",name:"run",arguments:{command:"node",args:["verify.mjs"]}}]});
+  slow.record("resp-slow",firstSlow,{model:"gpt-5.6",text:"",toolCalls:[{id:"call-1",namespace:"trebell_terminal",name:"run",arguments:{command:"node",args:["verify.mjs"]}}]});
+  const output=openAiContinuationOutputItems({toolCalls:[{id:"call-1",namespace:"trebell_terminal",name:"run",arguments:{command:"node",args:["verify.mjs"]}}]}),toolOutput={type:"function_call_output",call_id:"call-1",output:"failed"},full=body([...firstInput,...output,toolOutput]);
+  const fastPrepared=fast.prepare(full,"resp-fast",{messageRefs:[userRef,assistantRef,toolRef],identityToken:token}),slowPrepared=slow.prepare(full,"resp-slow");
+  assert.equal(fastPrepared.fastPrefixCount,firstInput.length);assert.equal(fastPrepared.used,true);assert.deepEqual(fastPrepared.body.input,slowPrepared.body.input);assert.equal(fastPrepared.savedRequestBytes,slowPrepared.savedRequestBytes);assert.deepEqual(fastPrepared.fullInputDigests,slowPrepared.fullInputDigests);
+});
+
+test("OpenAI continuation identity acceleration fails back to full fingerprinting across Native turn tokens",()=>{
+  const tracker=new OpenAiResponseContinuationTracker(),tokenA={},tokenB={},userRef={role:"user",content:"Task"},firstInput=[{type:"message",role:"user",content:[{type:"input_text",text:"Task"}]}],first=tracker.prepare(body(firstInput),"",{messageRefs:[userRef],identityToken:tokenA});
+  tracker.record("resp-1",first,{model:"gpt-5.6",text:"Done"});
+  const next=body([...firstInput,...openAiContinuationOutputItems({text:"Done"}),{type:"message",role:"user",content:[{type:"input_text",text:"Next"}]}]),prepared=tracker.prepare(next,"resp-1",{messageRefs:[userRef,{role:"assistant",content:"Done"},{role:"user",content:"Next"}],identityToken:tokenB});
+  assert.equal(prepared.fastPrefixCount,0);assert.equal(prepared.used,true);
+});

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { nativeAgentBudget, nativeProviderRetryable, runNativeAgentTurn } from "../src/native-agent-loop.mjs";
 import { attachNativePromptProvenance, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
+import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "../src/openai-response-continuation.mjs";
 const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
 
 test("native agent completes a plain model turn without inventing tool work",async()=>{
@@ -27,6 +28,20 @@ test("native agent forwards internal session metadata to the provider transport 
     executeTool:async()=>{throw new Error("not used")},
   });
   assert.deepEqual(seen.metadata,metadata);assert.deepEqual(seen.messages,messages);assert.deepEqual(seen.tools,[]);assert.match(toolSchemaFingerprint,/^[a-f0-9]{64}$/);
+});
+
+test("native agent reuses one hidden OpenAI continuation identity across model turns",async()=>{
+  const tokens=[],requests=[];
+  const result=await runNativeAgentTurn({
+    model:"gpt-5.6",provider:"openai",messages:[{role:"user",content:"inspect then answer"}],tools:[{type:"namespace",name:"trebell_repo",tools:[]}],
+    providerTurn:async request=>{
+      tokens.push(request[NATIVE_OPENAI_CONTINUATION_IDENTITY]);requests.push(request);
+      if(requests.length===1)return {model:"gpt-5.6",provider:"openai",text:"",toolCalls:[{id:"call-1",namespace:"trebell_repo",name:"search_symbols",arguments:{query:"Session"}}],finishReason:"tool_calls",usage:{}};
+      return {model:"gpt-5.6",provider:"openai",text:"done",toolCalls:[],finishReason:"stop",usage:{}};
+    },
+    executeTool:async()=>({success:true,content:"src/session.js"}),
+  });
+  assert.equal(result.text,"done");assert.equal(tokens.length,2);assert.ok(tokens[0]&&typeof tokens[0]==="object");assert.equal(tokens[0],tokens[1]);assert.equal(Object.getOwnPropertySymbols(requests[0]).includes(NATIVE_OPENAI_CONTINUATION_IDENTITY),true);assert.equal(JSON.stringify(requests[0]).includes("continuation-identity"),false);
 });
 
 test("native agent gives one bounded recovery chance to an empty terminal provider response",async()=>{
