@@ -94,6 +94,59 @@ test("native agent executes one explicit verifier status command without provide
   assert.ok(events.some(event=>event.name==="native.terminal.direct_status_executed"));assert.ok(events.some(event=>event.name==="native.terminal.report_synthesized"&&event.data?.direct===true));
 });
 
+test("native agent executes one exact replacement plus verifier status without provider inference",async()=>{
+  let providerCalls=0;const executions=[],events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Replace exactly `legacy` with `strict` in `src/config.mjs`, then run `node verify.mjs` and report the result."}],directExactReplacementStatus:true,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{providerCalls++;throw new Error("Exact replacement status should not call the provider.")},
+    executeTool:async call=>{
+      executions.push(structuredClone(call));
+      if(call.namespace==="trebell_workspace")return {path:"src/config.mjs",replacements:1};
+      return {exitCode:0,stdout:"VERIFY_OK"};
+    },
+  });
+  assert.equal(providerCalls,0);assert.equal(result.modelTurns,0);assert.equal(result.toolCalls,2);assert.equal(executions.length,2);
+  assert.equal(executions[0].namespace,"trebell_workspace");assert.equal(executions[0].name,"replace_text");assert.deepEqual(executions[0].arguments,{path:"src/config.mjs",old_text:"legacy",new_text:"strict",expected_replacements:1});
+  assert.equal(executions[1].namespace,"trebell_terminal");assert.deepEqual(executions[1].arguments,{command:"node",args:["verify.mjs"]});
+  assert.match(result.text,/Exact replacement completed in src\/config\.mjs/i);assert.match(result.text,/completed successfully \(exit code 0\)/i);
+  assert.ok(events.some(event=>event.name==="native.workspace.direct_exact_replacement_status"&&event.data?.exitCode===0));
+});
+
+test("native exact replacement status fast path fails closed for ambiguous or richer instructions",async()=>{
+  const prompts=[
+    "Replace legacy with strict in src/config.mjs, then run node verify.mjs and report the result.",
+    "Replace exactly legacy with strict in src/config.mjs, then run node verify.mjs and explain why it passes.",
+    "Replace exactly legacy with strict in src/config.mjs, then run node verify.mjs && echo done and report the result.",
+    'Replace exactly legacy with strict in src/config.mjs, then run node -e "console.log(1)" and report the result.',
+    "Replace exactly legacy with strict in src/config.mjs, then run node verify.mjs in packages/api and report the result.",
+  ];
+  for(const prompt of prompts){
+    let providerCalls=0,executions=0;const events=[];
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:prompt}],directExactReplacementStatus:true,onEvent:event=>events.push(event),
+      tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+      providerTurn:async()=>{providerCalls++;return {text:"provider handled it",toolCalls:[],usage:{}}},executeTool:async()=>{executions++;return {success:true}},
+    });
+    assert.equal(providerCalls,1,prompt);assert.equal(executions,0,prompt);assert.equal(result.text,"provider handled it",prompt);assert.equal(events.some(event=>event.name==="native.workspace.direct_exact_replacement_status"),false,prompt);
+  }
+});
+
+test("native exact replacement status falls back to the model when the edit is not proven",async()=>{
+  let providerCalls=0,terminalCalls=0;const requests=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Replace exactly legacy with strict in src/config.mjs, then run node verify.mjs and report the result."}],directExactReplacementStatus:true,
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{providerCalls++;requests.push(structuredClone(request));return {text:"The requested exact replacement was not found.",toolCalls:[],usage:{}}},
+    executeTool:async call=>{
+      if(call.namespace==="trebell_terminal"){terminalCalls++;return {exitCode:0}}
+      return {success:false,error:"Expected exactly one replacement, found zero."};
+    },
+  });
+  assert.equal(providerCalls,1);assert.equal(terminalCalls,0);assert.equal(result.modelTurns,1);assert.equal(result.toolCalls,1);assert.match(result.text,/not found/i);
+  assert.ok(requests[0].messages.some(message=>message.role==="tool"&&/found zero/i.test(String(message.content||""))));
+});
+
 test("native direct terminal status execution fails closed for ambiguous or richer instructions",async()=>{
   const prompts=[
     "Run the tests and report the result.",

@@ -236,6 +236,17 @@ function explicitDirectStatusCwd(value){
   if(parts.some(part=>!/^[A-Za-z0-9._@+-]+$/.test(part)))return null;
   return normalized;
 }
+function directVerifierCommand(value,{cwd=null}={}){
+  let raw=String(value||"").trim();
+  const quoted=raw.match(/^`([^`\n]{1,300})`$/);if(quoted)raw=String(quoted[1]||"").trim();
+  raw=raw.replace(/\s+(?:now|please)\s*$/i,"").trim();if(!raw||raw.length>300)return null;
+  if(/\s+(?:in|from|inside|within)\s+/i.test(raw))return null;
+  const normalized=normalizeNativeCommandArguments({command:raw,...(cwd?{cwd}:{})});if(nativeCommandSemanticError(normalized))return null;
+  const command=String(normalized.command||"").trim(),args=Array.isArray(normalized.args)?normalized.args.map(value=>String(value)):[];if(!command||/\s/.test(command)||args.length>48)return null;
+  const executable=command.replace(/^.*[\\/]/,"").toLowerCase();if(DIRECT_STATUS_NATURAL_COMMANDS.has(executable)||DIRECT_STATUS_SHELLS.has(executable))return null;
+  if(args.some(arg=>/^(?:-e|-c|--eval|--execute|--command|-command|-encodedcommand)$/i.test(String(arg))))return null;
+  const direct={command,args,...(cwd?{cwd}:{})};return terminalRunLooksLikeVerifier(direct)?direct:null;
+}
 function explicitTerminalStatusCommand(messages=[]){
   if(!explicitTerminalStatusRequest(messages))return null;
   const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=lastUserInstructionText(user),run=[...text.matchAll(/\b(?:run|execute)\b/ig)][0];
@@ -265,11 +276,30 @@ function explicitTerminalStatusCommand(messages=[]){
   const cwdSuffix=raw.match(/^(.+?)\s+(?:in|from|inside|within)\s+((?:`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+))$/i);
   if(cwdSuffix){if(cwd)return null;cwd=explicitDirectStatusCwd(cwdSuffix[2]);if(!cwd)return null;raw=String(cwdSuffix[1]||"").trim()}
   else if(/\s+(?:in|from|inside|within)\s+/i.test(raw))return null;
-  const normalized=normalizeNativeCommandArguments({command:raw,...(cwd?{cwd}:{})});if(nativeCommandSemanticError(normalized))return null;
-  const command=String(normalized.command||"").trim(),args=Array.isArray(normalized.args)?normalized.args.map(value=>String(value)):[];if(!command||/\s/.test(command)||args.length>48)return null;
-  const executable=command.replace(/^.*[\\/]/,"").toLowerCase();if(DIRECT_STATUS_NATURAL_COMMANDS.has(executable)||DIRECT_STATUS_SHELLS.has(executable))return null;
-  if(args.some(arg=>/^(?:-e|-c|--eval|--execute|--command|-command|-encodedcommand)$/i.test(String(arg))))return null;
-  const direct={command,args,...(cwd?{cwd}:{})};return terminalRunLooksLikeVerifier(direct)?direct:null;
+  return directVerifierCommand(raw,{cwd});
+}
+
+function exactReplacementToken(value,{allowEmpty=false}={}){
+  const raw=String(value??"").trim();if(!raw)return allowEmpty?"":null;
+  const quote=raw[0];
+  if(["`","\"","'"].includes(quote)){
+    if(raw.length<2||raw.at(-1)!==quote)return null;
+    const inner=raw.slice(1,-1);if(/[\r\n]/.test(inner)||(!inner&&!allowEmpty)||inner.length>300)return null;return inner;
+  }
+  if(/\s/.test(raw)||raw.length>300)return null;
+  return raw;
+}
+
+function explicitExactReplacementStatus(messages=[]){
+  const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=lastUserInstructionText(user).trim();
+  if(!text||/[\r\n]/.test(text))return null;
+  if(/\b(?:diagnos(?:e|is)|fix|repair|debug|explain|analy[sz]e|investigate|root\s+cause|recommend|suggest|compare|summari[sz]e|read|inspect|search|list|create|delete|write|commit|push|browse)\b/i.test(text))return null;
+  const match=text.match(/^(?:please\s+)?replace\s+(?:(?:exactly|only)\s+|the\s+exact\s+text\s+)(.+?)\s+with\s+(.+?)\s+in\s+(.+?)\s*[,;]?\s*(?:then|and\s+then)\s+(?:run|execute)\s+(.+?)\s+(?:and\s+)?(?:report|show)\s+(?:me\s+)?(?:the\s+)?(?:result|status|outcome)\s*[.!]?$/i);
+  if(!match)return null;
+  const oldText=exactReplacementToken(match[1]),newText=exactReplacementToken(match[2],{allowEmpty:true}),path=exactReplacementToken(match[3]),command=directVerifierCommand(match[4]);
+  if(oldText==null||newText==null||path==null||!command)return null;
+  if(oldText===newText||oldText.length>200||newText.length>200||path.length>300)return null;
+  return {path,oldText,newText,command};
 }
 
 const TERMINAL_REPORT_SIGNAL=/\b(?:error|failed|failure|exception|assert(?:ion)?|traceback|panic|fatal|timeout|timed out|cannot|can't|invalid|expected|received|not found|undefined|mismatch)\b/i;
@@ -492,14 +522,14 @@ export async function runNativeAgentTurn({
   providerTurn,executeTool,model,messages=[],tools=[],provider=null,toolChoice="auto",
   maxOutputTokens=null,temperature=null,parallelToolCalls=true,maxModelTurns=24,maxToolCalls=100,maxWallTimeMs=null,
   maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,coolReadToolHistory=null,preserveToolSchemasOnFinalization=false,signal=null,onEvent=null,metadata=null,
-  autoRerunVerification=false,priorTerminalRuns=[],synthesizeTerminalReports=false,coolSyntheticTerminalReportOutput=true,directTerminalStatusCommands=false,prepareProviderMessages=null,
+  autoRerunVerification=false,priorTerminalRuns=[],synthesizeTerminalReports=false,coolSyntheticTerminalReportOutput=true,directTerminalStatusCommands=false,directExactReplacementStatus=false,prepareProviderMessages=null,
 }={}){
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
   const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])];
   const explicitlyRequired=explicitlyRequestedTools(conversation,providerVisibleTools(tools,toolAllowlist)),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
-  const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalStatusRequested=explicitTerminalStatusRequest(conversation),directTerminalStatusCommand=directTerminalStatusCommands===true?explicitTerminalStatusCommand(conversation):null,terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
+  const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalStatusRequested=explicitTerminalStatusRequest(conversation),directTerminalStatusCommand=directTerminalStatusCommands===true?explicitTerminalStatusCommand(conversation):null,directReplacementStatus=directExactReplacementStatus===true?explicitExactReplacementStatus(conversation):null,terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
   const verificationFinalizationRequest=verificationCompletionRequest||(finalAfterVerifiedRequest?.target?finalAfterVerifiedRequest:null);
   const successfulTerminalRuns=[];
   let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
@@ -551,15 +581,17 @@ export async function runNativeAgentTurn({
     emit(onEvent,{name:"native.tool.completed",status:success?"completed":uncertain?"uncertain":"failed",model:String(model),provider:provider||null,data:{toolCall:toolCallNumber,callId,namespace,name,durationMs:duration(toolStarted),success,uncertain,retrySafe,error:errorMessage}});
     return {role:"tool",toolCallId:callId,content};
   };
+  const coolTerminalReportObservation=call=>{
+    if(coolSyntheticTerminalReportOutput===false||!call?.id)return;
+    const index=conversation.findLastIndex(message=>message?.role==="tool"&&String(message?.toolCallId||message?.tool_call_id||"")===String(call.id));
+    if(index<0||typeof conversation[index]?.content!=="string")return;
+    const before=conversation[index].content,after=coolVirtualizedToolContent(before,{maxPreviewChars:600,includePreview:false});
+    if(after===before)return;
+    conversation[index]={...conversation[index],content:after};emit(onEvent,{name:"native.tool.history_cooled",status:"completed",model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,data:{phase:"terminal_report",count:1,savedChars:Math.max(0,before.length-after.length),toolResultCount:1,toolCallArgumentCount:0,toolResultSavedChars:Math.max(0,before.length-after.length),toolCallArgumentSavedChars:0}});
+  };
   const finishTerminalStatus=(call,run,{responseText="",direct=false}={})=>{
     const text=terminalStatusText(run);if(!text)return null;
-    if(coolSyntheticTerminalReportOutput!==false&&call?.id){
-      const index=conversation.findLastIndex(message=>message?.role==="tool"&&String(message?.toolCallId||message?.tool_call_id||"")===String(call.id));
-      if(index>=0&&typeof conversation[index]?.content==="string"){
-        const before=conversation[index].content,after=coolVirtualizedToolContent(before,{maxPreviewChars:600,includePreview:false});
-        if(after!==before){conversation[index]={...conversation[index],content:after};emit(onEvent,{name:"native.tool.history_cooled",status:"completed",model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,data:{phase:"terminal_report",count:1,savedChars:Math.max(0,before.length-after.length),toolResultCount:1,toolCallArgumentCount:0,toolResultSavedChars:Math.max(0,before.length-after.length),toolCallArgumentSavedChars:0}})}
-      }
-    }
+    coolTerminalReportObservation(call);
     conversation.push({role:"assistant",content:text,toolCalls:[]});
     const result={text,model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse:null};
     if(direct)emit(onEvent,{name:"native.terminal.direct_status_executed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,exitCode:run.exitCode}});
@@ -569,6 +601,27 @@ export async function runNativeAgentTurn({
   };
   emit(onEvent,{name:"native.turn.started",status:"running",model:String(model),provider:provider||null,data:{...metadata,maxModelTurns:budget.maxModelTurns,maxToolCalls:budget.maxToolCalls,maxWallTimeMs:budget.maxWallTimeMs}});
   try{
+    const directVisiblePairs=exposedToolPairs(providerVisibleTools(tools,toolAllowlist)),directReplacementVisible=directReplacementStatus&&budget.maxToolCalls>=2&&directVisiblePairs.some(item=>item.namespace==="trebell_workspace"&&item.name==="replace_text")&&directVisiblePairs.some(item=>item.namespace==="trebell_terminal"&&item.name==="run");
+    if(directReplacementVisible&&!applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_direct_exact_replacement"})){
+      throwIfAborted(turnSignal);
+      const editCall={id:"native-direct-exact-replace-1",namespace:"trebell_workspace",name:"replace_text",arguments:JSON.stringify({path:directReplacementStatus.path,old_text:directReplacementStatus.oldText,new_text:directReplacementStatus.newText,expected_replacements:1})};
+      conversation.push({role:"assistant",content:"",toolCalls:[editCall]});toolCalls=1;const beforeRevision=editRevision,editObservation=await executeOneTool(editCall,toolCalls);conversation.push(editObservation);
+      const exactEdit=editRevision===beforeRevision+1&&verifiedEdits.at(-1)?.kind==="replace_text"&&verifiedEdits.at(-1)?.path===directReplacementStatus.path&&verifiedEdits.at(-1)?.replacements===1;
+      if(exactEdit&&!applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"after_direct_exact_replacement"})){
+        const verifyCall={id:"native-direct-exact-replace-verify-1",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify(directReplacementStatus.command)};
+        conversation.push({role:"assistant",content:"",toolCalls:[verifyCall]});toolCalls=2;const verifyObservation=await executeOneTool(verifyCall,toolCalls);conversation.push(verifyObservation);
+        const run=terminalRuns.findLast(item=>item?.currentTurn&&item.key===terminalRunKey(directReplacementStatus.command)),missingExplicit=explicitlyRequired.find(item=>!executedToolKeys.has(item.namespace+"/"+item.name));
+        if(run&&!missingExplicit&&!applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"after_direct_exact_replacement_verifier"})){
+          const status=terminalStatusText(run);if(status){
+            coolTerminalReportObservation(verifyCall);
+            const safePath=redactSecretText(String(directReplacementStatus.path||""),{trim:true}).replace(/[\r\n\t]+/g," ").slice(0,240),text=`Exact replacement completed${safePath?` in ${safePath}`:""}.\n${status}`;
+            conversation.push({role:"assistant",content:text,toolCalls:[]});const result={text,model:String(model),provider:provider||null,messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse:null};
+            emit(onEvent,{name:"native.workspace.direct_exact_replacement_status",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,path:safePath||null,exitCode:run.exitCode}});
+            emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage,directExactReplacementStatus:true}});return result;
+          }
+        }
+      }
+    }
     const directTerminalVisible=directTerminalStatusCommand&&budget.maxToolCalls>0&&exposedToolPairs(providerVisibleTools(tools,toolAllowlist)).some(item=>item.namespace==="trebell_terminal"&&item.name==="run");
     if(directTerminalVisible&&!applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_direct_terminal_status"})){
       throwIfAborted(turnSignal);

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdtemp,mkdir,rm,writeFile } from "node:fs/promises";
+import { mkdtemp,mkdir,readFile,rm,writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -104,6 +104,26 @@ test("Trebell Native relay executes an explicit verifier status command in a wor
     const completed=await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);assert.equal(completed.params.turn.status,"completed");assert.equal(providerCalls,0);
     const saved=threadStore.get(thread.id).turns.find(item=>item.id===turn.id),terminal=saved.items.find(item=>item.type==="dynamicToolCall"&&item.namespace==="trebell_terminal"&&item.tool==="run");assert.ok(terminal);assert.deepEqual(terminal.arguments,{command:"node",args:["verify.mjs"],cwd:"packages/api"});
     const assistant=saved.items.find(item=>item.type==="agentMessage");assert.match(assistant?.text||"",/completed successfully/i);assert.match(assistant?.text||"",/DIRECT_CWD_PASS/);
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
+test("Trebell Native relay persists an exact replacement plus verifier turn with zero provider inference",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-direct-replace-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(join(repo,"src"),{recursive:true});
+  await writeFile(join(repo,"src","config.mjs"),'export const mode="legacy";\n',"utf8");
+  await writeFile(join(repo,"verify.mjs"),'import { mode } from "./src/config.mjs";\nif(mode!=="strict") process.exit(1);\nconsole.log("DIRECT_REPLACE_PASS");\n',"utf8");
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let providerCalls=0;
+  const nativeProviderTurn=async()=>{providerCalls++;throw new Error("Direct exact replacement turn must not call the inference provider.")};
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
+  try{
+    const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"full",dynamicTools:[]})).thread;
+    const turn=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"full",input:[{type:"text",text:"Replace exactly legacy with strict in src/config.mjs, then run node verify.mjs and report the result."}]})).turn;
+    const completed=await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===turn.id);assert.equal(completed.params.turn.status,"completed",JSON.stringify(completed.params.turn.error||null));assert.equal(providerCalls,0);
+    assert.equal(await readFile(join(repo,"src","config.mjs"),"utf8"),'export const mode="strict";\n');
+    const persisted=threadStore.get(thread.id),saved=persisted.turns.find(item=>item.id===turn.id);assert.ok(saved);assert.equal(saved.modelTurns,0);assert.equal(saved.providerMessageId??null,null);
+    const calls=saved.items.filter(item=>item.type==="dynamicToolCall");assert.deepEqual(calls.map(item=>item.namespace+"/"+item.tool),["trebell_workspace/replace_text","trebell_terminal/run"]);assert.equal(calls[0].arguments?.path,"src/config.mjs");assert.equal(calls[1].arguments?.command,"node");assert.deepEqual(calls[1].arguments?.args,["verify.mjs"]);
+    const assistant=saved.items.find(item=>item.type==="agentMessage");assert.ok(assistant);assert.match(assistant.text,/Exact replacement completed in src\/config\.mjs/i);assert.match(assistant.text,/completed successfully \(exit code 0\)/i);
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
 });
 

@@ -37,6 +37,19 @@ test("Native session uses deterministic command-only reporting when no richer wo
   assert.ok(events.some(event=>event.name==="native.terminal.direct_status_executed"));assert.ok(events.some(event=>event.name==="native.terminal.report_synthesized"));
 });
 
+test("Native session directly executes one exact replacement followed by its verifier status",async()=>{
+  let providerCalls=0;const calls=[],updates=[],events=[];
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model-a",tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],onUpdate:update=>updates.push(update),onEvent:event=>events.push(event),
+    providerTurn:async()=>{providerCalls++;throw new Error("Exact replacement status should bypass provider inference.")},
+    executeTool:async call=>{calls.push(structuredClone(call));return call.namespace==="trebell_workspace"?{path:"src/config.mjs",replacements:1}:{exitCode:0,stdout:"VERIFY_OK"}},
+  });
+  await session.start({providerSessionId:"exact-replacement-status",model:"model-a"});
+  const result=await session.prompt([{type:"text",text:"Replace exactly legacy with strict in src/config.mjs, then run node verify.mjs and report the result."}]);
+  assert.equal(providerCalls,0);assert.equal(result.raw?.modelTurns,0);assert.equal(result.raw?.toolCalls,2);assert.deepEqual(calls.map(call=>call.namespace+"/"+call.name),["trebell_workspace/replace_text","trebell_terminal/run"]);
+  assert.match(updates.find(item=>item.update?.sessionUpdate==="agent_message_chunk")?.update?.content?.text||"",/Exact replacement completed/i);assert.ok(events.some(event=>event.name==="native.workspace.direct_exact_replacement_status"));
+});
+
 test("Native session keeps virtualized direct-status evidence persisted but collapses its first provider-facing view",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-terminal-report-cooling-")),requests=[],events=[];
   try{
