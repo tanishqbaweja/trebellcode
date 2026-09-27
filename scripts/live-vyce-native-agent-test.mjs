@@ -149,7 +149,7 @@ try{
     "When the command passes, give a concise summary of what you changed and the verification you actually ran.",
   ].join("\n");
   const contextPacket=await contextEngine.buildPacket({root:workspace,task:prompt,focusPaths:["TASK.md"]});
-  const additionalContext=repositoryContextEntries(contextPacket,{seedOnly:true});
+  const additionalContext=repositoryContextEntries(contextPacket,{seedOnly:true,currentTask:prompt});
   guard.consumeTurn("Trebell Native real-provider coding turn");
   const turn=await guard.withTimeout(rpc.request("turn/start",{
     threadId,model,modelProvider:"vyceai",permissionProfile:"full",

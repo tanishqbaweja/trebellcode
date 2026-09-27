@@ -282,7 +282,7 @@ async function runScenario(scenario){
     const started=performance.now();
     for(const turn of turnSpecs){
       const packet=await contextEngine.buildPacket({root,task:turn.prompt,focusPaths:Object.prototype.hasOwnProperty.call(scenario.files,"TASK.md")?["TASK.md"]:[]});
-      const additionalContext=repositoryContextEntries(packet,{seedOnly:true});
+      const additionalContext=repositoryContextEntries(packet,{seedOnly:true,currentTask:turn.prompt});
       const prompt=await contextualAgentPrompt([{type:"text",text:turn.prompt}],additionalContext);
       try{
         turnResults.push(await session.prompt(prompt,{

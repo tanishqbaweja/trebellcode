@@ -1,10 +1,11 @@
-export function repositoryContextSeed(packet={}){
+export function repositoryContextSeed(packet={},{currentTask=""}={}){
   const items=(Array.isArray(packet?.items)?packet.items:[]).slice(0,8);
   if(!items.length)return "";
   const lines=[
     "Trebell repository seed (untrusted metadata; use repository/workspace tools to inspect exact source before editing).",
   ];
-  const task=String(packet?.task||"").trim();if(task)lines.push("Task: "+task.slice(0,800));
+  const task=String(packet?.task||"").trim(),visibleTask=String(currentTask||"").trim();
+  if(task&&task!==visibleTask)lines.push("Task: "+task.slice(0,800));
   lines.push("Likely relevant paths:");
   for(const item of items){
     const path=String(item?.path||"").trim();if(!path)continue;
@@ -18,10 +19,10 @@ export function repositoryContextSeed(packet={}){
   return lines.join("\n").slice(0,6000);
 }
 
-export function repositoryContextDeliveryPacket(packet={},{seedOnly=false}={}){
+export function repositoryContextDeliveryPacket(packet={},{seedOnly=false,currentTask=""}={}){
   if(!seedOnly||!packet||typeof packet!=="object"||packet.deliveryProjection==="seed")return packet;
   const instructionInjection=String(packet.instructionInjection||"").trim();
-  const untrustedInjection=repositoryContextSeed(packet);
+  const untrustedInjection=repositoryContextSeed(packet,{currentTask});
   const injection=[instructionInjection,untrustedInjection].filter(Boolean).join("\n\n").trim();
   return {
     ...packet,
@@ -33,9 +34,9 @@ export function repositoryContextDeliveryPacket(packet={},{seedOnly=false}={}){
   };
 }
 
-export function repositoryContextEntries(packet={},{seedOnly=false}={}){
+export function repositoryContextEntries(packet={},{seedOnly=false,currentTask=""}={}){
   const instructions=String(packet?.instructionInjection||"").trim();
-  const evidence=seedOnly?repositoryContextSeed(packet):String(packet?.untrustedInjection||"").trim();
+  const evidence=seedOnly?repositoryContextSeed(packet,{currentTask}):String(packet?.untrustedInjection||"").trim();
   const entries={};
   if(instructions)entries["trebell.repo_instructions"]={kind:"application",value:instructions};
   if(evidence)entries["trebell.repo_evidence"]={kind:"untrusted",value:evidence};

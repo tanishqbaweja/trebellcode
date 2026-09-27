@@ -2733,7 +2733,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           io:remote?createRemoteContextIo({environments,environmentId,root}):null,
           signal:cancellation.signal,
         });
-        return json(res,200,repositoryContextDeliveryPacket(packet,{seedOnly:body.deliveryProjection==="seed"}));
+        return json(res,200,repositoryContextDeliveryPacket(packet,{seedOnly:body.deliveryProjection==="seed",currentTask:body.userTask||""}));
       }catch(error){
         if(cancellation.signal.aborted||error?.name==="AbortError")return;
         return json(res,400,{error:error.message});

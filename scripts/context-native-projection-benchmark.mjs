@@ -3,13 +3,13 @@ import { ContextEngine } from "../src/context-engine.mjs";
 import { repositoryContextDeliveryPacket, repositoryContextEntries } from "../src/context-provenance.mjs";
 
 const root=process.cwd(),engine=new ContextEngine();
-const packet=await engine.buildPacket({
+const task="Optimize Native context transport and persistence",packet=await engine.buildPacket({
   root,
-  task:"Optimize Native context transport and persistence",
+  task,
   focusPaths:["ui/src/App.jsx","src/gui-server.mjs"],
 });
-const projected=repositoryContextDeliveryPacket(packet,{seedOnly:true});
-const beforeEntries=repositoryContextEntries(packet,{seedOnly:true}),afterEntries=repositoryContextEntries(projected,{seedOnly:true});
+const projected=repositoryContextDeliveryPacket(packet,{seedOnly:true,currentTask:task});
+const beforeEntries=repositoryContextEntries(packet,{seedOnly:true,currentTask:task}),afterEntries=repositoryContextEntries(projected,{seedOnly:true,currentTask:task});
 assert.deepEqual(afterEntries,beforeEntries);
 const fullResponseBytes=Buffer.byteLength(JSON.stringify(packet)),nativeSeedResponseBytes=Buffer.byteLength(JSON.stringify(projected));
 console.log(JSON.stringify({

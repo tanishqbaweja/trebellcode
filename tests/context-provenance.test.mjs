@@ -36,6 +36,27 @@ test("Native repository context keeps instructions but replaces source excerpts 
   assert.equal(entries["trebell.repo_evidence"].value,seed);
 });
 
+test("Native repository context does not repeat the exact visible task inside its seed",()=>{
+  const packet={
+    task:"Fix the session refresh bug",
+    items:[{path:"src/auth/session.js",reasons:["task term match"],symbols:[{kind:"function",name:"refresh"}]}],
+  };
+  const seed=repositoryContextSeed(packet,{currentTask:packet.task});
+  assert.doesNotMatch(seed,/Task: Fix the session refresh bug/);
+  assert.match(seed,/src\/auth\/session\.js/);
+  assert.match(repositoryContextEntries(packet,{seedOnly:true,currentTask:packet.task})["trebell.repo_evidence"].value,/src\/auth\/session\.js/);
+});
+
+test("Native repository context retains a continuity task that differs from the visible follow-up",()=>{
+  const packet={
+    task:"Previous task: Fix the session refresh bug\nCurrent follow-up: continue",
+    items:[{path:"src/auth/session.js",reasons:["continuity"],symbols:[]}],
+  };
+  const seed=repositoryContextSeed(packet,{currentTask:"continue"});
+  assert.match(seed,/Previous task: Fix the session refresh bug/);
+  assert.match(seed,/Current follow-up: continue/);
+});
+
 test("Native delivery projection stores the exact compact context instead of discarded full excerpts",()=>{
   const packet={
     id:"ctx-1",task:"Fix the session refresh bug",tokenEstimate:25_000,

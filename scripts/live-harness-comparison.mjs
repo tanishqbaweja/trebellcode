@@ -103,7 +103,7 @@ async function runNative(){
       const response=await manager.turn(provider,{...request,provider,model},{signal:request.signal});requests.push({usage:response.usage||{},telemetry:response.telemetry||{}});return response;
     },onUpdate:update=>updates.push(update)});
     await session.start({providerSessionId:"harness-compare-native",model});
-    const packet=await contextEngine.buildPacket({root,task:TASK,focusPaths:["TASK.md"]}),prompt=await contextualAgentPrompt([{type:"text",text:TASK}],repositoryContextEntries(packet,{seedOnly:true}));
+    const packet=await contextEngine.buildPacket({root,task:TASK,focusPaths:["TASK.md"]}),prompt=await contextualAgentPrompt([{type:"text",text:TASK}],repositoryContextEntries(packet,{seedOnly:true,currentTask:TASK}));
     const started=performance.now(),result=await within(session.prompt(prompt,{maxModelTurns:10,maxToolCalls:40,maxWallTimeMs:180_000}),190_000,"Native comparison task"),elapsedMs=Math.round(performance.now()-started);
     await verify(root);
     const usage=requests.reduce((out,item)=>{out.inputTokens+=Number(item.usage.inputTokens||0);out.outputTokens+=Number(item.usage.outputTokens||0);out.cachedInputTokens+=Number(item.usage.cachedInputTokens||0);out.cacheWriteInputTokens+=Number(item.usage.cacheWriteInputTokens||0);return out},{inputTokens:0,outputTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0});
