@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { coolNativeProviderHistory, coolReportedVirtualizedToolResult } from "../src/native-tool-history.mjs";
+import { coolNativeProviderHistory, coolVirtualizedToolContent } from "../src/native-tool-history.mjs";
 import { nativeRequestMetrics } from "../src/native-request-metrics.mjs";
 
 const handle="out_12345678-abcd",signal="CRITICAL_ASSERTION expected strict but received legacy",preview=("noise line\n".repeat(240)+signal+"\n"+"tail noise\n".repeat(120)).slice(0,3600);
@@ -12,7 +12,7 @@ const messages=[
 const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"},{name:"replace_text"}]}];
 
 function measure(includePreview){
-  const reported=coolReportedVirtualizedToolResult(messages,{toolCallId:"verify",maxPreviewChars:600,includePreview});
+  const reported={messages:messages.map(message=>message.role==="tool"&&message.toolCallId==="verify"?{...message,content:coolVirtualizedToolContent(message.content,{maxPreviewChars:600,includePreview})}:message)};
   const cooled=coolNativeProviderHistory(reported.messages),metrics=nativeRequestMetrics(cooled.messages,tools),tool=cooled.messages.find(message=>message.role==="tool"&&message.toolCallId==="verify")?.content||"",assistant=cooled.messages.findLast(message=>message.role==="assistant"&&!Array.isArray(message.toolCalls))?.content||"";
   assert.match(tool,new RegExp(handle));assert.match(assistant,/CRITICAL_ASSERTION/);
   if(includePreview)assert.match(tool,/CRITICAL_ASSERTION/);else assert.doesNotMatch(tool,/CRITICAL_ASSERTION/);

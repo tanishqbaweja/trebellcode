@@ -691,12 +691,12 @@ export async function runNativeAgentTurn({
         if(coolSyntheticTerminalReportOutput!==false&&terminalStatusCall?.id){
           const index=conversation.findLastIndex(message=>message?.role==="tool"&&String(message?.toolCallId||message?.tool_call_id||"")===String(terminalStatusCall.id));
           if(index>=0&&typeof conversation[index]?.content==="string"){
-            const before=conversation[index].content,after=coolVirtualizedToolContent(before,{maxPreviewChars:600});
+            const before=conversation[index].content,after=coolVirtualizedToolContent(before,{maxPreviewChars:600,includePreview:false});
             if(after!==before){conversation[index]={...conversation[index],content:after};emit(onEvent,{name:"native.tool.history_cooled",status:"completed",model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,data:{phase:"terminal_report",count:1,savedChars:Math.max(0,before.length-after.length),toolResultCount:1,toolCallArgumentCount:0,toolResultSavedChars:Math.max(0,before.length-after.length),toolCallArgumentSavedChars:0}})}
           }
         }
         conversation.push({role:"assistant",content:text,toolCalls:[]});
-        const result={text,model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse:null,syntheticTerminalReportToolCallId:String(terminalStatusCall?.id||"")||null};
+        const result={text,model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse:null};
         emit(onEvent,{name:"native.terminal.report_synthesized",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,exitCode:terminalStatusRun.exitCode,evidence:Boolean(terminalStatusRun.reportEvidence),discardedPreToolTextChars:String(responseText||"").length}});
         emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage,syntheticTerminalReport:true}});
         return result;

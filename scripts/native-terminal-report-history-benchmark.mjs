@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { coolNativeProviderHistory, coolReportedVirtualizedToolResult } from "../src/native-tool-history.mjs";
+import { coolNativeProviderHistory, coolVirtualizedToolContent } from "../src/native-tool-history.mjs";
 import { nativeRequestMetrics } from "../src/native-request-metrics.mjs";
 
 const handle="out_12345678-abcd",signal="CRITICAL_ASSERTION expected strict but received legacy",preview=("noise line\n".repeat(240)+signal+"\n"+"tail noise\n".repeat(120)).slice(0,3600);
@@ -11,7 +11,7 @@ const messages=[
 ];
 const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"},{name:"replace_text"}]}];
 function measure(candidate){
-  const first=candidate?coolReportedVirtualizedToolResult(messages,{toolCallId:"verify",maxPreviewChars:600}):{messages};
+  const first=candidate?{messages:messages.map(message=>message.role==="tool"&&message.toolCallId==="verify"?{...message,content:coolVirtualizedToolContent(message.content,{maxPreviewChars:600})}:message)}:{messages};
   const cooled=coolNativeProviderHistory(first.messages),wire=JSON.stringify(cooled.messages),metrics=nativeRequestMetrics(cooled.messages,tools),tool=cooled.messages.find(message=>message.role==="tool"&&message.toolCallId==="verify")?.content||"";
   assert.match(tool,new RegExp(handle));assert.match(tool,/CRITICAL_ASSERTION/);
   return {providerInferences:1,providerVisibleEstimatedTokens:Number(metrics.totalLogical?.estimatedTokens||0),requestBytes:Buffer.byteLength(JSON.stringify({messages:cooled.messages,tools}),"utf8"),toolResultChars:tool.length,handlePreserved:true,signalPreserved:true,wireChars:wire.length};

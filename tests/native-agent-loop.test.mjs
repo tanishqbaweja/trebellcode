@@ -158,7 +158,7 @@ test("native terminal report synthesis cools its unsent virtualized result while
     return {result,events,tool:result.messages.find(message=>message.role==="tool"&&message.toolCallId==="verify")?.content||""};
   };
   const baseline=await run(false),candidate=await run(true);
-  assert.ok(candidate.tool.length<baseline.tool.length);assert.match(candidate.tool,/out_12345678-abcd/);assert.match(candidate.tool,/CRITICAL_ASSERTION expected mode=strict but received legacy/i);assert.doesNotMatch(candidate.tool,/x{1000}/);assert.doesNotMatch(candidate.tool,/y{1000}/);
+  assert.ok(candidate.tool.length<baseline.tool.length);assert.match(candidate.tool,/out_12345678-abcd/);assert.doesNotMatch(candidate.tool,/CRITICAL_ASSERTION expected mode=strict but received legacy/i);assert.doesNotMatch(candidate.tool,/x{1000}/);assert.doesNotMatch(candidate.tool,/y{1000}/);assert.match(candidate.result.text,/CRITICAL_ASSERTION expected mode=strict but received legacy/i);
   assert.ok(candidate.events.some(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="terminal_report"&&event.data?.savedChars>500));
 });
 
