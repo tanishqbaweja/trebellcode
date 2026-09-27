@@ -9,6 +9,7 @@ import { NATIVE_CHAT_MESSAGE_CACHE_IDENTITY } from "./provider-turn.mjs";
 
 const NATIVE_TOOL_OBSERVATION_OUTPUT=Symbol("trebell.native.tool-observation-output");
 const DIRECT_EXACT_READ_MAX_BYTES=12*1024;
+const DIRECT_EXACT_LIST_MAX_BYTES=12*1024;
 
 function abortError(signal){
   const reason=signal?.reason;if(reason?.name==="AbortError")return reason;
@@ -316,6 +317,25 @@ function explicitWorkspaceRelativeFile(value){
   return normalized;
 }
 
+function explicitWorkspaceRelativeDirectory(value){
+  const path=exactReplacementToken(value);if(path==null||path.length>300||/[\r\n\0]/.test(path))return null;
+  if(path===".")return ".";
+  if(/^[\\/]/.test(path)||/^[A-Za-z]:/.test(path)||/:\/\//.test(path))return null;
+  const normalized=path.replace(/\\/g,"/").replace(/\/+$/g,"");if(!normalized)return null;
+  const parts=normalized.split("/");if(parts.some(part=>!part||part==="."||part===".."))return null;
+  return normalized;
+}
+
+function explicitImmediateWorkspaceListStatus(messages=[]){
+  const user=latestUserMessage(messages),text=lastUserInstructionText(user).trim();if(!text||/[\r\n]/.test(text))return null;
+  const noun="(?:files?(?:\\s+(?:and|or)\\s+folders?)?|folders?(?:\\s+(?:and|or)\\s+files?)?|entries)",literal="(`[^`\\n]+`|\"[^\"\\n]+\"|'[^'\\n]+'|\\S+?)";
+  const root=text.match(new RegExp("^(?:please\\s+)?(?:list|show(?:\\s+me)?)\\s+(?:the\\s+)?(?:top-level|immediate)\\s+"+noun+"\\s+(?:in|inside)\\s+(?:the\\s+)?workspace(?:\\s+root)?\\s*[.!]?$","i"));
+  if(root)return {path:"."};
+  const prefixed=text.match(new RegExp("^(?:please\\s+)?(?:list|show(?:\\s+me)?)\\s+(?:the\\s+)?(?:top-level|immediate)\\s+"+noun+"\\s+(?:in|inside)\\s+"+literal+"\\s*[.!]?$","i"));
+  const direct=prefixed?null:text.match(new RegExp("^(?:please\\s+)?(?:list|show(?:\\s+me)?)\\s+(?:the\\s+)?"+noun+"\\s+directly\\s+(?:in|inside)\\s+"+literal+"\\s*[.!]?$","i"));
+  const match=prefixed||direct;if(!match)return null;const path=explicitWorkspaceRelativeDirectory(match[1]);return path?{path}:null;
+}
+
 function explicitExactFileReadStatus(messages=[]){
   const user=latestUserMessage(messages),text=lastUserInstructionText(user).trim();if(!text||/[\r\n]/.test(text))return null;
   const file="(`[^`\\n]+`|\"[^\"\\n]+\"|'[^'\\n]+'|\\S+?)";
@@ -569,14 +589,14 @@ export async function runNativeAgentTurn({
   providerTurn,executeTool,model,messages=[],tools=[],provider=null,toolChoice="auto",
   maxOutputTokens=null,temperature=null,parallelToolCalls=true,maxModelTurns=24,maxToolCalls=100,maxWallTimeMs=null,
   maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,coolReadToolHistory=null,preserveToolSchemasOnFinalization=false,signal=null,onEvent=null,metadata=null,
-  autoRerunVerification=false,priorTerminalRuns=[],synthesizeTerminalReports=false,coolSyntheticTerminalReportOutput=true,directTerminalStatusCommands=false,directExactReplacementStatus=false,directExactWriteStatus=false,directExactReadStatus=false,prepareProviderMessages=null,
+  autoRerunVerification=false,priorTerminalRuns=[],synthesizeTerminalReports=false,coolSyntheticTerminalReportOutput=true,directTerminalStatusCommands=false,directExactReplacementStatus=false,directExactWriteStatus=false,directExactReadStatus=false,directExactListStatus=false,prepareProviderMessages=null,
 }={}){
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
   const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])],visibleTools=providerVisibleTools(tools,toolAllowlist),directVisiblePairs=exposedToolPairs(visibleTools),requestMetricsToolCache=new WeakMap(),requestMetricsMessageCache=new WeakMap(),requestMetricsCurrentTurnCache=new WeakMap(),requestMetricsHistoryHashCache={},requestMetricsClassificationCache=typeof coolReadToolHistory==="function"?null:{},openAiContinuationIdentity={};
   const explicitlyRequired=explicitlyRequestedTools(conversation,visibleTools),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
-  const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalStatusRequested=explicitTerminalStatusRequest(conversation),directTerminalStatusCommand=directTerminalStatusCommands===true?explicitTerminalStatusCommand(conversation):null,directReplacementStatus=directExactReplacementStatus===true?explicitExactReplacementStatus(conversation):null,directWriteStatus=directExactWriteStatus===true?explicitExactFileWriteStatus(conversation):null,directReadStatus=directExactReadStatus===true?explicitExactFileReadStatus(conversation):null,terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
+  const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalStatusRequested=explicitTerminalStatusRequest(conversation),directTerminalStatusCommand=directTerminalStatusCommands===true?explicitTerminalStatusCommand(conversation):null,directReplacementStatus=directExactReplacementStatus===true?explicitExactReplacementStatus(conversation):null,directWriteStatus=directExactWriteStatus===true?explicitExactFileWriteStatus(conversation):null,directReadStatus=directExactReadStatus===true?explicitExactFileReadStatus(conversation):null,directListStatus=directExactListStatus===true?explicitImmediateWorkspaceListStatus(conversation):null,terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
   const verificationFinalizationRequest=verificationCompletionRequest||(finalAfterVerifiedRequest?.target?finalAfterVerifiedRequest:null);
   const successfulTerminalRuns=[];
   let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
@@ -650,6 +670,22 @@ export async function runNativeAgentTurn({
   };
   emit(onEvent,{name:"native.turn.started",status:"running",model:String(model),provider:provider||null,data:{...metadata,maxModelTurns:budget.maxModelTurns,maxToolCalls:budget.maxToolCalls,maxWallTimeMs:budget.maxWallTimeMs}});
   try{
+    const directListVisible=directListStatus&&budget.maxToolCalls>=1&&directVisiblePairs.some(item=>item.namespace==="trebell_workspace"&&item.name==="list");
+    if(directListVisible&&!applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_direct_exact_list"})){
+      throwIfAborted(turnSignal);
+      const call={id:"native-direct-exact-list-1",namespace:"trebell_workspace",name:"list",arguments:JSON.stringify({path:directListStatus.path,depth:1,limit:1000})};
+      conversation.push({role:"assistant",content:"",toolCalls:[call]});toolCalls=1;const observation=await executeOneTool(call,toolCalls);conversation.push(observation);
+      const output=observation?.[NATIVE_TOOL_OBSERVATION_OUTPUT],entries=Array.isArray(output?.entries)?output.entries:null;let serializedBytes=Infinity;try{if(entries)serializedBytes=Buffer.byteLength(JSON.stringify(output),"utf8")}catch{}
+      const complete=entries!=null&&serializedBytes<=DIRECT_EXACT_LIST_MAX_BYTES&&output?.success!==false&&output?.uncertain!==true&&output?.virtualized!==true&&output?.truncated!==true,missingExplicit=explicitlyRequired.find(item=>!executedToolKeys.has(item.namespace+"/"+item.name));
+      if(complete&&!missingExplicit&&!applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"after_direct_exact_list"})){
+        const immediate=entries.filter(entry=>Number(entry?.depth)===0),safePath=redactSecretText(String(directListStatus.path||"."),{trim:true}).replace(/[\r\n\t]+/g," ").slice(0,240),shown=[];
+        for(const entry of immediate){const raw=String(entry?.name||entry?.relativePath||"").replace(/[\r\n\t]+/g," ").trim();if(!raw)continue;const safe=redactSecretText(raw,{trim:true}).slice(0,240);if(safe)shown.push(`- ${safe}${entry?.isDirectory===true?"/":""}`)}
+        const location=safePath==="."?"the workspace root":safePath,text=shown.length?`Immediate entries in ${location}:\n${shown.join("\n")}`:`No immediate files or folders found in ${location}.`;
+        conversation.push({role:"assistant",content:text,toolCalls:[]});const result={text,model:String(model),provider:provider||null,messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse:null};
+        emit(onEvent,{name:"native.workspace.direct_exact_list",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,path:safePath||null,entryCount:shown.length}});
+        emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage,directExactList:true}});return result;
+      }
+    }
     const directReadVisible=directReadStatus&&budget.maxToolCalls>=1&&directVisiblePairs.some(item=>item.namespace==="trebell_workspace"&&item.name==="read_file");
     if(directReadVisible&&!applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_direct_exact_read"})){
       throwIfAborted(turnSignal);

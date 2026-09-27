@@ -195,6 +195,71 @@ test("native agent returns one exact bounded file read without provider inferenc
   }
 });
 
+test("native agent returns one exact immediate workspace listing without provider inference",async()=>{
+  for(const [prompt,path,label] of [
+    ["List the top-level files and folders in `src`.","src","src"],
+    ["Show me the immediate entries in `src`.","src","src"],
+    ["List the files and folders directly inside `src`.","src","src"],
+    ["List the top-level files and folders in the workspace.",".","the workspace root"],
+  ]){
+    let providerCalls=0;const executions=[],events=[];
+    const output={root:"C:/repo/"+(path==="."?"":path),entries:[
+      {name:"api",path:"C:/repo/src/api",relativePath:"api",isDirectory:true,isFile:false,depth:0},
+      {name:"index.mjs",path:"C:/repo/src/index.mjs",relativePath:"index.mjs",isDirectory:false,isFile:true,depth:0},
+      {name:"nested.mjs",path:"C:/repo/src/api/nested.mjs",relativePath:"api/nested.mjs",isDirectory:false,isFile:true,depth:1},
+    ],truncated:false};
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:prompt}],directExactListStatus:true,onEvent:event=>events.push(event),
+      tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"list"}]}],
+      providerTurn:async()=>{providerCalls++;throw new Error("Exact workspace list should not call the provider.")},
+      executeTool:async call=>{executions.push(structuredClone(call));return output},
+    });
+    assert.equal(providerCalls,0,prompt);assert.equal(result.modelTurns,0,prompt);assert.equal(result.toolCalls,1,prompt);assert.equal(executions.length,1,prompt);
+    assert.equal(executions[0].namespace,"trebell_workspace",prompt);assert.equal(executions[0].name,"list",prompt);assert.deepEqual(executions[0].arguments,{path,depth:1,limit:1000},prompt);
+    assert.equal(result.text,`Immediate entries in ${label}:\n- api/\n- index.mjs`,prompt);assert.ok(events.some(event=>event.name==="native.workspace.direct_exact_list"),prompt);
+    assert.equal(result.text.includes("C:/repo"),false,prompt);
+  }
+});
+
+test("native exact immediate workspace list fails closed for ambiguous, unsafe, or richer instructions",async()=>{
+  const prompts=[
+    "List files in `src`.",
+    "List the top-level files in `src` and explain them.",
+    "Find the top-level files in `src`.",
+    "List the top-level files in `../outside`.",
+    "Show me the immediate entries in `C:\\outside`.",
+    "List the top-level files in `src`, then run npm test.",
+  ];
+  for(const prompt of prompts){
+    let providerCalls=0,executions=0;
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:prompt}],directExactListStatus:true,
+      tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"list"}]}],
+      providerTurn:async()=>{providerCalls++;return {text:"provider handled it",toolCalls:[],usage:{}}},executeTool:async()=>{executions++;return {entries:[],truncated:false}},
+    });
+    assert.equal(providerCalls,1,prompt);assert.equal(executions,0,prompt);assert.equal(result.text,"provider handled it",prompt);
+  }
+});
+
+test("native exact immediate workspace list falls back after incomplete or oversized listing evidence",async()=>{
+  for(const fixture of [
+    {name:"truncated",output:{entries:[{name:"a",relativePath:"a",depth:0}],truncated:true}},
+    {name:"virtualized",output:{virtualized:true,handle:"out_1",preview:"preview",totalBytes:40000}},
+    {name:"oversized-inline",output:{entries:Array.from({length:250},(_,index)=>({name:`file-${index}-${"x".repeat(60)}.mjs`,relativePath:`file-${index}.mjs`,depth:0,isFile:true})),truncated:false}},
+    {name:"failed",output:{success:false,error:"list denied"}},
+  ]){
+    let providerCalls=0,executions=0;const requests=[];
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:"List the top-level files and folders in `src`."}],directExactListStatus:true,
+      tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"list"}]}],
+      providerTurn:async request=>{providerCalls++;requests.push(structuredClone(request));return {text:"provider handled the listing",toolCalls:[],usage:{}}},
+      executeTool:async()=>{executions++;return fixture.output},
+    });
+    assert.equal(executions,1,fixture.name);assert.equal(providerCalls,1,fixture.name);assert.equal(result.modelTurns,1,fixture.name);assert.equal(result.toolCalls,1,fixture.name);assert.equal(result.text,"provider handled the listing",fixture.name);
+    assert.ok(requests[0].messages.some(message=>message.role==="tool"),fixture.name);
+  }
+});
+
 test("native exact file read fails closed for interpretive, unsafe, or richer instructions",async()=>{
   const prompts=[
     "Read `src/config.mjs` and explain it.",

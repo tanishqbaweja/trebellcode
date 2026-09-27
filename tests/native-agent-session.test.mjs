@@ -77,6 +77,19 @@ test("Native session directly returns one exact inline file read",async()=>{
   assert.equal(updates.find(item=>item.update?.sessionUpdate==="agent_message_chunk")?.update?.content?.text,`Contents of src/config.mjs:\n\n${content}`);assert.ok(events.some(event=>event.name==="native.workspace.direct_exact_read"));
 });
 
+test("Native session directly returns one exact immediate workspace listing",async()=>{
+  let providerCalls=0;const calls=[],updates=[],events=[];
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model-a",tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"list"}]}],onUpdate:update=>updates.push(update),onEvent:event=>events.push(event),
+    providerTurn:async()=>{providerCalls++;throw new Error("Exact workspace list should bypass provider inference.")},
+    executeTool:async call=>{calls.push(structuredClone(call));return {root:"C:/repo/src",entries:[{name:"api",relativePath:"api",isDirectory:true,depth:0},{name:"index.mjs",relativePath:"index.mjs",isFile:true,depth:0},{name:"nested.mjs",relativePath:"api/nested.mjs",isFile:true,depth:1}],truncated:false}},
+  });
+  await session.start({providerSessionId:"exact-list",model:"model-a"});
+  const result=await session.prompt([{type:"text",text:"List the top-level files and folders in `src`."}]);
+  assert.equal(providerCalls,0);assert.equal(result.raw?.modelTurns,0);assert.equal(result.raw?.toolCalls,1);assert.equal(calls.length,1);assert.deepEqual(calls[0].arguments,{path:"src",depth:1,limit:1000});
+  assert.equal(updates.find(item=>item.update?.sessionUpdate==="agent_message_chunk")?.update?.content?.text,"Immediate entries in src:\n- api/\n- index.mjs");assert.ok(events.some(event=>event.name==="native.workspace.direct_exact_list"));
+});
+
 test("Native session keeps virtualized direct-status evidence persisted but collapses its first provider-facing view",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-terminal-report-cooling-")),requests=[],events=[];
   try{
