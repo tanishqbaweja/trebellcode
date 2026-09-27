@@ -421,10 +421,26 @@ test("provider turns expose bounded wire telemetry without including provider se
     assert.match(result.telemetry.endpoint,/\/chat\/completions$/);
     assert.ok(result.telemetry.requestBytes>0);assert.ok(result.telemetry.responseBytes>0);
     assert.ok(result.telemetry.totalLatencyMs>=result.telemetry.responseHeadersLatencyMs);
+    assert.ok(result.telemetry.responseBodyLatencyMs>=0);
     assert.equal(result.telemetry.streaming,false);
     assert.equal(result.telemetry.providerResponseId,"chatcmpl-telemetry");
     assert.doesNotMatch(JSON.stringify(result.telemetry),new RegExp(secret));
     assert.doesNotMatch(capturedBody,new RegExp(secret));
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("failed provider turns retain bounded wire timing telemetry for retry accounting",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-failed-telemetry-"));
+  try{
+    const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root,HCNSEC_API_KEY:"hc-failed"},fetchFn:async()=>new Response("busy",{status:503,headers:{"x-request-id":"req-failed"}})});
+    await assert.rejects(()=>manager.turn("hcnsec",{model:"glm-5.3",messages:[{role:"user",content:"hello"}]}),error=>{
+      assert.equal(error.status,503);assert.equal(error.retryable,true);
+      assert.equal(error.telemetry.providerRequestId,"req-failed");assert.equal(error.telemetry.streaming,false);
+      assert.ok(error.telemetry.requestBytes>0);assert.ok(error.telemetry.responseBytes>0);
+      assert.ok(error.telemetry.responseHeadersLatencyMs>=0);assert.ok(error.telemetry.responseBodyLatencyMs>=0);
+      assert.ok(error.telemetry.totalLatencyMs>=error.telemetry.responseHeadersLatencyMs);
+      return true;
+    });
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 

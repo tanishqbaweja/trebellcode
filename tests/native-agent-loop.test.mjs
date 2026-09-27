@@ -523,12 +523,12 @@ test("native agent retries only transient provider inference failures",async()=>
     model:"test-model",messages:[{role:"user",content:"retry please"}],retryBaseDelayMs:0,onEvent:event=>events.push(event),
     providerTurn:async()=>{
       attempts++;
-      if(attempts===1){const error=new Error("rate limited");error.status=429;throw error}
+      if(attempts===1){const error=new Error("rate limited");error.status=429;error.telemetry={totalLatencyMs:12.5,responseHeadersLatencyMs:10};throw error}
       if(attempts===2){const error=new Error("temporarily unavailable");error.status=503;throw error}
       return {text:"recovered",toolCalls:[],usage:{inputTokens:2,outputTokens:1,totalTokens:3}};
     },executeTool:async()=>"",
   });
-  assert.equal(attempts,3);assert.equal(result.text,"recovered");assert.equal(events.filter(event=>event.name==="native.model.retrying").length,2);
+  assert.equal(attempts,3);assert.equal(result.text,"recovered");const retryEvents=events.filter(event=>event.name==="native.model.retrying");assert.equal(retryEvents.length,2);assert.equal(retryEvents[0].data.providerTelemetry.totalLatencyMs,12.5);
 
   let authAttempts=0;
   await assert.rejects(()=>runNativeAgentTurn({

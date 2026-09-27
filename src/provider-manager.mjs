@@ -445,29 +445,39 @@ export class ProviderManager {
       ?await this.forwardResponses(provider.id,provider.id==="openai"?officialOpenAiResponsesBody({...request,model}):providerTurnToResponses({...request,model}),{signal,onWire})
       :await this.forwardChat(provider.id,providerTurnToChat({...request,model}),{signal,onWire});
     const headersLatencyMs=Number((performance.now()-started).toFixed(3));
+    const bodyStarted=performance.now();
     const raw=await upstream.text();
+    const bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3));
     const totalLatencyMs=Number((performance.now()-started).toFixed(3));
-    if(!upstream.ok){
-      const error=new Error(`${provider.name} HTTP ${upstream.status}: ${providerErrorExcerpt(raw,{environment:this.env,secret:this.key(provider.id),maxChars:1200})}`);
-      error.status=upstream.status;
-      error.retryable=[408,409,425,429].includes(upstream.status)||(upstream.status>=500&&upstream.status<=599);
-      throw error;
-    }
-    let parsed;try{parsed=raw?JSON.parse(raw):{}}catch{throw new Error(`${provider.name} returned invalid JSON for a provider turn.`)}
-    const result=provider.wireApi==="responses"
-      ?normalizeResponsesTurnResponse(parsed,provider.id,model)
-      :normalizeChatTurnResponse(parsed,provider.id,model);
     const providerRequestId=upstream.headers?.get?.("x-request-id")||upstream.headers?.get?.("request-id")||upstream.headers?.get?.("x-amzn-requestid")||null;
-    result.telemetry={
+    const baseTelemetry={
       endpoint:wire.endpoint,
       wireApi:wire.wireApi||provider.protocolCompatibility?.[0]||provider.wireApi,
       requestBytes:Number(wire.requestBytes)||0,
       responseBytes:Buffer.byteLength(raw,"utf8"),
       responseHeadersLatencyMs:headersLatencyMs,
+      responseBodyLatencyMs:bodyLatencyMs,
       timeToFirstTokenMs:null,
       totalLatencyMs,
       streaming:false,
       providerRequestId,
+      providerResponseId:null,
+    };
+    if(!upstream.ok){
+      const error=new Error(`${provider.name} HTTP ${upstream.status}: ${providerErrorExcerpt(raw,{environment:this.env,secret:this.key(provider.id),maxChars:1200})}`);
+      error.status=upstream.status;
+      error.retryable=[408,409,425,429].includes(upstream.status)||(upstream.status>=500&&upstream.status<=599);
+      error.telemetry=baseTelemetry;
+      throw error;
+    }
+    let parsed;try{parsed=raw?JSON.parse(raw):{}}catch{
+      const error=new Error(`${provider.name} returned invalid JSON for a provider turn.`);error.telemetry=baseTelemetry;throw error;
+    }
+    const result=provider.wireApi==="responses"
+      ?normalizeResponsesTurnResponse(parsed,provider.id,model)
+      :normalizeChatTurnResponse(parsed,provider.id,model);
+    result.telemetry={
+      ...baseTelemetry,
       providerResponseId:result.id||null,
     };
     return result;

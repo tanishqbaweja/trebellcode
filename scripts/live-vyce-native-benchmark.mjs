@@ -229,9 +229,13 @@ async function runScenario(scenario){
           requestMetrics:nativeRequestMetrics(requestMessages,requestTools),
         };
         providerRequests.push(record);
-        const response=await manager.turn("vyceai",{...effectiveRequest,provider:"vyceai",model},{signal:request.signal});
-        record.usage=response.usage;record.telemetry=response.telemetry;record.toolCalls=response.toolCalls||[];
-        return response;
+        try{
+          const response=await manager.turn("vyceai",{...effectiveRequest,provider:"vyceai",model},{signal:request.signal});
+          record.usage=response.usage;record.telemetry=response.telemetry;record.toolCalls=response.toolCalls||[];
+          return response;
+        }catch(error){
+          record.telemetry=error?.telemetry||null;record.error={status:Number(error?.status||0)||null,code:error?.code||null,retryable:Boolean(error?.retryable)};throw error;
+        }
       },
       onEvent:event=>events.push(event),onUpdate:update=>updates.push(update),
     });
@@ -255,7 +259,7 @@ async function runScenario(scenario){
     const elapsedMs=Number((performance.now()-started).toFixed(3));
     let independentVerificationPassed=true,independentVerificationError=null;
     try{await scenario.verify(root)}catch(error){independentVerificationPassed=false;independentVerificationError=String(error?.stderr||error?.message||error).slice(0,2000)}
-    const completed=events.filter(event=>event.name==="native.model.completed"),toolUpdates=updates.filter(item=>item.update?.sessionUpdate==="tool_call_update");
+    const requested=events.filter(event=>event.name==="native.model.requested"),completed=events.filter(event=>event.name==="native.model.completed"),retryEvents=events.filter(event=>event.name==="native.model.retrying"),toolUpdates=updates.filter(item=>item.update?.sessionUpdate==="tool_call_update");
     const firstRequest=providerRequests[0]||{};
     const repairedToolCalls=events.filter(event=>event.name==="native.tool.call_repaired").length;
     const sameTurnCooling=events.filter(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="same_turn");
@@ -266,8 +270,10 @@ async function runScenario(scenario){
       cachedInputTokens:out.cachedInputTokens+Number(item.usage?.cachedInputTokens||0),
       requestBytes:out.requestBytes+Number(item.telemetry?.requestBytes||0),
       responseBytes:out.responseBytes+Number(item.telemetry?.responseBytes||0),
+      responseHeadersLatencyMs:out.responseHeadersLatencyMs+Number(item.telemetry?.responseHeadersLatencyMs||0),
+      responseBodyLatencyMs:out.responseBodyLatencyMs+Number(item.telemetry?.responseBodyLatencyMs||0),
       providerLatencyMs:out.providerLatencyMs+Number(item.telemetry?.totalLatencyMs||0),
-    }),{inputTokens:0,outputTokens:0,cachedInputTokens:0,requestBytes:0,responseBytes:0,providerLatencyMs:0});
+    }),{inputTokens:0,outputTokens:0,cachedInputTokens:0,requestBytes:0,responseBytes:0,responseHeadersLatencyMs:0,responseBodyLatencyMs:0,providerLatencyMs:0});
     const toolNames=toolUpdates.map(item=>item.update?.namespace+"/"+item.update?.tool);
     const firstVerifyIndex=toolNames.indexOf("trebell_terminal/run");
     const firstEditIndex=toolNames.findIndex(name=>name==="trebell_workspace/replace_text"||name==="trebell_workspace/write_file");
@@ -287,7 +293,7 @@ async function runScenario(scenario){
       };
     });
     return {
-      name:scenario.name,ok:!turnFailure&&independentVerificationPassed&&verificationBeforeEdit&&virtualizationSatisfied,elapsedMs,userTurns:turnResults.length,modelTurns:providerRequests.length,toolCalls:toolUpdates.length,
+      name:scenario.name,ok:!turnFailure&&independentVerificationPassed&&verificationBeforeEdit&&virtualizationSatisfied,elapsedMs,userTurns:turnResults.length,modelTurns:requested.length,providerAttempts:providerRequests.length,providerRetryAttempts:retryEvents.length,toolCalls:toolUpdates.length,
       ...aggregate,cacheHitPercent:aggregate.inputTokens?Number((aggregate.cachedInputTokens/aggregate.inputTokens*100).toFixed(2)):0,
       stablePrefixVariants:new Set(completed.map(event=>event.data?.requestMetrics?.stablePrefixHash).filter(Boolean)).size,
       toolSchemaVariants:new Set(completed.map(event=>event.data?.requestMetrics?.toolSchemaHash).filter(Boolean)).size,
@@ -296,10 +302,14 @@ async function runScenario(scenario){
       firstFunctionCount:Number(firstRequest.functionCount||0),
       finalLogicalEstimatedTokens:completed.at(-1)?.data?.requestMetrics?.totalLogical?.estimatedTokens||0,
       requestBreakdown:providerRequests.map((item,index)=>({
-        modelTurn:index+1,
+        providerAttempt:index+1,
         providerToolCalls:Array.isArray(item.toolCalls)?item.toolCalls.length:0,
         providerToolNames:(Array.isArray(item.toolCalls)?item.toolCalls:[]).map(call=>String(call?.namespace||"")+"/"+String(call?.name||"")),
         providerInputTokens:Number(item.usage?.inputTokens||0),
+        providerResponseHeadersLatencyMs:Number(item.telemetry?.responseHeadersLatencyMs||0),
+        providerResponseBodyLatencyMs:Number(item.telemetry?.responseBodyLatencyMs||0),
+        providerTotalLatencyMs:Number(item.telemetry?.totalLatencyMs||0),
+        providerError:item.error||null,
         messageChars:Number(item.messageChars||0),
         schemaChars:Number(item.toolSchemaChars||0),
         systemTokens:Number(item.requestMetrics?.system?.estimatedTokens||0),
@@ -333,7 +343,8 @@ for(const scenario of selectedScenarios){
   results.push(await runScenario(scenario));
 }
 const totals=results.reduce((out,row)=>({
-  inputTokens:out.inputTokens+row.inputTokens,outputTokens:out.outputTokens+row.outputTokens,modelTurns:out.modelTurns+row.modelTurns,toolCalls:out.toolCalls+row.toolCalls,elapsedMs:out.elapsedMs+row.elapsedMs,
-}),{inputTokens:0,outputTokens:0,modelTurns:0,toolCalls:0,elapsedMs:0});
+  inputTokens:out.inputTokens+row.inputTokens,outputTokens:out.outputTokens+row.outputTokens,modelTurns:out.modelTurns+row.modelTurns,providerAttempts:out.providerAttempts+row.providerAttempts,providerRetryAttempts:out.providerRetryAttempts+row.providerRetryAttempts,toolCalls:out.toolCalls+row.toolCalls,elapsedMs:out.elapsedMs+row.elapsedMs,
+  providerLatencyMs:out.providerLatencyMs+row.providerLatencyMs,responseHeadersLatencyMs:out.responseHeadersLatencyMs+row.responseHeadersLatencyMs,responseBodyLatencyMs:out.responseBodyLatencyMs+row.responseBodyLatencyMs,
+}),{inputTokens:0,outputTokens:0,modelTurns:0,providerAttempts:0,providerRetryAttempts:0,toolCalls:0,elapsedMs:0,providerLatencyMs:0,responseHeadersLatencyMs:0,responseBodyLatencyMs:0});
 console.log(JSON.stringify({ok:results.every(row=>row.ok),runtime:"native",provider:"vyceai",model,results,totals},null,2));
 
