@@ -175,6 +175,64 @@ test("native agent executes one exact full-file write without provider inference
   }
 });
 
+test("native agent returns one exact bounded file read without provider inference",async()=>{
+  for(const prompt of [
+    "Read `src/config.mjs` and show me its contents.",
+    "Please open `src/config.mjs` and return the text.",
+    "Show me the contents of `src/config.mjs`.",
+  ]){
+    let providerCalls=0;const executions=[],events=[],content="export const mode = 'strict';\n";
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:prompt}],directExactReadStatus:true,onEvent:event=>events.push(event),
+      tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"}]}],
+      providerTurn:async()=>{providerCalls++;throw new Error("Exact file read should not call the provider.")},
+      executeTool:async call=>{executions.push(structuredClone(call));return {path:"C:/repo/src/config.mjs",name:"config.mjs",content,size:content.length,internalMarker:"DO_NOT_SERIALIZE"}},
+    });
+    assert.equal(providerCalls,0,prompt);assert.equal(result.modelTurns,0,prompt);assert.equal(result.toolCalls,1,prompt);assert.equal(executions.length,1,prompt);
+    assert.equal(executions[0].namespace,"trebell_workspace",prompt);assert.equal(executions[0].name,"read_file",prompt);assert.deepEqual(executions[0].arguments,{path:"src/config.mjs"},prompt);
+    assert.equal(result.text,`Contents of src/config.mjs:\n\n${content}`,prompt);assert.ok(events.some(event=>event.name==="native.workspace.direct_exact_read"),prompt);
+    assert.equal(JSON.stringify(result.messages).includes("DO_NOT_SERIALIZE"),false,prompt);
+  }
+});
+
+test("native exact file read fails closed for interpretive, unsafe, or richer instructions",async()=>{
+  const prompts=[
+    "Read `src/config.mjs` and explain it.",
+    "Read `src/config.mjs` and summarize the contents.",
+    "Read `src/config.mjs`, then run npm test.",
+    "Read `../outside.mjs` and show me its contents.",
+    "Show me the contents of `C:\\outside.mjs`.",
+    "Find the config file and show me its contents.",
+  ];
+  for(const prompt of prompts){
+    let providerCalls=0,executions=0;
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:prompt}],directExactReadStatus:true,
+      tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"}]}],
+      providerTurn:async()=>{providerCalls++;return {text:"provider handled it",toolCalls:[],usage:{}}},executeTool:async()=>{executions++;return {content:"should not run"}},
+    });
+    assert.equal(providerCalls,1,prompt);assert.equal(executions,0,prompt);assert.equal(result.text,"provider handled it",prompt);
+  }
+});
+
+test("native exact file read falls back after a non-inline or failed read",async()=>{
+  for(const fixture of [
+    {name:"virtualized",output:{virtualized:true,handle:"out_1",preview:"preview",totalBytes:40000}},
+    {name:"oversized-inline",output:{content:"x".repeat(13*1024),size:13*1024}},
+    {name:"failed",output:{success:false,error:"read denied"}},
+  ]){
+    let providerCalls=0,executions=0;const requests=[];
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:"Read `src/config.mjs` and show me its contents."}],directExactReadStatus:true,
+      tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"}]}],
+      providerTurn:async request=>{providerCalls++;requests.push(structuredClone(request));return {text:"provider handled the read",toolCalls:[],usage:{}}},
+      executeTool:async()=>{executions++;return fixture.output},
+    });
+    assert.equal(executions,1,fixture.name);assert.equal(providerCalls,1,fixture.name);assert.equal(result.modelTurns,1,fixture.name);assert.equal(result.toolCalls,1,fixture.name);assert.equal(result.text,"provider handled the read",fixture.name);
+    assert.ok(requests[0].messages.some(message=>message.role==="tool"),fixture.name);
+  }
+});
+
 test("native exact file write fails closed for ambiguous or richer instructions",async()=>{
   const prompts=[
     "Write strict to src/config.mjs.",

@@ -64,6 +64,19 @@ test("Native session directly executes one exact full-file write",async()=>{
   assert.match(updates.find(item=>item.update?.sessionUpdate==="agent_message_chunk")?.update?.content?.text||"",/Exact file write completed/i);assert.ok(events.some(event=>event.name==="native.workspace.direct_exact_write"));
 });
 
+test("Native session directly returns one exact inline file read",async()=>{
+  let providerCalls=0;const calls=[],updates=[],events=[],content="export const mode = 'strict';\n";
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model-a",tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"}]}],onUpdate:update=>updates.push(update),onEvent:event=>events.push(event),
+    providerTurn:async()=>{providerCalls++;throw new Error("Exact file read should bypass provider inference.")},
+    executeTool:async call=>{calls.push(structuredClone(call));return {path:"C:/repo/src/config.mjs",name:"config.mjs",content,size:content.length}},
+  });
+  await session.start({providerSessionId:"exact-read",model:"model-a"});
+  const result=await session.prompt([{type:"text",text:"Read `src/config.mjs` and show me its contents."}]);
+  assert.equal(providerCalls,0);assert.equal(result.raw?.modelTurns,0);assert.equal(result.raw?.toolCalls,1);assert.equal(calls.length,1);assert.deepEqual(calls[0].arguments,{path:"src/config.mjs"});
+  assert.equal(updates.find(item=>item.update?.sessionUpdate==="agent_message_chunk")?.update?.content?.text,`Contents of src/config.mjs:\n\n${content}`);assert.ok(events.some(event=>event.name==="native.workspace.direct_exact_read"));
+});
+
 test("Native session keeps virtualized direct-status evidence persisted but collapses its first provider-facing view",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-terminal-report-cooling-")),requests=[],events=[];
   try{
