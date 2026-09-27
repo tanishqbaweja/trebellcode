@@ -162,12 +162,10 @@ function agentRouterProvider(provider,environment={}){
 
 function officialResponsesToolName(namespace,name){return namespace?String(namespace)+"__"+String(name||"tool"):String(name||"tool")}
 function officialOpenAiPromptCacheKey(body={}){
-  const firstUser=(Array.isArray(body.input)?body.input:[]).find(item=>item?.type==="message"&&item.role==="user")||null;
   const seed=JSON.stringify({
     model:String(body.model||""),
     instructions:String(body.instructions||""),
     tools:Array.isArray(body.tools)?body.tools:[],
-    firstUser:firstUser?firstUser.content||[]:[],
   });
   return "trebell-"+createHash("sha256").update(seed).digest("hex").slice(0,32);
 }

@@ -220,7 +220,7 @@ test("official OpenAI Responses flattens Trebell namespaces into standard functi
   assert.deepEqual(result.toolCalls,[{id:"call-1",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Session"}'}]);
 });
 
-test("official OpenAI prompt cache key stays stable as later history grows but separates different task prefixes",async()=>{
+test("official OpenAI prompt cache key tracks the reusable instruction and tool prefix instead of the user task",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-")),bodies=[];
   const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{
     const body=JSON.parse(init.body||"{}");bodies.push(body);
@@ -233,9 +233,11 @@ test("official OpenAI prompt cache key stays stable as later history grows but s
   await manager.turn("openai",{model:"gpt-5.6",messages:[...base,{role:"assistant",content:"working"},{role:"user",content:"continue"}],tools});
   await manager.turn("openai",{model:"gpt-5.6",messages:[{role:"system",content:"Stable coding instructions"},{role:"user",content:"Fix the renderer"}],tools});
   await manager.turn("openai",{model:"gpt-5.6",messages:base,tools:[{...tools[0],tools:[{...tools[0].tools[0],description:"Read one file"}]}]});
+  await manager.turn("openai",{model:"gpt-5.6",messages:[{role:"system",content:"Different coding instructions"},{role:"user",content:"Fix the parser"}],tools});
   assert.equal(bodies[0].prompt_cache_key,bodies[1].prompt_cache_key);
-  assert.notEqual(bodies[0].prompt_cache_key,bodies[2].prompt_cache_key);
+  assert.equal(bodies[0].prompt_cache_key,bodies[2].prompt_cache_key);
   assert.notEqual(bodies[0].prompt_cache_key,bodies[3].prompt_cache_key);
+  assert.notEqual(bodies[0].prompt_cache_key,bodies[4].prompt_cache_key);
 });
 
 test("official OpenAI keeps late developer finalization out of the stable instruction prefix",async()=>{
