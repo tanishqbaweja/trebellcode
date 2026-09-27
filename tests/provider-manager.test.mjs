@@ -264,6 +264,31 @@ test("official OpenAI keeps late developer finalization out of the stable instru
   assert.equal(bodies[1].input.at(-1).content[0].text,"Tools are complete; answer now.");
 });
 
+test("official OpenAI adds tool-result cache breakpoints only for GPT-5.6 and later",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-")),bodies=[];
+  const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{
+    const body=JSON.parse(init.body||"{}");bodies.push(body);
+    return Response.json({id:"resp-cache-tool",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"ok"}]}],usage:{input_tokens:1,output_tokens:1,total_tokens:2}});
+  }});
+  manager.setKey("openai","oa-key");
+  const tools=[{type:"namespace",name:"trebell_workspace",tools:[{type:"function",name:"read_file",description:"Read file",inputSchema:{type:"object",properties:{path:{type:"string"}},required:["path"]}}]}];
+  const messages=[
+    {role:"system",content:"Stable coding instructions"},
+    {role:"user",content:"Read src/a.mjs"},
+    {role:"assistant",content:"",toolCalls:[{id:"call-1",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/a.mjs"}'}]},
+    {role:"tool",toolCallId:"call-1",content:"export const value = 1;"},
+  ];
+  await manager.turn("openai",{model:"gpt-5.6",messages,tools});
+  await manager.turn("openai",{model:"gpt-5.5",messages,tools});
+  const modernOutput=bodies[0].input.find(item=>item.type==="function_call_output"),legacyOutput=bodies[1].input.find(item=>item.type==="function_call_output");
+  assert.deepEqual(bodies[0].prompt_cache_options,{mode:"implicit"});
+  assert.ok(Array.isArray(modernOutput.output));
+  assert.deepEqual(modernOutput.output.at(-1).prompt_cache_breakpoint,{mode:"explicit"});
+  assert.equal(modernOutput.output.at(-1).text,"export const value = 1;");
+  assert.equal(Object.prototype.hasOwnProperty.call(bodies[1],"prompt_cache_options"),false);
+  assert.equal(legacyOutput.output,"export const value = 1;");
+});
+
 test("direct OpenAI Native streaming assembles the completed Responses result and records TTFT",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-openai-stream-"));let seen=null;
   try{

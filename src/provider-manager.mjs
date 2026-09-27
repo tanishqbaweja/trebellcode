@@ -170,6 +170,25 @@ function officialOpenAiPromptCacheKey(body={}){
   });
   return "trebell-"+createHash("sha256").update(seed).digest("hex").slice(0,32);
 }
+function officialOpenAiExplicitCacheBreakpointsSupported(model=""){
+  const match=String(model||"").trim().toLowerCase().match(/(?:^|\/)gpt-(\d+)(?:\.(\d+))?/);
+  if(!match)return false;
+  const major=Number(match[1]||0),minor=Number(match[2]||0);
+  return major>5||(major===5&&minor>=6);
+}
+function withOpenAiToolResultCacheBreakpoints(input=[]){
+  return (Array.isArray(input)?input:[]).map(item=>{
+    if(item?.type!=="function_call_output")return item;
+    const output=Array.isArray(item.output)
+      ?item.output.map(part=>part&&typeof part==="object"?{...part}:part)
+      :(typeof item.output==="string"&&item.output.length?[{type:"input_text",text:item.output}]:[]);
+    let index=-1;
+    for(let i=output.length-1;i>=0;i--)if(output[i]&&typeof output[i]==="object"&&output[i].type==="input_text"){index=i;break}
+    if(index<0)return item;
+    output[index]={...output[index],prompt_cache_breakpoint:{mode:"explicit"}};
+    return {...item,output};
+  });
+}
 function officialOpenAiResponsesBody(request={}){
   const body=providerTurnToResponses(request,{preserveInstructionOrder:true}),tools=[];
   for(const entry of Array.isArray(request.tools)?request.tools:[]){
@@ -190,6 +209,10 @@ function officialOpenAiResponsesBody(request={}){
     if(item?.type!=="function_call"||!item.namespace)return item;
     const next={...item,name:officialResponsesToolName(item.namespace,item.name)};delete next.namespace;return next;
   });
+  if(officialOpenAiExplicitCacheBreakpointsSupported(body.model)){
+    body.prompt_cache_options={mode:"implicit"};
+    body.input=withOpenAiToolResultCacheBreakpoints(body.input);
+  }
   body.prompt_cache_key=officialOpenAiPromptCacheKey(body);
   return body;
 }
