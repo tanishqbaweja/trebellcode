@@ -249,15 +249,25 @@ function preserveCacheableProviderHistory(provider){
   return providerFeatureEnabled(provider,"promptCaching");
 }
 
+function coolRestartProviderHistory(messages=[],provider=null){
+  const source=Array.isArray(messages)?messages:[];
+  if(!provider||preserveCacheableProviderHistory(provider))return {messages:source,count:0,savedChars:0,toolResultCount:0,toolCallArgumentCount:0,toolResultSavedChars:0,toolCallArgumentSavedChars:0};
+  const lastUser=source.findLastIndex(message=>message?.role==="user"),recent=lastUser>=0?source.slice(lastUser):[],recentSettled=recent.some(message=>message?.role==="assistant"&&!Array.isArray(message?.toolCalls)&&!Array.isArray(message?.tool_calls)&&String(message?.content||"").trim());
+  const boundary=lastUser<0||recentSettled?source.length:lastUser;
+  const cooled=coolNativeProviderHistory(source.slice(0,boundary));
+  return {...cooled,messages:[...cooled.messages,...source.slice(boundary)]};
+}
+
 export class NativeAgentSession{
   constructor({cwd=process.cwd(),providerTurn,executeTool,toolOutputStore=null,provider=null,model=null,contextWindow=null,tools=[],permissionMode="supervised",onUpdate=()=>{},onEvent=null,onClose=null,initialMessages=[]}={}){
     if(typeof providerTurn!=="function")throw new Error("NativeAgentSession requires providerTurn");
     if(typeof executeTool!=="function")throw new Error("NativeAgentSession requires executeTool");
-    this.cwd=cwd;this.providerTurn=providerTurn;this.executeTool=executeTool;this.toolOutputStore=toolOutputStore;this.provider=provider;this.model=model;this.contextWindow=null;this.setContextWindow(contextWindow);this.tools=Array.isArray(tools)?tools:[];this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onEvent=onEvent;this.onClose=onClose;this.messages=[...(Array.isArray(initialMessages)?initialMessages:[])];this.sessionId=null;this.controller=null;this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.closed=false;this.observationCache=new Map();this.lastProviderResponseId=null;this.previousTerminalRuns=recentPersistedTerminalRuns(this.messages);
+    this.cwd=cwd;this.providerTurn=providerTurn;this.executeTool=executeTool;this.toolOutputStore=toolOutputStore;this.provider=provider;this.model=model;this.contextWindow=null;this.setContextWindow(contextWindow);this.tools=Array.isArray(tools)?tools:[];this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onEvent=onEvent;this.onClose=onClose;const reconstructed=[...(Array.isArray(initialMessages)?initialMessages:[])],restartCooling=coolRestartProviderHistory(reconstructed,provider);this.messages=restartCooling.messages;this.restartHistoryCooling=restartCooling.count?restartCooling:null;this.sessionId=null;this.controller=null;this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.closed=false;this.observationCache=new Map();this.lastProviderResponseId=null;this.previousTerminalRuns=recentPersistedTerminalRuns(this.messages);
   }
   async start({providerSessionId=null,model=null}={}){
     if(this.closed)throw new Error("Native session is closed");
     const nextSessionId=String(providerSessionId||this.sessionId||`native_${randomUUID()}`);if(this.sessionId&&nextSessionId!==this.sessionId){this.lastProviderResponseId=null;this.previousTerminalRuns=[]}this.sessionId=nextSessionId;if(model){const next=String(model);if(next!==this.model)this.lastProviderResponseId=null;this.model=next}
+    if(this.restartHistoryCooling){const cooled=this.restartHistoryCooling;this.restartHistoryCooling=null;this.onEvent?.({name:"native.tool.history_cooled",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{phase:"restart",count:Number(cooled.count||0),savedChars:Number(cooled.savedChars||0),toolResultCount:Number(cooled.toolResultCount||0),toolCallArgumentCount:Number(cooled.toolCallArgumentCount||0),toolResultSavedChars:Number(cooled.toolResultSavedChars||0),toolCallArgumentSavedChars:Number(cooled.toolCallArgumentSavedChars||0)}})}
     return {initialize:{protocolVersion:1,agentInfo:{name:"Trebell Native",version:"1"},agentCapabilities:{native:true}},session:{sessionId:this.sessionId,models:{currentModelId:this.model||null,availableModels:this.model?[this.model]:[]},modes:{currentModeId:this.permissionMode,availableModes:[]}}};
   }
   setProvider(provider){const next=provider?String(provider):null;if(next!==this.provider)this.lastProviderResponseId=null;this.provider=next}
