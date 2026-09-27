@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { providerTurnToChat } from "./provider-turn.mjs";
 
+export const ANTHROPIC_PRE_SERIALIZED_MESSAGES=Symbol.for("trebell.anthropic.pre-serialized-messages");
+
 function textContent(content){
   if(typeof content==="string")return content;
   if(!Array.isArray(content))return "";
@@ -83,25 +85,66 @@ function canonicalToolName(call={}){
   return raw;
 }
 
-export function providerTurnToAnthropic(request={},{stream=false,scaffold=null}={}){
-  const resolvedScaffold=scaffold&&typeof scaffold==="object"?scaffold:chatToAnthropic(providerTurnToChat({...request,messages:[]})),system=[],messages=[];
-  for(const message of Array.isArray(request.messages)?request.messages:[]){
-    if(!message||typeof message!=="object")continue;
-    if(message.role==="system"||message.role==="developer"){
-      const text=canonicalAssistantText(message.content).trim();if(text)system.push(text);continue;
-    }
-    if(message.role==="tool"){
-      pushMessage(messages,"user",[{type:"tool_result",tool_use_id:String(message.toolCallId||message.tool_call_id||""),content:canonicalToolResultContent(message.content)}]);continue;
-    }
-    if(message.role==="assistant"){
-      const blocks=[],text=canonicalAssistantText(message.content);if(text)blocks.push({type:"text",text});
-      for(const call of message.toolCalls||message.tool_calls||[]){const source=call?.function||call;blocks.push({type:"tool_use",id:String(call?.id||call?.call_id||`toolu_${randomUUID()}`),name:canonicalToolName(call),input:safeJson(source?.arguments??call?.arguments)})}
-      pushMessage(messages,"assistant",blocks);continue;
-    }
-    pushMessage(messages,"user",canonicalUserContent(message.content));
+function canonicalMessageSnapshot(message){
+  const calls=message?.toolCalls||message?.tool_calls||null;
+  return {ref:message,role:message?.role,content:message?.content,calls,toolCallId:message?.toolCallId||message?.tool_call_id||null};
+}
+
+function sameCanonicalMessageSnapshot(snapshot,message){
+  if(!snapshot||snapshot.ref!==message||snapshot.role!==message?.role||snapshot.content!==message?.content)return false;
+  if(snapshot.calls!==(message?.toolCalls||message?.tool_calls||null))return false;
+  return snapshot.toolCallId===(message?.toolCallId||message?.tool_call_id||null);
+}
+
+function stableCanonicalAnthropicMessage(message){
+  if(message?.role!=="assistant")return true;
+  for(const call of message.toolCalls||message.tool_calls||[])if(!String(call?.id||call?.call_id||"").trim())return false;
+  return true;
+}
+
+function appendCanonicalAnthropicMessage(system,messages,message,{allowGeneratedToolIds=true}={}){
+  if(!message||typeof message!=="object")return true;
+  if(message.role==="system"||message.role==="developer"){
+    const text=canonicalAssistantText(message.content).trim();if(text)system.push(text);return true;
   }
-  const out={model:resolvedScaffold.model,max_tokens:resolvedScaffold.max_tokens,messages,stream:Boolean(stream)};
-  if(system.length)out.system=system.join("\n\n");
+  if(message.role==="tool"){
+    pushMessage(messages,"user",[{type:"tool_result",tool_use_id:String(message.toolCallId||message.tool_call_id||""),content:canonicalToolResultContent(message.content)}]);return true;
+  }
+  if(message.role==="assistant"){
+    const blocks=[],text=canonicalAssistantText(message.content);if(text)blocks.push({type:"text",text});
+    for(const call of message.toolCalls||message.tool_calls||[]){const source=call?.function||call,id=String(call?.id||call?.call_id||"");if(!id&&!allowGeneratedToolIds)return false;blocks.push({type:"tool_use",id:id||`toolu_${randomUUID()}`,name:canonicalToolName(call),input:safeJson(source?.arguments??call?.arguments)})}
+    pushMessage(messages,"assistant",blocks);return true;
+  }
+  if(message.role==="user")pushMessage(messages,"user",canonicalUserContent(message.content));
+  return true;
+}
+
+export function createAnthropicMessageProjector(){
+  let sourceRef=null,processed=0,snapshots=[],system=[],messages=[],messageJsonParts=[],messageJsonInner="",disabled=false;
+  const reset=source=>{sourceRef=source;processed=0;snapshots=[];system=[];messages=[];messageJsonParts=[];messageJsonInner="";disabled=false};
+  return input=>{
+    const source=Array.isArray(input)?input:[];
+    if(source!==sourceRef||source.length<processed)reset(source);
+    if(!disabled&&processed){for(let index=0;index<processed;index++)if(!sameCanonicalMessageSnapshot(snapshots[index],source[index])){reset(source);break}}
+    if(disabled)return null;
+    for(let index=processed;index<source.length;index++){
+      const message=source[index];if(!stableCanonicalAnthropicMessage(message)){disabled=true;return null}
+      const previousLength=messages.length;
+      if(!appendCanonicalAnthropicMessage(system,messages,message,{allowGeneratedToolIds:false})){disabled=true;return null}
+      if(messages.length>previousLength){const part=JSON.stringify(messages.at(-1));messageJsonParts.push(part);messageJsonInner+=messageJsonInner?","+part:part}
+      else if(messages.length&&message?.role!=="system"&&message?.role!=="developer"){messageJsonParts[messageJsonParts.length-1]=JSON.stringify(messages.at(-1));messageJsonInner=messageJsonParts.join(",")}
+      snapshots.push(canonicalMessageSnapshot(message));processed++;
+    }
+    return {messages,messagesJson:`[${messageJsonInner}]`,system:system.length?system.join("\n\n"):null};
+  };
+}
+
+export function providerTurnToAnthropic(request={},{stream=false,scaffold=null,messageProjector=null}={}){
+  const resolvedScaffold=scaffold&&typeof scaffold==="object"?scaffold:chatToAnthropic(providerTurnToChat({...request,messages:[]})),projected=typeof messageProjector==="function"?messageProjector(request.messages):null,system=[],messages=[];
+  if(!projected)for(const message of Array.isArray(request.messages)?request.messages:[])appendCanonicalAnthropicMessage(system,messages,message);
+  const out={model:resolvedScaffold.model,max_tokens:resolvedScaffold.max_tokens,messages:projected?.messages||messages,stream:Boolean(stream)};
+  if(projected?.messagesJson)try{Object.defineProperty(out,ANTHROPIC_PRE_SERIALIZED_MESSAGES,{value:projected.messagesJson,enumerable:false,configurable:true})}catch{}
+  const systemText=projected?.system??(system.length?system.join("\n\n"):null);if(systemText)out.system=systemText;
   if(Array.isArray(resolvedScaffold.tools)&&resolvedScaffold.tools.length)out.tools=resolvedScaffold.tools;
   if(resolvedScaffold.tool_choice)out.tool_choice=resolvedScaffold.tool_choice;
   if(typeof resolvedScaffold.temperature==="number")out.temperature=resolvedScaffold.temperature;

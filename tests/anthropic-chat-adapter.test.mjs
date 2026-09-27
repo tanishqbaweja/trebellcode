@@ -5,6 +5,7 @@ import {
   adaptAnthropicResponse,
   anthropicMessageToChatCompletion,
   chatToAnthropic,
+  createAnthropicMessageProjector,
   providerTurnAnthropicScaffold,
   providerTurnToAnthropic,
 } from "../src/anthropic-chat-adapter.mjs";
@@ -55,6 +56,20 @@ test("direct canonical Anthropic conversion matches the existing Chat adapter ex
   const legacy=providerTurnToChat(request);legacy.stream=true;legacy.stream_options={include_usage:true};
   assert.deepEqual(providerTurnToAnthropic(request,{stream:true}),chatToAnthropic(legacy));
   assert.deepEqual(providerTurnToAnthropic(request,{stream:true,scaffold:providerTurnAnthropicScaffold(request)}),chatToAnthropic(legacy));
+});
+
+test("Anthropic message projector preserves exact conversion across append-only Native history",()=>{
+  const messages=[{role:"system",content:"System"},{role:"developer",content:"Developer"},{role:"user",content:"Task"}],request={model:"claude-opus-4-8",messages,tools:[]},projector=createAnthropicMessageProjector();
+  const first=providerTurnToAnthropic(request,{messageProjector:projector});assert.deepEqual(first,providerTurnToAnthropic(request));
+  messages.push({role:"assistant",content:"",toolCalls:[{id:"call-1",namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/a.mjs"}}]},{role:"tool",toolCallId:"call-1",content:"data"});
+  const second=providerTurnToAnthropic(request,{messageProjector:projector});assert.deepEqual(second,providerTurnToAnthropic(request));assert.equal(second.messages,first.messages);
+});
+
+test("Anthropic message projector resets on replaced old messages and fails closed without stable tool-call ids",()=>{
+  const projector=createAnthropicMessageProjector(),messages=[{role:"user",content:"Task"},{role:"assistant",content:"first"}],request={model:"claude-opus-4-8",messages,tools:[]};providerTurnToAnthropic(request,{messageProjector:projector});
+  messages[1]={role:"assistant",content:"rewritten"};assert.deepEqual(providerTurnToAnthropic(request,{messageProjector:projector}),providerTurnToAnthropic(request));
+  messages.push({role:"assistant",content:"",toolCalls:[{namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/a.mjs"}}]});assert.equal(projector(messages),null);
+  const fallback=providerTurnToAnthropic(request,{messageProjector:projector}),toolUse=fallback.messages.at(-1).content.find(block=>block?.type==="tool_use");assert.match(toolUse?.id,/^toolu_/);
 });
 
 test("Anthropic SSE converts to OpenAI chat SSE including tool calls",async()=>{
