@@ -36,9 +36,9 @@ test("shared Trebell tool catalog owns unique schemas and policy metadata",()=>{
   assert.match(sharedToolNamespace("trebell_terminal").description,/argv/i);assert.match(sharedToolNamespace("trebell_terminal").description,/shell executable/i);
   assert.match(terminal.inputSchema.properties.command.description,/executable only/i);assert.match(terminal.inputSchema.properties.args.description,/argument vector/i);
   const compactCodingSurface=sharedDynamicToolNamespaces({workspaceTools:true,terminal:true,sourceControl:false});
-  assert.ok(JSON.stringify(compactCodingSurface).length<=2300,"workspace + terminal schema should stay compact without dropping argv guardrails");
+  assert.ok(JSON.stringify(compactCodingSurface).length<=2150,"workspace + terminal schema should stay compact without dropping argv guardrails");
   assert.deepEqual(sharedToolNamespace("trebell_output").tools.map(item=>item.name),["inspect"]);
-  assert.ok(JSON.stringify(sharedDynamicToolNamespaces({output:true,sourceControl:false})).length<=800,"virtualized-output manifest grew past its recurring wire budget");
+  assert.ok(JSON.stringify(sharedDynamicToolNamespaces({output:true,sourceControl:false})).length<=725,"virtualized-output manifest grew past its recurring wire budget");
   assert.equal(sharedToolDefinition("trebell_output","read").policy.kind,"read","legacy output read remains resolvable but is not advertised");
   assert.equal(sharedToolDefinition("trebell_output","search").policy.kind,"read","legacy output search remains resolvable but is not advertised");
   const background=sharedToolDefinition("trebell_process","start");assert.equal(background.policy.kind,"execute");assert.equal(background.policy.classifyFromInput,true);

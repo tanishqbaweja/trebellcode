@@ -9,11 +9,11 @@ export const CORE_REPOSITORY_TOOL_NAMES=Object.freeze([
 export const REPOSITORY_DISCOVERY_TOOL=Object.freeze({
   type:"function",
   name:"discover",
-  description:"Find an unexposed repository capability and return matching names and input schemas.",
+  description:"Discover an advanced repository capability and its input schema.",
   inputSchema:{
     type:"object",
     properties:{
-      query:{type:"string",description:"Capability needed, e.g. diagnostics, tests, rename, Git history, or verification."},
+      query:{type:"string",description:"Needed capability, e.g. diagnostics, tests, rename, Git history, verification."},
       limit:{type:"integer",minimum:1,maximum:12},
     },
     required:["query"],
@@ -23,12 +23,12 @@ export const REPOSITORY_DISCOVERY_TOOL=Object.freeze({
 export const REPOSITORY_INVOKE_TOOL=Object.freeze({
   type:"function",
   name:"invoke",
-  description:"Call one capability returned by discover.",
+  description:"Call a discovered capability using its returned input schema.",
   inputSchema:{
     type:"object",
     properties:{
-      name:{type:"string",minLength:1,maxLength:100,description:"Name returned by discover."},
-      arguments:{type:"object",description:"Arguments matching its input schema."},
+      name:{type:"string",minLength:1,maxLength:100,description:"Discovered capability name."},
+      arguments:{type:"object",description:"Arguments for its schema."},
     },
     required:["name","arguments"],
     additionalProperties:false,
@@ -74,8 +74,8 @@ function definition(name,handler,description,inputSchema,searchHint){
 }
 
 export const REPOSITORY_TOOL_DEFINITIONS=Object.freeze([
-  definition("search_symbols","searchSymbols","Find repository symbol definitions by name or signature.",{query:z.string().min(1),limit:z.number().int().min(1).max(100).optional()},"repository symbols definitions"),
-  definition("search_files","searchFiles","Find repository files by path or basename with deterministic ranking.",{query:z.string().min(1).max(500),limit:z.number().int().min(1).max(200).optional()},"repository files paths filenames"),
+  definition("search_symbols","searchSymbols","Find symbol definitions by name/signature.",{query:z.string().min(1),limit:z.number().int().min(1).max(100).optional()},"repository symbols definitions"),
+  definition("search_files","searchFiles","Find files by path/basename with deterministic ranking.",{query:z.string().min(1).max(500),limit:z.number().int().min(1).max(200).optional()},"repository files paths filenames"),
   definition("repo_map","repositoryMap","Inspect a bounded structural repository map ranked by task relevance and graph centrality.",{query:z.string().max(1000).optional(),limit:z.number().int().min(1).max(120).optional()},"repository map architecture structure modules central files"),
   definition("project_commands","projectCommands","Discover bounded repository-declared build, test, lint, typecheck, format, dev, and start commands plus clearly labeled ecosystem conventions.",{limit:z.number().int().min(1).max(240).optional()},"repository project commands scripts build test lint typecheck package manager make just cargo go pytest maven gradle"),
   definition("verification_plan","verificationPlan","Build a deterministic risk-aware verification plan from changed or explicit paths, related tests, and discovered project commands. This plans evidence only; it does not execute commands or spawn reviewer models.",{paths:z.array(z.string().min(1)).max(200).optional(),riskHints:z.array(z.string().min(1).max(80)).max(20).optional(),capabilities:z.object({diagnostics:z.boolean().optional(),semanticDiagnostics:z.boolean().optional()}).optional()},"verification plan changed files risk tests build browser screenshot integration evidence"),
@@ -90,8 +90,8 @@ export const REPOSITORY_TOOL_DEFINITIONS=Object.freeze([
   definition("organize_imports","organizeImports","Ask the project-local TypeScript language service for bounded non-mutating import-organization edits for one indexed JS/TS file.",{path:z.string().min(1),limit:z.number().int().min(1).max(500).optional()},"typescript organize imports remove unused imports sort imports refactor edits"),
   definition("rename_preview","renamePreview","Ask the project-local TypeScript language service to validate a semantic rename and return the exact bounded edits without changing files.",{path:z.string().min(1),line:z.number().int().min(1),column:z.number().int().min(1).optional(),newName:z.string().min(1).max(256),limit:z.number().int().min(1).max(500).optional()},"typescript semantic rename symbol refactor preview exact edits"),
   definition("symbol_references","symbolReferences","Find bounded repository occurrences of a symbol, marking known definition lines and whether locations are AST- or text-backed.",{name:z.string().min(1).max(256),path:z.string().min(1).optional(),limit:z.number().int().min(1).max(200).optional()},"repository symbol references usages occurrences"),
-  definition("search_code","searchCode","Search indexed repository source text with bounded literal or regular-expression matching.",{query:z.string().min(1).max(1000),regex:z.boolean().optional(),caseSensitive:z.boolean().optional(),limit:z.number().int().min(1).max(200).optional()},"repository code text exact regex search"),
-  definition("read_source","readSource","Read a bounded line range from an indexed repository source file.",{path:z.string().min(1),startLine:z.number().int().min(1).optional(),endLine:z.number().int().min(1).optional(),maxLines:z.number().int().min(1).max(400).optional()},"repository source lines range"),
+  definition("search_code","searchCode","Search indexed source with bounded literal/regex matching.",{query:z.string().min(1).max(1000),regex:z.boolean().optional(),caseSensitive:z.boolean().optional(),limit:z.number().int().min(1).max(200).optional()},"repository code text exact regex search"),
+  definition("read_source","readSource","Read bounded lines from an indexed source file.",{path:z.string().min(1),startLine:z.number().int().min(1).optional(),endLine:z.number().int().min(1).optional(),maxLines:z.number().int().min(1).max(400).optional()},"repository source lines range"),
   definition("git_context","gitContext","Read bounded current Git status, changed paths, HEAD, and workspace diff.",{},"repository git diff status changes"),
   definition("git_history","gitHistory","Read bounded repository or file Git history.",{path:z.string().min(1).optional(),limit:z.number().int().min(1).max(100).optional()},"repository git history commits file history"),
   definition("git_blame","gitBlame","Read bounded line-level Git blame for an indexed source file.",{path:z.string().min(1),startLine:z.number().int().min(1).optional(),endLine:z.number().int().min(1).optional(),maxLines:z.number().int().min(1).max(200).optional()},"repository git blame authors commits lines"),
@@ -149,7 +149,7 @@ export function repositoryDynamicToolNamespace({progressive=false,names=null,inc
   return [{
     type:"namespace",
     name:"trebell_repo",
-    description:"Query Trebell's deterministic repository intelligence, verification helpers, Git evidence, and durable evidence-backed repository knowledge.",
+    description:"Deterministic repository search, source, verification, Git, and durable knowledge.",
     tools:[
       ...definitions.map(definition=>{
       const inputSchema=z.toJSONSchema(z.object(definition.inputSchema));

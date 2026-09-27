@@ -47,6 +47,7 @@
     "bench:native:terminal-report": "node scripts/native-terminal-report-benchmark.mjs",
     "bench:native:terminal-report-history": "node scripts/native-terminal-report-history-benchmark.mjs",
     "bench:native:direct-terminal-status": "node scripts/native-direct-terminal-status-benchmark.mjs",
+    "bench:native:tool-schema": "node scripts/native-tool-schema-benchmark.mjs",
     "bench:native:restart-verifier": "node scripts/native-restart-verifier-benchmark.mjs",
     "bench:native:restart-history": "node scripts/native-restart-history-benchmark.mjs",
     "bench:vyce:native:search-dedupe": "node --env-file-if-exists=.env scripts/live-vyce-native-search-dedupe-benchmark.mjs --live",
