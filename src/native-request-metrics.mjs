@@ -44,33 +44,38 @@ function currentTurnBreakdown(message){
 }
 
 export function nativeRequestMetrics(messages=[],tools=[]){
-  const source=Array.isArray(messages)?messages:[],lastUser=[...source].map((item,index)=>({item,index})).reverse().find(entry=>entry.item?.role==="user")?.index??-1;
-  const system=source.filter(item=>item?.role==="system");
-  const developer=source.filter(item=>item?.role==="developer"&&!item?.trebellCompaction);
-  const compacted=source.filter(item=>item?.role==="developer"&&item?.trebellCompaction);
-  const toolResults=source.filter(item=>item?.role==="tool");
-  const history=source.filter((item,index)=>!["system","developer","tool"].includes(item?.role)&&index!==lastUser);
+  const source=Array.isArray(messages)?messages:[];let lastUser=-1;
+  for(let index=source.length-1;index>=0;index--)if(source[index]?.role==="user"){lastUser=index;break}
+  const system=[],developer=[],compacted=[],toolResults=[],history=[];
+  for(let index=0;index<source.length;index++){
+    const item=source[index],role=item?.role;
+    if(role==="system")system.push(item);
+    else if(role==="developer"){if(item?.trebellCompaction)compacted.push(item);else developer.push(item)}
+    else if(role==="tool")toolResults.push(item);
+    else if(index!==lastUser)history.push(item);
+  }
   const toolSchemas=Array.isArray(tools)?tools:[];
-  const messagesMetric=metric(source),toolsMetric=metric(toolSchemas);
+  const systemJson=json(system),developerJson=json(developer),compactedJson=json(compacted),historyJson=json(history),toolResultsJson=json(toolResults),toolSchemasJson=json(toolSchemas),messagesJson=json(source);
+  const messagesMetric=metric(messagesJson),toolsMetric=metric(toolSchemasJson);
   const currentBreakdown=currentTurnBreakdown(lastUser>=0?source[lastUser]:null);
   const prefix={system,developer,tools:toolSchemas};
   return {
     estimation:"utf8_bytes_div_4",
-    system:metric(system),
-    developer:metric(developer),
-    compactedContext:metric(compacted),
-    conversationHistory:metric(history),
+    system:metric(systemJson),
+    developer:metric(developerJson),
+    compactedContext:metric(compactedJson),
+    conversationHistory:metric(historyJson),
     ...currentBreakdown,
-    toolResults:metric(toolResults),
+    toolResults:metric(toolResultsJson),
     toolSchemas:toolsMetric,
     messages:messagesMetric,
     totalLogical:{bytes:messagesMetric.bytes+toolsMetric.bytes,estimatedTokens:estimate(messagesMetric.bytes+toolsMetric.bytes)},
     messageCount:source.length,
     toolFunctionCount:toolSchemas.reduce((sum,entry)=>sum+(Array.isArray(entry?.tools)?entry.tools.length:(entry?.type==="function"?1:0)),0),
     stablePrefixHash:hash(prefix),
-    systemHash:hash(system),
-    developerHash:hash(developer),
-    toolSchemaHash:hash(toolSchemas),
-    conversationHistoryHash:hash(history),
+    systemHash:hash(systemJson),
+    developerHash:hash(developerJson),
+    toolSchemaHash:hash(toolSchemasJson),
+    conversationHistoryHash:hash(historyJson),
   };
 }

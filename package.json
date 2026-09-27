@@ -49,6 +49,7 @@
     "bench:native:direct-terminal-status": "node scripts/native-direct-terminal-status-benchmark.mjs",
     "bench:native:direct-terminal-history": "node scripts/native-direct-terminal-history-benchmark.mjs",
     "bench:native:direct-terminal-history-overhead": "node scripts/native-direct-terminal-history-overhead-benchmark.mjs",
+    "bench:native:request-metrics-overhead": "node --expose-gc scripts/native-request-metrics-overhead-benchmark.mjs",
     "bench:native:direct-terminal-cwd": "node scripts/native-direct-terminal-cwd-benchmark.mjs",
     "bench:native:direct-exact-replacement": "node scripts/native-direct-exact-replacement-benchmark.mjs",
     "bench:native:direct-exact-replacement-cwd": "node scripts/native-direct-exact-replacement-cwd-benchmark.mjs",
