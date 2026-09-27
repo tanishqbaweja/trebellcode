@@ -342,6 +342,65 @@ test("native parallel-safe batching never starts work beyond the exact tool-call
   assert.deepEqual(executed,["one"]);
 });
 
+test("native agent finalizes without tool schemas after spending the exact tool-call budget",async()=>{
+  let turns=0,executions=0;const seen=[],events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Inspect once, then answer."}],maxToolCalls:1,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_repo",tools:[{name:"search_code",inputSchema:{type:"object",properties:{query:{type:"string"}}}}]}],
+    providerTurn:async request=>{
+      turns++;seen.push({tools:structuredClone(request.tools),toolChoice:structuredClone(request.toolChoice),messages:structuredClone(request.messages)});
+      if(turns===1)return {text:"",toolCalls:[{id:"search",namespace:"trebell_repo",name:"search_code",arguments:'{"query":"needle"}'}],usage:{}};
+      assert.deepEqual(request.tools,[]);assert.equal(request.toolChoice,"none");assert.match(String(request.messages.at(-1)?.content||""),/tool-call budget .* exhausted/i);
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>{executions++;return {matches:["needle"]}},
+  });
+  assert.equal(result.text,"done");assert.equal(result.modelTurns,2);assert.equal(result.toolCalls,1);assert.equal(executions,1);
+  assert.ok(seen[0].tools.length>0);assert.equal(seen[0].toolChoice,"auto");
+  assert.ok(events.some(event=>event.name==="native.tool_budget.finalizing"&&event.data?.maxToolCalls===1));
+});
+
+test("native agent retries one textual tool-call imitation during budget finalization",async()=>{
+  let turns=0;const events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Inspect once, then answer."}],maxToolCalls:1,maxModelTurns:3,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"read",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"a.txt"}'}],usage:{}};
+      assert.deepEqual(request.tools,[]);assert.equal(request.toolChoice,"none");
+      if(turns===2)return {text:"<tool_call>read_file<arg_key>path</arg_key><arg_value>a.txt</arg_value></tool_call>",toolCalls:[],usage:{}};
+      assert.match(String(request.messages.at(-1)?.content||""),/do not imitate a tool call/i);
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>({path:"a.txt",content:"evidence"}),
+  });
+  assert.equal(result.text,"done");assert.equal(result.modelTurns,3);assert.equal(result.toolCalls,1);
+  assert.equal(events.filter(event=>event.name==="native.tool_budget.finalization_retry").length,1);
+});
+
+test("native agent omits tools from the first request when the tool budget is zero",async()=>{
+  let executions=0,providerCalls=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Answer from existing context."}],maxToolCalls:0,
+    tools:[{type:"namespace",name:"trebell_repo",tools:[{name:"search_code"}]}],
+    providerTurn:async request=>{providerCalls++;assert.deepEqual(request.tools,[]);assert.equal(request.toolChoice,"none");return {text:"done",toolCalls:[],usage:{}}},
+    executeTool:async()=>{executions++;return "must not run"},
+  });
+  assert.equal(result.text,"done");assert.equal(providerCalls,1);assert.equal(executions,0);
+});
+
+test("native agent fails before inference when zero tool budget cannot satisfy an explicitly required tool",async()=>{
+  let providerCalls=0;
+  await assert.rejects(()=>runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Call trebell_browser.open exactly once."}],maxToolCalls:0,
+    tools:[{type:"namespace",name:"trebell_browser",tools:[{name:"open"}]}],
+    providerTurn:async()=>{providerCalls++;return {text:"",toolCalls:[],usage:{}}},
+    executeTool:async()=>"must not run",
+  }),error=>error?.code==="native_tool_call_budget"&&/required tool trebell_browser\/open/i.test(error.message));
+  assert.equal(providerCalls,0);
+});
+
 test("native agent enforces model-turn and tool-call budgets before extra work starts",async()=>{
   let executions=0;
   await assert.rejects(()=>runNativeAgentTurn({

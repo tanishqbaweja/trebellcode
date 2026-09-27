@@ -6,6 +6,11 @@ function abortError(signal){
   const reason=signal?.reason;if(reason?.name==="AbortError")return reason;
   const error=new Error(reason instanceof Error?(reason.message||"Native agent turn was cancelled."):String(reason||"Native agent turn was cancelled."));error.name="AbortError";return error;
 }
+
+function toolCallMarkupOnly(value){
+  const text=String(value||"").trim();
+  return /^<tool_call>[^]*<[/]tool_call>$/i.test(text);
+}
 function throwIfAborted(signal){if(signal?.aborted)throw abortError(signal)}
 
 function boundedInteger(value,fallback,{min=1,max=10_000}={}){
@@ -223,7 +228,7 @@ export async function runNativeAgentTurn({
   const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])];
   const explicitlyRequired=explicitlyRequestedTools(conversation,providerVisibleTools(tools,toolAllowlist)),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
   const successfulTerminalRuns=[];
-  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,forcedToolChoice=null,lastProviderReadMessageCount=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
+  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
   const startedAt=Date.now(),started=nowMs(),wallController=budget.maxWallTimeMs!=null?new AbortController():null,deadlineAt=budget.maxWallTimeMs==null?null:Date.now()+budget.maxWallTimeMs;
   let wallTimer=null;
   const armWallTimer=()=>{
@@ -271,15 +276,28 @@ export async function runNativeAgentTurn({
       const error=new Error(`Native agent model-turn budget exhausted (${modelTurns}/${budget.maxModelTurns}).`);error.code="native_model_turn_budget";
       emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(model),provider:provider||null,data:{reason:error.code,modelTurns,toolCalls}});throw error;
     }
+    const visibleTools=providerVisibleTools(tools,toolAllowlist),toolBudgetExhausted=visibleTools.length>0&&toolCalls>=budget.maxToolCalls;
+    if(toolBudgetExhausted){
+      const missingRequired=explicitlyRequired.find(item=>!executedToolKeys.has(item.namespace+"/"+item.name));
+      if(missingRequired){
+        const error=new Error(`Native agent tool-call budget exhausted (${toolCalls}/${budget.maxToolCalls}) before required tool ${missingRequired.namespace}/${missingRequired.name} could run.`);error.code="native_tool_call_budget";
+        emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(model),provider:provider||null,data:{reason:error.code,modelTurns,toolCalls,namespace:missingRequired.namespace,name:missingRequired.name}});throw error;
+      }
+      if(!toolBudgetFinalizationInjected){
+        conversation.push({role:"developer",content:"Trebell's tool-call budget for this turn is exhausted. All allowed tool work is finished and no tool schemas are available now. Do not request a tool, do not emit tool-call markup or imitate a function call in text, and do not repeat an earlier tool request. Respond only with the best concise user-visible final answer supported by the evidence already collected, clearly stating any remaining uncertainty or unverified work."});
+        toolBudgetFinalizationInjected=true;
+        emit(onEvent,{name:"native.tool_budget.finalizing",status:"completed",model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,data:{modelTurns,toolCalls,maxToolCalls:budget.maxToolCalls}});
+      }
+    }
     modelTurns++;
-    const requestStarted=nowMs(),requestMessageCount=conversation.length,visibleTools=providerVisibleTools(tools,toolAllowlist),forcedAllowlist=forcedToolChoice?[forcedToolChoice.namespace?forcedToolChoice.namespace+"/"+forcedToolChoice.name:forcedToolChoice.name]:null,requestTools=forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):visibleTools;
+    const requestStarted=nowMs(),requestMessageCount=conversation.length,forcedAllowlist=forcedToolChoice?[forcedToolChoice.namespace?forcedToolChoice.namespace+"/"+forcedToolChoice.name:forcedToolChoice.name]:null,requestTools=toolBudgetExhausted?[]:forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):visibleTools,requestToolChoice=toolBudgetExhausted?"none":forcedToolChoice||toolChoice;
     const requestMetrics=nativeRequestMetrics(conversation,requestTools);
     const inferenceId=(metadata?.sessionId?String(metadata.sessionId):"native")+":inference:"+modelTurns;
     emit(onEvent,{name:"native.model.requested",status:"running",model:String(model),provider:provider||null,data:{inferenceId,modelTurn:modelTurns,messageCount:conversation.length,toolCount:Array.isArray(requestTools)?requestTools.length:0,sessionId:metadata?.sessionId||null,compaction:Boolean(metadata?.compaction),requestMetrics}});
     const providerAttempts=boundedInteger(maxProviderAttempts,3,{min:1,max:8});let response=null;
     for(let attempt=1;attempt<=providerAttempts;attempt++){
       try{
-        response=await providerTurn({model,provider,messages:conversation,tools:requestTools,toolChoice:forcedToolChoice||toolChoice,maxOutputTokens,temperature,parallelToolCalls,signal:turnSignal});break;
+        response=await providerTurn({model,provider,messages:conversation,tools:requestTools,toolChoice:requestToolChoice,maxOutputTokens,temperature,parallelToolCalls,signal:turnSignal});break;
       }catch(error){
         if(error?.nativeSteered){
           if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"model_request_interrupted"})){
@@ -318,6 +336,17 @@ export async function runNativeAgentTurn({
     }});
     if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"after_model"}))continue;
     const responseText=String(lastResponse.text||"");
+    if(toolBudgetExhausted&&!calls.length&&toolCallMarkupOnly(responseText)){
+      if(toolBudgetTextRecoveries<1&&modelTurns<budget.maxModelTurns){
+        toolBudgetTextRecoveries++;
+        conversation.push({role:"assistant",content:responseText,toolCalls:[]});
+        conversation.push({role:"developer",content:"The previous response was tool-call markup, but Trebell has no tool budget or tool schemas remaining. Do not imitate a tool call. Respond now with plain user-visible final text based only on the evidence already available."});
+        emit(onEvent,{name:"native.tool_budget.finalization_retry",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,recoveryAttempt:toolBudgetTextRecoveries}});
+        continue;
+      }
+      const error=new Error("Native provider emitted tool-call markup after the tool budget was exhausted and no finalization retry remained.");error.code="native_invalid_tool_budget_finalization";
+      emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{reason:error.code,modelTurns,toolCalls}});throw error;
+    }
     if(!calls.length&&!responseText.trim()){
       if(emptyCompletionRecoveries<1&&modelTurns<budget.maxModelTurns){
         emptyCompletionRecoveries++;
