@@ -205,17 +205,19 @@ function explicitVerificationCompletion(messages=[]){
 
 function verificationCompletionMatchesRun(request,args={},terminalRuns=[],editRevision=0){
   const key=terminalRunKey(args);if(!key)return false;
+  const normalized=normalizeNativeCommandArguments(args),command=String(normalized.command||"").trim(),argv=Array.isArray(normalized.args)?normalized.args.map(value=>String(value)):[];
+  const rendered=[command,...argv].filter(Boolean).join(" ").replace(/\s+/g," ").trim().toLowerCase();
+  const verifierLike=/(?:^|[\s/\\._:-])(?:verify|verification|verifier|tests?|pytest|jest|vitest|mocha|ava|rspec|checks?|lint|typecheck|tsc)(?:$|[\s/\\._:-])/i.test(rendered);
   if(request?.implicit){
+    if(!verifierLike)return false;
     const failedKeys=new Set((Array.isArray(terminalRuns)?terminalRuns:[]).filter(item=>item?.exitCode!==0&&item?.editRevision<editRevision).map(item=>item?.key).filter(Boolean));
     return failedKeys.size===1&&failedKeys.has(key);
   }
   if(!request?.target)return false;
   const target=String(request.target).replace(/[`'\"“”‘’]/g,"").replace(/\s+/g," ").trim().toLowerCase();
   if(!target)return false;
-  const normalized=normalizeNativeCommandArguments(args),command=String(normalized.command||"").trim(),argv=Array.isArray(normalized.args)?normalized.args.map(value=>String(value)):[];
-  const rendered=[command,...argv].filter(Boolean).join(" ").replace(/\s+/g," ").trim().toLowerCase();
   if(/^(?:(?:the|this|that)\s+)?(?:(?:same|failing|failed|passing|requested)\s+)?(?:verification|verifier|verification command|verifier command|tests?|test suite|test command|checks?|check command)$/i.test(target)){
-    return /(?:^|[\s/\\._:-])(?:verify|verification|verifier|tests?|pytest|jest|vitest|mocha|ava|rspec|checks?|lint|typecheck|tsc)(?:$|[\s/\\._:-])/i.test(rendered);
+    return verifierLike;
   }
   return Boolean(rendered)&&target===rendered;
 }
