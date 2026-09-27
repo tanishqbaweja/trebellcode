@@ -123,6 +123,24 @@ test("native agent executes one exact replacement plus verifier status without p
   assert.ok(events.some(event=>event.name==="native.workspace.direct_exact_replacement_status"&&event.data?.exitCode===0));
 });
 
+test("native agent executes one exact replacement-only turn without provider inference",async()=>{
+  for(const prompt of [
+    "Replace exactly `legacy` with `strict` in `src/config.mjs`.",
+    "Replace only legacy with strict in src/config.mjs and report the result.",
+  ]){
+    let providerCalls=0;const executions=[],events=[];
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:prompt}],directExactReplacementStatus:true,onEvent:event=>events.push(event),
+      tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}],
+      providerTurn:async()=>{providerCalls++;throw new Error("Exact replacement-only turn should not call the provider.")},
+      executeTool:async call=>{executions.push(structuredClone(call));return {path:"src/config.mjs",replacements:1}},
+    });
+    assert.equal(providerCalls,0,prompt);assert.equal(result.modelTurns,0,prompt);assert.equal(result.toolCalls,1,prompt);assert.equal(executions.length,1,prompt);
+    assert.equal(executions[0].namespace,"trebell_workspace");assert.equal(executions[0].name,"replace_text");assert.deepEqual(executions[0].arguments,{path:"src/config.mjs",old_text:"legacy",new_text:"strict",expected_replacements:1});
+    assert.equal(result.text,"Exact replacement completed in src/config.mjs.");assert.ok(events.some(event=>event.name==="native.workspace.direct_exact_replacement"));
+  }
+});
+
 test("native exact replacement status supports one explicit workspace-relative verifier cwd",async()=>{
   for(const [prompt,cwd] of [
     ["Replace exactly legacy with strict in packages/api/src/config.mjs, then run npm test in packages/api and report the result.","packages/api"],
@@ -143,6 +161,13 @@ test("native exact replacement status supports one explicit workspace-relative v
 
 test("native exact replacement status fast path fails closed for ambiguous or richer instructions",async()=>{
   const prompts=[
+    "Replace legacy with strict in src/config.mjs.",
+    "Replace exactly legacy with strict in src/config.mjs and explain the change.",
+    "Replace exactly legacy with strict in src/config.mjs, then read it.",
+    "Replace exactly legacy with strict in ../outside.mjs.",
+    "Replace exactly legacy with strict in C:\\outside.mjs.",
+    "Replace exactly legacy with strict in C:outside.mjs.",
+    "Replace exactly legacy with strict in /tmp/outside.mjs.",
     "Replace legacy with strict in src/config.mjs, then run node verify.mjs and report the result.",
     "Replace exactly legacy with strict in src/config.mjs, then run node verify.mjs and explain why it passes.",
     "Replace exactly legacy with strict in src/config.mjs, then run node verify.mjs && echo done and report the result.",
@@ -179,6 +204,23 @@ test("native exact replacement status falls back to the model when the edit is n
   });
   assert.equal(providerCalls,1);assert.equal(terminalCalls,0);assert.equal(result.modelTurns,1);assert.equal(result.toolCalls,1);assert.match(result.text,/not found/i);
   assert.ok(requests[0].messages.some(message=>message.role==="tool"&&/found zero/i.test(String(message.content||""))));
+});
+
+test("native exact replacement-only path falls back when the edit is unproven or unavailable",async()=>{
+  for(const fixture of [
+    {name:"failed-edit",tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}],maxToolCalls:4,execute:true},
+    {name:"hidden-tool",tools:[],maxToolCalls:4,execute:false},
+    {name:"zero-budget",tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}],maxToolCalls:0,execute:false},
+  ]){
+    let providerCalls=0,executions=0;const requests=[];
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:"Replace exactly legacy with strict in src/config.mjs."}],directExactReplacementStatus:true,tools:fixture.tools,maxToolCalls:fixture.maxToolCalls,
+      providerTurn:async request=>{providerCalls++;requests.push(structuredClone(request));return {text:"provider handled it",toolCalls:[],usage:{}}},
+      executeTool:async()=>{executions++;return {success:false,error:"Expected exactly one replacement, found zero."}},
+    });
+    assert.equal(providerCalls,1,fixture.name);assert.equal(executions,fixture.execute?1:0,fixture.name);assert.equal(result.text,"provider handled it",fixture.name);
+    if(fixture.execute)assert.ok(requests[0].messages.some(message=>message.role==="tool"&&/found zero/i.test(String(message.content||""))),fixture.name);
+  }
 });
 
 test("native direct terminal status execution fails closed for ambiguous or richer instructions",async()=>{

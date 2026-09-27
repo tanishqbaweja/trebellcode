@@ -309,10 +309,11 @@ function explicitExactReplacementStatus(messages=[]){
   const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=lastUserInstructionText(user).trim();
   if(!text||/[\r\n]/.test(text))return null;
   if(/\b(?:diagnos(?:e|is)|fix|repair|debug|explain|analy[sz]e|investigate|root\s+cause|recommend|suggest|compare|summari[sz]e|read|inspect|search|list|create|delete|write|commit|push|browse)\b/i.test(text))return null;
-  const match=text.match(/^(?:please\s+)?replace\s+(?:(?:exactly|only)\s+|the\s+exact\s+text\s+)(.+?)\s+with\s+(.+?)\s+in\s+(.+?)\s*[,;]?\s*(?:then|and\s+then)\s+(?:run|execute)\s+(.+?)\s+(?:and\s+)?(?:report|show)\s+(?:me\s+)?(?:the\s+)?(?:result|status|outcome)\s*[.!]?$/i);
-  if(!match)return null;
-  const oldText=exactReplacementToken(match[1]),newText=exactReplacementToken(match[2],{allowEmpty:true}),path=explicitWorkspaceRelativeFile(match[3]),command=directVerifierCommandWithOptionalCwd(match[4]);
-  if(oldText==null||newText==null||path==null||!command)return null;
+  const verified=text.match(/^(?:please\s+)?replace\s+(?:(?:exactly|only)\s+|the\s+exact\s+text\s+)(.+?)\s+with\s+(.+?)\s+in\s+(.+?)\s*[,;]?\s*(?:then|and\s+then)\s+(?:run|execute)\s+(.+?)\s+(?:and\s+)?(?:report|show)\s+(?:me\s+)?(?:the\s+)?(?:result|status|outcome)\s*[.!]?$/i);
+  const direct=verified?null:text.match(/^(?:please\s+)?replace\s+(?:(?:exactly|only)\s+|the\s+exact\s+text\s+)(.+?)\s+with\s+(.+?)\s+in\s+(.+?)(?:\s*[,;]?\s+(?:and\s+)?(?:report|show)\s+(?:me\s+)?(?:the\s+)?(?:result|status|outcome))?\s*[.!]?$/i);
+  const match=verified||direct;if(!match)return null;
+  const oldText=exactReplacementToken(match[1]),newText=exactReplacementToken(match[2],{allowEmpty:true}),path=explicitWorkspaceRelativeFile(match[3]),command=verified?directVerifierCommandWithOptionalCwd(match[4]):null;
+  if(oldText==null||newText==null||path==null||(verified&&!command))return null;
   if(oldText===newText||oldText.length>200||newText.length>200||path.length>300)return null;
   return {path,oldText,newText,command};
 }
@@ -616,13 +617,23 @@ export async function runNativeAgentTurn({
   };
   emit(onEvent,{name:"native.turn.started",status:"running",model:String(model),provider:provider||null,data:{...metadata,maxModelTurns:budget.maxModelTurns,maxToolCalls:budget.maxToolCalls,maxWallTimeMs:budget.maxWallTimeMs}});
   try{
-    const directVisiblePairs=exposedToolPairs(providerVisibleTools(tools,toolAllowlist)),directReplacementVisible=directReplacementStatus&&budget.maxToolCalls>=2&&directVisiblePairs.some(item=>item.namespace==="trebell_workspace"&&item.name==="replace_text")&&directVisiblePairs.some(item=>item.namespace==="trebell_terminal"&&item.name==="run");
+    const directVisiblePairs=exposedToolPairs(providerVisibleTools(tools,toolAllowlist)),directReplacementNeedsVerifier=Boolean(directReplacementStatus?.command),directReplacementVisible=directReplacementStatus&&budget.maxToolCalls>=(directReplacementNeedsVerifier?2:1)&&directVisiblePairs.some(item=>item.namespace==="trebell_workspace"&&item.name==="replace_text")&&(!directReplacementNeedsVerifier||directVisiblePairs.some(item=>item.namespace==="trebell_terminal"&&item.name==="run"));
     if(directReplacementVisible&&!applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_direct_exact_replacement"})){
       throwIfAborted(turnSignal);
       const editCall={id:"native-direct-exact-replace-1",namespace:"trebell_workspace",name:"replace_text",arguments:JSON.stringify({path:directReplacementStatus.path,old_text:directReplacementStatus.oldText,new_text:directReplacementStatus.newText,expected_replacements:1})};
       conversation.push({role:"assistant",content:"",toolCalls:[editCall]});toolCalls=1;const beforeRevision=editRevision,editObservation=await executeOneTool(editCall,toolCalls);conversation.push(editObservation);
       const exactEdit=editRevision===beforeRevision+1&&verifiedEdits.at(-1)?.kind==="replace_text"&&verifiedEdits.at(-1)?.path===directReplacementStatus.path&&verifiedEdits.at(-1)?.replacements===1;
       if(exactEdit&&!applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"after_direct_exact_replacement"})){
+        if(!directReplacementNeedsVerifier){
+          const missingExplicit=explicitlyRequired.find(item=>!executedToolKeys.has(item.namespace+"/"+item.name));
+          if(!missingExplicit){
+            const safePath=redactSecretText(String(directReplacementStatus.path||""),{trim:true}).replace(/[\r\n\t]+/g," ").slice(0,240),text=`Exact replacement completed${safePath?` in ${safePath}`:""}.`;
+            conversation.push({role:"assistant",content:text,toolCalls:[]});const result={text,model:String(model),provider:provider||null,messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse:null};
+            emit(onEvent,{name:"native.workspace.direct_exact_replacement",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,path:safePath||null}});
+            emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage,directExactReplacement:true}});return result;
+          }
+        }
+        if(directReplacementNeedsVerifier){
         const verifyCall={id:"native-direct-exact-replace-verify-1",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify(directReplacementStatus.command)};
         conversation.push({role:"assistant",content:"",toolCalls:[verifyCall]});toolCalls=2;const verifyObservation=await executeOneTool(verifyCall,toolCalls);conversation.push(verifyObservation);
         const run=terminalRuns.findLast(item=>item?.currentTurn&&item.key===terminalRunKey(directReplacementStatus.command)),missingExplicit=explicitlyRequired.find(item=>!executedToolKeys.has(item.namespace+"/"+item.name));
@@ -634,6 +645,7 @@ export async function runNativeAgentTurn({
             emit(onEvent,{name:"native.workspace.direct_exact_replacement_status",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,path:safePath||null,exitCode:run.exitCode}});
             emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage,directExactReplacementStatus:true}});return result;
           }
+        }
         }
       }
     }
