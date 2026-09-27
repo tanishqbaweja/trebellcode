@@ -2,6 +2,7 @@ import { performance } from "node:perf_hooks";
 import { nativeRequestMetrics, NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 import { platformToolAllowedByAllowlist } from "./shared-tool-gateway.mjs";
 import { normalizeNativeCommandArguments } from "./native-command-argv.mjs";
+import { redactSecretText } from "./secret-redactor.mjs";
 
 function abortError(signal){
   const reason=signal?.reason;if(reason?.name==="AbortError")return reason;
@@ -163,21 +164,44 @@ function explicitSummaryAfterVerification(messages=[]){
   return /\b(?:after|once|when)\b[^.\n]{0,220}\b(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful)\b[^.\n]{0,220}\b(?:(?:concise|brief|short)\s+summary|summari[sz]e\s+(?:briefly|concisely)|(?:briefly|concisely)\s+summari[sz]e)\b/i.test(text);
 }
 
+function conciseReplacementSummary(oldText,newText){
+  const before=String(oldText??""),after=String(newText??"");
+  if(!before||!after||before.length>4096||after.length>4096)return null;
+  if(redactSecretText(before)!==before||redactSecretText(after)!==after)return null;
+  let prefix=0;const prefixLimit=Math.min(before.length,after.length);
+  while(prefix<prefixLimit&&before[prefix]===after[prefix])prefix++;
+  let beforeEnd=before.length,afterEnd=after.length;
+  while(beforeEnd>prefix&&afterEnd>prefix&&before[beforeEnd-1]===after[afterEnd-1]){beforeEnd--;afterEnd--}
+  const wordChar=value=>/[A-Za-z0-9_$]/.test(String(value||""));
+  if(prefix>0&&prefix<before.length&&prefix<after.length&&wordChar(before[prefix-1])&&(wordChar(before[prefix])||wordChar(after[prefix]))){
+    while(prefix>0&&before[prefix-1]===after[prefix-1]&&wordChar(before[prefix-1]))prefix--;
+  }
+  if(beforeEnd<before.length&&afterEnd<after.length&&beforeEnd>prefix&&afterEnd>prefix&&wordChar(before[beforeEnd-1])&&wordChar(before[beforeEnd])){
+    while(beforeEnd<before.length&&afterEnd<after.length&&before[beforeEnd]===after[afterEnd]&&wordChar(before[beforeEnd])){beforeEnd++;afterEnd++}
+  }
+  const clean=value=>{
+    const text=String(value||"").replace(/\s+/g," ").trim();
+    if(!text||text.length>80||/^[A-Za-z0-9+/_=.-]{20,}$/.test(text))return null;
+    const redacted=redactSecretText(text,{trim:true});return redacted===text&&!/\[(?:redacted|pairing-url)\]/i.test(redacted)?text:null;
+  };
+  const oldValue=clean(before.slice(prefix,beforeEnd)),newValue=clean(after.slice(prefix,afterEnd));
+  return oldValue&&newValue?{oldValue,newValue}:null;
+}
+
 function verifiedSummaryText(edits=[]){
   const unique=[],seen=new Set();
   for(const edit of Array.isArray(edits)?edits:[]){
     const path=String(edit?.path||"").replace(/[\r\n\t]+/g," ").trim().slice(0,240);if(!path)continue;
-    const kind=edit?.kind==="replace_text"?"replace_text":"write_file",replacements=Math.max(0,Math.trunc(Number(edit?.replacements)||0)),key=JSON.stringify([path,kind,replacements]);
-    if(seen.has(key))continue;seen.add(key);unique.push({path,kind,replacements});
+    const kind=edit?.kind==="replace_text"?"replace_text":"write_file",replacements=Math.max(0,Math.trunc(Number(edit?.replacements)||0));
+    if(kind!=="replace_text"||!edit?.summary||replacements<1)return null;
+    const oldValue=String(edit.summary.oldValue||""),newValue=String(edit.summary.newValue||"");if(!oldValue||!newValue)return null;
+    const key=JSON.stringify([path,kind,replacements,oldValue,newValue]);if(seen.has(key))continue;seen.add(key);unique.push({path,kind,replacements,oldValue,newValue});
   }
-  const shown=unique.slice(0,6),lines=["Done."];
-  if(shown.length){
-    lines.push("Changed:");
-    for(const edit of shown){
-      if(edit.kind==="replace_text")lines.push(`- ${edit.path}: ${Math.max(1,edit.replacements)} exact text replacement${Math.max(1,edit.replacements)===1?"":"s"}.`);
-      else lines.push(`- ${edit.path}: updated file contents.`);
-    }
-    if(unique.length>shown.length)lines.push(`- (+${unique.length-shown.length} more changed file${unique.length-shown.length===1?"":"s"})`);
+  if(!unique.length||unique.length>6)return null;
+  const lines=["Done.","Changed:"];
+  for(const edit of unique){
+    const count=edit.replacements>1?` (${edit.replacements} occurrences)`:"";
+    lines.push(`- ${edit.path}: replaced ${JSON.stringify(edit.oldValue)} with ${JSON.stringify(edit.newValue)}${count}.`);
   }
   lines.push("Verification: the same verifier command that failed before the edit now passes (exit code 0).");
   return lines.join("\n");
@@ -309,7 +333,7 @@ export async function runNativeAgentTurn({
       successfulTerminalRuns.push({command:String(args.command).trim(),args:args.args.map(value=>String(value)),cwd:String(args.cwd??"")});
     }
     if(success&&output?.success!==false&&output?.uncertain!==true&&namespace==="trebell_workspace"&&["write_file","replace_text"].includes(name)){
-      editRevision++;const path=String(args.path||output?.path||"").trim();if(path)verifiedEdits.push({path,kind:name,replacements:name==="replace_text"?Math.max(0,Math.trunc(Number(output?.replacements)||0)):0});
+      editRevision++;const path=String(args.path||output?.path||"").trim();if(path)verifiedEdits.push({path,kind:name,replacements:name==="replace_text"?Math.max(0,Math.trunc(Number(output?.replacements)||0)):0,summary:name==="replace_text"?conciseReplacementSummary(args.old_text,args.new_text):null});
     }
     if(success&&output?.success!==false&&output?.timedOut!==true&&output?.signal==null&&namespace==="trebell_terminal"&&name==="run"){
       const key=terminalRunKey(args),exitCode=Number.isFinite(Number(output?.exitCode))?Number(output.exitCode):null;
@@ -338,8 +362,9 @@ export async function runNativeAgentTurn({
     }
     if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_model"})){verifiedFinalizationAllowed=false;verifiedFinalizationReady=false}
     const missingExplicitTool=explicitlyRequired.find(item=>!executedToolKeys.has(item.namespace+"/"+item.name));
-    if(verifiedFinalizationReady&&verifiedFinalizationAllowed&&summaryAfterVerifiedCommand&&!missingExplicitTool){
-      const text=verifiedSummaryText(verifiedEdits);conversation.push({role:"assistant",content:text,toolCalls:[]});
+    const synthesizedVerifiedSummary=verifiedFinalizationReady&&verifiedFinalizationAllowed&&summaryAfterVerifiedCommand&&!missingExplicitTool?verifiedSummaryText(verifiedEdits):null;
+    if(synthesizedVerifiedSummary){
+      const text=synthesizedVerifiedSummary;conversation.push({role:"assistant",content:text,toolCalls:[]});
       const result={text,model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse:null};
       emit(onEvent,{name:"native.verification.summary_synthesized",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,changedPaths:[...new Set(verifiedEdits.map(edit=>edit.path))].slice(0,20)}});
       emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage,syntheticFinalSummary:true}});

@@ -447,9 +447,30 @@ test("native agent synthesizes an explicit post-verifier summary without another
     },
     executeTool:async call=>call.id==="verify-1"?{exitCode:1,stdout:"FAIL"}:call.id==="verify-2"?{exitCode:0,stdout:"PASS"}:{path:"src/a.mjs",replacements:1},
   });
-  assert.match(result.text,/same verifier command/i);assert.match(result.text,/src\/a\.mjs/);assert.match(result.text,/1 exact text replacement/i);assert.doesNotMatch(result.text,/old_text|new_text|bad|good/);assert.equal(result.modelTurns,3);assert.equal(result.toolCalls,3);assert.equal(seen.length,3);assert.ok(seen[0].tools.length>0);
+  assert.match(result.text,/same verifier command/i);assert.match(result.text,/src\/a\.mjs/);assert.match(result.text,/replaced "bad" with "good"/i);assert.doesNotMatch(result.text,/old_text|new_text/);assert.equal(result.modelTurns,3);assert.equal(result.toolCalls,3);assert.equal(seen.length,3);assert.ok(seen[0].tools.length>0);
   assert.ok(events.some(event=>event.name==="native.verification.finalizing"));
   assert.ok(events.some(event=>event.name==="native.verification.summary_synthesized"));
+});
+
+test("native explicit concise summary falls back to the provider when edit details are sensitive",async()=>{
+  let turns=0;const events=[];
+  const tools=[
+    {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    {type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},
+  ];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Run the verifier, fix it, rerun it, and after it passes answer with a concise summary."}],tools,onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"verify-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:JSON.stringify({path:"src/config.mjs",old_text:"api_key=sk-12345678",new_text:"api_key=sk-ABCDEFGH"})}],usage:{}};
+      if(turns===3)return {text:"",toolCalls:[{id:"verify-2",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      assert.deepEqual(request.tools,[]);assert.equal(request.toolChoice,"none");return {text:"provider-authored safe summary",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.id==="verify-1"?{exitCode:1}:call.id==="verify-2"?{exitCode:0}:{path:"src/config.mjs",replacements:1},
+  });
+  assert.equal(result.text,"provider-authored safe summary");assert.equal(result.modelTurns,4);assert.equal(turns,4);
+  assert.equal(events.filter(event=>event.name==="native.verification.summary_synthesized").length,0);
 });
 
 test("native verifier success does not disable tools without an explicit answer-after-pass instruction",async()=>{
