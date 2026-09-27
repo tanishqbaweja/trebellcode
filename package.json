@@ -78,6 +78,7 @@
     "bench:native:direct-exact-read": "node scripts/native-direct-exact-read-benchmark.mjs",
     "bench:native:direct-exact-list": "node scripts/native-direct-exact-list-benchmark.mjs",
     "bench:native:direct-git-status": "node scripts/native-direct-git-status-benchmark.mjs",
+    "bench:native:direct-git-branch": "node scripts/native-direct-git-branch-benchmark.mjs",
     "bench:openai:response-continuation": "node scripts/openai-response-continuation-benchmark.mjs",
     "bench:openai:continuation-accounting": "node scripts/openai-continuation-accounting-benchmark.mjs",
     "bench:openai:continuation-byte-accounting": "node --expose-gc scripts/openai-continuation-byte-accounting-benchmark.mjs",

@@ -247,8 +247,28 @@ test("native direct Git status reports a clean or non-Git workspace without infe
   }
 });
 
+test("native agent returns the current Git branch without provider inference",async()=>{
+  for(const prompt of ["What branch am I on?","Show me the current git branch.","git branch"]){
+    let providerCalls=0;const executions=[],events=[];
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:prompt}],directGitStatus:true,onEvent:event=>events.push(event),
+      tools:[{type:"namespace",name:"trebell_source_control",tools:[{name:"status"}]}],
+      providerTurn:async()=>{providerCalls++;throw new Error("Git branch should not call the provider.")},
+      executeTool:async call=>{executions.push(structuredClone(call));return {isGit:true,root:"C:/repo",branch:"feature/perf",upstream:"origin/feature/perf",statusHeader:"## feature/perf...origin/feature/perf",status:[],remotes:[],worktrees:[]}},
+    });
+    assert.equal(providerCalls,0,prompt);assert.equal(result.modelTurns,0,prompt);assert.equal(result.toolCalls,1,prompt);assert.deepEqual(executions[0].arguments,{},prompt);
+    assert.equal(result.text,"Current Git branch: feature/perf.",prompt);assert.ok(events.some(event=>event.name==="native.source_control.direct_status"&&event.data?.mode==="branch"),prompt);
+  }
+});
+
+test("native current Git branch falls back when branch identity is unavailable",async()=>{
+  let providerCalls=0,executions=0;
+  const result=await runNativeAgentTurn({model:"test-model",messages:[{role:"user",content:"What branch am I on?"}],directGitStatus:true,tools:[{type:"namespace",name:"trebell_source_control",tools:[{name:"status"}]}],providerTurn:async()=>{providerCalls++;return {text:"provider handled detached state",toolCalls:[],usage:{}}},executeTool:async()=>{executions++;return {isGit:true,branch:null,statusHeader:"## HEAD (no branch)",status:[]}}});
+  assert.equal(executions,1);assert.equal(providerCalls,1);assert.equal(result.text,"provider handled detached state");
+});
+
 test("native direct Git status fails closed for richer wording or incomplete evidence",async()=>{
-  for(const prompt of ["Show git status and explain the changes.","Check the repo status.","Run git status and then fix anything wrong."]){
+  for(const prompt of ["Show git status and explain the changes.","Check the repo status.","Run git status and then fix anything wrong.","What branch am I on and what changed?"]){
     let providerCalls=0,executions=0;
     const result=await runNativeAgentTurn({model:"test-model",messages:[{role:"user",content:prompt}],directGitStatus:true,tools:[{type:"namespace",name:"trebell_source_control",tools:[{name:"status"}]}],providerTurn:async()=>{providerCalls++;return {text:"provider handled it",toolCalls:[],usage:{}}},executeTool:async()=>{executions++;return {isGit:true,status:[]}}});
     assert.equal(providerCalls,1,prompt);assert.equal(executions,0,prompt);assert.equal(result.text,"provider handled it",prompt);

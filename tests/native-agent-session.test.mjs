@@ -98,6 +98,14 @@ test("Native session directly returns Git status",async()=>{
   assert.equal(updates.find(item=>item.update?.sessionUpdate==="agent_message_chunk")?.update?.content?.text,"Git status:\n## feature...origin/feature\nChanges:\n- M src/a.mjs");assert.ok(events.some(event=>event.name==="native.source_control.direct_status"));
 });
 
+test("Native session directly returns the current Git branch",async()=>{
+  let providerCalls=0;const calls=[],updates=[],events=[];
+  const session=new NativeAgentSession({provider:"fixture",model:"model-a",tools:[{type:"namespace",name:"trebell_source_control",tools:[{name:"status"}]}],onUpdate:update=>updates.push(update),onEvent:event=>events.push(event),providerTurn:async()=>{providerCalls++;throw new Error("Git branch should bypass provider inference.")},executeTool:async call=>{calls.push(structuredClone(call));return {isGit:true,branch:"feature/perf",upstream:"origin/feature/perf",statusHeader:"## feature/perf...origin/feature/perf",status:[]}}});
+  await session.start({providerSessionId:"git-branch",model:"model-a"});const result=await session.prompt([{type:"text",text:"What branch am I on?"}]);
+  assert.equal(providerCalls,0);assert.equal(result.raw?.modelTurns,0);assert.equal(result.raw?.toolCalls,1);assert.equal(calls[0].namespace,"trebell_source_control");assert.equal(calls[0].name,"status");
+  assert.equal(updates.find(item=>item.update?.sessionUpdate==="agent_message_chunk")?.update?.content?.text,"Current Git branch: feature/perf.");assert.ok(events.some(event=>event.name==="native.source_control.direct_status"&&event.data?.mode==="branch"));
+});
+
 test("Native session keeps virtualized direct-status evidence persisted but collapses its first provider-facing view",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-terminal-report-cooling-")),requests=[],events=[];
   try{
