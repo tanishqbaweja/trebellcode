@@ -66,6 +66,19 @@ test("provider turn converts the same conversation to Responses while preserving
   assert.equal(request.tools[0].name,"trebell_repo");
 });
 
+test("Responses can flatten tool names and attach tool-result cache breakpoints during the original conversion",()=>{
+  const request=providerTurnToResponses({
+    model:"gpt-5.6",
+    messages:[
+      {role:"assistant",content:"",toolCalls:[{id:"call-1",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Session"}'}]},
+      {role:"tool",toolCallId:"call-1",content:[{type:"text",text:"found"},{type:"image_url",image_url:{url:IMAGE_DATA_URL}}]},
+    ],
+  },{flattenToolCallNames:true,toolResultCacheBreakpoints:true});
+  const call=request.input[0],output=request.input[1];
+  assert.equal(call.name,"trebell_repo__search_symbols");assert.equal(Object.prototype.hasOwnProperty.call(call,"namespace"),false);
+  assert.equal(output.output[0].text,"found");assert.deepEqual(output.output[0].prompt_cache_breakpoint,{mode:"explicit"});assert.equal(output.output[1].type,"input_image");
+});
+
 test("Responses can keep only the stable leading instruction block at the prompt prefix",()=>{
   const request=providerTurnToResponses({
     model:"gpt-5.6",

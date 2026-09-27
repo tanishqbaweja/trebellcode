@@ -178,19 +178,6 @@ function officialOpenAiExplicitCacheBreakpointsSupported(model=""){
   const major=Number(match[1]||0),minor=Number(match[2]||0);
   return major>5||(major===5&&minor>=6);
 }
-function withOpenAiToolResultCacheBreakpoints(input=[]){
-  return (Array.isArray(input)?input:[]).map(item=>{
-    if(item?.type!=="function_call_output")return item;
-    const output=Array.isArray(item.output)
-      ?item.output.map(part=>part&&typeof part==="object"?{...part}:part)
-      :(typeof item.output==="string"&&item.output.length?[{type:"input_text",text:item.output}]:[]);
-    let index=-1;
-    for(let i=output.length-1;i>=0;i--)if(output[i]&&typeof output[i]==="object"&&output[i].type==="input_text"){index=i;break}
-    if(index<0)return item;
-    output[index]={...output[index],prompt_cache_breakpoint:{mode:"explicit"}};
-    return {...item,output};
-  });
-}
 function normalizedOpenAiPromptCacheDiagnostics(body={}){
   const value=body?.prompt_cache_diagnostics;
   if(!value||typeof value!=="object")return null;
@@ -208,7 +195,7 @@ function normalizedOpenAiPromptCacheDiagnostics(body={}){
   };
 }
 function officialOpenAiResponsesBody(request={}){
-  const body=providerTurnToResponses(request,{preserveInstructionOrder:true}),tools=[];
+  const explicitCacheBreakpoints=officialOpenAiExplicitCacheBreakpointsSupported(request.model),body=providerTurnToResponses(request,{preserveInstructionOrder:true,flattenToolCallNames:true,toolResultCacheBreakpoints:explicitCacheBreakpoints}),tools=[];
   for(const entry of Array.isArray(request.tools)?request.tools:[]){
     if(entry?.type==="namespace"&&entry.name&&Array.isArray(entry.tools)){
       for(const child of entry.tools){
@@ -223,14 +210,9 @@ function officialOpenAiResponsesBody(request={}){
     }
   }
   body.tools=tools;
-  body.input=(body.input||[]).map(item=>{
-    if(item?.type!=="function_call"||!item.namespace)return item;
-    const next={...item,name:officialResponsesToolName(item.namespace,item.name)};delete next.namespace;return next;
-  });
-  if(officialOpenAiExplicitCacheBreakpointsSupported(body.model)){
+  if(explicitCacheBreakpoints){
     const comparisonResponseId=String(request.promptCacheComparisonResponseId||"").trim();
     body.prompt_cache_options={mode:"implicit",...(comparisonResponseId?{comparison_response_id:comparisonResponseId}:{})};
-    body.input=withOpenAiToolResultCacheBreakpoints(body.input);
   }
   body.prompt_cache_key=officialOpenAiPromptCacheKey(body);
   return body;

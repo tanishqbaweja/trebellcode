@@ -126,7 +126,22 @@ function responsesContent(content,{assistant=false}={}){
   return out;
 }
 
-export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,parallelToolCalls=true}={}, {preserveInstructionOrder=false}={}){
+function responseToolOutput(content,{cacheBreakpoint=false}={}){
+  let output=typeof content==="string"?content:responsesContent(content);
+  if(cacheBreakpoint!==true)return output;
+  if(typeof output==="string"){
+    if(!output.length)return output;
+    return [{type:"input_text",text:output,prompt_cache_breakpoint:{mode:"explicit"}}];
+  }
+  if(!Array.isArray(output))return output;
+  for(let index=output.length-1;index>=0;index--){
+    if(output[index]?.type!=="input_text")continue;
+    output[index]={...output[index],prompt_cache_breakpoint:{mode:"explicit"}};break;
+  }
+  return output;
+}
+
+export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,parallelToolCalls=true}={}, {preserveInstructionOrder=false,flattenToolCallNames=false,toolResultCacheBreakpoints=false}={}){
   const instructions=[],input=[];let instructionPrefixOpen=true;
   for(const message of Array.isArray(messages)?messages:[]){
     if(!message||typeof message!=="object")continue;
@@ -140,14 +155,14 @@ export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="
     }
     if(preserveInstructionOrder)instructionPrefixOpen=false;
     if(message.role==="tool"){
-      const output=typeof message.content==="string"?message.content:responsesContent(message.content);
+      const output=responseToolOutput(message.content,{cacheBreakpoint:toolResultCacheBreakpoints});
       input.push({type:"function_call_output",call_id:String(message.toolCallId||message.tool_call_id||""),output});continue;
     }
     if(message.role==="assistant"){
       const content=responsesContent(message.content,{assistant:true});if(content.length)input.push({type:"message",role:"assistant",content});
       for(const call of message.toolCalls||message.tool_calls||[]){
         const normalized=normalizeToolCall(call);
-        input.push({type:"function_call",call_id:normalized.id||undefined,...(normalized.namespace?{namespace:normalized.namespace}:{}),name:normalized.name,arguments:normalized.arguments});
+        input.push({type:"function_call",call_id:normalized.id||undefined,...(!flattenToolCallNames&&normalized.namespace?{namespace:normalized.namespace}:{}),name:flattenToolCallNames?flatToolName(normalized.namespace,normalized.name):normalized.name,arguments:normalized.arguments});
       }
       continue;
     }
