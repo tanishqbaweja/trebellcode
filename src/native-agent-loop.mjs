@@ -163,8 +163,11 @@ function explicitlyRequestedTools(messages=[],tools=[]){
 
 function explicitFinalAnswerAfterVerification(messages=[]){
   const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=messageText(user);
-  if(!text)return false;
-  return /\b(?:after|once|when)\b[^.\n]{0,220}\b(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful)\b[^.\n]{0,220}\b(?:answer|respond|reply|summari[sz](?:e|ing|ation)?|summary)\b/i.test(text);
+  if(!text)return null;
+  const match=text.match(/\b(?:after|once|when)\b\s*([^.\n]{1,220}?)\s+\b(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful)\b[^.\n]{0,220}\b(?:answer|respond|reply|summari[sz](?:e|ing|ation)?|summary)\b/i);
+  if(!match)return null;
+  const target=String(match[1]||"").trim();if(!target)return null;
+  return {target:/^(?:it|this|that|them|the|a|an)$/i.test(target)?null:target};
 }
 
 function explicitSummaryAfterVerification(messages=[]){
@@ -198,9 +201,11 @@ function verificationCompletionMatchesRun(request,args={}){
   if(!request?.target)return false;
   const target=String(request.target).replace(/[`'\"“”‘’]/g,"").replace(/\s+/g," ").trim().toLowerCase();
   if(!target)return false;
-  if(/^(?:(?:the|this|that)\s+)?(?:(?:same|failing|failed)\s+)?(?:verification|verifier|verification command|verifier command|tests?|test suite|test command|checks?|check command)$/i.test(target))return true;
   const normalized=normalizeNativeCommandArguments(args),command=String(normalized.command||"").trim(),argv=Array.isArray(normalized.args)?normalized.args.map(value=>String(value)):[];
   const rendered=[command,...argv].filter(Boolean).join(" ").replace(/\s+/g," ").trim().toLowerCase();
+  if(/^(?:(?:the|this|that)\s+)?(?:(?:same|failing|failed|passing|requested)\s+)?(?:verification|verifier|verification command|verifier command|tests?|test suite|test command|checks?|check command)$/i.test(target)){
+    return /(?:^|[\s/\\._:-])(?:verify|verification|verifier|tests?|pytest|jest|vitest|mocha|ava|rspec|checks?|lint|typecheck|tsc)(?:$|[\s/\\._:-])/i.test(rendered);
+  }
   return Boolean(rendered)&&target===rendered;
 }
 
@@ -349,7 +354,8 @@ export async function runNativeAgentTurn({
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
   const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])];
   const explicitlyRequired=explicitlyRequestedTools(conversation,providerVisibleTools(tools,toolAllowlist)),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
-  const finalAfterVerifiedCommand=explicitFinalAnswerAfterVerification(conversation),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalRuns=[],verifiedEdits=[];
+  const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalRuns=[],verifiedEdits=[];
+  const verificationFinalizationRequest=verificationCompletionRequest||(finalAfterVerifiedRequest?.target?finalAfterVerifiedRequest:null);
   const successfulTerminalRuns=[];
   let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
   const startedAt=Date.now(),started=nowMs(),wallController=budget.maxWallTimeMs!=null?new AbortController():null,deadlineAt=budget.maxWallTimeMs==null?null:Date.now()+budget.maxWallTimeMs;
@@ -388,7 +394,7 @@ export async function runNativeAgentTurn({
       if(key&&exitCode!==null){
         const priorFailure=terminalRuns.findLast(item=>item.key===key&&item.exitCode!==0&&item.editRevision<editRevision);
         terminalRuns.push({key,exitCode,editRevision});
-        const completionTargetMatches=!verificationCompletionRequested||verificationCompletionMatchesRun(verificationCompletionRequest,args);
+        const completionTargetMatches=!verificationFinalizationRequest||verificationCompletionMatchesRun(verificationFinalizationRequest,args);
         if(verifiedFinalizationAllowed&&exitCode===0&&priorFailure&&completionTargetMatches){
           verifiedFinalizationReady=true;
           emit(onEvent,{name:"native.verification.finalizing",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision}});

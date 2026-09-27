@@ -497,6 +497,23 @@ test("native agent synthesizes an exact post-verifier literal without another mo
   assert.ok(events.some(event=>event.name==="native.turn.completed"&&event.data?.syntheticFinalLiteral===true));
 });
 
+test("native post-verifier literal ignores an unrelated fail-pass terminal command",async()=>{
+  let turns=0;const events=[];
+  const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation. After the verifier passes, reply exactly `VERIFIED_OK`."}],tools,onEvent:event=>events.push(event),
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"setup-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["setup.mjs"]}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      if(turns===3)return {text:"",toolCalls:[{id:"setup-2",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["setup.mjs"]}'}],usage:{}};
+      return {text:"provider final",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.id==="setup-1"?{exitCode:1}:call.id==="setup-2"?{exitCode:0}:{path:"src/a.mjs",replacements:1},
+  });
+  assert.equal(turns,4);assert.equal(result.text,"provider final");assert.equal(events.filter(event=>event.name==="native.verification.literal_synthesized").length,0);
+});
+
 test("native agent does not synthesize an exact literal when the user also requests richer final content",async()=>{
   let turns=0;const events=[];
   const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
@@ -565,6 +582,23 @@ test("native generic verification completion still accepts one proven verifier r
     executeTool:async call=>call.id==="verify-1"?{exitCode:1}:call.id==="verify-2"?{exitCode:0}:{path:"src/a.mjs",replacements:1},
   });
   assert.equal(turns,3);assert.equal(result.modelTurns,3);assert.match(result.text,/passes \(exit code 0\)/i);
+});
+
+test("native generic verification completion rejects unrelated terminal reruns",async()=>{
+  let turns=0;const events=[];
+  const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation, and rerun the verification until it passes."}],tools,onEvent:event=>events.push(event),
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"setup-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["setup.mjs"]}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      if(turns===3)return {text:"",toolCalls:[{id:"setup-2",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["setup.mjs"]}'}],usage:{}};
+      return {text:"provider final",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.id==="setup-1"?{exitCode:1}:call.id==="setup-2"?{exitCode:0}:{path:"src/a.mjs",replacements:1},
+  });
+  assert.equal(turns,4);assert.equal(result.text,"provider final");assert.equal(events.filter(event=>event.name==="native.verification.completion_synthesized").length,0);
 });
 
 test("native rerun-until-pass completion ignores a negated rerun instruction",async()=>{
