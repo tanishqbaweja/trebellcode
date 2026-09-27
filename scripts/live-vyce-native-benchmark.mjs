@@ -332,6 +332,8 @@ async function runScenario(scenario){
           messageChars:JSON.stringify(requestMessages).length,
           toolSchemaChars:JSON.stringify(requestTools).length,
           functionCount:requestTools.reduce((sum,item)=>sum+(Array.isArray(item?.tools)?item.tools.length:1),0),
+          toolNamespaces:requestTools.map(item=>String(item?.name||item?.function?.name||"")).filter(Boolean),
+          functionNames:requestTools.flatMap(item=>Array.isArray(item?.tools)?item.tools.map(tool=>String(item?.name||"")+"/"+String(tool?.name||"")):[String(item?.function?.name||item?.name||"")]).filter(Boolean),
           requestMetrics:nativeRequestMetrics(requestMessages,requestTools),
         };
         providerRequests.push(record);
@@ -431,6 +433,9 @@ async function runScenario(scenario){
         providerResponseTextChars:Number(item.responseTextChars||0),
         providerFinishReason:item.finishReason||null,
         providerResponseEmpty:!Number(item.responseTextChars||0)&&!(Array.isArray(item.toolCalls)&&item.toolCalls.length),
+        providerFunctionCount:Number(item.functionCount||0),
+        providerToolNamespaces:Array.isArray(item.toolNamespaces)?item.toolNamespaces:[],
+        providerVisibleFunctions:Array.isArray(item.functionNames)?item.functionNames:[],
         messageChars:Number(item.messageChars||0),
         schemaChars:Number(item.toolSchemaChars||0),
         systemTokens:Number(item.requestMetrics?.system?.estimatedTokens||0),
