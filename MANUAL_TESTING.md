@@ -6,7 +6,7 @@ Current release target: **v1.3.6**
 
 Current automated regression baseline on **2026-09-27**:
 
-- npm test: **836 passed, 0 failed**.
+- npm test: **839 passed, 0 failed**.
 - Full Playwright UI suite in **headless Google Chrome**: **193 passed, 0 failed**.
 - Production UI build succeeds.
 - Packaged Windows validation passed bundled Codex relay/desktop smoke plus a real Trebell Native model using packaged browser, computer and filesystem capabilities.
