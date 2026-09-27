@@ -841,16 +841,21 @@ function relevanceFor(entry,terms,changed,focusSet){
   return {score,reasons,symbolMatches};
 }
 
-function repositoryGraph(files,{terms=[],changed=new Set(),focusSet=new Set()}={}){
-  const available=new Set(files.map(entry=>entry.relativePath)),definitionIndex=new Map(),edges=new Map(),relevance=new Map(),personalization=new Map();
+function repositoryGraphStructure(files){
+  const available=new Set(files.map(entry=>entry.relativePath)),definitionIndex=new Map(),edges=new Map();
   for(const entry of files)for(const definition of entry.parsed.definitions||[]){let owners=definitionIndex.get(definition.name);if(!owners){owners=[];definitionIndex.set(definition.name,owners)}owners.push(entry.relativePath)}
   for(const entry of files){
-    const rank=relevanceFor(entry,terms,changed,focusSet);relevance.set(entry.relativePath,rank);personalization.set(entry.relativePath,1+rank.score);
     for(const spec of entry.parsed.imports||[]){const target=resolveImport(entry.relativePath,spec,available);if(target)addEdge(edges,entry.relativePath,target,4)}
     for(const [name,count] of entry.parsed.references||[]){const owners=definitionIndex.get(name);if(!owners||owners.length>4)continue;for(const owner of owners)addEdge(edges,entry.relativePath,owner,Math.min(4,Math.sqrt(count)))}
   }
-  const centrality=pageRank(files.map(entry=>entry.relativePath),edges,personalization),edgeCount=[...edges.values()].reduce((sum,row)=>sum+row.size,0);
-  return {available,definitionIndex,edges,relevance,centrality,edgeCount};
+  return {available,definitionIndex,edges,edgeCount:[...edges.values()].reduce((sum,row)=>sum+row.size,0)};
+}
+
+function repositoryGraph(files,{terms=[],changed=new Set(),focusSet=new Set(),structure=null}={}){
+  const graph=structure||repositoryGraphStructure(files),relevance=new Map(),personalization=new Map();
+  for(const entry of files){const rank=relevanceFor(entry,terms,changed,focusSet);relevance.set(entry.relativePath,rank);personalization.set(entry.relativePath,1+rank.score)}
+  const centrality=pageRank(files.map(entry=>entry.relativePath),graph.edges,personalization);
+  return {...graph,relevance,centrality};
 }
 
 function relevantExcerpt(content,entry,terms,maxChars=2600){
@@ -942,17 +947,30 @@ export function planContextBudget({task="",focusPaths=[],tokensUsed=null,context
 
 export class ContextEngine{
   constructor({maxFileBytes=256_000,env=process.env,platform=process.platform}={}){
-    this.maxFileBytes=maxFileBytes;this.environment=buildRuntimeEnvironment("native",{parent:env,platform});this.roots=new Map();this.gitStates=new Map();this.packetGraphs=new Map();
+    this.maxFileBytes=maxFileBytes;this.environment=buildRuntimeEnvironment("native",{parent:env,platform});this.roots=new Map();this.gitStates=new Map();this.packetGraphs=new Map();this.graphStructures=new Map();
+  }
+
+  #graphSourceFingerprint(files){
+    return JSON.stringify(files.map(entry=>[entry.relativePath,entry.size,String(entry.version??""),entry.parserVersion]));
+  }
+
+  #graphStructure(cacheKey,files,sourceFingerprint=this.#graphSourceFingerprint(files)){
+    const cached=this.graphStructures.get(cacheKey);
+    if(cached?.sourceFingerprint===sourceFingerprint)return {structure:cached.structure,reused:true};
+    const structure=repositoryGraphStructure(files);
+    this.graphStructures.set(cacheKey,{sourceFingerprint,structure});
+    return {structure,reused:false};
   }
 
   #packetGraph(cacheKey,files,{terms=[],changed=new Set(),focusSet=new Set()}={}){
     const selector=JSON.stringify([terms,[...changed].sort(),[...focusSet].sort()]);
-    const sourceFingerprint=JSON.stringify(files.map(entry=>[entry.relativePath,entry.size,String(entry.version??""),entry.parserVersion]));
+    const sourceFingerprint=this.#graphSourceFingerprint(files);
     const cached=this.packetGraphs.get(cacheKey);
-    if(cached?.selector===selector&&cached.sourceFingerprint===sourceFingerprint)return {graph:cached.graph,reused:true};
-    const graph=repositoryGraph(files,{terms,changed,focusSet});
+    if(cached?.selector===selector&&cached.sourceFingerprint===sourceFingerprint)return {graph:cached.graph,reused:true,structureReused:true};
+    const {structure,reused:structureReused}=this.#graphStructure(cacheKey,files,sourceFingerprint);
+    const graph=repositoryGraph(files,{terms,changed,focusSet,structure});
     this.packetGraphs.set(cacheKey,{selector,sourceFingerprint,graph});
-    return {graph,reused:false};
+    return {graph,reused:false,structureReused};
   }
 
   async #indexed(root,io=null,signal=null){
@@ -1022,7 +1040,7 @@ export class ContextEngine{
       id:`ctx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`,
       root:contextIo.root,task:String(task||""),generatedAt:Date.now(),tokenEstimate:0,maxTokens:0,
       items:[],injection:"",instructionInjection:"",untrustedInjection:"",budget:budgetPlan,skipped:true,
-      stats:{filesIndexed:0,reparsed:0,reused:0,skipped:0,inspected:0,graphEdges:0,durationMs:0,remote:Boolean(io),skippedByPressure:true,pathInventoryReused:false,graphReused:false},
+      stats:{filesIndexed:0,reparsed:0,reused:0,skipped:0,inspected:0,graphEdges:0,durationMs:0,remote:Boolean(io),skippedByPressure:true,pathInventoryReused:false,graphReused:false,graphStructureReused:false},
     };
     const budget=budgetPlan.maxTokens,fileLimit=budgetPlan.maxFiles;
     const git=await contextIo.gitState({signal});throwIfContextAborted(signal);
@@ -1072,7 +1090,7 @@ export class ContextEngine{
       id:`ctx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`,
       root:index.root,task:String(task||""),generatedAt:Date.now(),tokenEstimate:tokenEstimate(injection),maxTokens:budget,
       items:selected,injection,instructionInjection,untrustedInjection,budget:budgetPlan,
-      stats:{filesIndexed:files.length,reparsed:index.reparsed,reused:index.reused,skipped:index.skipped,inspected:index.inspected,graphEdges:edgeCount,durationMs:index.durationMs,remote:Boolean(io),revisionChanged:index.revisionChanged,revisionUnknown:index.revisionUnknown,revisionDiffUsed:index.revisionDiffUsed,pathInventoryReused:Boolean(index.pathInventoryReused),graphReused:packetGraph.reused},
+      stats:{filesIndexed:files.length,reparsed:index.reparsed,reused:index.reused,skipped:index.skipped,inspected:index.inspected,graphEdges:edgeCount,durationMs:index.durationMs,remote:Boolean(io),revisionChanged:index.revisionChanged,revisionUnknown:index.revisionUnknown,revisionDiffUsed:index.revisionDiffUsed,pathInventoryReused:Boolean(index.pathInventoryReused),graphReused:packetGraph.reused,graphStructureReused:packetGraph.structureReused},
     };
   }
 
@@ -1104,7 +1122,7 @@ export class ContextEngine{
   async repositoryMap({root,query="",limit=60,io=null}={}){
     if(String(query||"").length>1000)throw new Error("Repository map query is too long");
     const {git,index}=await this.#indexed(root,io),files=[...index.files.values()],terms=taskTerms(query),capped=Math.max(1,Math.min(120,Number(limit)||60));
-    const {available,edges,relevance,centrality,edgeCount}=repositoryGraph(files,{terms,changed:git.changed||new Set(),focusSet:new Set()}),incoming=new Map();
+    const {structure}=this.#graphStructure(index.cacheKey,files),{available,edges,relevance,centrality,edgeCount}=repositoryGraph(files,{terms,changed:git.changed||new Set(),focusSet:new Set(),structure}),incoming=new Map();
     for(const [from,row] of edges)for(const to of row.keys()){let sources=incoming.get(to);if(!sources){sources=new Set();incoming.set(to,sources)}sources.add(from)}
     const data=files.map(entry=>{
       const rel=relevance.get(entry.relativePath)||{score:0,reasons:[]},central=centrality.get(entry.relativePath)||0,imports=(entry.parsed.imports||[]).map(specifier=>({specifier,target:resolveImport(entry.relativePath,specifier,available)})).filter(item=>item.target).slice(0,20);

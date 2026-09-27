@@ -171,20 +171,27 @@ test("context packet reuses an identical repository graph only while source stru
     relativeFocus:path=>path,
   };
   const engine=new ContextEngine(),first=await engine.buildPacket({root:"/srv/app",io,task:"inspect beta"}),second=await engine.buildPacket({root:"/srv/app",io,task:"inspect beta"});
-  assert.equal(first.stats.graphReused,false);assert.equal(second.stats.graphReused,true);
+  assert.equal(first.stats.graphReused,false);assert.equal(first.stats.graphStructureReused,false);
+  assert.equal(second.stats.graphReused,true);assert.equal(second.stats.graphStructureReused,true);
   assert.deepEqual(second.items,first.items);assert.equal(second.injection,first.injection);
 
   const differentTask=await engine.buildPacket({root:"/srv/app",io,task:"inspect alpha"});
   assert.equal(differentTask.stats.graphReused,false,"task relevance changes must invalidate personalized graph reuse");
+  assert.equal(differentTask.stats.graphStructureReused,true,"task changes should reuse source-derived graph topology");
+  const freshDifferentTask=await new ContextEngine().buildPacket({root:"/srv/app",io,task:"inspect alpha"});
+  assert.deepEqual(differentTask.items,freshDifferentTask.items);assert.equal(differentTask.injection,freshDifferentTask.injection);
 
   contents.set("src/a.js","export const alpha = 2;\n");versions.set("src/a.js","v2");changed=new Set(["src/a.js"]);statusFingerprint="dirty:a";
   const dirty=await engine.buildPacket({root:"/srv/app",io,task:"inspect alpha"});
   assert.equal(dirty.stats.graphReused,false,"changed parsed source must invalidate graph reuse");
+  assert.equal(dirty.stats.graphStructureReused,false,"changed parsed source must invalidate cached graph topology");
   const dirtyStable=await engine.buildPacket({root:"/srv/app",io,task:"inspect alpha"});
   assert.equal(dirtyStable.stats.graphReused,false,"a changed source may temporarily alter exact indexed iteration order while its reread is folded into cache state");
+  assert.equal(dirtyStable.stats.graphStructureReused,false,"a changed source topology must settle before reuse");
   assert.deepEqual(dirtyStable.items,dirty.items);assert.equal(dirtyStable.injection,dirty.injection);
   const dirtyStableAgain=await engine.buildPacket({root:"/srv/app",io,task:"inspect alpha"});
   assert.equal(dirtyStableAgain.stats.graphReused,true,"once the exact dirty indexed source state is stable, the personalized graph should be reusable");
+  assert.equal(dirtyStableAgain.stats.graphStructureReused,true);
   assert.deepEqual(dirtyStableAgain.items,dirtyStable.items);assert.equal(dirtyStableAgain.injection,dirtyStable.injection);
 });
 
