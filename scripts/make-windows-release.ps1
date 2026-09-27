@@ -193,7 +193,6 @@ $Version = [string]$Package.version
 if ([string]::IsNullOrWhiteSpace($Tag)) { $Tag = "v$Version" }
 $ElectronDist = Join-Path $Root "node_modules\electron\dist"
 $ElectronExe = Join-Path $ElectronDist "electron.exe"
-if (-not (Test-Path $ElectronExe)) { throw "Installed Electron distribution is unavailable: $ElectronExe" }
 
 Write-Host "== Trebell Code Windows release ==" -ForegroundColor Cyan
 Write-Host "Version: $Version"
@@ -201,6 +200,7 @@ Write-Host "Tag:     $Tag"
 
 Write-Host "`n[1/8] Installing dependencies..." -ForegroundColor Cyan
 Invoke-Native "npm" @("install","--no-audit","--no-fund","--include=optional")
+if (-not (Test-Path $ElectronExe)) { throw "Installed Electron distribution is unavailable after dependency installation: $ElectronExe" }
 
 if (-not $SkipTests) {
   Write-Host "`n[2/8] Running unit/integration tests..." -ForegroundColor Cyan
