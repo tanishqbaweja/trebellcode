@@ -1,6 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { nativeToolTiming } from "../scripts/native-benchmark-timing.mjs";
+import { nativeToolTiming, optionalFiniteMetric, optionalMetricTotal } from "../scripts/native-benchmark-timing.mjs";
+
+test("Native benchmark nullable metrics do not turn missing TTFT into zero",()=>{
+  assert.equal(optionalFiniteMetric(null),null);
+  assert.equal(optionalFiniteMetric(undefined),null);
+  assert.equal(optionalFiniteMetric(""),null);
+  assert.equal(optionalFiniteMetric(Number.NaN),null);
+  assert.equal(optionalFiniteMetric(-1),null);
+  assert.equal(optionalFiniteMetric(0),0);
+  assert.equal(optionalFiniteMetric("7.5"),7.5);
+  assert.equal(optionalMetricTotal(0,0),null);
+  assert.equal(optionalMetricTotal(0,1),0);
+  assert.equal(optionalMetricTotal(7.5,2),7.5);
+});
 
 test("Native benchmark timing removes parallel overlap from tool wall time",()=>{
   const events=[

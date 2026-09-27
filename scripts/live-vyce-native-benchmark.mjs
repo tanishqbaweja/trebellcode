@@ -16,7 +16,7 @@ import { platformDynamicToolNamespaces } from "../src/platform-tool-catalog.mjs"
 import { ProviderManager } from "../src/provider-manager.mjs";
 import { repositoryDynamicToolNamespace, searchRepositoryToolDefinitions } from "../src/repository-tool-catalog.mjs";
 import { repositoryContextEntries } from "../ui/src/context-provenance.js";
-import { nativeToolTiming } from "./native-benchmark-timing.mjs";
+import { nativeToolTiming, optionalFiniteMetric, optionalMetricTotal } from "./native-benchmark-timing.mjs";
 
 const execFileAsync=promisify(execFile);
 const apiKey=String(process.env.TREBELL_TEST_VYCE_API_KEY||process.env.VYCEAI_API_KEY||process.env.VYCE_API_KEY||"").trim();
@@ -266,18 +266,22 @@ async function runScenario(scenario){
     const repairedToolCalls=events.filter(event=>event.name==="native.tool.call_repaired").length;
     const sameTurnCooling=events.filter(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="same_turn");
     const failedToolCalls=toolUpdates.filter(item=>item.update?.status==="failed").length;
-    const aggregate=providerRequests.reduce((out,item)=>({
-      inputTokens:out.inputTokens+Number(item.usage?.inputTokens||0),
-      outputTokens:out.outputTokens+Number(item.usage?.outputTokens||0),
-      cachedInputTokens:out.cachedInputTokens+Number(item.usage?.cachedInputTokens||0),
-      requestBytes:out.requestBytes+Number(item.telemetry?.requestBytes||0),
-      responseBytes:out.responseBytes+Number(item.telemetry?.responseBytes||0),
-      responseHeadersLatencyMs:out.responseHeadersLatencyMs+Number(item.telemetry?.responseHeadersLatencyMs||0),
-      responseBodyLatencyMs:out.responseBodyLatencyMs+Number(item.telemetry?.responseBodyLatencyMs||0),
-      timeToFirstTokenMs:out.timeToFirstTokenMs+Number(item.telemetry?.timeToFirstTokenMs||0),
-      ttftSamples:out.ttftSamples+(Number.isFinite(Number(item.telemetry?.timeToFirstTokenMs))?1:0),
-      providerLatencyMs:out.providerLatencyMs+Number(item.telemetry?.totalLatencyMs||0),
-    }),{inputTokens:0,outputTokens:0,cachedInputTokens:0,requestBytes:0,responseBytes:0,responseHeadersLatencyMs:0,responseBodyLatencyMs:0,timeToFirstTokenMs:0,ttftSamples:0,providerLatencyMs:0});
+    const aggregate=providerRequests.reduce((out,item)=>{
+      const ttft=optionalFiniteMetric(item.telemetry?.timeToFirstTokenMs);
+      return {
+        inputTokens:out.inputTokens+Number(item.usage?.inputTokens||0),
+        outputTokens:out.outputTokens+Number(item.usage?.outputTokens||0),
+        cachedInputTokens:out.cachedInputTokens+Number(item.usage?.cachedInputTokens||0),
+        requestBytes:out.requestBytes+Number(item.telemetry?.requestBytes||0),
+        responseBytes:out.responseBytes+Number(item.telemetry?.responseBytes||0),
+        responseHeadersLatencyMs:out.responseHeadersLatencyMs+Number(item.telemetry?.responseHeadersLatencyMs||0),
+        responseBodyLatencyMs:out.responseBodyLatencyMs+Number(item.telemetry?.responseBodyLatencyMs||0),
+        timeToFirstTokenMs:out.timeToFirstTokenMs+(ttft??0),
+        ttftSamples:out.ttftSamples+(ttft==null?0:1),
+        providerLatencyMs:out.providerLatencyMs+Number(item.telemetry?.totalLatencyMs||0),
+      };
+    },{inputTokens:0,outputTokens:0,cachedInputTokens:0,requestBytes:0,responseBytes:0,responseHeadersLatencyMs:0,responseBodyLatencyMs:0,timeToFirstTokenMs:0,ttftSamples:0,providerLatencyMs:0});
+    aggregate.timeToFirstTokenMs=optionalMetricTotal(aggregate.timeToFirstTokenMs,aggregate.ttftSamples);
     const toolTiming=nativeToolTiming(events,{elapsedMs,providerLatencyMs:aggregate.providerLatencyMs});
     const toolNames=toolUpdates.map(item=>item.update?.namespace+"/"+item.update?.tool);
     const firstVerifyIndex=toolNames.indexOf("trebell_terminal/run");
@@ -313,7 +317,7 @@ async function runScenario(scenario){
         providerInputTokens:Number(item.usage?.inputTokens||0),
         providerResponseHeadersLatencyMs:Number(item.telemetry?.responseHeadersLatencyMs||0),
         providerResponseBodyLatencyMs:Number(item.telemetry?.responseBodyLatencyMs||0),
-        providerTimeToFirstTokenMs:Number.isFinite(Number(item.telemetry?.timeToFirstTokenMs))?Number(item.telemetry.timeToFirstTokenMs):null,
+        providerTimeToFirstTokenMs:optionalFiniteMetric(item.telemetry?.timeToFirstTokenMs),
         providerTotalLatencyMs:Number(item.telemetry?.totalLatencyMs||0),
         providerStreaming:Boolean(item.telemetry?.streaming),
         providerError:item.error||null,
@@ -354,5 +358,6 @@ const totals=results.reduce((out,row)=>({
   providerLatencyMs:out.providerLatencyMs+row.providerLatencyMs,responseHeadersLatencyMs:out.responseHeadersLatencyMs+row.responseHeadersLatencyMs,responseBodyLatencyMs:out.responseBodyLatencyMs+row.responseBodyLatencyMs,timeToFirstTokenMs:out.timeToFirstTokenMs+row.timeToFirstTokenMs,ttftSamples:out.ttftSamples+row.ttftSamples,
   toolExecutionMs:out.toolExecutionMs+row.toolExecutionMs,toolWallMs:out.toolWallMs+row.toolWallMs,parallelToolOverlapMs:out.parallelToolOverlapMs+row.parallelToolOverlapMs,otherElapsedMs:out.otherElapsedMs+row.otherElapsedMs,
 }),{inputTokens:0,outputTokens:0,modelTurns:0,providerAttempts:0,providerRetryAttempts:0,toolCalls:0,elapsedMs:0,providerLatencyMs:0,responseHeadersLatencyMs:0,responseBodyLatencyMs:0,timeToFirstTokenMs:0,ttftSamples:0,toolExecutionMs:0,toolWallMs:0,parallelToolOverlapMs:0,otherElapsedMs:0});
+totals.timeToFirstTokenMs=optionalMetricTotal(totals.timeToFirstTokenMs,totals.ttftSamples);
 console.log(JSON.stringify({ok:results.every(row=>row.ok),runtime:"native",provider:"vyceai",model,streamingRequested:streamVyce,results,totals},null,2));
 

@@ -1,5 +1,15 @@
 function rounded(value){return Number(Math.max(0,Number(value)||0).toFixed(3))}
 
+export function optionalFiniteMetric(value){
+  if(value==null||value==="")return null;
+  const number=Number(value);
+  return Number.isFinite(number)&&number>=0?number:null;
+}
+
+export function optionalMetricTotal(total,samples){
+  return Number(samples)>0?optionalFiniteMetric(total):null;
+}
+
 function mergedIntervalMs(intervals=[]){
   const ordered=intervals.filter(item=>Number.isFinite(item?.start)&&Number.isFinite(item?.end)&&item.end>=item.start).sort((a,b)=>a.start-b.start||a.end-b.end);
   if(!ordered.length)return 0;
