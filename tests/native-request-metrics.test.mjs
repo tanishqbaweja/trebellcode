@@ -45,3 +45,11 @@ test("Native request metrics preserve array JSON semantics when a message define
   assert.equal(result.system.bytes,Buffer.byteLength(systemJson,"utf8"));assert.equal(result.messages.bytes,Buffer.byteLength(messagesJson,"utf8"));
   assert.equal(result.systemHash,createHash("sha256").update(systemJson).digest("hex").slice(0,16));assert.equal(result.messages.estimatedTokens,Math.ceil(Buffer.byteLength(messagesJson,"utf8")/4));
 });
+
+test("Native request metrics can reuse a stable tool-schema serialization within one agent turn",()=>{
+  const messages=[{role:"system",content:"system"},{role:"user",content:"request"}],tools=[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file",description:"read",inputSchema:{type:"object",properties:{path:{type:"string"}}}}]}],cache=new WeakMap();
+  const uncached=nativeRequestMetrics(messages,tools),cachedFirst=nativeRequestMetrics(messages,tools,{toolSchemaCache:cache}),cachedSecond=nativeRequestMetrics(messages,tools,{toolSchemaCache:cache});
+  assert.deepEqual(cachedFirst,uncached);assert.deepEqual(cachedSecond,uncached);
+  assert.equal(cachedFirst[NATIVE_TOOL_SCHEMA_FINGERPRINT],uncached[NATIVE_TOOL_SCHEMA_FINGERPRINT]);assert.equal(cachedSecond[NATIVE_TOOL_SCHEMA_FINGERPRINT],uncached[NATIVE_TOOL_SCHEMA_FINGERPRINT]);
+  assert.equal(cache.has(tools),true);
+});

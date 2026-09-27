@@ -549,8 +549,8 @@ export async function runNativeAgentTurn({
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
-  const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])];
-  const explicitlyRequired=explicitlyRequestedTools(conversation,providerVisibleTools(tools,toolAllowlist)),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
+  const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])],visibleTools=providerVisibleTools(tools,toolAllowlist),directVisiblePairs=exposedToolPairs(visibleTools),requestMetricsToolCache=new WeakMap();
+  const explicitlyRequired=explicitlyRequestedTools(conversation,visibleTools),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
   const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalStatusRequested=explicitTerminalStatusRequest(conversation),directTerminalStatusCommand=directTerminalStatusCommands===true?explicitTerminalStatusCommand(conversation):null,directReplacementStatus=directExactReplacementStatus===true?explicitExactReplacementStatus(conversation):null,terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
   const verificationFinalizationRequest=verificationCompletionRequest||(finalAfterVerifiedRequest?.target?finalAfterVerifiedRequest:null);
   const successfulTerminalRuns=[];
@@ -623,7 +623,7 @@ export async function runNativeAgentTurn({
   };
   emit(onEvent,{name:"native.turn.started",status:"running",model:String(model),provider:provider||null,data:{...metadata,maxModelTurns:budget.maxModelTurns,maxToolCalls:budget.maxToolCalls,maxWallTimeMs:budget.maxWallTimeMs}});
   try{
-    const directVisiblePairs=exposedToolPairs(providerVisibleTools(tools,toolAllowlist)),directReplacementNeedsVerifier=Boolean(directReplacementStatus?.command),directReplacementVisible=directReplacementStatus&&budget.maxToolCalls>=(directReplacementNeedsVerifier?2:1)&&directVisiblePairs.some(item=>item.namespace==="trebell_workspace"&&item.name==="replace_text")&&(!directReplacementNeedsVerifier||directVisiblePairs.some(item=>item.namespace==="trebell_terminal"&&item.name==="run"));
+    const directReplacementNeedsVerifier=Boolean(directReplacementStatus?.command),directReplacementVisible=directReplacementStatus&&budget.maxToolCalls>=(directReplacementNeedsVerifier?2:1)&&directVisiblePairs.some(item=>item.namespace==="trebell_workspace"&&item.name==="replace_text")&&(!directReplacementNeedsVerifier||directVisiblePairs.some(item=>item.namespace==="trebell_terminal"&&item.name==="run"));
     if(directReplacementVisible&&!applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_direct_exact_replacement"})){
       throwIfAborted(turnSignal);
       const editCall={id:"native-direct-exact-replace-1",namespace:"trebell_workspace",name:"replace_text",arguments:JSON.stringify({path:directReplacementStatus.path,old_text:directReplacementStatus.oldText,new_text:directReplacementStatus.newText,expected_replacements:1})};
@@ -655,7 +655,7 @@ export async function runNativeAgentTurn({
         }
       }
     }
-    const directTerminalVisible=directTerminalStatusCommand&&budget.maxToolCalls>0&&exposedToolPairs(providerVisibleTools(tools,toolAllowlist)).some(item=>item.namespace==="trebell_terminal"&&item.name==="run");
+    const directTerminalVisible=directTerminalStatusCommand&&budget.maxToolCalls>0&&directVisiblePairs.some(item=>item.namespace==="trebell_terminal"&&item.name==="run");
     if(directTerminalVisible&&!applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_direct_terminal_status"})){
       throwIfAborted(turnSignal);
       const call={id:"native-direct-terminal-status-1",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify(directTerminalStatusCommand)};conversation.push({role:"assistant",content:"",toolCalls:[call]});toolCalls=1;
@@ -689,7 +689,7 @@ export async function runNativeAgentTurn({
       const error=new Error(`Native agent model-turn budget exhausted (${modelTurns}/${budget.maxModelTurns}).`);error.code="native_model_turn_budget";
       emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(model),provider:provider||null,data:{reason:error.code,modelTurns,toolCalls}});throw error;
     }
-    const visibleTools=providerVisibleTools(tools,toolAllowlist),toolBudgetExhausted=visibleTools.length>0&&toolCalls>=budget.maxToolCalls;
+    const toolBudgetExhausted=visibleTools.length>0&&toolCalls>=budget.maxToolCalls;
     if(toolBudgetExhausted){
       const missingRequired=explicitlyRequired.find(item=>!executedToolKeys.has(item.namespace+"/"+item.name));
       if(missingRequired){
@@ -714,7 +714,7 @@ export async function runNativeAgentTurn({
       if(Array.isArray(prepared))providerMessages=prepared;
       else if(Array.isArray(prepared?.messages)){providerMessages=prepared.messages;providerView=prepared}
     }
-    const requestMetrics=nativeRequestMetrics(providerMessages,requestTools);
+    const requestMetrics=nativeRequestMetrics(providerMessages,requestTools,{toolSchemaCache:requestMetricsToolCache});
     const inferenceId=(metadata?.sessionId?String(metadata.sessionId):"native")+":inference:"+modelTurns;
     if(Number(providerView?.count||0)>0)emit(onEvent,{name:"native.context.provider_view_compacted",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,count:Number(providerView.count||0),savedChars:Number(providerView.savedChars||0)}});
     emit(onEvent,{name:"native.model.requested",status:"running",model:String(model),provider:provider||null,data:{inferenceId,modelTurn:modelTurns,messageCount:providerMessages.length,toolCount:Array.isArray(requestTools)?requestTools.length:0,sessionId:metadata?.sessionId||null,compaction:Boolean(metadata?.compaction),requestMetrics}});

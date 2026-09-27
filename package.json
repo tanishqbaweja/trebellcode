@@ -52,6 +52,7 @@
     "bench:native:direct-terminal-scan": "node --expose-gc scripts/native-direct-terminal-scan-benchmark.mjs",
     "bench:native:request-metrics-overhead": "node --expose-gc scripts/native-request-metrics-overhead-benchmark.mjs",
     "bench:native:message-bucket-metrics": "node --expose-gc scripts/native-message-bucket-metrics-benchmark.mjs",
+    "bench:native:tool-schema-metrics-cache": "node --expose-gc scripts/native-tool-schema-metrics-cache-benchmark.mjs",
     "bench:native:latest-user-lookup": "node --expose-gc scripts/native-latest-user-lookup-benchmark.mjs",
     "bench:native:tool-repair-scan": "node --expose-gc scripts/native-tool-repair-scan-benchmark.mjs",
     "bench:native:prefix-hash-overhead": "node --expose-gc scripts/native-prefix-hash-overhead-benchmark.mjs",

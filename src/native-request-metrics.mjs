@@ -66,14 +66,20 @@ function currentTurnBreakdown(message){
   };
 }
 
-export function nativeRequestMetrics(messages=[],tools=[]){
+export function nativeRequestMetrics(messages=[],tools=[],{toolSchemaCache=null}={}){
   const source=Array.isArray(messages)?messages:[];let lastUser=-1;
   for(let index=source.length-1;index>=0;index--)if(source[index]?.role==="user"){lastUser=index;break}
   const classified=classifiedMessages(source,lastUser),{system,developer,compacted,toolResults,history}=classified;
   const toolSchemas=Array.isArray(tools)?tools:[];
-  const systemSerialized=serialized(system),developerSerialized=serialized(developer),toolSchemasSerialized=serialized(toolSchemas),
+  let cachedToolSchemas=toolSchemaCache&&typeof toolSchemaCache.get==="function"?toolSchemaCache.get(toolSchemas):null;
+  if(!cachedToolSchemas){
+    const value=serialized(toolSchemas),text=value.text,digestValue=value.jsonSafe?digest(text):null;
+    cachedToolSchemas={serialized:value,text,metric:metric(text),digest:digestValue};
+    if(value.jsonSafe&&toolSchemaCache&&typeof toolSchemaCache.set==="function")toolSchemaCache.set(toolSchemas,cachedToolSchemas);
+  }
+  const systemSerialized=serialized(system),developerSerialized=serialized(developer),toolSchemasSerialized=cachedToolSchemas.serialized,
     systemJson=classified.serialized?.system??systemSerialized.text,developerJson=classified.serialized?.developer??developerSerialized.text,compactedJson=classified.serialized?.compacted??json(compacted),historyJson=classified.serialized?.history??json(history),toolResultsJson=classified.serialized?.toolResults??json(toolResults),toolSchemasJson=toolSchemasSerialized.text,messagesJson=classified.serialized?.messages??json(source);
-  const messagesMetric=metric(messagesJson),toolsMetric=metric(toolSchemasJson),toolSchemaDigest=toolSchemasSerialized.jsonSafe?digest(toolSchemasJson):null;
+  const messagesMetric=metric(messagesJson),toolsMetric=cachedToolSchemas.metric,toolSchemaDigest=cachedToolSchemas.digest;
   const currentBreakdown=currentTurnBreakdown(lastUser>=0?source[lastUser]:null);
   const prefix={system,developer,tools:toolSchemas};
   const stablePrefixJsonSafe=systemSerialized.jsonSafe&&developerSerialized.jsonSafe&&toolSchemasSerialized.jsonSafe;
