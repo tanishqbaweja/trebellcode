@@ -103,10 +103,10 @@ function canonicalToolPattern(value){
   if(separator){const index=raw.indexOf(separator),head=raw.slice(0,index),tail=raw.slice(index+separator.length),namespace=TOOL_ALLOWLIST_ALIASES[head]||head;return separator===".*"?namespace+".*":namespace+"/"+tail}
   return TOOL_ALLOWLIST_ALIASES[raw]||raw;
 }
-function toolAllowedByAllowlist(namespace,name,value){
+export function platformToolAllowedByAllowlist(namespace,name,value){
   const allowlist=normalizedToolAllowlist(value);if(!allowlist)return true;
   const ns=String(namespace||"").toLowerCase(),tool=String(name||"").toLowerCase(),qualified=ns+"/"+tool;
-  return allowlist.some(raw=>{const item=canonicalToolPattern(raw);if(item==="mcp")return ns==="trebell_mcp"||ns.startsWith("mcp_");return item==="*"||item===ns||item===qualified||item===ns+"/*"||item===ns+".*"});
+  return allowlist.some(raw=>{const item=canonicalToolPattern(raw);if(item==="mcp")return ns==="trebell_mcp"||ns.startsWith("mcp_");return item==="*"||(!ns&&item===tool)||item===ns||item===qualified||item===ns+"/*"||item===ns+".*"});
 }
 
 function rejection(reason,definition=null){
@@ -130,7 +130,7 @@ export function authorizePlatformToolCall(call={},context={},resolveDefinition=p
   if(!namespace||!name||!definition)return rejection(`Unknown Trebell tool: ${namespace||"default"}/${name||"unknown"}.`,definition);
   const args=normalizedWorkspaceArguments(namespace,name,call.arguments,context),validationError=toolArgumentValidation(definition,args);
   if(validationError)return rejection(`Invalid arguments for ${namespace}/${name}: ${validationError}.`,definition);
-  if(!toolAllowedByAllowlist(namespace,name,context.toolAllowlist))return rejection(`Tool ${namespace}/${name} is not allowed by the active recipe.`,definition);
+  if(!platformToolAllowedByAllowlist(namespace,name,context.toolAllowlist))return rejection(`Tool ${namespace}/${name} is not allowed by the active recipe.`,definition);
   const requirement=requirementDecision(definition,{...context,namespace});if(requirement)return requirement;
   const policy=definition.policy||{};
   const policyMetadata=policy.classifyFromInput?{}:{

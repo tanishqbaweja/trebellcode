@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { nativeRequestMetrics, NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
+import { platformToolAllowedByAllowlist } from "./shared-tool-gateway.mjs";
 
 function abortError(signal){
   const reason=signal?.reason;if(reason?.name==="AbortError")return reason;
@@ -15,6 +16,22 @@ function safeArguments(value){
   if(value&&typeof value==="object"&&!Array.isArray(value))return value;
   try{const parsed=JSON.parse(String(value||"{}"));return parsed&&typeof parsed==="object"&&!Array.isArray(parsed)?parsed:{}}
   catch{return {}}
+}
+
+function providerVisibleTools(tools=[],toolAllowlist=null){
+  if(!Array.isArray(toolAllowlist)||!toolAllowlist.length)return tools;
+  const visible=[];
+  for(const entry of Array.isArray(tools)?tools:[]){
+    if(entry?.type==="namespace"&&entry.name&&Array.isArray(entry.tools)){
+      const allowed=entry.tools.filter(tool=>platformToolAllowedByAllowlist(entry.name,tool?.name,toolAllowlist));
+      if(allowed.length)visible.push({...entry,tools:allowed});
+      continue;
+    }
+    if(entry?.type==="function"){
+      const name=entry.function?.name||entry.name;if(name&&platformToolAllowedByAllowlist("",name,toolAllowlist))visible.push(entry);
+    }
+  }
+  return visible;
 }
 
 function obviousToolNameCorruption(value){
@@ -198,13 +215,13 @@ export function nativeAgentBudget(options={}){
 export async function runNativeAgentTurn({
   providerTurn,executeTool,model,messages=[],tools=[],provider=null,toolChoice="auto",
   maxOutputTokens=null,temperature=null,parallelToolCalls=true,maxModelTurns=24,maxToolCalls=100,maxWallTimeMs=null,
-  maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,signal=null,onEvent=null,metadata=null,
+  maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,signal=null,onEvent=null,metadata=null,
 }={}){
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
   const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])];
-  const explicitlyRequired=explicitlyRequestedTools(conversation,tools),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
+  const explicitlyRequired=explicitlyRequestedTools(conversation,providerVisibleTools(tools,toolAllowlist)),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
   const successfulTerminalRuns=[];
   let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,forcedToolChoice=null,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
   const startedAt=Date.now(),started=nowMs(),wallController=budget.maxWallTimeMs!=null?new AbortController():null,deadlineAt=budget.maxWallTimeMs==null?null:Date.now()+budget.maxWallTimeMs;
@@ -248,14 +265,14 @@ export async function runNativeAgentTurn({
       emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(model),provider:provider||null,data:{reason:error.code,modelTurns,toolCalls}});throw error;
     }
     modelTurns++;
-    const requestStarted=nowMs();
-    const requestMetrics=nativeRequestMetrics(conversation,tools);
+    const requestStarted=nowMs(),requestTools=providerVisibleTools(tools,toolAllowlist);
+    const requestMetrics=nativeRequestMetrics(conversation,requestTools);
     const inferenceId=(metadata?.sessionId?String(metadata.sessionId):"native")+":inference:"+modelTurns;
-    emit(onEvent,{name:"native.model.requested",status:"running",model:String(model),provider:provider||null,data:{inferenceId,modelTurn:modelTurns,messageCount:conversation.length,toolCount:Array.isArray(tools)?tools.length:0,sessionId:metadata?.sessionId||null,compaction:Boolean(metadata?.compaction),requestMetrics}});
+    emit(onEvent,{name:"native.model.requested",status:"running",model:String(model),provider:provider||null,data:{inferenceId,modelTurn:modelTurns,messageCount:conversation.length,toolCount:Array.isArray(requestTools)?requestTools.length:0,sessionId:metadata?.sessionId||null,compaction:Boolean(metadata?.compaction),requestMetrics}});
     const providerAttempts=boundedInteger(maxProviderAttempts,3,{min:1,max:8});let response=null;
     for(let attempt=1;attempt<=providerAttempts;attempt++){
       try{
-        response=await providerTurn({model,provider,messages:conversation,tools,toolChoice:forcedToolChoice||toolChoice,maxOutputTokens,temperature,parallelToolCalls,signal:turnSignal});break;
+        response=await providerTurn({model,provider,messages:conversation,tools:requestTools,toolChoice:forcedToolChoice||toolChoice,maxOutputTokens,temperature,parallelToolCalls,signal:turnSignal});break;
       }catch(error){
         if(error?.nativeSteered){
           if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"model_request_interrupted"})){
@@ -277,7 +294,7 @@ export async function runNativeAgentTurn({
     forcedToolChoice=null;
     throwIfAborted(turnSignal);lastResponse=response||{};usage=aggregateUsage(usage,lastResponse.usage||{});
     const rawCalls=Array.isArray(lastResponse.toolCalls)?lastResponse.toolCalls:[],calls=rawCalls.map(call=>{
-      const normalized=repairCorruptedToolCall(call,tools);
+      const normalized=repairCorruptedToolCall(call,requestTools);
       if(normalized.repaired)emit(onEvent,{name:"native.tool.call_repaired",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{namespace:String(call?.namespace||""),repairedNamespace:String(normalized.call?.namespace||""),malformedNameLength:String(normalized.originalName||"").length,name:String(normalized.call?.name||""),reason:normalized.reason||"corruption"}});
       const repairedArgs=repairRepeatedTerminalCommand(normalized.call,successfulTerminalRuns);
       if(repairedArgs.repaired)emit(onEvent,{name:"native.tool.call_repaired",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{namespace:"trebell_terminal",repairedNamespace:"trebell_terminal",malformedNameLength:0,name:"run",reason:repairedArgs.reason}});

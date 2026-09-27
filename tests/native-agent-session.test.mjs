@@ -132,14 +132,18 @@ test("Native session returns full file content again when a repeated read has ch
 });
 
 test("Native session passes a recipe tool allowlist only to tool calls in that turn",async()=>{
-  const contexts=[];let providerCalls=0;
+  const contexts=[],providerTools=[];let providerCalls=0;
   const session=new NativeAgentSession({
-    model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_repo",tools:[{type:"function",name:"search_symbols",inputSchema:{type:"object",properties:{}}}]}],
+    model:"model-a",provider:"fixture",tools:[
+      {type:"namespace",name:"trebell_repo",tools:[{type:"function",name:"search_symbols",inputSchema:{type:"object",properties:{}}},{type:"function",name:"search_code",inputSchema:{type:"object",properties:{}}}]},
+      {type:"namespace",name:"trebell_workspace",tools:[{type:"function",name:"read_file",inputSchema:{type:"object",properties:{}}}]},
+    ],
     executeTool:async(_call,context)=>{contexts.push(context);return {success:true,contentItems:[{type:"inputText",text:"ok"}]}},
-    providerTurn:async()=>{providerCalls++;return providerCalls===1?{id:"tool-turn",provider:"fixture",model:"model-a",text:"",toolCalls:[{id:"call-1",namespace:"trebell_repo",name:"search_symbols",arguments:"{}"}],finishReason:"tool_calls",usage:{}}:{id:"done",provider:"fixture",model:"model-a",text:"done",toolCalls:[],finishReason:"stop",usage:{}}},
+    providerTurn:async request=>{providerCalls++;providerTools.push(request.tools);return providerCalls===1?{id:"tool-turn",provider:"fixture",model:"model-a",text:"",toolCalls:[{id:"call-1",namespace:"trebell_repo",name:"search_symbols",arguments:"{}"}],finishReason:"tool_calls",usage:{}}:{id:"done",provider:"fixture",model:"model-a",text:"done",toolCalls:[],finishReason:"stop",usage:{}}},
   });
   await session.start({providerSessionId:"allowlist-session",model:"model-a"});await session.prompt([{type:"text",text:"search"}],{toolAllowlist:["trebell_repo/search_symbols"]});
-  assert.deepEqual(contexts,[{toolAllowlist:["trebell_repo/search_symbols"]}]);await session.close();
+  assert.deepEqual(contexts,[{toolAllowlist:["trebell_repo/search_symbols"]}]);
+  assert.deepEqual(providerTools.map(tools=>tools.map(namespace=>[namespace.name,(namespace.tools||[]).map(tool=>tool.name)])),[[["trebell_repo",["search_symbols"]]],[["trebell_repo",["search_symbols"]]]]);await session.close();
 });
 
 test("Native persisted thread evidence reconstructs model and tool history after restart",()=>{

@@ -18,14 +18,20 @@ function client(ws){
   return {request(method,params={}){return new Promise((resolve,reject)=>{const requestId=++id;pending.set(requestId,{resolve,reject});ws.send(JSON.stringify({id:requestId,method,params}))})},waitFor(predicate,timeoutMs=5000){const found=notifications.find(predicate);if(found)return Promise.resolve(found);return new Promise((resolve,reject)=>{const waiter={predicate,resolve,reject,timer:setTimeout(()=>{const index=waiters.indexOf(waiter);if(index>=0)waiters.splice(index,1);reject(new Error("Timed out waiting for relay notification"))},timeoutMs)};waiters.push(waiter)})}};
 }
 
-test("Native recipe tool allowlist blocks a disallowed tool before execution",async()=>{
+test("Native recipe tool allowlist hides disallowed tools from the provider before execution",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-recipe-policy-")),home=join(root,"home"),repo=join(root,"repo"),blocked=join(repo,"blocked.txt");await mkdir(repo,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
   const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let calls=0;
   const nativeProviderTurn=async request=>{
     calls++;
-    if(calls===1){assert.ok((request.tools||[]).some(namespace=>namespace.name==="trebell_terminal"));return {id:"recipe-disallowed-call",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"blocked-terminal",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:process.execPath,args:["-e",`require('fs').writeFileSync(${JSON.stringify(blocked)},'bad')`],cwd:repo})}],finishReason:"tool_calls",usage:{}}}
-    const observation=request.messages.at(-1);assert.equal(observation.role,"tool");assert.match(String(observation.content),/not allowed by the active recipe/i);return {id:"recipe-policy-done",provider:request.provider,model:request.model,text:"The recipe policy blocked the terminal call.",toolCalls:[],finishReason:"stop",usage:{}};
+    if(calls===1){
+      const namespaces=request.tools||[];assert.ok(namespaces.some(namespace=>namespace.name==="trebell_repo"));assert.equal(namespaces.some(namespace=>namespace.name==="trebell_terminal"),false);
+      // A buggy provider can still hallucinate a hidden tool. Keep execution
+      // policy fail-closed even though the schema was never advertised.
+      return {id:"recipe-disallowed-call",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"blocked-terminal",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:process.execPath,args:["-e",`require('fs').writeFileSync(${JSON.stringify(blocked)},'bad')`],cwd:repo})}],finishReason:"tool_calls",usage:{}};
+    }
+    const observation=request.messages.at(-1);assert.equal(observation.role,"tool");assert.match(String(observation.content),/not allowed by the active recipe/i);
+    return {id:"recipe-policy-done",provider:request.provider,model:request.model,text:"The hidden terminal call was still blocked by recipe policy.",toolCalls:[],finishReason:"stop",usage:{}};
   };
   const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
   const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
