@@ -62,6 +62,7 @@ test("repository tool catalog serializes into one Codex dynamic-tool namespace",
 
 test("progressive Native repository catalog keeps common tools small and discovers advanced capabilities on demand",()=>{
   const [namespace]=repositoryDynamicToolNamespace({progressive:true});
+  assert.ok(JSON.stringify(namespace).length<=2600,"progressive repository gateway should stay within its recurring wire-size budget");
   const names=namespace.tools.map(item=>item.name);
   assert.ok(names.includes("discover"));
   assert.ok(names.includes("invoke"));

@@ -9,11 +9,11 @@ export const CORE_REPOSITORY_TOOL_NAMES=Object.freeze([
 export const REPOSITORY_DISCOVERY_TOOL=Object.freeze({
   type:"function",
   name:"discover",
-  description:"Find a repository capability not already exposed, such as repo maps, project commands, related tests, diagnostics, semantic refactors, Git history, verification, or durable knowledge. Returns names and input schemas without changing the provider-visible manifest.",
+  description:"Find an unexposed repository capability and return matching names and input schemas.",
   inputSchema:{
     type:"object",
     properties:{
-      query:{type:"string",description:"Capability needed, e.g. diagnostics, project commands, semantic rename, Git history, or verification."},
+      query:{type:"string",description:"Capability needed, e.g. diagnostics, tests, rename, Git history, or verification."},
       limit:{type:"integer",minimum:1,maximum:12},
     },
     required:["query"],
@@ -23,12 +23,12 @@ export const REPOSITORY_DISCOVERY_TOOL=Object.freeze({
 export const REPOSITORY_INVOKE_TOOL=Object.freeze({
   type:"function",
   name:"invoke",
-  description:"Call one capability returned by discover without changing the provider-visible manifest.",
+  description:"Call one capability returned by discover.",
   inputSchema:{
     type:"object",
     properties:{
-      name:{type:"string",minLength:1,maxLength:100,description:"Capability name returned by discover."},
-      arguments:{type:"object",description:"Arguments matching its returned input schema."},
+      name:{type:"string",minLength:1,maxLength:100,description:"Name returned by discover."},
+      arguments:{type:"object",description:"Arguments matching its input schema."},
     },
     required:["name","arguments"],
     additionalProperties:false,
