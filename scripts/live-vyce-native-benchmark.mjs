@@ -14,6 +14,7 @@ import { createNativeToolExecutor } from "../src/native-tool-executor.mjs";
 import { NativeToolOutputStore } from "../src/native-tool-output-store.mjs";
 import { platformDynamicToolNamespaces } from "../src/platform-tool-catalog.mjs";
 import { ProviderManager } from "../src/provider-manager.mjs";
+import { providerTurnToChat } from "../src/provider-turn.mjs";
 import { repositoryDynamicToolNamespace, searchRepositoryToolDefinitions } from "../src/repository-tool-catalog.mjs";
 import { repositoryContextEntries } from "../ui/src/context-provenance.js";
 import { nativeToolTiming, optionalFiniteMetric, optionalMetricTotal } from "./native-benchmark-timing.mjs";
@@ -329,9 +330,13 @@ async function runScenario(scenario){
             ?{...request,tools:forcedTools,toolChoice:forcedChoice,parallelToolCalls:false}
             :request;
         const requestMessages=Array.isArray(effectiveRequest.messages)?effectiveRequest.messages:[],requestTools=Array.isArray(effectiveRequest.tools)?effectiveRequest.tools:[];
+        const wireChat=providerTurnToChat({...effectiveRequest,model}),wireTools=Array.isArray(wireChat.tools)?wireChat.tools:[],wireMessages=Array.isArray(wireChat.messages)?wireChat.messages:[];
         const record={
           messageChars:JSON.stringify(requestMessages).length,
           toolSchemaChars:JSON.stringify(requestTools).length,
+          wireMessageChars:JSON.stringify(wireMessages).length,
+          wireToolSchemaChars:JSON.stringify(wireTools).length,
+          wireRequestBytes:Buffer.byteLength(JSON.stringify(wireChat),"utf8"),
           functionCount:requestTools.reduce((sum,item)=>sum+(Array.isArray(item?.tools)?item.tools.length:1),0),
           toolNamespaces:requestTools.map(item=>String(item?.name||item?.function?.name||"")).filter(Boolean),
           functionNames:requestTools.flatMap(item=>Array.isArray(item?.tools)?item.tools.map(tool=>String(item?.name||"")+"/"+String(tool?.name||"")):[String(item?.function?.name||item?.name||"")]).filter(Boolean),
@@ -431,6 +436,7 @@ async function runScenario(scenario){
       toolSchemaVariants:new Set(completed.map(event=>event.data?.requestMetrics?.toolSchemaHash).filter(Boolean)).size,
       firstSchemaEstimatedTokens:completed[0]?.data?.requestMetrics?.toolSchemas?.estimatedTokens||0,
       firstSchemaChars:Number(firstRequest.toolSchemaChars||0),
+      firstWireSchemaChars:Number(firstRequest.wireToolSchemaChars||0),
       firstFunctionCount:Number(firstRequest.functionCount||0),
       finalLogicalEstimatedTokens:completed.at(-1)?.data?.requestMetrics?.totalLogical?.estimatedTokens||0,
       requestBreakdown:providerRequests.map((item,index)=>({
@@ -452,6 +458,9 @@ async function runScenario(scenario){
         providerVisibleFunctions:Array.isArray(item.functionNames)?item.functionNames:[],
         messageChars:Number(item.messageChars||0),
         schemaChars:Number(item.toolSchemaChars||0),
+        wireMessageChars:Number(item.wireMessageChars||0),
+        wireSchemaChars:Number(item.wireToolSchemaChars||0),
+        wireRequestBytes:Number(item.wireRequestBytes||0),
         systemTokens:Number(item.requestMetrics?.system?.estimatedTokens||0),
         currentUserTokens:Number(item.requestMetrics?.currentUser?.estimatedTokens||0),
         workingContextTokens:Number(item.requestMetrics?.workingContext?.estimatedTokens||0),
