@@ -139,6 +139,8 @@ export function anthropicSseToChatStream(source,{model=""}={}){
   let buffer="";
   let finishReason=null;
   let inputTokens=0;
+  let cacheReadTokens=0;
+  let cacheWriteTokens=0;
   let outputTokens=0;
   const toolIndexes=new Map();
   let nextToolIndex=0;
@@ -163,6 +165,8 @@ export function anthropicSseToChatStream(source,{model=""}={}){
             if(event.type==="error")throw new Error(event.error?.message||"Anthropic provider stream error");
             if(event.type==="message_start"){
               inputTokens=Number(event.message?.usage?.input_tokens||0)||0;
+              cacheReadTokens=Number(event.message?.usage?.cache_read_input_tokens||0)||0;
+              cacheWriteTokens=Number(event.message?.usage?.cache_creation_input_tokens||0)||0;
               if(event.message?.model)model=event.message.model;
             }else if(event.type==="content_block_start"){
               const blockValue=event.content_block||{};
@@ -194,7 +198,12 @@ export function anthropicSseToChatStream(source,{model=""}={}){
         }
         controller.enqueue(line(openAiChunk({
           id,model,delta:{},finish_reason:finishReason||"stop",
-          usage:{prompt_tokens:inputTokens,completion_tokens:outputTokens,total_tokens:inputTokens+outputTokens},
+          usage:{
+            prompt_tokens:inputTokens+cacheReadTokens+cacheWriteTokens,
+            completion_tokens:outputTokens,
+            total_tokens:inputTokens+cacheReadTokens+cacheWriteTokens+outputTokens,
+            prompt_tokens_details:{cached_tokens:cacheReadTokens,cache_write_tokens:cacheWriteTokens},
+          },
         })));
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         controller.close();

@@ -18,6 +18,10 @@ test("managed provider capabilities distinguish protocol compatibility from veri
   const justworker=providerCapabilities("justworker");
   assert.equal(justworker.explicitCacheControl.status,"unverified");
   assert.equal(justworker.cacheUsageBreakdown.status,"supported");
+  const anthropic=providerCapabilities("anthropic");
+  assert.equal(anthropic.promptCaching.status,"supported");
+  assert.equal(anthropic.explicitCacheControl.status,"supported");
+  assert.equal(providerFeatureEnabled("anthropic","promptCaching"),true);
 });
 
 test("ProviderManager surfaces conservative capability metadata without secrets",()=>{

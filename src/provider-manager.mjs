@@ -371,6 +371,7 @@ export class ProviderManager {
     if (!key) throw new Error(`${provider.name} API key is not configured.`);
     if (provider.protocolCompatibility?.includes("anthropic-messages")) {
       const anthropicBody = chatToAnthropic(chatBody);
+      if(provider.id==="anthropic")anthropicBody.cache_control={type:"ephemeral"};
       const endpoint=provider.baseUrl + "/messages",body=JSON.stringify(anthropicBody);onWire?.({endpoint,wireApi:"anthropic-messages",requestBytes:Buffer.byteLength(body,"utf8")});
       const upstream = await this.fetchFn(endpoint, {
         method: "POST",

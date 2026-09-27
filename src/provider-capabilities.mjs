@@ -28,8 +28,8 @@ const CAPABILITIES=Object.freeze({
   }),
   anthropic:Object.freeze({
     ...COMMON_PROXY,
-    promptCaching:feature("unverified","Anthropic supports prompt caching, but Trebell's direct Messages adapter does not yet add explicit cache_control blocks."),
-    explicitCacheControl:feature("unsupported","Trebell's current Anthropic Messages adapter does not emit cache_control blocks."),
+    promptCaching:feature("supported","Trebell's direct Anthropic Messages route enables Anthropic automatic prompt caching with top-level cache_control and records returned cache-read/write usage."),
+    explicitCacheControl:feature("supported","The direct Anthropic Messages route emits cache_control with an ephemeral automatic breakpoint; compatible proxy routes are not assumed to support it."),
     previousResponseContinuation:feature("unsupported","Trebell Native carries the conversation explicitly through Messages API turns."),
     persistentConnection:feature("unsupported","The current Trebell Native Anthropic integration uses HTTPS Messages requests."),
     nativeCompaction:feature("unsupported","Trebell Native owns compaction for direct Anthropic API sessions."),

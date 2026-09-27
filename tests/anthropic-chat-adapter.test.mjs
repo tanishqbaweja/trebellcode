@@ -43,7 +43,7 @@ test("Anthropic SSE converts to OpenAI chat SSE including tool calls",async()=>{
   const encoder=new TextEncoder();
   const event=(name,data)=>`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
   const source=new ReadableStream({start(controller){
-    controller.enqueue(encoder.encode(event("message_start",{type:"message_start",message:{model:"claude-opus-4-8",usage:{input_tokens:12}}})));
+    controller.enqueue(encoder.encode(event("message_start",{type:"message_start",message:{model:"claude-opus-4-8",usage:{input_tokens:12,cache_read_input_tokens:7,cache_creation_input_tokens:3}}})));
     controller.enqueue(encoder.encode(event("content_block_start",{type:"content_block_start",index:0,content_block:{type:"text",text:""}})));
     controller.enqueue(encoder.encode(event("content_block_delta",{type:"content_block_delta",index:0,delta:{type:"text_delta",text:"hello"}})));
     controller.enqueue(encoder.encode(event("content_block_start",{type:"content_block_start",index:1,content_block:{type:"tool_use",id:"toolu_1",name:"shell",input:{}}})));
@@ -58,6 +58,9 @@ test("Anthropic SSE converts to OpenAI chat SSE including tool calls",async()=>{
   assert.match(text,/"name":"shell"/);
   assert.ok(text.includes('\\\"cmd\\\":\\\"ls\\\"'));
   assert.match(text,/"finish_reason":"tool_calls"/);
+  assert.match(text,/"prompt_tokens":22/);
+  assert.match(text,/"cached_tokens":7/);
+  assert.match(text,/"cache_write_tokens":3/);
   assert.match(text,/\[DONE\]/);
 });
 

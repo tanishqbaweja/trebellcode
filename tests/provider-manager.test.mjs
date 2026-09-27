@@ -391,8 +391,24 @@ test("normalized Anthropic-compatible turns reuse the existing tool adapter",asy
     tools:[{type:"namespace",name:"trebell_repo",tools:[{type:"function",name:"search_symbols",description:"Search",inputSchema:{type:"object",properties:{query:{type:"string"}},required:["query"]}}]}],
   });
   assert.equal(seen.url,"https://api.justwoker.icu/v1/messages");assert.equal(seen.body.tools[0].name,"trebell_repo__search_symbols");
+  assert.equal(seen.body.cache_control,undefined,"unverified Anthropic-compatible proxies must not inherit direct-provider cache controls");
   assert.deepEqual(result.toolCalls,[{id:"toolu-native",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Session"}'}]);assert.equal(result.finishReason,"tool_calls");
   assert.equal(result.telemetry.wireApi,"anthropic-messages");assert.ok(result.telemetry.requestBytes>0);
+});
+
+test("direct Anthropic turns enable automatic prompt caching on the wire",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-anthropic-cache-"));let seen=null;
+  try{
+    const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root},fetchFn:async(url,init)=>{
+      seen={url,body:JSON.parse(init.body)};
+      return Response.json({id:"msg-cache",type:"message",role:"assistant",model:"claude-opus-4-8",content:[{type:"text",text:"done"}],stop_reason:"end_turn",usage:{input_tokens:11,cache_read_input_tokens:9,cache_creation_input_tokens:4,output_tokens:2}});
+    }});
+    manager.setKey("anthropic","anthropic-cache-key");
+    const result=await manager.turn("anthropic",{model:"claude-opus-4-8",messages:[{role:"user",content:"hello"}],tools:[]});
+    assert.equal(seen.url,"https://api.anthropic.com/v1/messages");
+    assert.deepEqual(seen.body.cache_control,{type:"ephemeral"});
+    assert.equal(result.usage.cachedInputTokens,9);assert.equal(result.usage.cacheWriteInputTokens,4);
+  }finally{rmSync(root,{recursive:true,force:true})}
 });
 
 test("normalized provider turns expose retryability for transient HTTP failures only",async()=>{

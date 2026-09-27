@@ -293,6 +293,23 @@ test("Native session preserves the OpenAI tool manifest when finalizing after to
   assert.equal(requests.length,2);assert.deepEqual(requests[1].tools,requests[0].tools);assert.equal(requests[1].toolChoice,"none");
 });
 
+test("Native session preserves the Anthropic tool manifest when finalizing after tool budget exhaustion",async()=>{
+  const requests=[];let calls=0;
+  const tools=[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file",inputSchema:{type:"object",properties:{path:{type:"string"}}}}]}];
+  const session=new NativeAgentSession({
+    model:"claude-opus-4-8",provider:"anthropic",tools,
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));calls++;
+      if(calls===1)return {id:"read",text:"",toolCalls:[{id:"read-1",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"a.txt"}'}],usage:{}};
+      return {id:"done",text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>({path:"a.txt",content:"evidence"}),
+  });
+  await session.start({providerSessionId:"native-anthropic-budget-finalization",model:"claude-opus-4-8"});
+  await session.prompt([{type:"text",text:"read once then answer"}],{maxToolCalls:1,maxModelTurns:2});
+  assert.equal(requests.length,2);assert.deepEqual(requests[1].tools,requests[0].tools);assert.equal(requests[1].toolChoice,"none");
+});
+
 test("Native session deduplicates only byte-identical repeated hot file observations",async()=>{
   const requests=[],events=[];let providerCalls=0,content="A".repeat(4000);
   const session=new NativeAgentSession({
