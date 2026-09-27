@@ -138,7 +138,13 @@ const scenarios=[
     default:false,
     requireVerificationBeforeEdit:true,
     requireVirtualizedOutput:true,
-    forceFirstTool:{namespace:"trebell_terminal",name:"run"},
+    forceToolSequence:[
+      {namespace:"trebell_terminal",name:"run"},
+      {namespace:"trebell_workspace",name:"read_file"},
+      {namespace:"trebell_workspace",name:"replace_text"},
+      {namespace:"trebell_terminal",name:"run"},
+      false,
+    ],
     toolAllowlist:["trebell_terminal/run","trebell_workspace/read_file","trebell_workspace/replace_text"],
     files:{
       "TASK.md":[
@@ -162,7 +168,7 @@ const scenarios=[
         "",
       ].join("\n"),
     },
-    prompt:"Run node noisy-verify.mjs before making any edit. Then complete the coding task described by TASK.md in this same turn: diagnose the failure from the command evidence, inspect only the files you need, fix the implementation without changing noisy-verify.mjs or TASK.md, and rerun node noisy-verify.mjs until it passes. Do not edit TASK.md and do not merely explain.",
+    prompt:"Complete this exact workflow in one turn. First run node noisy-verify.mjs. Then read src/config.mjs. Then replace only legacy with strict in src/config.mjs. Then run node noisy-verify.mjs again. After the passing verifier, answer with a concise summary. Do not edit noisy-verify.mjs or TASK.md and do not use other files.",
     verify:async root=>{await verifyNode(root,"noisy-verify.mjs","BENCH_NOISY_PASS");assert.match(await readFile(join(root,"src/config.mjs"),"utf8"),/strict/)},
   },
 ];
@@ -208,7 +214,14 @@ async function runScenario(scenario){
       initialMessages:[{role:"system",content:nativeSystemPrompt({tools,permissionMode:"full",projectless:false})}],
       providerTurn:async request=>{
         const requestNumber=providerRequests.length+1;
-        const requestMessages=Array.isArray(request.messages)?request.messages:[],requestTools=Array.isArray(request.tools)?request.tools:[];
+        const forcedSequence=Array.isArray(scenario.forceToolSequence)?scenario.forceToolSequence:null;
+        const forcedChoice=forcedSequence&&requestNumber<=forcedSequence.length?forcedSequence[requestNumber-1]:requestNumber===1&&scenario.forceFirstTool?scenario.forceFirstTool:null;
+        const effectiveRequest=forcedChoice===false
+          ?{...request,tools:[],toolChoice:"none",parallelToolCalls:false}
+          :forcedChoice
+            ?{...request,toolChoice:forcedChoice,parallelToolCalls:false}
+            :request;
+        const requestMessages=Array.isArray(effectiveRequest.messages)?effectiveRequest.messages:[],requestTools=Array.isArray(effectiveRequest.tools)?effectiveRequest.tools:[];
         const record={
           messageChars:JSON.stringify(requestMessages).length,
           toolSchemaChars:JSON.stringify(requestTools).length,
@@ -216,7 +229,6 @@ async function runScenario(scenario){
           requestMetrics:nativeRequestMetrics(requestMessages,requestTools),
         };
         providerRequests.push(record);
-        const effectiveRequest=requestNumber===1&&scenario.forceFirstTool?{...request,toolChoice:scenario.forceFirstTool}:request;
         const response=await manager.turn("vyceai",{...effectiveRequest,provider:"vyceai",model},{signal:request.signal});
         record.usage=response.usage;record.telemetry=response.telemetry;record.toolCalls=response.toolCalls||[];
         return response;
@@ -285,6 +297,8 @@ async function runScenario(scenario){
       finalLogicalEstimatedTokens:completed.at(-1)?.data?.requestMetrics?.totalLogical?.estimatedTokens||0,
       requestBreakdown:providerRequests.map((item,index)=>({
         modelTurn:index+1,
+        providerToolCalls:Array.isArray(item.toolCalls)?item.toolCalls.length:0,
+        providerToolNames:(Array.isArray(item.toolCalls)?item.toolCalls:[]).map(call=>String(call?.namespace||"")+"/"+String(call?.name||"")),
         providerInputTokens:Number(item.usage?.inputTokens||0),
         messageChars:Number(item.messageChars||0),
         schemaChars:Number(item.toolSchemaChars||0),
