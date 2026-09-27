@@ -54,6 +54,19 @@ test("Native request metrics can reuse a stable tool-schema serialization within
   assert.equal(cache.has(tools),true);
 });
 
+test("Native request metrics can reuse unchanged canonical message serialization within one agent turn",()=>{
+  const first={role:"system",content:"system"},second={role:"user",content:"request"},messages=[first,second],cache=new WeakMap();
+  const uncached=nativeRequestMetrics(messages,[]),cachedFirst=nativeRequestMetrics(messages,[],{messageSerializationCache:cache}),cachedSecond=nativeRequestMetrics(messages,[],{messageSerializationCache:cache});
+  assert.deepEqual(cachedFirst,uncached);assert.deepEqual(cachedSecond,uncached);assert.equal(cache.has(first),true);assert.equal(cache.has(second),true);
+  const replacement={role:"user",content:"different"},next=[first,replacement],nextCached=nativeRequestMetrics(next,[],{messageSerializationCache:cache}),nextUncached=nativeRequestMetrics(next,[]);assert.deepEqual(nextCached,nextUncached);assert.equal(cache.has(replacement),true);
+});
+
+test("Native request metrics never cache custom toJSON message semantics",()=>{
+  let calls=0;const tricky={role:"system",content:"source",toJSON(key){calls++;return {role:"system",content:key==="0"?"array-value":"standalone-value"}}},messages=[tricky,{role:"user",content:"request"}],cache=new WeakMap();
+  const first=nativeRequestMetrics(messages,[],{messageSerializationCache:cache}),firstCalls=calls,second=nativeRequestMetrics(messages,[],{messageSerializationCache:cache});
+  assert.deepEqual(second,first);assert.equal(cache.has(tricky),false);assert.ok(calls>firstCalls);
+});
+
 test("Native request metrics invalidate cached stable-prefix hashes when instructions change",()=>{
   const tools=[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file",description:"read",inputSchema:{type:"object",properties:{path:{type:"string"}}}}]}],cache=new WeakMap(),firstMessages=[{role:"system",content:"system-a"},{role:"developer",content:"developer-a"},{role:"user",content:"request"}],secondMessages=[{role:"system",content:"system-b"},{role:"developer",content:"developer-a"},{role:"user",content:"request"}];
   const first=nativeRequestMetrics(firstMessages,tools,{toolSchemaCache:cache}),secondCached=nativeRequestMetrics(secondMessages,tools,{toolSchemaCache:cache}),secondUncached=nativeRequestMetrics(secondMessages,tools);

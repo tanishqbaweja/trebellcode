@@ -18,7 +18,7 @@ function jsonArrayText(parts=[]){return `[${parts.map(part=>part.text).join(",")
 function jsonArrayMetric(parts=[]){let byteCount=2+Math.max(0,parts.length-1);for(const part of parts)byteCount+=part.bytes;return {bytes:byteCount,estimatedTokens:estimate(byteCount)}}
 function jsonArrayHash(parts=[]){const state=createHash("sha256");state.update("[");for(let index=0;index<parts.length;index++){if(index)state.update(",");state.update(parts[index].text)}state.update("]");return state.digest("hex").slice(0,16)}
 
-function classifiedMessages(source,lastUser){
+function classifiedMessages(source,lastUser,messageSerializationCache=null){
   const system=[],developer=[],compacted=[],toolResults=[],history=[],allJson=[],systemJson=[],developerJson=[],compactedJson=[],toolResultsJson=[],historyJson=[];let jsonSafe=true;
   for(let index=0;index<source.length;index++){
     const item=source[index],role=item?.role;let bucket=null,bucketJson=null;
@@ -29,8 +29,13 @@ function classifiedMessages(source,lastUser){
     if(!jsonSafe)continue;
     if(item&&typeof item==="object"&&typeof item.toJSON==="function"){jsonSafe=false;continue}
     try{
-      const itemJson=JSON.stringify(item);if(typeof itemJson!=="string"){jsonSafe=false;continue}
-      const fragment={text:itemJson,bytes:Buffer.byteLength(itemJson,"utf8")};allJson.push(fragment);if(bucket&&bucketJson)bucketJson.push(fragment);
+      let fragment=item&&typeof item==="object"&&messageSerializationCache&&typeof messageSerializationCache.get==="function"?messageSerializationCache.get(item):null;
+      if(!fragment){
+        const itemJson=JSON.stringify(item);if(typeof itemJson!=="string"){jsonSafe=false;continue}
+        fragment={text:itemJson,bytes:Buffer.byteLength(itemJson,"utf8")};
+        if(item&&typeof item==="object"&&messageSerializationCache&&typeof messageSerializationCache.set==="function")messageSerializationCache.set(item,fragment);
+      }
+      allJson.push(fragment);if(bucket&&bucketJson)bucketJson.push(fragment);
     }catch{jsonSafe=false}
   }
   return {system,developer,compacted,toolResults,history,fragments:jsonSafe?{messages:allJson,system:systemJson,developer:developerJson,compacted:compactedJson,toolResults:toolResultsJson,history:historyJson}:null};
@@ -68,10 +73,10 @@ function currentTurnBreakdown(message){
   };
 }
 
-export function nativeRequestMetrics(messages=[],tools=[],{toolSchemaCache=null}={}){
+export function nativeRequestMetrics(messages=[],tools=[],{toolSchemaCache=null,messageSerializationCache=null}={}){
   const source=Array.isArray(messages)?messages:[];let lastUser=-1;
   for(let index=source.length-1;index>=0;index--)if(source[index]?.role==="user"){lastUser=index;break}
-  const classified=classifiedMessages(source,lastUser),{system,developer,compacted,toolResults,history}=classified;
+  const classified=classifiedMessages(source,lastUser,messageSerializationCache),{system,developer,compacted,toolResults,history}=classified;
   const toolSchemas=Array.isArray(tools)?tools:[];
   let cachedToolSchemas=toolSchemaCache&&typeof toolSchemaCache.get==="function"?toolSchemaCache.get(toolSchemas):null;
   if(!cachedToolSchemas){
