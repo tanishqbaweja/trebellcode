@@ -408,9 +408,9 @@ export class ProviderManager {
     if(this.chatToolManifestCache.has(fingerprint)){
       const cached=this.chatToolManifestCache.get(fingerprint);this.chatToolManifestCache.delete(fingerprint);this.chatToolManifestCache.set(fingerprint,cached);return cached;
     }
-    const tools=providerToolsToChat(request.tools);this.chatToolManifestCache.set(fingerprint,tools);
+    const tools=providerToolsToChat(request.tools),manifest={tools,toolsJson:JSON.stringify(tools)};this.chatToolManifestCache.set(fingerprint,manifest);
     while(this.chatToolManifestCache.size>this.chatToolManifestCacheSize)this.chatToolManifestCache.delete(this.chatToolManifestCache.keys().next().value);
-    return tools;
+    return manifest;
   }
 
   #openAiWebSocketCircuitOpen(){
@@ -613,7 +613,7 @@ export class ProviderManager {
           "User-Agent": TREBELL_USER_AGENT,
         };
 
-    const endpoint=provider.baseUrl + "/chat/completions",body=JSON.stringify(chatBody);onWire?.({endpoint,wireApi:"openai-chat-completions",requestBytes:Buffer.byteLength(body,"utf8")});
+    const endpoint=provider.baseUrl + "/chat/completions",body=this.reusePreSerializedToolJson?stringifyProviderBody(chatBody):JSON.stringify(chatBody);onWire?.({endpoint,wireApi:"openai-chat-completions",requestBytes:Buffer.byteLength(body,"utf8")});
     return await this.fetchFn(endpoint, {
       method: "POST",
       headers,
@@ -666,8 +666,10 @@ export class ProviderManager {
     const anthropicScaffold=provider.id==="anthropic"?this.#anthropicToolScaffold({...request,model}):null;
     const directAnthropicBody=anthropicScaffold?providerTurnToAnthropic({...request,model},{stream:streamChat===true,scaffold:anthropicScaffold.scaffold}):null;
     if(this.reusePreSerializedToolJson&&directAnthropicBody&&anthropicScaffold?.toolsJson&&directAnthropicBody.tools===anthropicScaffold.scaffold.tools)attachPreSerializedTopLevel(directAnthropicBody,"tools",directAnthropicBody.tools,anthropicScaffold.toolsJson);
-    const chatBody=provider.wireApi==="responses"||directAnthropicBody?null:providerTurnToChat({...request,model},{preparedTools:this.#chatToolManifest(request)});
+    const chatManifest=provider.wireApi==="responses"||directAnthropicBody?null:this.#chatToolManifest(request);
+    const chatBody=provider.wireApi==="responses"||directAnthropicBody?null:providerTurnToChat({...request,model},{preparedTools:chatManifest?.tools||null});
     if(streamChat===true&&chatBody){chatBody.stream=true;chatBody.stream_options={include_usage:true}}
+    if(this.reusePreSerializedToolJson&&chatBody&&chatManifest?.toolsJson&&chatBody.tools===chatManifest.tools)attachPreSerializedTopLevel(chatBody,"tools",chatBody.tools,chatManifest.toolsJson);
     let openAiWebSocketFallback=null;
     const openAiWebSocketStreamId=provider.id==="openai"&&streamResponses===true?openAiResponsesWebSocketStreamId(request?.metadata?.sessionId):null;
     const openAiWebSocketEnabled=Boolean(openAiWebSocketStreamId)&&String(this.env.TREBELL_OPENAI_RESPONSES_WEBSOCKET||"1").trim()!=="0"&&!this.#openAiWebSocketCircuitOpen();

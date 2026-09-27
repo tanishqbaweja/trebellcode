@@ -477,6 +477,18 @@ test("Native Chat tool-manifest cache preserves exact wire JSON and invalidates 
   const uncached=await run(0),cached=await run(8);assert.deepEqual(cached,uncached);assert.equal(cached[0],cached[1]);assert.notEqual(cached[2],cached[1]);
 });
 
+test("pre-serialized Native Chat tools preserve exact wire JSON with streaming and forced tool choice",async()=>{
+  const tools=[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file",description:"Read one file",inputSchema:{type:"object",properties:{path:{type:"string"}},required:["path"]}}]}],messages=[{role:"system",content:"stable"},{role:"user",content:"read it"}],fingerprint=nativeRequestMetrics(messages,tools)[NATIVE_TOOL_SCHEMA_FINGERPRINT];
+  const run=async reusePreSerializedToolJson=>{
+    const root=mkdtempSync(join(tmpdir(),"trebell-provider-chat-wire-json-"));let body="";
+    try{
+      const manager=new ProviderManager({env:{TREBELL_HOME:root},chatToolManifestCacheSize:8,reusePreSerializedToolJson,fetchFn:async(_url,init={})=>{body=String(init.body||"");return Response.json({id:"chat-wire",model:"glm-5.3",choices:[{finish_reason:"stop",message:{role:"assistant",content:"ok"}}],usage:{}})}});manager.setKey("hcnsec","hc-key");
+      await manager.turn("hcnsec",{model:"glm-5.3",messages,tools,toolChoice:{namespace:"trebell_workspace",name:"read_file"},[NATIVE_TOOL_SCHEMA_FINGERPRINT]:fingerprint},{streamChat:true});return body;
+    }finally{rmSync(root,{recursive:true,force:true})}
+  };
+  const baseline=await run(false),candidate=await run(true);assert.equal(candidate,baseline);const parsed=JSON.parse(candidate);assert.equal(parsed.tools[0].function.name,"trebell_workspace__read_file");assert.equal(parsed.tool_choice.function.name,"trebell_workspace__read_file");assert.equal(parsed.stream,true);assert.deepEqual(parsed.stream_options,{include_usage:true});
+});
+
 test("official OpenAI keeps late developer finalization out of the stable instruction prefix",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-")),bodies=[];
   const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{
