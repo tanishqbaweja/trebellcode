@@ -175,6 +175,7 @@ const scenarios=[
 ];
 
 const env={...process.env,VYCEAI_API_KEY:apiKey};
+const streamVyce=["1","true","yes"].includes(String(process.env.TREBELL_VYCE_STREAMING||"").trim().toLowerCase());
 const manager=new ProviderManager({env}),catalog=await manager.models("vyceai"),requested=String(process.env.VYCE_MODEL||"deepseek-v4.1").trim(),model=catalog.models.includes(requested)?requested:catalog.models[0];
 if(!model)throw new Error("Vyce did not advertise any model for the Native benchmark.");
 
@@ -231,7 +232,7 @@ async function runScenario(scenario){
         };
         providerRequests.push(record);
         try{
-          const response=await manager.turn("vyceai",{...effectiveRequest,provider:"vyceai",model},{signal:request.signal,streamChat:true});
+          const response=await manager.turn("vyceai",{...effectiveRequest,provider:"vyceai",model},{signal:request.signal,streamChat:streamVyce});
           record.usage=response.usage;record.telemetry=response.telemetry;record.toolCalls=response.toolCalls||[];
           return response;
         }catch(error){
@@ -353,5 +354,5 @@ const totals=results.reduce((out,row)=>({
   providerLatencyMs:out.providerLatencyMs+row.providerLatencyMs,responseHeadersLatencyMs:out.responseHeadersLatencyMs+row.responseHeadersLatencyMs,responseBodyLatencyMs:out.responseBodyLatencyMs+row.responseBodyLatencyMs,timeToFirstTokenMs:out.timeToFirstTokenMs+row.timeToFirstTokenMs,ttftSamples:out.ttftSamples+row.ttftSamples,
   toolExecutionMs:out.toolExecutionMs+row.toolExecutionMs,toolWallMs:out.toolWallMs+row.toolWallMs,parallelToolOverlapMs:out.parallelToolOverlapMs+row.parallelToolOverlapMs,otherElapsedMs:out.otherElapsedMs+row.otherElapsedMs,
 }),{inputTokens:0,outputTokens:0,modelTurns:0,providerAttempts:0,providerRetryAttempts:0,toolCalls:0,elapsedMs:0,providerLatencyMs:0,responseHeadersLatencyMs:0,responseBodyLatencyMs:0,timeToFirstTokenMs:0,ttftSamples:0,toolExecutionMs:0,toolWallMs:0,parallelToolOverlapMs:0,otherElapsedMs:0});
-console.log(JSON.stringify({ok:results.every(row=>row.ok),runtime:"native",provider:"vyceai",model,results,totals},null,2));
+console.log(JSON.stringify({ok:results.every(row=>row.ok),runtime:"native",provider:"vyceai",model,streamingRequested:streamVyce,results,totals},null,2));
 
