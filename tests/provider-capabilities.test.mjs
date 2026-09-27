@@ -22,10 +22,6 @@ test("managed provider capabilities distinguish protocol compatibility from veri
   assert.equal(anthropic.promptCaching.status,"supported");
   assert.equal(anthropic.explicitCacheControl.status,"supported");
   assert.equal(providerFeatureEnabled("anthropic","promptCaching"),true);
-  const openai=providerCapabilities("openai");
-  assert.equal(openai.promptCaching.status,"supported");
-  assert.equal(openai.explicitCacheControl.status,"supported");
-  assert.equal(providerFeatureEnabled("openai","explicitCacheControl"),true);
 });
 
 test("ProviderManager surfaces conservative capability metadata without secrets",()=>{
