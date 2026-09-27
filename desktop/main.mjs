@@ -10,6 +10,7 @@ import { DEFAULT_SNAPSHOT_CONFIG, normalizeSnapshotConfig } from "./snapshot-con
 import { discoverEditors } from "./editor-discovery.mjs";
 import { createUpdaterController } from "./updater-controller.mjs";
 import { bundledCodexPath } from "./bundled-codex.mjs";
+import { decodePowerShellStderr } from "./powershell-output.mjs";
 
 const require=createRequire(import.meta.url);
 const { autoUpdater }=require("electron-updater");
@@ -453,7 +454,7 @@ function powershell(script,{timeout=10000}={}){
   const encoded=Buffer.from(String(script),"utf16le").toString("base64");
   return new Promise((resolve,reject)=>{
     execFile("powershell.exe",["-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-EncodedCommand",encoded],{windowsHide:true,timeout},(error,stdout,stderr)=>{
-      if(error){reject(new Error(String(stderr||error.message||error).trim()));return}
+      if(error){reject(new Error(decodePowerShellStderr(stderr)||String(error.message||error).trim()));return}
       resolve(String(stdout||"").trim());
     });
   });
