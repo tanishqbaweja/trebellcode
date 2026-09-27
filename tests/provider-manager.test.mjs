@@ -234,10 +234,12 @@ test("official OpenAI prompt cache key tracks the reusable instruction and tool 
   await manager.turn("openai",{model:"gpt-5.6",messages:[{role:"system",content:"Stable coding instructions"},{role:"user",content:"Fix the renderer"}],tools});
   await manager.turn("openai",{model:"gpt-5.6",messages:base,tools:[{...tools[0],tools:[{...tools[0].tools[0],description:"Read one file"}]}]});
   await manager.turn("openai",{model:"gpt-5.6",messages:[{role:"system",content:"Different coding instructions"},{role:"user",content:"Fix the parser"}],tools});
+  await manager.turn("openai",{model:"gpt-5.6",messages:base,tools,parallelToolCalls:false});
   assert.equal(bodies[0].prompt_cache_key,bodies[1].prompt_cache_key);
   assert.equal(bodies[0].prompt_cache_key,bodies[2].prompt_cache_key);
   assert.notEqual(bodies[0].prompt_cache_key,bodies[3].prompt_cache_key);
   assert.notEqual(bodies[0].prompt_cache_key,bodies[4].prompt_cache_key);
+  assert.notEqual(bodies[0].prompt_cache_key,bodies[5].prompt_cache_key);
 });
 
 test("official OpenAI keeps late developer finalization out of the stable instruction prefix",async()=>{

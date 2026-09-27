@@ -166,6 +166,7 @@ function officialOpenAiPromptCacheKey(body={}){
     model:String(body.model||""),
     instructions:String(body.instructions||""),
     tools:Array.isArray(body.tools)?body.tools:[],
+    parallelToolCalls:Boolean(body.parallel_tool_calls),
   });
   return "trebell-"+createHash("sha256").update(seed).digest("hex").slice(0,32);
 }
