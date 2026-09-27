@@ -955,9 +955,11 @@ export class ContextEngine{
     const previous=this.roots.get(cacheKey)||new Map(),previousGit=this.gitStates.get(cacheKey)||null,next=new Map();let reparsed=0,reused=0,skipped=0;
     const currentHead=String(git?.head||"").trim()||null,previousHead=String(previousGit?.head||"").trim()||null;
     const currentChanged=git?.changed instanceof Set?git.changed:new Set(git?.changed||[]),previousChanged=previousGit?.changed instanceof Set?previousGit.changed:new Set(previousGit?.changed||[]);
+    const currentStatus=String(git?.status||""),previousStatus=String(previousGit?.status||"");
     const pathInventoryReused=Boolean(
       git?.isGit&&previousGit?.isGit&&currentHead&&previousHead&&currentHead===previousHead
-      &&currentChanged.size===0&&previousChanged.size===0&&Array.isArray(previousGit?.paths)
+      &&currentStatus===previousStatus&&currentChanged.size===previousChanged.size
+      &&[...currentChanged].every(path=>previousChanged.has(path))&&Array.isArray(previousGit?.paths)
     );
     const paths=(pathInventoryReused?previousGit.paths:await io.discoverFiles({signal})).slice(0,20_000);throwIfContextAborted(signal);
     const sourcePaths=paths.filter(relativePath=>SOURCE_EXTENSIONS.has(extname(relativePath).toLowerCase()));
@@ -993,7 +995,7 @@ export class ContextEngine{
       next.set(relativePath,{relativePath,size:info.size,version:info.version,parserVersion:parserVersion(relativePath),sample:content.slice(0,64_000),parsed:parseSource(content,relativePath)});reparsed++;
     }
     throwIfContextAborted(signal);
-    this.roots.set(cacheKey,next);this.gitStates.set(cacheKey,{isGit:Boolean(git?.isGit),head:currentHead,changed:new Set(currentChanged),paths:[...paths]});
+    this.roots.set(cacheKey,next);this.gitStates.set(cacheKey,{isGit:Boolean(git?.isGit),head:currentHead,changed:new Set(currentChanged),status:currentStatus,paths:[...paths]});
     return {root:absolute,files:next,paths,reparsed,reused,skipped,inspected:inspect.length,durationMs:Date.now()-started,cacheKey,revisionChanged,revisionUnknown,revisionDiffUsed:Boolean(revisionChanged&&revisionPaths),pathInventoryReused};
   }
 
