@@ -567,6 +567,127 @@ test("native completion recognizes keep-rerunning a named verifier until it pass
   assert.equal(turns,3);assert.equal(result.modelTurns,3);assert.match(result.text,/passes \(exit code 0\)/i);
 });
 
+test("native session mode auto-reruns one exact failed verifier after a successful edit",async()=>{
+  let turns=0,verifierRuns=0;const events=[];
+  const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Run node verify.mjs first. Fix the implementation, then rerun it until it passes."}],tools,autoRerunVerification:true,onEvent:event=>events.push(event),
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"verify-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      throw new Error("The known verifier should be rerun without a third provider turn.");
+    },
+    executeTool:async call=>{
+      if(call.namespace==="trebell_terminal"){verifierRuns++;return {exitCode:verifierRuns===1?1:0}}
+      return {path:"src/a.mjs",replacements:1};
+    },
+  });
+  assert.equal(turns,2);assert.equal(result.modelTurns,2);assert.equal(result.toolCalls,3);assert.equal(verifierRuns,2);assert.match(result.text,/passes \(exit code 0\)/i);
+  assert.equal(events.filter(event=>event.name==="native.verification.auto_rerun").length,1);
+});
+
+test("native verifier auto-rerun never duplicates a verifier already present after the edit",async()=>{
+  let turns=0,verifierRuns=0;const events=[];
+  const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Run node verify.mjs first. Fix the implementation, then rerun it until it passes."}],tools,autoRerunVerification:true,onEvent:event=>events.push(event),
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"verify-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[
+        {id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'},
+        {id:"verify-2",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'},
+      ],usage:{}};
+      throw new Error("The batched verifier should complete the workflow without another provider turn.");
+    },
+    executeTool:async call=>{
+      if(call.namespace==="trebell_terminal"){verifierRuns++;return {exitCode:verifierRuns===1?1:0}}
+      return {path:"src/a.mjs",replacements:1};
+    },
+  });
+  assert.equal(turns,2);assert.equal(result.toolCalls,3);assert.equal(verifierRuns,2);assert.equal(events.filter(event=>event.name==="native.verification.auto_rerun").length,0);
+});
+
+test("native verifier auto-rerun fails closed when implicit verifier identity is ambiguous",async()=>{
+  let turns=0;const events=[];
+  const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Run the checks first. Fix the implementation, then rerun it until it passes."}],tools,autoRerunVerification:true,onEvent:event=>events.push(event),
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[
+        {id:"lint-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["lint.mjs"]}'},
+        {id:"verify-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'},
+      ],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      return {text:"provider final",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.namespace==="trebell_terminal"?{exitCode:1}:{path:"src/a.mjs",replacements:1},
+  });
+  assert.equal(turns,3);assert.equal(result.text,"provider final");assert.equal(events.filter(event=>event.name==="native.verification.auto_rerun").length,0);
+});
+
+test("native verifier auto-rerun never replays an explicitly named non-verifier command",async()=>{
+  let turns=0,setupRuns=0;const events=[];
+  const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Run node setup.mjs first. Fix the implementation, then rerun node setup.mjs until it passes."}],tools,autoRerunVerification:true,onEvent:event=>events.push(event),
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"setup-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["setup.mjs"]}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      return {text:"provider final",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{if(call.namespace==="trebell_terminal"){setupRuns++;return {exitCode:1}}return {path:"src/a.mjs",replacements:1}},
+  });
+  assert.equal(turns,3);assert.equal(setupRuns,1);assert.equal(result.text,"provider final");assert.equal(events.filter(event=>event.name==="native.verification.auto_rerun").length,0);
+});
+
+test("native verifier auto-rerun requires a successful edit and a remaining tool slot",async()=>{
+  const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
+  for(const fixture of [
+    {name:"failed edit",maxToolCalls:8,editResult:{success:false,error:"edit failed"}},
+    {name:"spent tool budget",maxToolCalls:2,editResult:{path:"src/a.mjs",replacements:1}},
+  ]){
+    let turns=0,verifierRuns=0;const events=[];
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:"Run node verify.mjs first. Fix the implementation, then rerun it until it passes."}],tools,autoRerunVerification:true,maxToolCalls:fixture.maxToolCalls,onEvent:event=>events.push(event),
+      providerTurn:async()=>{
+        turns++;
+        if(turns===1)return {text:"",toolCalls:[{id:"verify-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+        if(turns===2)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+        return {text:"provider final",toolCalls:[],usage:{}};
+      },
+      executeTool:async call=>{if(call.namespace==="trebell_terminal"){verifierRuns++;return {exitCode:1}}return fixture.editResult},
+    });
+    assert.equal(result.text,"provider final",fixture.name);
+    assert.equal(verifierRuns,1,fixture.name);assert.equal(events.filter(event=>event.name==="native.verification.auto_rerun").length,0,fixture.name);
+  }
+});
+
+test("native verifier auto-rerun yields to steering that arrives after the edit",async()=>{
+  let turns=0,verifierRuns=0,steered=false,steeringDelivered=false;const events=[];
+  const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Run node verify.mjs first. Fix the implementation, then rerun it until it passes."}],tools,autoRerunVerification:true,onEvent:event=>events.push(event),
+    consumeSteering:()=>steered&&!steeringDelivered?(steeringDelivered=true,[{role:"user",content:"Stop there and explain instead."}]):[],
+    providerTurn:async({messages})=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"verify-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      assert.ok(messages.some(message=>message.role==="user"&&/Stop there/.test(String(message.content||""))));return {text:"stopped after edit",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{
+      if(call.namespace==="trebell_terminal"){verifierRuns++;return {exitCode:1}}
+      steered=true;return {path:"src/a.mjs",replacements:1};
+    },
+  });
+  assert.equal(turns,3);assert.equal(result.text,"stopped after edit");assert.equal(verifierRuns,1);
+  assert.equal(events.filter(event=>event.name==="native.verification.auto_rerun").length,0);
+  assert.ok(events.some(event=>event.name==="native.steering.applied"&&event.data?.stage==="before_auto_verifier"));
+});
+
 test("native rerun-command completion only accepts the command the user named",async()=>{
   let turns=0;const events=[];
   const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];

@@ -206,11 +206,17 @@ function explicitVerificationCompletion(messages=[]){
   return {target:null,implicit:true};
 }
 
+function terminalRunLooksLikeVerifier(args={}){
+  const normalized=normalizeNativeCommandArguments(args),command=String(normalized.command||"").trim(),argv=Array.isArray(normalized.args)?normalized.args.map(value=>String(value)):[];
+  const rendered=[command,...argv].filter(Boolean).join(" ").replace(/\s+/g," ").trim().toLowerCase();
+  return /(?:^|[\s/\\._:-])(?:verify|verification|verifier|tests?|pytest|jest|vitest|mocha|ava|rspec|checks?|lint|typecheck|tsc)(?:$|[\s/\\._:-])/i.test(rendered);
+}
+
 function verificationCompletionMatchesRun(request,args={},terminalRuns=[],editRevision=0){
   const key=terminalRunKey(args);if(!key)return false;
   const normalized=normalizeNativeCommandArguments(args),command=String(normalized.command||"").trim(),argv=Array.isArray(normalized.args)?normalized.args.map(value=>String(value)):[];
   const rendered=[command,...argv].filter(Boolean).join(" ").replace(/\s+/g," ").trim().toLowerCase();
-  const verifierLike=/(?:^|[\s/\\._:-])(?:verify|verification|verifier|tests?|pytest|jest|vitest|mocha|ava|rspec|checks?|lint|typecheck|tsc)(?:$|[\s/\\._:-])/i.test(rendered);
+  const verifierLike=terminalRunLooksLikeVerifier(args);
   if(request?.implicit){
     if(!verifierLike)return false;
     const failedKeys=new Set((Array.isArray(terminalRuns)?terminalRuns:[]).filter(item=>item?.exitCode!==0&&item?.editRevision<editRevision).map(item=>item?.key).filter(Boolean));
@@ -279,6 +285,31 @@ function verifiedCompletionText(edits=[]){
 function terminalRunKey(args={}){
   const normalized=normalizeNativeCommandArguments(args),command=String(normalized.command||"").trim(),argv=Array.isArray(normalized.args)?normalized.args.map(value=>String(value)):[],cwd=String(normalized.cwd??"");
   return command?JSON.stringify([command,argv,cwd]):null;
+}
+
+function terminalReplayArguments(args={}){
+  const normalized=normalizeNativeCommandArguments(args),command=String(normalized.command||"").trim();if(!command)return null;
+  const replay={command,args:Array.isArray(normalized.args)?normalized.args.map(value=>String(value)):[]};
+  if(Object.prototype.hasOwnProperty.call(normalized,"cwd"))replay.cwd=String(normalized.cwd??"");
+  if(Number.isFinite(Number(normalized.timeout_ms)))replay.timeout_ms=Math.trunc(Number(normalized.timeout_ms));
+  if(Number.isFinite(Number(normalized.max_output_bytes)))replay.max_output_bytes=Math.trunc(Number(normalized.max_output_bytes));
+  return replay;
+}
+
+function verificationAutoRerunCandidate(request,terminalRuns=[],editRevision=0,currentCalls=[]){
+  if(!request||editRevision<1)return null;
+  const matching=new Map();
+  for(const item of Array.isArray(terminalRuns)?terminalRuns:[]){
+    if(!item?.key||item.exitCode===0||item.editRevision>=editRevision||!item.arguments)continue;
+    if(!terminalRunLooksLikeVerifier(item.arguments))continue;
+    if(!verificationCompletionMatchesRun(request,item.arguments,terminalRuns,editRevision))continue;
+    matching.set(item.key,item);
+  }
+  if(matching.size!==1)return null;
+  const candidate=[...matching.values()][0];
+  const alreadyScheduled=(Array.isArray(currentCalls)?currentCalls:[]).some(call=>call?.namespace==="trebell_terminal"&&call?.name==="run"&&terminalRunKey(safeArguments(call?.arguments))===candidate.key);
+  if(alreadyScheduled)return null;
+  const argumentsForReplay=terminalReplayArguments(candidate.arguments);return argumentsForReplay?{...candidate,arguments:argumentsForReplay}:null;
 }
 
 function resultContent(value){
@@ -364,6 +395,7 @@ export async function runNativeAgentTurn({
   providerTurn,executeTool,model,messages=[],tools=[],provider=null,toolChoice="auto",
   maxOutputTokens=null,temperature=null,parallelToolCalls=true,maxModelTurns=24,maxToolCalls=100,maxWallTimeMs=null,
   maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,coolReadToolHistory=null,preserveToolSchemasOnFinalization=false,signal=null,onEvent=null,metadata=null,
+  autoRerunVerification=false,
 }={}){
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
@@ -409,7 +441,7 @@ export async function runNativeAgentTurn({
       const key=terminalRunKey(args),exitCode=Number.isFinite(Number(output?.exitCode))?Number(output.exitCode):null;
       if(key&&exitCode!==null){
         const priorFailure=terminalRuns.findLast(item=>item.key===key&&item.exitCode!==0&&item.editRevision<editRevision);
-        terminalRuns.push({key,exitCode,editRevision});
+        terminalRuns.push({key,exitCode,editRevision,arguments:terminalReplayArguments(args)});
         const completionTargetMatches=!verificationFinalizationRequest||verificationCompletionMatchesRun(verificationFinalizationRequest,args,terminalRuns,editRevision);
         if(verifiedFinalizationAllowed&&exitCode===0&&priorFailure&&completionTargetMatches){
           verifiedFinalizationReady=true;
@@ -566,7 +598,7 @@ export async function runNativeAgentTurn({
       emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage}});
       return result;
     }
-    let redirected=false;
+    const editRevisionBeforeCalls=editRevision;let redirected=false;
     for(let callIndex=0;callIndex<calls.length;){
       const call=calls[callIndex];
       throwIfAborted(turnSignal);
@@ -602,6 +634,16 @@ export async function runNativeAgentTurn({
       callIndex+=batch.length;
     }
     if(redirected)continue;
+    if(autoRerunVerification===true&&verificationCompletionRequest&&verifiedFinalizationAllowed&&!verifiedFinalizationReady&&editRevision>editRevisionBeforeCalls&&toolCalls<budget.maxToolCalls){
+      if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_auto_verifier"})){verifiedFinalizationAllowed=false;verifiedFinalizationReady=false;continue}
+      const candidate=verificationAutoRerunCandidate(verificationCompletionRequest,terminalRuns,editRevision,calls);
+      if(candidate){
+        const toolCallNumber=toolCalls+1,callId=`native-auto-verifier-${modelTurns}-${toolCallNumber}`,call={id:callId,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify(candidate.arguments)};
+        conversation.push({role:"assistant",content:"",toolCalls:[call]});toolCalls=toolCallNumber;
+        const observation=await executeOneTool(call,toolCallNumber);conversation.push(observation);
+        emit(onEvent,{name:"native.verification.auto_rerun",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision}});
+      }
+    }
   }}catch(caught){
     let error=caught;
     if(wallController?.signal.aborted&&!signal?.aborted){
