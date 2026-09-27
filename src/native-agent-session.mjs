@@ -207,6 +207,19 @@ function observationKey(call={},definition=null){
   return namespace+"/"+name+":"+stableJson(call.arguments&&typeof call.arguments==="object"?call.arguments:{});
 }
 
+function exactWorkspacePath(output){
+  const path=String(output?.path||"").trim();return path||null;
+}
+
+function postEditReadReceipt(output,expected={}){
+  const content=String(output?.content??""),hash=createHash("sha256").update(content).digest("hex").slice(0,20);
+  return {
+    success:true,postEditVerified:true,path:String(output?.path||""),name:output?.name||null,size:Number(output?.size||Buffer.byteLength(content,"utf8")),
+    message:"Trebell re-read this file from the workspace and its contents byte-match the exact successful edit already present in this conversation.",
+    _trebell_post_edit_verification:{hash,originalBytes:Buffer.byteLength(JSON.stringify(output??null),"utf8"),editToolCallId:expected.toolCallId||null,editTool:expected.tool||null},
+  };
+}
+
 function preserveCacheableProviderHistory(provider){
   return providerFeatureEnabled(provider,"promptCaching");
 }
@@ -268,7 +281,7 @@ export class NativeAgentSession{
   async prompt(prompt,{messageId=null,maxModelTurns=24,maxToolCalls=100,maxOutputTokens=null,maxWallTimeMs=null,toolAllowlist=null}={}){
     if(this.closed)throw new Error("Native session is closed");if(!this.model)throw new Error("Trebell Native requires a model");
     if(this.turnActive)throw new Error("Trebell Native already has a running turn");
-    this.controller=new AbortController();this.turnActive=true;this.pendingSteering=[];const user=promptMessage(prompt),observationSnapshot=new Map(this.observationCache),preserveCacheHistory=preserveCacheableProviderHistory(this.provider),userMeta=user[NATIVE_PROMPT_PROVENANCE],freshEntries=Array.isArray(userMeta?.contextEntries)?userMeta.contextEntries:[],hasFreshWorkingContext=Boolean(String(userMeta?.contextText||"").trim()&&freshEntries.length);
+    this.controller=new AbortController();this.turnActive=true;this.pendingSteering=[];const user=promptMessage(prompt),observationSnapshot=new Map(this.observationCache),preserveCacheHistory=preserveCacheableProviderHistory(this.provider),userMeta=user[NATIVE_PROMPT_PROVENANCE],freshEntries=Array.isArray(userMeta?.contextEntries)?userMeta.contextEntries:[],hasFreshWorkingContext=Boolean(String(userMeta?.contextText||"").trim()&&freshEntries.length),exactWorkspaceContents=new Map(),postEditExpected=new Map();
     const priorContext=preserveCacheHistory||!hasFreshWorkingContext?{messages:this.messages,count:0,savedChars:0,supersededEntries:0,retainedEntries:0}:coolSupersededWorkingContext(this.messages,freshEntries),base=[...priorContext.messages,user];
     if(priorContext.count)this.onEvent?.({name:"native.context.history_cooled",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{count:priorContext.count,savedChars:priorContext.savedChars,supersededEntries:Number(priorContext.supersededEntries||0),retainedEntries:Number(priorContext.retainedEntries||0)}});
     const wrappedExecutor=async call=>{
@@ -288,6 +301,21 @@ export class NativeAgentSession{
       }
       const key=observationKey(call,definition),digest=key?observationDigest(output):null,prior=key?this.observationCache.get(key):null;
       let observed=output;
+      const resolvedPath=exactWorkspacePath(output);
+      if(call.namespace==="trebell_workspace"&&call.name==="read_file"&&output?.success!==false&&resolvedPath&&typeof output?.content==="string"){
+        const expected=postEditExpected.get(resolvedPath);
+        if(expected&&String(output.content)===expected.content){
+          const receipt=postEditReadReceipt(output,expected),originalBytes=Buffer.byteLength(JSON.stringify(output),"utf8"),receiptBytes=Buffer.byteLength(JSON.stringify(receipt),"utf8");
+          if(originalBytes-receiptBytes>=256){
+            observed=receipt;
+            this.onEvent?.({name:"native.tool.post_edit_read_compacted",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{path:resolvedPath,originalBytes,receiptBytes,savedBytes:originalBytes-receiptBytes,editToolCallId:expected.toolCallId||null,editTool:expected.tool||null}});
+          }
+          postEditExpected.delete(resolvedPath);
+        }else if(expected){
+          postEditExpected.delete(resolvedPath);
+        }
+        exactWorkspaceContents.set(resolvedPath,String(output.content));
+      }
       const reusable=Boolean(key)&&output?.success!==false&&output?.uncertain!==true;
       if(reusable&&prior&&prior.hash===digest.hash&&digest.bytes>=512){
         observed={
@@ -301,6 +329,18 @@ export class NativeAgentSession{
         this.observationCache.set(key,{hash:digest.hash,bytes:digest.bytes,toolCallId:String(call.id||"")});
       }else if(key){
         this.observationCache.delete(key);
+      }
+      if(call.namespace==="trebell_workspace"&&output?.success!==false&&resolvedPath){
+        if(call.name==="write_file"){
+          const content=String(call.arguments?.content??"");exactWorkspaceContents.set(resolvedPath,content);postEditExpected.set(resolvedPath,{content,toolCallId:String(call.id||""),tool:"trebell_workspace/write_file"});
+        }else if(call.name==="replace_text"){
+          const before=exactWorkspaceContents.get(resolvedPath),oldText=String(call.arguments?.old_text??""),newText=String(call.arguments?.new_text??""),replacements=Math.max(0,Math.trunc(Number(output?.replacements)||0));
+          if(typeof before==="string"&&oldText&&replacements>0&&before.split(oldText).length-1===replacements){
+            const content=before.split(oldText).join(newText);exactWorkspaceContents.set(resolvedPath,content);postEditExpected.set(resolvedPath,{content,toolCallId:String(call.id||""),tool:"trebell_workspace/replace_text"});
+          }else{
+            exactWorkspaceContents.delete(resolvedPath);postEditExpected.delete(resolvedPath);
+          }
+        }
       }
       const shaped=this.toolOutputStore?await this.toolOutputStore.virtualize(observed,{namespace:call.namespace||null,name:call.name||null}):{value:observed,virtualized:false};
       const modelOutput=shaped.value,failed=modelOutput?.success===false;

@@ -329,6 +329,115 @@ test("Native session returns full file content again when a repeated read has ch
   assert.doesNotMatch(requests[2].messages.at(-1).content,/byte-identical/i);
 });
 
+test("Native session compacts a verified post-edit reread when it byte-matches the exact edit",async()=>{
+  const requests=[],events=[];let providerCalls=0,content=("prefix line\n".repeat(700))+"mode=legacy\n"+("suffix line\n".repeat(120));
+  const resolvedPath="C:/repo/src/config.txt";
+  const session=new NativeAgentSession({
+    model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {id:"read-before",text:"",toolCalls:[{id:"read-before",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/config.txt"}'}],usage:{}};
+      if(providerCalls===2)return {id:"edit",text:"",toolCalls:[{id:"edit-1",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/config.txt","old_text":"mode=legacy","new_text":"mode=strict"}'}],usage:{}};
+      if(providerCalls===3)return {id:"read-after",text:"",toolCalls:[{id:"read-after",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/config.txt"}'}],usage:{}};
+      return {id:"done",text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{
+      if(call.name==="read_file")return {path:resolvedPath,name:"config.txt",size:Buffer.byteLength(content,"utf8"),content};
+      if(call.name==="replace_text"){
+        const before=content,oldText=String(call.arguments?.old_text||""),newText=String(call.arguments?.new_text||"");
+        const replacements=before.split(oldText).length-1;content=before.split(oldText).join(newText);
+        return {path:resolvedPath,size:Buffer.byteLength(content,"utf8"),replacements};
+      }
+      throw new Error("unexpected tool");
+    },
+  });
+  await session.start({providerSessionId:"native-post-edit-reread",model:"model-a"});await session.prompt([{type:"text",text:"read edit reread"}]);
+  const fresh=requests[3].messages.find(message=>message.role==="tool"&&message.toolCallId==="read-after");assert.ok(fresh);
+  assert.match(fresh.content,/byte-match the exact successful edit/i);assert.match(fresh.content,/postEditVerified/);assert.doesNotMatch(fresh.content,/suffix line\nsuffix line\nsuffix line/);
+  const event=events.find(item=>item.name==="native.tool.post_edit_read_compacted");assert.ok(event);assert.ok(event.data.savedBytes>5000);assert.equal(event.data.editTool,"trebell_workspace/replace_text");
+});
+
+test("Native session keeps a post-edit reread in full when the workspace changed after the edit",async()=>{
+  const requests=[];let providerCalls=0,content="A".repeat(3000)+"mode=legacy\n";
+  const resolvedPath="C:/repo/src/config.txt";
+  const session=new NativeAgentSession({
+    model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {id:"read-before",text:"",toolCalls:[{id:"read-before",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/config.txt"}'}],usage:{}};
+      if(providerCalls===2)return {id:"edit",text:"",toolCalls:[{id:"edit-1",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/config.txt","old_text":"mode=legacy","new_text":"mode=strict"}'}],usage:{}};
+      if(providerCalls===3){content="EXTERNAL_CHANGE\n"+content;return {id:"read-after",text:"",toolCalls:[{id:"read-after",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/config.txt"}'}],usage:{}}}
+      return {id:"done",text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{
+      if(call.name==="read_file")return {path:resolvedPath,name:"config.txt",size:content.length,content};
+      const oldText=String(call.arguments?.old_text||""),newText=String(call.arguments?.new_text||"");content=content.split(oldText).join(newText);return {path:resolvedPath,size:content.length,replacements:1};
+    },
+  });
+  await session.start({providerSessionId:"native-post-edit-reread-changed",model:"model-a"});await session.prompt([{type:"text",text:"read edit reread"}]);
+  const fresh=requests[3].messages.find(message=>message.role==="tool"&&message.toolCallId==="read-after");assert.match(fresh.content,/EXTERNAL_CHANGE/);assert.doesNotMatch(fresh.content,/postEditVerified/);
+});
+
+test("Native session compacts a verified reread after an exact successful write_file",async()=>{
+  const requests=[],events=[];let providerCalls=0,content="old\n",resolvedPath="C:/repo/generated.txt";const written=("generated line zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n".repeat(180))+"READY\n";
+  const session=new NativeAgentSession({
+    model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {id:"write",text:"",toolCalls:[{id:"write-1",namespace:"trebell_workspace",name:"write_file",arguments:JSON.stringify({path:"generated.txt",content:written})}],usage:{}};
+      if(providerCalls===2)return {id:"read",text:"",toolCalls:[{id:"read-after-write",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"generated.txt"}'}],usage:{}};
+      return {id:"done",text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{
+      if(call.name==="write_file"){content=String(call.arguments?.content??"");return {path:resolvedPath,name:"generated.txt",size:Buffer.byteLength(content,"utf8"),createdOrReplaced:true}}
+      return {path:resolvedPath,name:"generated.txt",size:Buffer.byteLength(content,"utf8"),content};
+    },
+  });
+  await session.start({providerSessionId:"native-post-write-reread",model:"model-a"});await session.prompt([{type:"text",text:"write then verify"}]);
+  const fresh=requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="read-after-write");assert.ok(fresh);assert.match(fresh.content,/byte-match the exact successful edit/i);assert.doesNotMatch(fresh.content,/generated line z{20}/);
+  const event=events.find(item=>item.name==="native.tool.post_edit_read_compacted");assert.ok(event);assert.equal(event.data.editTool,"trebell_workspace/write_file");assert.ok(event.data.savedBytes>5000);
+});
+
+test("Native session keeps tiny verified post-edit rereads inline when a receipt would not save enough",async()=>{
+  const requests=[];let providerCalls=0,content="mode=legacy\n",resolvedPath="C:/repo/tiny.txt";
+  const session=new NativeAgentSession({
+    model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {id:"read",text:"",toolCalls:[{id:"read-before",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"tiny.txt"}'}],usage:{}};
+      if(providerCalls===2)return {id:"edit",text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"tiny.txt","old_text":"legacy","new_text":"strict"}'}],usage:{}};
+      if(providerCalls===3)return {id:"reread",text:"",toolCalls:[{id:"read-after",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"tiny.txt"}'}],usage:{}};
+      return {id:"done",text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{
+      if(call.name==="read_file")return {path:resolvedPath,name:"tiny.txt",size:content.length,content};
+      content=content.replace("legacy","strict");return {path:resolvedPath,size:content.length,replacements:1};
+    },
+  });
+  await session.start({providerSessionId:"native-tiny-post-edit-reread",model:"model-a"});await session.prompt([{type:"text",text:"verify tiny edit"}]);
+  const fresh=requests[3].messages.find(message=>message.role==="tool"&&message.toolCallId==="read-after");assert.match(fresh.content,/mode=strict/);assert.doesNotMatch(fresh.content,/postEditVerified/);
+});
+
+test("Native session does not compact a post-replace reread without exact pre-edit contents",async()=>{
+  const requests=[];let providerCalls=0,content="prefix\n"+"U".repeat(6000)+"\nmode=legacy\n";
+  const resolvedPath="C:/repo/src/config.txt";
+  const session=new NativeAgentSession({
+    model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {id:"edit",text:"",toolCalls:[{id:"edit-1",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/config.txt","old_text":"mode=legacy","new_text":"mode=strict"}'}],usage:{}};
+      if(providerCalls===2)return {id:"read-after",text:"",toolCalls:[{id:"read-after",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/config.txt"}'}],usage:{}};
+      return {id:"done",text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{
+      if(call.name==="replace_text"){content=content.replace("mode=legacy","mode=strict");return {path:resolvedPath,size:content.length,replacements:1}}
+      return {path:resolvedPath,name:"config.txt",size:content.length,content};
+    },
+  });
+  await session.start({providerSessionId:"native-post-replace-unknown",model:"model-a"});await session.prompt([{type:"text",text:"edit then verify without prior read"}]);
+  const fresh=requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="read-after");assert.ok(fresh);assert.match(fresh.content,/U{1000}/);assert.match(fresh.content,/mode=strict/);assert.doesNotMatch(fresh.content,/postEditVerified/);
+});
+
 test("Native session deduplicates only byte-identical repeated repository searches",async()=>{
   const requests=[],events=[];let providerCalls=0,searches=0;
   const session=new NativeAgentSession({
