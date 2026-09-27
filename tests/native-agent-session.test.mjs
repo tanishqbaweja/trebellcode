@@ -37,6 +37,41 @@ test("Native session uses deterministic command-only reporting when no richer wo
   assert.ok(events.some(event=>event.name==="native.terminal.report_synthesized"));
 });
 
+test("Native session aggressively cools only the virtualized command result behind a synthesized terminal report",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-terminal-report-cooling-")),requests=[],events=[];
+  try{
+    const store=new NativeToolOutputStore({directory:root,maxHotBytes:4096});let providerCalls=0;
+    const session=new NativeAgentSession({
+      provider:"fixture",model:"model-a",toolOutputStore:store,onEvent:event=>events.push(event),
+      tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+      providerTurn:async request=>{requests.push(structuredClone({...request,signal:undefined}));providerCalls++;return providerCalls===1?{text:"Running it now.",toolCalls:[{id:"verify-report",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}}:{text:"continued",toolCalls:[],usage:{}}},
+      executeTool:async()=>({exitCode:1,stdout:"noise\n".repeat(6000),stderr:"CRITICAL_ASSERTION expected strict but received legacy"}),
+    });
+    await session.start({providerSessionId:"terminal-report-cooling",model:"model-a"});
+    const first=await session.prompt([{type:"text",text:"Run node verify.mjs and report the result."}]);assert.equal(first.raw?.modelTurns,1);
+    const persisted=session.messages.find(message=>message.role==="tool"&&message.toolCallId==="verify-report")?.content||"";
+    assert.match(persisted,/CRITICAL_ASSERTION/);assert.match(persisted,/out_[a-zA-Z0-9-]+/);assert.ok(persisted.length<1700);
+    assert.ok(events.some(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="terminal_report"&&event.data?.savedChars>400));
+    await session.prompt([{type:"text",text:"continue"}]);
+    const next=requests[1].messages.find(message=>message.role==="tool"&&message.toolCallId==="verify-report")?.content||"";
+    assert.equal(next,persisted);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("Native session cools synthesized terminal-report history before first cache-provider exposure, then keeps it stable",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-terminal-report-cache-")),events=[],requests=[];
+  try{
+    const store=new NativeToolOutputStore({directory:root,maxHotBytes:4096});let providerCalls=0;
+    const session=new NativeAgentSession({provider:"openai",model:"gpt-5.6",toolOutputStore:store,onEvent:event=>events.push(event),tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],providerTurn:async request=>{requests.push(structuredClone({...request,signal:undefined}));providerCalls++;return {id:"r"+providerCalls,text:providerCalls===1?"Running it now.":"continued",toolCalls:providerCalls===1?[{id:"verify-cache",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}]:[],usage:{}}},executeTool:async()=>({exitCode:1,stdout:"noise\n".repeat(6000),stderr:"CRITICAL_ASSERTION expected strict but received legacy"})});
+    await session.start({providerSessionId:"terminal-report-cache",model:"gpt-5.6"});await session.prompt([{type:"text",text:"Run node verify.mjs and report the result."}]);
+    const persisted=session.messages.find(message=>message.role==="tool"&&message.toolCallId==="verify-cache")?.content||"";
+    assert.match(persisted,/CRITICAL_ASSERTION/);assert.match(persisted,/out_[a-zA-Z0-9-]+/);assert.ok(persisted.length<1700);
+    assert.ok(events.some(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="terminal_report"));
+    await session.prompt([{type:"text",text:"continue"}]);
+    const exposed=requests[1].messages.find(message=>message.role==="tool"&&message.toolCallId==="verify-cache")?.content||"";assert.equal(exposed,persisted);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
 test("Native session auto-reruns one uniquely proven verifier after a successful edit",async()=>{
   let providerCalls=0,verifierRuns=0;const events=[],updates=[];
   const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];

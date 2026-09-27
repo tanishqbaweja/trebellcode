@@ -49,6 +49,20 @@ export function coolVirtualizedToolHistory(messages=[],options={}){
   return {messages:cooled,count,savedChars};
 }
 
+export function coolReportedVirtualizedToolResult(messages=[],{toolCallId,maxPreviewChars=600}={}){
+  const wanted=String(toolCallId||"").trim();
+  if(!wanted)return {messages:Array.isArray(messages)?messages:[],count:0,savedChars:0};
+  let count=0,savedChars=0;
+  const cooled=(Array.isArray(messages)?messages:[]).map(message=>{
+    const id=String(message?.toolCallId||message?.tool_call_id||"");
+    if(message?.role!=="tool"||id!==wanted||typeof message.content!=="string")return message;
+    const content=coolVirtualizedToolContent(message.content,{maxPreviewChars});
+    if(content===message.content)return message;
+    count++;savedChars+=Math.max(0,message.content.length-content.length);return {...message,content};
+  });
+  return {messages:cooled,count,savedChars};
+}
+
 function toolCallIdentity(call={}){
   const source=call?.function||call,raw=String(source?.name||call?.name||"");
   const marker=raw.indexOf("__"),namespace=String(call?.namespace|| (marker>0?raw.slice(0,marker):"")),name=String(call?.name|| (marker>0?raw.slice(marker+2):raw));
