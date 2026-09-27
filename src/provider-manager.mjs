@@ -9,6 +9,7 @@ import { redactSecretText } from "./secret-redactor.mjs";
 import { performance } from "node:perf_hooks";
 import { providerCapabilities } from "./provider-capabilities.mjs";
 import { OpenAiResponseContinuationTracker } from "./openai-response-continuation.mjs";
+import { OpenAiResponsesWebSocket, openAiResponsesWebSocketStreamId } from "./openai-responses-websocket.mjs";
 
 export const MODEL_PROVIDERS = Object.freeze({
   freebuff: {
@@ -327,8 +328,14 @@ function providerRequestSignal(signal, timeoutMs = DEFAULT_PROVIDER_REQUEST_TIME
   return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 }
 
+function remainingProviderRequestMs(deadlineAt){
+  const remaining=Math.ceil(Number(deadlineAt)-performance.now());
+  if(remaining>0)return remaining;
+  const error=new DOMException("Provider request deadline exceeded.","TimeoutError");error.retryable=false;throw error;
+}
+
 export class ProviderManager {
-  constructor({ env = process.env, fetchFn = fetch, requestTimeoutMs = DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS } = {}) {
+  constructor({ env = process.env, fetchFn = fetch, requestTimeoutMs = DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS, openAiResponsesWebSocketFactory=null } = {}) {
     this.env = env;
     this.fetchFn = fetchFn;
     const timeoutMs = Math.trunc(Number(requestTimeoutMs));
@@ -337,6 +344,26 @@ export class ProviderManager {
     mkdirSync(dirname(this.path), { recursive: true });
     this.secrets = this.#load();
     this.openAiResponseContinuations=new OpenAiResponseContinuationTracker();
+    this.openAiResponsesWebSocketFactory=typeof openAiResponsesWebSocketFactory==="function"?openAiResponsesWebSocketFactory:options=>new OpenAiResponsesWebSocket(options);
+    this.openAiResponsesWebSocket=null;this.openAiResponsesWebSocketDisabled=false;
+  }
+
+  #resetOpenAiWebSocket(reason="reset"){
+    this.openAiResponseContinuations.clear();
+    const normalized=String(reason||""),disable=!["abort","close"].includes(normalized),transport=this.openAiResponsesWebSocket;
+    if(disable)this.openAiResponsesWebSocketDisabled=true;
+    if(this.openAiResponsesWebSocketDisabled){this.openAiResponsesWebSocket=null;if(["protocol_failure","timeout_failure"].includes(normalized))try{transport?.close?.()}catch{}}
+  }
+
+  #openAiWebSocketTransport(){
+    if(this.openAiResponsesWebSocketDisabled)return null;
+    if(this.openAiResponsesWebSocket)return this.openAiResponsesWebSocket;
+    const key=this.key("openai");if(!key)return null;
+    this.openAiResponsesWebSocket=this.openAiResponsesWebSocketFactory({
+      apiKey:key,baseUrl:this.get("openai").baseUrl,userAgent:TREBELL_USER_AGENT,
+      onReset:event=>this.#resetOpenAiWebSocket(event?.reason||"reset"),
+    });
+    return this.openAiResponsesWebSocket;
   }
 
   #load() {
@@ -387,10 +414,11 @@ export class ProviderManager {
   setKey(providerId, value) {
     const provider = this.get(providerId);
     if (!provider.requiresKey) throw new Error(`${provider.name} does not use an API key here.`);
-    const key = normalizeProviderKey(value);
+    const previousKey=this.key(provider.id),key = normalizeProviderKey(value);
     if (key) this.secrets[provider.id] = key;
     else delete this.secrets[provider.id];
     this.#save();
+    if(provider.id==="openai"&&previousKey!==key){try{this.openAiResponsesWebSocket?.close?.()}catch{}this.openAiResponsesWebSocket=null;this.openAiResponsesWebSocketDisabled=false;this.openAiResponseContinuations.clear()}
     return { provider: provider.id, hasKey: Boolean(key) };
   }
 
@@ -522,7 +550,7 @@ export class ProviderManager {
     });
   }
 
-  async forwardResponses(providerId, responsesBody, { signal, onWire } = {}) {
+  async forwardResponses(providerId, responsesBody, { signal, onWire, timeoutMs=this.requestTimeoutMs } = {}) {
     const provider = this.get(providerId);
     if (provider.wireApi !== "responses") {
       throw new Error(`${provider.name} does not use direct Responses forwarding.`);
@@ -545,7 +573,7 @@ export class ProviderManager {
             "User-Agent": TREBELL_USER_AGENT,
           },
       body,
-      signal: providerRequestSignal(signal, this.requestTimeoutMs),
+      signal: providerRequestSignal(signal, timeoutMs),
     });
   }
 
@@ -553,25 +581,55 @@ export class ProviderManager {
     const provider=this.get(providerId),model=String(request.model||"").trim();
     if(!model)throw new Error("Provider turn requires a model.");
     if(provider.id==="freebuff")throw new Error("Freebuff provider turns are served by the local Freebuff bridge, not ProviderManager.");
-    const started=performance.now();let wire={endpoint:null,wireApi:null,requestBytes:0},wireRequestBytes=0,wireAttempts=0;
+    const started=performance.now(),requestDeadlineAt=started+this.requestTimeoutMs;let wire={endpoint:null,wireApi:null,requestBytes:0},wireRequestBytes=0,wireAttempts=0;
     const onWire=value=>{wire=value||wire;wireRequestBytes+=Number(value?.requestBytes||0);wireAttempts++};
     const fullResponsesBody=provider.wireApi==="responses"
       ?(provider.id==="openai"?officialOpenAiResponsesBody({...request,model}):providerTurnToResponses({...request,model}))
       :null;
-    const openAiContinuation=provider.id==="openai"&&fullResponsesBody
+    let openAiContinuation=provider.id==="openai"&&fullResponsesBody
       ?this.openAiResponseContinuations.prepare(fullResponsesBody,request.promptCacheComparisonResponseId)
       :null;
-    const responsesBody=openAiContinuation?.body||fullResponsesBody;
+    let responsesBody=openAiContinuation?.body||fullResponsesBody;
     if(provider.id==="openai"&&streamResponses===true&&responsesBody){responsesBody.stream=true;if(fullResponsesBody)fullResponsesBody.stream=true}
     const chatBody=provider.wireApi==="responses"?null:providerTurnToChat({...request,model});
     if(streamChat===true&&chatBody){chatBody.stream=true;chatBody.stream_options={include_usage:true}}
+    let openAiWebSocketFallback=null;
+    const openAiWebSocketStreamId=provider.id==="openai"&&streamResponses===true?openAiResponsesWebSocketStreamId(request?.metadata?.sessionId):null;
+    const openAiWebSocketEnabled=Boolean(openAiWebSocketStreamId)&&String(this.env.TREBELL_OPENAI_RESPONSES_WEBSOCKET||"1").trim()!=="0"&&!this.openAiResponsesWebSocketDisabled;
+    if(openAiWebSocketEnabled){
+      const transport=this.#openAiWebSocketTransport();
+      if(transport){
+        try{
+          const socketSignal=providerRequestSignal(signal,remainingProviderRequestMs(requestDeadlineAt));
+          const socketStarted=performance.now(),socketResult=await transport.request(responsesBody,{streamId:openAiWebSocketStreamId,signal:socketSignal}),result=normalizeResponsesTurnResponse(socketResult.response,provider.id,model);
+          this.openAiResponseContinuations.record(result.id,openAiContinuation,result);
+          result.telemetry={
+            endpoint:String(provider.baseUrl||"").replace(/^http/i,"ws")+"/responses",wireApi:"openai-responses-websocket",requestBytes:Number(socketResult.requestBytes||0),responseBytes:Number(socketResult.telemetry?.responseBytes||0),
+            responseHeadersLatencyMs:null,responseBodyLatencyMs:Number(socketResult.telemetry?.totalLatencyMs||0),timeToFirstTokenMs:socketResult.telemetry?.timeToFirstTokenMs??null,totalLatencyMs:Number(socketResult.telemetry?.totalLatencyMs??(performance.now()-socketStarted)),streaming:true,providerRequestId:null,providerResponseId:result.id||null,
+            promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(socketResult.response),persistentConnection:true,responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used),attempted:Boolean(openAiContinuation.used),fallback:false,parentId:openAiContinuation.parentId||null,fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:Number(openAiContinuation.savedRequestBytes||0),wireAttempts:1}:null,
+          };
+          return result;
+        }catch(error){
+          if(signal?.aborted||error?.name==="AbortError")throw error;
+          const failedWire=Number(error?.webSocketTelemetry?.requestBytes||0);if(failedWire>0)wireRequestBytes+=failedWire;wireAttempts++;
+          const failureKind=String(error?.webSocketFailureKind||((error?.name==="TimeoutError")?"timeout":error?.protocolFailure?"protocol":error?.transportFailure?"transport":"unknown")),replaySafe=error?.replaySafe===true;
+          openAiWebSocketFallback={transportFailure:Boolean(error?.transportFailure),protocolFailure:Boolean(error?.protocolFailure),failureKind,name:error?.name||null,code:error?.code??null,replaySafe,retried:false,requestBytes:failedWire,responseBytes:Number(error?.webSocketTelemetry?.responseBytes||0),timeToFirstTokenMs:error?.webSocketTelemetry?.timeToFirstTokenMs??null};
+          if(error?.transportFailure)this.#resetOpenAiWebSocket("transport_failure");else if(error?.protocolFailure)this.#resetOpenAiWebSocket("protocol_failure");else if(error?.name==="TimeoutError")this.#resetOpenAiWebSocket("timeout_failure");
+          if(!replaySafe){error.retryable=false;error.telemetry={endpoint:String(provider.baseUrl||"").replace(/^http/i,"ws")+"/responses",wireApi:"openai-responses-websocket",requestBytes:failedWire,responseBytes:Number(error?.webSocketTelemetry?.responseBytes||0),timeToFirstTokenMs:error?.webSocketTelemetry?.timeToFirstTokenMs??null,totalLatencyMs:Number((performance.now()-started).toFixed(3)),streaming:true,persistentConnection:true,webSocketFallback:openAiWebSocketFallback};throw error}
+          try{remainingProviderRequestMs(requestDeadlineAt)}catch{error.retryable=false;error.telemetry={endpoint:String(provider.baseUrl||"").replace(/^http/i,"ws")+"/responses",wireApi:"openai-responses-websocket",requestBytes:failedWire,responseBytes:Number(error?.webSocketTelemetry?.responseBytes||0),timeToFirstTokenMs:error?.webSocketTelemetry?.timeToFirstTokenMs??null,totalLatencyMs:Number((performance.now()-started).toFixed(3)),streaming:true,persistentConnection:true,webSocketFallback:openAiWebSocketFallback};throw error}
+          openAiWebSocketFallback.retried=true;
+          const fallbackBody=officialOpenAiResponsesBody({...request,model,promptCacheComparisonResponseId:""});fallbackBody.stream=true;
+          openAiContinuation=this.openAiResponseContinuations.prepare(fallbackBody,"");responsesBody=fallbackBody;
+        }
+      }
+    }
     let upstream=provider.wireApi==="responses"
-      ?await this.forwardResponses(provider.id,responsesBody,{signal,onWire})
+      ?await this.forwardResponses(provider.id,responsesBody,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)})
       :await this.forwardChat(provider.id,chatBody,{signal,onWire,promptCaching});
     let continuationFallback=false;
     if(provider.id==="openai"&&openAiContinuation?.used&&!upstream.ok&&[400,404,409].includes(Number(upstream.status))){
       try{await upstream.body?.cancel?.()}catch{}
-      upstream=await this.forwardResponses(provider.id,fullResponsesBody,{signal,onWire});continuationFallback=true;
+      upstream=await this.forwardResponses(provider.id,fullResponsesBody,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)});continuationFallback=true;
     }
     const headersLatencyMs=Number((performance.now()-started).toFixed(3));
     const providerRequestId=upstream.headers?.get?.("x-request-id")||upstream.headers?.get?.("request-id")||upstream.headers?.get?.("x-amzn-requestid")||null;
@@ -582,7 +640,7 @@ export class ProviderManager {
         const streamed=await readOpenAiResponsesStream(upstream.body,{requestStartedAt:started}),bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
         const result=normalizeResponsesTurnResponse(streamed.response,provider.id,model);
         this.openAiResponseContinuations.record(result.id,openAiContinuation,result);
-        result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null,promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(streamed.response),responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,parentId:openAiContinuation.parentId||null,fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),wireAttempts}:null};
+        result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null,promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(streamed.response),persistentConnection:false,webSocketFallback:openAiWebSocketFallback,responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,parentId:openAiContinuation.parentId||null,fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),wireAttempts}:null};
         return result;
       }catch(error){
         const bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
@@ -615,6 +673,7 @@ export class ProviderManager {
       streaming:false,
       providerRequestId,
       providerResponseId:null,
+      ...(provider.id==="openai"?{persistentConnection:false,webSocketFallback:openAiWebSocketFallback}:{}),
     };
     if(!upstream.ok){
       const error=new Error(`${provider.name} HTTP ${upstream.status}: ${providerErrorExcerpt(raw,{environment:this.env,secret:this.key(provider.id),maxChars:1200})}`);

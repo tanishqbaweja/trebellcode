@@ -23,7 +23,7 @@ const CAPABILITIES=Object.freeze({
     promptCaching:feature("supported","The direct OpenAI Responses route keeps a deterministic prompt_cache_key for the reusable model/instruction/tool/parallel-tool prefix rather than user-task text; Trebell records returned cache usage and same-session cache diagnostics when the model supports them."),
     explicitCacheControl:feature("supported","For GPT-5.6 and later, Trebell keeps implicit caching enabled and adds explicit cache breakpoints to provider-visible tool results so growing agent prefixes can be reused; earlier models keep their legacy cache behavior."),
     previousResponseContinuation:feature("supported","Trebell keeps its own durable conversation state and, within a live ProviderManager process, may additionally send previous_response_id only when the current full provider-visible history exactly matches the locally fingerprinted prior request + prior response prefix. Missing or rewritten state falls back to a full request."),
-    persistentConnection:feature("unsupported","The current Trebell Native OpenAI integration uses HTTPS Responses requests, not a persistent Responses WebSocket."),
+    persistentConnection:feature("supported","Official OpenAI Native turns with a stable Trebell session ID can use one multiplexed Responses WebSocket with per-session stream IDs. Trebell automatically replays over HTTPS only for failures proven to happen before response.create was sent; uncertain post-send failures fail closed to avoid duplicate provider work. Live-provider verification is tracked separately from local support."),
     nativeCompaction:feature("unsupported","Trebell Native owns compaction rather than delegating it to the OpenAI API."),
   }),
   anthropic:Object.freeze({

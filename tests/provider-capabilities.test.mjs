@@ -25,7 +25,10 @@ test("managed provider capabilities distinguish protocol compatibility from veri
   const openai=providerCapabilities("openai");
   assert.equal(openai.promptCaching.status,"supported");
   assert.equal(openai.explicitCacheControl.status,"supported");
+  assert.equal(openai.previousResponseContinuation.status,"supported");
+  assert.equal(openai.persistentConnection.status,"supported");
   assert.equal(providerFeatureEnabled("openai","explicitCacheControl"),true);
+  assert.equal(providerFeatureEnabled("openai","persistentConnection"),true);
 });
 
 test("ProviderManager surfaces conservative capability metadata without secrets",()=>{

@@ -270,6 +270,88 @@ test("official OpenAI continuation retries once with full local context when the
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
+test("official OpenAI Native uses one Responses WebSocket lane when a stable Trebell session ID is present",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-")),requests=[];let fetchCalls=0,factoryCalls=0;
+  try{
+    const manager=new ProviderManager({
+      env:{TREBELL_HOME:root},fetchFn:async()=>{fetchCalls++;throw new Error("HTTP should not run when the WebSocket succeeds")},
+      openAiResponsesWebSocketFactory:options=>{factoryCalls++;assert.equal(options.apiKey,"oa-key");return {request:async(body,{streamId})=>{requests.push({body:structuredClone(body),streamId});const index=requests.length;return {requestBytes:321,response:{id:"resp-ws-"+index,model:body.model,status:"completed",output:index===1?[{type:"function_call",call_id:"call-1",name:"trebell_terminal__run",arguments:'{"command":"node","args":["verify.mjs"]}'}]:[{type:"message",role:"assistant",content:[{type:"output_text",text:"done"}]}]},telemetry:{responseBytes:123,timeToFirstTokenMs:index===1?null:4,totalLatencyMs:8}}}}},
+    });
+    manager.setKey("openai","oa-key");const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run",inputSchema:{type:"object",properties:{command:{type:"string"},args:{type:"array",items:{type:"string"}}}}}]}],user={role:"user",content:"Run verifier"};
+    const first=await manager.turn("openai",{model:"gpt-5.6",messages:[user],tools,metadata:{sessionId:"native_abc"}},{streamResponses:true});
+    const second=await manager.turn("openai",{model:"gpt-5.6",messages:[user,{role:"assistant",content:first.text,toolCalls:first.toolCalls},{role:"tool",toolCallId:"call-1",content:"exit 1"}],tools,metadata:{sessionId:"native_abc"},promptCacheComparisonResponseId:"resp-ws-1"},{streamResponses:true});
+    assert.equal(fetchCalls,0);assert.equal(factoryCalls,1);assert.deepEqual(requests.map(item=>item.streamId),["native_abc","native_abc"]);assert.equal(requests[0].body.input.length,1);assert.equal(requests[1].body.previous_response_id,"resp-ws-1");assert.equal(requests[1].body.input.length,1);assert.equal(requests[1].body.input[0].type,"function_call_output");
+    assert.equal(first.telemetry.wireApi,"openai-responses-websocket");assert.equal(first.telemetry.persistentConnection,true);assert.equal(second.telemetry.responseContinuation.used,true);assert.equal(second.text,"done");
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("OpenAI WebSocket pre-send connection failure trips the circuit breaker and safely retries with full HTTPS context",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-fallback-")),httpBodies=[];let factoryCalls=0;
+  try{
+    const manager=new ProviderManager({
+      env:{TREBELL_HOME:root},
+      openAiResponsesWebSocketFactory:options=>{factoryCalls++;return {request:async()=>{options.onReset?.({reason:"connect_failure"});const error=new Error("socket did not connect");error.transportFailure=true;error.webSocketFailureKind="transport";error.replaySafe=true;error.retryable=false;error.webSocketTelemetry={requestBytes:0,responseBytes:0,timeToFirstTokenMs:null};throw error}}},
+      fetchFn:async(_url,init={})=>{const body=JSON.parse(init.body||"{}");httpBodies.push(body);return Response.json({id:"resp-http",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"http fallback"}]}],usage:{input_tokens:2,output_tokens:1,total_tokens:3}})},
+    });
+    manager.setKey("openai","oa-key");const messages=[{role:"user",content:"hello"}],request={model:"gpt-5.6",messages,tools:[],metadata:{sessionId:"native_ws_fail"}};
+    const first=await manager.turn("openai",request,{streamResponses:true});assert.equal(first.text,"http fallback");assert.equal(factoryCalls,1);assert.equal(httpBodies.length,1);assert.equal(Object.prototype.hasOwnProperty.call(httpBodies[0],"previous_response_id"),false);assert.deepEqual(httpBodies[0].prompt_cache_options,{mode:"implicit"});assert.equal(first.telemetry.webSocketFallback.transportFailure,true);assert.equal(first.telemetry.webSocketFallback.replaySafe,true);assert.equal(first.telemetry.webSocketFallback.retried,true);assert.equal(first.telemetry.webSocketFallback.requestBytes,0);
+    await manager.turn("openai",request,{streamResponses:true});assert.equal(factoryCalls,1,"circuit breaker should keep later turns on HTTP");assert.equal(httpBodies.length,2);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("OpenAI WebSocket safe HTTPS fallback uses only the remaining end-to-end timeout budget",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-deadline-"));let httpSignal=null,httpStarted=0;
+  try{
+    const manager=new ProviderManager({requestTimeoutMs:200,env:{TREBELL_HOME:root},openAiResponsesWebSocketFactory:()=>({request:async()=>{await new Promise(resolve=>setTimeout(resolve,120));const error=new Error("connect failed late");error.transportFailure=true;error.webSocketFailureKind="transport";error.replaySafe=true;error.retryable=false;throw error}}),fetchFn:async(_url,init={})=>{httpSignal=init.signal;httpStarted=Date.now();const body=JSON.parse(init.body||"{}");return Response.json({id:"resp-http",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"fallback"}]}],usage:{}})}});manager.setKey("openai","oa-key");
+    const result=await manager.turn("openai",{model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"native_deadline"}},{streamResponses:true});assert.equal(result.text,"fallback");assert.ok(httpSignal);const abortedAt=await new Promise(resolve=>{if(httpSignal.aborted)return resolve(Date.now());httpSignal.addEventListener("abort",()=>resolve(Date.now()),{once:true})});assert.ok(abortedAt-httpStarted<185,"fallback received a fresh timeout instead of the remaining request budget");
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("OpenAI WebSocket post-send transport failure is not replayed and later turns use HTTPS",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-uncertain-"));let factoryCalls=0,fetchCalls=0;
+  try{
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},openAiResponsesWebSocketFactory:options=>{factoryCalls++;return {request:async()=>{options.onReset?.({reason:"transport_failure"});const error=new Error("socket broke after send");error.transportFailure=true;error.webSocketFailureKind="transport";error.replaySafe=false;error.retryable=false;error.webSocketTelemetry={requestBytes:91,responseBytes:4,timeToFirstTokenMs:null};throw error}}},fetchFn:async(_url,init={})=>{fetchCalls++;const body=JSON.parse(init.body||"{}");return Response.json({id:"resp-http",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"later http"}]}],usage:{}})}});manager.setKey("openai","oa-key");
+    const request={model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"native_uncertain"}};await assert.rejects(manager.turn("openai",request,{streamResponses:true}),error=>error?.retryable===false&&error?.telemetry?.webSocketFallback?.retried===false);assert.equal(fetchCalls,0);
+    const second=await manager.turn("openai",request,{streamResponses:true});assert.equal(second.text,"later http");assert.equal(factoryCalls,1);assert.equal(fetchCalls,1);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("OpenAI WebSocket response failure is not replayed and does not trip the socket circuit breaker",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-api-fail-"));let factoryCalls=0,fetchCalls=0,requests=0;
+  try{
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},openAiResponsesWebSocketFactory:()=>{factoryCalls++;return {request:async body=>{requests++;if(requests===1){const error=new Error("model rejected request");error.code="model_error";error.webSocketFailureKind="response_failed";error.replaySafe=false;error.retryable=false;error.webSocketTelemetry={requestBytes:50,responseBytes:25,timeToFirstTokenMs:null};throw error}return {requestBytes:40,response:{id:"resp-ok",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"socket still healthy"}]}]},telemetry:{responseBytes:20,totalLatencyMs:1,timeToFirstTokenMs:1}}}}},fetchFn:async()=>{fetchCalls++;throw new Error("HTTP should not run")}});manager.setKey("openai","oa-key");const request={model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"native_api_fail"}};
+    await assert.rejects(manager.turn("openai",request,{streamResponses:true}),error=>error?.retryable===false&&error?.telemetry?.webSocketFallback?.failureKind==="response_failed");const second=await manager.turn("openai",request,{streamResponses:true});assert.equal(second.text,"socket still healthy");assert.equal(factoryCalls,1);assert.equal(fetchCalls,0);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("OpenAI WebSocket timeout is not blindly replayed and disables later socket attempts",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-timeout-"));let factoryCalls=0,fetchCalls=0,closeCalls=0;
+  try{
+    const manager=new ProviderManager({requestTimeoutMs:25,env:{TREBELL_HOME:root},openAiResponsesWebSocketFactory:()=>{factoryCalls++;return {close:()=>{closeCalls++},request:async(_body,{signal})=>await new Promise((resolve,reject)=>{const fail=()=>reject(signal.reason);if(signal.aborted)return fail();signal.addEventListener("abort",fail,{once:true})})}},fetchFn:async(_url,init={})=>{fetchCalls++;const body=JSON.parse(init.body||"{}");return Response.json({id:"resp-http",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"fallback"}]}],usage:{}})}});manager.setKey("openai","oa-key");
+    const request={model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"native_timeout"}};
+    await assert.rejects(manager.turn("openai",request,{streamResponses:true}),error=>error?.name==="TimeoutError"&&error?.retryable===false&&error?.telemetry?.webSocketFallback?.retried===false);assert.equal(factoryCalls,1);assert.equal(fetchCalls,0);assert.equal(closeCalls,1);
+    const second=await manager.turn("openai",request,{streamResponses:true});assert.equal(second.text,"fallback");assert.equal(factoryCalls,1);assert.equal(fetchCalls,1);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("official OpenAI one-shot turns without Native session metadata stay on HTTPS",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-no-session-"));let factoryCalls=0,fetchCalls=0;
+  try{
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},openAiResponsesWebSocketFactory:()=>{factoryCalls++;throw new Error("not expected")},fetchFn:async(_url,init={})=>{fetchCalls++;const body=JSON.parse(init.body||"{}");return Response.json({id:"resp-http",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"http"}]}],usage:{}})}});manager.setKey("openai","oa-key");
+    const result=await manager.turn("openai",{model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[]},{streamResponses:true});assert.equal(result.text,"http");assert.equal(factoryCalls,0);assert.equal(fetchCalls,1);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("changing the OpenAI key closes the old persistent Responses socket and allows a fresh connection",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-key-"));let factoryCalls=0,closeCalls=0;
+  try{
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async()=>{throw new Error("HTTP not expected")},openAiResponsesWebSocketFactory:()=>{factoryCalls++;return {close:()=>{closeCalls++},request:async body=>({requestBytes:1,response:{id:"resp-key",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"ok"}]}]},telemetry:{responseBytes:1,totalLatencyMs:1,timeToFirstTokenMs:1}})}}});
+    manager.setKey("openai","key-one");await manager.turn("openai",{model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"native_key"}},{streamResponses:true});assert.equal(factoryCalls,1);
+    manager.setKey("openai","key-two");assert.equal(closeCalls,1);
+    await manager.turn("openai",{model:"gpt-5.6",messages:[{role:"user",content:"hello again"}],tools:[],metadata:{sessionId:"native_key"}},{streamResponses:true});assert.equal(factoryCalls,2);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
 test("official OpenAI prompt cache key tracks the reusable instruction and tool prefix instead of the user task",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-")),bodies=[];
   const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{

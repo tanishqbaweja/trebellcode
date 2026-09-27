@@ -19,6 +19,16 @@ test("native agent completes a plain model turn without inventing tool work",asy
   assert.equal(typeof requested.data.requestMetrics.toolSchemaHash,"string");assert.equal(typeof requested.data.requestMetrics.stablePrefixHash,"string");
 });
 
+test("native agent forwards internal session metadata to the provider transport without changing the conversation",async()=>{
+  let seen=null;const messages=[{role:"user",content:"hello"}],metadata={sessionId:"native_ws_lane",contextWindow:128000};
+  await runNativeAgentTurn({
+    model:"test-model",provider:"openai",messages,tools:[],metadata,
+    providerTurn:async request=>{seen=structuredClone({...request,signal:undefined});return {text:"ok",toolCalls:[],usage:{}}},
+    executeTool:async()=>{throw new Error("not used")},
+  });
+  assert.deepEqual(seen.metadata,metadata);assert.deepEqual(seen.messages,messages);assert.deepEqual(seen.tools,[]);
+});
+
 test("native agent gives one bounded recovery chance to an empty terminal provider response",async()=>{
   const requests=[],events=[];
   const result=await runNativeAgentTurn({
