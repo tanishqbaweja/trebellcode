@@ -14,6 +14,9 @@ function metric(value){
 function digest(value){return createHash("sha256").update(typeof value==="string"?value:json(value)).digest("hex")}
 function hash(value){return digest(value).slice(0,16)}
 function hashParts(...parts){const state=createHash("sha256");for(const part of parts)state.update(String(part));return state.digest("hex").slice(0,16)}
+function jsonArrayText(parts=[]){return `[${parts.map(part=>part.text).join(",")}]`}
+function jsonArrayMetric(parts=[]){let byteCount=2+Math.max(0,parts.length-1);for(const part of parts)byteCount+=part.bytes;return {bytes:byteCount,estimatedTokens:estimate(byteCount)}}
+function jsonArrayHash(parts=[]){const state=createHash("sha256");state.update("[");for(let index=0;index<parts.length;index++){if(index)state.update(",");state.update(parts[index].text)}state.update("]");return state.digest("hex").slice(0,16)}
 
 function classifiedMessages(source,lastUser){
   const system=[],developer=[],compacted=[],toolResults=[],history=[],allJson=[],systemJson=[],developerJson=[],compactedJson=[],toolResultsJson=[],historyJson=[];let jsonSafe=true;
@@ -27,11 +30,10 @@ function classifiedMessages(source,lastUser){
     if(item&&typeof item==="object"&&typeof item.toJSON==="function"){jsonSafe=false;continue}
     try{
       const itemJson=JSON.stringify(item);if(typeof itemJson!=="string"){jsonSafe=false;continue}
-      allJson.push(itemJson);if(bucket&&bucketJson)bucketJson.push(itemJson);
+      const fragment={text:itemJson,bytes:Buffer.byteLength(itemJson,"utf8")};allJson.push(fragment);if(bucket&&bucketJson)bucketJson.push(fragment);
     }catch{jsonSafe=false}
   }
-  const asArrayJson=parts=>`[${parts.join(",")}]`;
-  return {system,developer,compacted,toolResults,history,serialized:jsonSafe?{messages:asArrayJson(allJson),system:asArrayJson(systemJson),developer:asArrayJson(developerJson),compacted:asArrayJson(compactedJson),toolResults:asArrayJson(toolResultsJson),history:asArrayJson(historyJson)}:null};
+  return {system,developer,compacted,toolResults,history,fragments:jsonSafe?{messages:allJson,system:systemJson,developer:developerJson,compacted:compactedJson,toolResults:toolResultsJson,history:historyJson}:null};
 }
 
 export function attachNativePromptProvenance(target,value){
@@ -77,9 +79,8 @@ export function nativeRequestMetrics(messages=[],tools=[],{toolSchemaCache=null}
     cachedToolSchemas={serialized:value,text,metric:metric(text),digest:digestValue,functionCount:toolSchemas.reduce((sum,entry)=>sum+(Array.isArray(entry?.tools)?entry.tools.length:(entry?.type==="function"?1:0)),0),stablePrefix:null};
     if(value.jsonSafe&&toolSchemaCache&&typeof toolSchemaCache.set==="function")toolSchemaCache.set(toolSchemas,cachedToolSchemas);
   }
-  const systemSerialized=serialized(system),developerSerialized=serialized(developer),toolSchemasSerialized=cachedToolSchemas.serialized,
-    systemJson=classified.serialized?.system??systemSerialized.text,developerJson=classified.serialized?.developer??developerSerialized.text,compactedJson=classified.serialized?.compacted??json(compacted),historyJson=classified.serialized?.history??json(history),toolResultsJson=classified.serialized?.toolResults??json(toolResults),toolSchemasJson=toolSchemasSerialized.text,messagesJson=classified.serialized?.messages??json(source);
-  const messagesMetric=metric(messagesJson),toolsMetric=cachedToolSchemas.metric,toolSchemaDigest=cachedToolSchemas.digest;
+  const fragments=classified.fragments,systemJson=fragments?jsonArrayText(fragments.system):json(system),developerJson=fragments?jsonArrayText(fragments.developer):json(developer),systemSerialized=fragments?{text:systemJson,jsonSafe:true}:serialized(system),developerSerialized=fragments?{text:developerJson,jsonSafe:true}:serialized(developer),toolSchemasSerialized=cachedToolSchemas.serialized,toolSchemasJson=toolSchemasSerialized.text;
+  const messagesMetric=fragments?jsonArrayMetric(fragments.messages):metric(source),compactedMetric=fragments?jsonArrayMetric(fragments.compacted):metric(compacted),historyMetric=fragments?jsonArrayMetric(fragments.history):metric(history),toolResultsMetric=fragments?jsonArrayMetric(fragments.toolResults):metric(toolResults),historyHash=fragments?jsonArrayHash(fragments.history):hash(history),toolsMetric=cachedToolSchemas.metric,toolSchemaDigest=cachedToolSchemas.digest;
   const currentBreakdown=currentTurnBreakdown(lastUser>=0?source[lastUser]:null);
   const prefix={system,developer,tools:toolSchemas};
   const stablePrefixJsonSafe=systemSerialized.jsonSafe&&developerSerialized.jsonSafe&&toolSchemasSerialized.jsonSafe;
@@ -90,10 +91,10 @@ export function nativeRequestMetrics(messages=[],tools=[],{toolSchemaCache=null}
     estimation:"utf8_bytes_div_4",
     system:systemMetric,
     developer:developerMetric,
-    compactedContext:metric(compactedJson),
-    conversationHistory:metric(historyJson),
+    compactedContext:compactedMetric,
+    conversationHistory:historyMetric,
     ...currentBreakdown,
-    toolResults:metric(toolResultsJson),
+    toolResults:toolResultsMetric,
     toolSchemas:toolsMetric,
     messages:messagesMetric,
     totalLogical:{bytes:messagesMetric.bytes+toolsMetric.bytes,estimatedTokens:estimate(messagesMetric.bytes+toolsMetric.bytes)},
@@ -103,7 +104,7 @@ export function nativeRequestMetrics(messages=[],tools=[],{toolSchemaCache=null}
     systemHash,
     developerHash,
     toolSchemaHash:toolSchemaDigest?toolSchemaDigest.slice(0,16):hash(toolSchemasJson),
-    conversationHistoryHash:hash(historyJson),
+    conversationHistoryHash:historyHash,
   };
   if(toolSchemaDigest)try{Object.defineProperty(result,NATIVE_TOOL_SCHEMA_FINGERPRINT,{value:toolSchemaDigest,enumerable:false,configurable:false})}catch{}
   return result;

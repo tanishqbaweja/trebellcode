@@ -60,3 +60,10 @@ test("Native request metrics invalidate cached stable-prefix hashes when instruc
   assert.deepEqual(secondCached,secondUncached);assert.notEqual(first.stablePrefixHash,secondCached.stablePrefixHash);assert.notEqual(first.systemHash,secondCached.systemHash);assert.equal(first.developerHash,secondCached.developerHash);
   assert.equal(secondCached[NATIVE_TOOL_SCHEMA_FINGERPRINT],secondUncached[NATIVE_TOOL_SCHEMA_FINGERPRINT]);
 });
+
+test("Native request metrics stream UTF-8 message buckets with exact JSON byte and hash semantics",()=>{
+  const messages=[{role:"system",content:"सिस्टम 🧠"},{role:"user",content:"पुराना सवाल 🙂"},{role:"assistant",content:"答え café 🚀"},{role:"tool",toolCallId:"t1",content:"結果 ✅"},{role:"user",content:"नया सवाल 🌍"}],result=nativeRequestMetrics(messages,[]);
+  const history=messages.filter((message,index)=>!["system","developer","tool"].includes(message.role)&&index!==messages.length-1),toolResults=messages.filter(message=>message.role==="tool"),messagesJson=JSON.stringify(messages),historyJson=JSON.stringify(history),toolResultsJson=JSON.stringify(toolResults);
+  assert.equal(result.messages.bytes,Buffer.byteLength(messagesJson,"utf8"));assert.equal(result.conversationHistory.bytes,Buffer.byteLength(historyJson,"utf8"));assert.equal(result.toolResults.bytes,Buffer.byteLength(toolResultsJson,"utf8"));
+  assert.equal(result.conversationHistoryHash,createHash("sha256").update(historyJson).digest("hex").slice(0,16));
+});
