@@ -15,6 +15,25 @@ function digest(value){return createHash("sha256").update(typeof value==="string
 function hash(value){return digest(value).slice(0,16)}
 function hashParts(...parts){const state=createHash("sha256");for(const part of parts)state.update(String(part));return state.digest("hex").slice(0,16)}
 
+function classifiedMessages(source,lastUser){
+  const system=[],developer=[],compacted=[],toolResults=[],history=[],allJson=[],systemJson=[],developerJson=[],compactedJson=[],toolResultsJson=[],historyJson=[];let jsonSafe=true;
+  for(let index=0;index<source.length;index++){
+    const item=source[index],role=item?.role;let bucket=null,bucketJson=null;
+    if(role==="system"){system.push(item);bucket=system;bucketJson=systemJson}
+    else if(role==="developer"){if(item?.trebellCompaction){compacted.push(item);bucket=compacted;bucketJson=compactedJson}else{developer.push(item);bucket=developer;bucketJson=developerJson}}
+    else if(role==="tool"){toolResults.push(item);bucket=toolResults;bucketJson=toolResultsJson}
+    else if(index!==lastUser){history.push(item);bucket=history;bucketJson=historyJson}
+    if(!jsonSafe)continue;
+    if(item&&typeof item==="object"&&typeof item.toJSON==="function"){jsonSafe=false;continue}
+    try{
+      const itemJson=JSON.stringify(item);if(typeof itemJson!=="string"){jsonSafe=false;continue}
+      allJson.push(itemJson);if(bucket&&bucketJson)bucketJson.push(itemJson);
+    }catch{jsonSafe=false}
+  }
+  const asArrayJson=parts=>`[${parts.join(",")}]`;
+  return {system,developer,compacted,toolResults,history,serialized:jsonSafe?{messages:asArrayJson(allJson),system:asArrayJson(systemJson),developer:asArrayJson(developerJson),compacted:asArrayJson(compactedJson),toolResults:asArrayJson(toolResultsJson),history:asArrayJson(historyJson)}:null};
+}
+
 export function attachNativePromptProvenance(target,value){
   if(!target||typeof target!=="object")return target;
   try{Object.defineProperty(target,NATIVE_PROMPT_PROVENANCE,{value,enumerable:false,configurable:true})}catch{}
@@ -50,17 +69,10 @@ function currentTurnBreakdown(message){
 export function nativeRequestMetrics(messages=[],tools=[]){
   const source=Array.isArray(messages)?messages:[];let lastUser=-1;
   for(let index=source.length-1;index>=0;index--)if(source[index]?.role==="user"){lastUser=index;break}
-  const system=[],developer=[],compacted=[],toolResults=[],history=[];
-  for(let index=0;index<source.length;index++){
-    const item=source[index],role=item?.role;
-    if(role==="system")system.push(item);
-    else if(role==="developer"){if(item?.trebellCompaction)compacted.push(item);else developer.push(item)}
-    else if(role==="tool")toolResults.push(item);
-    else if(index!==lastUser)history.push(item);
-  }
+  const classified=classifiedMessages(source,lastUser),{system,developer,compacted,toolResults,history}=classified;
   const toolSchemas=Array.isArray(tools)?tools:[];
   const systemSerialized=serialized(system),developerSerialized=serialized(developer),toolSchemasSerialized=serialized(toolSchemas),
-    systemJson=systemSerialized.text,developerJson=developerSerialized.text,compactedJson=json(compacted),historyJson=json(history),toolResultsJson=json(toolResults),toolSchemasJson=toolSchemasSerialized.text,messagesJson=json(source);
+    systemJson=classified.serialized?.system??systemSerialized.text,developerJson=classified.serialized?.developer??developerSerialized.text,compactedJson=classified.serialized?.compacted??json(compacted),historyJson=classified.serialized?.history??json(history),toolResultsJson=classified.serialized?.toolResults??json(toolResults),toolSchemasJson=toolSchemasSerialized.text,messagesJson=classified.serialized?.messages??json(source);
   const messagesMetric=metric(messagesJson),toolsMetric=metric(toolSchemasJson),toolSchemaDigest=toolSchemasSerialized.jsonSafe?digest(toolSchemasJson):null;
   const currentBreakdown=currentTurnBreakdown(lastUser>=0?source[lastUser]:null);
   const prefix={system,developer,tools:toolSchemas};

@@ -39,3 +39,9 @@ test("Native request metrics preserve stable-prefix fallback semantics for non-s
   const expected=createHash("sha256").update(String({system:[messages[0]],developer:[messages[1]],tools})).digest("hex").slice(0,16),result=nativeRequestMetrics(messages,tools);
   assert.equal(result.stablePrefixHash,expected);
 });
+
+test("Native request metrics preserve array JSON semantics when a message defines toJSON",()=>{
+  const tricky={role:"system",content:"source",toJSON(key){return {role:"system",content:key==="0"?"array-value":"standalone-value"}}},messages=[tricky,{role:"user",content:"request"}],result=nativeRequestMetrics(messages,[]),systemJson=JSON.stringify([tricky]),messagesJson=JSON.stringify(messages);
+  assert.equal(result.system.bytes,Buffer.byteLength(systemJson,"utf8"));assert.equal(result.messages.bytes,Buffer.byteLength(messagesJson,"utf8"));
+  assert.equal(result.systemHash,createHash("sha256").update(systemJson).digest("hex").slice(0,16));assert.equal(result.messages.estimatedTokens,Math.ceil(Buffer.byteLength(messagesJson,"utf8")/4));
+});
