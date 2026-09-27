@@ -163,10 +163,24 @@ function explicitSummaryAfterVerification(messages=[]){
   return /\b(?:after|once|when)\b[^.\n]{0,220}\b(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful)\b[^.\n]{0,220}\b(?:(?:concise|brief|short)\s+summary|summari[sz]e\s+(?:briefly|concisely)|(?:briefly|concisely)\s+summari[sz]e)\b/i.test(text);
 }
 
-function verifiedSummaryText(paths=[]){
-  const unique=[...new Set((Array.isArray(paths)?paths:[]).map(value=>String(value||"").replace(/[\r\n\t]+/g," ").trim().slice(0,240)).filter(Boolean))],shown=unique.slice(0,6);
-  const changed=shown.length?"\nChanged: "+shown.join(", ")+(unique.length>shown.length?` (+${unique.length-shown.length} more)`:"")+".":"";
-  return "Done.\nVerification: the same verifier command that failed before the edit now passes (exit code 0)."+changed;
+function verifiedSummaryText(edits=[]){
+  const unique=[],seen=new Set();
+  for(const edit of Array.isArray(edits)?edits:[]){
+    const path=String(edit?.path||"").replace(/[\r\n\t]+/g," ").trim().slice(0,240);if(!path)continue;
+    const kind=edit?.kind==="replace_text"?"replace_text":"write_file",replacements=Math.max(0,Math.trunc(Number(edit?.replacements)||0)),key=JSON.stringify([path,kind,replacements]);
+    if(seen.has(key))continue;seen.add(key);unique.push({path,kind,replacements});
+  }
+  const shown=unique.slice(0,6),lines=["Done."];
+  if(shown.length){
+    lines.push("Changed:");
+    for(const edit of shown){
+      if(edit.kind==="replace_text")lines.push(`- ${edit.path}: ${Math.max(1,edit.replacements)} exact text replacement${Math.max(1,edit.replacements)===1?"":"s"}.`);
+      else lines.push(`- ${edit.path}: updated file contents.`);
+    }
+    if(unique.length>shown.length)lines.push(`- (+${unique.length-shown.length} more changed file${unique.length-shown.length===1?"":"s"})`);
+  }
+  lines.push("Verification: the same verifier command that failed before the edit now passes (exit code 0).");
+  return lines.join("\n");
 }
 
 function terminalRunKey(args={}){
@@ -263,7 +277,7 @@ export async function runNativeAgentTurn({
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
   const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])];
   const explicitlyRequired=explicitlyRequestedTools(conversation,providerVisibleTools(tools,toolAllowlist)),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
-  const finalAfterVerifiedCommand=explicitFinalAnswerAfterVerification(conversation),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),terminalRuns=[],verifiedEditPaths=[];
+  const finalAfterVerifiedCommand=explicitFinalAnswerAfterVerification(conversation),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),terminalRuns=[],verifiedEdits=[];
   const successfulTerminalRuns=[];
   let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,verifiedFinalizationAllowed=finalAfterVerifiedCommand,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
   const startedAt=Date.now(),started=nowMs(),wallController=budget.maxWallTimeMs!=null?new AbortController():null,deadlineAt=budget.maxWallTimeMs==null?null:Date.now()+budget.maxWallTimeMs;
@@ -295,7 +309,7 @@ export async function runNativeAgentTurn({
       successfulTerminalRuns.push({command:String(args.command).trim(),args:args.args.map(value=>String(value)),cwd:String(args.cwd??"")});
     }
     if(success&&output?.success!==false&&output?.uncertain!==true&&namespace==="trebell_workspace"&&["write_file","replace_text"].includes(name)){
-      editRevision++;const path=String(args.path||output?.path||"").trim();if(path)verifiedEditPaths.push(path);
+      editRevision++;const path=String(args.path||output?.path||"").trim();if(path)verifiedEdits.push({path,kind:name,replacements:name==="replace_text"?Math.max(0,Math.trunc(Number(output?.replacements)||0)):0});
     }
     if(success&&output?.success!==false&&output?.timedOut!==true&&output?.signal==null&&namespace==="trebell_terminal"&&name==="run"){
       const key=terminalRunKey(args),exitCode=Number.isFinite(Number(output?.exitCode))?Number(output.exitCode):null;
@@ -325,9 +339,9 @@ export async function runNativeAgentTurn({
     if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_model"})){verifiedFinalizationAllowed=false;verifiedFinalizationReady=false}
     const missingExplicitTool=explicitlyRequired.find(item=>!executedToolKeys.has(item.namespace+"/"+item.name));
     if(verifiedFinalizationReady&&verifiedFinalizationAllowed&&summaryAfterVerifiedCommand&&!missingExplicitTool){
-      const text=verifiedSummaryText(verifiedEditPaths);conversation.push({role:"assistant",content:text,toolCalls:[]});
+      const text=verifiedSummaryText(verifiedEdits);conversation.push({role:"assistant",content:text,toolCalls:[]});
       const result={text,model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse:null};
-      emit(onEvent,{name:"native.verification.summary_synthesized",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,changedPaths:[...new Set(verifiedEditPaths)].slice(0,20)}});
+      emit(onEvent,{name:"native.verification.summary_synthesized",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,changedPaths:[...new Set(verifiedEdits.map(edit=>edit.path))].slice(0,20)}});
       emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage,syntheticFinalSummary:true}});
       return result;
     }

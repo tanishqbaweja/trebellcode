@@ -447,7 +447,7 @@ test("native agent synthesizes an explicit post-verifier summary without another
     },
     executeTool:async call=>call.id==="verify-1"?{exitCode:1,stdout:"FAIL"}:call.id==="verify-2"?{exitCode:0,stdout:"PASS"}:{path:"src/a.mjs",replacements:1},
   });
-  assert.match(result.text,/same verifier command/i);assert.match(result.text,/src\/a\.mjs/);assert.doesNotMatch(result.text,/old_text|new_text|bad|good/);assert.equal(result.modelTurns,3);assert.equal(result.toolCalls,3);assert.equal(seen.length,3);assert.ok(seen[0].tools.length>0);
+  assert.match(result.text,/same verifier command/i);assert.match(result.text,/src\/a\.mjs/);assert.match(result.text,/1 exact text replacement/i);assert.doesNotMatch(result.text,/old_text|new_text|bad|good/);assert.equal(result.modelTurns,3);assert.equal(result.toolCalls,3);assert.equal(seen.length,3);assert.ok(seen[0].tools.length>0);
   assert.ok(events.some(event=>event.name==="native.verification.finalizing"));
   assert.ok(events.some(event=>event.name==="native.verification.summary_synthesized"));
 });
