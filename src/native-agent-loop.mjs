@@ -189,12 +189,12 @@ function explicitLiteralAfterVerification(messages=[]){
 function explicitVerificationCompletion(messages=[]){
   const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=lastUserInstructionText(user);
   if(!text)return null;
-  const explicit=text.match(/\bre-?run\b\s+([^\n]{1,180}?)\s+\buntil\b[^\n]{0,80}\bpass(?:es|ed|ing)?\b\s*[.!]?\s*$/i);
+  const explicit=text.match(/\b(?:re-?run|keep\s+re-?running)\b\s+([^\n]{1,180}?)\s+\buntil\b[^\n]{0,80}\bpass(?:es|ed|ing)?\b\s*[.!]?\s*$/i);
   if(explicit){
     const target=String(explicit[1]||"").trim(),prefix=text.slice(Math.max(0,Number(explicit.index||0)-48),Number(explicit.index||0));
     if(!/^(?:it|this|that|them|again)$/i.test(target)&&!/\b(?:do\s+not|don't|never)(?:\s+\w+){0,2}\s*$/i.test(prefix))return {target,implicit:false};
   }
-  const implicit=text.match(/\bre-?run(?:\s+(?:it|this|that|them|again))?\s+\buntil\b[^\n]{0,80}\bpass(?:es|ed|ing)?\b\s*[.!]?\s*$/i);
+  const implicit=text.match(/\b(?:re-?run|keep\s+re-?running)(?:\s+(?:it|this|that|them|again))?\s+\buntil\b[^\n]{0,80}\bpass(?:es|ed|ing)?\b\s*[.!]?\s*$/i);
   if(!implicit)return null;
   const prefix=text.slice(Math.max(0,Number(implicit.index||0)-48),Number(implicit.index||0));
   if(/\b(?:do\s+not|don't|never)(?:\s+\w+){0,2}\s*$/i.test(prefix))return null;
