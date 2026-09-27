@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { basename, dirname, extname, join, posix, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -398,8 +399,8 @@ async function gitState(root,{signal=null,environment=process.env}={}){
       execFileAsync("git",["-C",root,"rev-parse","HEAD"],{env:environment,windowsHide:true,maxBuffer:64*1024,timeout:8_000,...(signal?{signal}:{})}).catch(error=>{if(signal?.aborted||error?.name==="AbortError")throw error;return {stdout:""}}),
     ]);
     throwIfContextAborted(signal);
-    const changed=new Set(String(status||"").split(/\r?\n/).filter(Boolean).map(line=>slash(line.slice(3).replace(/^.* -> /,""))));
-    return {isGit:true,head:String(headResult?.stdout||"").trim()||null,changed,status:String(status||"").slice(0,12_000),diff:String(diff||"").slice(0,16_000)};
+    const rawStatus=String(status||""),changed=new Set(rawStatus.split(/\r?\n/).filter(Boolean).map(line=>slash(line.slice(3).replace(/^.* -> /,""))));
+    return {isGit:true,head:String(headResult?.stdout||"").trim()||null,changed,status:rawStatus.slice(0,12_000),statusFingerprint:createHash("sha256").update(rawStatus).digest("hex").slice(0,20),diff:String(diff||"").slice(0,16_000)};
   }catch(error){if(signal?.aborted||error?.name==="AbortError")throw contextAbortError(signal);return {isGit:false,head:null,changed:new Set(),status:"",diff:""}}
 }
 
@@ -675,8 +676,8 @@ export function createRemoteContextIo({environments,environmentId,root}={}){
     ]);
     throwIfContextAborted(signal);
     if(status.exitCode!==0)return {isGit:false,head:null,changed:new Set(),status:"",diff:""};
-    const changed=new Set(String(status.stdout||"").split(/\r?\n/).filter(Boolean).map(line=>line.slice(3).replace(/^.* -> /,"").replace(/\\/g,"/")));
-    return {isGit:true,head:head.exitCode===0?String(head.stdout||"").trim()||null:null,changed,status:String(status.stdout||"").slice(0,12_000),diff:diff.exitCode===0?String(diff.stdout||"").slice(0,16_000):""};
+    const rawStatus=String(status.stdout||""),changed=new Set(rawStatus.split(/\r?\n/).filter(Boolean).map(line=>line.slice(3).replace(/^.* -> /,"").replace(/\\/g,"/")));
+    return {isGit:true,head:head.exitCode===0?String(head.stdout||"").trim()||null:null,changed,status:rawStatus.slice(0,12_000),statusFingerprint:createHash("sha256").update(rawStatus).digest("hex").slice(0,20),diff:diff.exitCode===0?String(diff.stdout||"").slice(0,16_000):""};
   };
   const searchPaths=async({query,regex=false,caseSensitive=false,limit=120}={})=>{
     const args=["-C",absolute,"grep","-l","-z","-I","--untracked","--exclude-standard"];
@@ -955,10 +956,10 @@ export class ContextEngine{
     const previous=this.roots.get(cacheKey)||new Map(),previousGit=this.gitStates.get(cacheKey)||null,next=new Map();let reparsed=0,reused=0,skipped=0;
     const currentHead=String(git?.head||"").trim()||null,previousHead=String(previousGit?.head||"").trim()||null;
     const currentChanged=git?.changed instanceof Set?git.changed:new Set(git?.changed||[]),previousChanged=previousGit?.changed instanceof Set?previousGit.changed:new Set(previousGit?.changed||[]);
-    const currentStatus=String(git?.status||""),previousStatus=String(previousGit?.status||"");
+    const currentStatus=String(git?.status||""),currentStatusFingerprint=String(git?.statusFingerprint||"").trim(),previousStatusFingerprint=String(previousGit?.statusFingerprint||"").trim();
     const pathInventoryReused=Boolean(
       git?.isGit&&previousGit?.isGit&&currentHead&&previousHead&&currentHead===previousHead
-      &&currentStatus===previousStatus&&currentChanged.size===previousChanged.size
+      &&currentStatusFingerprint&&currentStatusFingerprint===previousStatusFingerprint&&currentChanged.size===previousChanged.size
       &&[...currentChanged].every(path=>previousChanged.has(path))&&Array.isArray(previousGit?.paths)
     );
     const paths=(pathInventoryReused?previousGit.paths:await io.discoverFiles({signal})).slice(0,20_000);throwIfContextAborted(signal);
@@ -995,7 +996,7 @@ export class ContextEngine{
       next.set(relativePath,{relativePath,size:info.size,version:info.version,parserVersion:parserVersion(relativePath),sample:content.slice(0,64_000),parsed:parseSource(content,relativePath)});reparsed++;
     }
     throwIfContextAborted(signal);
-    this.roots.set(cacheKey,next);this.gitStates.set(cacheKey,{isGit:Boolean(git?.isGit),head:currentHead,changed:new Set(currentChanged),status:currentStatus,paths:[...paths]});
+    this.roots.set(cacheKey,next);this.gitStates.set(cacheKey,{isGit:Boolean(git?.isGit),head:currentHead,changed:new Set(currentChanged),status:currentStatus,statusFingerprint:currentStatusFingerprint||null,paths:[...paths]});
     return {root:absolute,files:next,paths,reparsed,reused,skipped,inspected:inspect.length,durationMs:Date.now()-started,cacheKey,revisionChanged,revisionUnknown,revisionDiffUsed:Boolean(revisionChanged&&revisionPaths),pathInventoryReused};
   }
 

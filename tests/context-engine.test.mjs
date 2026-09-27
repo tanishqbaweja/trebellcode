@@ -117,14 +117,14 @@ test("clean unchanged Git context reuses the discovered path inventory and inval
     ["src/a.js","export const alpha = 1;\n"],
     ["src/b.js","export const beta = 2;\n"],
   ]),versions=new Map([["src/a.js","v1"],["src/b.js","v1"]]);
-  let paths=["src/a.js","src/b.js"],changed=new Set(),statusText="",discoverCalls=0;
+  let paths=["src/a.js","src/b.js"],changed=new Set(),statusText="",statusFingerprint="clean",discoverCalls=0;
   const io={
     root:"/srv/app",cacheKey:"fixture:/path-inventory",
     discoverFiles:async()=>{discoverCalls++;return [...paths]},
     metadata:async requested=>new Map(requested.filter(path=>contents.has(path)).map(path=>[path,{size:contents.get(path).length,version:versions.get(path)}])),
     readMany:async requested=>new Map(requested.filter(path=>contents.has(path)).map(path=>[path,contents.get(path)])),
     readText:async path=>contents.get(path)||"",
-    gitState:async()=>({isGit:true,head:"head-1",changed:new Set(changed),status:statusText,diff:""}),
+    gitState:async()=>({isGit:true,head:"head-1",changed:new Set(changed),status:statusText,statusFingerprint,diff:""}),
     changedSince:async()=>new Set(),
     relativeFocus:path=>path,
   };
@@ -133,7 +133,7 @@ test("clean unchanged Git context reuses the discovered path inventory and inval
   const second=await engine.buildPacket({root:"/srv/app",io,task:"inspect beta"});
   assert.equal(second.stats.pathInventoryReused,true);assert.equal(discoverCalls,1);
 
-  paths=[...paths,"src/new.js"];contents.set("src/new.js","export const gamma = 3;\n");versions.set("src/new.js","v1");changed=new Set(["src/new.js"]);statusText="?? src/new.js\n";
+  paths=[...paths,"src/new.js"];contents.set("src/new.js","export const gamma = 3;\n");versions.set("src/new.js","v1");changed=new Set(["src/new.js"]);statusText="?? src/new.js\n";statusFingerprint="dirty:new";
   const dirty=await engine.buildPacket({root:"/srv/app",io,task:"inspect gamma"});
   assert.equal(dirty.stats.pathInventoryReused,false);assert.equal(discoverCalls,2);assert.equal(dirty.stats.filesIndexed,3);
   contents.set("src/new.js","export const gamma = 4;\n");versions.set("src/new.js","v2");
@@ -141,12 +141,12 @@ test("clean unchanged Git context reuses the discovered path inventory and inval
   assert.equal(dirtyAgain.stats.pathInventoryReused,true,"stable dirty path/status sets should reuse only the path inventory");
   assert.equal(dirtyAgain.stats.reparsed,1,"dirty source contents must still be re-statted and reparsed when their version changes");
   assert.equal(discoverCalls,2);
-  statusText=" D src/new.js\n";
+  statusFingerprint="dirty:status-transition";
   const statusChanged=await engine.buildPacket({root:"/srv/app",io,task:"inspect gamma"});
-  assert.equal(statusChanged.stats.pathInventoryReused,false,"a Git status transition must invalidate inventory reuse even when the changed path set is identical");
+  assert.equal(statusChanged.stats.pathInventoryReused,false,"a full Git status transition must invalidate inventory reuse even when the bounded display status and changed path set are identical");
   assert.equal(discoverCalls,3);
 
-  changed=new Set();statusText="";
+  changed=new Set();statusText="";statusFingerprint="clean";
   const cleanAgain=await engine.buildPacket({root:"/srv/app",io,task:"inspect gamma"});
   assert.equal(cleanAgain.stats.pathInventoryReused,false,"the first clean packet after a dirty inventory must rediscover paths");
   assert.equal(discoverCalls,4);
