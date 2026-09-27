@@ -439,6 +439,29 @@ test("Native session does not compact a post-replace reread without exact pre-ed
   const fresh=requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="read-after");assert.ok(fresh);assert.match(fresh.content,/U{1000}/);assert.match(fresh.content,/mode=strict/);assert.doesNotMatch(fresh.content,/postEditVerified/);
 });
 
+test("Native session does not claim exact post-edit verification from uncertain or truncated evidence",async()=>{
+  const run=async({uncertainWrite=false,truncatedRead=false})=>{
+    const requests=[],events=[];let providerCalls=0;const content="Z".repeat(5000),resolvedPath="C:/repo/src/file.txt";
+    const session=new NativeAgentSession({
+      model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],onEvent:event=>events.push(event),
+      providerTurn:async request=>{
+        requests.push(structuredClone(request));providerCalls++;
+        if(providerCalls===1)return {id:"write",text:"",toolCalls:[{id:"write-a",namespace:"trebell_workspace",name:"write_file",arguments:JSON.stringify({path:"src/file.txt",content})}],usage:{}};
+        if(providerCalls===2)return {id:"read",text:"",toolCalls:[{id:"read-a",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/file.txt"}'}],usage:{}};
+        return {id:"done",text:"done",toolCalls:[],usage:{}};
+      },
+      executeTool:async call=>call.name==="write_file"
+        ?{success:true,uncertain:uncertainWrite,path:resolvedPath,size:content.length}
+        :{path:resolvedPath,size:content.length,content,truncated:truncatedRead},
+    });
+    await session.start({providerSessionId:"native-post-edit-evidence-guard",model:"model-a"});await session.prompt([{type:"text",text:"write and verify"}]);
+    return {content:requests[2].messages.at(-1).content,events};
+  };
+  const uncertain=await run({uncertainWrite:true});assert.match(uncertain.content,/Z{1000}/);assert.doesNotMatch(uncertain.content,/postEditVerified/i);
+  const truncated=await run({truncatedRead:true});assert.match(truncated.content,/Z{1000}/);assert.doesNotMatch(truncated.content,/postEditVerified/i);
+  assert.equal(uncertain.events.filter(item=>item.name==="native.tool.post_edit_read_compacted").length,0);assert.equal(truncated.events.filter(item=>item.name==="native.tool.post_edit_read_compacted").length,0);
+});
+
 test("Native session deduplicates only byte-identical repeated repository searches",async()=>{
   const requests=[],events=[];let providerCalls=0,searches=0;
   const session=new NativeAgentSession({

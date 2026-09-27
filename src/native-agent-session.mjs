@@ -302,7 +302,7 @@ export class NativeAgentSession{
       const key=observationKey(call,definition),digest=key?observationDigest(output):null,prior=key?this.observationCache.get(key):null;
       let observed=output;
       const resolvedPath=exactWorkspacePath(output);
-      if(call.namespace==="trebell_workspace"&&call.name==="read_file"&&output?.success!==false&&resolvedPath&&typeof output?.content==="string"){
+      if(call.namespace==="trebell_workspace"&&call.name==="read_file"&&output?.success!==false&&output?.uncertain!==true&&output?.truncated!==true&&resolvedPath&&typeof output?.content==="string"){
         const expected=postEditExpected.get(resolvedPath);
         if(expected&&String(output.content)===expected.content){
           const receipt=postEditReadReceipt(output,expected),originalBytes=Buffer.byteLength(JSON.stringify(output),"utf8"),receiptBytes=Buffer.byteLength(JSON.stringify(receipt),"utf8");
@@ -330,7 +330,7 @@ export class NativeAgentSession{
       }else if(key){
         this.observationCache.delete(key);
       }
-      if(call.namespace==="trebell_workspace"&&output?.success!==false&&resolvedPath){
+      if(call.namespace==="trebell_workspace"&&output?.success!==false&&output?.uncertain!==true&&resolvedPath){
         if(call.name==="write_file"){
           const content=String(call.arguments?.content??"");exactWorkspaceContents.set(resolvedPath,content);postEditExpected.set(resolvedPath,{content,toolCallId:String(call.id||""),tool:"trebell_workspace/write_file"});
         }else if(call.name==="replace_text"){
