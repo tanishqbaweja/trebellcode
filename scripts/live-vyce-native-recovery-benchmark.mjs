@@ -45,15 +45,16 @@ const scenarios=[
   },
   {
     name:"relative-workspace-path",
-    marker:"RECOVERY_WORKSPACE_OK",
-    files:{"TASK.md":"RECOVERY_WORKSPACE_OK\n"},
+    marker:"RECOVERY_WORKSPACE_CONTENT_7F31C9",
+    files:{"TASK.md":"RECOVERY_WORKSPACE_CONTENT_7F31C9\n"},
     prompt:[
-      "Call trebell_workspace.read_file exactly once with path workspace/TASK.md.",
-      "Inspect the returned file and then reply with exactly RECOVERY_WORKSPACE_OK.",
-      "Do not change the requested path spelling before the tool call.",
+      "First call trebell_workspace.read_file with path workspace/TASK.md exactly as written.",
+      "The file contains one line whose value is not included in this prompt. Reply with only that exact line after you have successfully read it.",
+      "If the first read fails, recover using another workspace read rather than guessing the file contents.",
     ].join(" "),
     toolAllowlist:["trebell_workspace/read_file"],
-    verify:async root=>assert.equal(await readFile(join(root,"TASK.md"),"utf8"),"RECOVERY_WORKSPACE_OK\n"),
+    forceFirstTool:{namespace:"trebell_workspace",name:"read_file"},
+    verify:async root=>assert.equal(await readFile(join(root,"TASK.md"),"utf8"),"RECOVERY_WORKSPACE_CONTENT_7F31C9\n"),
   },
 ];
 
@@ -85,6 +86,7 @@ async function runScenario(scenario){
       cwd:root,provider:"vyceai",model,tools,executeTool:executor,
       initialMessages:[{role:"system",content:nativeSystemPrompt({tools,permissionMode:"full",projectless:false})}],
       providerTurn:async request=>{
+        const requestNumber=providerRequests.length+1;
         const requestMessages=Array.isArray(request.messages)?request.messages:[],requestTools=Array.isArray(request.tools)?request.tools:[];
         const record={
           messageChars:JSON.stringify(requestMessages).length,
@@ -93,7 +95,8 @@ async function runScenario(scenario){
           requestMetrics:nativeRequestMetrics(requestMessages,requestTools),
         };
         providerRequests.push(record);
-        const response=await manager.turn("vyceai",{...request,provider:"vyceai",model},{signal:request.signal});
+        const effectiveRequest=requestNumber===1&&scenario.forceFirstTool?{...request,toolChoice:scenario.forceFirstTool}:request;
+        const response=await manager.turn("vyceai",{...effectiveRequest,provider:"vyceai",model},{signal:request.signal});
         record.usage=response.usage;record.telemetry=response.telemetry;return response;
       },
       onEvent:event=>events.push(event),onUpdate:update=>updates.push(update),
