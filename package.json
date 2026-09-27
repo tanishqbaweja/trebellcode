@@ -48,6 +48,7 @@
     "bench:native:terminal-report-history": "node scripts/native-terminal-report-history-benchmark.mjs",
     "bench:native:direct-terminal-status": "node scripts/native-direct-terminal-status-benchmark.mjs",
     "bench:native:direct-terminal-cwd": "node scripts/native-direct-terminal-cwd-benchmark.mjs",
+    "bench:native:direct-exact-replacement": "node scripts/native-direct-exact-replacement-benchmark.mjs",
     "bench:native:tool-schema": "node scripts/native-tool-schema-benchmark.mjs",
     "bench:native:restart-verifier": "node scripts/native-restart-verifier-benchmark.mjs",
     "bench:native:restart-history": "node scripts/native-restart-history-benchmark.mjs",

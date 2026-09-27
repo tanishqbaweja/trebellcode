@@ -389,7 +389,7 @@ export class NativeAgentSession{
     try{
       const result=await runNativeAgentTurn({
         provider:this.provider,model:this.model,messages:base,tools:this.tools,maxModelTurns,maxToolCalls,maxOutputTokens,maxWallTimeMs,signal:this.controller.signal,onEvent:this.onEvent,
-        autoRerunVerification:true,priorTerminalRuns,synthesizeTerminalReports:true,directTerminalStatusCommands:true,
+        autoRerunVerification:true,priorTerminalRuns,synthesizeTerminalReports:true,directTerminalStatusCommands:true,directExactReplacementStatus:true,
         metadata:{contextWindow:this.contextWindow,sessionId:this.sessionId},
         toolAllowlist:Array.isArray(toolAllowlist)?toolAllowlist:null,
         coolReadToolHistory:preserveCacheHistory?null:messages=>coolNativeProviderHistory(messages),
