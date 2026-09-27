@@ -1,6 +1,7 @@
 import { performance } from "node:perf_hooks";
 import { nativeRequestMetrics, NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 import { platformToolAllowedByAllowlist } from "./shared-tool-gateway.mjs";
+import { normalizeNativeCommandArguments } from "./native-command-argv.mjs";
 
 function abortError(signal){
   const reason=signal?.reason;if(reason?.name==="AbortError")return reason;
@@ -150,6 +151,17 @@ function explicitlyRequestedTools(messages=[],tools=[]){
   return requested;
 }
 
+function explicitFinalAnswerAfterVerification(messages=[]){
+  const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=messageText(user);
+  if(!text)return false;
+  return /\b(?:after|once|when)\b[^.\n]{0,220}\b(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful)\b[^.\n]{0,220}\b(?:answer|respond|reply|summari[sz](?:e|ing|ation)?|summary)\b/i.test(text);
+}
+
+function terminalRunKey(args={}){
+  const normalized=normalizeNativeCommandArguments(args),command=String(normalized.command||"").trim(),argv=Array.isArray(normalized.args)?normalized.args.map(value=>String(value)):[],cwd=String(normalized.cwd??"");
+  return command?JSON.stringify([command,argv,cwd]):null;
+}
+
 function resultContent(value){
   if(typeof value==="string")return value;
   if(value==null)return "";
@@ -239,8 +251,9 @@ export async function runNativeAgentTurn({
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
   const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])];
   const explicitlyRequired=explicitlyRequestedTools(conversation,providerVisibleTools(tools,toolAllowlist)),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
+  const finalAfterVerifiedCommand=explicitFinalAnswerAfterVerification(conversation),terminalRuns=[];
   const successfulTerminalRuns=[];
-  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
+  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,verifiedFinalizationAllowed=finalAfterVerifiedCommand,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
   const startedAt=Date.now(),started=nowMs(),wallController=budget.maxWallTimeMs!=null?new AbortController():null,deadlineAt=budget.maxWallTimeMs==null?null:Date.now()+budget.maxWallTimeMs;
   let wallTimer=null;
   const armWallTimer=()=>{
@@ -269,6 +282,18 @@ export async function runNativeAgentTurn({
     if(success&&output?.success!==false&&output?.timedOut!==true&&output?.signal==null&&namespace==="trebell_terminal"&&name==="run"&&String(args.command||"").trim()&&Array.isArray(args.args)){
       successfulTerminalRuns.push({command:String(args.command).trim(),args:args.args.map(value=>String(value)),cwd:String(args.cwd??"")});
     }
+    if(success&&output?.success!==false&&output?.uncertain!==true&&namespace==="trebell_workspace"&&["write_file","replace_text"].includes(name))editRevision++;
+    if(success&&output?.success!==false&&output?.timedOut!==true&&output?.signal==null&&namespace==="trebell_terminal"&&name==="run"){
+      const key=terminalRunKey(args),exitCode=Number.isFinite(Number(output?.exitCode))?Number(output.exitCode):null;
+      if(key&&exitCode!==null){
+        const priorFailure=terminalRuns.findLast(item=>item.key===key&&item.exitCode!==0&&item.editRevision<editRevision);
+        terminalRuns.push({key,exitCode,editRevision});
+        if(verifiedFinalizationAllowed&&exitCode===0&&priorFailure){
+          verifiedFinalizationReady=true;
+          emit(onEvent,{name:"native.verification.finalizing",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision}});
+        }
+      }
+    }
     const content=resultContent(output)||(!success?errorMessage||"Tool execution failed.":"Tool completed without text output.");
     emit(onEvent,{name:"native.tool.completed",status:success?"completed":uncertain?"uncertain":"failed",model:String(model),provider:provider||null,data:{toolCall:toolCallNumber,callId,namespace,name,durationMs:duration(toolStarted),success,uncertain,retrySafe,error:errorMessage}});
     return {role:"tool",toolCallId:callId,content};
@@ -283,7 +308,7 @@ export async function runNativeAgentTurn({
         if(Number(cooled.count||0)>0)emit(onEvent,{name:"native.tool.history_cooled",status:"completed",model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,data:{phase:"same_turn",count:Number(cooled.count||0),savedChars:Number(cooled.savedChars||0),toolResultCount:Number(cooled.toolResultCount||0),toolCallArgumentCount:Number(cooled.toolCallArgumentCount||0),toolResultSavedChars:Number(cooled.toolResultSavedChars||0),toolCallArgumentSavedChars:Number(cooled.toolCallArgumentSavedChars||0),beforeModelTurn:modelTurns+1}});
       }
     }
-    applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_model"});
+    if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_model"})){verifiedFinalizationAllowed=false;verifiedFinalizationReady=false}
     if(modelTurns>=budget.maxModelTurns){
       const error=new Error(`Native agent model-turn budget exhausted (${modelTurns}/${budget.maxModelTurns}).`);error.code="native_model_turn_budget";
       emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(model),provider:provider||null,data:{reason:error.code,modelTurns,toolCalls}});throw error;
@@ -301,8 +326,12 @@ export async function runNativeAgentTurn({
         emit(onEvent,{name:"native.tool_budget.finalizing",status:"completed",model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,data:{modelTurns,toolCalls,maxToolCalls:budget.maxToolCalls}});
       }
     }
+    if(verifiedFinalizationReady&&!verifiedFinalizationInjected){
+      conversation.push({role:"developer",content:"The user explicitly asked for the final answer after the verifier passes. Trebell observed the same verifier command fail, then a successful workspace edit, then that exact command pass. Verification tool work for that requested workflow is complete. Do not call another tool; respond now with the concise user-visible final answer supported by the evidence already collected."});
+      verifiedFinalizationInjected=true;
+    }
     modelTurns++;
-    const requestStarted=nowMs(),requestMessageCount=conversation.length,forcedAllowlist=forcedToolChoice?[forcedToolChoice.namespace?forcedToolChoice.namespace+"/"+forcedToolChoice.name:forcedToolChoice.name]:null,requestTools=toolBudgetExhausted&&!preserveToolSchemasOnFinalization?[]:forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):visibleTools,requestToolChoice=toolBudgetExhausted?"none":forcedToolChoice||toolChoice;
+    const requestStarted=nowMs(),requestMessageCount=conversation.length,forcedAllowlist=forcedToolChoice?[forcedToolChoice.namespace?forcedToolChoice.namespace+"/"+forcedToolChoice.name:forcedToolChoice.name]:null,finalAnswerOnly=toolBudgetExhausted||verifiedFinalizationReady,requestTools=finalAnswerOnly&&!preserveToolSchemasOnFinalization?[]:forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):visibleTools,requestToolChoice=finalAnswerOnly?"none":forcedToolChoice||toolChoice;
     const requestMetrics=nativeRequestMetrics(conversation,requestTools);
     const inferenceId=(metadata?.sessionId?String(metadata.sessionId):"native")+":inference:"+modelTurns;
     emit(onEvent,{name:"native.model.requested",status:"running",model:String(model),provider:provider||null,data:{inferenceId,modelTurn:modelTurns,messageCount:conversation.length,toolCount:Array.isArray(requestTools)?requestTools.length:0,sessionId:metadata?.sessionId||null,compaction:Boolean(metadata?.compaction),requestMetrics}});
@@ -346,8 +375,18 @@ export async function runNativeAgentTurn({
       contextWindowUtilizationPercent:contextWindow>0&&inputTokens>0?Number(((inputTokens/contextWindow)*100).toFixed(2)):null,
       sessionId:metadata?.sessionId||null,compaction:Boolean(metadata?.compaction),
     }});
-    if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"after_model"}))continue;
+    if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"after_model"})){verifiedFinalizationAllowed=false;verifiedFinalizationReady=false;continue}
     const responseText=String(lastResponse.text||"");
+    if(verifiedFinalizationReady&&calls.length){
+      if(verifiedFinalizationRecoveries<1&&modelTurns<budget.maxModelTurns){
+        verifiedFinalizationRecoveries++;
+        conversation.push({role:"developer",content:"Tool use is disabled because the user-requested verifier already passed after the edit. Do not request or imitate a tool call. Respond now with the concise final answer."});
+        emit(onEvent,{name:"native.verification.finalization_retry",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,recoveryAttempt:verifiedFinalizationRecoveries}});
+        continue;
+      }
+      const error=new Error("Native provider requested another tool after explicit verifier completion and no finalization retry remained.");error.code="native_invalid_verified_finalization";
+      emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{reason:error.code,modelTurns,toolCalls}});throw error;
+    }
     if(toolBudgetExhausted&&!calls.length&&toolCallMarkupOnly(responseText)){
       if(toolBudgetTextRecoveries<1&&modelTurns<budget.maxModelTurns){
         toolBudgetTextRecoveries++;
@@ -384,7 +423,7 @@ export async function runNativeAgentTurn({
         emit(onEvent,{name:"native.model.required_tool_recovery",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{namespace:missingRequired.namespace,name:missingRequired.name,modelTurn:modelTurns}});
         continue;
       }
-      if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_completion"}))continue;
+      if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_completion"})){verifiedFinalizationAllowed=false;verifiedFinalizationReady=false;continue}
       const result={
         text:responseText,model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,
         messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse,
@@ -398,6 +437,7 @@ export async function runNativeAgentTurn({
       throwIfAborted(turnSignal);
       const steerNow=steeringMessages(consumeSteering);
       if(steerNow.length){
+        verifiedFinalizationAllowed=false;verifiedFinalizationReady=false;
         for(const skipped of calls.slice(callIndex)){
           const skippedId=String(skipped?.id||"");
           conversation.push({role:"tool",toolCallId:skippedId,content:"Tool call cancelled before execution because the user steered the active turn."});
