@@ -57,3 +57,15 @@ test("SQLite search projection indexes visible conversation only and removes rew
     assert.deepEqual(store.searchCandidates("native","alpha user"),[],"rewind/removal must remove stale search projection rows");
   }finally{await rm(home,{recursive:true,force:true})}
 });
+
+test("AgentThreadStore metadata reads stay transcript-free and current without SQLite hydration",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-agent-metadata-")),env={...process.env,TREBELL_HOME:home};
+  try{
+    const store=new AgentThreadStore(env),thread=store.create({runtime:"native",cwd:home,providerSessionId:"metadata",model:"fixture",providerMeta:{permissionProfile:"supervised"}});
+    const originalGet=store.storage.get;let storageGets=0;store.storage.get=(...args)=>{storageGets++;return originalGet.apply(store.storage,args)};
+    const created=store.getMetadata(thread.id);assert.equal(created.id,thread.id);assert.deepEqual(created.turns,[]);assert.equal(created.status.type,"idle");assert.equal(storageGets,0);
+    created.providerMeta.permissionProfile="mutated";assert.equal(store.getMetadata(thread.id).providerMeta.permissionProfile,"supervised","metadata callers must receive an isolated copy");
+    const turn=store.addTurn(thread.id,{id:"metadata-turn",inputText:"hello"});assert.equal(turn.status,"inProgress");assert.equal(store.getMetadata(thread.id).status.type,"active");assert.deepEqual(store.getMetadata(thread.id).turns,[]);assert.equal(storageGets,1,"the write may hydrate once, but metadata reads must not add storage gets");
+    store.finishTurn(thread.id,turn.id);assert.equal(store.getMetadata(thread.id).status.type,"idle");assert.equal(storageGets,2);assert.equal(store.get(thread.id).turns.length,1);assert.equal(storageGets,3);
+  }finally{await rm(home,{recursive:true,force:true})}
+});

@@ -554,6 +554,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
   const pendingDelegations=new Map();
   const promptSettlements=new Set();
   let closing=false;
+  const threadMetadata=id=>typeof threadStore.getMetadata==="function"?threadStore.getMetadata(id):threadStore.get(id);
   async function createVerificationCheckpoint(thread,label){
     if(!checkpoints?.create||!thread?.cwd)return null;
     try{
@@ -570,7 +571,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
   const nativeQueueStarting=new Set();
   const nativeBackgroundProcesses=new NativeBackgroundProcessManager({
     environments,environment:runtimeManager?.env||process.env,platform:runtimeManager?.platform||process.platform,
-    onEvent:event=>{const thread=threadStore.get(event.threadId);journal?.record?.({runtime:"native",provider:agentProviderIdentity(thread),environmentId:thread?.providerMeta?.environmentId??null,threadId:event.threadId,category:"process",name:event.name,status:event.status,data:event.data||{}})},
+    onEvent:event=>{const thread=threadMetadata(event.threadId);journal?.record?.({runtime:"native",provider:agentProviderIdentity(thread),environmentId:thread?.providerMeta?.environmentId??null,threadId:event.threadId,category:"process",name:event.name,status:event.status,data:event.data||{}})},
   });
   function clearLiveToolOutput(threadId){
     const prefix=String(threadId||"")+":";
@@ -596,7 +597,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     const withGoal=goalAdditionalContext(additionalContext,durableGoal(threadId));
     const withContinuity=continuityAdditionalContext(withGoal,durableContinuity(threadId));
     if(!repositoryKnowledge)return withContinuity;
-    const thread=threadStore.get(threadId),projectPath=thread?.cwd;if(!projectPath)return withContinuity;
+    const thread=threadMetadata(threadId),projectPath=thread?.cwd;if(!projectPath)return withContinuity;
     try{
       const environmentId=thread?.providerMeta?.environmentId??null;
       const knowledge=await repositoryKnowledge.context({projectPath,environmentId,query,limit:12,refresh:true});
@@ -609,7 +610,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
   }
   function assertGoalBudget(threadId){
     const goal=durableGoal(threadId),gate=goalBudgetGate(goal,{includeChildAgents:false});if(gate.allowed)return goal;
-    const thread=threadStore.get(threadId),meta=thread?.providerMeta||{};
+    const thread=threadMetadata(threadId),meta=thread?.providerMeta||{};
     journal?.record?.({runtime:thread?.runtime||runtimeManager.activeRuntime(),provider:meta.runtimeInstanceId||null,environmentId:meta.environmentId??state?.settings?.().activeEnvironmentId??null,threadId,category:"budget",name:"goal.budget_blocked",status:"blocked",data:{goalStatus:goal?.status||null,tokenBudget:goal?.tokenBudget??null,tokensUsed:goal?.tokensUsed??0,timeBudgetMinutes:goal?.timeBudgetMinutes??null,timeUsedSeconds:goal?.timeUsedSeconds??0,turnBudget:goal?.turnBudget??null,turnsUsed:goal?.turnsUsed??0,toolCallBudget:goal?.toolCallBudget??null,toolCallsUsed:goal?.toolCallsUsed??0,toolCallTelemetryComplete:goal?.toolCallTelemetryComplete??true,childAgentBudget:goal?.childAgentBudget??null,childAgentsUsed:goal?.childAgentsUsed??null,childAgentTelemetryComplete:goal?.childAgentTelemetryComplete??false,costBudgetUsd:goal?.costBudgetUsd??null,costUsedUsd:goal?.costUsedUsd??null,costTelemetryComplete:goal?.costTelemetryComplete??true,tokenExhausted:gate.tokenExhausted,timeExhausted:gate.timeExhausted,turnExhausted:gate.turnExhausted,toolCallExhausted:gate.toolCallExhausted,childAgentExhausted:gate.childAgentExhausted,costExhausted:gate.costExhausted}});
     throw Object.assign(new Error(gate.reason),{code:-32001});
   }
@@ -720,7 +721,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         discoverRepositoryTools,outputStore,
         projectAvailable:!projectless,
         policyContext:()=>({
-          permissionProfile:normalizePermissionMode((threadStore.get(thread.id)||thread)?.providerMeta?.permissionProfile||effectivePermissionMode),runtime:"native",workspace:runtimeCwd,projectAvailable:!projectless,
+          permissionProfile:normalizePermissionMode((threadMetadata(thread.id)||thread)?.providerMeta?.permissionProfile||effectivePermissionMode),runtime:"native",workspace:runtimeCwd,projectAvailable:!projectless,
           desktopAvailable:namespaceNames.has("trebell_browser")||namespaceNames.has("trebell_computer"),delegationAvailable:namespaceNames.has("trebell_delegate"),
           environmentType:environmentProfile?.type||"local",environmentIsolated:false,provenance:"model",
         }),
@@ -770,7 +771,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       });
       runtime.__trebellMcpFingerprint=JSON.stringify(mcpServers);
       const started=await runtime.start({providerSessionId:thread.providerSessionId||null,model:model||thread.model||null});
-      const discoveredMeta=threadStore.get(thread.id)?.providerMeta||{};
+      const discoveredMeta=threadMetadata(thread.id)?.providerMeta||{};
       threadStore.update(thread.id,{providerSessionId:started.session.sessionId,providerMeta:{...discoveredMeta,initialize:started.initialize,setup:started.session,nativeMcp:{namespaces:mcpTools.map(item=>item.name),failures:mcpBroker.failures()}},model:model||started.session.models?.currentModelId||thread.model||null});
       sessions.set(thread.id,runtime);return runtime;
     }
@@ -791,13 +792,13 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     let started;
     try{started=await runtime.start({providerSessionId:thread.providerSessionId||null,model:model||thread.model||null})}
     catch(error){await runtime.close().catch(()=>{});throw error}
-    const discoveredMeta=threadStore.get(thread.id)?.providerMeta||{};
+    const discoveredMeta=threadMetadata(thread.id)?.providerMeta||{};
     threadStore.update(thread.id,{providerSessionId:started.session.sessionId,providerMeta:{...discoveredMeta,initialize:started.initialize,setup:started.session},model:model||started.session.models?.currentModelId||thread.model||null});
     sessions.set(thread.id,runtime);return runtime;
   }
 
   function emit(method,params){
-    const thread=params?.threadId?threadStore.get(params.threadId):null;
+    const thread=params?.threadId?threadMetadata(params.threadId):null;
     journal?.recordProtocol?.({
       runtime:thread?.runtime||runtimeManager.activeRuntime(),
       provider:agentProviderIdentity(thread),
@@ -810,7 +811,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
 
   async function autoStartNextNativeQueue(threadId,context){
     const id=String(threadId||"");if(closing||!id||!context||nativeQueueStarting.has(id))return false;
-    const current=threadStore.get(id);if(!current||current.runtime!=="native"||current.status?.type==="active")return false;
+    const current=threadMetadata(id);if(!current||current.runtime!=="native"||current.status?.type==="active")return false;
     const queue=agentQueue(state,id);if(!queue.length)return false;
     nativeQueueStarting.add(id);
     try{
@@ -823,7 +824,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
 
   function settlePrompt({thread,turn,session,promptPromise,model=null,context=null}){
     const persistUsage=result=>{
-      const usage=usageFromPromptResult(result,session.__usage);if(!usage)return;const current=threadStore.get(thread.id)||thread;
+      const usage=usageFromPromptResult(result,session.__usage);if(!usage)return;const current=threadMetadata(thread.id)||thread;
       state?.recordUsage?.({runtime:current.runtime||runtimeManager.activeRuntime(),provider:agentProviderIdentity(current),model:current.model||model||null,environmentId:current.providerMeta?.environmentId??null,threadId:thread.id,turnId:turn.id,usage:usage.usage,cost:usage.cost,at:usage.at||Date.now()});
     };
     const persistModelTurns=value=>{
@@ -837,7 +838,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       if(providerMessageId||providerUserMessageId)threadStore.updateTurn(thread.id,turn.id,{...(providerMessageId?{providerMessageId}:{}),...(providerUserMessageId?{providerUserMessageId}:{})});
       const assistant=String(session.__assistant||"").trim();if(assistant){const item={type:"agentMessage",id:`assistant-${turn.id}`,text:assistant,phase:null,memoryCitation:null,delivery:null,questions:null};threadStore.addItem(thread.id,turn.id,item);emit("item/completed",{threadId:thread.id,turnId:turn.id,item,completedAtMs:Date.now()})}
       const status=result?.stopReason==="cancelled"?"cancelled":result?.stopReason==="refusal"?"failed":"completed";const completed=threadStore.finishTurn(thread.id,turn.id,{status,error:status==="failed"?{message:"Agent refused the turn"}:null});
-      emit("turn/completed",{threadId:thread.id,turn:completed});emit("thread/status/changed",{threadId:thread.id,status:threadStore.get(thread.id).status});
+      emit("turn/completed",{threadId:thread.id,turn:completed});emit("thread/status/changed",{threadId:thread.id,status:threadMetadata(thread.id)?.status||{type:"idle"}});
       if(status==="completed"&&thread.runtime==="native")queueMicrotask(()=>void autoStartNextNativeQueue(thread.id,context));
     }).catch(error=>{
       if(error?.code==="CLAUDE_REWIND_REJECTED"){
@@ -920,11 +921,11 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     }else if(type==="diff"){
       emit("turn/diff/updated",{threadId,turnId,diff:update.diff||[]});
     }else if(type==="claude_fork_materialized"){
-      const current=threadStore.get(threadId)?.providerMeta||{};const next={...current};delete next.claudeFork;delete next.claudeRewindBackup;
+      const current=threadMetadata(threadId)?.providerMeta||{};const next={...current};delete next.claudeFork;delete next.claudeRewindBackup;
       threadStore.update(threadId,{providerMeta:next});
       emit("thread/providerMetadata/updated",{threadId,type,update});
     }else if(type==="compaction_update"||type==="compaction_summary_chunk"){
-      const current=threadStore.get(threadId)?.providerMeta||{};
+      const current=threadMetadata(threadId)?.providerMeta||{};
       const key=String(update.compactionId||"current");
       const previous=current.compactions?.[key]||{};
       const summaryChunk=type==="compaction_summary_chunk"&&update.content?.type==="text"?String(update.content.text||""):"";
@@ -937,7 +938,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     }else if(type==="elicitation_complete"){
       emit("thread/elicitation/completed",{threadId,turnId,elicitationId:update.elicitationId||null});
     }else if(type==="available_commands_update"||type==="config_option_update"||type==="current_mode_update"||type==="session_info_update"){
-      const current=threadStore.get(threadId)?.providerMeta||{};
+      const current=threadMetadata(threadId)?.providerMeta||{};
       threadStore.update(threadId,{providerMeta:{...current,[type]:update}});
       emit("thread/providerMetadata/updated",{threadId,type,update});
     }else if(type==="runtime_error"){
@@ -963,7 +964,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
   async function request(context,method,params={}){
     if(method==="initialize")return {userAgent:"trebell-agent-relay",capabilities:{experimentalApi:true}};
     const runtime=runtimeManager.activeRuntime();
-    const target=params?.threadId?threadStore.get(params.threadId):null;
+    const target=params?.threadId?threadMetadata(params.threadId):null;
     journal?.recordProtocol?.({
       runtime:target?.runtime||runtime,
       provider:agentProviderIdentity(target),
@@ -978,7 +979,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       return {thread:params.includeTurns===false?{...thread,turns:[]}:thread};
     }
     if(method==="thread/runtimeInstances/list"){
-      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      const thread=threadMetadata(params.threadId);if(!thread)throw new Error("Thread not found");
       if(thread.runtime!=="claude")return {supported:false,currentInstanceId:thread.runtimeInstanceId||null,items:[],reason:"Thread profile switching is currently supported only for Claude Code threads."};
       const instances=runtimeManager.instances();
       const savedInstanceId=thread.runtimeInstanceId||thread.providerMeta?.runtimeInstanceId||null;
@@ -993,7 +994,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       return {supported:true,currentInstanceId:current?.id||compatible[0]?.id||null,items};
     }
     if(method==="thread/runtimeInstance/set"){
-      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      const thread=threadMetadata(params.threadId);if(!thread)throw new Error("Thread not found");
       const instances=runtimeManager.instances();const target=instances.find(item=>item.id===params.instanceId&&item.kind===thread.runtime);
       if(!target)throw new Error("Runtime profile not found");
       if(thread.runtime!=="claude")throw new Error("Thread profile switching is currently supported only for Claude Code threads.");
@@ -1059,7 +1060,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     }
     if(method==="thread/section/move"){return {thread:threadStore.update(params.threadId,{section:params.sectionId?{id:params.sectionId,name:params.sectionId}:null})}}
     if(method==="thread/settings/update"){
-      const current=threadStore.get(params.threadId);const nextSettings={...(current?.settings||{}),...(params.settings||{})};
+      const current=threadMetadata(params.threadId);const nextSettings={...(current?.settings||{}),...(params.settings||{})};
       return {thread:threadStore.update(params.threadId,{settings:nextSettings,...(Object.prototype.hasOwnProperty.call(params.settings||{},"agent")?{agent:params.settings.agent||null}:{})})}
     }
     if(method==="thread/tools/ensure"){
@@ -1068,38 +1069,38 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
     }
     if(method==="thread/goal/get")return {goal:durableGoal(params.threadId)};
     if(method==="thread/goal/set"){
-      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      const thread=threadMetadata(params.threadId);if(!thread)throw new Error("Thread not found");
       const previous=state.threadMeta(params.threadId)?.goal||null,goal=normalizeGoal({threadId:params.threadId,previous,patch:params});
       state.updateThreadMeta(params.threadId,{goal});const enriched=durableGoal(params.threadId);emit("thread/goal/updated",{threadId:params.threadId,goal:enriched});return {goal:enriched}
     }
     if(method==="thread/goal/clear"){state.updateThreadMeta(params.threadId,{goal:null});emit("thread/goal/cleared",{threadId:params.threadId});return {ok:true}}
     if(method==="thread/continuity/get"){
-      if(!threadStore.get(params.threadId))throw new Error("Thread not found");
+      if(!threadMetadata(params.threadId))throw new Error("Thread not found");
       return {continuity:durableContinuity(params.threadId)};
     }
     if(method==="thread/continuity/set"){
-      if(!threadStore.get(params.threadId))throw new Error("Thread not found");
+      if(!threadMetadata(params.threadId))throw new Error("Thread not found");
       const meta=state.threadMeta(params.threadId),continuityNotes=normalizeContinuityNotes(meta?.continuityNotes||null,params);
       state.updateThreadMeta(params.threadId,{continuityNotes});const continuity=durableContinuity(params.threadId);
       emit("thread/continuity/updated",{threadId:params.threadId,continuity});return {continuity};
     }
     if(method==="thread/continuity/clear"){
-      if(!threadStore.get(params.threadId))throw new Error("Thread not found");
+      if(!threadMetadata(params.threadId))throw new Error("Thread not found");
       state.updateThreadMeta(params.threadId,{continuityNotes:undefined});const continuity=durableContinuity(params.threadId);
       emit("thread/continuity/updated",{threadId:params.threadId,continuity});return {ok:true,continuity};
     }
     if(method==="thread/verification/get"){
-      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      const thread=threadMetadata(params.threadId);if(!thread)throw new Error("Thread not found");
       const records=state?.verificationRecords?.({threadId:thread.id,limit:50})||[];
       if(!records.length)return {record:null,nextAction:null};
       return verificationRepairState(records,params.recordId||null);
     }
     if(method==="thread/verification/evidence/record"){
-      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");const turnId=String(params.turnId||"").trim();if(!turnId)throw new Error("turnId is required");
+      const thread=threadMetadata(params.threadId);if(!thread)throw new Error("Thread not found");const turnId=String(params.turnId||"").trim();if(!turnId)throw new Error("turnId is required");
       const evidence=normalizeBrowserVerificationReceipt(params.evidence||{});journal?.record?.({runtime:thread.runtime||runtime,provider:thread.providerMeta?.modelProvider||thread.providerMeta?.runtimeInstanceId||null,environmentId:thread.providerMeta?.environmentId??null,threadId:thread.id,turnId,category:"verification",name:"verification.browser_evidence",status:evidence.success?"completed":"failed",data:evidence});return {ok:true};
     }
     if(method==="thread/verification/repair"){
-      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      const thread=threadMetadata(params.threadId);if(!thread)throw new Error("Thread not found");
       if(thread.status?.type==="active")throw new Error("Stop the running turn before starting verification repair.");
       const records=state?.verificationRecords?.({threadId:thread.id,limit:50})||[];
       if(!records.length)throw new Error("No persisted verification record is available for this thread.");
@@ -1120,7 +1121,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       return {record,nextAction,turn:started?.turn||null};
     }
     if(method==="thread/verification/continue"){
-      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      const thread=threadMetadata(params.threadId);if(!thread)throw new Error("Thread not found");
       if(thread.status?.type==="active")throw new Error("Stop the running turn before continuing verification.");
       const records=state?.verificationRecords?.({threadId:thread.id,limit:50})||[];if(!records.length)throw new Error("No persisted verification record is available for this thread.");
       const prepared=verificationContinuationState(records,params.recordId||null),{record,nextAction}=prepared;if(nextAction.action!=="verify"||!nextAction.nextStep)throw new Error("Latest verification does not require another verification step (next action: "+nextAction.action+").");
@@ -1204,11 +1205,11 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       return result;
     }
     if(method==="thread/attachment/list"){
-      if(!threadStore.get(params.threadId))throw new Error("Thread not found");
+      if(!threadMetadata(params.threadId))throw new Error("Thread not found");
       return paginateAgentAttachments(agentAttachments(state,params.threadId),params);
     }
     if(method==="thread/attachment/add"){
-      if(!threadStore.get(params.threadId))throw new Error("Thread not found");
+      if(!threadMetadata(params.threadId))throw new Error("Thread not found");
       const attachmentType=String(params.attachmentType||"").trim(),identityKey=String(params.identityKey||"").trim();
       if(!attachmentType||!identityKey)throw Object.assign(new Error("attachmentType and identityKey are required"),{code:-32602});
       const attachments=agentAttachments(state,params.threadId),existing=attachments.find(item=>item.attachmentType===attachmentType&&item.identityKey===identityKey);
@@ -1217,24 +1218,24 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       attachments.push(attachment);state.updateThreadMeta(params.threadId,{attachments});emit("thread/attachment/updated",{threadId:params.threadId,attachmentType,identityKey,attachmentId:attachment.id,operation:"created"});return {outcome:"created",attachment};
     }
     if(method==="thread/attachment/remove"){
-      if(!threadStore.get(params.threadId))throw new Error("Thread not found");
+      if(!threadMetadata(params.threadId))throw new Error("Thread not found");
       const attachments=agentAttachments(state,params.threadId),target=attachments.find(item=>item.attachmentType===params.attachmentType&&item.identityKey===params.identityKey);
       if(!target)return {};
       state.updateThreadMeta(params.threadId,{attachments:attachments.filter(item=>item.id!==target.id)});emit("thread/attachment/updated",{threadId:params.threadId,attachmentType:target.attachmentType,identityKey:target.identityKey,attachmentId:target.id,operation:"deleted"});return {};
     }
     if(method==="thread/queue/list"){
-      if(!threadStore.get(params.threadId))throw new Error("Thread not found");
+      if(!threadMetadata(params.threadId))throw new Error("Thread not found");
       return paginateAgentQueue(agentQueue(state,params.threadId),params);
     }
     if(method==="thread/queue/add"){
-      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      const thread=threadMetadata(params.threadId);if(!thread)throw new Error("Thread not found");
       if(!Array.isArray(params.input)||!params.input.length)throw Object.assign(new Error("Queued submission input is required"),{code:-32602});
       const dynamicToolNamespaces=thread.runtime==="native"?expandableNativeToolNamespaces(params.dynamicToolNamespaces):[];
       const queue=agentQueue(state,params.threadId),queuedSubmission={id:randomUUID(),input:params.input,clientUserMessageId:String(params.clientUserMessageId||""),...(dynamicToolNamespaces.length?{dynamicToolNamespaces}:{})};
       queue.push(queuedSubmission);saveAgentQueue(state,params.threadId,queue);emit("thread/queue/changed",{threadId:params.threadId});return {queuedSubmission};
     }
     if(method==="thread/queue/update"){
-      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      const thread=threadMetadata(params.threadId);if(!thread)throw new Error("Thread not found");
       if(!Array.isArray(params.input)||!params.input.length)throw Object.assign(new Error("Queued submission input is required"),{code:-32602});
       const queue=agentQueue(state,params.threadId),index=queue.findIndex(item=>item.id===params.queuedSubmissionId);if(index<0)throw Object.assign(new Error("Queued submission not found: "+params.queuedSubmissionId),{code:-32602});
       queue[index]={...queue[index],input:params.input};
@@ -1244,19 +1245,19 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       saveAgentQueue(state,params.threadId,queue);emit("thread/queue/changed",{threadId:params.threadId});return {queuedSubmission:queue[index]};
     }
     if(method==="thread/queue/delete"){
-      if(!threadStore.get(params.threadId))throw new Error("Thread not found");
+      if(!threadMetadata(params.threadId))throw new Error("Thread not found");
       const queue=agentQueue(state,params.threadId),next=queue.filter(item=>item.id!==params.queuedSubmissionId),deleted=next.length!==queue.length;
       if(deleted){saveAgentQueue(state,params.threadId,next);emit("thread/queue/changed",{threadId:params.threadId})}
       return {deleted};
     }
     if(method==="thread/queue/reorder"){
-      if(!threadStore.get(params.threadId))throw new Error("Thread not found");
+      if(!threadMetadata(params.threadId))throw new Error("Thread not found");
       const queue=agentQueue(state,params.threadId),ids=(params.queuedSubmissionIds||[]).map(String),known=new Map(queue.map(item=>[item.id,item]));
       if(ids.length!==queue.length||new Set(ids).size!==ids.length||ids.some(id=>!known.has(id)))throw Object.assign(new Error("Queued submission order must contain every queued submission exactly once"),{code:-32602});
       const next=ids.map(id=>known.get(id));saveAgentQueue(state,params.threadId,next);emit("thread/queue/changed",{threadId:params.threadId});return {};
     }
     if(method==="thread/queue/start"){
-      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      const thread=threadMetadata(params.threadId);if(!thread)throw new Error("Thread not found");
       if(thread.status?.type==="active")throw Object.assign(new Error("Thread already has an active or pending turn"),{code:-32602});
       const queue=agentQueue(state,params.threadId),index=params.queuedSubmissionId?queue.findIndex(item=>item.id===params.queuedSubmissionId):0;
       if(index<0||!queue[index])throw Object.assign(new Error("Queued submission not found"),{code:-32602});
@@ -1264,17 +1265,17 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const next=queue.filter((_,itemIndex)=>itemIndex!==index);saveAgentQueue(state,params.threadId,next);emit("thread/queue/changed",{threadId:params.threadId});return {turn:started.turn};
     }
     if(method==="thread/backgroundTerminals/list"){
-      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      const thread=threadMetadata(params.threadId);if(!thread)throw new Error("Thread not found");
       if(thread.runtime!=="native")throw Object.assign(new Error(`${thread.runtime||runtime} does not expose Trebell-managed background processes`),{code:-32601});
       return nativeBackgroundProcesses.list(thread.id,params);
     }
     if(method==="thread/backgroundTerminals/terminate"){
-      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      const thread=threadMetadata(params.threadId);if(!thread)throw new Error("Thread not found");
       if(thread.runtime!=="native")throw Object.assign(new Error(`${thread.runtime||runtime} does not expose Trebell-managed background processes`),{code:-32601});
       return {process:await nativeBackgroundProcesses.terminate(thread.id,params.processId)};
     }
     if(method==="thread/backgroundTerminals/clean"){
-      const thread=threadStore.get(params.threadId);if(!thread)throw new Error("Thread not found");
+      const thread=threadMetadata(params.threadId);if(!thread)throw new Error("Thread not found");
       if(thread.runtime!=="native")throw Object.assign(new Error(`${thread.runtime||runtime} does not expose Trebell-managed background processes`),{code:-32601});
       return await nativeBackgroundProcesses.clean(thread.id);
     }
@@ -1311,7 +1312,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       if(thread.runtime==="native"&&Array.isArray(params.dynamicToolNamespaces)&&params.dynamicToolNamespaces.length)thread=(await ensureNativeToolNamespaces(thread,params.dynamicToolNamespaces)).thread;
       const session=await ensureSession(thread,context,{model:params.model||thread.model});
       if(runtime==="native"&&params.modelProvider&&typeof session.setProvider==="function")session.setProvider(params.modelProvider);
-      if(runtime==="native"&&typeof session.setPermissionMode==="function")session.setPermissionMode((threadStore.get(thread.id)||thread)?.providerMeta?.permissionProfile||"supervised");
+      if(runtime==="native"&&typeof session.setPermissionMode==="function")session.setPermissionMode((threadMetadata(thread.id)||thread)?.providerMeta?.permissionProfile||"supervised");
       if(params.model&&params.model!==thread.model){await session.setModel(params.model).catch(()=>{});threadStore.update(thread.id,{model:params.model})}
       if(runtime==="native"&&typeof session.setContextWindow==="function"){
         let contextWindow=null;
@@ -1355,7 +1356,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         const deterministicContext=continuityContextValue(durableContinuity(thread.id));
         const result=await session.compact({maxOutputTokens:params.maxOutputTokens||4096,recentMessages,deterministicContext});
         const compaction={id:`native-compact-${randomUUID()}`,summary:result.summary,throughTurnId:throughTurn.id,retainedTurnIds:retainedTurns.map(item=>item.id),createdAt:Date.now(),model:result.model||thread.model||null,provider:result.provider||thread.providerMeta?.modelProvider||null,sourceMessageCount:result.sourceMessageCount||0,retainedRecentMessageCount:result.retainedRecentMessageCount||0,continuityChars:result.continuityChars||0};
-        const current=threadStore.get(thread.id)||thread;threadStore.update(thread.id,{providerMeta:{...(current.providerMeta||{}),nativeCompaction:compaction}});
+        const current=threadMetadata(thread.id)||thread;threadStore.update(thread.id,{providerMeta:{...(current.providerMeta||{}),nativeCompaction:compaction}});
         if(result.usage)state?.recordUsage?.({id:`native:${thread.id}:compaction:${compaction.id}`,runtime:"native",provider:compaction.provider,model:compaction.model,environmentId:current.providerMeta?.environmentId??null,threadId:thread.id,turnId:`compaction:${compaction.id}`,usage:result.usage,at:compaction.createdAt});
         journal?.record?.({runtime:"native",provider:compaction.provider,environmentId:current.providerMeta?.environmentId??null,threadId:thread.id,category:"context",name:"native.compaction.completed",status:"completed",data:{compactionId:compaction.id,throughTurnId:compaction.throughTurnId,retainedTurnIds:compaction.retainedTurnIds,sourceMessageCount:compaction.sourceMessageCount,retainedRecentMessageCount:compaction.retainedRecentMessageCount,continuityChars:compaction.continuityChars,summaryChars:compaction.summary.length}});
         emit("thread/compacted",{threadId:thread.id,compaction:{id:compaction.id,throughTurnId:compaction.throughTurnId,createdAt:compaction.createdAt}});return {ok:true,compaction};
@@ -1381,7 +1382,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       if(session instanceof ClaudeAgentSession){
         const {index,providerMessageId,dropsTurn}=claudeRewindCheckpoint(thread,params.beforeTurnId);
         const forked=await session.rewindConversation(providerMessageId,{dropsTurn});
-        const currentMeta=threadStore.get(thread.id)?.providerMeta||{};
+        const currentMeta=threadMetadata(thread.id)?.providerMeta||{};
         threadStore.update(thread.id,{providerSessionId:forked.sessionId,turns:thread.turns.slice(0,index),providerMeta:{...currentMeta,...(forked.lazyFork?{claudeFork:forked.lazyFork}:{}),claudeRewindBackup:{sourceSessionId:thread.providerSessionId,retainedCount:index,removedTurns:thread.turns.slice(index),createdAt:Date.now()}}});
         emit("thread/reverted",{threadId:thread.id});return {thread:threadStore.get(thread.id)};
       }

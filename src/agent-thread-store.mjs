@@ -85,6 +85,9 @@ export class AgentThreadStore{
   list(runtime=null){
     return clone(this.data.threads.filter(thread=>!runtime||thread.runtime===runtime).sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0)));
   }
+  getMetadata(id){
+    const thread=this.data.threads.find(item=>item.id===id);return thread?clone(thread):null;
+  }
   searchCandidates(runtime,searchTerm,{archived=false}={}){return clone(this.storage.searchCandidates({runtime,term:searchTerm,archived}))}
   get(id){return clone(this.storage.get(id))}
   findProviderSession(runtime,providerSessionId){
