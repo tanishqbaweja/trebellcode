@@ -67,3 +67,11 @@ test("OpenAI continuation identity acceleration fails back to full fingerprintin
   const next=body([...firstInput,...openAiContinuationOutputItems({text:"Done"}),{type:"message",role:"user",content:[{type:"input_text",text:"Next"}]}]),prepared=tracker.prepare(next,"resp-1",{messageRefs:[userRef,{role:"assistant",content:"Done"},{role:"user",content:"Next"}],identityToken:tokenB});
   assert.equal(prepared.fastPrefixCount,0);assert.equal(prepared.used,true);
 });
+
+test("OpenAI continuation snapshots Native message refs instead of trusting a later-mutated array",()=>{
+  const tracker=new OpenAiResponseContinuationTracker(),token={},userRef={role:"user",content:"Task"},refs=[userRef],firstInput=[{type:"message",role:"user",content:[{type:"input_text",text:"Task"}]}],first=tracker.prepare(body(firstInput),"",{messageRefs:refs,identityToken:token});
+  tracker.record("resp-1",first,{model:"gpt-5.6",text:"Done"});
+  refs[0]={role:"user",content:"Rewritten"};refs.push({role:"assistant",content:"Done"},{role:"user",content:"Next"});
+  const rewritten={type:"message",role:"user",content:[{type:"input_text",text:"Rewritten"}]},next=body([rewritten,...openAiContinuationOutputItems({text:"Done"}),{type:"message",role:"user",content:[{type:"input_text",text:"Next"}]}]),prepared=tracker.prepare(next,"resp-1",{messageRefs:refs,identityToken:token});
+  assert.equal(prepared.fastPrefixCount,0);assert.equal(prepared.used,false,"snapshot proof must reject an in-place replacement of an old canonical message reference");
+});

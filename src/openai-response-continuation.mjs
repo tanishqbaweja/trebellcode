@@ -62,7 +62,7 @@ export class OpenAiResponseContinuationTracker{
 
   prepare(fullBody={},previousResponseId="",{messageRefs=null,identityToken=null}={}){
     const input=Array.isArray(fullBody?.input)?fullBody.input:[],parentId=String(previousResponseId||"").trim(),parent=parentId?this.entries.get(parentId):null;
-    const refs=Array.isArray(messageRefs)?messageRefs:null;
+    const refs=Array.isArray(messageRefs)?messageRefs:null,refSnapshot=refs?[...refs]:null;
     let fingerprints=null,fastPrefixCount=0;
     if(parent&&identityToken&&parent.identityToken===identityToken&&refs&&Array.isArray(parent.messageRefs)&&Array.isArray(parent.requestFingerprints)&&parent.requestFingerprints.length<=input.length&&parent.messageRefs.length<=refs.length){
       let same=true;for(let index=0;index<parent.messageRefs.length;index++)if(parent.messageRefs[index]!==refs[index]){same=false;break}
@@ -70,7 +70,7 @@ export class OpenAiResponseContinuationTracker{
     }
     if(!fingerprints)fingerprints=input.map(fingerprint);
     const fullInputDigests=fingerprints.map(item=>item.digest),base={
-      body:fullBody,used:false,parentId:null,fullInputDigests,requestFingerprints:fingerprints,messageRefs:refs,identityToken:identityToken||null,fastPrefixCount,deltaInputCount:input.length,fullInputCount:input.length,savedRequestBytes:0,
+      body:fullBody,used:false,parentId:null,fullInputDigests,requestFingerprints:fingerprints,messageRefs:refSnapshot,identityToken:identityToken||null,fastPrefixCount,deltaInputCount:input.length,fullInputCount:input.length,savedRequestBytes:0,
     };
     if(!parent||String(parent.model||"")!==String(fullBody?.model||""))return base;
     const prefix=Array.isArray(parent.conversationDigests)?parent.conversationDigests:[];
