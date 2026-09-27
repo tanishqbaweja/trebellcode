@@ -27,7 +27,7 @@ build/icon.icns
 build/icon.png
 
 # Local Trebell worktree / scratch state
-.trebell-rename-worktree/
+.trebell-*/
 
 # Logs and caches
 *.log
