@@ -514,6 +514,41 @@ test("native agent does not synthesize an exact literal when the user also reque
   assert.equal(turns,4);assert.match(result.text,/Root cause:/);assert.ok(!events.some(event=>event.name==="native.verification.literal_synthesized"));
 });
 
+test("native agent treats a final rerun-until-pass instruction as verified completion",async()=>{
+  let turns=0;const events=[];
+  const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Run node verify.mjs, diagnose the failure, and fix the implementation. Re-run the verification until it passes."}],tools,onEvent:event=>events.push(event),
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"verify-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      if(turns===3)return {text:"",toolCalls:[{id:"verify-2",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      throw new Error("A fourth provider turn should not be needed when the final requested action is verified complete.");
+    },
+    executeTool:async call=>call.id==="verify-1"?{exitCode:1}:call.id==="verify-2"?{exitCode:0}:{path:"src/a.mjs",replacements:1},
+  });
+  assert.equal(turns,3);assert.equal(result.modelTurns,3);assert.match(result.text,/replaced "bad" with "good"/i);assert.match(result.text,/passes \(exit code 0\)/i);
+  assert.ok(events.some(event=>event.name==="native.verification.summary_synthesized"));
+});
+
+test("native rerun-until-pass completion does not trigger when work remains after verification",async()=>{
+  let turns=0;const seen=[];
+  const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation and re-run the verification until it passes. Then explain the root cause."}],tools,
+    providerTurn:async request=>{
+      turns++;seen.push(structuredClone(request));
+      if(turns===1)return {text:"",toolCalls:[{id:"verify-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      if(turns===3)return {text:"",toolCalls:[{id:"verify-2",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      assert.ok(request.tools.length>0);assert.equal(request.toolChoice,"auto");return {text:"Root cause: stale implementation.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.id==="verify-1"?{exitCode:1}:call.id==="verify-2"?{exitCode:0}:{path:"src/a.mjs",replacements:1},
+  });
+  assert.equal(turns,4);assert.match(result.text,/Root cause:/);
+});
+
 test("native verifier success does not disable tools without an explicit answer-after-pass instruction",async()=>{
   let turns=0;const seen=[];
   const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];

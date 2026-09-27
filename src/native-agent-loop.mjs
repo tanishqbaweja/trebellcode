@@ -183,6 +183,12 @@ function explicitLiteralAfterVerification(messages=[]){
   return token?token[1]:null;
 }
 
+function explicitVerificationCompletion(messages=[]){
+  const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=lastUserInstructionText(user);
+  if(!text)return false;
+  return /(?:^|[.!?]\s*)re-?run\b[^.\n]{0,180}\b(?:verification|verifier|tests?|checks?)\b[^.\n]{0,120}\buntil\b[^.\n]{0,60}\bpass(?:es|ed|ing)?\b\s*[.!]?\s*$/i.test(text);
+}
+
 function conciseReplacementSummary(oldText,newText){
   const before=String(oldText??""),after=String(newText??"");
   if(!before||!after||before.length>4096||after.length>4096)return null;
@@ -320,9 +326,9 @@ export async function runNativeAgentTurn({
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
   const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])];
   const explicitlyRequired=explicitlyRequestedTools(conversation,providerVisibleTools(tools,toolAllowlist)),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
-  const finalAfterVerifiedCommand=explicitFinalAnswerAfterVerification(conversation),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),terminalRuns=[],verifiedEdits=[];
+  const finalAfterVerifiedCommand=explicitFinalAnswerAfterVerification(conversation),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequested=explicitVerificationCompletion(conversation),terminalRuns=[],verifiedEdits=[];
   const successfulTerminalRuns=[];
-  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,verifiedFinalizationAllowed=finalAfterVerifiedCommand,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
+  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
   const startedAt=Date.now(),started=nowMs(),wallController=budget.maxWallTimeMs!=null?new AbortController():null,deadlineAt=budget.maxWallTimeMs==null?null:Date.now()+budget.maxWallTimeMs;
   let wallTimer=null;
   const armWallTimer=()=>{
@@ -381,7 +387,7 @@ export async function runNativeAgentTurn({
     }
     if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_model"})){verifiedFinalizationAllowed=false;verifiedFinalizationReady=false}
     const missingExplicitTool=explicitlyRequired.find(item=>!executedToolKeys.has(item.namespace+"/"+item.name));
-    const synthesizedVerifiedSummary=verifiedFinalizationReady&&verifiedFinalizationAllowed&&summaryAfterVerifiedCommand&&!missingExplicitTool?verifiedSummaryText(verifiedEdits):null;
+    const synthesizedVerifiedSummary=verifiedFinalizationReady&&verifiedFinalizationAllowed&&(summaryAfterVerifiedCommand||verificationCompletionRequested)&&!missingExplicitTool?verifiedSummaryText(verifiedEdits):null;
     const synthesizedVerifiedLiteral=verifiedFinalizationReady&&verifiedFinalizationAllowed&&literalAfterVerifiedCommand!=null&&!missingExplicitTool?literalAfterVerifiedCommand:null;
     const synthesizedVerifiedText=synthesizedVerifiedLiteral??synthesizedVerifiedSummary;
     if(synthesizedVerifiedText!=null){
@@ -409,7 +415,7 @@ export async function runNativeAgentTurn({
       }
     }
     if(verifiedFinalizationReady&&!verifiedFinalizationInjected){
-      conversation.push({role:"developer",content:"The user explicitly asked for the final answer after the verifier passes. Trebell observed the same verifier command fail, then a successful workspace edit, then that exact command pass. Verification tool work for that requested workflow is complete. Do not call another tool; respond now with the concise user-visible final answer supported by the evidence already collected."});
+      conversation.push({role:"developer",content:verificationCompletionRequested?"The user's final requested action was to re-run verification until it passes. Trebell observed the same verifier command fail, then a successful workspace edit, then that exact command pass. That requested verification workflow is complete. Do not call another tool; respond now with the concise user-visible final answer supported by the evidence already collected.":"The user explicitly asked for the final answer after the verifier passes. Trebell observed the same verifier command fail, then a successful workspace edit, then that exact command pass. Verification tool work for that requested workflow is complete. Do not call another tool; respond now with the concise user-visible final answer supported by the evidence already collected."});
       verifiedFinalizationInjected=true;
     }
     modelTurns++;
