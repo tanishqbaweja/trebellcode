@@ -10,8 +10,10 @@ const env={...process.env,VYCEAI_API_KEY:apiKey},manager=new ProviderManager({en
 const catalog=await manager.models("vyceai"),requested=String(process.env.VYCE_MODEL||"deepseek-v4.1").trim(),model=catalog.models.includes(requested)?requested:catalog.models[0];
 if(!model)throw new Error("Vyce did not advertise any model for the Native prior-context benchmark.");
 
+const contextRows=Math.max(1,Math.min(180,Number(process.env.TREBELL_PRIOR_CONTEXT_ROWS||180)||180));
+
 function generatedContext(label){
-  return "Trebell supplied generated "+label+" context.\n"+Array.from({length:180},(_,index)=>{
+  return "Trebell supplied generated "+label+" context.\n"+Array.from({length:contextRows},(_,index)=>{
     const id=String(index).padStart(3,"0");
     return `[${label}] src/module-${id}.mjs :: symbol_${label}_${id} :: evidence_${id}_${"x".repeat(48)}`;
   }).join("\n");
@@ -43,16 +45,18 @@ await session.prompt(prompt(oldContext,"Inspect the old task context."),{maxMode
 await session.prompt(prompt(newContext,"Now answer using the new task context."),{maxModelTurns:1,maxToolCalls:0,maxWallTimeMs:120_000});
 assert.equal(requests.length,2);assert.ok(String(requests[1].text||"").trim());
 const second=requests[1],wire=JSON.stringify(second.messages),cooling=events.filter(event=>event.name==="native.context.history_cooled");
+const lastContextId=String(contextRows-1).padStart(3,"0");
 console.log(JSON.stringify({
   ok:true,runtime:"native",provider:"vyceai",model,
+  contextRows,
   oldContextChars:oldContext.length,newContextChars:newContext.length,
   secondRequestInputTokens:Number(second.usage?.inputTokens||0),
   secondRequestOutputTokens:Number(second.usage?.outputTokens||0),
   secondRequestCachedInputTokens:Number(second.usage?.cachedInputTokens||0),
   secondRequestBytes:Number(second.telemetry?.requestBytes||0),
   secondRequestMessageChars:wire.length,
-  oldContextStillHot:wire.includes("symbol_OLD_179"),
-  newContextPresent:wire.includes("symbol_NEW_179"),
+  oldContextStillHot:wire.includes("symbol_OLD_"+lastContextId),
+  newContextPresent:wire.includes("symbol_NEW_"+lastContextId),
   priorContextCoolingEvents:cooling.length,
   priorContextSavedChars:cooling.reduce((sum,event)=>sum+Number(event.data?.savedChars||0),0),
   finalAgentText:String(second.text||"").trim(),

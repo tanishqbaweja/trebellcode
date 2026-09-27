@@ -121,9 +121,10 @@ function coolSupersededWorkingContext(messages=[],replacementEntries=[]){
   const cooled=(Array.isArray(messages)?messages:[]).map(message=>{
     if(message?.role!=="user")return message;
     const meta=message[NATIVE_PROMPT_PROVENANCE],contextText=String(meta?.contextText||""),oldEntries=Array.isArray(meta?.contextEntries)?meta.contextEntries:[];
-    if(contextText.length<512||!oldEntries.length)return message;
+    if(!oldEntries.length)return message;
     const retained=oldEntries.filter(entry=>!replacementKeys.has(contextEntryKey(entry))),removed=oldEntries.length-retained.length;if(!removed)return message;
     const replacement=retainedWorkingContext(retained);
+    if(replacement.length>=contextText.length)return message;
     let replaced=false,content=message.content;
     if(typeof content==="string"){
       if(content===contextText){content=replacement;replaced=true}

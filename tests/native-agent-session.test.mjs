@@ -45,6 +45,43 @@ test("Native session replaces old generated working context when a newer packet 
   assert.ok(events.some(event=>event.name==="native.context.history_cooled"&&event.data?.savedChars>5000));
 });
 
+test("Native session cools small superseded context whenever the replacement is shorter",async()=>{
+  const requests=[],events=[];let calls=0;
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model-a",onEvent:event=>events.push(event),
+    providerTurn:async request=>{requests.push(structuredClone(request));calls++;return {id:"small-"+calls,text:"done",toolCalls:[],usage:{}}},
+    executeTool:async()=>{throw new Error("not used")},
+  });
+  await session.start({providerSessionId:"native-small-context-cooling",model:"model-a"});
+  const oldContext="OLD_SMALL_CONTEXT "+("x".repeat(360)),newContext="NEW_SMALL_CONTEXT "+("y".repeat(360));
+  const prompt=(context,text)=>[
+    attachNativePromptProvenance({type:"text",text:context},{kind:"working_context",contextText:context,contextEntries:[{source:"repo",kind:"untrusted",value:context}]}),
+    attachNativePromptProvenance({type:"text",text},{kind:"user_input",userParts:[text]}),
+  ];
+  await session.prompt(prompt(oldContext,"first task"));await session.prompt(prompt(newContext,"second task"));
+  const secondRequest=JSON.stringify(requests[1].messages);
+  assert.doesNotMatch(secondRequest,/OLD_SMALL_CONTEXT x{100}/);assert.match(secondRequest,/NEW_SMALL_CONTEXT y{100}/);assert.match(secondRequest,/prior generated working context omitted/i);
+  assert.ok(events.some(event=>event.name==="native.context.history_cooled"&&event.data?.savedChars>200));
+});
+
+test("Native session leaves tiny superseded context alone when the replacement would be larger",async()=>{
+  const requests=[],events=[];let calls=0;
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model-a",onEvent:event=>events.push(event),
+    providerTurn:async request=>{requests.push(structuredClone(request));calls++;return {id:"tiny-"+calls,text:"done",toolCalls:[],usage:{}}},
+    executeTool:async()=>{throw new Error("not used")},
+  });
+  await session.start({providerSessionId:"native-tiny-context-no-expansion",model:"model-a"});
+  const prompt=(context,text)=>[
+    attachNativePromptProvenance({type:"text",text:context},{kind:"working_context",contextText:context,contextEntries:[{source:"repo",kind:"untrusted",value:context}]}),
+    attachNativePromptProvenance({type:"text",text},{kind:"user_input",userParts:[text]}),
+  ];
+  await session.prompt(prompt("OLD_TINY","first task"));await session.prompt(prompt("NEW_TINY","second task"));
+  const secondRequest=JSON.stringify(requests[1].messages);
+  assert.match(secondRequest,/OLD_TINY/);assert.match(secondRequest,/NEW_TINY/);assert.doesNotMatch(secondRequest,/prior generated working context omitted/i);
+  assert.equal(events.filter(event=>event.name==="native.context.history_cooled").length,0);
+});
+
 test("Native session preserves prior generated working context for cache-capable providers",async()=>{
   const requests=[];let calls=0;
   const session=new NativeAgentSession({
