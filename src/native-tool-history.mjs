@@ -63,14 +63,17 @@ export function compactDirectTerminalStatusProviderHistory(messages=[]){
 }
 
 export function createDirectTerminalStatusProviderHistoryProjector(){
-  let sourceRef=null,stableThrough=0,stableMessages=[],count=0,savedChars=0;
+  let sourceRef=null,stableThrough=0,stableMessages=[],count=0,savedChars=0,projectedMessages=null,projectedSourceLength=0;
   return messages=>{
     const source=Array.isArray(messages)?messages:[];
-    if(source!==sourceRef||source.length<stableThrough){sourceRef=source;stableThrough=0;stableMessages=[];count=0;savedChars=0}
+    if(source!==sourceRef||source.length<stableThrough||source.length<projectedSourceLength){sourceRef=source;stableThrough=0;stableMessages=[];count=0;savedChars=0;projectedMessages=null;projectedSourceLength=0}
     const next=compactDirectTerminalStatusRange(source,stableThrough,{stableOnly:true});
     if(next.consumed>stableThrough){stableMessages.push(...next.messages);stableThrough=next.consumed;count+=next.count;savedChars+=next.savedChars}
-    if(count===0)return {messages:source,count:0,savedChars:0};
-    return {messages:stableThrough===source.length?[...stableMessages]:[...stableMessages,...source.slice(stableThrough)],count,savedChars};
+    if(count===0){projectedSourceLength=source.length;return {messages:source,count:0,savedChars:0}}
+    if(!projectedMessages||next.count>0)projectedMessages=stableThrough===source.length?[...stableMessages]:[...stableMessages,...source.slice(stableThrough)];
+    else if(source.length>projectedSourceLength)projectedMessages.push(...source.slice(projectedSourceLength));
+    projectedSourceLength=source.length;
+    return {messages:projectedMessages,count,savedChars};
   };
 }
 
