@@ -231,8 +231,8 @@ function stringifyProviderBody(body){
   }
   return `{${parts.join(",")}}`;
 }
-function officialOpenAiResponsesBody(request={},toolManifest=null,promptCacheKeyForBody=null){
-  const explicitCacheBreakpoints=officialOpenAiExplicitCacheBreakpointsSupported(request.model),body=providerTurnToResponses(request,{preserveInstructionOrder:true,flattenToolCallNames:true,toolResultCacheBreakpoints:explicitCacheBreakpoints});
+function officialOpenAiResponsesBody(request={},toolManifest=null,promptCacheKeyForBody=null,responsesOptions=null){
+  const explicitCacheBreakpoints=officialOpenAiExplicitCacheBreakpointsSupported(request.model),body=providerTurnToResponses(request,{preserveInstructionOrder:true,flattenToolCallNames:true,toolResultCacheBreakpoints:explicitCacheBreakpoints,...(responsesOptions&&typeof responsesOptions==="object"?responsesOptions:{})});
   const tools=Array.isArray(toolManifest?.tools)?toolManifest.tools:officialOpenAiTools(request.tools);body.tools=tools;
   if(explicitCacheBreakpoints){
     const comparisonResponseId=String(request.promptCacheComparisonResponseId||"").trim();
@@ -342,7 +342,7 @@ function remainingProviderRequestMs(deadlineAt){
 }
 
 export class ProviderManager {
-  constructor({ env = process.env, fetchFn = fetch, requestTimeoutMs = DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS, openAiResponsesWebSocketFactory=null, openAiResponsesWebSocketRetryMs=30_000, openAiToolManifestCacheSize=32, openAiPromptCacheKeyCacheSize=128, anthropicToolManifestCacheSize=32, chatToolManifestCacheSize=32, reusePreSerializedToolJson=true, nowFn=Date.now } = {}) {
+  constructor({ env = process.env, fetchFn = fetch, requestTimeoutMs = DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS, openAiResponsesWebSocketFactory=null, openAiResponsesWebSocketRetryMs=30_000, openAiToolManifestCacheSize=32, openAiPromptCacheKeyCacheSize=128, anthropicToolManifestCacheSize=32, chatToolManifestCacheSize=32, reusePreSerializedToolJson=true, reuseOpenAiContinuationInputBuild=true, nowFn=Date.now } = {}) {
     this.env = env;
     this.fetchFn = fetchFn;
     const timeoutMs = Math.trunc(Number(requestTimeoutMs));
@@ -355,6 +355,7 @@ export class ProviderManager {
     const retryMs=Math.trunc(Number(openAiResponsesWebSocketRetryMs));this.openAiResponsesWebSocketRetryMs=Number.isFinite(retryMs)&&retryMs>=0?retryMs:30_000;this.nowFn=typeof nowFn==="function"?nowFn:Date.now;
     this.openAiResponsesWebSocket=null;this.openAiResponsesWebSocketDisabledUntil=0;this.openAiResponsesWebSocketPermanentlyDisabled=false;
     this.reusePreSerializedToolJson=reusePreSerializedToolJson!==false;
+    this.reuseOpenAiContinuationInputBuild=reuseOpenAiContinuationInputBuild!==false;
     const manifestCacheSize=Math.trunc(Number(openAiToolManifestCacheSize));this.openAiToolManifestCacheSize=Number.isFinite(manifestCacheSize)&&manifestCacheSize>=0?Math.min(256,manifestCacheSize):32;this.openAiToolManifestCache=new Map();
     const anthropicManifestCacheSize=Math.trunc(Number(anthropicToolManifestCacheSize));this.anthropicToolManifestCacheSize=Number.isFinite(anthropicManifestCacheSize)&&anthropicManifestCacheSize>=0?Math.min(256,anthropicManifestCacheSize):32;this.anthropicToolManifestCache=new Map();
     const cacheKeyCacheSize=Math.trunc(Number(openAiPromptCacheKeyCacheSize));this.openAiPromptCacheKeyCacheSize=Number.isFinite(cacheKeyCacheSize)&&cacheKeyCacheSize>=0?Math.min(1024,cacheKeyCacheSize):128;this.openAiPromptCacheKeyCache=new Map();
@@ -383,9 +384,9 @@ export class ProviderManager {
     return value;
   }
 
-  #officialOpenAiResponsesBody(request={}){
+  #officialOpenAiResponsesBody(request={},responsesOptions=null){
     const manifest=this.#openAiToolManifest(request);
-    return officialOpenAiResponsesBody(request,manifest,(body,toolsJson)=>this.#openAiPromptCacheKey(request,body,toolsJson));
+    return officialOpenAiResponsesBody(request,manifest,(body,toolsJson)=>this.#openAiPromptCacheKey(request,body,toolsJson),responsesOptions);
   }
 
   #anthropicToolScaffold(request={}){
@@ -655,13 +656,28 @@ export class ProviderManager {
     if(provider.id==="freebuff")throw new Error("Freebuff provider turns are served by the local Freebuff bridge, not ProviderManager.");
     const started=performance.now(),requestDeadlineAt=started+this.requestTimeoutMs;let wire={endpoint:null,wireApi:null,requestBytes:0},wireRequestBytes=0,wireAttempts=0;
     const onWire=value=>{wire=value||wire;wireRequestBytes+=Number(value?.requestBytes||0);wireAttempts++};
-    const fullResponsesBody=provider.wireApi==="responses"
-      ?(provider.id==="openai"?this.#officialOpenAiResponsesBody({...request,model}):providerTurnToResponses({...request,model}))
-      :null;
-    let openAiContinuation=provider.id==="openai"&&fullResponsesBody
-      ?this.openAiResponseContinuations.prepare(fullResponsesBody,request.promptCacheComparisonResponseId,{messageRefs:Array.isArray(request.messages)?request.messages:null,identityToken:request?.[NATIVE_OPENAI_CONTINUATION_IDENTITY]||null})
-      :null;
-    let responsesBody=openAiContinuation?.body||fullResponsesBody;
+    let fullResponsesBody=null,openAiContinuation=null,responsesBody=null;
+    if(provider.wireApi==="responses"){
+      if(provider.id==="openai"){
+        const messageRefs=Array.isArray(request.messages)?request.messages:null,identityToken=request?.[NATIVE_OPENAI_CONTINUATION_IDENTITY]||null,parentId=request.promptCacheComparisonResponseId;
+        const preflight=this.reuseOpenAiContinuationInputBuild
+          ?this.openAiResponseContinuations.preflight(parentId,{messageRefs,identityToken,model})
+          :null;
+        if(preflight){
+          const suffixBody=this.#officialOpenAiResponsesBody({...request,model},{inputStartMessageIndex:preflight.messageCount});
+          openAiContinuation=this.openAiResponseContinuations.prepareSuffix(suffixBody,parentId,{messageRefs,identityToken});
+          if(openAiContinuation)responsesBody=openAiContinuation.body;
+        }
+        if(!responsesBody){
+          fullResponsesBody=this.#officialOpenAiResponsesBody({...request,model});
+          openAiContinuation=this.openAiResponseContinuations.prepare(fullResponsesBody,parentId,{messageRefs,identityToken});
+          responsesBody=openAiContinuation?.body||fullResponsesBody;
+        }
+      }else{
+        fullResponsesBody=providerTurnToResponses({...request,model});
+        responsesBody=fullResponsesBody;
+      }
+    }
     if(provider.id==="openai"&&streamResponses===true&&responsesBody){responsesBody.stream=true;if(fullResponsesBody)fullResponsesBody.stream=true}
     const anthropicScaffold=provider.id==="anthropic"?this.#anthropicToolScaffold({...request,model}):null;
     const directAnthropicBody=anthropicScaffold?providerTurnToAnthropic({...request,model},{stream:streamChat===true,scaffold:anthropicScaffold.scaffold}):null;
@@ -683,7 +699,7 @@ export class ProviderManager {
           result.telemetry={
             endpoint:String(provider.baseUrl||"").replace(/^http/i,"ws")+"/responses",wireApi:"openai-responses-websocket",requestBytes:Number(socketResult.requestBytes||0),responseBytes:Number(socketResult.telemetry?.responseBytes||0),
             responseHeadersLatencyMs:null,responseBodyLatencyMs:Number(socketResult.telemetry?.totalLatencyMs||0),timeToFirstTokenMs:socketResult.telemetry?.timeToFirstTokenMs??null,totalLatencyMs:Number(socketResult.telemetry?.totalLatencyMs??(performance.now()-socketStarted)),streaming:true,providerRequestId:null,providerResponseId:result.id||null,
-            promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(socketResult.response),persistentConnection:true,responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used),attempted:Boolean(openAiContinuation.used),fallback:false,parentId:openAiContinuation.parentId||null,fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:Number(openAiContinuation.savedRequestBytes||0),wireAttempts:1}:null,
+            promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(socketResult.response),persistentConnection:true,responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used),attempted:Boolean(openAiContinuation.used),fallback:false,parentId:openAiContinuation.parentId||null,fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts:1}:null,
           };
           return result;
         }catch(error){
@@ -706,6 +722,7 @@ export class ProviderManager {
     let continuationFallback=false;
     if(provider.id==="openai"&&openAiContinuation?.used&&!upstream.ok&&[400,404,409].includes(Number(upstream.status))){
       try{await upstream.body?.cancel?.()}catch{}
+      if(!fullResponsesBody){fullResponsesBody=this.#officialOpenAiResponsesBody({...request,model});if(streamResponses===true)fullResponsesBody.stream=true}
       upstream=await this.forwardResponses(provider.id,fullResponsesBody,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)});continuationFallback=true;
     }
     const headersLatencyMs=Number((performance.now()-started).toFixed(3));
@@ -717,7 +734,7 @@ export class ProviderManager {
         const streamed=await readOpenAiResponsesStream(upstream.body,{requestStartedAt:started}),bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
         const result=normalizeResponsesTurnResponse(streamed.response,provider.id,model);
         this.openAiResponseContinuations.record(result.id,openAiContinuation,result);
-        result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null,promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(streamed.response),persistentConnection:false,webSocketFallback:openAiWebSocketFallback,responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,parentId:openAiContinuation.parentId||null,fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),wireAttempts}:null};
+        result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null,promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(streamed.response),persistentConnection:false,webSocketFallback:openAiWebSocketFallback,responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,parentId:openAiContinuation.parentId||null,fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused&&!continuationFallback),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts}:null};
         return result;
       }catch(error){
         const bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
@@ -769,7 +786,7 @@ export class ProviderManager {
     result.telemetry={
       ...baseTelemetry,
       providerResponseId:result.id||null,
-      ...(provider.id==="openai"?{promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(parsed),responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,parentId:openAiContinuation.parentId||null,fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),wireAttempts}:null}:{}),
+      ...(provider.id==="openai"?{promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(parsed),responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,parentId:openAiContinuation.parentId||null,fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused&&!continuationFallback),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts}:null}:{}),
     };
     return result;
   }

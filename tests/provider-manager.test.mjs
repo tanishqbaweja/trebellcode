@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProviderManager } from "../src/provider-manager.mjs";
 import { nativeRequestMetrics, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
+import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "../src/openai-response-continuation.mjs";
 
 const BUNDLED_CODEX_VERSION=JSON.parse(readFileSync(new URL("../node_modules/@openai/codex/package.json",import.meta.url),"utf8")).version;
 
@@ -231,13 +232,13 @@ test("official OpenAI Responses sends only strict appended input when the previo
     }});
     manager.setKey("openai","oa-key");
     const tools=[{type:"namespace",name:"trebell_terminal",tools:[{type:"function",name:"run",inputSchema:{type:"object",properties:{command:{type:"string"},args:{type:"array",items:{type:"string"}}},required:["command","args"]}}]}];
-    const user={role:"user",content:"Run node verify.mjs"},first=await manager.turn("openai",{model:"gpt-5.6",messages:[user],tools});
+    const token={},user={role:"user",content:"Run node verify.mjs"},first=await manager.turn("openai",{model:"gpt-5.6",messages:[user],tools,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token});
     const assistant={role:"assistant",content:first.text,toolCalls:first.toolCalls},tool={role:"tool",toolCallId:"call-1",content:"exit 1"};
-    const second=await manager.turn("openai",{model:"gpt-5.6",messages:[user,assistant,tool],tools,promptCacheComparisonResponseId:"resp-1"});
+    const second=await manager.turn("openai",{model:"gpt-5.6",messages:[user,assistant,tool],tools,promptCacheComparisonResponseId:"resp-1",[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token});
     assert.equal(Object.prototype.hasOwnProperty.call(bodies[0],"previous_response_id"),false);
     assert.equal(bodies[1].previous_response_id,"resp-1");assert.equal(bodies[1].input.length,1);assert.equal(bodies[1].input[0].type,"function_call_output");assert.equal(bodies[1].input[0].call_id,"call-1");
     assert.deepEqual(bodies[1].prompt_cache_options,{mode:"implicit",comparison_response_id:"resp-1"});
-    assert.equal(second.telemetry.responseContinuation.used,true);assert.equal(second.telemetry.responseContinuation.parentId,"resp-1");assert.equal(second.telemetry.responseContinuation.fullInputCount,3);assert.equal(second.telemetry.responseContinuation.deltaInputCount,1);assert.ok(second.telemetry.responseContinuation.savedRequestBytes>0);
+    assert.equal(second.telemetry.responseContinuation.used,true);assert.equal(second.telemetry.responseContinuation.parentId,"resp-1");assert.equal(second.telemetry.responseContinuation.fullInputCount,3);assert.equal(second.telemetry.responseContinuation.deltaInputCount,1);assert.ok(second.telemetry.responseContinuation.savedRequestBytes>0);assert.equal(second.telemetry.responseContinuation.inputBuildReused,true);assert.equal(second.telemetry.responseContinuation.canonicalPrefixMessageCount,1);
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
@@ -263,11 +264,11 @@ test("official OpenAI continuation retries once with full local context when the
       if(calls===2)return new Response(JSON.stringify({error:{message:"Previous response is unavailable"}}),{status:404,headers:{"content-type":"application/json"}});
       return Response.json({id:"resp-2",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"second"}]}],usage:{input_tokens:2,output_tokens:1,total_tokens:3}});
     }});
-    manager.setKey("openai","oa-key");const firstUser={role:"user",content:"first"};await manager.turn("openai",{model:"gpt-5.6",messages:[firstUser],tools:[]});
-    const result=await manager.turn("openai",{model:"gpt-5.6",messages:[firstUser,{role:"assistant",content:"first"},{role:"user",content:"second"}],tools:[],promptCacheComparisonResponseId:"resp-1"});
+    manager.setKey("openai","oa-key");const token={},firstUser={role:"user",content:"first"};await manager.turn("openai",{model:"gpt-5.6",messages:[firstUser],tools:[],[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token});
+    const result=await manager.turn("openai",{model:"gpt-5.6",messages:[firstUser,{role:"assistant",content:"first"},{role:"user",content:"second"}],tools:[],promptCacheComparisonResponseId:"resp-1",[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token});
     assert.equal(bodies.length,3);assert.equal(bodies[1].previous_response_id,"resp-1");assert.equal(bodies[1].input.length,1);
     assert.equal(Object.prototype.hasOwnProperty.call(bodies[2],"previous_response_id"),false);assert.equal(bodies[2].input.length,3);
-    assert.equal(result.text,"second");assert.equal(result.telemetry.responseContinuation.attempted,true);assert.equal(result.telemetry.responseContinuation.used,false);assert.equal(result.telemetry.responseContinuation.fallback,true);assert.equal(result.telemetry.responseContinuation.savedRequestBytes,0);assert.equal(result.telemetry.responseContinuation.wireAttempts,2);
+    assert.equal(result.text,"second");assert.equal(result.telemetry.responseContinuation.attempted,true);assert.equal(result.telemetry.responseContinuation.used,false);assert.equal(result.telemetry.responseContinuation.fallback,true);assert.equal(result.telemetry.responseContinuation.savedRequestBytes,0);assert.equal(result.telemetry.responseContinuation.inputBuildReused,false);assert.equal(result.telemetry.responseContinuation.wireAttempts,2);
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
@@ -278,11 +279,11 @@ test("official OpenAI Native uses one Responses WebSocket lane when a stable Tre
       env:{TREBELL_HOME:root},fetchFn:async()=>{fetchCalls++;throw new Error("HTTP should not run when the WebSocket succeeds")},
       openAiResponsesWebSocketFactory:options=>{factoryCalls++;assert.equal(options.apiKey,"oa-key");return {request:async(body,{streamId})=>{requests.push({body:structuredClone(body),streamId});const index=requests.length;return {requestBytes:321,response:{id:"resp-ws-"+index,model:body.model,status:"completed",output:index===1?[{type:"function_call",call_id:"call-1",name:"trebell_terminal__run",arguments:'{"command":"node","args":["verify.mjs"]}'}]:[{type:"message",role:"assistant",content:[{type:"output_text",text:"done"}]}]},telemetry:{responseBytes:123,timeToFirstTokenMs:index===1?null:4,totalLatencyMs:8}}}}},
     });
-    manager.setKey("openai","oa-key");const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run",inputSchema:{type:"object",properties:{command:{type:"string"},args:{type:"array",items:{type:"string"}}}}}]}],user={role:"user",content:"Run verifier"};
-    const first=await manager.turn("openai",{model:"gpt-5.6",messages:[user],tools,metadata:{sessionId:"native_abc"}},{streamResponses:true});
-    const second=await manager.turn("openai",{model:"gpt-5.6",messages:[user,{role:"assistant",content:first.text,toolCalls:first.toolCalls},{role:"tool",toolCallId:"call-1",content:"exit 1"}],tools,metadata:{sessionId:"native_abc"},promptCacheComparisonResponseId:"resp-ws-1"},{streamResponses:true});
+    manager.setKey("openai","oa-key");const token={},tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run",inputSchema:{type:"object",properties:{command:{type:"string"},args:{type:"array",items:{type:"string"}}}}}]}],user={role:"user",content:"Run verifier"};
+    const first=await manager.turn("openai",{model:"gpt-5.6",messages:[user],tools,metadata:{sessionId:"native_abc"},[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token},{streamResponses:true});
+    const second=await manager.turn("openai",{model:"gpt-5.6",messages:[user,{role:"assistant",content:first.text,toolCalls:first.toolCalls},{role:"tool",toolCallId:"call-1",content:"exit 1"}],tools,metadata:{sessionId:"native_abc"},promptCacheComparisonResponseId:"resp-ws-1",[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token},{streamResponses:true});
     assert.equal(fetchCalls,0);assert.equal(factoryCalls,1);assert.deepEqual(requests.map(item=>item.streamId),["native_abc","native_abc"]);assert.equal(requests[0].body.input.length,1);assert.equal(requests[1].body.previous_response_id,"resp-ws-1");assert.equal(requests[1].body.input.length,1);assert.equal(requests[1].body.input[0].type,"function_call_output");
-    assert.equal(first.telemetry.wireApi,"openai-responses-websocket");assert.equal(first.telemetry.persistentConnection,true);assert.equal(second.telemetry.responseContinuation.used,true);assert.equal(second.text,"done");
+    assert.equal(first.telemetry.wireApi,"openai-responses-websocket");assert.equal(first.telemetry.persistentConnection,true);assert.equal(second.telemetry.responseContinuation.used,true);assert.equal(second.telemetry.responseContinuation.inputBuildReused,true);assert.equal(second.text,"done");
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 

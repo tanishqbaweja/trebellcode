@@ -141,9 +141,11 @@ function responseToolOutput(content,{cacheBreakpoint=false}={}){
   return output;
 }
 
-export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,parallelToolCalls=true}={}, {preserveInstructionOrder=false,flattenToolCallNames=false,toolResultCacheBreakpoints=false}={}){
+export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,parallelToolCalls=true}={}, {preserveInstructionOrder=false,flattenToolCallNames=false,toolResultCacheBreakpoints=false,inputStartMessageIndex=0}={}){
   const instructions=[],input=[];let instructionPrefixOpen=true;
-  for(const message of Array.isArray(messages)?messages:[]){
+  const sourceMessages=Array.isArray(messages)?messages:[],inputStart=Math.max(0,Math.trunc(Number(inputStartMessageIndex)||0));
+  for(let messageIndex=0;messageIndex<sourceMessages.length;messageIndex++){
+    const message=sourceMessages[messageIndex];
     if(!message||typeof message!=="object")continue;
     if(message.role==="system"||message.role==="developer"){
       const text=textContent(message.content).trim();
@@ -151,9 +153,11 @@ export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="
         if(text)instructions.push(text);continue;
       }
       instructionPrefixOpen=false;
+      if(messageIndex<inputStart)continue;
       const content=responsesContent(message.content);if(content.length)input.push({type:"message",role:message.role,content});continue;
     }
     if(preserveInstructionOrder)instructionPrefixOpen=false;
+    if(messageIndex<inputStart)continue;
     if(message.role==="tool"){
       const output=responseToolOutput(message.content,{cacheBreakpoint:toolResultCacheBreakpoints});
       input.push({type:"function_call_output",call_id:String(message.toolCallId||message.tool_call_id||""),output});continue;

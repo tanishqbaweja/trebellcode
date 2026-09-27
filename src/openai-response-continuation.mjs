@@ -60,6 +60,28 @@ export class OpenAiResponseContinuationTracker{
 
   clear(){this.entries.clear()}
 
+  preflight(previousResponseId="",{messageRefs=null,identityToken=null,model=""}={}){
+    const parentId=String(previousResponseId||"").trim(),parent=parentId?this.entries.get(parentId):null,refs=Array.isArray(messageRefs)?messageRefs:null;
+    if(!parent||!identityToken||parent.identityToken!==identityToken||!refs||!Array.isArray(parent.messageRefs)||!Array.isArray(parent.requestFingerprints)||!Array.isArray(parent.conversationDigests))return null;
+    if(String(parent.model||"")!==String(model||"")||parent.messageRefs.length>refs.length||parent.requestFingerprints.length>parent.conversationDigests.length)return null;
+    for(let index=0;index<parent.messageRefs.length;index++)if(parent.messageRefs[index]!==refs[index])return null;
+    return {parentId,messageCount:parent.messageRefs.length,requestInputCount:parent.requestFingerprints.length,conversationInputCount:Array.isArray(parent.conversationDigests)?parent.conversationDigests.length:0};
+  }
+
+  prepareSuffix(suffixBody={},previousResponseId="",{messageRefs=null,identityToken=null}={}){
+    const refs=Array.isArray(messageRefs)?messageRefs:null,proof=this.preflight(previousResponseId,{messageRefs:refs,identityToken,model:suffixBody?.model});
+    if(!proof)return null;
+    const parent=this.entries.get(proof.parentId),suffixInput=Array.isArray(suffixBody?.input)?suffixBody.input:[],suffixFingerprints=suffixInput.map(fingerprint),requestFingerprints=[...parent.requestFingerprints,...suffixFingerprints];
+    const outputDigests=Array.isArray(parent.conversationDigests)?parent.conversationDigests.slice(parent.requestFingerprints.length):[];
+    if(outputDigests.length>suffixFingerprints.length)return null;
+    for(let index=0;index<outputDigests.length;index++)if(outputDigests[index]!==suffixFingerprints[index].digest)return null;
+    const fullInputDigests=requestFingerprints.map(item=>item.digest),delta=suffixInput.slice(outputDigests.length),candidate={...suffixBody,input:delta,previous_response_id:proof.parentId};
+    return {
+      body:candidate,used:true,parentId:proof.parentId,fullInputDigests,requestFingerprints,messageRefs:refs?[...refs]:null,identityToken:identityToken||null,fastPrefixCount:parent.requestFingerprints.length,
+      deltaInputCount:delta.length,fullInputCount:requestFingerprints.length,savedRequestBytes:continuationSavedRequestBytes(suffixBody,requestFingerprints,parent.conversationDigests.length,proof.parentId),inputBuildReused:true,canonicalPrefixMessageCount:proof.messageCount,
+    };
+  }
+
   prepare(fullBody={},previousResponseId="",{messageRefs=null,identityToken=null}={}){
     const input=Array.isArray(fullBody?.input)?fullBody.input:[],parentId=String(previousResponseId||"").trim(),parent=parentId?this.entries.get(parentId):null;
     const refs=Array.isArray(messageRefs)?messageRefs:null,refSnapshot=refs?[...refs]:null;

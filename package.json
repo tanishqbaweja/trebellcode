@@ -73,6 +73,7 @@
     "bench:openai:response-continuation": "node scripts/openai-response-continuation-benchmark.mjs",
     "bench:openai:continuation-accounting": "node scripts/openai-continuation-accounting-benchmark.mjs",
     "bench:openai:continuation-fingerprint-reuse": "node --expose-gc scripts/openai-response-continuation-fingerprint-benchmark.mjs",
+    "bench:openai:continuation-input-build": "node --expose-gc scripts/openai-continuation-input-build-benchmark.mjs",
     "bench:openai:responses-websocket": "node scripts/openai-responses-websocket-benchmark.mjs",
     "bench:openai:responses-input-build": "node scripts/openai-responses-input-build-benchmark.mjs",
     "bench:openai:tool-manifest-cache": "node --expose-gc scripts/openai-tool-manifest-cache-benchmark.mjs",

@@ -75,3 +75,21 @@ test("OpenAI continuation snapshots Native message refs instead of trusting a la
   const rewritten={type:"message",role:"user",content:[{type:"input_text",text:"Rewritten"}]},next=body([rewritten,...openAiContinuationOutputItems({text:"Done"}),{type:"message",role:"user",content:[{type:"input_text",text:"Next"}]}]),prepared=tracker.prepare(next,"resp-1",{messageRefs:refs,identityToken:token});
   assert.equal(prepared.fastPrefixCount,0);assert.equal(prepared.used,false,"snapshot proof must reject an in-place replacement of an old canonical message reference");
 });
+
+test("OpenAI continuation can prove a provider-input suffix without rebuilding the old canonical prefix",()=>{
+  const fast=new OpenAiResponseContinuationTracker(),slow=new OpenAiResponseContinuationTracker(),token={},userRef={role:"user",content:"Task"},assistantRef={role:"assistant",content:"",toolCalls:[]},toolRef={role:"tool",toolCallId:"call-1",content:"failed"},userItem={type:"message",role:"user",content:[{type:"input_text",text:"Task"}]},firstFast=fast.prepare(body([userItem]),"",{messageRefs:[userRef],identityToken:token}),firstSlow=slow.prepare(body([userItem]));
+  const turn={model:"gpt-5.6",text:"",toolCalls:[{id:"call-1",namespace:"trebell_terminal",name:"run",arguments:{command:"node",args:["verify.mjs"]}}]};
+  fast.record("resp-fast",firstFast,turn);slow.record("resp-slow",firstSlow,turn);
+  const replay=openAiContinuationOutputItems(turn),toolOutput={type:"function_call_output",call_id:"call-1",output:"failed"},refs=[userRef,assistantRef,toolRef],full=body([userItem,...replay,toolOutput]),suffix=body([...replay,toolOutput]),proof=fast.preflight("resp-fast",{messageRefs:refs,identityToken:token,model:"gpt-5.6"});
+  assert.equal(proof.messageCount,1);
+  const accelerated=fast.prepareSuffix(suffix,"resp-fast",{messageRefs:refs,identityToken:token}),baseline=slow.prepare(full,"resp-slow");
+  assert.equal(accelerated.used,true);assert.equal(accelerated.inputBuildReused,true);assert.equal(accelerated.canonicalPrefixMessageCount,1);assert.deepEqual(accelerated.body.input,baseline.body.input);assert.equal(accelerated.savedRequestBytes,baseline.savedRequestBytes);assert.deepEqual(accelerated.fullInputDigests,baseline.fullInputDigests);
+});
+
+test("OpenAI continuation suffix proof fails closed when replayed provider output changes",()=>{
+  const tracker=new OpenAiResponseContinuationTracker(),token={},userRef={role:"user",content:"Task"},first=tracker.prepare(body([{type:"message",role:"user",content:[{type:"input_text",text:"Task"}]}]),"",{messageRefs:[userRef],identityToken:token}),turn={model:"gpt-5.6",text:"Done",toolCalls:[]};
+  tracker.record("resp-1",first,turn);
+  const refs=[userRef,{role:"assistant",content:"Changed"},{role:"user",content:"Next"}],changed=[{type:"message",role:"assistant",content:[{type:"output_text",text:"Changed"}]},{type:"message",role:"user",content:[{type:"input_text",text:"Next"}]}];
+  assert.ok(tracker.preflight("resp-1",{messageRefs:refs,identityToken:token,model:"gpt-5.6"}));
+  assert.equal(tracker.prepareSuffix(body(changed),"resp-1",{messageRefs:refs,identityToken:token}),null);
+});
