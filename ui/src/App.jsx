@@ -42,7 +42,7 @@ import { userVerificationAvailability } from "./mcp-elicitation.js";
 import { sharedRuntimeCapabilities } from "../../src/runtime-capabilities.mjs";
 import { sharedDynamicToolNamespaces, sharedToolResponseContent } from "../../src/shared-tool-catalog.mjs";
 import { repositoryFocusPaths } from "./context-focus.js";
-import { repositoryContextEntries } from "./context-provenance.js";
+import { repositoryContextDeliveryPacket, repositoryContextEntries } from "./context-provenance.js";
 import { desktopBridgeToolAvailability } from "./desktop-tool-availability.js";
 import { hydratePersistedQueue, persistedQueueItems } from "./persistent-queue.js";
 import { contextTaskAnchor, contextTaskText } from "./context-task.js";
@@ -2704,12 +2704,13 @@ export default function App(){
         if(!background)setEvents(prev=>[...prev,{id:"context-pressure-"+packet.id,kind:"context",title:"Trebell context skipped · preserving "+Number(pressure.reserveTokens||0).toLocaleString()+" tokens for the response",status:"done",raw:{contextId:packet.id,budget:packet.budget}}]);
         return packet;
       }
-      const stored={...packet,userTask:String(text||""),queryTask:contextTask,continuityTask,runtime:agentRuntime,delivery:agentRuntime==="codex"?"additionalContext":"promptPreamble"};
+      const deliveredPacket=repositoryContextDeliveryPacket(packet,{seedOnly:agentRuntime==="native"});
+      const stored={...deliveredPacket,userTask:String(text||""),queryTask:contextTask,continuityTask,runtime:agentRuntime,delivery:agentRuntime==="codex"?"additionalContext":"promptPreamble"};
       try{await updateThreadMeta(thread.id,{trebellContext:stored,trebellContextError:null,trebellContextPressure:null},{strict:true})}
       catch(error){showActionError(error,"Repository context was injected but its inspector state could not be saved")}
       contextTaskRef.current.set(thread.id,continuityTask);
-      if(!background)setEvents(prev=>[...prev,{id:"context-"+packet.id,kind:"context",title:`Trebell context · ${packet.items?.length||0} files · ~${packet.tokenEstimate||0} tokens`,status:"done",raw:{contextId:packet.id,items:packet.items?.length||0,tokenEstimate:packet.tokenEstimate||0}}]);
-      return packet;
+      if(!background)setEvents(prev=>[...prev,{id:"context-"+deliveredPacket.id,kind:"context",title:`Trebell context · ${deliveredPacket.items?.length||0} files · ~${deliveredPacket.tokenEstimate||0} tokens`,status:"done",raw:{contextId:deliveredPacket.id,items:deliveredPacket.items?.length||0,tokenEstimate:deliveredPacket.tokenEstimate||0}}]);
+      return deliveredPacket;
     }catch(error){
       const detail=error?.message||String(error)||"Unknown context error";
       await updateThreadMeta(thread.id,{trebellContextError:{message:detail,at:Date.now(),runtime:agentRuntime}}).catch(()=>{});

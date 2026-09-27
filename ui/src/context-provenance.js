@@ -18,6 +18,21 @@ export function repositoryContextSeed(packet={}){
   return lines.join("\n").slice(0,6000);
 }
 
+export function repositoryContextDeliveryPacket(packet={},{seedOnly=false}={}){
+  if(!seedOnly||!packet||typeof packet!=="object")return packet;
+  const instructionInjection=String(packet.instructionInjection||"").trim();
+  const untrustedInjection=repositoryContextSeed(packet);
+  const injection=[instructionInjection,untrustedInjection].filter(Boolean).join("\n\n").trim();
+  return {
+    ...packet,
+    injection,
+    instructionInjection,
+    untrustedInjection,
+    tokenEstimate:Math.ceil(injection.length/4),
+    deliveryProjection:"seed",
+  };
+}
+
 export function repositoryContextEntries(packet={},{seedOnly=false}={}){
   const instructions=String(packet?.instructionInjection||"").trim();
   const evidence=seedOnly?repositoryContextSeed(packet):String(packet?.untrustedInjection||"").trim();
