@@ -40,6 +40,8 @@
     "bench:vyce:native:budget-finalization": "node --env-file-if-exists=.env scripts/live-vyce-native-budget-finalization-benchmark.mjs --live",
     "bench:vyce:native:shell-hint": "node --env-file-if-exists=.env scripts/live-vyce-native-shell-hint-benchmark.mjs --live",
     "bench:vyce:native:toolcall-history": "node --env-file-if-exists=.env scripts/live-vyce-native-toolcall-history-benchmark.mjs --live",
+    "bench:vyce:native:prior-context": "node --env-file-if-exists=.env scripts/live-vyce-native-prior-context-benchmark.mjs --live",
+    "bench:vyce:native:prior-context-mixed": "node --env-file-if-exists=.env scripts/live-vyce-native-prior-context-mixed-benchmark.mjs --live",
     "test:vyce:cache": "node --env-file-if-exists=.env scripts/live-vyce-cache-test.mjs --live",
     "test:vyce:background": "node --env-file-if-exists=.env scripts/live-vyce-background-test.mjs --live",
     "test:vyce:fanout": "node --env-file-if-exists=.env scripts/live-vyce-fanout-test.mjs --live",

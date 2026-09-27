@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { NativeAgentSession, nativeCompactionMessage, nativeMessagesFromThread } from "../src/native-agent-session.mjs";
 import { NativeToolOutputStore } from "../src/native-tool-output-store.mjs";
 import { agentToolLifecycle } from "../src/agent-relay.mjs";
+import { attachNativePromptProvenance } from "../src/native-request-metrics.mjs";
 const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
 
 test("Native session implements the relay start/prompt contract with usage updates",async()=>{
@@ -20,6 +21,72 @@ test("Native session implements the relay start/prompt contract with usage updat
   assert.equal(result.stopReason,"end_turn");assert.equal(result.providerMessageId,"resp-1");
   const message=updates.find(item=>item.update.sessionUpdate==="agent_message_chunk");assert.equal(message.update.content.text,"hi");
   const usage=updates.find(item=>item.update.sessionUpdate==="usage_update");assert.equal(usage.update.used,6);assert.equal(usage.update.usage.cache_read_input_tokens,1);
+});
+
+test("Native session replaces old generated working context when a newer packet arrives on non-cache providers",async()=>{
+  const requests=[],events=[];let calls=0;
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model-a",onEvent:event=>events.push(event),
+    providerTurn:async request=>{requests.push(structuredClone(request));calls++;return {id:"r"+calls,text:calls===1?"first done":"second done",toolCalls:[],usage:{}}},
+    executeTool:async()=>{throw new Error("not used")},
+  });
+  await session.start({providerSessionId:"native-context-cooling",model:"model-a"});
+  const oldContext="OLD_CONTEXT "+("x".repeat(6000)),newContext="NEW_CONTEXT "+("y".repeat(6000));
+  await session.prompt([
+    attachNativePromptProvenance({type:"text",text:oldContext},{kind:"working_context",contextText:oldContext,contextEntries:[{source:"repo",kind:"application",value:oldContext}]}),
+    attachNativePromptProvenance({type:"text",text:"first task"},{kind:"user_input",userParts:["first task"]}),
+  ]);
+  await session.prompt([
+    attachNativePromptProvenance({type:"text",text:newContext},{kind:"working_context",contextText:newContext,contextEntries:[{source:"repo",kind:"application",value:newContext}]}),
+    attachNativePromptProvenance({type:"text",text:"second task"},{kind:"user_input",userParts:["second task"]}),
+  ]);
+  const secondRequest=JSON.stringify(requests[1].messages);
+  assert.doesNotMatch(secondRequest,/OLD_CONTEXT x{100}/);assert.match(secondRequest,/prior generated working context omitted/i);assert.match(secondRequest,/NEW_CONTEXT y{100}/);assert.match(secondRequest,/first task/);assert.match(secondRequest,/second task/);
+  assert.ok(events.some(event=>event.name==="native.context.history_cooled"&&event.data?.savedChars>5000));
+});
+
+test("Native session preserves prior generated working context for cache-capable providers",async()=>{
+  const requests=[];let calls=0;
+  const session=new NativeAgentSession({
+    provider:"openai",model:"gpt-5.6",
+    providerTurn:async request=>{requests.push(structuredClone(request));calls++;return {id:"r"+calls,text:"done",toolCalls:[],usage:{}}},
+    executeTool:async()=>{throw new Error("not used")},
+  });
+  await session.start({providerSessionId:"native-context-cache",model:"gpt-5.6"});
+  const oldContext="OLD_CACHE_CONTEXT "+("x".repeat(6000)),newContext="NEW_CACHE_CONTEXT "+("y".repeat(6000));
+  const prompt=(context,text)=>[
+    attachNativePromptProvenance({type:"text",text:context},{kind:"working_context",contextText:context,contextEntries:[{source:"repo",kind:"application",value:context}]}),
+    attachNativePromptProvenance({type:"text",text},{kind:"user_input",userParts:[text]}),
+  ];
+  await session.prompt(prompt(oldContext,"first task"));await session.prompt(prompt(newContext,"second task"));
+  const secondRequest=JSON.stringify(requests[1].messages);
+  assert.match(secondRequest,/OLD_CACHE_CONTEXT x{100}/);assert.match(secondRequest,/NEW_CACHE_CONTEXT y{100}/);assert.doesNotMatch(secondRequest,/prior generated working context omitted/i);
+});
+
+test("Native session cools only replaced sources and preserves one-off prior context",async()=>{
+  const requests=[];let calls=0;
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model-a",
+    providerTurn:async request=>{requests.push(structuredClone(request));calls++;return {id:"r"+calls,text:"done",toolCalls:[],usage:{}}},
+    executeTool:async()=>{throw new Error("not used")},
+  });
+  await session.start({providerSessionId:"native-context-source-safety",model:"model-a"});
+  const oldContext="OLD_MIXED_CONTEXT "+("x".repeat(6000)),newContext="NEW_REPO_CONTEXT "+("y".repeat(6000));
+  await session.prompt([
+    attachNativePromptProvenance({type:"text",text:oldContext},{kind:"working_context",contextText:oldContext,contextEntries:[
+      {source:"trebell.repo_evidence",kind:"untrusted",value:"repo"},
+      {source:"user.selection",kind:"application",value:"one-off selection"},
+    ]}),
+    attachNativePromptProvenance({type:"text",text:"first task"},{kind:"user_input",userParts:["first task"]}),
+  ]);
+  await session.prompt([
+    attachNativePromptProvenance({type:"text",text:newContext},{kind:"working_context",contextText:newContext,contextEntries:[
+      {source:"trebell.repo_evidence",kind:"untrusted",value:"new repo"},
+    ]}),
+    attachNativePromptProvenance({type:"text",text:"second task"},{kind:"user_input",userParts:["second task"]}),
+  ]);
+  const secondRequest=JSON.stringify(requests[1].messages);
+  assert.doesNotMatch(secondRequest,/OLD_MIXED_CONTEXT x{100}/);assert.match(secondRequest,/NEW_REPO_CONTEXT y{100}/);assert.match(secondRequest,/one-off selection/);assert.match(secondRequest,/retained prior working-context sources/i);
 });
 
 test("Native session reports namespaced tool lifecycle and keeps observations in provider history",async()=>{

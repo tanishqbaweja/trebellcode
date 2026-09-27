@@ -98,6 +98,48 @@ function promptMessage(prompt=[]){
   return attachNativePromptProvenance({role:"user",content:content.length===1&&content[0].type==="text"?content[0].text:content},{userParts,contextText,contextEntries});
 }
 
+const SUPERSEDED_WORKING_CONTEXT="Trebell prior generated working context omitted because a newer Trebell working-context packet supersedes it.";
+const RETAINED_WORKING_CONTEXT_HEADER="Trebell retained prior working-context sources that are not present in the newer Trebell working-context packet.";
+
+function contextEntryKey(entry={}){
+  return String(entry.source||"")+"|"+String(entry.kind||"");
+}
+
+function retainedWorkingContext(entries=[]){
+  const blocks=(Array.isArray(entries)?entries:[]).map(entry=>{
+    const source=String(entry?.source||"").trim(),value=String(entry?.value||"").trim();if(!source||!value)return "";
+    const kind=entry?.kind==="application"?"application":"untrusted";
+    return `[${kind} context · ${source}]\n${value}`;
+  }).filter(Boolean);
+  return blocks.length?RETAINED_WORKING_CONTEXT_HEADER+"\n\n"+blocks.join("\n\n"):SUPERSEDED_WORKING_CONTEXT;
+}
+
+function coolSupersededWorkingContext(messages=[],replacementEntries=[]){
+  const replacementKeys=new Set((Array.isArray(replacementEntries)?replacementEntries:[]).map(contextEntryKey).filter(key=>key!=="|"));
+  if(!replacementKeys.size)return {messages:Array.isArray(messages)?messages:[],count:0,savedChars:0,supersededEntries:0,retainedEntries:0};
+  let count=0,savedChars=0,supersededEntries=0,retainedEntries=0;
+  const cooled=(Array.isArray(messages)?messages:[]).map(message=>{
+    if(message?.role!=="user")return message;
+    const meta=message[NATIVE_PROMPT_PROVENANCE],contextText=String(meta?.contextText||""),oldEntries=Array.isArray(meta?.contextEntries)?meta.contextEntries:[];
+    if(contextText.length<512||!oldEntries.length)return message;
+    const retained=oldEntries.filter(entry=>!replacementKeys.has(contextEntryKey(entry))),removed=oldEntries.length-retained.length;if(!removed)return message;
+    const replacement=retainedWorkingContext(retained);
+    let replaced=false,content=message.content;
+    if(typeof content==="string"){
+      if(content===contextText){content=replacement;replaced=true}
+    }else if(Array.isArray(content)){
+      content=content.map(part=>{
+        if(part?.type==="text"&&String(part.text||"")===contextText){replaced=true;return {...part,text:replacement}}
+        return part;
+      });
+    }
+    if(!replaced)return message;
+    count++;savedChars+=Math.max(0,contextText.length-replacement.length);supersededEntries+=removed;retainedEntries+=retained.length;
+    return attachNativePromptProvenance({...message,content},{...meta,contextText:replacement,contextEntries:retained});
+  });
+  return {messages:cooled,count,savedChars,supersededEntries,retainedEntries};
+}
+
 function contentItems(value){
   if(Array.isArray(value?.contentItems))return value.contentItems;
   if(typeof value==="string")return [{type:"inputText",text:value}];
@@ -225,7 +267,9 @@ export class NativeAgentSession{
   async prompt(prompt,{messageId=null,maxModelTurns=24,maxToolCalls=100,maxOutputTokens=null,maxWallTimeMs=null,toolAllowlist=null}={}){
     if(this.closed)throw new Error("Native session is closed");if(!this.model)throw new Error("Trebell Native requires a model");
     if(this.turnActive)throw new Error("Trebell Native already has a running turn");
-    this.controller=new AbortController();this.turnActive=true;this.pendingSteering=[];const user=promptMessage(prompt),base=[...this.messages,user],observationSnapshot=new Map(this.observationCache),preserveCacheHistory=preserveCacheableProviderHistory(this.provider);
+    this.controller=new AbortController();this.turnActive=true;this.pendingSteering=[];const user=promptMessage(prompt),observationSnapshot=new Map(this.observationCache),preserveCacheHistory=preserveCacheableProviderHistory(this.provider),userMeta=user[NATIVE_PROMPT_PROVENANCE],freshEntries=Array.isArray(userMeta?.contextEntries)?userMeta.contextEntries:[],hasFreshWorkingContext=Boolean(String(userMeta?.contextText||"").trim()&&freshEntries.length);
+    const priorContext=preserveCacheHistory||!hasFreshWorkingContext?{messages:this.messages,count:0,savedChars:0,supersededEntries:0,retainedEntries:0}:coolSupersededWorkingContext(this.messages,freshEntries),base=[...priorContext.messages,user];
+    if(priorContext.count)this.onEvent?.({name:"native.context.history_cooled",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{count:priorContext.count,savedChars:priorContext.savedChars,supersededEntries:Number(priorContext.supersededEntries||0),retainedEntries:Number(priorContext.retainedEntries||0)}});
     const wrappedExecutor=async call=>{
       const definition=platformToolDefinition(call.namespace,call.name),kind=definition?.policy?.kind||"other";
       this.onUpdate({update:{sessionUpdate:"tool_call",toolCallId:call.id,namespace:call.namespace||"native",tool:call.name,title:(call.namespace?call.namespace+" / ":"")+call.name,kind,rawInput:call.arguments,status:"in_progress"}});
