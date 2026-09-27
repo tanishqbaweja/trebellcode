@@ -162,3 +162,10 @@ export function coolNativeProviderHistory(messages=[],options={}){
     toolCallArgumentSavedChars:argumentsResult.savedChars,
   };
 }
+
+export function coolNativeProviderHistorySince(messages=[],startIndex=0,options={}){
+  const source=Array.isArray(messages)?messages:[],boundary=Math.max(0,Math.min(source.length,Math.trunc(Number(startIndex)||0)));
+  if(boundary===0)return coolNativeProviderHistory(source,options);
+  const cooled=coolNativeProviderHistory(source.slice(boundary),options);
+  return {...cooled,messages:[...source.slice(0,boundary),...cooled.messages]};
+}
