@@ -35,7 +35,8 @@ async function run(provider){
     const hot=String(requests[1].messages.find(message=>message.role==="tool"&&message.toolCallId==="big")?.content||"");
     const later=String(requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="big")?.content||"");
     const persisted=String(session.messages.find(message=>message.role==="tool"&&message.toolCallId==="big")?.content||"");
-    assert.ok(hot.length>3000);
+    assert.ok(hot.length>512,"virtualized hot evidence should retain a meaningful preview");
+    assert.match(hot,/CRITICAL_ASSERTION expected strict but received legacy/,"hot preview should retain the decisive failure signal");
     return {
       provider,
       hotChars:hot.length,
