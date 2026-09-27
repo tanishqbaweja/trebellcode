@@ -30,7 +30,7 @@ test("direct-status saved-character accounting stays exact across multiple compa
 
 test("direct-status history compaction reports zero savings when no matching receipt exists",()=>{
   const source=Array.from({length:200},(_,index)=>({role:index%2?"assistant":"user",content:"message "+index+" "+"x".repeat(200)})),result=compactDirectTerminalStatusProviderHistory(source);
-  assert.equal(result.count,0);assert.equal(result.savedChars,0);assert.deepEqual(result.messages,source);
+  assert.equal(result.count,0);assert.equal(result.savedChars,0);assert.equal(result.messages,source);assert.deepEqual(result.messages,source);
 });
 
 test("large historical workspace write arguments compact to a valid bounded receipt",()=>{

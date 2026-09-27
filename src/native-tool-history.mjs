@@ -36,7 +36,7 @@ function toolCallIdentityWithId(call={}){
 }
 
 export function compactDirectTerminalStatusProviderHistory(messages=[]){
-  const source=Array.isArray(messages)?messages:[],out=[];let count=0,savedChars=0;
+  const source=Array.isArray(messages)?messages:[];let out=null,count=0,savedChars=0;
   for(let index=0;index<source.length;index++){
     const assistant=source[index],tool=source[index+1],receipt=source[index+2],calls=messageToolCalls(assistant);
     if(assistant?.role==="assistant"&&calls.length===1&&tool?.role==="tool"&&receipt?.role==="assistant"){
@@ -47,13 +47,13 @@ export function compactDirectTerminalStatusProviderHistory(messages=[]){
           const note=`[Full command output handle: ${handle}; inspect via trebell_output/inspect only if needed.]`;
           const compactedReceipt={...receipt,content:receipt.content+"\n"+note};
           savedChars+=JSON.stringify(assistant).length+JSON.stringify(tool).length+JSON.stringify(receipt).length+2-JSON.stringify(compactedReceipt).length;
-          out.push(compactedReceipt);index+=2;count++;continue;
+          if(!out)out=source.slice(0,index);out.push(compactedReceipt);index+=2;count++;continue;
         }
       }
     }
-    out.push(source[index]);
+    if(out)out.push(source[index]);
   }
-  return {messages:out,count,savedChars:Math.max(0,savedChars)};
+  return {messages:out||source,count,savedChars:Math.max(0,savedChars)};
 }
 
 function coldPreview(value,maxChars){
