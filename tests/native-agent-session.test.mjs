@@ -155,6 +155,66 @@ test("Native session returns full file content again when a repeated read has ch
   assert.doesNotMatch(requests[2].messages.at(-1).content,/byte-identical/i);
 });
 
+test("Native session deduplicates only byte-identical repeated repository searches",async()=>{
+  const requests=[],events=[];let providerCalls=0,searches=0;
+  const session=new NativeAgentSession({
+    model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_repo",tools:[]}],onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {id:"search-1",text:"",toolCalls:[{id:"search-a",namespace:"trebell_repo",name:"search_code",arguments:'{"query":"needle"}'}],usage:{}};
+      if(providerCalls===2)return {id:"search-2",text:"",toolCalls:[{id:"search-b",namespace:"trebell_repo",name:"search_code",arguments:'{"query":"needle"}'}],usage:{}};
+      return {id:"done",text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>{
+      searches++;
+      return {query:"needle",matches:Array.from({length:80},(_,index)=>({path:"src/file-"+index+".mjs",line:index+1,text:"needle "+"x".repeat(80)}))};
+    },
+  });
+  await session.start({providerSessionId:"native-search-dedupe",model:"model-a"});await session.prompt([{type:"text",text:"search twice"}]);
+  assert.equal(searches,2);
+  const firstObservation=requests[1].messages.at(-1);assert.equal(firstObservation.role,"tool");assert.match(firstObservation.content,/file-79/);
+  const repeatedObservation=requests[2].messages.at(-1);assert.equal(repeatedObservation.role,"tool");assert.match(repeatedObservation.content,/byte-identical/i);assert.doesNotMatch(repeatedObservation.content,/file-79/);
+  const dedupe=events.find(event=>event.name==="native.tool.observation_deduplicated"&&event.data?.namespace==="trebell_repo"&&event.data?.name==="search_code");assert.ok(dedupe);assert.ok(dedupe.data.savedBytes>5000);
+});
+
+test("Native session returns changed repository search results in full",async()=>{
+  const requests=[];let providerCalls=0,searches=0;
+  const session=new NativeAgentSession({
+    model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_repo",tools:[]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {id:"search-1",text:"",toolCalls:[{id:"search-a",namespace:"trebell_repo",name:"search_code",arguments:'{"query":"needle"}'}],usage:{}};
+      if(providerCalls===2)return {id:"search-2",text:"",toolCalls:[{id:"search-b",namespace:"trebell_repo",name:"search_code",arguments:'{"query":"needle"}'}],usage:{}};
+      return {id:"done",text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>{
+      searches++;
+      return {query:"needle",matches:[{path:"src/file.mjs",line:1,text:searches===1?"needle old":"needle changed"}]};
+    },
+  });
+  await session.start({providerSessionId:"native-search-changed",model:"model-a"});await session.prompt([{type:"text",text:"search twice"}]);
+  assert.equal(searches,2);
+  const repeatedObservation=requests[2].messages.at(-1);assert.equal(repeatedObservation.role,"tool");assert.match(repeatedObservation.content,/needle changed/);assert.doesNotMatch(repeatedObservation.content,/byte-identical/i);
+});
+
+test("Native session never deduplicates repeated failed repository search observations",async()=>{
+  const requests=[],events=[];let providerCalls=0;
+  const session=new NativeAgentSession({
+    model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_repo",tools:[]}],onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {id:"search-1",text:"",toolCalls:[{id:"search-a",namespace:"trebell_repo",name:"search_code",arguments:'{"query":"needle"}'}],usage:{}};
+      if(providerCalls===2)return {id:"search-2",text:"",toolCalls:[{id:"search-b",namespace:"trebell_repo",name:"search_code",arguments:'{"query":"needle"}'}],usage:{}};
+      return {id:"done",text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>({success:false,error:"SEARCH_FAILED "+"E".repeat(2_000)}),
+  });
+  await session.start({providerSessionId:"native-search-failure",model:"model-a"});await session.prompt([{type:"text",text:"retry failed search"}]);
+  assert.match(requests[1].messages.at(-1).content,/SEARCH_FAILED/);assert.match(requests[2].messages.at(-1).content,/SEARCH_FAILED/);
+  assert.doesNotMatch(requests[2].messages.at(-1).content,/byte-identical/i);
+  assert.equal(events.filter(event=>event.name==="native.tool.observation_deduplicated").length,0);
+});
+
 test("Native session passes a recipe tool allowlist only to tool calls in that turn",async()=>{
   const contexts=[],providerTools=[];let providerCalls=0;
   const session=new NativeAgentSession({

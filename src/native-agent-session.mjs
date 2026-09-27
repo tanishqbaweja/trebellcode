@@ -141,6 +141,9 @@ function workspaceReadAsSource(file,args={}){
 const DEDUPLICABLE_OBSERVATIONS=new Set([
   "trebell_workspace/read_file",
   "trebell_repo/read_source",
+  "trebell_repo/search_code",
+  "trebell_repo/search_symbols",
+  "trebell_repo/search_files",
 ]);
 
 function stableJson(value){
@@ -235,16 +238,19 @@ export class NativeAgentSession{
       }
       const key=observationKey(call),digest=key?observationDigest(output):null,prior=key?this.observationCache.get(key):null;
       let observed=output;
-      if(key&&prior&&prior.hash===digest.hash&&digest.bytes>=512){
+      const reusable=Boolean(key)&&output?.success!==false&&output?.uncertain!==true;
+      if(reusable&&prior&&prior.hash===digest.hash&&digest.bytes>=512){
         observed={
           success:true,unchanged:true,
-          message:"Trebell re-read this target and the result is byte-identical to the previous hot observation already present in this conversation.",
+          message:"Trebell re-read this target and the result is byte-identical to the previous observation already present in this conversation.",
           _trebell_observation:{hash:digest.hash,originalBytes:digest.bytes,previousToolCallId:prior.toolCallId||null},
         };
         const markerBytes=Buffer.byteLength(JSON.stringify(observed),"utf8");
         this.onEvent?.({name:"native.tool.observation_deduplicated",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{namespace:call.namespace||null,name:call.name||null,originalBytes:digest.bytes,markerBytes,savedBytes:Math.max(0,digest.bytes-markerBytes),hash:digest.hash}});
-      }else if(key){
+      }else if(reusable){
         this.observationCache.set(key,{hash:digest.hash,bytes:digest.bytes,toolCallId:String(call.id||"")});
+      }else if(key){
+        this.observationCache.delete(key);
       }
       const shaped=this.toolOutputStore?await this.toolOutputStore.virtualize(observed,{namespace:call.namespace||null,name:call.name||null}):{value:observed,virtualized:false};
       const modelOutput=shaped.value,failed=modelOutput?.success===false;
