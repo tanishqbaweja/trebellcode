@@ -125,13 +125,14 @@ const scenarios=[
       {
         prompt:"Run node noisy-verify.mjs now. Do not read or edit project files in this turn. Inspect only the command evidence Trebell returns; if output is virtualized, use the output handle only when the preview is insufficient.",
         toolAllowlist:["trebell_terminal/run","trebell_output"],
-        maxModelTurns:8,maxToolCalls:12,
+        maxModelTurns:8,maxToolCalls:1,
       },
       {
         prompt:"Now diagnose the failure you just observed, fix the project without weakening noisy-verify.mjs, and re-run node noisy-verify.mjs until it passes.",
         maxModelTurns:6,maxToolCalls:24,
       },
     ],
+    requiredFirstTurnCommand:{command:"node",args:["noisy-verify.mjs"]},
     verify:async root=>{await verifyNode(root,"noisy-verify.mjs","BENCH_NOISY_PASS");assert.match(await readFile(join(root,"src/config.mjs"),"utf8"),/strict/)},
   },
   {
@@ -351,9 +352,10 @@ async function runScenario(scenario){
       onEvent:event=>events.push(event),onUpdate:update=>updates.push(update),
     });
     await session.start({providerSessionId:"bench-"+scenario.name,model});
-    const turnSpecs=Array.isArray(scenario.turns)&&scenario.turns.length?scenario.turns:[{prompt:scenario.prompt,maxModelTurns:10,maxToolCalls:80,toolAllowlist:scenario.toolAllowlist}],turnResults=[];let turnFailure=null;
+    const turnSpecs=Array.isArray(scenario.turns)&&scenario.turns.length?scenario.turns:[{prompt:scenario.prompt,maxModelTurns:10,maxToolCalls:80,toolAllowlist:scenario.toolAllowlist}],turnResults=[],turnToolDetails=[];let turnFailure=null;
     const started=performance.now();
     for(const turn of turnSpecs){
+      const beforeToolUpdates=updates.filter(item=>item.update?.sessionUpdate==="tool_call_update").length;
       const packet=await contextEngine.buildPacket({root,task:turn.prompt,focusPaths:Object.prototype.hasOwnProperty.call(scenario.files,"TASK.md")?["TASK.md"]:[]});
       const additionalContext=repositoryContextEntries(packet,{seedOnly:true,currentTask:turn.prompt});
       const prompt=await contextualAgentPrompt([{type:"text",text:turn.prompt}],additionalContext);
@@ -362,6 +364,12 @@ async function runScenario(scenario){
           maxModelTurns:turn.maxModelTurns||10,maxToolCalls:turn.maxToolCalls||80,maxWallTimeMs:240_000,
           toolAllowlist:Array.isArray(turn.toolAllowlist)?turn.toolAllowlist:null,
         }));
+        const completedToolUpdates=updates.filter(item=>item.update?.sessionUpdate==="tool_call_update").slice(beforeToolUpdates);
+        turnToolDetails.push(completedToolUpdates.map(item=>({
+          tool:String(item.update?.namespace||"")+"/"+String(item.update?.tool||""),
+          arguments:item.update?.rawInput&&typeof item.update.rawInput==="object"?item.update.rawInput:{},
+          status:item.update?.status||null,
+        })));
       }catch(error){
         turnFailure={code:error?.code||null,message:String(error?.message||error).slice(0,2000),modelTurns:Number(error?.nativeModelTurns||0),toolCalls:Number(error?.nativeToolCalls||0),usage:error?.nativeUsage||null};
         break;
@@ -396,6 +404,12 @@ async function runScenario(scenario){
     const firstVerifyIndex=toolNames.indexOf("trebell_terminal/run");
     const firstEditIndex=toolNames.findIndex(name=>name==="trebell_workspace/replace_text"||name==="trebell_workspace/write_file");
     const verificationBeforeEdit=!scenario.requireVerificationBeforeEdit||(firstVerifyIndex>=0&&(firstEditIndex<0||firstVerifyIndex<firstEditIndex));
+    const requiredFirstTurn=scenario.requiredFirstTurnCommand;
+    const firstTurnExactCommand=!requiredFirstTurn||(()=>{
+      const first=turnToolDetails[0]||[];if(first.length!==1)return false;
+      const detail=first[0],args=detail.arguments||{};
+      return detail.tool==="trebell_terminal/run"&&detail.status==="completed"&&String(args.command||"")===String(requiredFirstTurn.command||"")&&JSON.stringify(Array.isArray(args.args)?args.args.map(String):[])===JSON.stringify((requiredFirstTurn.args||[]).map(String));
+    })();
     const virtualizationSatisfied=!scenario.requireVirtualizedOutput||virtualized.length>0;
     const agentMessages=updates.filter(item=>item.update?.sessionUpdate==="agent_message_chunk").map(item=>String(item.update?.content?.text||"")).filter(Boolean);
     const toolDetails=toolUpdates.map(item=>{
@@ -411,7 +425,7 @@ async function runScenario(scenario){
       };
     });
     return {
-      name:scenario.name,ok:!turnFailure&&independentVerificationPassed&&verificationBeforeEdit&&virtualizationSatisfied,elapsedMs,userTurns:turnResults.length,modelTurns:requested.length,providerAttempts:providerRequests.length,providerRetryAttempts:retryEvents.length,toolCalls:toolUpdates.length,
+      name:scenario.name,ok:!turnFailure&&independentVerificationPassed&&verificationBeforeEdit&&virtualizationSatisfied&&firstTurnExactCommand,elapsedMs,userTurns:turnResults.length,modelTurns:requested.length,providerAttempts:providerRequests.length,providerRetryAttempts:retryEvents.length,toolCalls:toolUpdates.length,
       ...aggregate,...toolTiming,cacheHitPercent:aggregate.inputTokens?Number((aggregate.cachedInputTokens/aggregate.inputTokens*100).toFixed(2)):0,
       stablePrefixVariants:new Set(completed.map(event=>event.data?.requestMetrics?.stablePrefixHash).filter(Boolean)).size,
       toolSchemaVariants:new Set(completed.map(event=>event.data?.requestMetrics?.toolSchemaHash).filter(Boolean)).size,
@@ -455,7 +469,7 @@ async function runScenario(scenario){
       synthesizedVerificationCompletions:events.filter(event=>event.name==="native.verification.completion_synthesized").length,
       virtualizedBytes:virtualized.reduce((sum,item)=>sum+Number(item.totalBytes||0),0),
       usedOutputRetrieval:toolUpdates.some(item=>item.update?.namespace==="trebell_output"),
-      turnFailure,independentVerificationPassed,independentVerificationError,verificationBeforeEdit,virtualizationSatisfied,
+      turnFailure,independentVerificationPassed,independentVerificationError,verificationBeforeEdit,virtualizationSatisfied,firstTurnExactCommand,turnToolDetails,
       finalAgentMessage:agentMessages.at(-1)?.slice(-2000)||"",
       tools:toolNames,
       toolDetails,
