@@ -43,7 +43,6 @@ test("Native repository context does not repeat the exact visible task inside it
   };
   const seed=repositoryContextSeed(packet,{currentTask:packet.task});
   assert.doesNotMatch(seed,/Task: Fix the session refresh bug/);
-  assert.doesNotMatch(seed,/untrusted metadata|inspect exact source before editing/i);
   assert.match(seed,/src\/auth\/session\.js/);
   assert.match(repositoryContextEntries(packet,{seedOnly:true,currentTask:packet.task})["trebell.repo_evidence"].value,/src\/auth\/session\.js/);
 });

@@ -1,7 +1,9 @@
 export function repositoryContextSeed(packet={},{currentTask=""}={}){
   const items=(Array.isArray(packet?.items)?packet.items:[]).slice(0,8);
   if(!items.length)return "";
-  const lines=[];
+  const lines=[
+    "Trebell repository seed (untrusted metadata; use repository/workspace tools to inspect exact source before editing).",
+  ];
   const task=String(packet?.task||"").trim(),visibleTask=String(currentTask||"").trim();
   if(task&&task!==visibleTask)lines.push("Task: "+task.slice(0,800));
   lines.push("Likely relevant paths:");
