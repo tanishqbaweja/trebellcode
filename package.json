@@ -58,6 +58,7 @@
     "bench:native:message-serialization-cache": "node --expose-gc scripts/native-message-serialization-cache-benchmark.mjs",
     "bench:native:history-hash-cache": "node --expose-gc scripts/native-history-hash-cache-benchmark.mjs",
     "bench:native:message-classification-cache": "node --expose-gc scripts/native-message-classification-cache-benchmark.mjs",
+    "bench:native:provider-history-projector": "node --expose-gc scripts/native-provider-history-projector-benchmark.mjs",
     "bench:native:tool-schema-metrics-cache": "node --expose-gc scripts/native-tool-schema-metrics-cache-benchmark.mjs",
     "bench:native:latest-user-lookup": "node --expose-gc scripts/native-latest-user-lookup-benchmark.mjs",
     "bench:native:tool-repair-scan": "node --expose-gc scripts/native-tool-repair-scan-benchmark.mjs",

@@ -69,6 +69,7 @@ export function createDirectTerminalStatusProviderHistoryProjector(){
     if(source!==sourceRef||source.length<stableThrough){sourceRef=source;stableThrough=0;stableMessages=[];count=0;savedChars=0}
     const next=compactDirectTerminalStatusRange(source,stableThrough,{stableOnly:true});
     if(next.consumed>stableThrough){stableMessages.push(...next.messages);stableThrough=next.consumed;count+=next.count;savedChars+=next.savedChars}
+    if(count===0)return {messages:source,count:0,savedChars:0};
     return {messages:stableThrough===source.length?[...stableMessages]:[...stableMessages,...source.slice(stableThrough)],count,savedChars};
   };
 }
