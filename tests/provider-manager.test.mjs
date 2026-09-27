@@ -430,6 +430,22 @@ test("official Anthropic Native tool-manifest cache preserves exact wire JSON an
   const first=JSON.parse(cached[0]),mutated=JSON.parse(cached[2]);assert.equal(first.tools[0].description,"Read one file");assert.equal(mutated.tools[0].description,"Read one file exactly");
 });
 
+test("official OpenAI prompt-cache key memoization preserves exact wire JSON and invalidates with exact cache-key inputs",async()=>{
+  const tools=[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file",description:"Read file",inputSchema:{type:"object",properties:{path:{type:"string"}},required:["path"]}}]}],baseMessages=[{role:"system",content:"Stable coding instructions"},{role:"developer",content:"Stable project instructions"},{role:"user",content:"Fix the parser"}],changedMessages=[{role:"system",content:"Different coding instructions"},{role:"developer",content:"Stable project instructions"},{role:"user",content:"Fix the parser"}];
+  const requestFor=(messages,parallelToolCalls=true)=>{const metrics=nativeRequestMetrics(messages,tools);return {model:"gpt-5.6",messages,tools,parallelToolCalls,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:metrics[NATIVE_TOOL_SCHEMA_FINGERPRINT]}};
+  const requests=[requestFor(baseMessages),requestFor([...baseMessages,{role:"assistant",content:"working"},{role:"user",content:"continue"}]),requestFor(changedMessages),requestFor(baseMessages,false)];
+  const run=async cacheSize=>{
+    const root=mkdtempSync(join(tmpdir(),"trebell-provider-cache-key-")),bodies=[];
+    try{
+      const manager=new ProviderManager({env:{TREBELL_HOME:root},openAiPromptCacheKeyCacheSize:cacheSize,fetchFn:async(_url,init={})=>{bodies.push(String(init.body||""));const body=JSON.parse(init.body||"{}");return Response.json({id:"resp-"+bodies.length,model:body.model,status:"completed",output:[],usage:{}})}});manager.setKey("openai","oa-key");
+      for(const request of requests)await manager.turn("openai",request);
+      return bodies;
+    }finally{rmSync(root,{recursive:true,force:true})}
+  };
+  const uncached=await run(0),cached=await run(16);assert.deepEqual(cached,uncached);
+  const parsed=cached.map(body=>JSON.parse(body));assert.equal(parsed[0].prompt_cache_key,parsed[1].prompt_cache_key);assert.notEqual(parsed[0].prompt_cache_key,parsed[2].prompt_cache_key);assert.notEqual(parsed[0].prompt_cache_key,parsed[3].prompt_cache_key);
+});
+
 test("official OpenAI keeps late developer finalization out of the stable instruction prefix",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-")),bodies=[];
   const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{

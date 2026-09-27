@@ -215,14 +215,14 @@ function officialOpenAiTools(requestTools=[]){
   }
   return tools;
 }
-function officialOpenAiResponsesBody(request={},toolManifest=null){
+function officialOpenAiResponsesBody(request={},toolManifest=null,promptCacheKeyForBody=null){
   const explicitCacheBreakpoints=officialOpenAiExplicitCacheBreakpointsSupported(request.model),body=providerTurnToResponses(request,{preserveInstructionOrder:true,flattenToolCallNames:true,toolResultCacheBreakpoints:explicitCacheBreakpoints});
   const tools=Array.isArray(toolManifest?.tools)?toolManifest.tools:officialOpenAiTools(request.tools);body.tools=tools;
   if(explicitCacheBreakpoints){
     const comparisonResponseId=String(request.promptCacheComparisonResponseId||"").trim();
     body.prompt_cache_options={mode:"implicit",...(comparisonResponseId?{comparison_response_id:comparisonResponseId}:{})};
   }
-  body.prompt_cache_key=officialOpenAiPromptCacheKey(body,toolManifest?.toolsJson);
+  body.prompt_cache_key=typeof promptCacheKeyForBody==="function"?promptCacheKeyForBody(body,toolManifest?.toolsJson):officialOpenAiPromptCacheKey(body,toolManifest?.toolsJson);
   return body;
 }
 
@@ -325,7 +325,7 @@ function remainingProviderRequestMs(deadlineAt){
 }
 
 export class ProviderManager {
-  constructor({ env = process.env, fetchFn = fetch, requestTimeoutMs = DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS, openAiResponsesWebSocketFactory=null, openAiResponsesWebSocketRetryMs=30_000, openAiToolManifestCacheSize=32, anthropicToolManifestCacheSize=32, nowFn=Date.now } = {}) {
+  constructor({ env = process.env, fetchFn = fetch, requestTimeoutMs = DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS, openAiResponsesWebSocketFactory=null, openAiResponsesWebSocketRetryMs=30_000, openAiToolManifestCacheSize=32, openAiPromptCacheKeyCacheSize=128, anthropicToolManifestCacheSize=32, nowFn=Date.now } = {}) {
     this.env = env;
     this.fetchFn = fetchFn;
     const timeoutMs = Math.trunc(Number(requestTimeoutMs));
@@ -339,6 +339,7 @@ export class ProviderManager {
     this.openAiResponsesWebSocket=null;this.openAiResponsesWebSocketDisabledUntil=0;this.openAiResponsesWebSocketPermanentlyDisabled=false;
     const manifestCacheSize=Math.trunc(Number(openAiToolManifestCacheSize));this.openAiToolManifestCacheSize=Number.isFinite(manifestCacheSize)&&manifestCacheSize>=0?Math.min(256,manifestCacheSize):32;this.openAiToolManifestCache=new Map();
     const anthropicManifestCacheSize=Math.trunc(Number(anthropicToolManifestCacheSize));this.anthropicToolManifestCacheSize=Number.isFinite(anthropicManifestCacheSize)&&anthropicManifestCacheSize>=0?Math.min(256,anthropicManifestCacheSize):32;this.anthropicToolManifestCache=new Map();
+    const cacheKeyCacheSize=Math.trunc(Number(openAiPromptCacheKeyCacheSize));this.openAiPromptCacheKeyCacheSize=Number.isFinite(cacheKeyCacheSize)&&cacheKeyCacheSize>=0?Math.min(1024,cacheKeyCacheSize):128;this.openAiPromptCacheKeyCache=new Map();
   }
 
   #openAiToolManifest(request={}){
@@ -351,7 +352,22 @@ export class ProviderManager {
     return manifest;
   }
 
-  #officialOpenAiResponsesBody(request={}){return officialOpenAiResponsesBody(request,this.#openAiToolManifest(request))}
+  #openAiPromptCacheKey(request={},body={},toolsJson=null){
+    const supplied=request?.[NATIVE_TOOL_SCHEMA_FINGERPRINT],fingerprint=/^[a-f0-9]{64}$/i.test(String(supplied||""))?String(supplied).toLowerCase():null;
+    if(!fingerprint||this.openAiPromptCacheKeyCacheSize<=0)return officialOpenAiPromptCacheKey(body,toolsJson);
+    const lookup=String(body.model||"")+"\0"+(body.parallel_tool_calls?"1":"0")+"\0"+fingerprint+"\0"+String(body.instructions||"");
+    if(this.openAiPromptCacheKeyCache.has(lookup)){
+      const cached=this.openAiPromptCacheKeyCache.get(lookup);this.openAiPromptCacheKeyCache.delete(lookup);this.openAiPromptCacheKeyCache.set(lookup,cached);return cached;
+    }
+    const value=officialOpenAiPromptCacheKey(body,toolsJson);this.openAiPromptCacheKeyCache.set(lookup,value);
+    while(this.openAiPromptCacheKeyCache.size>this.openAiPromptCacheKeyCacheSize)this.openAiPromptCacheKeyCache.delete(this.openAiPromptCacheKeyCache.keys().next().value);
+    return value;
+  }
+
+  #officialOpenAiResponsesBody(request={}){
+    const manifest=this.#openAiToolManifest(request);
+    return officialOpenAiResponsesBody(request,manifest,(body,toolsJson)=>this.#openAiPromptCacheKey(request,body,toolsJson));
+  }
 
   #anthropicToolScaffold(request={}){
     const supplied=request?.[NATIVE_TOOL_SCHEMA_FINGERPRINT],fingerprint=/^[a-f0-9]{64}$/i.test(String(supplied||""))?String(supplied).toLowerCase():null;
