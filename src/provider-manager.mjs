@@ -1,5 +1,5 @@
 import { TREBELL_USER_AGENT } from "./version.mjs";
-import { adaptAnthropicResponse, chatToAnthropic } from "./anthropic-chat-adapter.mjs";
+import { adaptAnthropicResponse, chatToAnthropic, providerTurnToAnthropic } from "./anthropic-chat-adapter.mjs";
 import { normalizeChatTurnResponse, normalizeResponsesTurnResponse, providerTurnToChat, providerTurnToResponses } from "./provider-turn.mjs";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -516,28 +516,28 @@ export class ProviderManager {
     };
   }
 
-  async forwardChat(providerId, chatBody, { signal, userAgent, onWire, promptCaching=false } = {}) {
+  async forwardChat(providerId, chatBody, { signal, userAgent, onWire, promptCaching=false, anthropicBody=null } = {}) {
     const provider = this.get(providerId);
     if (provider.id === "freebuff") throw new Error("Freebuff chat is handled by the local freebuff2api bridge.");
     const key = this.key(provider.id);
     if (!key) throw new Error(`${provider.name} API key is not configured.`);
     if (provider.protocolCompatibility?.includes("anthropic-messages")) {
-      const anthropicBody = chatToAnthropic(chatBody);
-      if(provider.id==="anthropic"&&promptCaching===true)anthropicBody.cache_control={type:"ephemeral"};
-      const endpoint=provider.baseUrl + "/messages",body=JSON.stringify(anthropicBody);onWire?.({endpoint,wireApi:"anthropic-messages",requestBytes:Buffer.byteLength(body,"utf8")});
+      const requestBody = anthropicBody||chatToAnthropic(chatBody);
+      if(provider.id==="anthropic"&&promptCaching===true)requestBody.cache_control={type:"ephemeral"};
+      const endpoint=provider.baseUrl + "/messages",body=JSON.stringify(requestBody);onWire?.({endpoint,wireApi:"anthropic-messages",requestBytes:Buffer.byteLength(body,"utf8")});
       const upstream = await this.fetchFn(endpoint, {
         method: "POST",
         headers: {
           "x-api-key": key,
           "anthropic-version": "2023-06-01",
           "Content-Type": "application/json",
-          "Accept": anthropicBody.stream ? "text/event-stream, application/json" : "application/json",
+          "Accept": requestBody.stream ? "text/event-stream, application/json" : "application/json",
           "User-Agent": TREBELL_USER_AGENT,
         },
         body,
         signal: providerRequestSignal(signal, this.requestTimeoutMs),
       });
-      return await adaptAnthropicResponse(upstream, { stream: anthropicBody.stream, model: chatBody.model });
+      return await adaptAnthropicResponse(upstream, { stream: requestBody.stream, model: requestBody.model });
     }
 
     const headers = provider.id === "agentrouter"
@@ -602,7 +602,8 @@ export class ProviderManager {
       :null;
     let responsesBody=openAiContinuation?.body||fullResponsesBody;
     if(provider.id==="openai"&&streamResponses===true&&responsesBody){responsesBody.stream=true;if(fullResponsesBody)fullResponsesBody.stream=true}
-    const chatBody=provider.wireApi==="responses"?null:providerTurnToChat({...request,model});
+    const directAnthropicBody=provider.id==="anthropic"?providerTurnToAnthropic({...request,model},{stream:streamChat===true}):null;
+    const chatBody=provider.wireApi==="responses"||directAnthropicBody?null:providerTurnToChat({...request,model});
     if(streamChat===true&&chatBody){chatBody.stream=true;chatBody.stream_options={include_usage:true}}
     let openAiWebSocketFallback=null;
     const openAiWebSocketStreamId=provider.id==="openai"&&streamResponses===true?openAiResponsesWebSocketStreamId(request?.metadata?.sessionId):null;
@@ -636,7 +637,7 @@ export class ProviderManager {
     }
     let upstream=provider.wireApi==="responses"
       ?await this.forwardResponses(provider.id,responsesBody,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)})
-      :await this.forwardChat(provider.id,chatBody,{signal,onWire,promptCaching});
+      :await this.forwardChat(provider.id,chatBody,{signal,onWire,promptCaching,anthropicBody:directAnthropicBody});
     let continuationFallback=false;
     if(provider.id==="openai"&&openAiContinuation?.used&&!upstream.ok&&[400,404,409].includes(Number(upstream.status))){
       try{await upstream.body?.cancel?.()}catch{}

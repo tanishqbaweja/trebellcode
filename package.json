@@ -67,6 +67,7 @@
     "bench:openai:responses-websocket": "node scripts/openai-responses-websocket-benchmark.mjs",
     "bench:openai:responses-input-build": "node scripts/openai-responses-input-build-benchmark.mjs",
     "bench:openai:tool-manifest-cache": "node --expose-gc scripts/openai-tool-manifest-cache-benchmark.mjs",
+    "bench:anthropic:direct-input-build": "node --expose-gc scripts/anthropic-direct-input-build-benchmark.mjs",
     "bench:native:tool-schema": "node scripts/native-tool-schema-benchmark.mjs",
     "bench:native:restart-verifier": "node scripts/native-restart-verifier-benchmark.mjs",
     "bench:native:restart-history": "node scripts/native-restart-history-benchmark.mjs",

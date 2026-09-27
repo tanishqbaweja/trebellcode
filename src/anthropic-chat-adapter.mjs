@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { providerTurnToChat } from "./provider-turn.mjs";
 
 function textContent(content){
   if(typeof content==="string")return content;
@@ -39,6 +40,74 @@ function pushMessage(messages,role,content){
     return;
   }
   messages.push({role,content});
+}
+
+function canonicalUserContent(content){
+  if(typeof content==="string")return content?[{type:"text",text:content}]:[];
+  if(!Array.isArray(content))return [];
+  const blocks=[];
+  for(const part of content){
+    if(typeof part==="string"){if(part)blocks.push({type:"text",text:part});continue}
+    if(["text","input_text","output_text"].includes(part?.type)&&typeof part.text==="string"){blocks.push({type:"text",text:part.text});continue}
+    const url=part?.type==="image_url"?part.image_url?.url:part?.type==="input_image"?part.image_url:null;
+    if(typeof url!=="string"||!url)continue;
+    const match=url.match(/^data:([^;]+);base64,(.+)$/s);if(match)blocks.push({type:"image",source:{type:"base64",media_type:match[1],data:match[2]}});
+  }
+  return blocks;
+}
+
+function canonicalToolResultContent(content){
+  if(typeof content==="string")return content;
+  if(!Array.isArray(content))return textContent(content);
+  const blocks=[];
+  for(const part of content){
+    if(typeof part==="string"){if(part)blocks.push({type:"text",text:part});continue}
+    if(["text","input_text","output_text"].includes(part?.type)&&typeof part.text==="string"){blocks.push({type:"text",text:part.text});continue}
+    const url=part?.type==="image_url"?part.image_url?.url:part?.type==="input_image"?part.image_url:null;
+    if(typeof url!=="string"||!url)continue;
+    const match=url.match(/^data:([^;]+);base64,(.+)$/s);
+    if(match)blocks.push({type:"image",source:{type:"base64",media_type:match[1],data:match[2]}});else blocks.push({type:"text",text:`Image result: ${url}`});
+  }
+  return blocks.length?blocks:"";
+}
+
+function canonicalAssistantText(content){
+  if(typeof content==="string")return content;
+  if(!Array.isArray(content))return "";
+  return content.map(part=>typeof part==="string"?part:["text","input_text","output_text"].includes(part?.type)?String(part.text||""):"").join("");
+}
+
+function canonicalToolName(call={}){
+  const source=call?.function||call,raw=String(source?.name||call?.name||"tool"),namespace=String(call?.namespace||"").trim();
+  if(namespace)return namespace+"__"+String(call?.name||source?.name||"tool");
+  return raw;
+}
+
+export function providerTurnToAnthropic(request={},{stream=false}={}){
+  const scaffold=chatToAnthropic(providerTurnToChat({...request,messages:[]})),system=[],messages=[];
+  for(const message of Array.isArray(request.messages)?request.messages:[]){
+    if(!message||typeof message!=="object")continue;
+    if(message.role==="system"||message.role==="developer"){
+      const text=canonicalAssistantText(message.content).trim();if(text)system.push(text);continue;
+    }
+    if(message.role==="tool"){
+      pushMessage(messages,"user",[{type:"tool_result",tool_use_id:String(message.toolCallId||message.tool_call_id||""),content:canonicalToolResultContent(message.content)}]);continue;
+    }
+    if(message.role==="assistant"){
+      const blocks=[],text=canonicalAssistantText(message.content);if(text)blocks.push({type:"text",text});
+      for(const call of message.toolCalls||message.tool_calls||[]){const source=call?.function||call;blocks.push({type:"tool_use",id:String(call?.id||call?.call_id||`toolu_${randomUUID()}`),name:canonicalToolName(call),input:safeJson(source?.arguments??call?.arguments)})}
+      pushMessage(messages,"assistant",blocks);continue;
+    }
+    pushMessage(messages,"user",canonicalUserContent(message.content));
+  }
+  const out={model:scaffold.model,max_tokens:scaffold.max_tokens,messages,stream:Boolean(stream)};
+  if(system.length)out.system=system.join("\n\n");
+  if(Array.isArray(scaffold.tools)&&scaffold.tools.length)out.tools=scaffold.tools;
+  if(scaffold.tool_choice)out.tool_choice=scaffold.tool_choice;
+  if(typeof scaffold.temperature==="number")out.temperature=scaffold.temperature;
+  if(typeof scaffold.top_p==="number")out.top_p=scaffold.top_p;
+  if(Array.isArray(scaffold.stop_sequences))out.stop_sequences=scaffold.stop_sequences;
+  return out;
 }
 
 export function chatToAnthropic(body={}){

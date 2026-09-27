@@ -5,7 +5,9 @@ import {
   adaptAnthropicResponse,
   anthropicMessageToChatCompletion,
   chatToAnthropic,
+  providerTurnToAnthropic,
 } from "../src/anthropic-chat-adapter.mjs";
+import { providerTurnToChat } from "../src/provider-turn.mjs";
 const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
 
 test("OpenAI chat payload converts to Anthropic messages and tools",()=>{
@@ -37,6 +39,20 @@ test("Anthropic tool results preserve data-URL images as image blocks",()=>{
     ],
   });
   const result=body.messages[1].content[0];assert.equal(result.type,"tool_result");assert.ok(Array.isArray(result.content));assert.equal(result.content[1].type,"image");assert.equal(result.content[1].source.media_type,"image/png");assert.equal(result.content[1].source.data,"iVBORw0KGgo=");
+});
+
+test("direct canonical Anthropic conversion matches the existing Chat adapter exactly",()=>{
+  const request={
+    model:"claude-opus-4-8",maxOutputTokens:2048,temperature:.2,toolChoice:{namespace:"trebell_repo",name:"search_symbols"},
+    messages:[
+      {role:"system",content:"Stable system"},{role:"developer",content:[{type:"text",text:"Developer guidance"}]},{role:"user",content:[{type:"text",text:"Inspect"},{type:"input_image",image_url:IMAGE_DATA_URL}]},
+      {role:"assistant",content:[{type:"output_text",text:"Checking"}],toolCalls:[{id:"call-1",namespace:"trebell_repo",name:"search_symbols",arguments:{query:"Session"}}]},
+      {role:"tool",toolCallId:"call-1",content:[{type:"text",text:"found"},{type:"image_url",image_url:{url:IMAGE_DATA_URL}}]},
+    ],
+    tools:[{type:"namespace",name:"trebell_repo",description:"Repo",tools:[{name:"search_symbols",description:"Search",inputSchema:{type:"object",properties:{query:{type:"string"},limit:{type:"integer",maximum:Number.MAX_SAFE_INTEGER}},required:["query"],additionalProperties:false}}]}],
+  };
+  const legacy=providerTurnToChat(request);legacy.stream=true;legacy.stream_options={include_usage:true};
+  assert.deepEqual(providerTurnToAnthropic(request,{stream:true}),chatToAnthropic(legacy));
 });
 
 test("Anthropic SSE converts to OpenAI chat SSE including tool calls",async()=>{
