@@ -199,7 +199,10 @@ function explicitVerificationCompletion(messages=[]){
   const prefix=text.slice(Math.max(0,Number(implicit.index||0)-48),Number(implicit.index||0));
   if(/\b(?:do\s+not|don't|never)(?:\s+\w+){0,2}\s*$/i.test(prefix))return null;
   const prior=text.slice(0,Number(implicit.index||0));
-  if(!/(?:\brun\b|\b(?:verification|verifier|tests?|checks?)\b)[\s\S]{0,400}$/i.test(prior))return null;
+  const references=[...prior.matchAll(/\b(?:run|verification|verifier|tests?|checks?|lint|typecheck)\b/ig)],reference=references.at(-1);
+  if(!reference||prior.length-Number(reference.index||0)>400)return null;
+  const referencePrefix=prior.slice(Math.max(0,Number(reference.index||0)-32),Number(reference.index||0));
+  if(/\b(?:do\s+not|don't|never)(?:\s+\w+){0,2}\s*$/i.test(referencePrefix))return null;
   return {target:null,implicit:true};
 }
 
