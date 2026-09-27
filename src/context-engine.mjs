@@ -811,11 +811,14 @@ function pageRank(nodes,edges,personalization,iterations=24,damping=0.85){
   if(!nodes.length)return new Map();
   const size=nodes.length,uniform=1/size,totalPersonal=[...personalization.values()].reduce((sum,value)=>sum+value,0)||size;
   const teleport=new Map(nodes.map(node=>[node,(personalization.get(node)||1)/totalPersonal]));
+  const edgeTotals=new Map(nodes.map(node=>{
+    const row=edges.get(node);return [node,row?[...row.values()].reduce((sum,weight)=>sum+weight,0):0];
+  }));
   let rank=new Map(nodes.map(node=>[node,uniform]));
   for(let iteration=0;iteration<iterations;iteration++){
     const next=new Map(nodes.map(node=>[node,(1-damping)*(teleport.get(node)||uniform)]));let dangling=0;
     for(const node of nodes){
-      const row=edges.get(node),value=rank.get(node)||0,total=row?[...row.values()].reduce((sum,weight)=>sum+weight,0):0;
+      const row=edges.get(node),value=rank.get(node)||0,total=edgeTotals.get(node)||0;
       if(!total){dangling+=value;continue}
       for(const [target,weight] of row)next.set(target,(next.get(target)||0)+damping*value*weight/total);
     }
