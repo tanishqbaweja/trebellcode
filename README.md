@@ -479,6 +479,14 @@ Provider API keys for normal product use belong in **Settings**, not repository 
 npm test
 ~~~
 
+For fast local iteration, Trebell also provides a single-process deterministic gate:
+
+~~~bash
+npm run test:fast
+~~~
+
+`test:fast` deliberately disables Node's per-file process isolation but keeps serial test execution. In one controlled same-tree run on exact `ed5ad7ba`, it passed the same **924 / 924** tests in **181.8 s** versus **373.4 s** for the process-isolated serial gate, about **51.3% lower wall time**. A second invocation through the packaged script also passed **924 / 924** under heavier concurrent machine load; wall time is therefore a measured optimization, not a fixed-duration promise. Keep `npm test` as the stronger release/final-validation gate because process isolation is useful for catching cross-file state leaks; use `test:fast` for the tight edit/test loop.
+
 At the v1.3.3 Native-harness release checkpoint:
 
 - **808 / 808 deterministic tests passed**
