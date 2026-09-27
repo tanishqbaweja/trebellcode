@@ -86,6 +86,13 @@ test("OpenAI continuation can prove a provider-input suffix without rebuilding t
   assert.equal(accelerated.used,true);assert.equal(accelerated.inputBuildReused,true);assert.equal(accelerated.canonicalPrefixMessageCount,1);assert.deepEqual(accelerated.body.input,baseline.body.input);assert.equal(accelerated.savedRequestBytes,baseline.savedRequestBytes);assert.deepEqual(accelerated.fullInputDigests,baseline.fullInputDigests);
 });
 
+test("OpenAI continuation incremental byte accounting matches full fingerprint reduction",()=>{
+  const cached=new OpenAiResponseContinuationTracker(),legacy=new OpenAiResponseContinuationTracker({reuseByteAccounting:false}),token={},userRef={role:"user",content:"Task"},assistantRef={role:"assistant",content:""},toolRef={role:"tool",content:"failed"},firstInput=[{type:"message",role:"user",content:[{type:"input_text",text:"Task "+"x".repeat(2000)}]}],firstCached=cached.prepare(body(firstInput),"",{messageRefs:[userRef],identityToken:token}),firstLegacy=legacy.prepare(body(firstInput),"",{messageRefs:[userRef],identityToken:token}),turn={model:"gpt-5.6",text:"",toolCalls:[{id:"call-1",namespace:"trebell_terminal",name:"run",arguments:{command:"node",args:["verify.mjs"]}}]};
+  cached.record("resp-1",firstCached,turn);legacy.record("resp-1",firstLegacy,turn);
+  const replay=openAiContinuationOutputItems(turn),toolOutput={type:"function_call_output",call_id:"call-1",output:"failed "+"y".repeat(5000)},full=body([...firstInput,...replay,toolOutput]),refs=[userRef,assistantRef,toolRef],cachedPrepared=cached.prepare(full,"resp-1",{messageRefs:refs,identityToken:token}),legacyPrepared=legacy.prepare(full,"resp-1",{messageRefs:refs,identityToken:token});
+  assert.equal(cachedPrepared.used,true);assert.equal(cachedPrepared.savedRequestBytes,legacyPrepared.savedRequestBytes);assert.deepEqual(cachedPrepared.body,legacyPrepared.body);assert.deepEqual(cachedPrepared.fullInputDigests,legacyPrepared.fullInputDigests);assert.equal(cachedPrepared.fullInputCount,legacyPrepared.fullInputCount);assert.ok(cachedPrepared.requestFingerprintByteSum>firstCached.requestFingerprintByteSum);
+});
+
 test("OpenAI continuation suffix proof fails closed when replayed provider output changes",()=>{
   const tracker=new OpenAiResponseContinuationTracker(),token={},userRef={role:"user",content:"Task"},first=tracker.prepare(body([{type:"message",role:"user",content:[{type:"input_text",text:"Task"}]}]),"",{messageRefs:[userRef],identityToken:token}),turn={model:"gpt-5.6",text:"Done",toolCalls:[]};
   tracker.record("resp-1",first,turn);
