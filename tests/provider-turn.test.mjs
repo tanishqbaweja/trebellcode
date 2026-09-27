@@ -47,6 +47,24 @@ test("provider turn converts the same conversation to Responses while preserving
   assert.equal(request.tools[0].name,"trebell_repo");
 });
 
+test("Responses can keep only the stable leading instruction block at the prompt prefix",()=>{
+  const request=providerTurnToResponses({
+    model:"gpt-5.6",
+    messages:[
+      {role:"system",content:"Stable system guidance"},
+      {role:"developer",content:"Stable project guidance"},
+      {role:"developer",trebellCompaction:true,content:"Changing continuation brief"},
+      {role:"user",content:"Fix the parser"},
+      {role:"assistant",content:"Working"},
+      {role:"developer",content:"Dynamic finalization guidance"},
+    ],
+  },{preserveInstructionOrder:true});
+  assert.equal(request.instructions,"Stable system guidance\n\nStable project guidance");
+  assert.deepEqual(request.input.map(item=>item.role||item.type),["developer","user","assistant","developer"]);
+  assert.equal(request.input[0].content[0].text,"Changing continuation brief");
+  assert.equal(request.input[3].content[0].text,"Dynamic finalization guidance");
+});
+
 test("provider turns preserve image tool observations for Chat and Responses transports",()=>{
   const messages=[
     {role:"assistant",content:"",toolCalls:[{id:"call-image",namespace:"trebell_browser",name:"screenshot",arguments:"{}"}]},

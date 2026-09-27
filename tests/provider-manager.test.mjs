@@ -238,6 +238,28 @@ test("official OpenAI prompt cache key stays stable as later history grows but s
   assert.notEqual(bodies[0].prompt_cache_key,bodies[3].prompt_cache_key);
 });
 
+test("official OpenAI keeps late developer finalization out of the stable instruction prefix",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-")),bodies=[];
+  const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{
+    const body=JSON.parse(init.body||"{}");bodies.push(body);
+    return Response.json({id:"resp-cache-finalize",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"ok"}]}],usage:{input_tokens:1,output_tokens:1,total_tokens:2}});
+  }});
+  manager.setKey("openai","oa-key");
+  const base=[
+    {role:"system",content:"Stable coding instructions"},
+    {role:"developer",content:"Stable project instructions"},
+    {role:"user",content:"Fix the parser"},
+    {role:"assistant",content:"Working"},
+  ];
+  await manager.turn("openai",{model:"gpt-5.6",messages:base,tools:[]});
+  await manager.turn("openai",{model:"gpt-5.6",messages:[...base,{role:"developer",content:"Tools are complete; answer now."}],tools:[]});
+  assert.equal(bodies[0].instructions,"Stable coding instructions\n\nStable project instructions");
+  assert.equal(bodies[1].instructions,bodies[0].instructions);
+  assert.equal(bodies[1].prompt_cache_key,bodies[0].prompt_cache_key);
+  assert.equal(bodies[1].input.at(-1).role,"developer");
+  assert.equal(bodies[1].input.at(-1).content[0].text,"Tools are complete; answer now.");
+});
+
 test("direct OpenAI Native streaming assembles the completed Responses result and records TTFT",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-openai-stream-"));let seen=null;
   try{

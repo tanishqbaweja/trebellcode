@@ -109,13 +109,19 @@ function responsesContent(content,{assistant=false}={}){
   return out;
 }
 
-export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,parallelToolCalls=true}={}){
-  const instructions=[],input=[];
+export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,parallelToolCalls=true}={}, {preserveInstructionOrder=false}={}){
+  const instructions=[],input=[];let instructionPrefixOpen=true;
   for(const message of Array.isArray(messages)?messages:[]){
     if(!message||typeof message!=="object")continue;
     if(message.role==="system"||message.role==="developer"){
-      const text=textContent(message.content).trim();if(text)instructions.push(text);continue;
+      const text=textContent(message.content).trim();
+      if(!preserveInstructionOrder||(instructionPrefixOpen&&message?.trebellCompaction!==true)){
+        if(text)instructions.push(text);continue;
+      }
+      instructionPrefixOpen=false;
+      const content=responsesContent(message.content);if(content.length)input.push({type:"message",role:message.role,content});continue;
     }
+    if(preserveInstructionOrder)instructionPrefixOpen=false;
     if(message.role==="tool"){
       const output=typeof message.content==="string"?message.content:responsesContent(message.content);
       input.push({type:"function_call_output",call_id:String(message.toolCallId||message.tool_call_id||""),output});continue;

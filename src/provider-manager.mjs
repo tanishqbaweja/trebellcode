@@ -172,7 +172,7 @@ function officialOpenAiPromptCacheKey(body={}){
   return "trebell-"+createHash("sha256").update(seed).digest("hex").slice(0,32);
 }
 function officialOpenAiResponsesBody(request={}){
-  const body=providerTurnToResponses(request),tools=[];
+  const body=providerTurnToResponses(request,{preserveInstructionOrder:true}),tools=[];
   for(const entry of Array.isArray(request.tools)?request.tools:[]){
     if(entry?.type==="namespace"&&entry.name&&Array.isArray(entry.tools)){
       for(const child of entry.tools){
