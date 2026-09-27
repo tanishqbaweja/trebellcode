@@ -161,6 +161,12 @@ function agentRouterProvider(provider,environment={}){
 }
 
 function officialResponsesToolName(namespace,name){return namespace?String(namespace)+"__"+String(name||"tool"):String(name||"tool")}
+function officialOpenAiExplicitPromptCacheModel(model=""){
+  const match=/^gpt-(\d+)(?:\.(\d+))?(?:-|$)/i.exec(String(model||"").trim());
+  if(!match)return false;
+  const major=Number(match[1]),minor=match[2]==null?0:Number(match[2]);
+  return major>5||(major===5&&minor>=6);
+}
 function officialOpenAiPromptCacheKey(body={}){
   const seed=JSON.stringify({
     model:String(body.model||""),
@@ -190,7 +196,16 @@ function officialOpenAiResponsesBody(request={}){
     if(item?.type!=="function_call"||!item.namespace)return item;
     const next={...item,name:officialResponsesToolName(item.namespace,item.name)};delete next.namespace;return next;
   });
-  body.prompt_cache_key=officialOpenAiPromptCacheKey(body);
+  const promptCacheKey=officialOpenAiPromptCacheKey(body),stableInstructions=String(body.instructions||"").trim();
+  if(stableInstructions&&officialOpenAiExplicitPromptCacheModel(body.model)){
+    body.input=[
+      {type:"message",role:"developer",content:[{type:"input_text",text:stableInstructions,prompt_cache_breakpoint:{mode:"explicit"}}]},
+      ...body.input,
+    ];
+    delete body.instructions;
+    body.prompt_cache_options={mode:"implicit"};
+  }
+  body.prompt_cache_key=promptCacheKey;
   return body;
 }
 

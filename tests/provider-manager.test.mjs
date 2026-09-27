@@ -240,6 +240,13 @@ test("official OpenAI prompt cache key tracks the reusable instruction and tool 
   assert.notEqual(bodies[0].prompt_cache_key,bodies[3].prompt_cache_key);
   assert.notEqual(bodies[0].prompt_cache_key,bodies[4].prompt_cache_key);
   assert.notEqual(bodies[0].prompt_cache_key,bodies[5].prompt_cache_key);
+  assert.equal(bodies[0].instructions,undefined);
+  assert.deepEqual(bodies[0].prompt_cache_options,{mode:"implicit"});
+  assert.deepEqual(bodies[0].input[0],{
+    type:"message",role:"developer",
+    content:[{type:"input_text",text:"Stable coding instructions",prompt_cache_breakpoint:{mode:"explicit"}}],
+  });
+  assert.deepEqual(bodies[2].input[0],bodies[0].input[0],"different first user tasks should retain the exact same reusable cache boundary");
 });
 
 test("official OpenAI keeps late developer finalization out of the stable instruction prefix",async()=>{
@@ -257,11 +264,29 @@ test("official OpenAI keeps late developer finalization out of the stable instru
   ];
   await manager.turn("openai",{model:"gpt-5.6",messages:base,tools:[]});
   await manager.turn("openai",{model:"gpt-5.6",messages:[...base,{role:"developer",content:"Tools are complete; answer now."}],tools:[]});
-  assert.equal(bodies[0].instructions,"Stable coding instructions\n\nStable project instructions");
-  assert.equal(bodies[1].instructions,bodies[0].instructions);
+  assert.equal(bodies[0].instructions,undefined);
+  assert.equal(bodies[1].instructions,undefined);
+  assert.equal(bodies[0].input[0].role,"developer");
+  assert.equal(bodies[0].input[0].content[0].text,"Stable coding instructions\n\nStable project instructions");
+  assert.deepEqual(bodies[0].input[0].content[0].prompt_cache_breakpoint,{mode:"explicit"});
+  assert.deepEqual(bodies[1].input[0],bodies[0].input[0]);
   assert.equal(bodies[1].prompt_cache_key,bodies[0].prompt_cache_key);
   assert.equal(bodies[1].input.at(-1).role,"developer");
   assert.equal(bodies[1].input.at(-1).content[0].text,"Tools are complete; answer now.");
+});
+
+test("official OpenAI keeps pre-5.6 models on implicit-only compatible request fields",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));let body=null;
+  const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{
+    body=JSON.parse(init.body||"{}");
+    return Response.json({id:"resp-cache-legacy",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"ok"}]}],usage:{input_tokens:1,output_tokens:1,total_tokens:2}});
+  }});
+  manager.setKey("openai","oa-key");
+  await manager.turn("openai",{model:"gpt-5.5",messages:[{role:"system",content:"Stable coding instructions"},{role:"user",content:"Fix the parser"}],tools:[]});
+  assert.equal(body.instructions,"Stable coding instructions");
+  assert.equal(body.prompt_cache_options,undefined);
+  assert.match(body.prompt_cache_key,/^trebell-[a-f0-9]{32}$/);
+  assert.equal(body.input[0].role,"user");
 });
 
 test("direct OpenAI Native streaming assembles the completed Responses result and records TTFT",async()=>{
