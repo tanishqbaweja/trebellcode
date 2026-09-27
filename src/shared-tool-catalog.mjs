@@ -35,9 +35,8 @@ function namespace(name,description,tools,requirements={},options={}){
 const emptyObjectSchema=freeze({type:"object",properties:{},additionalProperties:false});
 
 export const SHARED_TOOL_NAMESPACE_CATALOG=freeze([
-  namespace("trebell_output","Inspect full redacted content that Trebell moved out of hot model context after a large tool result.",[
-    tool("read","Read an exact bounded line range from a virtualized tool output handle.",{type:"object",properties:{handle:{type:"string"},start_line:{type:"integer",minimum:1},end_line:{type:"integer",minimum:1},max_chars:{type:"integer",minimum:1000,maximum:48000}},required:["handle"],additionalProperties:false},{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,asyncSafe:true}),
-    tool("search","Search a virtualized tool output and return bounded matching line excerpts.",{type:"object",properties:{handle:{type:"string"},query:{type:"string",minLength:1,maxLength:1000},regex:{type:"boolean"},case_sensitive:{type:"boolean"},limit:{type:"integer",minimum:1,maximum:100},context_lines:{type:"integer",minimum:0,maximum:8}},required:["handle","query"],additionalProperties:false},{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,asyncSafe:true}),
+  namespace("trebell_output","Inspect content Trebell virtualized out of hot model context.",[
+    tool("inspect","Search output when query is set; otherwise read a bounded line range.",{type:"object",properties:{handle:{type:"string"},query:{type:"string",minLength:1,maxLength:1000},regex:{type:"boolean"},case_sensitive:{type:"boolean"},limit:{type:"integer",minimum:1,maximum:100},context_lines:{type:"integer",minimum:0,maximum:8},start_line:{type:"integer",minimum:1},end_line:{type:"integer",minimum:1},max_chars:{type:"integer",minimum:1000,maximum:48000}},required:["handle"],additionalProperties:false},{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,asyncSafe:true}),
   ]),
   namespace("trebell_workspace","Read/edit files inside the active workspace.",[
     tool("list","List a bounded workspace subtree.",{type:"object",properties:{path:{type:"string",description:"Workspace-relative directory; default root."},depth:{type:"integer",minimum:1,maximum:8},limit:{type:"integer",minimum:1,maximum:1000}},additionalProperties:false},{kind:"read",riskLevel:"low",reversibility:"not-applicable",idempotent:true,asyncSafe:true},{workspace:true}),
@@ -120,6 +119,11 @@ export function sharedToolResponseContent(namespaceName,contentItems=[]){
 export function sharedToolDefinition(namespaceName,toolName){
   const namespace=String(namespaceName||""),name=String(toolName||"");
   const direct=sharedToolNamespace(namespace)?.tools.find(item=>item.name===name);if(direct)return direct;
+  const legacyOutput=namespace==="trebell_output"&&["read","search"].includes(name)?"inspect":null;
+  if(legacyOutput){
+    const definition=sharedToolNamespace("trebell_output")?.tools.find(item=>item.name===legacyOutput);
+    return definition?{...definition,name}:null;
+  }
   const legacyProcess=namespace==="trebell_terminal"?{start_background:"start",background_status:"status",stop_background:"stop"}[name]:null;
   if(legacyProcess){
     const definition=sharedToolNamespace("trebell_process")?.tools.find(item=>item.name===legacyProcess);

@@ -109,12 +109,16 @@ const TOOL_ALLOWLIST_ALIASES=Object.freeze({
 function canonicalToolPattern(value){
   const raw=String(value||"").trim().toLowerCase();if(!raw||raw==="*")return raw;
   const separator=raw.includes("/")?"/":raw.includes(".*")?".*":null;
-  if(separator){const index=raw.indexOf(separator),head=raw.slice(0,index),tail=raw.slice(index+separator.length),namespace=TOOL_ALLOWLIST_ALIASES[head]||head;return separator===".*"?namespace+".*":namespace+"/"+tail}
+  if(separator){
+    const index=raw.indexOf(separator),head=raw.slice(0,index),tail=raw.slice(index+separator.length),namespace=TOOL_ALLOWLIST_ALIASES[head]||head;
+    const canonicalTail=namespace==="trebell_output"&&["read","search"].includes(tail)?"inspect":tail;
+    return separator===".*"?namespace+".*":namespace+"/"+canonicalTail;
+  }
   return TOOL_ALLOWLIST_ALIASES[raw]||raw;
 }
 export function platformToolAllowedByAllowlist(namespace,name,value){
   const allowlist=normalizedToolAllowlist(value);if(!allowlist)return true;
-  const ns=String(namespace||"").toLowerCase(),tool=String(name||"").toLowerCase(),qualified=ns+"/"+tool;
+  const ns=String(namespace||"").toLowerCase(),rawTool=String(name||"").toLowerCase(),tool=ns==="trebell_output"&&["read","search"].includes(rawTool)?"inspect":rawTool,qualified=ns+"/"+tool;
   return allowlist.some(raw=>{const item=canonicalToolPattern(raw);if(item==="mcp")return ns==="trebell_mcp"||ns.startsWith("mcp_");return item==="*"||(!ns&&item===tool)||item===ns||item===qualified||item===ns+"/*"||item===ns+".*"});
 }
 

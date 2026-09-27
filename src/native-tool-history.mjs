@@ -35,7 +35,7 @@ export function coolVirtualizedToolContent(content,{maxPreviewChars=DEFAULT_COLD
   for(const key of keep)if(Object.prototype.hasOwnProperty.call(parsed,key))receipt[key]=parsed[key];
   const previewChars=Math.max(600,Math.trunc(Number(maxPreviewChars)||DEFAULT_COLD_PREVIEW_CHARS));
   if(typeof parsed.preview==="string"&&parsed.preview)receipt.preview=coldPreview(parsed.preview,previewChars);
-  receipt._trebell_output={handle,totalBytes:Number(output.totalBytes||0)||null,totalLines:Number(output.totalLines||0)||null,note:"Full redacted output remains stored by Trebell. Use trebell_output/search or trebell_output/read with this handle only if the compact prior evidence is insufficient."};
+  receipt._trebell_output={handle,totalBytes:Number(output.totalBytes||0)||null,totalLines:Number(output.totalLines||0)||null,note:"Full redacted output remains stored by Trebell. Use trebell_output/inspect with this handle only if the compact prior evidence is insufficient."};
   return markedToolText(JSON.stringify(receipt));
 }
 

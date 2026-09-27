@@ -117,6 +117,9 @@ test("per-turn tool allowlists reject tools outside the active recipe before exe
   const exactAllowed=authorizePlatformToolCall({namespace:"trebell_browser",name:"snapshot",arguments:{}},{permissionProfile:"read-only",desktopAvailable:true,toolAllowlist:["trebell_browser/snapshot"]});
   assert.equal(exactAllowed.decision,POLICY_ALLOW);
   const aliasExactAllowed=authorizePlatformToolCall({namespace:"trebell_browser",name:"snapshot",arguments:{}},{permissionProfile:"read-only",desktopAvailable:true,toolAllowlist:["browser/snapshot"]});assert.equal(aliasExactAllowed.decision,POLICY_ALLOW);
+  const legacyOutputRead=authorizePlatformToolCall({namespace:"trebell_output",name:"inspect",arguments:{handle:"out_12345678"}},{permissionProfile:"read-only",toolAllowlist:["trebell_output/read"]});assert.equal(legacyOutputRead.decision,POLICY_ALLOW);
+  const legacyOutputSearch=authorizePlatformToolCall({namespace:"trebell_output",name:"inspect",arguments:{handle:"out_12345678",query:"needle"}},{permissionProfile:"read-only",toolAllowlist:["trebell_output/search"]});assert.equal(legacyOutputSearch.decision,POLICY_ALLOW);
+  const inspectAllowsLegacyCall=authorizePlatformToolCall({namespace:"trebell_output",name:"read",arguments:{handle:"out_12345678"}},{permissionProfile:"read-only",toolAllowlist:["trebell_output/inspect"]});assert.equal(inspectAllowsLegacyCall.decision,POLICY_ALLOW);
   const wildcardAllowed=authorizePlatformToolCall({namespace:"trebell_browser",name:"snapshot",arguments:{}},{permissionProfile:"read-only",desktopAvailable:true,toolAllowlist:["trebell_browser/*"]});
   assert.equal(wildcardAllowed.decision,POLICY_ALLOW);
   const blocked=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"npm",args:["test"]}},{permissionProfile:"auto",workspace:"/repo",toolAllowlist:["trebell_repo","trebell_browser/snapshot"]});

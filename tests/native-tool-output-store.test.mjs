@@ -22,6 +22,10 @@ test("Native tool output store virtualizes large output, supports targeted retri
     assert.doesNotMatch(read.content,new RegExp(secret));assert.match(read.content,/\[redacted\]/);
     const searched=await store.search({handle:shaped.handle,query:"TARGET",context_lines:1});
     assert.equal(searched.matches.length,1);assert.match(searched.matches[0].excerpt,/TARGET failure stack/);
+    const inspectedSearch=await store.execute({name:"inspect",arguments:{handle:shaped.handle,query:"TARGET",context_lines:1}});
+    assert.equal(inspectedSearch.matches.length,1);assert.match(inspectedSearch.matches[0].excerpt,/TARGET failure stack/);
+    const inspectedRead=await store.execute({name:"inspect",arguments:{handle:shaped.handle,start_line:1,max_chars:48000}});
+    assert.match(inspectedRead.content,/line ok/);
   }finally{await rm(root,{recursive:true,force:true})}
 });
 

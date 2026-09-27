@@ -94,7 +94,7 @@ export class NativeToolOutputStore{
         preview:preview(text,DEFAULT_PREVIEW_CHARS,{compactSignalPreview:failureLike(safeValue)}),
         _trebell_output:{
           handle,totalBytes,totalLines:lines,
-          note:"Full redacted output is outside hot model context. Preview contains bounded head/tail plus important failure-like lines when found. Use trebell_output/search first, or trebell_output/read for a bounded range, only when more detail is needed.",
+          note:"Full redacted output is outside hot model context. Preview contains bounded head/tail plus important failure-like lines when found. Use trebell_output/inspect only when more detail is needed; set query to search, or omit it to read a bounded range.",
         },
       },
     };
@@ -125,6 +125,7 @@ export class NativeToolOutputStore{
     return {handle:entry.handle,query:needle,totalLines:lines.length,totalBytes:entry.totalBytes,matches};
   }
   async execute(call={}){
+    if(call.name==="inspect")return String(call.arguments?.query||"").trim()?await this.search(call.arguments||{}):await this.read(call.arguments||{});
     if(call.name==="read")return await this.read(call.arguments||{});
     if(call.name==="search")return await this.search(call.arguments||{});
     throw new Error("Unknown Trebell output tool: "+String(call.name||""));
