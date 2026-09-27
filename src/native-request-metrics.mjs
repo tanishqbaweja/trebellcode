@@ -19,8 +19,11 @@ function jsonArrayMetric(parts=[]){let byteCount=2+Math.max(0,parts.length-1);fo
 function jsonArrayHash(parts=[]){const state=createHash("sha256");state.update("[");for(let index=0;index<parts.length;index++){if(index)state.update(",");state.update(parts[index].text)}state.update("]");return state.digest("hex").slice(0,16)}
 function cachedJsonArrayHash(parts=[],cache=null){
   if(!cache||typeof cache!=="object")return jsonArrayHash(parts);
-  const prior=Array.isArray(cache.parts)?cache.parts:null;let state=null,start=0;
-  if(prior&&prior.length<=parts.length&&cache.state&&typeof cache.state.copy==="function"){
+  const prior=Array.isArray(cache.parts)?cache.parts:null,priorLength=Number.isInteger(cache.length)?cache.length:(prior?.length||0);let state=null,start=0;
+  if(prior===parts&&priorLength<=parts.length&&cache.state&&typeof cache.state.copy==="function"){
+    if(priorLength===parts.length&&typeof cache.hash==="string")return cache.hash;
+    try{state=cache.state.copy();start=priorLength}catch{}
+  }else if(prior&&prior.length<=parts.length&&cache.state&&typeof cache.state.copy==="function"){
     let prefixMatches=true;for(let index=0;index<prior.length;index++)if(prior[index]!==parts[index]){prefixMatches=false;break}
     if(prefixMatches){
       if(prior.length===parts.length&&typeof cache.hash==="string")return cache.hash;
@@ -30,30 +33,36 @@ function cachedJsonArrayHash(parts=[],cache=null){
   if(!state){state=createHash("sha256");state.update("[");start=0}
   for(let index=start;index<parts.length;index++){if(index)state.update(",");state.update(parts[index].text)}
   const finalState=state.copy();finalState.update("]");const value=finalState.digest("hex").slice(0,16);
-  cache.parts=parts;cache.state=state;cache.hash=value;return value;
+  cache.parts=parts;cache.length=parts.length;cache.state=state;cache.hash=value;return value;
 }
 
-function classifiedMessages(source,lastUser,messageSerializationCache=null){
-  const system=[],developer=[],compacted=[],toolResults=[],history=[],allJson=[],systemJson=[],developerJson=[],compactedJson=[],toolResultsJson=[],historyJson=[];let jsonSafe=true;
-  for(let index=0;index<source.length;index++){
+function classifiedMessages(source,lastUser,messageSerializationCache=null,classificationCache=null){
+  const reusable=classificationCache&&typeof classificationCache==="object"&&classificationCache.source===source&&classificationCache.lastUser===lastUser&&Number.isInteger(classificationCache.length)&&classificationCache.length<=source.length;
+  let state=reusable?classificationCache:null;
+  if(!state){
+    state={source,lastUser,length:0,system:[],developer:[],compacted:[],toolResults:[],history:[],allJson:[],systemJson:[],developerJson:[],compactedJson:[],toolResultsJson:[],historyJson:[],jsonSafe:true};
+    if(classificationCache&&typeof classificationCache==="object"){Object.assign(classificationCache,state);state=classificationCache}
+  }
+  for(let index=state.length;index<source.length;index++){
     const item=source[index],role=item?.role;let bucket=null,bucketJson=null;
-    if(role==="system"){system.push(item);bucket=system;bucketJson=systemJson}
-    else if(role==="developer"){if(item?.trebellCompaction){compacted.push(item);bucket=compacted;bucketJson=compactedJson}else{developer.push(item);bucket=developer;bucketJson=developerJson}}
-    else if(role==="tool"){toolResults.push(item);bucket=toolResults;bucketJson=toolResultsJson}
-    else if(index!==lastUser){history.push(item);bucket=history;bucketJson=historyJson}
-    if(!jsonSafe)continue;
-    if(item&&typeof item==="object"&&typeof item.toJSON==="function"){jsonSafe=false;continue}
+    if(role==="system"){state.system.push(item);bucket=state.system;bucketJson=state.systemJson}
+    else if(role==="developer"){if(item?.trebellCompaction){state.compacted.push(item);bucket=state.compacted;bucketJson=state.compactedJson}else{state.developer.push(item);bucket=state.developer;bucketJson=state.developerJson}}
+    else if(role==="tool"){state.toolResults.push(item);bucket=state.toolResults;bucketJson=state.toolResultsJson}
+    else if(index!==lastUser){state.history.push(item);bucket=state.history;bucketJson=state.historyJson}
+    if(!state.jsonSafe)continue;
+    if(item&&typeof item==="object"&&typeof item.toJSON==="function"){state.jsonSafe=false;continue}
     try{
       let fragment=item&&typeof item==="object"&&messageSerializationCache&&typeof messageSerializationCache.get==="function"?messageSerializationCache.get(item):null;
       if(!fragment){
-        const itemJson=JSON.stringify(item);if(typeof itemJson!=="string"){jsonSafe=false;continue}
+        const itemJson=JSON.stringify(item);if(typeof itemJson!=="string"){state.jsonSafe=false;continue}
         fragment={text:itemJson,bytes:Buffer.byteLength(itemJson,"utf8")};
         if(item&&typeof item==="object"&&messageSerializationCache&&typeof messageSerializationCache.set==="function")messageSerializationCache.set(item,fragment);
       }
-      allJson.push(fragment);if(bucket&&bucketJson)bucketJson.push(fragment);
-    }catch{jsonSafe=false}
+      state.allJson.push(fragment);if(bucket&&bucketJson)bucketJson.push(fragment);
+    }catch{state.jsonSafe=false}
   }
-  return {system,developer,compacted,toolResults,history,fragments:jsonSafe?{messages:allJson,system:systemJson,developer:developerJson,compacted:compactedJson,toolResults:toolResultsJson,history:historyJson}:null};
+  state.length=source.length;
+  return {system:state.system,developer:state.developer,compacted:state.compacted,toolResults:state.toolResults,history:state.history,fragments:state.jsonSafe?{messages:state.allJson,system:state.systemJson,developer:state.developerJson,compacted:state.compactedJson,toolResults:state.toolResultsJson,history:state.historyJson}:null};
 }
 
 export function attachNativePromptProvenance(target,value){
@@ -88,10 +97,10 @@ function currentTurnBreakdown(message){
   };
 }
 
-export function nativeRequestMetrics(messages=[],tools=[],{toolSchemaCache=null,messageSerializationCache=null,historyHashCache=null}={}){
+export function nativeRequestMetrics(messages=[],tools=[],{toolSchemaCache=null,messageSerializationCache=null,historyHashCache=null,messageClassificationCache=null}={}){
   const source=Array.isArray(messages)?messages:[];let lastUser=-1;
   for(let index=source.length-1;index>=0;index--)if(source[index]?.role==="user"){lastUser=index;break}
-  const classified=classifiedMessages(source,lastUser,messageSerializationCache),{system,developer,compacted,toolResults,history}=classified;
+  const classified=classifiedMessages(source,lastUser,messageSerializationCache,messageClassificationCache),{system,developer,compacted,toolResults,history}=classified;
   const toolSchemas=Array.isArray(tools)?tools:[];
   let cachedToolSchemas=toolSchemaCache&&typeof toolSchemaCache.get==="function"?toolSchemaCache.get(toolSchemas):null;
   if(!cachedToolSchemas){

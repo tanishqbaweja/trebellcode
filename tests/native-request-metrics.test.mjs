@@ -74,6 +74,22 @@ test("Native request metrics incrementally reuse only an unchanged history-hash 
   const rewritten={role:"assistant",content:"rewritten old answer"},rewrittenMessages=[system,oldUser,rewritten,currentUser,appended],rewrittenCached=nativeRequestMetrics(rewrittenMessages,[],{messageSerializationCache:messageCache,historyHashCache}),rewrittenUncached=nativeRequestMetrics(rewrittenMessages,[]);assert.deepEqual(rewrittenCached,rewrittenUncached);assert.notEqual(rewrittenCached.conversationHistoryHash,next.conversationHistoryHash);
 });
 
+test("Native request metrics incrementally classify one append-only in-turn conversation",()=>{
+  const system={role:"system",content:"system"},user={role:"user",content:"request"},messages=[system,user],messageCache=new WeakMap(),historyHashCache={},messageClassificationCache={};
+  const cached=()=>nativeRequestMetrics(messages,[],{messageSerializationCache:messageCache,historyHashCache,messageClassificationCache});
+  assert.deepEqual(cached(),nativeRequestMetrics(messages,[]));
+  messages.push({role:"assistant",content:"answer"},{role:"tool",toolCallId:"call-1",content:"result"});assert.deepEqual(cached(),nativeRequestMetrics(messages,[]));
+  messages.push({role:"assistant",content:"follow-up answer"});assert.deepEqual(cached(),nativeRequestMetrics(messages,[]));
+  messages.push({role:"user",content:"steered request"});assert.deepEqual(cached(),nativeRequestMetrics(messages,[]));
+});
+
+test("Native request metrics classification cache falls back when appended JSON semantics become custom",()=>{
+  const messages=[{role:"system",content:"system"},{role:"user",content:"request"}],messageCache=new WeakMap(),historyHashCache={},messageClassificationCache={};
+  nativeRequestMetrics(messages,[],{messageSerializationCache:messageCache,historyHashCache,messageClassificationCache});
+  messages.push({role:"assistant",content:"source",toJSON(key){return {role:"assistant",content:key==="2"?"array-value":"standalone-value"}}});
+  const cached=nativeRequestMetrics(messages,[],{messageSerializationCache:messageCache,historyHashCache,messageClassificationCache}),uncached=nativeRequestMetrics(messages,[]);assert.deepEqual(cached,uncached);
+});
+
 test("Native request metrics invalidate cached stable-prefix hashes when instructions change",()=>{
   const tools=[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file",description:"read",inputSchema:{type:"object",properties:{path:{type:"string"}}}}]}],cache=new WeakMap(),firstMessages=[{role:"system",content:"system-a"},{role:"developer",content:"developer-a"},{role:"user",content:"request"}],secondMessages=[{role:"system",content:"system-b"},{role:"developer",content:"developer-a"},{role:"user",content:"request"}];
   const first=nativeRequestMetrics(firstMessages,tools,{toolSchemaCache:cache}),secondCached=nativeRequestMetrics(secondMessages,tools,{toolSchemaCache:cache}),secondUncached=nativeRequestMetrics(secondMessages,tools);
