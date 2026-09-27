@@ -186,7 +186,11 @@ function explicitLiteralAfterVerification(messages=[]){
 function explicitVerificationCompletion(messages=[]){
   const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=lastUserInstructionText(user);
   if(!text)return false;
-  return /(?:^|[.!?]\s*)re-?run\b[^.\n]{0,180}\b(?:verification|verifier|tests?|checks?)\b[^.\n]{0,120}\buntil\b[^.\n]{0,60}\bpass(?:es|ed|ing)?\b\s*[.!]?\s*$/i.test(text);
+  const match=text.match(/\bre-?run\b\s+([^\n]{1,180}?)\s+\buntil\b[^\n]{0,80}\bpass(?:es|ed|ing)?\b\s*[.!]?\s*$/i);
+  if(!match)return false;
+  const target=String(match[1]||"").trim();if(!target||/^(?:it|this|that|them|again)$/i.test(target))return false;
+  const prefix=text.slice(Math.max(0,Number(match.index||0)-48),Number(match.index||0));
+  return !/\b(?:do\s+not|don't|never)(?:\s+\w+){0,2}\s*$/i.test(prefix);
 }
 
 function conciseReplacementSummary(oldText,newText){
