@@ -218,8 +218,8 @@ test("Native session cools virtualized output after one hot same-turn model read
     const hot=requests[1].messages.find(message=>message.role==="tool"&&message.toolCallId==="big")?.content||"";
     const cooled=requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="big")?.content||"";
     const fresh=requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="read")?.content||"";
-    assert.ok(hot.length>4000);assert.ok(cooled.length<hot.length);assert.match(cooled,/CRITICAL_ASSERTION/);assert.match(cooled,/out_[a-zA-Z0-9-]+/);assert.match(fresh,/legacy/);
-    assert.ok(events.some(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="same_turn"&&event.data?.savedChars>1000));
+    assert.match(hot,/CRITICAL_ASSERTION/);assert.match(hot,/out_[a-zA-Z0-9-]+/);assert.ok(cooled.length<hot.length);assert.match(cooled,/CRITICAL_ASSERTION/);assert.match(cooled,/out_[a-zA-Z0-9-]+/);assert.match(fresh,/legacy/);
+    assert.ok(events.some(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="same_turn"&&event.data?.savedChars>400));
   }finally{await rm(root,{recursive:true,force:true})}
 });
 

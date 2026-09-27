@@ -3,7 +3,7 @@ import { mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promi
 import { join } from "node:path";
 import { redactSecretValue } from "./secret-redactor.mjs";
 
-const DEFAULT_HOT_BYTES=16*1024,DEFAULT_READ_CHARS=12_000,MAX_READ_CHARS=48_000,DEFAULT_PREVIEW_CHARS=3600;
+const DEFAULT_HOT_BYTES=16*1024,DEFAULT_READ_CHARS=12_000,MAX_READ_CHARS=48_000,DEFAULT_PREVIEW_CHARS=3600,DEFAULT_SIGNAL_PREVIEW_CHARS=2200;
 const SIGNAL_LINE=/\b(?:error|failed|failure|exception|assert(?:ion)?|traceback|panic|fatal|timeout|timed out|cannot|can't|invalid|expected|received|not found|undefined|mismatch)\b/i;
 
 function serialized(value){
@@ -35,11 +35,13 @@ function importantLines(text,maxChars){
 }
 function preview(text,maxChars=DEFAULT_PREVIEW_CHARS){
   const value=String(text||"");if(value.length<=maxChars)return value;
-  const signals=importantLines(value,Math.min(2200,Math.floor(maxChars*.36)));
-  const marker="\n...[Trebell virtualized "+(value.length-maxChars).toLocaleString()+" omitted characters]...\n";
+  let signals=importantLines(value,Math.min(2200,Math.floor(maxChars*.36)));
+  const target=signals?Math.min(maxChars,DEFAULT_SIGNAL_PREVIEW_CHARS):maxChars;
+  if(signals&&target<maxChars)signals=importantLines(value,Math.min(1100,Math.floor(target*.48)));
+  const marker="\n...[Trebell virtualized "+(value.length-target).toLocaleString()+" omitted characters]...\n";
   const signalBlock=signals?"\n...[important lines from omitted output]...\n"+signals+"\n...[end important lines]...\n":"";
-  const remaining=Math.max(512,maxChars-marker.length-signalBlock.length),head=Math.floor(remaining*.62),tail=Math.max(0,remaining-head);
-  return (value.slice(0,head)+marker+signalBlock+value.slice(-tail)).slice(0,maxChars);
+  const remaining=Math.max(512,target-marker.length-signalBlock.length),head=Math.floor(remaining*.62),tail=Math.max(0,remaining-head);
+  return (value.slice(0,head)+marker+signalBlock+value.slice(-tail)).slice(0,target);
 }
 function safeHandle(value){
   const handle=String(value||"");if(!/^out_[a-zA-Z0-9-]{8,80}$/.test(handle))throw new Error("Invalid Trebell output handle");
