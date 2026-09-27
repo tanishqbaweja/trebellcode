@@ -63,6 +63,31 @@ export function nativeMessagesFromThread(thread={}, {afterTurnId=null}={}){
   return messages;
 }
 
+function persistedToolObject(content){
+  if(typeof content!=="string")return null;
+  const start=content.indexOf("{");if(start<0)return null;
+  try{const value=JSON.parse(content.slice(start));return value&&typeof value==="object"&&!Array.isArray(value)?value:null}catch{return null}
+}
+
+function recentPersistedTerminalRuns(messages=[]){
+  const source=Array.isArray(messages)?messages:[],lastUser=source.findLastIndex(message=>message?.role==="user");if(lastUser<0)return [];
+  const recent=source.slice(lastUser),calls=new Map(),runs=[],settled=recent.some(message=>message?.role==="assistant"&&!Array.isArray(message?.toolCalls)&&!Array.isArray(message?.tool_calls)&&String(message?.content||"").trim());
+  if(!settled)return [];
+  for(const message of recent){
+    const toolCalls=Array.isArray(message?.toolCalls)?message.toolCalls:Array.isArray(message?.tool_calls)?message.tool_calls:[];
+    for(const call of toolCalls){
+      const namespace=String(call?.namespace||""),name=String(call?.name||"");if(namespace!=="trebell_terminal"||name!=="run")continue;
+      const id=String(call?.id||call?.call_id||"");if(id)calls.set(id,call);
+    }
+    if(message?.role!=="tool")continue;
+    const id=String(message.toolCallId||message.tool_call_id||""),call=calls.get(id);if(!call)continue;
+    const output=persistedToolObject(message.content),exitCode=Number(output?.exitCode);
+    if(!output||output.success===false||output.uncertain===true||output.timedOut===true||output.signal!=null||!Number.isFinite(exitCode))continue;
+    runs.push({arguments:call.arguments&&typeof call.arguments==="object"?call.arguments:{},exitCode});
+  }
+  return runs.slice(-16);
+}
+
 export function nativeCompactionMessage(summary){
   const text=String(summary||"").trim();
   if(!text)return null;
@@ -228,7 +253,7 @@ export class NativeAgentSession{
   constructor({cwd=process.cwd(),providerTurn,executeTool,toolOutputStore=null,provider=null,model=null,contextWindow=null,tools=[],permissionMode="supervised",onUpdate=()=>{},onEvent=null,onClose=null,initialMessages=[]}={}){
     if(typeof providerTurn!=="function")throw new Error("NativeAgentSession requires providerTurn");
     if(typeof executeTool!=="function")throw new Error("NativeAgentSession requires executeTool");
-    this.cwd=cwd;this.providerTurn=providerTurn;this.executeTool=executeTool;this.toolOutputStore=toolOutputStore;this.provider=provider;this.model=model;this.contextWindow=null;this.setContextWindow(contextWindow);this.tools=Array.isArray(tools)?tools:[];this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onEvent=onEvent;this.onClose=onClose;this.messages=[...(Array.isArray(initialMessages)?initialMessages:[])];this.sessionId=null;this.controller=null;this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.closed=false;this.observationCache=new Map();this.lastProviderResponseId=null;this.previousTerminalRuns=[];
+    this.cwd=cwd;this.providerTurn=providerTurn;this.executeTool=executeTool;this.toolOutputStore=toolOutputStore;this.provider=provider;this.model=model;this.contextWindow=null;this.setContextWindow(contextWindow);this.tools=Array.isArray(tools)?tools:[];this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onEvent=onEvent;this.onClose=onClose;this.messages=[...(Array.isArray(initialMessages)?initialMessages:[])];this.sessionId=null;this.controller=null;this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.closed=false;this.observationCache=new Map();this.lastProviderResponseId=null;this.previousTerminalRuns=recentPersistedTerminalRuns(this.messages);
   }
   async start({providerSessionId=null,model=null}={}){
     if(this.closed)throw new Error("Native session is closed");
@@ -289,7 +314,7 @@ export class NativeAgentSession{
       this.onUpdate({update:{sessionUpdate:"tool_call",toolCallId:call.id,namespace:call.namespace||"native",tool:call.name,title:(call.namespace?call.namespace+" / ":"")+call.name,kind,rawInput:call.arguments,status:"in_progress"}});
       const toolContext={toolAllowlist:Array.isArray(toolAllowlist)?toolAllowlist:null};
       let output=await this.executeTool(call,toolContext);
-      if(call.namespace==="trebell_terminal"&&call.name==="run"&&output?.success!==false&&output?.timedOut!==true&&output?.signal==null&&Number.isFinite(Number(output?.exitCode))){
+      if(call.namespace==="trebell_terminal"&&call.name==="run"&&output?.success!==false&&output?.uncertain!==true&&output?.timedOut!==true&&output?.signal==null&&Number.isFinite(Number(output?.exitCode))){
         let args={};try{args=structuredClone(call.arguments&&typeof call.arguments==="object"?call.arguments:{})}catch{}
         currentTerminalRuns.push({arguments:args,exitCode:Number(output.exitCode)});
       }

@@ -764,6 +764,38 @@ test("Native persisted thread evidence reconstructs model and tool history after
   assert.equal(messages[1].toolCalls[0].namespace,"trebell_repo");assert.match(messages[2].content,/untrusted tool data/i);assert.match(messages[2].content,/session\.js/);assert.equal(messages[3].content,"Found Session.");
 });
 
+test("Native restarted session reconstructs the immediately prior failed verifier for an explicit rerun workflow",async()=>{
+  const thread={turns:[{items:[
+    {type:"userMessage",id:"u1",content:[{type:"text",text:"Run node verify.mjs and report the result."}]},
+    {type:"dynamicToolCall",id:"verify-old",namespace:"trebell_terminal",tool:"run",arguments:{command:"node",args:["verify.mjs"]},status:"completed",rawOutput:{exitCode:1,stderr:"expected strict"}},
+    {type:"agentMessage",id:"a1",text:"Verifier failed."},
+  ]}]};
+  let providerCalls=0,verifierRuns=0;const events=[];
+  const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model-a",tools,initialMessages:nativeMessagesFromThread(thread),onEvent:event=>events.push(event),
+    providerTurn:async()=>{providerCalls++;if(providerCalls===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};throw new Error("Restarted Native should replay the persisted verifier without another inference.")},
+    executeTool:async call=>{if(call.namespace==="trebell_terminal"){verifierRuns++;return {exitCode:0,stdout:"PASS"}}return {path:"src/a.mjs",replacements:1}},
+  });
+  await session.start({providerSessionId:"restarted-native",model:"model-a"});
+  const result=await session.prompt([{type:"text",text:"Now fix the implementation and rerun node verify.mjs until it passes."}]);
+  assert.equal(providerCalls,1);assert.equal(verifierRuns,1);assert.equal(result.raw?.modelTurns,1);assert.equal(result.raw?.toolCalls,2);
+  assert.ok(events.some(event=>event.name==="native.verification.prior_terminal_evidence"&&event.data?.count===1));
+});
+
+test("Native restart does not reconstruct terminal evidence from an unfinished or uncertain prior turn",async()=>{
+  for(const fixture of [
+    {name:"unfinished",items:[{type:"userMessage",content:[{type:"text",text:"run"}]},{type:"dynamicToolCall",id:"v",namespace:"trebell_terminal",tool:"run",arguments:{command:"node",args:["verify.mjs"]},rawOutput:{exitCode:1}}]},
+    {name:"uncertain",items:[{type:"userMessage",content:[{type:"text",text:"run"}]},{type:"dynamicToolCall",id:"v",namespace:"trebell_terminal",tool:"run",arguments:{command:"node",args:["verify.mjs"]},rawOutput:{exitCode:1,uncertain:true}},{type:"agentMessage",text:"uncertain"}]},
+  ]){
+    let providerCalls=0,verifierRuns=0;
+    const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
+    const session=new NativeAgentSession({provider:"fixture",model:"model-a",tools,initialMessages:nativeMessagesFromThread({turns:[{items:fixture.items}]}),providerTurn:async()=>{providerCalls++;if(providerCalls===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};return {text:"provider final",toolCalls:[],usage:{}}},executeTool:async call=>{if(call.namespace==="trebell_terminal")verifierRuns++;return {path:"src/a.mjs",replacements:1}}});
+    await session.start({providerSessionId:"restart-"+fixture.name,model:"model-a"});const result=await session.prompt([{type:"text",text:"Now fix it and rerun node verify.mjs until it passes."}]);
+    assert.equal(providerCalls,2,fixture.name);assert.equal(verifierRuns,0,fixture.name);assert.equal(result.raw?.modelTurns,2,fixture.name);
+  }
+});
+
 test("Native persisted tool content reconstructs image observations when available",()=>{
   const thread={turns:[{items:[
     {type:"dynamicToolCall",id:"shot-1",namespace:"trebell_browser",tool:"screenshot",arguments:{},status:"completed",contentItems:[{type:"inputText",text:"screen metadata"},{type:"inputImage",imageUrl:IMAGE_DATA_URL}],success:true},
