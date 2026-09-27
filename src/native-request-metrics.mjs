@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 
 export const NATIVE_PROMPT_PROVENANCE=Symbol.for("trebell.native.prompt.provenance");
 
-function json(value){try{return JSON.stringify(value??null)}catch{return String(value??"")}}
+function serialized(value){try{return {text:JSON.stringify(value??null),jsonSafe:true}}catch{return {text:String(value??""),jsonSafe:false}}}
+function json(value){return serialized(value).text}
 function bytes(value){return Buffer.byteLength(typeof value==="string"?value:json(value),"utf8")}
 function estimate(byteCount){return Math.max(0,Math.ceil(Number(byteCount||0)/4))}
 function metric(value){
@@ -10,6 +11,7 @@ function metric(value){
   return {bytes:byteCount,estimatedTokens:estimate(byteCount)};
 }
 function hash(value){return createHash("sha256").update(typeof value==="string"?value:json(value)).digest("hex").slice(0,16)}
+function hashParts(...parts){const state=createHash("sha256");for(const part of parts)state.update(String(part));return state.digest("hex").slice(0,16)}
 
 export function attachNativePromptProvenance(target,value){
   if(!target||typeof target!=="object")return target;
@@ -55,10 +57,12 @@ export function nativeRequestMetrics(messages=[],tools=[]){
     else if(index!==lastUser)history.push(item);
   }
   const toolSchemas=Array.isArray(tools)?tools:[];
-  const systemJson=json(system),developerJson=json(developer),compactedJson=json(compacted),historyJson=json(history),toolResultsJson=json(toolResults),toolSchemasJson=json(toolSchemas),messagesJson=json(source);
+  const systemSerialized=serialized(system),developerSerialized=serialized(developer),toolSchemasSerialized=serialized(toolSchemas),
+    systemJson=systemSerialized.text,developerJson=developerSerialized.text,compactedJson=json(compacted),historyJson=json(history),toolResultsJson=json(toolResults),toolSchemasJson=toolSchemasSerialized.text,messagesJson=json(source);
   const messagesMetric=metric(messagesJson),toolsMetric=metric(toolSchemasJson);
   const currentBreakdown=currentTurnBreakdown(lastUser>=0?source[lastUser]:null);
   const prefix={system,developer,tools:toolSchemas};
+  const stablePrefixJsonSafe=systemSerialized.jsonSafe&&developerSerialized.jsonSafe&&toolSchemasSerialized.jsonSafe;
   return {
     estimation:"utf8_bytes_div_4",
     system:metric(systemJson),
@@ -72,7 +76,7 @@ export function nativeRequestMetrics(messages=[],tools=[]){
     totalLogical:{bytes:messagesMetric.bytes+toolsMetric.bytes,estimatedTokens:estimate(messagesMetric.bytes+toolsMetric.bytes)},
     messageCount:source.length,
     toolFunctionCount:toolSchemas.reduce((sum,entry)=>sum+(Array.isArray(entry?.tools)?entry.tools.length:(entry?.type==="function"?1:0)),0),
-    stablePrefixHash:hash(prefix),
+    stablePrefixHash:stablePrefixJsonSafe?hashParts('{"system":',systemJson,',"developer":',developerJson,',"tools":',toolSchemasJson,"}"):hash(prefix),
     systemHash:hash(systemJson),
     developerHash:hash(developerJson),
     toolSchemaHash:hash(toolSchemasJson),
