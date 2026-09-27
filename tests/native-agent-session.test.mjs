@@ -37,7 +37,7 @@ test("Native session uses deterministic command-only reporting when no richer wo
   assert.ok(events.some(event=>event.name==="native.terminal.direct_status_executed"));assert.ok(events.some(event=>event.name==="native.terminal.report_synthesized"));
 });
 
-test("Native session aggressively cools only the virtualized command result behind a synthesized terminal report",async()=>{
+test("Native session keeps virtualized direct-status evidence persisted but collapses its first provider-facing view",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-terminal-report-cooling-")),requests=[],events=[];
   try{
     const store=new NativeToolOutputStore({directory:root,maxHotBytes:4096});let providerCalls=0;
@@ -51,15 +51,18 @@ test("Native session aggressively cools only the virtualized command result behi
     const first=await session.prompt([{type:"text",text:"Run node verify.mjs and report the result."}]);assert.equal(first.raw?.modelTurns,0);assert.equal(providerCalls,0);
     const persisted=session.messages.find(message=>message.role==="tool"&&message.toolCallId==="native-direct-terminal-status-1")?.content||"";
     assert.doesNotMatch(persisted,/CRITICAL_ASSERTION/);assert.match(persisted,/out_[a-zA-Z0-9-]+/);assert.ok(persisted.length<900);
+    const handle=persisted.match(/out_[a-zA-Z0-9-]+/)?.[0]||"";assert.ok(handle);
     const receipt=session.messages.findLast(message=>message.role==="assistant"&&!(Array.isArray(message.toolCalls)&&message.toolCalls.length)&&String(message.content||"").includes("Command failed"))?.content||"";assert.match(receipt,/CRITICAL_ASSERTION/);
     assert.ok(events.some(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="terminal_report"&&event.data?.savedChars>400));
     await session.prompt([{type:"text",text:"continue"}]);
-    const next=requests[0].messages.find(message=>message.role==="tool"&&message.toolCallId==="native-direct-terminal-status-1")?.content||"";
-    assert.equal(next,persisted);
+    assert.equal(requests[0].messages.some(message=>message.role==="tool"&&message.toolCallId==="native-direct-terminal-status-1"),false);
+    const exposedReceipt=requests[0].messages.find(message=>message.role==="assistant"&&String(message.content||"").includes("CRITICAL_ASSERTION"))?.content||"";
+    assert.match(exposedReceipt,new RegExp(handle));assert.match(exposedReceipt,/trebell_output\/inspect/);
+    assert.ok(events.some(event=>event.name==="native.context.provider_view_compacted"&&event.data?.count===1&&event.data?.savedChars>0));
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
-test("Native session cools synthesized terminal-report history before first cache-provider exposure, then keeps it stable",async()=>{
+test("Native session gives cache providers a stable compact direct-status prefix before first exposure",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-terminal-report-cache-")),events=[],requests=[];
   try{
     const store=new NativeToolOutputStore({directory:root,maxHotBytes:4096});let providerCalls=0;
@@ -67,10 +70,28 @@ test("Native session cools synthesized terminal-report history before first cach
     await session.start({providerSessionId:"terminal-report-cache",model:"gpt-5.6"});await session.prompt([{type:"text",text:"Run node verify.mjs and report the result."}]);
     assert.equal(providerCalls,0);const persisted=session.messages.find(message=>message.role==="tool"&&message.toolCallId==="native-direct-terminal-status-1")?.content||"";
     assert.doesNotMatch(persisted,/CRITICAL_ASSERTION/);assert.match(persisted,/out_[a-zA-Z0-9-]+/);assert.ok(persisted.length<900);
+    const handle=persisted.match(/out_[a-zA-Z0-9-]+/)?.[0]||"";assert.ok(handle);
     assert.ok(events.some(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="terminal_report"));
     await session.prompt([{type:"text",text:"continue"}]);
-    const exposed=requests[0].messages.find(message=>message.role==="tool"&&message.toolCallId==="native-direct-terminal-status-1")?.content||"";assert.equal(exposed,persisted);
+    assert.equal(requests[0].messages.some(message=>message.role==="tool"&&message.toolCallId==="native-direct-terminal-status-1"),false);
+    const firstReceipt=requests[0].messages.find(message=>message.role==="assistant"&&String(message.content||"").includes(handle))?.content||"";assert.match(firstReceipt,/trebell_output\/inspect/);
+    await session.prompt([{type:"text",text:"continue again"}]);
+    const secondReceipt=requests[1].messages.find(message=>message.role==="assistant"&&String(message.content||"").includes(handle))?.content||"";assert.equal(secondReceipt,firstReceipt);
   }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("Native session leaves non-virtualized direct-status tool history intact for later provider reasoning",async()=>{
+  const requests=[],events=[];
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model-a",onEvent:event=>events.push(event),tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{requests.push(structuredClone({...request,signal:undefined}));return {text:"continued",toolCalls:[],usage:{}}},
+    executeTool:async()=>({exitCode:1,stderr:"small deterministic failure"}),
+  });
+  await session.start({providerSessionId:"terminal-report-inline",model:"model-a"});
+  await session.prompt([{type:"text",text:"Run node verify.mjs and report the result."}]);
+  await session.prompt([{type:"text",text:"continue"}]);
+  assert.ok(requests[0].messages.some(message=>message.role==="tool"&&message.toolCallId==="native-direct-terminal-status-1"));
+  assert.equal(events.some(event=>event.name==="native.context.provider_view_compacted"),false);
 });
 
 test("Native session auto-reruns one uniquely proven verifier after a successful edit",async()=>{
@@ -798,6 +819,26 @@ test("Native persisted thread evidence reconstructs model and tool history after
   ]}]};
   const messages=nativeMessagesFromThread(thread);assert.deepEqual(messages.map(item=>item.role),["user","assistant","tool","assistant"]);
   assert.equal(messages[1].toolCalls[0].namespace,"trebell_repo");assert.match(messages[2].content,/untrusted tool data/i);assert.match(messages[2].content,/session\.js/);assert.equal(messages[3].content,"Found Session.");
+});
+
+test("Native restart reconstructs the same compact provider view for a persisted virtualized direct-status turn",async()=>{
+  const handle="out_12345678-restart",requests=[];
+  const initialMessages=nativeMessagesFromThread({turns:[{id:"turn-direct",items:[
+    {type:"userMessage",content:[{type:"text",text:"Run node verify.mjs and report the result."}]},
+    {type:"dynamicToolCall",id:"native-direct-terminal-status-1",namespace:"trebell_terminal",tool:"run",arguments:{command:"node",args:["verify.mjs"]},rawOutput:{exitCode:1,_trebell_output:{handle,totalBytes:12000,totalLines:400,note:"stored"}}},
+    {type:"agentMessage",text:"Command failed (exit code 1): CRITICAL_ASSERTION restart evidence"},
+  ]}]});
+  assert.ok(initialMessages.some(message=>message.role==="tool"&&message.toolCallId==="native-direct-terminal-status-1"),"persisted reconstruction should retain exact tool evidence");
+  const session=new NativeAgentSession({
+    provider:"openai",model:"gpt-5.6",initialMessages,tools:[{type:"namespace",name:"trebell_output",tools:[{name:"inspect"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{requests.push(structuredClone({...request,signal:undefined}));return {id:"resume-1",text:"continued",toolCalls:[],usage:{}}},
+    executeTool:async()=>{throw new Error("not used")},
+  });
+  await session.start({providerSessionId:"direct-status-restart",model:"gpt-5.6"});
+  await session.prompt([{type:"text",text:"continue"}]);
+  assert.equal(requests.length,1);assert.equal(requests[0].messages.some(message=>message.role==="tool"&&message.toolCallId==="native-direct-terminal-status-1"),false);
+  const receipt=requests[0].messages.find(message=>message.role==="assistant"&&String(message.content||"").includes(handle))?.content||"";
+  assert.match(receipt,/CRITICAL_ASSERTION/);assert.match(receipt,/trebell_output\/inspect/);
 });
 
 test("Native restarted session reconstructs the immediately prior failed verifier for an explicit rerun workflow",async()=>{

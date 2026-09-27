@@ -9,9 +9,47 @@ const COLD_TOOL_ARGUMENT_KEYS=Object.freeze({
   "trebell_workspace/write_file":new Set(["content"]),
   "trebell_workspace/replace_text":new Set(["old_text","new_text"]),
 });
+const DIRECT_TERMINAL_STATUS_CALL_ID=/^native-direct-terminal-status-\d+$/;
+const OUTPUT_HANDLE=/^out_[a-zA-Z0-9-]{8,80}$/;
 
 function markedToolText(value){
   const text=String(value??"");return /Trebell provenance:\s*untrusted(?:\s+external)?\s+tool data\b/i.test(text)?text:UNTRUSTED_TOOL_DATA_MARKER+(text?"\n"+text:"");
+}
+
+function parsedToolContent(content){
+  if(typeof content!=="string")return null;
+  const start=content.indexOf("{");if(start<0)return null;
+  try{const value=JSON.parse(content.slice(start));return value&&typeof value==="object"&&!Array.isArray(value)?value:null}catch{return null}
+}
+
+function messageToolCalls(message={}){
+  return Array.isArray(message?.toolCalls)?message.toolCalls:Array.isArray(message?.tool_calls)?message.tool_calls:[];
+}
+
+function toolCallIdentityWithId(call={}){
+  const source=call?.function||call,raw=String(source?.name||call?.name||""),marker=raw.indexOf("__");
+  return {
+    id:String(call?.id||call?.call_id||""),
+    namespace:String(call?.namespace||(marker>0?raw.slice(0,marker):"")),
+    name:String(call?.name||(marker>0?raw.slice(marker+2):raw)),
+  };
+}
+
+export function compactDirectTerminalStatusProviderHistory(messages=[]){
+  const source=Array.isArray(messages)?messages:[],out=[];let count=0;
+  for(let index=0;index<source.length;index++){
+    const assistant=source[index],tool=source[index+1],receipt=source[index+2],calls=messageToolCalls(assistant);
+    if(assistant?.role==="assistant"&&calls.length===1&&tool?.role==="tool"&&receipt?.role==="assistant"){
+      const call=toolCallIdentityWithId(calls[0]),toolCallId=String(tool.toolCallId||tool.tool_call_id||""),receiptCalls=messageToolCalls(receipt),parsed=parsedToolContent(tool.content),handle=String(parsed?._trebell_output?.handle||"");
+      if(DIRECT_TERMINAL_STATUS_CALL_ID.test(call.id)&&call.id===toolCallId&&call.namespace==="trebell_terminal"&&call.name==="run"&&receiptCalls.length===0&&typeof receipt.content==="string"&&receipt.content.trim()&&OUTPUT_HANDLE.test(handle)){
+        const note=`[Full command output handle: ${handle}; inspect via trebell_output/inspect only if needed.]`;
+        out.push({...receipt,content:receipt.content+"\n"+note});index+=2;count++;continue;
+      }
+    }
+    out.push(source[index]);
+  }
+  const savedChars=Math.max(0,JSON.stringify(source).length-JSON.stringify(out).length);
+  return {messages:out,count,savedChars};
 }
 
 function coldPreview(value,maxChars){
