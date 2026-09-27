@@ -5,6 +5,7 @@ import {
   normalizeResponsesTurnResponse,
   providerTurnToChat,
   providerTurnToResponses,
+  providerToolsToChat,
 } from "../src/provider-turn.mjs";
 
 const tools=[{
@@ -47,6 +48,12 @@ test("Chat tool schemas omit redundant root closure while preserving runtime-fac
   assert.equal(parameters.properties.options.additionalProperties,false,"nested object closure still guides structured arguments");
   assert.equal(schema.additionalProperties,false,"wire compaction must not mutate Trebell's canonical schema");
   assert.equal(schema.properties.line.maximum,Number.MAX_SAFE_INTEGER);
+});
+
+test("Chat conversion can reuse a prepared tool manifest without changing wire JSON or property order",()=>{
+  const request={model:"chat-model",tools,messages:[{role:"system",content:"system"},{role:"user",content:"task"}],toolChoice:"auto",parallelToolCalls:true};
+  const ordinary=providerTurnToChat(request),prepared=providerTurnToChat(request,{preparedTools:providerToolsToChat(tools)});
+  assert.equal(JSON.stringify(prepared),JSON.stringify(ordinary));
 });
 
 test("provider turn converts the same conversation to Responses while preserving namespace identity",()=>{

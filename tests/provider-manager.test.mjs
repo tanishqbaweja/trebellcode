@@ -460,6 +460,23 @@ test("official OpenAI prompt-cache key memoization preserves exact wire JSON and
   const parsed=cached.map(body=>JSON.parse(body));assert.equal(parsed[0].prompt_cache_key,parsed[1].prompt_cache_key);assert.notEqual(parsed[0].prompt_cache_key,parsed[2].prompt_cache_key);assert.notEqual(parsed[0].prompt_cache_key,parsed[3].prompt_cache_key);
 });
 
+test("Native Chat tool-manifest cache preserves exact wire JSON and invalidates on schema changes",async()=>{
+  const tools=[{type:"namespace",name:"trebell_workspace",description:"Workspace tools",tools:[
+    {name:"read_file",description:"Read one file",inputSchema:{type:"object",properties:{path:{type:"string"}},required:["path"],additionalProperties:false}},
+    {name:"replace_text",description:"Replace exact text",inputSchema:{type:"object",properties:{path:{type:"string"},old_text:{type:"string"},new_text:{type:"string"}},required:["path","old_text","new_text"],additionalProperties:false}},
+  ]}],messages=[{role:"system",content:"stable"},{role:"user",content:"task"}];
+  const run=async cacheSize=>{
+    const root=mkdtempSync(join(tmpdir(),"trebell-provider-chat-tool-cache-")),bodies=[],runTools=structuredClone(tools),fingerprint=nativeRequestMetrics(messages,runTools)[NATIVE_TOOL_SCHEMA_FINGERPRINT];
+    try{
+      const manager=new ProviderManager({env:{TREBELL_HOME:root},chatToolManifestCacheSize:cacheSize,fetchFn:async(_url,init={})=>{bodies.push(String(init.body||""));const body=JSON.parse(init.body||"{}");return Response.json({id:"chat-"+bodies.length,model:body.model,choices:[{finish_reason:"stop",message:{role:"assistant",content:"ok"}}],usage:{}})}});manager.setKey("hcnsec","hc-key");
+      const request={model:"glm-5.3",messages,tools:runTools,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:fingerprint};await manager.turn("hcnsec",request);await manager.turn("hcnsec",request);
+      runTools[0].tools[0].description="Read one file exactly";const mutatedFingerprint=nativeRequestMetrics(messages,runTools)[NATIVE_TOOL_SCHEMA_FINGERPRINT];await manager.turn("hcnsec",{...request,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:mutatedFingerprint});
+      return bodies;
+    }finally{rmSync(root,{recursive:true,force:true})}
+  };
+  const uncached=await run(0),cached=await run(8);assert.deepEqual(cached,uncached);assert.equal(cached[0],cached[1]);assert.notEqual(cached[2],cached[1]);
+});
+
 test("official OpenAI keeps late developer finalization out of the stable instruction prefix",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-")),bodies=[];
   const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{

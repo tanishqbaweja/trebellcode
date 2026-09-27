@@ -1,6 +1,6 @@
 import { TREBELL_USER_AGENT } from "./version.mjs";
 import { adaptAnthropicResponse, chatToAnthropic, providerTurnAnthropicScaffold, providerTurnToAnthropic } from "./anthropic-chat-adapter.mjs";
-import { normalizeChatTurnResponse, normalizeResponsesTurnResponse, providerTurnToChat, providerTurnToResponses } from "./provider-turn.mjs";
+import { normalizeChatTurnResponse, normalizeResponsesTurnResponse, providerTurnToChat, providerTurnToResponses, providerToolsToChat } from "./provider-turn.mjs";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -342,7 +342,7 @@ function remainingProviderRequestMs(deadlineAt){
 }
 
 export class ProviderManager {
-  constructor({ env = process.env, fetchFn = fetch, requestTimeoutMs = DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS, openAiResponsesWebSocketFactory=null, openAiResponsesWebSocketRetryMs=30_000, openAiToolManifestCacheSize=32, openAiPromptCacheKeyCacheSize=128, anthropicToolManifestCacheSize=32, reusePreSerializedToolJson=true, nowFn=Date.now } = {}) {
+  constructor({ env = process.env, fetchFn = fetch, requestTimeoutMs = DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS, openAiResponsesWebSocketFactory=null, openAiResponsesWebSocketRetryMs=30_000, openAiToolManifestCacheSize=32, openAiPromptCacheKeyCacheSize=128, anthropicToolManifestCacheSize=32, chatToolManifestCacheSize=32, reusePreSerializedToolJson=true, nowFn=Date.now } = {}) {
     this.env = env;
     this.fetchFn = fetchFn;
     const timeoutMs = Math.trunc(Number(requestTimeoutMs));
@@ -358,6 +358,7 @@ export class ProviderManager {
     const manifestCacheSize=Math.trunc(Number(openAiToolManifestCacheSize));this.openAiToolManifestCacheSize=Number.isFinite(manifestCacheSize)&&manifestCacheSize>=0?Math.min(256,manifestCacheSize):32;this.openAiToolManifestCache=new Map();
     const anthropicManifestCacheSize=Math.trunc(Number(anthropicToolManifestCacheSize));this.anthropicToolManifestCacheSize=Number.isFinite(anthropicManifestCacheSize)&&anthropicManifestCacheSize>=0?Math.min(256,anthropicManifestCacheSize):32;this.anthropicToolManifestCache=new Map();
     const cacheKeyCacheSize=Math.trunc(Number(openAiPromptCacheKeyCacheSize));this.openAiPromptCacheKeyCacheSize=Number.isFinite(cacheKeyCacheSize)&&cacheKeyCacheSize>=0?Math.min(1024,cacheKeyCacheSize):128;this.openAiPromptCacheKeyCache=new Map();
+    const chatCacheSize=Math.trunc(Number(chatToolManifestCacheSize));this.chatToolManifestCacheSize=Number.isFinite(chatCacheSize)&&chatCacheSize>=0?Math.min(256,chatCacheSize):32;this.chatToolManifestCache=new Map();
   }
 
   #openAiToolManifest(request={}){
@@ -399,6 +400,17 @@ export class ProviderManager {
     const scaffold=providerTurnAnthropicScaffold(request),toolsJson=Array.isArray(scaffold.tools)&&scaffold.tools.length?JSON.stringify(scaffold.tools):null,manifest={scaffold,toolsJson};this.anthropicToolManifestCache.set(key,manifest);
     while(this.anthropicToolManifestCache.size>this.anthropicToolManifestCacheSize)this.anthropicToolManifestCache.delete(this.anthropicToolManifestCache.keys().next().value);
     return manifest;
+  }
+
+  #chatToolManifest(request={}){
+    const supplied=request?.[NATIVE_TOOL_SCHEMA_FINGERPRINT],fingerprint=/^[a-f0-9]{64}$/i.test(String(supplied||""))?String(supplied).toLowerCase():null;
+    if(!fingerprint||this.chatToolManifestCacheSize<=0)return null;
+    if(this.chatToolManifestCache.has(fingerprint)){
+      const cached=this.chatToolManifestCache.get(fingerprint);this.chatToolManifestCache.delete(fingerprint);this.chatToolManifestCache.set(fingerprint,cached);return cached;
+    }
+    const tools=providerToolsToChat(request.tools);this.chatToolManifestCache.set(fingerprint,tools);
+    while(this.chatToolManifestCache.size>this.chatToolManifestCacheSize)this.chatToolManifestCache.delete(this.chatToolManifestCache.keys().next().value);
+    return tools;
   }
 
   #openAiWebSocketCircuitOpen(){
@@ -654,7 +666,7 @@ export class ProviderManager {
     const anthropicScaffold=provider.id==="anthropic"?this.#anthropicToolScaffold({...request,model}):null;
     const directAnthropicBody=anthropicScaffold?providerTurnToAnthropic({...request,model},{stream:streamChat===true,scaffold:anthropicScaffold.scaffold}):null;
     if(this.reusePreSerializedToolJson&&directAnthropicBody&&anthropicScaffold?.toolsJson&&directAnthropicBody.tools===anthropicScaffold.scaffold.tools)attachPreSerializedTopLevel(directAnthropicBody,"tools",directAnthropicBody.tools,anthropicScaffold.toolsJson);
-    const chatBody=provider.wireApi==="responses"||directAnthropicBody?null:providerTurnToChat({...request,model});
+    const chatBody=provider.wireApi==="responses"||directAnthropicBody?null:providerTurnToChat({...request,model},{preparedTools:this.#chatToolManifest(request)});
     if(streamChat===true&&chatBody){chatBody.stream=true;chatBody.stream_options={include_usage:true}}
     let openAiWebSocketFallback=null;
     const openAiWebSocketStreamId=provider.id==="openai"&&streamResponses===true?openAiResponsesWebSocketStreamId(request?.metadata?.sessionId):null;

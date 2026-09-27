@@ -68,7 +68,7 @@ function compactChatToolSchema(value){
   return schema;
 }
 
-function toolDefinitionsToChat(tools=[]){
+export function providerToolsToChat(tools=[]){
   const out=[];
   for(const entry of Array.isArray(tools)?tools:[]){
     if(entry?.type==="function"){
@@ -85,7 +85,7 @@ function toolDefinitionsToChat(tools=[]){
   return out;
 }
 
-export function providerTurnToChat({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,parallelToolCalls=true}={}){
+export function providerTurnToChat({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,parallelToolCalls=true}={}, {preparedTools=null}={}){
   const chatMessages=[];
   for(const message of Array.isArray(messages)?messages:[]){
     if(!message||typeof message!=="object")continue;
@@ -102,7 +102,7 @@ export function providerTurnToChat({model,messages=[],tools=[],toolChoice="auto"
     if(["system","developer","user"].includes(message.role))chatMessages.push({role:message.role,content:openAiContent(message.content)});
   }
   const result={model:String(model||""),messages:chatMessages,stream:false,parallel_tool_calls:Boolean(parallelToolCalls)};
-  const chatTools=toolDefinitionsToChat(tools);if(chatTools.length)result.tools=chatTools;
+  const chatTools=Array.isArray(preparedTools)?preparedTools:providerToolsToChat(tools);if(chatTools.length)result.tools=chatTools;
   if(toolChoice&&chatTools.length){
     if(typeof toolChoice==="string")result.tool_choice=toolChoice;
     else if(toolChoice.name)result.tool_choice={type:"function",function:{name:flatToolName(toolChoice.namespace,toolChoice.name)}};
