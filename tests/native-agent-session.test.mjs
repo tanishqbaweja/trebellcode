@@ -50,7 +50,8 @@ test("Native session aggressively cools only the virtualized command result behi
     await session.start({providerSessionId:"terminal-report-cooling",model:"model-a"});
     const first=await session.prompt([{type:"text",text:"Run node verify.mjs and report the result."}]);assert.equal(first.raw?.modelTurns,1);
     const persisted=session.messages.find(message=>message.role==="tool"&&message.toolCallId==="verify-report")?.content||"";
-    assert.match(persisted,/CRITICAL_ASSERTION/);assert.match(persisted,/out_[a-zA-Z0-9-]+/);assert.ok(persisted.length<1700);
+    assert.doesNotMatch(persisted,/CRITICAL_ASSERTION/);assert.match(persisted,/out_[a-zA-Z0-9-]+/);assert.ok(persisted.length<900);
+    const receipt=session.messages.findLast(message=>message.role==="assistant"&&!(Array.isArray(message.toolCalls)&&message.toolCalls.length)&&String(message.content||"").includes("Command failed"))?.content||"";assert.match(receipt,/CRITICAL_ASSERTION/);
     assert.ok(events.some(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="terminal_report"&&event.data?.savedChars>400));
     await session.prompt([{type:"text",text:"continue"}]);
     const next=requests[1].messages.find(message=>message.role==="tool"&&message.toolCallId==="verify-report")?.content||"";
@@ -65,7 +66,7 @@ test("Native session cools synthesized terminal-report history before first cach
     const session=new NativeAgentSession({provider:"openai",model:"gpt-5.6",toolOutputStore:store,onEvent:event=>events.push(event),tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],providerTurn:async request=>{requests.push(structuredClone({...request,signal:undefined}));providerCalls++;return {id:"r"+providerCalls,text:providerCalls===1?"Running it now.":"continued",toolCalls:providerCalls===1?[{id:"verify-cache",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}]:[],usage:{}}},executeTool:async()=>({exitCode:1,stdout:"noise\n".repeat(6000),stderr:"CRITICAL_ASSERTION expected strict but received legacy"})});
     await session.start({providerSessionId:"terminal-report-cache",model:"gpt-5.6"});await session.prompt([{type:"text",text:"Run node verify.mjs and report the result."}]);
     const persisted=session.messages.find(message=>message.role==="tool"&&message.toolCallId==="verify-cache")?.content||"";
-    assert.match(persisted,/CRITICAL_ASSERTION/);assert.match(persisted,/out_[a-zA-Z0-9-]+/);assert.ok(persisted.length<1700);
+    assert.doesNotMatch(persisted,/CRITICAL_ASSERTION/);assert.match(persisted,/out_[a-zA-Z0-9-]+/);assert.ok(persisted.length<900);
     assert.ok(events.some(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="terminal_report"));
     await session.prompt([{type:"text",text:"continue"}]);
     const exposed=requests[1].messages.find(message=>message.role==="tool"&&message.toolCallId==="verify-cache")?.content||"";assert.equal(exposed,persisted);

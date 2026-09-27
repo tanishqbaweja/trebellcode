@@ -26,7 +26,7 @@ function coldPreview(value,maxChars){
   return [text.slice(0,head),signalBlock&&"\n...[important prior output lines]...\n"+signalBlock,text.slice(-tail)].filter(Boolean).join("").slice(0,maxChars);
 }
 
-export function coolVirtualizedToolContent(content,{maxPreviewChars=DEFAULT_COLD_PREVIEW_CHARS}={}){
+export function coolVirtualizedToolContent(content,{maxPreviewChars=DEFAULT_COLD_PREVIEW_CHARS,includePreview=true}={}){
   if(typeof content!=="string"||!content.includes('"_trebell_output"'))return content;
   const jsonStart=content.indexOf("{");if(jsonStart<0)return content;
   let parsed;try{parsed=JSON.parse(content.slice(jsonStart))}catch{return content}
@@ -34,7 +34,7 @@ export function coolVirtualizedToolContent(content,{maxPreviewChars=DEFAULT_COLD
   const keep=["success","exitCode","signal","timedOut","truncated","durationMs","cwd","command","args","path","size","replacements","error","message","status"],receipt={};
   for(const key of keep)if(Object.prototype.hasOwnProperty.call(parsed,key))receipt[key]=parsed[key];
   const previewChars=Math.max(600,Math.trunc(Number(maxPreviewChars)||DEFAULT_COLD_PREVIEW_CHARS));
-  if(typeof parsed.preview==="string"&&parsed.preview)receipt.preview=coldPreview(parsed.preview,previewChars);
+  if(includePreview&&typeof parsed.preview==="string"&&parsed.preview)receipt.preview=coldPreview(parsed.preview,previewChars);
   receipt._trebell_output={handle,totalBytes:Number(output.totalBytes||0)||null,totalLines:Number(output.totalLines||0)||null,note:"Full redacted output remains stored by Trebell. Use trebell_output/inspect with this handle only if the compact prior evidence is insufficient."};
   return markedToolText(JSON.stringify(receipt));
 }
@@ -49,14 +49,14 @@ export function coolVirtualizedToolHistory(messages=[],options={}){
   return {messages:cooled,count,savedChars};
 }
 
-export function coolReportedVirtualizedToolResult(messages=[],{toolCallId,maxPreviewChars=600}={}){
+export function coolReportedVirtualizedToolResult(messages=[],{toolCallId,maxPreviewChars=600,includePreview=true}={}){
   const wanted=String(toolCallId||"").trim();
   if(!wanted)return {messages:Array.isArray(messages)?messages:[],count:0,savedChars:0};
   let count=0,savedChars=0;
   const cooled=(Array.isArray(messages)?messages:[]).map(message=>{
     const id=String(message?.toolCallId||message?.tool_call_id||"");
     if(message?.role!=="tool"||id!==wanted||typeof message.content!=="string")return message;
-    const content=coolVirtualizedToolContent(message.content,{maxPreviewChars});
+    const content=coolVirtualizedToolContent(message.content,{maxPreviewChars,includePreview});
     if(content===message.content)return message;
     count++;savedChars+=Math.max(0,message.content.length-content.length);return {...message,content};
   });

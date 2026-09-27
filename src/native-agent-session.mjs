@@ -413,7 +413,7 @@ export class NativeAgentSession{
           }finally{if(this.modelController===modelController)this.modelController=null}
         },executeTool:wrappedExecutor,
       });
-      const terminalReportCooling=result.syntheticTerminalReportToolCallId?coolReportedVirtualizedToolResult(result.messages,{toolCallId:result.syntheticTerminalReportToolCallId,maxPreviewChars:600}):{messages:result.messages,count:0,savedChars:0};
+      const terminalReportCooling=result.syntheticTerminalReportToolCallId?coolReportedVirtualizedToolResult(result.messages,{toolCallId:result.syntheticTerminalReportToolCallId,maxPreviewChars:600,includePreview:false}):{messages:result.messages,count:0,savedChars:0};
       if(terminalReportCooling.count)this.onEvent?.({name:"native.tool.history_cooled",status:"completed",model:String(result.model||this.model||""),provider:result.provider||this.provider||null,data:{phase:"terminal_report",count:terminalReportCooling.count,savedChars:terminalReportCooling.savedChars,toolResultCount:terminalReportCooling.count,toolCallArgumentCount:0,toolResultSavedChars:terminalReportCooling.savedChars,toolCallArgumentSavedChars:0}});
       if(preserveCacheHistory){
         this.messages=terminalReportCooling.messages;
