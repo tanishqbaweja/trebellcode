@@ -379,7 +379,7 @@ test("Native session keeps a post-edit reread in full when the workspace changed
 });
 
 test("Native session compacts a verified reread after an exact successful write_file",async()=>{
-  const requests=[],events=[];let providerCalls=0,content="old\n",resolvedPath="C:/repo/generated.txt";const written=("generated line zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n".repeat(180))+"READY\n";
+  const requests=[],events=[];let providerCalls=0,reads=0,content="old\n",resolvedPath="C:/repo/generated.txt";const written=("generated line zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n".repeat(180))+"READY\n";
   const session=new NativeAgentSession({
     model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],onEvent:event=>events.push(event),
     providerTurn:async request=>{
@@ -390,10 +390,11 @@ test("Native session compacts a verified reread after an exact successful write_
     },
     executeTool:async call=>{
       if(call.name==="write_file"){content=String(call.arguments?.content??"");return {path:resolvedPath,name:"generated.txt",size:Buffer.byteLength(content,"utf8"),createdOrReplaced:true}}
-      return {path:resolvedPath,name:"generated.txt",size:Buffer.byteLength(content,"utf8"),content};
+      reads++;return {path:resolvedPath,name:"generated.txt",size:Buffer.byteLength(content,"utf8"),content};
     },
   });
   await session.start({providerSessionId:"native-post-write-reread",model:"model-a"});await session.prompt([{type:"text",text:"write then verify"}]);
+  assert.equal(reads,1,"the post-write workspace verification read must still execute");
   const fresh=requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="read-after-write");assert.ok(fresh);assert.match(fresh.content,/byte-match the exact successful edit/i);assert.doesNotMatch(fresh.content,/generated line z{20}/);
   const event=events.find(item=>item.name==="native.tool.post_edit_read_compacted");assert.ok(event);assert.equal(event.data.editTool,"trebell_workspace/write_file");assert.ok(event.data.savedBytes>5000);
 });
