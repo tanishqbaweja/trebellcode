@@ -312,6 +312,17 @@ function explicitWorkspaceRelativeFile(value){
   return normalized;
 }
 
+function explicitExactFileWriteStatus(messages=[]){
+  const user=latestUserMessage(messages),text=lastUserInstructionText(user).trim();if(!text||/[\r\n]/.test(text))return null;
+  const literal="(`[^`\\n]*`|\"[^\"\\n]*\"|'[^'\\n]*'|\\S+?)",report="(?:\\s+(?:and\\s+)?(?:report|show)\\s+(?:me\\s+)?(?:the\\s+)?(?:result|status|outcome))?";
+  const write=text.match(new RegExp("^(?:please\\s+)?write\\s+exactly\\s+"+literal+"\\s+to\\s+"+literal+report+"\\s*[.!]?$","i"));
+  const set=write?null:text.match(new RegExp("^(?:please\\s+)?set\\s+(?:the\\s+)?contents?\\s+of\\s+"+literal+"\\s+exactly\\s+to\\s+"+literal+report+"\\s*[.!]?$","i"));
+  const match=write||set;if(!match)return null;
+  const content=exactReplacementToken(write?match[1]:match[2],{allowEmpty:true}),path=explicitWorkspaceRelativeFile(write?match[2]:match[1]);
+  if(content==null||path==null)return null;
+  return {path,content};
+}
+
 function explicitExactReplacementStatus(messages=[]){
   const user=latestUserMessage(messages),text=lastUserInstructionText(user).trim();
   if(!text||/[\r\n]/.test(text))return null;
@@ -545,14 +556,14 @@ export async function runNativeAgentTurn({
   providerTurn,executeTool,model,messages=[],tools=[],provider=null,toolChoice="auto",
   maxOutputTokens=null,temperature=null,parallelToolCalls=true,maxModelTurns=24,maxToolCalls=100,maxWallTimeMs=null,
   maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,coolReadToolHistory=null,preserveToolSchemasOnFinalization=false,signal=null,onEvent=null,metadata=null,
-  autoRerunVerification=false,priorTerminalRuns=[],synthesizeTerminalReports=false,coolSyntheticTerminalReportOutput=true,directTerminalStatusCommands=false,directExactReplacementStatus=false,prepareProviderMessages=null,
+  autoRerunVerification=false,priorTerminalRuns=[],synthesizeTerminalReports=false,coolSyntheticTerminalReportOutput=true,directTerminalStatusCommands=false,directExactReplacementStatus=false,directExactWriteStatus=false,prepareProviderMessages=null,
 }={}){
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
   const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])],visibleTools=providerVisibleTools(tools,toolAllowlist),directVisiblePairs=exposedToolPairs(visibleTools),requestMetricsToolCache=new WeakMap(),requestMetricsMessageCache=new WeakMap(),requestMetricsHistoryHashCache={},requestMetricsClassificationCache=typeof coolReadToolHistory==="function"?null:{},openAiContinuationIdentity={};
   const explicitlyRequired=explicitlyRequestedTools(conversation,visibleTools),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
-  const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalStatusRequested=explicitTerminalStatusRequest(conversation),directTerminalStatusCommand=directTerminalStatusCommands===true?explicitTerminalStatusCommand(conversation):null,directReplacementStatus=directExactReplacementStatus===true?explicitExactReplacementStatus(conversation):null,terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
+  const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalStatusRequested=explicitTerminalStatusRequest(conversation),directTerminalStatusCommand=directTerminalStatusCommands===true?explicitTerminalStatusCommand(conversation):null,directReplacementStatus=directExactReplacementStatus===true?explicitExactReplacementStatus(conversation):null,directWriteStatus=directExactWriteStatus===true?explicitExactFileWriteStatus(conversation):null,terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
   const verificationFinalizationRequest=verificationCompletionRequest||(finalAfterVerifiedRequest?.target?finalAfterVerifiedRequest:null);
   const successfulTerminalRuns=[];
   let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
@@ -624,6 +635,19 @@ export async function runNativeAgentTurn({
   };
   emit(onEvent,{name:"native.turn.started",status:"running",model:String(model),provider:provider||null,data:{...metadata,maxModelTurns:budget.maxModelTurns,maxToolCalls:budget.maxToolCalls,maxWallTimeMs:budget.maxWallTimeMs}});
   try{
+    const directWriteVisible=directWriteStatus&&budget.maxToolCalls>=1&&directVisiblePairs.some(item=>item.namespace==="trebell_workspace"&&item.name==="write_file");
+    if(directWriteVisible&&!applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_direct_exact_write"})){
+      throwIfAborted(turnSignal);
+      const call={id:"native-direct-exact-write-1",namespace:"trebell_workspace",name:"write_file",arguments:JSON.stringify({path:directWriteStatus.path,content:directWriteStatus.content})};
+      conversation.push({role:"assistant",content:"",toolCalls:[call]});toolCalls=1;const beforeRevision=editRevision,observation=await executeOneTool(call,toolCalls);conversation.push(observation);
+      const exactWrite=editRevision===beforeRevision+1&&verifiedEdits.at(-1)?.kind==="write_file"&&verifiedEdits.at(-1)?.path===directWriteStatus.path,missingExplicit=explicitlyRequired.find(item=>!executedToolKeys.has(item.namespace+"/"+item.name));
+      if(exactWrite&&!missingExplicit&&!applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"after_direct_exact_write"})){
+        const safePath=redactSecretText(String(directWriteStatus.path||""),{trim:true}).replace(/[\r\n\t]+/g," ").slice(0,240),text=`Exact file write completed${safePath?` in ${safePath}`:""}.`;
+        conversation.push({role:"assistant",content:text,toolCalls:[]});const result={text,model:String(model),provider:provider||null,messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse:null};
+        emit(onEvent,{name:"native.workspace.direct_exact_write",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,path:safePath||null}});
+        emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage,directExactWrite:true}});return result;
+      }
+    }
     const directReplacementNeedsVerifier=Boolean(directReplacementStatus?.command),directReplacementVisible=directReplacementStatus&&budget.maxToolCalls>=(directReplacementNeedsVerifier?2:1)&&directVisiblePairs.some(item=>item.namespace==="trebell_workspace"&&item.name==="replace_text")&&(!directReplacementNeedsVerifier||directVisiblePairs.some(item=>item.namespace==="trebell_terminal"&&item.name==="run"));
     if(directReplacementVisible&&!applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_direct_exact_replacement"})){
       throwIfAborted(turnSignal);

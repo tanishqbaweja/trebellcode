@@ -69,6 +69,7 @@
     "bench:native:direct-exact-replacement": "node scripts/native-direct-exact-replacement-benchmark.mjs",
     "bench:native:direct-exact-replacement-only": "node scripts/native-direct-exact-replacement-only-benchmark.mjs",
     "bench:native:direct-exact-replacement-cwd": "node scripts/native-direct-exact-replacement-cwd-benchmark.mjs",
+    "bench:native:direct-exact-write": "node scripts/native-direct-exact-write-benchmark.mjs",
     "bench:openai:response-continuation": "node scripts/openai-response-continuation-benchmark.mjs",
     "bench:openai:continuation-accounting": "node scripts/openai-continuation-accounting-benchmark.mjs",
     "bench:openai:continuation-fingerprint-reuse": "node --expose-gc scripts/openai-response-continuation-fingerprint-benchmark.mjs",

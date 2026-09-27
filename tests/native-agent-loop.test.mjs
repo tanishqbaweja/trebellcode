@@ -156,6 +156,65 @@ test("native agent executes one exact replacement-only turn without provider inf
   }
 });
 
+test("native agent executes one exact full-file write without provider inference",async()=>{
+  for(const [prompt,content] of [
+    ["Write exactly `strict` to `src/config.mjs` and report the result.","strict"],
+    ["Set the contents of `src/config.mjs` exactly to `mode=strict`.","mode=strict"],
+    ["Please write exactly strict to src/config.mjs.","strict"],
+  ]){
+    let providerCalls=0;const executions=[],events=[];
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:prompt}],directExactWriteStatus:true,onEvent:event=>events.push(event),
+      tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]}],
+      providerTurn:async()=>{providerCalls++;throw new Error("Exact file write should not call the provider.")},
+      executeTool:async call=>{executions.push(structuredClone(call));return {path:call.arguments.path,size:Buffer.byteLength(call.arguments.content,"utf8"),createdOrReplaced:true}},
+    });
+    assert.equal(providerCalls,0,prompt);assert.equal(result.modelTurns,0,prompt);assert.equal(result.toolCalls,1,prompt);assert.equal(executions.length,1,prompt);
+    assert.equal(executions[0].namespace,"trebell_workspace",prompt);assert.equal(executions[0].name,"write_file",prompt);assert.deepEqual(executions[0].arguments,{path:"src/config.mjs",content},prompt);
+    assert.equal(result.text,"Exact file write completed in src/config.mjs.",prompt);assert.ok(events.some(event=>event.name==="native.workspace.direct_exact_write"),prompt);
+  }
+});
+
+test("native exact file write fails closed for ambiguous or richer instructions",async()=>{
+  const prompts=[
+    "Write strict to src/config.mjs.",
+    "Create src/config.mjs with exactly strict.",
+    "Write exactly strict to src/config.mjs and explain the change.",
+    "Write exactly strict to src/config.mjs, then run npm test.",
+    "Write exactly strict to ../outside.mjs.",
+    "Write exactly strict to C:\\outside.mjs.",
+    "Write exactly strict to C:outside.mjs.",
+    "Write exactly strict to /tmp/outside.mjs.",
+    "Set the contents of src/config.mjs to strict.",
+  ];
+  for(const prompt of prompts){
+    let providerCalls=0,executions=0;
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:prompt}],directExactWriteStatus:true,
+      tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]}],
+      providerTurn:async()=>{providerCalls++;return {text:"provider handled it",toolCalls:[],usage:{}}},executeTool:async()=>{executions++;return {path:"src/config.mjs"}},
+    });
+    assert.equal(providerCalls,1,prompt);assert.equal(executions,0,prompt);assert.equal(result.text,"provider handled it",prompt);
+  }
+});
+
+test("native exact file write falls back when the write is unproven or unavailable",async()=>{
+  for(const fixture of [
+    {name:"failed-write",tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]}],maxToolCalls:4,execute:true},
+    {name:"hidden-tool",tools:[],maxToolCalls:4,execute:false},
+    {name:"zero-budget",tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]}],maxToolCalls:0,execute:false},
+  ]){
+    let providerCalls=0,executions=0;const requests=[];
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:"Write exactly `strict` to `src/config.mjs`."}],directExactWriteStatus:true,tools:fixture.tools,maxToolCalls:fixture.maxToolCalls,
+      providerTurn:async request=>{providerCalls++;requests.push(structuredClone(request));return {text:"provider handled it",toolCalls:[],usage:{}}},
+      executeTool:async()=>{executions++;return {success:false,error:"write denied"}},
+    });
+    assert.equal(providerCalls,1,fixture.name);assert.equal(executions,fixture.execute?1:0,fixture.name);assert.equal(result.text,"provider handled it",fixture.name);
+    if(fixture.execute)assert.ok(requests[0].messages.some(message=>message.role==="tool"&&/write denied/i.test(String(message.content||""))),fixture.name);
+  }
+});
+
 test("native exact replacement status supports one explicit workspace-relative verifier cwd",async()=>{
   for(const [prompt,cwd] of [
     ["Replace exactly legacy with strict in packages/api/src/config.mjs, then run npm test in packages/api and report the result.","packages/api"],

@@ -50,6 +50,20 @@ test("Native session directly executes one exact replacement followed by its ver
   assert.match(updates.find(item=>item.update?.sessionUpdate==="agent_message_chunk")?.update?.content?.text||"",/Exact replacement completed/i);assert.ok(events.some(event=>event.name==="native.workspace.direct_exact_replacement_status"));
 });
 
+test("Native session directly executes one exact full-file write",async()=>{
+  let providerCalls=0;const calls=[],updates=[],events=[];
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model-a",tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]}],onUpdate:update=>updates.push(update),onEvent:event=>events.push(event),
+    providerTurn:async()=>{providerCalls++;throw new Error("Exact file write should bypass provider inference.")},
+    executeTool:async call=>{calls.push(structuredClone(call));return {path:call.arguments.path,size:Buffer.byteLength(call.arguments.content,"utf8"),createdOrReplaced:true}},
+  });
+  await session.start({providerSessionId:"exact-write",model:"model-a"});
+  const result=await session.prompt([{type:"text",text:"Write exactly `mode=strict` to `src/config.mjs` and report the result."}]);
+  assert.equal(providerCalls,0);assert.equal(result.raw?.modelTurns,0);assert.equal(result.raw?.toolCalls,1);assert.equal(calls.length,1);
+  assert.equal(calls[0].namespace,"trebell_workspace");assert.equal(calls[0].name,"write_file");assert.deepEqual(calls[0].arguments,{path:"src/config.mjs",content:"mode=strict"});
+  assert.match(updates.find(item=>item.update?.sessionUpdate==="agent_message_chunk")?.update?.content?.text||"",/Exact file write completed/i);assert.ok(events.some(event=>event.name==="native.workspace.direct_exact_write"));
+});
+
 test("Native session keeps virtualized direct-status evidence persisted but collapses its first provider-facing view",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-terminal-report-cooling-")),requests=[],events=[];
   try{
