@@ -51,6 +51,22 @@ function openAiContent(content){
   }).filter(Boolean);
 }
 
+export const NATIVE_CHAT_MESSAGE_CACHE_IDENTITY=Symbol.for("trebell.native.chat-message-cache-identity");
+
+function chatMessage(message={}){
+  if(!message||typeof message!=="object")return null;
+  if(message.role==="tool")return {role:"tool",tool_call_id:String(message.toolCallId||message.tool_call_id||""),content:openAiContent(message.content)};
+  if(message.role==="assistant"){
+    const calls=(message.toolCalls||message.tool_calls||[]).map(call=>{
+      const normalized=normalizeToolCall(call);
+      return {id:normalized.id||undefined,type:"function",function:{name:flatToolName(normalized.namespace,normalized.name),arguments:normalized.arguments}};
+    });
+    return {role:"assistant",content:openAiContent(message.content),...(calls.length?{tool_calls:calls}:{})};
+  }
+  if(["system","developer","user"].includes(message.role))return {role:message.role,content:openAiContent(message.content)};
+  return null;
+}
+
 function compactChatToolSchemaValue(value){
   if(Array.isArray(value))return value.map(compactChatToolSchemaValue);
   if(!value||typeof value!=="object")return value;
@@ -85,21 +101,13 @@ export function providerToolsToChat(tools=[]){
   return out;
 }
 
-export function providerTurnToChat({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,parallelToolCalls=true}={}, {preparedTools=null}={}){
+export function providerTurnToChat({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,parallelToolCalls=true}={}, {preparedTools=null,messageCache=null}={}){
   const chatMessages=[];
   for(const message of Array.isArray(messages)?messages:[]){
     if(!message||typeof message!=="object")continue;
-    if(message.role==="tool"){
-      chatMessages.push({role:"tool",tool_call_id:String(message.toolCallId||message.tool_call_id||""),content:openAiContent(message.content)});continue;
-    }
-    if(message.role==="assistant"){
-      const calls=(message.toolCalls||message.tool_calls||[]).map(call=>{
-        const normalized=normalizeToolCall(call);
-        return {id:normalized.id||undefined,type:"function",function:{name:flatToolName(normalized.namespace,normalized.name),arguments:normalized.arguments}};
-      });
-      chatMessages.push({role:"assistant",content:openAiContent(message.content),...(calls.length?{tool_calls:calls}:{})});continue;
-    }
-    if(["system","developer","user"].includes(message.role))chatMessages.push({role:message.role,content:openAiContent(message.content)});
+    let converted=messageCache&&typeof messageCache.get==="function"?messageCache.get(message):null;
+    if(!converted){converted=chatMessage(message);if(converted&&messageCache&&typeof messageCache.set==="function")messageCache.set(message,converted)}
+    if(converted)chatMessages.push(converted);
   }
   const result={model:String(model||""),messages:chatMessages,stream:false,parallel_tool_calls:Boolean(parallelToolCalls)};
   const chatTools=Array.isArray(preparedTools)?preparedTools:providerToolsToChat(tools);if(chatTools.length)result.tools=chatTools;

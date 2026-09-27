@@ -5,6 +5,7 @@ import { nativeCommandSemanticError, normalizeNativeCommandArguments } from "./n
 import { redactSecretText } from "./secret-redactor.mjs";
 import { coolVirtualizedToolContent } from "./native-tool-history.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "./openai-response-continuation.mjs";
+import { NATIVE_CHAT_MESSAGE_CACHE_IDENTITY } from "./provider-turn.mjs";
 
 function abortError(signal){
   const reason=signal?.reason;if(reason?.name==="AbortError")return reason;
@@ -746,7 +747,7 @@ export async function runNativeAgentTurn({
     const providerAttempts=boundedInteger(maxProviderAttempts,3,{min:1,max:8});let response=null;
     for(let attempt=1;attempt<=providerAttempts;attempt++){
       try{
-        response=await providerTurn({model,provider,messages:providerMessages,tools:requestTools,toolChoice:requestToolChoice,maxOutputTokens,temperature,parallelToolCalls,signal:turnSignal,metadata,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:requestMetrics[NATIVE_TOOL_SCHEMA_FINGERPRINT]||null,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:openAiContinuationIdentity});break;
+        response=await providerTurn({model,provider,messages:providerMessages,tools:requestTools,toolChoice:requestToolChoice,maxOutputTokens,temperature,parallelToolCalls,signal:turnSignal,metadata,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:requestMetrics[NATIVE_TOOL_SCHEMA_FINGERPRINT]||null,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:openAiContinuationIdentity,[NATIVE_CHAT_MESSAGE_CACHE_IDENTITY]:openAiContinuationIdentity});break;
       }catch(error){
         if(error?.nativeSteered){
           if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"model_request_interrupted"})){

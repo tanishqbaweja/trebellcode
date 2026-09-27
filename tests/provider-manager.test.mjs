@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { ProviderManager } from "../src/provider-manager.mjs";
 import { nativeRequestMetrics, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "../src/openai-response-continuation.mjs";
+import { NATIVE_CHAT_MESSAGE_CACHE_IDENTITY } from "../src/provider-turn.mjs";
 
 const BUNDLED_CODEX_VERSION=JSON.parse(readFileSync(new URL("../node_modules/@openai/codex/package.json",import.meta.url),"utf8")).version;
 
@@ -476,6 +477,20 @@ test("Native Chat tool-manifest cache preserves exact wire JSON and invalidates 
     }finally{rmSync(root,{recursive:true,force:true})}
   };
   const uncached=await run(0),cached=await run(8);assert.deepEqual(cached,uncached);assert.equal(cached[0],cached[1]);assert.notEqual(cached[2],cached[1]);
+});
+
+test("Native Chat message conversion cache preserves exact wire JSON across append-only requests",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-chat-message-cache-")),candidateBodies=[],baselineBodies=[];
+  try{
+    const response=()=>Response.json({id:"chat-1",model:"deepseek-v4.1",choices:[{message:{role:"assistant",content:"ok"},finish_reason:"stop"}],usage:{}});
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{candidateBodies.push(String(init.body));return response()}});manager.setKey("vyceai","vyce-key");
+    const identity={},messages=[{role:"system",content:"stable"},{role:"user",content:"hello"}],request={model:"deepseek-v4.1",messages,tools:[],[NATIVE_CHAT_MESSAGE_CACHE_IDENTITY]:identity};
+    await manager.turn("vyceai",request);messages.push({role:"assistant",content:"ok"},{role:"user",content:"next"});await manager.turn("vyceai",request);
+    const baselineManager=new ProviderManager({env:{TREBELL_HOME:root},reuseChatMessageConversion:false,fetchFn:async(_url,init={})=>{baselineBodies.push(String(init.body));return response()}});baselineManager.setKey("vyceai","vyce-key");
+    const baselineMessages=[{role:"system",content:"stable"},{role:"user",content:"hello"}],baselineRequest={model:"deepseek-v4.1",messages:baselineMessages,tools:[]};
+    await baselineManager.turn("vyceai",baselineRequest);baselineMessages.push({role:"assistant",content:"ok"},{role:"user",content:"next"});await baselineManager.turn("vyceai",baselineRequest);
+    assert.deepEqual(candidateBodies,baselineBodies);
+  }finally{rmSync(root,{recursive:true,force:true})}
 });
 
 test("pre-serialized Native Chat tools preserve exact wire JSON with streaming and forced tool choice",async()=>{

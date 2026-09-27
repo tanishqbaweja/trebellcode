@@ -1,6 +1,6 @@
 import { TREBELL_USER_AGENT } from "./version.mjs";
 import { adaptAnthropicResponse, chatToAnthropic, providerTurnAnthropicScaffold, providerTurnToAnthropic } from "./anthropic-chat-adapter.mjs";
-import { normalizeChatTurnResponse, normalizeResponsesTurnResponse, providerTurnToChat, providerTurnToResponses, providerToolsToChat } from "./provider-turn.mjs";
+import { NATIVE_CHAT_MESSAGE_CACHE_IDENTITY, normalizeChatTurnResponse, normalizeResponsesTurnResponse, providerTurnToChat, providerTurnToResponses, providerToolsToChat } from "./provider-turn.mjs";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -218,18 +218,34 @@ function officialOpenAiTools(requestTools=[]){
 const PRE_SERIALIZED_TOP_LEVEL=Symbol("trebell.provider.pre-serialized-top-level");
 function attachPreSerializedTopLevel(body,key,value,json){
   if(!body||typeof body!=="object"||typeof json!=="string")return body;
-  try{Object.defineProperty(body,PRE_SERIALIZED_TOP_LEVEL,{value:{key:String(key),value,json},enumerable:true,configurable:true})}catch{}
+  try{
+    let cached=body[PRE_SERIALIZED_TOP_LEVEL];
+    if(!(cached instanceof Map)){cached=new Map();Object.defineProperty(body,PRE_SERIALIZED_TOP_LEVEL,{value:cached,enumerable:true,configurable:true})}
+    cached.set(String(key),{value,json});
+  }catch{}
   return body;
 }
 function stringifyProviderBody(body){
   const cached=body&&typeof body==="object"?body[PRE_SERIALIZED_TOP_LEVEL]:null;
-  if(!cached||typeof body?.toJSON==="function"||typeof cached.json!=="string"||body[cached.key]!==cached.value)return JSON.stringify(body);
+  if(!(cached instanceof Map)||!cached.size||typeof body?.toJSON==="function")return JSON.stringify(body);
   const parts=[];
   for(const key of Object.keys(body)){
-    const valueJson=key===cached.key?cached.json:JSON.stringify(body[key]);
+    const entry=cached.get(key),valueJson=entry&&entry.value===body[key]&&typeof entry.json==="string"?entry.json:JSON.stringify(body[key]);
     if(valueJson!==undefined)parts.push(JSON.stringify(key)+":"+valueJson);
   }
   return `{${parts.join(",")}}`;
+}
+
+function preSerializedChatMessages(messages=[],cache=null){
+  if(!cache||typeof cache.get!=="function"||typeof cache.set!=="function")return null;
+  const parts=[];
+  try{
+    for(const message of Array.isArray(messages)?messages:[]){
+      if(!message||typeof message!=="object")return null;
+      let json=cache.get(message);if(typeof json!=="string"){json=JSON.stringify(message);if(typeof json!=="string")return null;cache.set(message,json)}parts.push(json);
+    }
+  }catch{return null}
+  return `[${parts.join(",")}]`;
 }
 function officialOpenAiResponsesBody(request={},toolManifest=null,promptCacheKeyForBody=null,responsesOptions=null){
   const explicitCacheBreakpoints=officialOpenAiExplicitCacheBreakpointsSupported(request.model),body=providerTurnToResponses(request,{preserveInstructionOrder:true,flattenToolCallNames:true,toolResultCacheBreakpoints:explicitCacheBreakpoints,...(responsesOptions&&typeof responsesOptions==="object"?responsesOptions:{})});
@@ -342,7 +358,7 @@ function remainingProviderRequestMs(deadlineAt){
 }
 
 export class ProviderManager {
-  constructor({ env = process.env, fetchFn = fetch, requestTimeoutMs = DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS, openAiResponsesWebSocketFactory=null, openAiResponsesWebSocketRetryMs=30_000, openAiToolManifestCacheSize=32, openAiPromptCacheKeyCacheSize=128, anthropicToolManifestCacheSize=32, chatToolManifestCacheSize=32, reusePreSerializedToolJson=true, reuseOpenAiContinuationInputBuild=true, nowFn=Date.now } = {}) {
+  constructor({ env = process.env, fetchFn = fetch, requestTimeoutMs = DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS, openAiResponsesWebSocketFactory=null, openAiResponsesWebSocketRetryMs=30_000, openAiToolManifestCacheSize=32, openAiPromptCacheKeyCacheSize=128, anthropicToolManifestCacheSize=32, chatToolManifestCacheSize=32, reusePreSerializedToolJson=true, reuseOpenAiContinuationInputBuild=true, reuseChatMessageConversion=true, nowFn=Date.now } = {}) {
     this.env = env;
     this.fetchFn = fetchFn;
     const timeoutMs = Math.trunc(Number(requestTimeoutMs));
@@ -356,6 +372,7 @@ export class ProviderManager {
     this.openAiResponsesWebSocket=null;this.openAiResponsesWebSocketDisabledUntil=0;this.openAiResponsesWebSocketPermanentlyDisabled=false;
     this.reusePreSerializedToolJson=reusePreSerializedToolJson!==false;
     this.reuseOpenAiContinuationInputBuild=reuseOpenAiContinuationInputBuild!==false;
+    this.reuseChatMessageConversion=reuseChatMessageConversion!==false;this.chatMessageConversionCaches=new WeakMap();
     const manifestCacheSize=Math.trunc(Number(openAiToolManifestCacheSize));this.openAiToolManifestCacheSize=Number.isFinite(manifestCacheSize)&&manifestCacheSize>=0?Math.min(256,manifestCacheSize):32;this.openAiToolManifestCache=new Map();
     const anthropicManifestCacheSize=Math.trunc(Number(anthropicToolManifestCacheSize));this.anthropicToolManifestCacheSize=Number.isFinite(anthropicManifestCacheSize)&&anthropicManifestCacheSize>=0?Math.min(256,anthropicManifestCacheSize):32;this.anthropicToolManifestCache=new Map();
     const cacheKeyCacheSize=Math.trunc(Number(openAiPromptCacheKeyCacheSize));this.openAiPromptCacheKeyCacheSize=Number.isFinite(cacheKeyCacheSize)&&cacheKeyCacheSize>=0?Math.min(1024,cacheKeyCacheSize):128;this.openAiPromptCacheKeyCache=new Map();
@@ -412,6 +429,12 @@ export class ProviderManager {
     const tools=providerToolsToChat(request.tools),manifest={tools,toolsJson:JSON.stringify(tools)};this.chatToolManifestCache.set(fingerprint,manifest);
     while(this.chatToolManifestCache.size>this.chatToolManifestCacheSize)this.chatToolManifestCache.delete(this.chatToolManifestCache.keys().next().value);
     return manifest;
+  }
+
+  #chatMessageConversionCache(request={}){
+    if(!this.reuseChatMessageConversion)return null;
+    const identity=request?.[NATIVE_CHAT_MESSAGE_CACHE_IDENTITY];if(!identity||typeof identity!=="object")return null;
+    let cache=this.chatMessageConversionCaches.get(identity);if(!cache){cache={messages:new WeakMap(),serialized:new WeakMap()};this.chatMessageConversionCaches.set(identity,cache)}return cache;
   }
 
   #openAiWebSocketCircuitOpen(){
@@ -683,8 +706,9 @@ export class ProviderManager {
     const directAnthropicBody=anthropicScaffold?providerTurnToAnthropic({...request,model},{stream:streamChat===true,scaffold:anthropicScaffold.scaffold}):null;
     if(this.reusePreSerializedToolJson&&directAnthropicBody&&anthropicScaffold?.toolsJson&&directAnthropicBody.tools===anthropicScaffold.scaffold.tools)attachPreSerializedTopLevel(directAnthropicBody,"tools",directAnthropicBody.tools,anthropicScaffold.toolsJson);
     const chatManifest=provider.wireApi==="responses"||directAnthropicBody?null:this.#chatToolManifest(request);
-    const chatBody=provider.wireApi==="responses"||directAnthropicBody?null:providerTurnToChat({...request,model},{preparedTools:chatManifest?.tools||null});
+    const chatMessageCache=this.#chatMessageConversionCache(request),chatBody=provider.wireApi==="responses"||directAnthropicBody?null:providerTurnToChat({...request,model},{preparedTools:chatManifest?.tools||null,messageCache:chatMessageCache?.messages||null});
     if(streamChat===true&&chatBody){chatBody.stream=true;chatBody.stream_options={include_usage:true}}
+    if(chatBody&&chatMessageCache?.serialized){const messagesJson=preSerializedChatMessages(chatBody.messages,chatMessageCache.serialized);if(messagesJson)attachPreSerializedTopLevel(chatBody,"messages",chatBody.messages,messagesJson)}
     if(this.reusePreSerializedToolJson&&chatBody&&chatManifest?.toolsJson&&chatBody.tools===chatManifest.tools)attachPreSerializedTopLevel(chatBody,"tools",chatBody.tools,chatManifest.toolsJson);
     let openAiWebSocketFallback=null;
     const openAiWebSocketStreamId=provider.id==="openai"&&streamResponses===true?openAiResponsesWebSocketStreamId(request?.metadata?.sessionId):null;

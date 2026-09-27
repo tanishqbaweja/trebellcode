@@ -56,6 +56,13 @@ test("Chat conversion can reuse a prepared tool manifest without changing wire J
   assert.equal(JSON.stringify(prepared),JSON.stringify(ordinary));
 });
 
+test("Chat conversion can reuse canonical message conversions without changing the request body",()=>{
+  const messages=[{role:"system",content:"stable"},{role:"user",content:[{type:"text",text:"hello"}]},{role:"assistant",content:"",toolCalls:[{id:"c1",namespace:"trebell_repo",name:"search_code",arguments:{query:"Session"}}]},{role:"tool",toolCallId:"c1",content:"result"}],request={model:"chat-model",messages,tools:[]},cache=new WeakMap(),baseline=providerTurnToChat(request),candidate=providerTurnToChat(request,{messageCache:cache});
+  assert.deepEqual(candidate,baseline);assert.equal(JSON.stringify(candidate),JSON.stringify(baseline));
+  const again=providerTurnToChat(request,{messageCache:cache});assert.deepEqual(again,baseline);
+  messages.push({role:"assistant",content:"done"});const grown=providerTurnToChat(request,{messageCache:cache}),grownBaseline=providerTurnToChat(request);assert.deepEqual(grown,grownBaseline);
+});
+
 test("provider turn converts the same conversation to Responses while preserving namespace identity",()=>{
   const request=providerTurnToResponses({
     model:"gpt-5.6",tools,maxOutputTokens:8192,
