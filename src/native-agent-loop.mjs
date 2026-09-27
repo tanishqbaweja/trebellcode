@@ -220,7 +220,7 @@ export function nativeAgentBudget(options={}){
 export async function runNativeAgentTurn({
   providerTurn,executeTool,model,messages=[],tools=[],provider=null,toolChoice="auto",
   maxOutputTokens=null,temperature=null,parallelToolCalls=true,maxModelTurns=24,maxToolCalls=100,maxWallTimeMs=null,
-  maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,coolReadToolHistory=null,signal=null,onEvent=null,metadata=null,
+  maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,coolReadToolHistory=null,preserveToolSchemasOnFinalization=false,signal=null,onEvent=null,metadata=null,
 }={}){
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
@@ -284,13 +284,13 @@ export async function runNativeAgentTurn({
         emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(model),provider:provider||null,data:{reason:error.code,modelTurns,toolCalls,namespace:missingRequired.namespace,name:missingRequired.name}});throw error;
       }
       if(!toolBudgetFinalizationInjected){
-        conversation.push({role:"developer",content:"Trebell's tool-call budget for this turn is exhausted. All allowed tool work is finished and no tool schemas are available now. Do not request a tool, do not emit tool-call markup or imitate a function call in text, and do not repeat an earlier tool request. Respond only with the best concise user-visible final answer supported by the evidence already collected, clearly stating any remaining uncertainty or unverified work."});
+        conversation.push({role:"developer",content:"Trebell's tool-call budget for this turn is exhausted. All allowed tool work is finished and tool use is disabled for finalization. Do not request a tool, do not emit tool-call markup or imitate a function call in text, and do not repeat an earlier tool request. Respond only with the best concise user-visible final answer supported by the evidence already collected, clearly stating any remaining uncertainty or unverified work."});
         toolBudgetFinalizationInjected=true;
         emit(onEvent,{name:"native.tool_budget.finalizing",status:"completed",model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,data:{modelTurns,toolCalls,maxToolCalls:budget.maxToolCalls}});
       }
     }
     modelTurns++;
-    const requestStarted=nowMs(),requestMessageCount=conversation.length,forcedAllowlist=forcedToolChoice?[forcedToolChoice.namespace?forcedToolChoice.namespace+"/"+forcedToolChoice.name:forcedToolChoice.name]:null,requestTools=toolBudgetExhausted?[]:forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):visibleTools,requestToolChoice=toolBudgetExhausted?"none":forcedToolChoice||toolChoice;
+    const requestStarted=nowMs(),requestMessageCount=conversation.length,forcedAllowlist=forcedToolChoice?[forcedToolChoice.namespace?forcedToolChoice.namespace+"/"+forcedToolChoice.name:forcedToolChoice.name]:null,requestTools=toolBudgetExhausted&&!preserveToolSchemasOnFinalization?[]:forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):visibleTools,requestToolChoice=toolBudgetExhausted?"none":forcedToolChoice||toolChoice;
     const requestMetrics=nativeRequestMetrics(conversation,requestTools);
     const inferenceId=(metadata?.sessionId?String(metadata.sessionId):"native")+":inference:"+modelTurns;
     emit(onEvent,{name:"native.model.requested",status:"running",model:String(model),provider:provider||null,data:{inferenceId,modelTurn:modelTurns,messageCount:conversation.length,toolCount:Array.isArray(requestTools)?requestTools.length:0,sessionId:metadata?.sessionId||null,compaction:Boolean(metadata?.compaction),requestMetrics}});

@@ -360,6 +360,22 @@ test("native agent finalizes without tool schemas after spending the exact tool-
   assert.ok(events.some(event=>event.name==="native.tool_budget.finalizing"&&event.data?.maxToolCalls===1));
 });
 
+test("native agent can preserve tool schemas while disabling tool use during cache-friendly finalization",async()=>{
+  let turns=0;const seen=[];
+  const tools=[{type:"namespace",name:"trebell_repo",tools:[{name:"search_code",inputSchema:{type:"object",properties:{query:{type:"string"}}}}]}];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Inspect once, then answer."}],maxToolCalls:1,preserveToolSchemasOnFinalization:true,tools,
+    providerTurn:async request=>{
+      turns++;seen.push({tools:structuredClone(request.tools),toolChoice:structuredClone(request.toolChoice)});
+      if(turns===1)return {text:"",toolCalls:[{id:"search",namespace:"trebell_repo",name:"search_code",arguments:'{"query":"needle"}'}],usage:{}};
+      assert.deepEqual(request.tools,tools);assert.equal(request.toolChoice,"none");
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>({matches:["needle"]}),
+  });
+  assert.equal(result.text,"done");assert.equal(result.toolCalls,1);assert.deepEqual(seen[1].tools,seen[0].tools);
+});
+
 test("native agent retries one textual tool-call imitation during budget finalization",async()=>{
   let turns=0;const events=[];
   const result=await runNativeAgentTurn({

@@ -34,8 +34,12 @@ test("Trebell-owned tool arguments are schema-validated before policy or executi
   assert.equal(normalized.decision,POLICY_ALLOW);
   const combined=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"node verify.mjs"}},{permissionProfile:"full",workspace:"/repo"});
   assert.equal(combined.decision,POLICY_ALLOW);
+  const genericShellHint=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"node verify.mjs",shell:"cmd"}},{permissionProfile:"full",workspace:"/repo"});
+  assert.equal(genericShellHint.decision,POLICY_ALLOW);assert.deepEqual(genericShellHint.arguments,{command:"node",args:["verify.mjs"]});
   const shellSyntax=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"npm test | findstr FAIL"}},{permissionProfile:"full",workspace:"/repo"});
   assert.equal(shellSyntax.decision,POLICY_REJECT);assert.match(shellSyntax.reason,/explicit shell executable/i);
+  const hintedShellSyntax=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"npm test | findstr FAIL",shell:"cmd"}},{permissionProfile:"full",workspace:"/repo"});
+  assert.equal(hintedShellSyntax.decision,POLICY_REJECT);assert.match(hintedShellSyntax.reason,/explicit shell executable/i);
   const malformed=authorizePlatformToolCall({namespace:"trebell_terminal",name:"run",arguments:{command:"node",args:{bad:true}}},{permissionProfile:"full",workspace:"/repo"});
   assert.equal(malformed.decision,POLICY_REJECT);assert.match(malformed.reason,/\.args must be an array/i);
   const extra=authorizePlatformToolCall({namespace:"trebell_workspace",name:"read_file",arguments:{path:"a.js",surprise:true}},{permissionProfile:"read-only",workspace:"/repo"});
@@ -46,6 +50,8 @@ test("Trebell-owned tool arguments are schema-validated before policy or executi
   assert.equal(result.success,true);assert.equal(executed,true);assert.deepEqual(seen.args,["verify.mjs"]);assert.deepEqual(result.result.args,["verify.mjs"]);
   const combinedResult=await gateway.invoke({namespace:"trebell_terminal",name:"run",arguments:{command:"node verify.mjs"}},{permissionProfile:"full",workspace:"/repo"});
   assert.equal(combinedResult.success,true);assert.equal(seen.command,"node");assert.deepEqual(seen.args,["verify.mjs"]);
+  const hintedResult=await gateway.invoke({namespace:"trebell_terminal",name:"run",arguments:{command:"node verify.mjs",shell:"cmd"}},{permissionProfile:"full",workspace:"/repo"});
+  assert.equal(hintedResult.success,true);assert.equal(seen.command,"node");assert.deepEqual(seen.args,["verify.mjs"]);assert.equal(Object.prototype.hasOwnProperty.call(seen,"shell"),false);
 });
 
 test("repository intelligence goes through the same gateway as other Trebell tools",async()=>{

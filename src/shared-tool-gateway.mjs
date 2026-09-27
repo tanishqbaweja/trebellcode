@@ -9,7 +9,16 @@ function callName(call={}){return {namespace:String(call.namespace||""),name:Str
 function objectArguments(value){return value&&typeof value==="object"&&!Array.isArray(value)?value:{}}
 function normalizedPlatformArguments(namespace,name,value){
   const args=objectArguments(value);
-  if((namespace==="trebell_terminal"&&["run","start_background"].includes(name))||(namespace==="trebell_process"&&name==="start"))return normalizeNativeCommandArguments(args);
+  if((namespace==="trebell_terminal"&&["run","start_background"].includes(name))||(namespace==="trebell_process"&&name==="start")){
+    const normalized={...args};
+    // Some OpenAI-compatible models copy a generic `shell` hint into tool
+    // calls even though Trebell deliberately exposes an argv-only contract.
+    // Ignore that hint, but keep the existing semantic guard below: commands
+    // containing shell syntax are still rejected unless the model explicitly
+    // invokes a shell executable and puts the script in args.
+    delete normalized.shell;
+    return normalizeNativeCommandArguments(normalized);
+  }
   return args;
 }
 

@@ -119,6 +119,52 @@ test("Native session cools virtualized output after one hot same-turn model read
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
+test("Native session preserves already-sent virtualized history for cache-capable providers",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-cache-history-")),requests=[],events=[];
+  try{
+    const store=new NativeToolOutputStore({directory:root,maxHotBytes:4096});let calls=0;
+    const session=new NativeAgentSession({
+      model:"gpt-5.6",provider:"openai",toolOutputStore:store,onEvent:event=>events.push(event),
+      tools:[
+        {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+        {type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"}]},
+      ],
+      providerTurn:async request=>{
+        requests.push(structuredClone(request));calls++;
+        if(calls===1)return {id:"tool-big",text:"",toolCalls:[{id:"big",namespace:"trebell_terminal",name:"run",arguments:'{"command":"test"}'}],usage:{}};
+        if(calls===2)return {id:"tool-small",text:"",toolCalls:[{id:"small",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"small.txt"}'}],usage:{}};
+        return {id:"done",text:"done",toolCalls:[],usage:{}};
+      },
+      executeTool:async call=>call.id==="big"
+        ?{exitCode:1,stdout:"x".repeat(40_000),stderr:"FAIL important"}
+        :{path:"small.txt",size:8,content:"small-ok"},
+    });
+    await session.start({providerSessionId:"native-cache-history",model:"gpt-5.6"});await session.prompt([{type:"text",text:"run and inspect"}]);
+    const hot=requests[1].messages.find(message=>message.role==="tool"&&message.toolCallId==="big")?.content||"";
+    const later=requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="big")?.content||"";
+    const persisted=session.messages.find(message=>message.role==="tool"&&message.toolCallId==="big")?.content||"";
+    assert.ok(hot.length>3000);assert.equal(later,hot);assert.equal(persisted,hot);
+    assert.equal(events.filter(event=>event.name==="native.tool.history_cooled").length,0);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("Native session preserves the OpenAI tool manifest when finalizing after tool budget exhaustion",async()=>{
+  const requests=[];let calls=0;
+  const tools=[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file",inputSchema:{type:"object",properties:{path:{type:"string"}}}}]}];
+  const session=new NativeAgentSession({
+    model:"gpt-5.6",provider:"openai",tools,
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));calls++;
+      if(calls===1)return {id:"read",text:"",toolCalls:[{id:"read-1",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"a.txt"}'}],usage:{}};
+      return {id:"done",text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>({path:"a.txt",content:"evidence"}),
+  });
+  await session.start({providerSessionId:"native-openai-budget-finalization",model:"gpt-5.6"});
+  await session.prompt([{type:"text",text:"read once then answer"}],{maxToolCalls:1,maxModelTurns:2});
+  assert.equal(requests.length,2);assert.deepEqual(requests[1].tools,requests[0].tools);assert.equal(requests[1].toolChoice,"none");
+});
+
 test("Native session deduplicates only byte-identical repeated hot file observations",async()=>{
   const requests=[],events=[];let providerCalls=0,content="A".repeat(4000);
   const session=new NativeAgentSession({
