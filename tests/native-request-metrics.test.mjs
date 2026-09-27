@@ -67,6 +67,13 @@ test("Native request metrics never cache custom toJSON message semantics",()=>{
   assert.deepEqual(second,first);assert.equal(cache.has(tricky),false);assert.ok(calls>firstCalls);
 });
 
+test("Native request metrics incrementally reuse only an unchanged history-hash prefix",()=>{
+  const system={role:"system",content:"system"},oldUser={role:"user",content:"old request"},oldAssistant={role:"assistant",content:"old answer"},currentUser={role:"user",content:"current request"},messageCache=new WeakMap(),historyHashCache={};
+  const firstMessages=[system,oldUser,oldAssistant,currentUser],first=nativeRequestMetrics(firstMessages,[],{messageSerializationCache:messageCache,historyHashCache}),firstUncached=nativeRequestMetrics(firstMessages,[]);assert.deepEqual(first,firstUncached);
+  const appended={role:"assistant",content:"new answer"},nextMessages=[...firstMessages,appended],next=nativeRequestMetrics(nextMessages,[],{messageSerializationCache:messageCache,historyHashCache}),nextUncached=nativeRequestMetrics(nextMessages,[]);assert.deepEqual(next,nextUncached);
+  const rewritten={role:"assistant",content:"rewritten old answer"},rewrittenMessages=[system,oldUser,rewritten,currentUser,appended],rewrittenCached=nativeRequestMetrics(rewrittenMessages,[],{messageSerializationCache:messageCache,historyHashCache}),rewrittenUncached=nativeRequestMetrics(rewrittenMessages,[]);assert.deepEqual(rewrittenCached,rewrittenUncached);assert.notEqual(rewrittenCached.conversationHistoryHash,next.conversationHistoryHash);
+});
+
 test("Native request metrics invalidate cached stable-prefix hashes when instructions change",()=>{
   const tools=[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file",description:"read",inputSchema:{type:"object",properties:{path:{type:"string"}}}}]}],cache=new WeakMap(),firstMessages=[{role:"system",content:"system-a"},{role:"developer",content:"developer-a"},{role:"user",content:"request"}],secondMessages=[{role:"system",content:"system-b"},{role:"developer",content:"developer-a"},{role:"user",content:"request"}];
   const first=nativeRequestMetrics(firstMessages,tools,{toolSchemaCache:cache}),secondCached=nativeRequestMetrics(secondMessages,tools,{toolSchemaCache:cache}),secondUncached=nativeRequestMetrics(secondMessages,tools);
