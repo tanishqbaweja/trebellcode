@@ -231,7 +231,7 @@ async function runScenario(scenario){
         };
         providerRequests.push(record);
         try{
-          const response=await manager.turn("vyceai",{...effectiveRequest,provider:"vyceai",model},{signal:request.signal});
+          const response=await manager.turn("vyceai",{...effectiveRequest,provider:"vyceai",model},{signal:request.signal,streamChat:true});
           record.usage=response.usage;record.telemetry=response.telemetry;record.toolCalls=response.toolCalls||[];
           return response;
         }catch(error){
@@ -273,8 +273,10 @@ async function runScenario(scenario){
       responseBytes:out.responseBytes+Number(item.telemetry?.responseBytes||0),
       responseHeadersLatencyMs:out.responseHeadersLatencyMs+Number(item.telemetry?.responseHeadersLatencyMs||0),
       responseBodyLatencyMs:out.responseBodyLatencyMs+Number(item.telemetry?.responseBodyLatencyMs||0),
+      timeToFirstTokenMs:out.timeToFirstTokenMs+Number(item.telemetry?.timeToFirstTokenMs||0),
+      ttftSamples:out.ttftSamples+(Number.isFinite(Number(item.telemetry?.timeToFirstTokenMs))?1:0),
       providerLatencyMs:out.providerLatencyMs+Number(item.telemetry?.totalLatencyMs||0),
-    }),{inputTokens:0,outputTokens:0,cachedInputTokens:0,requestBytes:0,responseBytes:0,responseHeadersLatencyMs:0,responseBodyLatencyMs:0,providerLatencyMs:0});
+    }),{inputTokens:0,outputTokens:0,cachedInputTokens:0,requestBytes:0,responseBytes:0,responseHeadersLatencyMs:0,responseBodyLatencyMs:0,timeToFirstTokenMs:0,ttftSamples:0,providerLatencyMs:0});
     const toolTiming=nativeToolTiming(events,{elapsedMs,providerLatencyMs:aggregate.providerLatencyMs});
     const toolNames=toolUpdates.map(item=>item.update?.namespace+"/"+item.update?.tool);
     const firstVerifyIndex=toolNames.indexOf("trebell_terminal/run");
@@ -310,7 +312,9 @@ async function runScenario(scenario){
         providerInputTokens:Number(item.usage?.inputTokens||0),
         providerResponseHeadersLatencyMs:Number(item.telemetry?.responseHeadersLatencyMs||0),
         providerResponseBodyLatencyMs:Number(item.telemetry?.responseBodyLatencyMs||0),
+        providerTimeToFirstTokenMs:Number.isFinite(Number(item.telemetry?.timeToFirstTokenMs))?Number(item.telemetry.timeToFirstTokenMs):null,
         providerTotalLatencyMs:Number(item.telemetry?.totalLatencyMs||0),
+        providerStreaming:Boolean(item.telemetry?.streaming),
         providerError:item.error||null,
         messageChars:Number(item.messageChars||0),
         schemaChars:Number(item.toolSchemaChars||0),
@@ -346,8 +350,8 @@ for(const scenario of selectedScenarios){
 }
 const totals=results.reduce((out,row)=>({
   inputTokens:out.inputTokens+row.inputTokens,outputTokens:out.outputTokens+row.outputTokens,modelTurns:out.modelTurns+row.modelTurns,providerAttempts:out.providerAttempts+row.providerAttempts,providerRetryAttempts:out.providerRetryAttempts+row.providerRetryAttempts,toolCalls:out.toolCalls+row.toolCalls,elapsedMs:out.elapsedMs+row.elapsedMs,
-  providerLatencyMs:out.providerLatencyMs+row.providerLatencyMs,responseHeadersLatencyMs:out.responseHeadersLatencyMs+row.responseHeadersLatencyMs,responseBodyLatencyMs:out.responseBodyLatencyMs+row.responseBodyLatencyMs,
+  providerLatencyMs:out.providerLatencyMs+row.providerLatencyMs,responseHeadersLatencyMs:out.responseHeadersLatencyMs+row.responseHeadersLatencyMs,responseBodyLatencyMs:out.responseBodyLatencyMs+row.responseBodyLatencyMs,timeToFirstTokenMs:out.timeToFirstTokenMs+row.timeToFirstTokenMs,ttftSamples:out.ttftSamples+row.ttftSamples,
   toolExecutionMs:out.toolExecutionMs+row.toolExecutionMs,toolWallMs:out.toolWallMs+row.toolWallMs,parallelToolOverlapMs:out.parallelToolOverlapMs+row.parallelToolOverlapMs,otherElapsedMs:out.otherElapsedMs+row.otherElapsedMs,
-}),{inputTokens:0,outputTokens:0,modelTurns:0,providerAttempts:0,providerRetryAttempts:0,toolCalls:0,elapsedMs:0,providerLatencyMs:0,responseHeadersLatencyMs:0,responseBodyLatencyMs:0,toolExecutionMs:0,toolWallMs:0,parallelToolOverlapMs:0,otherElapsedMs:0});
+}),{inputTokens:0,outputTokens:0,modelTurns:0,providerAttempts:0,providerRetryAttempts:0,toolCalls:0,elapsedMs:0,providerLatencyMs:0,responseHeadersLatencyMs:0,responseBodyLatencyMs:0,timeToFirstTokenMs:0,ttftSamples:0,toolExecutionMs:0,toolWallMs:0,parallelToolOverlapMs:0,otherElapsedMs:0});
 console.log(JSON.stringify({ok:results.every(row=>row.ok),runtime:"native",provider:"vyceai",model,results,totals},null,2));
 

@@ -284,6 +284,52 @@ test("direct OpenAI streaming failures retain partial wire telemetry for retry d
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
+test("Vyce Native streaming assembles Chat Completions text and preserves usage",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-vyce-stream-"));let seen=null;
+  try{
+    const encoder=new TextEncoder(),event=value=>`data: ${JSON.stringify(value)}\n\n`;
+    const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root,VYCEAI_API_KEY:"vyce-stream-key"},fetchFn:async(url,init={})=>{
+      seen={url,body:JSON.parse(init.body||"{}")};
+      const stream=new ReadableStream({start(controller){
+        controller.enqueue(encoder.encode(event({id:"chat-stream",model:"deepseek-v4.1",choices:[{index:0,delta:{role:"assistant",content:"hello "},finish_reason:null}]})));
+        controller.enqueue(encoder.encode(event({id:"chat-stream",model:"deepseek-v4.1",choices:[{index:0,delta:{content:"world"},finish_reason:"stop"}]})));
+        controller.enqueue(encoder.encode(event({id:"chat-stream",model:"deepseek-v4.1",choices:[],usage:{prompt_tokens:7,completion_tokens:2,total_tokens:9,prompt_tokens_details:{cached_tokens:1}}})));
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));controller.close();
+      }});
+      return new Response(stream,{status:200,headers:{"content-type":"text/event-stream","x-request-id":"vyce-stream-req"}});
+    }});
+    const result=await manager.turn("vyceai",{model:"deepseek-v4.1",messages:[{role:"user",content:"hello"}],tools:[]},{streamChat:true});
+    assert.equal(seen.url,"https://vyceai.com/v1/chat/completions");assert.equal(seen.body.stream,true);assert.deepEqual(seen.body.stream_options,{include_usage:true});
+    assert.equal(result.text,"hello world");assert.equal(result.usage.inputTokens,7);assert.equal(result.usage.cachedInputTokens,1);assert.equal(result.telemetry.streaming,true);assert.equal(result.telemetry.providerRequestId,"vyce-stream-req");assert.ok(result.telemetry.timeToFirstTokenMs>=0);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("Vyce Native streaming reassembles fragmented tool calls without inventing text TTFT",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-vyce-tool-stream-"));
+  try{
+    const event=value=>`data: ${JSON.stringify(value)}\n\n`;
+    const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root,VYCEAI_API_KEY:"vyce-stream-key"},fetchFn:async()=>new Response(
+      event({id:"chat-tool",model:"deepseek-v4.1",choices:[{index:0,delta:{role:"assistant",tool_calls:[{index:0,id:"call-1",type:"function",function:{name:"trebell_repo__",arguments:"{\"query\":"}}]},finish_reason:null}]})+
+      event({id:"chat-tool",model:"deepseek-v4.1",choices:[{index:0,delta:{tool_calls:[{index:0,function:{name:"search_symbols",arguments:"\"Session\"}"}}]},finish_reason:"tool_calls"}]})+
+      event({id:"chat-tool",model:"deepseek-v4.1",choices:[],usage:{prompt_tokens:9,completion_tokens:3,total_tokens:12}})+"data: [DONE]\n\n",
+      {status:200,headers:{"content-type":"text/event-stream"}}
+    )});
+    const result=await manager.turn("vyceai",{model:"deepseek-v4.1",messages:[{role:"user",content:"Find Session"}],tools:[{type:"namespace",name:"trebell_repo",tools:[{name:"search_symbols",inputSchema:{type:"object",properties:{query:{type:"string"}}}}]}]},{streamChat:true});
+    assert.deepEqual(result.toolCalls,[{id:"call-1",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Session"}'}]);assert.equal(result.usage.totalTokens,12);assert.equal(result.telemetry.streaming,true);assert.equal(result.telemetry.timeToFirstTokenMs,null);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("Vyce Native streaming failures retain partial wire telemetry",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-vyce-stream-failure-"));
+  try{
+    const event=value=>`data: ${JSON.stringify(value)}\n\n`;
+    const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root,VYCEAI_API_KEY:"vyce-stream-key"},fetchFn:async()=>new Response(event({id:"chat-fail",choices:[{index:0,delta:{content:"partial"},finish_reason:null}]})+event({error:{code:"server_error",message:"stream broke"}}),{status:200,headers:{"content-type":"text/event-stream","x-request-id":"vyce-fail"}})});
+    await assert.rejects(()=>manager.turn("vyceai",{model:"deepseek-v4.1",messages:[{role:"user",content:"hello"}],tools:[]},{streamChat:true}),error=>{
+      assert.equal(error.code,"server_error");assert.equal(error.telemetry.streaming,true);assert.equal(error.telemetry.providerRequestId,"vyce-fail");assert.ok(error.telemetry.responseBytes>0);assert.ok(error.telemetry.timeToFirstTokenMs>=0);return true;
+    });
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
 
 test("JustWorker uses the documented Anthropic-compatible messages endpoint", async () => {
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
