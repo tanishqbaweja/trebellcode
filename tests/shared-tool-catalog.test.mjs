@@ -33,6 +33,10 @@ test("shared Trebell tool catalog owns unique schemas and policy metadata",()=>{
   const reload=sharedToolDefinition("trebell_browser","reload");assert.equal(reload.policy.kind,"fetch");assert.equal(reload.policy.idempotent,true);
   assert.equal(sharedToolNamespace("trebell_device"),null,"mobile simulator tooling is outside the desktop harness product surface");
   const terminal=sharedToolDefinition("trebell_terminal","run");assert.equal(terminal.policy.kind,"execute");assert.equal(terminal.policy.classifyFromInput,true);assert.equal(terminal.requirements.workspace,true);
+  assert.match(sharedToolNamespace("trebell_terminal").description,/argv/i);assert.match(sharedToolNamespace("trebell_terminal").description,/shell executable/i);
+  assert.match(terminal.inputSchema.properties.command.description,/executable only/i);assert.match(terminal.inputSchema.properties.args.description,/argument vector/i);
+  const compactCodingSurface=sharedDynamicToolNamespaces({workspaceTools:true,terminal:true,sourceControl:false});
+  assert.ok(JSON.stringify(compactCodingSurface).length<=2300,"workspace + terminal schema should stay compact without dropping argv guardrails");
   const background=sharedToolDefinition("trebell_process","start");assert.equal(background.policy.kind,"execute");assert.equal(background.policy.classifyFromInput,true);
   assert.equal(sharedToolDefinition("trebell_process","status").policy.kind,"read");assert.equal(sharedToolDefinition("trebell_process","stop").policy.kind,"execute");
   assert.equal(sharedToolDefinition("trebell_terminal","start_background").policy.kind,"execute","legacy process aliases remain resolvable but are not advertised");
