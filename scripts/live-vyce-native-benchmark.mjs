@@ -16,6 +16,7 @@ import { platformDynamicToolNamespaces } from "../src/platform-tool-catalog.mjs"
 import { ProviderManager } from "../src/provider-manager.mjs";
 import { repositoryDynamicToolNamespace, searchRepositoryToolDefinitions } from "../src/repository-tool-catalog.mjs";
 import { repositoryContextEntries } from "../ui/src/context-provenance.js";
+import { nativeToolTiming } from "./native-benchmark-timing.mjs";
 
 const execFileAsync=promisify(execFile);
 const apiKey=String(process.env.TREBELL_TEST_VYCE_API_KEY||process.env.VYCEAI_API_KEY||process.env.VYCE_API_KEY||"").trim();
@@ -274,6 +275,7 @@ async function runScenario(scenario){
       responseBodyLatencyMs:out.responseBodyLatencyMs+Number(item.telemetry?.responseBodyLatencyMs||0),
       providerLatencyMs:out.providerLatencyMs+Number(item.telemetry?.totalLatencyMs||0),
     }),{inputTokens:0,outputTokens:0,cachedInputTokens:0,requestBytes:0,responseBytes:0,responseHeadersLatencyMs:0,responseBodyLatencyMs:0,providerLatencyMs:0});
+    const toolTiming=nativeToolTiming(events,{elapsedMs,providerLatencyMs:aggregate.providerLatencyMs});
     const toolNames=toolUpdates.map(item=>item.update?.namespace+"/"+item.update?.tool);
     const firstVerifyIndex=toolNames.indexOf("trebell_terminal/run");
     const firstEditIndex=toolNames.findIndex(name=>name==="trebell_workspace/replace_text"||name==="trebell_workspace/write_file");
@@ -294,7 +296,7 @@ async function runScenario(scenario){
     });
     return {
       name:scenario.name,ok:!turnFailure&&independentVerificationPassed&&verificationBeforeEdit&&virtualizationSatisfied,elapsedMs,userTurns:turnResults.length,modelTurns:requested.length,providerAttempts:providerRequests.length,providerRetryAttempts:retryEvents.length,toolCalls:toolUpdates.length,
-      ...aggregate,cacheHitPercent:aggregate.inputTokens?Number((aggregate.cachedInputTokens/aggregate.inputTokens*100).toFixed(2)):0,
+      ...aggregate,...toolTiming,cacheHitPercent:aggregate.inputTokens?Number((aggregate.cachedInputTokens/aggregate.inputTokens*100).toFixed(2)):0,
       stablePrefixVariants:new Set(completed.map(event=>event.data?.requestMetrics?.stablePrefixHash).filter(Boolean)).size,
       toolSchemaVariants:new Set(completed.map(event=>event.data?.requestMetrics?.toolSchemaHash).filter(Boolean)).size,
       firstSchemaEstimatedTokens:completed[0]?.data?.requestMetrics?.toolSchemas?.estimatedTokens||0,
@@ -345,6 +347,7 @@ for(const scenario of selectedScenarios){
 const totals=results.reduce((out,row)=>({
   inputTokens:out.inputTokens+row.inputTokens,outputTokens:out.outputTokens+row.outputTokens,modelTurns:out.modelTurns+row.modelTurns,providerAttempts:out.providerAttempts+row.providerAttempts,providerRetryAttempts:out.providerRetryAttempts+row.providerRetryAttempts,toolCalls:out.toolCalls+row.toolCalls,elapsedMs:out.elapsedMs+row.elapsedMs,
   providerLatencyMs:out.providerLatencyMs+row.providerLatencyMs,responseHeadersLatencyMs:out.responseHeadersLatencyMs+row.responseHeadersLatencyMs,responseBodyLatencyMs:out.responseBodyLatencyMs+row.responseBodyLatencyMs,
-}),{inputTokens:0,outputTokens:0,modelTurns:0,providerAttempts:0,providerRetryAttempts:0,toolCalls:0,elapsedMs:0,providerLatencyMs:0,responseHeadersLatencyMs:0,responseBodyLatencyMs:0});
+  toolExecutionMs:out.toolExecutionMs+row.toolExecutionMs,toolWallMs:out.toolWallMs+row.toolWallMs,parallelToolOverlapMs:out.parallelToolOverlapMs+row.parallelToolOverlapMs,otherElapsedMs:out.otherElapsedMs+row.otherElapsedMs,
+}),{inputTokens:0,outputTokens:0,modelTurns:0,providerAttempts:0,providerRetryAttempts:0,toolCalls:0,elapsedMs:0,providerLatencyMs:0,responseHeadersLatencyMs:0,responseBodyLatencyMs:0,toolExecutionMs:0,toolWallMs:0,parallelToolOverlapMs:0,otherElapsedMs:0});
 console.log(JSON.stringify({ok:results.every(row=>row.ok),runtime:"native",provider:"vyceai",model,results,totals},null,2));
 
