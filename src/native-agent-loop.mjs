@@ -634,7 +634,8 @@ export async function runNativeAgentTurn({
       callIndex+=batch.length;
     }
     if(redirected)continue;
-    if(autoRerunVerification===true&&verificationCompletionRequest&&verifiedFinalizationAllowed&&!verifiedFinalizationReady&&editRevision>editRevisionBeforeCalls&&toolCalls<budget.maxToolCalls){
+    const successfulEditOnlyBatch=calls.length>0&&calls.every(call=>call?.namespace==="trebell_workspace"&&["write_file","replace_text"].includes(call?.name))&&editRevision-editRevisionBeforeCalls===calls.length;
+    if(autoRerunVerification===true&&successfulEditOnlyBatch&&verificationCompletionRequest&&verifiedFinalizationAllowed&&!verifiedFinalizationReady&&toolCalls<budget.maxToolCalls){
       if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_auto_verifier"})){verifiedFinalizationAllowed=false;verifiedFinalizationReady=false;continue}
       const candidate=verificationAutoRerunCandidate(verificationCompletionRequest,terminalRuns,editRevision,calls);
       if(candidate){

@@ -609,6 +609,30 @@ test("native verifier auto-rerun never duplicates a verifier already present aft
   assert.equal(turns,2);assert.equal(result.toolCalls,3);assert.equal(verifierRuns,2);assert.equal(events.filter(event=>event.name==="native.verification.auto_rerun").length,0);
 });
 
+test("native verifier auto-rerun waits when the current batch mixes edits with other work",async()=>{
+  let turns=0,verifierRuns=0;const events=[];
+  const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"},{name:"read_file"}]}];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Run node verify.mjs first. Fix the implementation, then rerun it until it passes."}],tools,autoRerunVerification:true,onEvent:event=>events.push(event),
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"verify-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[
+        {id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'},
+        {id:"read",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/b.mjs"}'},
+      ],usage:{}};
+      return {text:"provider final",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{
+      if(call.namespace==="trebell_terminal"){verifierRuns++;return {exitCode:1}}
+      if(call.name==="replace_text")return {path:"src/a.mjs",replacements:1};
+      return {path:"src/b.mjs",content:"export const b = 1;"};
+    },
+  });
+  assert.equal(turns,3);assert.equal(result.text,"provider final");assert.equal(verifierRuns,1);
+  assert.equal(events.filter(event=>event.name==="native.verification.auto_rerun").length,0);
+});
+
 test("native verifier auto-rerun fails closed when implicit verifier identity is ambiguous",async()=>{
   let turns=0;const events=[];
   const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
