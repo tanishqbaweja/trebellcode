@@ -54,9 +54,9 @@ export const MODEL_PROVIDERS = Object.freeze({
   agentrouter: {
     id: "agentrouter",
     name: "AgentRouter",
-    baseUrl: "https://agentrouter.org/v1",
-    wireApi: "responses",
-    protocolCompatibility: ["openai-responses"],
+    baseUrl: "https://co.agentrouter.org/v1",
+    wireApi: "chat",
+    protocolCompatibility: ["openai-chat-completions"],
     envKey: "AGENTROUTER_API_KEY",
     requiresKey: true,
   },
@@ -109,24 +109,54 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-const AGENTROUTER_CLIENT_VERSION = "0.149.1";
+function bundledCodexVersion(){
+  try{
+    const pkg=JSON.parse(readFileSync(new URL("../node_modules/@openai/codex/package.json",import.meta.url),"utf8"));
+    const value=String(pkg?.version||"").trim();if(value)return value;
+  }catch{}
+  try{
+    const pkg=JSON.parse(readFileSync(new URL("../package.json",import.meta.url),"utf8"));
+    const value=String(pkg?.dependencies?.["@openai/codex"]||"").trim().replace(/^[^0-9]*/,"");
+    if(value)return value;
+  }catch{}
+  return "0.149.1";
+}
+const DEFAULT_AGENTROUTER_CLIENT_VERSION=bundledCodexVersion();
 const DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS = 300_000;
 function providerErrorExcerpt(value,{environment={},secret="",maxChars=1200}={}){
   const max=Math.max(120,Math.min(4000,Math.trunc(Number(maxChars)||1200))),scan=String(value??"").slice(0,Math.max(max*4,max+4096));
   return redactSecretText(scan,{environment:{...environment,TREBELL_PROVIDER_ERROR_SECRET:String(secret||"")}}).slice(0,max);
 }
-const AGENTROUTER_CLIENT_HEADERS = Object.freeze({
-  "User-Agent": `codex_cli_rs/${AGENTROUTER_CLIENT_VERSION}`,
-  originator: "codex_cli_rs",
-  version: AGENTROUTER_CLIENT_VERSION,
-});
+function agentRouterClientVersion(environment={}){
+  const requested=String(environment.AGENTROUTER_CLIENT_VERSION||environment.TREBELL_AGENTROUTER_CLIENT_VERSION||DEFAULT_AGENTROUTER_CLIENT_VERSION).trim();
+  return /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/.test(requested)?requested:DEFAULT_AGENTROUTER_CLIENT_VERSION;
+}
 
-function agentRouterHeaders(key, { accept = "application/json" } = {}) {
+function agentRouterHeaders(key, { accept = "application/json", environment = {} } = {}) {
+  const version=agentRouterClientVersion(environment);
   return {
     Authorization: `Bearer ${key}`,
     "Content-Type": "application/json",
     Accept: accept,
-    ...AGENTROUTER_CLIENT_HEADERS,
+    "User-Agent": `codex_cli_rs/${version}`,
+    originator: "codex_cli_rs",
+    version,
+  };
+}
+
+function agentRouterProvider(provider,environment={}){
+  const configuredBase=String(environment.AGENTROUTER_BASE_URL||"").trim().replace(/\/+$/,"");
+  const requestedWire=String(environment.AGENTROUTER_WIRE_API||"").trim().toLowerCase();
+  const wireApi=["responses","openai-responses"].includes(requestedWire)
+    ?"responses"
+    :["chat","openai-chat-completions"].includes(requestedWire)
+      ?"chat"
+      :provider.wireApi;
+  return {
+    ...provider,
+    baseUrl:configuredBase||provider.baseUrl,
+    wireApi,
+    protocolCompatibility:[wireApi==="responses"?"openai-responses":"openai-chat-completions"],
   };
 }
 
@@ -212,7 +242,7 @@ export class ProviderManager {
   }
 
   definitions() {
-    return Object.values(MODEL_PROVIDERS).map((provider) => ({
+    return Object.values(MODEL_PROVIDERS).map(({id}) => this.get(id)).map((provider) => ({
       id: provider.id,
       name: provider.name,
       baseUrl: provider.baseUrl,
@@ -226,7 +256,8 @@ export class ProviderManager {
   }
 
   get(providerId) {
-    return MODEL_PROVIDERS[normalizeProviderId(providerId)];
+    const provider=MODEL_PROVIDERS[normalizeProviderId(providerId)];
+    return provider.id==="agentrouter"?agentRouterProvider(provider,this.env):provider;
   }
 
   key(providerId) {
@@ -295,7 +326,7 @@ export class ProviderManager {
     const key = this.key(provider.id);
     const response = await this.fetchFn(provider.baseUrl + "/models", {
       headers: provider.id === "agentrouter"
-        ? agentRouterHeaders(key)
+        ? agentRouterHeaders(key,{environment:this.env})
         : provider.authStyle === "anthropic"
           ? {
               "x-api-key": key,
@@ -359,6 +390,7 @@ export class ProviderManager {
     const headers = provider.id === "agentrouter"
       ? agentRouterHeaders(key, {
           accept: chatBody.stream ? "text/event-stream, application/json" : "application/json",
+          environment:this.env,
         })
       : {
           Authorization: `Bearer ${key}`,
@@ -390,6 +422,7 @@ export class ProviderManager {
       headers: provider.id === "agentrouter"
         ? agentRouterHeaders(key, {
             accept: stream ? "text/event-stream, application/json" : "application/json",
+            environment:this.env,
           })
         : {
             Authorization: `Bearer ${key}`,

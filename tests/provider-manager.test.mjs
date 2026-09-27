@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProviderManager } from "../src/provider-manager.mjs";
 
+const BUNDLED_CODEX_VERSION=JSON.parse(readFileSync(new URL("../node_modules/@openai/codex/package.json",import.meta.url),"utf8")).version;
+
 function abortingFetch(seen) {
   return async (url, init = {}) => {
     seen.push({ url, signal: init.signal });
@@ -26,7 +28,7 @@ test("provider keys are stored separately and never returned by definitions", ()
   assert.equal(manager.childEnv("agentrouter",{}).AGENTROUTER_API_KEY,"ar-secret");
   const def=manager.definitions().find(x=>x.id==="agentrouter");
   assert.equal(def.hasKey,true);
-  assert.deepEqual(def.protocolCompatibility,["openai-responses"]);
+  assert.deepEqual(def.protocolCompatibility,["openai-chat-completions"]);
   assert.equal("apiKey" in def,false);
   const stored=readFileSync(join(root,"provider-secrets.json"),"utf8");
   assert.match(stored,/ar-secret/);
@@ -59,15 +61,15 @@ test("AgentRouter validates the key and loads its live model catalog", async () 
   manager.setKey("agentrouter",'"ar-key"');
   assert.equal(manager.key("agentrouter"),"ar-key");
   const result=await manager.models("agentrouter");
-  assert.equal(seen.url,"https://agentrouter.org/v1/models");
+  assert.equal(seen.url,"https://co.agentrouter.org/v1/models");
   assert.equal(seen.headers.Authorization,"Bearer ar-key");
   assert.equal(seen.headers["Content-Type"],"application/json");
-  assert.equal(seen.headers["User-Agent"],"codex_cli_rs/0.149.1");
+  assert.equal(seen.headers["User-Agent"],`codex_cli_rs/${BUNDLED_CODEX_VERSION}`);
   assert.equal(seen.headers.originator,"codex_cli_rs");
-  assert.equal(seen.headers.version,"0.149.1");
+  assert.equal(seen.headers.version,BUNDLED_CODEX_VERSION);
   assert.deepEqual(result.models,["claude-opus-4-8","glm-5.1","gpt-5.5","kimi-k2.6"]);
   assert.equal(result.source,"live");
-  assert.ok(result.metadata.every(model=>model.protocolCompatibility?.[0]==="openai-responses"));
+  assert.ok(result.metadata.every(model=>model.protocolCompatibility?.[0]==="openai-chat-completions"));
 });
 
 test("AgentRouter chat always uses the required Codex fingerprint", async () => {
@@ -81,11 +83,11 @@ test("AgentRouter chat always uses the required Codex fingerprint", async () => 
   manager.setKey("agentrouter","ar-key");
   const response=await manager.forwardChat("agentrouter",{model:"gpt-5.5",messages:[{role:"user",content:"hello"}],stream:false},{userAgent:"generic-client/1.0"});
   assert.equal(response.status,200);
-  assert.equal(seen.url,"https://agentrouter.org/v1/chat/completions");
+  assert.equal(seen.url,"https://co.agentrouter.org/v1/chat/completions");
   assert.equal(seen.headers.Authorization,"Bearer ar-key");
-  assert.equal(seen.headers["User-Agent"],"codex_cli_rs/0.149.1");
+  assert.equal(seen.headers["User-Agent"],`codex_cli_rs/${BUNDLED_CODEX_VERSION}`);
   assert.equal(seen.headers.originator,"codex_cli_rs");
-  assert.equal(seen.headers.version,"0.149.1");
+  assert.equal(seen.headers.version,BUNDLED_CODEX_VERSION);
   assert.equal(seen.body.model,"gpt-5.5");
 });
 
@@ -300,7 +302,7 @@ test("provider key normalization strips copied Bearer prefix and invisible chara
 
 test("AgentRouter Responses uses the required Codex fingerprint", async () => {
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
-  const env={...process.env,TREBELL_HOME:root};
+  const env={...process.env,TREBELL_HOME:root,AGENTROUTER_BASE_URL:"https://agentrouter.org/v1/",AGENTROUTER_WIRE_API:"responses",AGENTROUTER_CLIENT_VERSION:"0.149.1"};
   let seen=null;
   const manager=new ProviderManager({env,fetchFn:async(url,init)=>{
     seen={url,headers:init.headers,body:JSON.parse(init.body)};
@@ -322,14 +324,14 @@ test("AgentRouter Responses uses the required Codex fingerprint", async () => {
   assert.equal(seen.body.model,"deepseek-v4-flash");
 });
 
-test("normalized AgentRouter turns keep the Responses transport and namespaced tool calls",async()=>{
+test("normalized AgentRouter turns use the current Chat transport and preserve namespaced tool calls",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));let seen=null;
   const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root},fetchFn:async(url,init)=>{
     seen={url,headers:init.headers,body:JSON.parse(init.body)};
     return Response.json({
-      id:"resp-native",object:"response",model:"gpt-5.6",status:"completed",
-      output:[{type:"function_call",call_id:"call-native",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Session"}'}],
-      usage:{input_tokens:11,output_tokens:2,total_tokens:13},
+      id:"chat-native",model:"gpt-5.6",
+      choices:[{finish_reason:"tool_calls",message:{role:"assistant",content:"",tool_calls:[{id:"call-native",type:"function",function:{name:"trebell_repo__search_symbols",arguments:'{"query":"Session"}'}}]}}],
+      usage:{prompt_tokens:11,completion_tokens:2,total_tokens:13},
     });
   }});
   manager.setKey("agentrouter","ar-native-key");
@@ -337,11 +339,28 @@ test("normalized AgentRouter turns keep the Responses transport and namespaced t
     model:"gpt-5.6",messages:[{role:"user",content:"Find Session"}],
     tools:[{type:"namespace",name:"trebell_repo",tools:[{type:"function",name:"search_symbols",description:"Search",inputSchema:{type:"object",properties:{query:{type:"string"}},required:["query"]}}]}],
   });
-  assert.equal(seen.url,"https://agentrouter.org/v1/responses");assert.equal(seen.headers.originator,"codex_cli_rs");assert.equal(seen.body.tools[0].name,"trebell_repo");
+  assert.equal(seen.url,"https://co.agentrouter.org/v1/chat/completions");assert.equal(seen.headers.originator,"codex_cli_rs");assert.equal(seen.body.tools[0].function.name,"trebell_repo__search_symbols");
   assert.deepEqual(result.toolCalls,[{id:"call-native",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Session"}'}]);
   assert.equal(result.usage.totalTokens,13);
-  assert.equal(result.telemetry.endpoint,"https://agentrouter.org/v1/responses");assert.equal(result.telemetry.wireApi,"openai-responses");
+  assert.equal(result.telemetry.endpoint,"https://co.agentrouter.org/v1/chat/completions");assert.equal(result.telemetry.wireApi,"openai-chat-completions");
   assert.ok(result.telemetry.requestBytes>0);assert.ok(result.telemetry.responseBytes>0);assert.equal(result.telemetry.streaming,false);assert.equal(result.telemetry.timeToFirstTokenMs,null);
+});
+
+test("AgentRouter transport and client fingerprint remain explicitly overrideable",()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
+  const manager=new ProviderManager({env:{
+    ...process.env,TREBELL_HOME:root,
+    AGENTROUTER_BASE_URL:"https://legacy.agentrouter.example/v1/",
+    AGENTROUTER_WIRE_API:"responses",
+    AGENTROUTER_CLIENT_VERSION:"0.200.7-custom",
+  }});
+  const status=manager.status("agentrouter");
+  assert.equal(status.baseUrl,"https://legacy.agentrouter.example/v1");
+  assert.equal(status.wireApi,"responses");
+  assert.deepEqual(status.protocolCompatibility,["openai-responses"]);
+  const definition=manager.definitions().find(item=>item.id==="agentrouter");
+  assert.equal(definition.baseUrl,status.baseUrl);
+  assert.equal(definition.wireApi,status.wireApi);
 });
 
 test("normalized Chat turns flatten namespaces and recover them from tool calls",async()=>{
@@ -432,7 +451,7 @@ test("provider inference transports keep their request timeout when a caller sig
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-"));
   const seen=[];
   const manager=new ProviderManager({
-    env:{...process.env,TREBELL_HOME:root},
+    env:{...process.env,TREBELL_HOME:root,AGENTROUTER_WIRE_API:"responses"},
     fetchFn:abortingFetch(seen),
     requestTimeoutMs:20,
   });
