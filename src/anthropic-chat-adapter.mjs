@@ -83,8 +83,8 @@ function canonicalToolName(call={}){
   return raw;
 }
 
-export function providerTurnToAnthropic(request={},{stream=false}={}){
-  const scaffold=chatToAnthropic(providerTurnToChat({...request,messages:[]})),system=[],messages=[];
+export function providerTurnToAnthropic(request={},{stream=false,scaffold=null}={}){
+  const resolvedScaffold=scaffold&&typeof scaffold==="object"?scaffold:chatToAnthropic(providerTurnToChat({...request,messages:[]})),system=[],messages=[];
   for(const message of Array.isArray(request.messages)?request.messages:[]){
     if(!message||typeof message!=="object")continue;
     if(message.role==="system"||message.role==="developer"){
@@ -100,14 +100,18 @@ export function providerTurnToAnthropic(request={},{stream=false}={}){
     }
     pushMessage(messages,"user",canonicalUserContent(message.content));
   }
-  const out={model:scaffold.model,max_tokens:scaffold.max_tokens,messages,stream:Boolean(stream)};
+  const out={model:resolvedScaffold.model,max_tokens:resolvedScaffold.max_tokens,messages,stream:Boolean(stream)};
   if(system.length)out.system=system.join("\n\n");
-  if(Array.isArray(scaffold.tools)&&scaffold.tools.length)out.tools=scaffold.tools;
-  if(scaffold.tool_choice)out.tool_choice=scaffold.tool_choice;
-  if(typeof scaffold.temperature==="number")out.temperature=scaffold.temperature;
-  if(typeof scaffold.top_p==="number")out.top_p=scaffold.top_p;
-  if(Array.isArray(scaffold.stop_sequences))out.stop_sequences=scaffold.stop_sequences;
+  if(Array.isArray(resolvedScaffold.tools)&&resolvedScaffold.tools.length)out.tools=resolvedScaffold.tools;
+  if(resolvedScaffold.tool_choice)out.tool_choice=resolvedScaffold.tool_choice;
+  if(typeof resolvedScaffold.temperature==="number")out.temperature=resolvedScaffold.temperature;
+  if(typeof resolvedScaffold.top_p==="number")out.top_p=resolvedScaffold.top_p;
+  if(Array.isArray(resolvedScaffold.stop_sequences))out.stop_sequences=resolvedScaffold.stop_sequences;
   return out;
+}
+
+export function providerTurnAnthropicScaffold(request={}){
+  return chatToAnthropic(providerTurnToChat({...request,messages:[]}));
 }
 
 export function chatToAnthropic(body={}){

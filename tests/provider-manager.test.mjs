@@ -412,6 +412,24 @@ test("official OpenAI Native tool-manifest cache preserves exact wire JSON and i
   const first=JSON.parse(cached[0]),mutated=JSON.parse(cached[2]);assert.notEqual(mutated.prompt_cache_key,first.prompt_cache_key);assert.equal(mutated.tools[0].description,"Read one file exactly");
 });
 
+test("official Anthropic Native tool-manifest cache preserves exact wire JSON and invalidates on schema changes",async()=>{
+  const tools=[{type:"namespace",name:"trebell_workspace",description:"Workspace tools",tools:[
+    {name:"read_file",description:"Read one file",inputSchema:{type:"object",properties:{path:{type:"string"}},required:["path"],additionalProperties:false}},
+    {name:"replace_text",description:"Replace exact text",inputSchema:{type:"object",properties:{path:{type:"string"},old_text:{type:"string"},new_text:{type:"string"}},required:["path","old_text","new_text"],additionalProperties:false}},
+  ]}],messages=[{role:"system",content:"stable"},{role:"user",content:"task"}];
+  const run=async cacheSize=>{
+    const root=mkdtempSync(join(tmpdir(),"trebell-anthropic-tool-cache-")),bodies=[],runTools=structuredClone(tools),fingerprint=nativeRequestMetrics(messages,runTools)[NATIVE_TOOL_SCHEMA_FINGERPRINT];
+    try{
+      const manager=new ProviderManager({env:{TREBELL_HOME:root},anthropicToolManifestCacheSize:cacheSize,fetchFn:async(_url,init={})=>{bodies.push(String(init.body||""));const body=JSON.parse(init.body||"{}");return Response.json({id:"msg-"+bodies.length,type:"message",role:"assistant",model:body.model,content:[{type:"text",text:"ok"}],stop_reason:"end_turn",usage:{}})}});manager.setKey("anthropic","an-key");
+      const request={model:"claude-opus-4-8",messages,tools:runTools,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:fingerprint};await manager.turn("anthropic",request);await manager.turn("anthropic",request);
+      runTools[0].tools[0].description="Read one file exactly";const mutatedFingerprint=nativeRequestMetrics(messages,runTools)[NATIVE_TOOL_SCHEMA_FINGERPRINT];await manager.turn("anthropic",{...request,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:mutatedFingerprint});
+      return bodies;
+    }finally{rmSync(root,{recursive:true,force:true})}
+  };
+  const uncached=await run(0),cached=await run(8);assert.deepEqual(cached,uncached);assert.equal(cached[0],cached[1]);
+  const first=JSON.parse(cached[0]),mutated=JSON.parse(cached[2]);assert.equal(first.tools[0].description,"Read one file");assert.equal(mutated.tools[0].description,"Read one file exactly");
+});
+
 test("official OpenAI keeps late developer finalization out of the stable instruction prefix",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-")),bodies=[];
   const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{

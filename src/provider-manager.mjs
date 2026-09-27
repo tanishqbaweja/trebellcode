@@ -1,5 +1,5 @@
 import { TREBELL_USER_AGENT } from "./version.mjs";
-import { adaptAnthropicResponse, chatToAnthropic, providerTurnToAnthropic } from "./anthropic-chat-adapter.mjs";
+import { adaptAnthropicResponse, chatToAnthropic, providerTurnAnthropicScaffold, providerTurnToAnthropic } from "./anthropic-chat-adapter.mjs";
 import { normalizeChatTurnResponse, normalizeResponsesTurnResponse, providerTurnToChat, providerTurnToResponses } from "./provider-turn.mjs";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -325,7 +325,7 @@ function remainingProviderRequestMs(deadlineAt){
 }
 
 export class ProviderManager {
-  constructor({ env = process.env, fetchFn = fetch, requestTimeoutMs = DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS, openAiResponsesWebSocketFactory=null, openAiResponsesWebSocketRetryMs=30_000, openAiToolManifestCacheSize=32, nowFn=Date.now } = {}) {
+  constructor({ env = process.env, fetchFn = fetch, requestTimeoutMs = DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS, openAiResponsesWebSocketFactory=null, openAiResponsesWebSocketRetryMs=30_000, openAiToolManifestCacheSize=32, anthropicToolManifestCacheSize=32, nowFn=Date.now } = {}) {
     this.env = env;
     this.fetchFn = fetchFn;
     const timeoutMs = Math.trunc(Number(requestTimeoutMs));
@@ -338,6 +338,7 @@ export class ProviderManager {
     const retryMs=Math.trunc(Number(openAiResponsesWebSocketRetryMs));this.openAiResponsesWebSocketRetryMs=Number.isFinite(retryMs)&&retryMs>=0?retryMs:30_000;this.nowFn=typeof nowFn==="function"?nowFn:Date.now;
     this.openAiResponsesWebSocket=null;this.openAiResponsesWebSocketDisabledUntil=0;this.openAiResponsesWebSocketPermanentlyDisabled=false;
     const manifestCacheSize=Math.trunc(Number(openAiToolManifestCacheSize));this.openAiToolManifestCacheSize=Number.isFinite(manifestCacheSize)&&manifestCacheSize>=0?Math.min(256,manifestCacheSize):32;this.openAiToolManifestCache=new Map();
+    const anthropicManifestCacheSize=Math.trunc(Number(anthropicToolManifestCacheSize));this.anthropicToolManifestCacheSize=Number.isFinite(anthropicManifestCacheSize)&&anthropicManifestCacheSize>=0?Math.min(256,anthropicManifestCacheSize):32;this.anthropicToolManifestCache=new Map();
   }
 
   #openAiToolManifest(request={}){
@@ -351,6 +352,20 @@ export class ProviderManager {
   }
 
   #officialOpenAiResponsesBody(request={}){return officialOpenAiResponsesBody(request,this.#openAiToolManifest(request))}
+
+  #anthropicToolScaffold(request={}){
+    const supplied=request?.[NATIVE_TOOL_SCHEMA_FINGERPRINT],fingerprint=/^[a-f0-9]{64}$/i.test(String(supplied||""))?String(supplied).toLowerCase():null;
+    if(!fingerprint||this.anthropicToolManifestCacheSize<=0)return providerTurnAnthropicScaffold(request);
+    const maxOutputTokens=Number.isFinite(Number(request.maxOutputTokens))?Math.max(1,Math.trunc(Number(request.maxOutputTokens))):null,temperature=Number.isFinite(Number(request.temperature))?Number(request.temperature):null;
+    let toolChoiceKey;try{toolChoiceKey=JSON.stringify(request.toolChoice??"auto")}catch{return providerTurnAnthropicScaffold(request)}
+    const key=JSON.stringify([fingerprint,String(request.model||""),maxOutputTokens,temperature,toolChoiceKey]);
+    if(this.anthropicToolManifestCache.has(key)){
+      const cached=this.anthropicToolManifestCache.get(key);this.anthropicToolManifestCache.delete(key);this.anthropicToolManifestCache.set(key,cached);return cached;
+    }
+    const scaffold=providerTurnAnthropicScaffold(request);this.anthropicToolManifestCache.set(key,scaffold);
+    while(this.anthropicToolManifestCache.size>this.anthropicToolManifestCacheSize)this.anthropicToolManifestCache.delete(this.anthropicToolManifestCache.keys().next().value);
+    return scaffold;
+  }
 
   #openAiWebSocketCircuitOpen(){
     if(this.openAiResponsesWebSocketPermanentlyDisabled)return true;
@@ -602,7 +617,7 @@ export class ProviderManager {
       :null;
     let responsesBody=openAiContinuation?.body||fullResponsesBody;
     if(provider.id==="openai"&&streamResponses===true&&responsesBody){responsesBody.stream=true;if(fullResponsesBody)fullResponsesBody.stream=true}
-    const directAnthropicBody=provider.id==="anthropic"?providerTurnToAnthropic({...request,model},{stream:streamChat===true}):null;
+    const directAnthropicBody=provider.id==="anthropic"?providerTurnToAnthropic({...request,model},{stream:streamChat===true,scaffold:this.#anthropicToolScaffold({...request,model})}):null;
     const chatBody=provider.wireApi==="responses"||directAnthropicBody?null:providerTurnToChat({...request,model});
     if(streamChat===true&&chatBody){chatBody.stream=true;chatBody.stream_options={include_usage:true}}
     let openAiWebSocketFallback=null;

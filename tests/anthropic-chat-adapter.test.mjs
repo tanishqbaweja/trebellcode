@@ -5,6 +5,7 @@ import {
   adaptAnthropicResponse,
   anthropicMessageToChatCompletion,
   chatToAnthropic,
+  providerTurnAnthropicScaffold,
   providerTurnToAnthropic,
 } from "../src/anthropic-chat-adapter.mjs";
 import { providerTurnToChat } from "../src/provider-turn.mjs";
@@ -53,6 +54,7 @@ test("direct canonical Anthropic conversion matches the existing Chat adapter ex
   };
   const legacy=providerTurnToChat(request);legacy.stream=true;legacy.stream_options={include_usage:true};
   assert.deepEqual(providerTurnToAnthropic(request,{stream:true}),chatToAnthropic(legacy));
+  assert.deepEqual(providerTurnToAnthropic(request,{stream:true,scaffold:providerTurnAnthropicScaffold(request)}),chatToAnthropic(legacy));
 });
 
 test("Anthropic SSE converts to OpenAI chat SSE including tool calls",async()=>{
