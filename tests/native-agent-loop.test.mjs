@@ -146,6 +146,22 @@ test("native terminal report synthesis yields to steering after command executio
   assert.equal(turns,2);assert.equal(result.text,"detailed provider answer");
 });
 
+test("native terminal report synthesis cools its unsent virtualized result while keeping recovery evidence",async()=>{
+  const run=async coolSyntheticTerminalReportOutput=>{
+    const events=[];
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:"Run node noisy-verify.mjs and report the result."}],synthesizeTerminalReports:true,coolSyntheticTerminalReportOutput,onEvent:event=>events.push(event),
+      tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+      providerTurn:async()=>({text:"",toolCalls:[{id:"verify",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["noisy-verify.mjs"]}'}],usage:{}}),
+      executeTool:async()=>({exitCode:1,preview:"setup "+"x".repeat(2200)+"\nCRITICAL_ASSERTION expected mode=strict but received legacy; inspect src/config.mjs\ncleanup "+"y".repeat(2200),_trebell_output:{handle:"out_12345678-abcd",totalBytes:92000,totalLines:1800}}),
+    });
+    return {result,events,tool:result.messages.find(message=>message.role==="tool"&&message.toolCallId==="verify")?.content||""};
+  };
+  const baseline=await run(false),candidate=await run(true);
+  assert.ok(candidate.tool.length<baseline.tool.length);assert.match(candidate.tool,/out_12345678-abcd/);assert.match(candidate.tool,/CRITICAL_ASSERTION expected mode=strict but received legacy/i);assert.doesNotMatch(candidate.tool,/x{1000}/);assert.doesNotMatch(candidate.tool,/y{1000}/);
+  assert.ok(candidate.events.some(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="terminal_report"&&event.data?.savedChars>500));
+});
+
 test("native agent repairs obvious protocol-corrupted names only for single-tool namespaces",async()=>{
   let turns=0;const executions=[],events=[];
   const result=await runNativeAgentTurn({

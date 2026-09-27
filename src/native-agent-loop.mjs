@@ -3,6 +3,7 @@ import { nativeRequestMetrics, NATIVE_PROMPT_PROVENANCE } from "./native-request
 import { platformToolAllowedByAllowlist } from "./shared-tool-gateway.mjs";
 import { normalizeNativeCommandArguments } from "./native-command-argv.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
+import { coolVirtualizedToolContent } from "./native-tool-history.mjs";
 
 function abortError(signal){
   const reason=signal?.reason;if(reason?.name==="AbortError")return reason;
@@ -440,7 +441,7 @@ export async function runNativeAgentTurn({
   providerTurn,executeTool,model,messages=[],tools=[],provider=null,toolChoice="auto",
   maxOutputTokens=null,temperature=null,parallelToolCalls=true,maxModelTurns=24,maxToolCalls=100,maxWallTimeMs=null,
   maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,coolReadToolHistory=null,preserveToolSchemasOnFinalization=false,signal=null,onEvent=null,metadata=null,
-  autoRerunVerification=false,priorTerminalRuns=[],synthesizeTerminalReports=false,
+  autoRerunVerification=false,priorTerminalRuns=[],synthesizeTerminalReports=false,coolSyntheticTerminalReportOutput=true,
 }={}){
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
@@ -687,8 +688,15 @@ export async function runNativeAgentTurn({
       if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_terminal_report"})){verifiedFinalizationAllowed=false;verifiedFinalizationReady=false;continue}
       const text=terminalStatusText(terminalStatusRun);
       if(text){
+        if(coolSyntheticTerminalReportOutput!==false&&terminalStatusCall?.id){
+          const index=conversation.findLastIndex(message=>message?.role==="tool"&&String(message?.toolCallId||message?.tool_call_id||"")===String(terminalStatusCall.id));
+          if(index>=0&&typeof conversation[index]?.content==="string"){
+            const before=conversation[index].content,after=coolVirtualizedToolContent(before,{maxPreviewChars:600});
+            if(after!==before){conversation[index]={...conversation[index],content:after};emit(onEvent,{name:"native.tool.history_cooled",status:"completed",model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,data:{phase:"terminal_report",count:1,savedChars:Math.max(0,before.length-after.length),toolResultCount:1,toolCallArgumentCount:0,toolResultSavedChars:Math.max(0,before.length-after.length),toolCallArgumentSavedChars:0}})}
+          }
+        }
         conversation.push({role:"assistant",content:text,toolCalls:[]});
-        const result={text,model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse:null};
+        const result={text,model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse:null,syntheticTerminalReportToolCallId:String(terminalStatusCall?.id||"")||null};
         emit(onEvent,{name:"native.terminal.report_synthesized",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,exitCode:terminalStatusRun.exitCode,evidence:Boolean(terminalStatusRun.reportEvidence),discardedPreToolTextChars:String(responseText||"").length}});
         emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage,syntheticTerminalReport:true}});
         return result;

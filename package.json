@@ -45,6 +45,8 @@
     "bench:native:cache-history": "node scripts/native-cache-history-benchmark.mjs",
     "bench:native:cross-turn-verifier": "node scripts/native-cross-turn-verifier-benchmark.mjs",
     "bench:native:terminal-report": "node scripts/native-terminal-report-benchmark.mjs",
+    "bench:native:terminal-report-history": "node scripts/native-terminal-report-history-benchmark.mjs",
+    "bench:native:terminal-report-history": "node scripts/native-terminal-report-history-benchmark.mjs",
     "bench:native:restart-verifier": "node scripts/native-restart-verifier-benchmark.mjs",
     "bench:native:restart-history": "node scripts/native-restart-history-benchmark.mjs",
     "bench:vyce:native:search-dedupe": "node --env-file-if-exists=.env scripts/live-vyce-native-search-dedupe-benchmark.mjs --live",
