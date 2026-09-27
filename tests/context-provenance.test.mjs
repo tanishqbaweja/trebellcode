@@ -55,6 +55,7 @@ test("Native delivery projection stores the exact compact context instead of dis
   assert.equal(projected.tokenEstimate,Math.ceil(projected.injection.length/4));
   assert.deepEqual(projected.items,packet.items);
   assert.deepEqual(afterEntries,beforeEntries,"persistence projection must not change the Native context sent to the model");
+  assert.equal(repositoryContextDeliveryPacket(projected,{seedOnly:true}),projected,"server-projected Native packets should be idempotent in the UI");
   assert.doesNotMatch(JSON.stringify(projected),/VERY LARGE SOURCE EXCERPT/);
   assert.ok(JSON.stringify(projected).length<JSON.stringify(packet).length/10);
 });

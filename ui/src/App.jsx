@@ -2696,6 +2696,7 @@ export default function App(){
       const packet=await api("/api/context/packet",{method:"POST",body:{
         path:cwd,task:contextTask,focusPaths:paths||[],environmentId:workspaceEnvironmentId||null,
         tokensUsed:usage?.last?.inputTokens??null,contextWindow:usage?.modelContextWindow??null,
+        deliveryProjection:agentRuntime==="native"?"seed":null,
       }});
       if(packet.skipped){
         const pressure={...(packet.budget||{}),at:Date.now(),skipped:true};

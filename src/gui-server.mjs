@@ -47,6 +47,7 @@ import { boundDiagnosticText } from "./diagnostic-bounds.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
 import { createNativeSourceControlExecutor, sourceControlEnvironmentKeys } from "./native-source-control.mjs";
 import { ContextEngine, createRemoteContextIo } from "./context-engine.mjs";
+import { repositoryContextDeliveryPacket } from "./context-provenance.mjs";
 import { RepositoryKnowledgeService } from "./repository-knowledge-service.mjs";
 import { REPOSITORY_TOOL_DEFINITIONS, invokeRepositoryTool, parseRepositoryToolArguments, repositoryDynamicToolNamespace, repositoryToolHandlers } from "./repository-tool-catalog.mjs";
 import { EventJournal } from "./event-journal.mjs";
@@ -2732,7 +2733,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           io:remote?createRemoteContextIo({environments,environmentId,root}):null,
           signal:cancellation.signal,
         });
-        return json(res,200,packet);
+        return json(res,200,repositoryContextDeliveryPacket(packet,{seedOnly:body.deliveryProjection==="seed"}));
       }catch(error){
         if(cancellation.signal.aborted||error?.name==="AbortError")return;
         return json(res,400,{error:error.message});
