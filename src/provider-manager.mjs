@@ -8,6 +8,7 @@ import { trebellHome } from "./paths.mjs";
 import { redactSecretText } from "./secret-redactor.mjs";
 import { performance } from "node:perf_hooks";
 import { providerCapabilities } from "./provider-capabilities.mjs";
+import { OpenAiResponseContinuationTracker } from "./openai-response-continuation.mjs";
 
 export const MODEL_PROVIDERS = Object.freeze({
   freebuff: {
@@ -335,6 +336,7 @@ export class ProviderManager {
     this.path = providerSecretsPath(env);
     mkdirSync(dirname(this.path), { recursive: true });
     this.secrets = this.#load();
+    this.openAiResponseContinuations=new OpenAiResponseContinuationTracker();
   }
 
   #load() {
@@ -551,17 +553,26 @@ export class ProviderManager {
     const provider=this.get(providerId),model=String(request.model||"").trim();
     if(!model)throw new Error("Provider turn requires a model.");
     if(provider.id==="freebuff")throw new Error("Freebuff provider turns are served by the local Freebuff bridge, not ProviderManager.");
-    const started=performance.now();let wire={endpoint:null,wireApi:null,requestBytes:0};
-    const onWire=value=>{wire=value||wire};
-    const responsesBody=provider.wireApi==="responses"
+    const started=performance.now();let wire={endpoint:null,wireApi:null,requestBytes:0},wireRequestBytes=0,wireAttempts=0;
+    const onWire=value=>{wire=value||wire;wireRequestBytes+=Number(value?.requestBytes||0);wireAttempts++};
+    const fullResponsesBody=provider.wireApi==="responses"
       ?(provider.id==="openai"?officialOpenAiResponsesBody({...request,model}):providerTurnToResponses({...request,model}))
       :null;
-    if(provider.id==="openai"&&streamResponses===true&&responsesBody)responsesBody.stream=true;
+    const openAiContinuation=provider.id==="openai"&&fullResponsesBody
+      ?this.openAiResponseContinuations.prepare(fullResponsesBody,request.promptCacheComparisonResponseId)
+      :null;
+    const responsesBody=openAiContinuation?.body||fullResponsesBody;
+    if(provider.id==="openai"&&streamResponses===true&&responsesBody){responsesBody.stream=true;if(fullResponsesBody)fullResponsesBody.stream=true}
     const chatBody=provider.wireApi==="responses"?null:providerTurnToChat({...request,model});
     if(streamChat===true&&chatBody){chatBody.stream=true;chatBody.stream_options={include_usage:true}}
-    const upstream=provider.wireApi==="responses"
+    let upstream=provider.wireApi==="responses"
       ?await this.forwardResponses(provider.id,responsesBody,{signal,onWire})
       :await this.forwardChat(provider.id,chatBody,{signal,onWire,promptCaching});
+    let continuationFallback=false;
+    if(provider.id==="openai"&&openAiContinuation?.used&&!upstream.ok&&[400,404,409].includes(Number(upstream.status))){
+      try{await upstream.body?.cancel?.()}catch{}
+      upstream=await this.forwardResponses(provider.id,fullResponsesBody,{signal,onWire});continuationFallback=true;
+    }
     const headersLatencyMs=Number((performance.now()-started).toFixed(3));
     const providerRequestId=upstream.headers?.get?.("x-request-id")||upstream.headers?.get?.("request-id")||upstream.headers?.get?.("x-amzn-requestid")||null;
     const bodyStarted=performance.now();
@@ -570,22 +581,23 @@ export class ProviderManager {
       try{
         const streamed=await readOpenAiResponsesStream(upstream.body,{requestStartedAt:started}),bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
         const result=normalizeResponsesTurnResponse(streamed.response,provider.id,model);
-        result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null,promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(streamed.response)};
+        this.openAiResponseContinuations.record(result.id,openAiContinuation,result);
+        result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null,promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(streamed.response),responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,parentId:openAiContinuation.parentId||null,fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),wireAttempts}:null};
         return result;
       }catch(error){
         const bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
-        error.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:Number(wire.requestBytes)||0,responseBytes:Number(error?.streamTelemetry?.responseBytes||0),responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:error?.streamTelemetry?.timeToFirstTokenMs??null,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:null};throw error;
+        error.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:Number(error?.streamTelemetry?.responseBytes||0),responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:error?.streamTelemetry?.timeToFirstTokenMs??null,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:null};throw error;
       }
     }
     if(upstream.ok&&streamChat===true&&upstream.body&&contentType.includes("text/event-stream")){
       try{
         const streamed=await readOpenAiChatStream(upstream.body,{requestStartedAt:started}),bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
         const result=normalizeChatTurnResponse(streamed.response,provider.id,model);
-        result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-chat-completions",requestBytes:Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null};
+        result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-chat-completions",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null};
         return result;
       }catch(error){
         const bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
-        error.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-chat-completions",requestBytes:Number(wire.requestBytes)||0,responseBytes:Number(error?.streamTelemetry?.responseBytes||0),responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:error?.streamTelemetry?.timeToFirstTokenMs??null,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:null};throw error;
+        error.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-chat-completions",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:Number(error?.streamTelemetry?.responseBytes||0),responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:error?.streamTelemetry?.timeToFirstTokenMs??null,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:null};throw error;
       }
     }
     const raw=await upstream.text();
@@ -594,7 +606,7 @@ export class ProviderManager {
     const baseTelemetry={
       endpoint:wire.endpoint,
       wireApi:wire.wireApi||provider.protocolCompatibility?.[0]||provider.wireApi,
-      requestBytes:Number(wire.requestBytes)||0,
+      requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,
       responseBytes:Buffer.byteLength(raw,"utf8"),
       responseHeadersLatencyMs:headersLatencyMs,
       responseBodyLatencyMs:bodyLatencyMs,
@@ -617,10 +629,11 @@ export class ProviderManager {
     const result=provider.wireApi==="responses"
       ?normalizeResponsesTurnResponse(parsed,provider.id,model)
       :normalizeChatTurnResponse(parsed,provider.id,model);
+    if(provider.id==="openai")this.openAiResponseContinuations.record(result.id,openAiContinuation,result);
     result.telemetry={
       ...baseTelemetry,
       providerResponseId:result.id||null,
-      ...(provider.id==="openai"?{promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(parsed)}:{}),
+      ...(provider.id==="openai"?{promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(parsed),responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,parentId:openAiContinuation.parentId||null,fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),wireAttempts}:null}:{}),
     };
     return result;
   }

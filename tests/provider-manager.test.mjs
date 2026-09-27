@@ -220,6 +220,56 @@ test("official OpenAI Responses flattens Trebell namespaces into standard functi
   assert.deepEqual(result.toolCalls,[{id:"call-1",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Session"}'}]);
 });
 
+test("official OpenAI Responses sends only strict appended input when the previous response prefix is proven",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-continuation-")),bodies=[];let calls=0;
+  try{
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{
+      const body=JSON.parse(init.body||"{}");bodies.push(body);calls++;
+      if(calls===1)return Response.json({id:"resp-1",model:body.model,status:"completed",output:[{type:"function_call",call_id:"call-1",name:"trebell_terminal__run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{input_tokens:10,output_tokens:3,total_tokens:13}});
+      return Response.json({id:"resp-2",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"Verifier failed."}]}],usage:{input_tokens:14,output_tokens:3,total_tokens:17}});
+    }});
+    manager.setKey("openai","oa-key");
+    const tools=[{type:"namespace",name:"trebell_terminal",tools:[{type:"function",name:"run",inputSchema:{type:"object",properties:{command:{type:"string"},args:{type:"array",items:{type:"string"}}},required:["command","args"]}}]}];
+    const user={role:"user",content:"Run node verify.mjs"},first=await manager.turn("openai",{model:"gpt-5.6",messages:[user],tools});
+    const assistant={role:"assistant",content:first.text,toolCalls:first.toolCalls},tool={role:"tool",toolCallId:"call-1",content:"exit 1"};
+    const second=await manager.turn("openai",{model:"gpt-5.6",messages:[user,assistant,tool],tools,promptCacheComparisonResponseId:"resp-1"});
+    assert.equal(Object.prototype.hasOwnProperty.call(bodies[0],"previous_response_id"),false);
+    assert.equal(bodies[1].previous_response_id,"resp-1");assert.equal(bodies[1].input.length,1);assert.equal(bodies[1].input[0].type,"function_call_output");assert.equal(bodies[1].input[0].call_id,"call-1");
+    assert.deepEqual(bodies[1].prompt_cache_options,{mode:"implicit",comparison_response_id:"resp-1"});
+    assert.equal(second.telemetry.responseContinuation.used,true);assert.equal(second.telemetry.responseContinuation.parentId,"resp-1");assert.equal(second.telemetry.responseContinuation.fullInputCount,3);assert.equal(second.telemetry.responseContinuation.deltaInputCount,1);assert.ok(second.telemetry.responseContinuation.savedRequestBytes>0);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("official OpenAI continuation falls back to full input after history rewrite or manager restart",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-continuation-fallback-")),bodies=[];
+  try{
+    const response=body=>Response.json({id:"resp-base",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"ok"}]}],usage:{input_tokens:1,output_tokens:1,total_tokens:2}}),manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{const body=JSON.parse(init.body||"{}");bodies.push(body);return response(body)}});
+    manager.setKey("openai","oa-key");const original={role:"user",content:"Original task"};await manager.turn("openai",{model:"gpt-5.6",messages:[original],tools:[]});
+    await manager.turn("openai",{model:"gpt-5.6",messages:[{role:"user",content:"Rewritten task"},{role:"assistant",content:"ok"},{role:"user",content:"continue"}],tools:[],promptCacheComparisonResponseId:"resp-base"});
+    assert.equal(Object.prototype.hasOwnProperty.call(bodies[1],"previous_response_id"),false);assert.equal(bodies[1].input.length,3);
+    const restartedBodies=[],restarted=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{const body=JSON.parse(init.body||"{}");restartedBodies.push(body);return response(body)}});
+    await restarted.turn("openai",{model:"gpt-5.6",messages:[original,{role:"assistant",content:"ok"},{role:"user",content:"continue"}],tools:[],promptCacheComparisonResponseId:"resp-base"});
+    assert.equal(Object.prototype.hasOwnProperty.call(restartedBodies[0],"previous_response_id"),false);assert.equal(restartedBodies[0].input.length,3);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("official OpenAI continuation retries once with full local context when the parent response is unavailable",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-continuation-retry-")),bodies=[];let calls=0;
+  try{
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{
+      const body=JSON.parse(init.body||"{}");bodies.push(body);calls++;
+      if(calls===1)return Response.json({id:"resp-1",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"first"}]}],usage:{input_tokens:1,output_tokens:1,total_tokens:2}});
+      if(calls===2)return new Response(JSON.stringify({error:{message:"Previous response is unavailable"}}),{status:404,headers:{"content-type":"application/json"}});
+      return Response.json({id:"resp-2",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"second"}]}],usage:{input_tokens:2,output_tokens:1,total_tokens:3}});
+    }});
+    manager.setKey("openai","oa-key");const firstUser={role:"user",content:"first"};await manager.turn("openai",{model:"gpt-5.6",messages:[firstUser],tools:[]});
+    const result=await manager.turn("openai",{model:"gpt-5.6",messages:[firstUser,{role:"assistant",content:"first"},{role:"user",content:"second"}],tools:[],promptCacheComparisonResponseId:"resp-1"});
+    assert.equal(bodies.length,3);assert.equal(bodies[1].previous_response_id,"resp-1");assert.equal(bodies[1].input.length,1);
+    assert.equal(Object.prototype.hasOwnProperty.call(bodies[2],"previous_response_id"),false);assert.equal(bodies[2].input.length,3);
+    assert.equal(result.text,"second");assert.equal(result.telemetry.responseContinuation.attempted,true);assert.equal(result.telemetry.responseContinuation.used,false);assert.equal(result.telemetry.responseContinuation.fallback,true);assert.equal(result.telemetry.responseContinuation.savedRequestBytes,0);assert.equal(result.telemetry.responseContinuation.wireAttempts,2);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
 test("official OpenAI prompt cache key tracks the reusable instruction and tool prefix instead of the user task",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-")),bodies=[];
   const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{
@@ -333,6 +383,26 @@ test("direct OpenAI Native streaming assembles the completed Responses result an
     assert.equal(result.text,"hello world");assert.equal(result.usage.inputTokens,8);assert.equal(result.telemetry.streaming,true);assert.equal(result.telemetry.providerRequestId,"req-stream");
     assert.deepEqual(result.telemetry.promptCacheDiagnostics,{type:"cache_hit",reason:null,comparisonReusableTokens:2048,cacheMissedTokens:null});
     assert.ok(result.telemetry.timeToFirstTokenMs>=0);assert.ok(result.telemetry.responseBytes>0);assert.ok(result.telemetry.totalLatencyMs>=result.telemetry.timeToFirstTokenMs);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("direct OpenAI streaming reuses a proven previous response with delta-only input",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-openai-stream-continuation-")),bodies=[];let calls=0;
+  try{
+    const event=value=>`event: ${value.type}\ndata: ${JSON.stringify(value)}\n\n`,manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root},fetchFn:async(_url,init={})=>{
+      const body=JSON.parse(init.body||"{}");bodies.push(body);calls++;
+      const completed=calls===1
+        ?{id:"resp-stream-1",model:"gpt-5.6",status:"completed",output:[{type:"function_call",call_id:"verify",name:"trebell_terminal__run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{input_tokens:8,output_tokens:2,total_tokens:10}}
+        :{id:"resp-stream-2",model:"gpt-5.6",status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"failed"}]}],usage:{input_tokens:9,output_tokens:1,total_tokens:10}};
+      return new Response(event({type:"response.completed",response:completed}),{status:200,headers:{"content-type":"text/event-stream"}});
+    }});
+    manager.setKey("openai","oa-stream-key");
+    const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run",inputSchema:{type:"object",properties:{command:{type:"string"},args:{type:"array",items:{type:"string"}}}}}]}],user={role:"user",content:"Run verifier"};
+    const first=await manager.turn("openai",{model:"gpt-5.6",messages:[user],tools},{streamResponses:true});
+    const second=await manager.turn("openai",{model:"gpt-5.6",messages:[user,{role:"assistant",content:first.text,toolCalls:first.toolCalls},{role:"tool",toolCallId:"verify",content:"exit 1"}],tools,promptCacheComparisonResponseId:"resp-stream-1"},{streamResponses:true});
+    assert.equal(bodies[0].stream,true);assert.equal(Object.prototype.hasOwnProperty.call(bodies[0],"previous_response_id"),false);
+    assert.equal(bodies[1].stream,true);assert.equal(bodies[1].previous_response_id,"resp-stream-1");assert.equal(bodies[1].input.length,1);assert.equal(bodies[1].input[0].type,"function_call_output");
+    assert.equal(second.telemetry.responseContinuation.used,true);assert.ok(second.telemetry.responseContinuation.savedRequestBytes>0);
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
