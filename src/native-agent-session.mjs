@@ -256,6 +256,7 @@ export class NativeAgentSession{
         provider:this.provider,model:this.model,messages:base,tools:this.tools,maxModelTurns,maxToolCalls,maxOutputTokens,maxWallTimeMs,signal:this.controller.signal,onEvent:this.onEvent,
         metadata:{contextWindow:this.contextWindow,sessionId:this.sessionId},
         toolAllowlist:Array.isArray(toolAllowlist)?toolAllowlist:null,
+        coolReadToolHistory:messages=>coolVirtualizedToolHistory(messages),
         isToolParallelSafe:call=>platformToolParallelSafe(call?.namespace,call?.name),
         consumeSteering:()=>this.pendingSteering.splice(0),
         providerTurn:async request=>{

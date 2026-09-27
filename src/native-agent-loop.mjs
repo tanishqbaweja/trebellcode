@@ -1,7 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { nativeRequestMetrics, NATIVE_PROMPT_PROVENANCE } from "./native-request-metrics.mjs";
 import { platformToolAllowedByAllowlist } from "./shared-tool-gateway.mjs";
-import { coolVirtualizedToolHistory } from "./native-tool-history.mjs";
 
 function abortError(signal){
   const reason=signal?.reason;if(reason?.name==="AbortError")return reason;
@@ -216,7 +215,7 @@ export function nativeAgentBudget(options={}){
 export async function runNativeAgentTurn({
   providerTurn,executeTool,model,messages=[],tools=[],provider=null,toolChoice="auto",
   maxOutputTokens=null,temperature=null,parallelToolCalls=true,maxModelTurns=24,maxToolCalls=100,maxWallTimeMs=null,
-  maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,signal=null,onEvent=null,metadata=null,
+  maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,coolReadToolHistory=null,signal=null,onEvent=null,metadata=null,
 }={}){
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
@@ -224,7 +223,7 @@ export async function runNativeAgentTurn({
   const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])];
   const explicitlyRequired=explicitlyRequestedTools(conversation,providerVisibleTools(tools,toolAllowlist)),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
   const successfulTerminalRuns=[];
-  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,forcedToolChoice=null,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
+  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,forcedToolChoice=null,lastProviderReadMessageCount=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
   const startedAt=Date.now(),started=nowMs(),wallController=budget.maxWallTimeMs!=null?new AbortController():null,deadlineAt=budget.maxWallTimeMs==null?null:Date.now()+budget.maxWallTimeMs;
   let wallTimer=null;
   const armWallTimer=()=>{
@@ -260,13 +259,20 @@ export async function runNativeAgentTurn({
   emit(onEvent,{name:"native.turn.started",status:"running",model:String(model),provider:provider||null,data:{...metadata,maxModelTurns:budget.maxModelTurns,maxToolCalls:budget.maxToolCalls,maxWallTimeMs:budget.maxWallTimeMs}});
   try{for(;;){
     throwIfAborted(turnSignal);
+    if(typeof coolReadToolHistory==="function"&&lastProviderReadMessageCount>0){
+      const count=Math.min(lastProviderReadMessageCount,conversation.length),cooled=coolReadToolHistory(conversation.slice(0,count));lastProviderReadMessageCount=0;
+      if(Array.isArray(cooled?.messages)&&cooled.messages.length===count){
+        conversation.splice(0,count,...cooled.messages);
+        if(Number(cooled.count||0)>0)emit(onEvent,{name:"native.tool.history_cooled",status:"completed",model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,data:{phase:"same_turn",count:Number(cooled.count||0),savedChars:Number(cooled.savedChars||0),beforeModelTurn:modelTurns+1}});
+      }
+    }
     applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_model"});
     if(modelTurns>=budget.maxModelTurns){
       const error=new Error(`Native agent model-turn budget exhausted (${modelTurns}/${budget.maxModelTurns}).`);error.code="native_model_turn_budget";
       emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(model),provider:provider||null,data:{reason:error.code,modelTurns,toolCalls}});throw error;
     }
     modelTurns++;
-    const requestStarted=nowMs(),visibleTools=providerVisibleTools(tools,toolAllowlist),forcedAllowlist=forcedToolChoice?[forcedToolChoice.namespace?forcedToolChoice.namespace+"/"+forcedToolChoice.name:forcedToolChoice.name]:null,requestTools=forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):visibleTools;
+    const requestStarted=nowMs(),requestMessageCount=conversation.length,visibleTools=providerVisibleTools(tools,toolAllowlist),forcedAllowlist=forcedToolChoice?[forcedToolChoice.namespace?forcedToolChoice.namespace+"/"+forcedToolChoice.name:forcedToolChoice.name]:null,requestTools=forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):visibleTools;
     const requestMetrics=nativeRequestMetrics(conversation,requestTools);
     const inferenceId=(metadata?.sessionId?String(metadata.sessionId):"native")+":inference:"+modelTurns;
     emit(onEvent,{name:"native.model.requested",status:"running",model:String(model),provider:provider||null,data:{inferenceId,modelTurn:modelTurns,messageCount:conversation.length,toolCount:Array.isArray(requestTools)?requestTools.length:0,sessionId:metadata?.sessionId||null,compaction:Boolean(metadata?.compaction),requestMetrics}});
@@ -292,6 +298,7 @@ export async function runNativeAgentTurn({
       }
     }
     if(response==null)continue;
+    lastProviderReadMessageCount=requestMessageCount;
     forcedToolChoice=null;
     throwIfAborted(turnSignal);lastResponse=response||{};usage=aggregateUsage(usage,lastResponse.usage||{});
     const rawCalls=Array.isArray(lastResponse.toolCalls)?lastResponse.toolCalls:[],calls=rawCalls.map(call=>{
@@ -309,11 +316,6 @@ export async function runNativeAgentTurn({
       contextWindowUtilizationPercent:contextWindow>0&&inputTokens>0?Number(((inputTokens/contextWindow)*100).toFixed(2)):null,
       sessionId:metadata?.sessionId||null,compaction:Boolean(metadata?.compaction),
     }});
-    const cooledHot=coolVirtualizedToolHistory(conversation,{maxPreviewChars:2200});
-    if(cooledHot.count){
-      conversation.splice(0,conversation.length,...cooledHot.messages);
-      emit(onEvent,{name:"native.tool.history_cooled",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{phase:"same_turn",count:cooledHot.count,savedChars:cooledHot.savedChars,maxPreviewChars:2200}});
-    }
     if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"after_model"}))continue;
     const responseText=String(lastResponse.text||"");
     if(!calls.length&&!responseText.trim()){

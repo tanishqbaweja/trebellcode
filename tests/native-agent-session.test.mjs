@@ -95,7 +95,7 @@ test("Native session keeps large tool output outside hot provider history behind
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
-test("Native session cools a virtualized result after one hot same-turn model read",async()=>{
+test("Native session cools virtualized output after one hot same-turn model read",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-hot-output-session-"));const requests=[],events=[];
   try{
     const store=new NativeToolOutputStore({directory:root,maxHotBytes:4096});let calls=0;
@@ -115,7 +115,7 @@ test("Native session cools a virtualized result after one hot same-turn model re
     const cooled=requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="big")?.content||"";
     const fresh=requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="read")?.content||"";
     assert.ok(hot.length>4000);assert.ok(cooled.length<hot.length);assert.match(cooled,/CRITICAL_ASSERTION/);assert.match(cooled,/out_[a-zA-Z0-9-]+/);assert.match(fresh,/legacy/);
-    assert.ok(events.some(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="same_turn"&&event.data?.savedChars>1000&&event.data?.maxPreviewChars===2200));
+    assert.ok(events.some(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="same_turn"&&event.data?.savedChars>1000));
   }finally{await rm(root,{recursive:true,force:true})}
 });
 

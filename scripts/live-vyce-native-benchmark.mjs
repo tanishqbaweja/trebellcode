@@ -133,6 +133,38 @@ const scenarios=[
     ],
     verify:async root=>{await verifyNode(root,"noisy-verify.mjs","BENCH_NOISY_PASS");assert.match(await readFile(join(root,"src/config.mjs"),"utf8"),/strict/)},
   },
+  {
+    name:"large-tool-output-same-turn",
+    default:false,
+    requireVerificationBeforeEdit:true,
+    requireVirtualizedOutput:true,
+    forceFirstTool:{namespace:"trebell_terminal",name:"run"},
+    toolAllowlist:["trebell_terminal/run","trebell_workspace/read_file","trebell_workspace/replace_text"],
+    files:{
+      "TASK.md":[
+        "# Task",
+        "Run node noisy-verify.mjs first.",
+        "Use the failure evidence to diagnose and fix the project, then rerun the same verifier until it passes.",
+        "Do not weaken or edit noisy-verify.mjs.",
+        "",
+      ].join("\n"),
+      "src/config.mjs":"export const mode=\"legacy\";\n",
+      "expected-mode.txt":"strict\n",
+      "noisy-verify.mjs":[
+        'import { readFileSync } from "node:fs";',
+        'import { mode } from "./src/config.mjs";',
+        'const expected=readFileSync(new URL("./expected-mode.txt", import.meta.url),"utf8").trim();',
+        'if(mode===expected){ console.log("BENCH_NOISY_PASS"); process.exit(0); }',
+        'for(let i=0;i<900;i++) console.log("setup-noise-"+String(i).padStart(4,"0")+" xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");',
+        'console.error("CRITICAL_ASSERTION expected mode="+expected+" but received "+mode+"; inspect src/config.mjs");',
+        'for(let i=0;i<900;i++) console.log("cleanup-noise-"+String(i).padStart(4,"0")+" yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy");',
+        'process.exit(1);',
+        "",
+      ].join("\n"),
+    },
+    prompt:"Run node noisy-verify.mjs before making any edit. Then complete the coding task described by TASK.md in this same turn: diagnose the failure from the command evidence, inspect only the files you need, fix the implementation without changing noisy-verify.mjs or TASK.md, and rerun node noisy-verify.mjs until it passes. Do not edit TASK.md and do not merely explain.",
+    verify:async root=>{await verifyNode(root,"noisy-verify.mjs","BENCH_NOISY_PASS");assert.match(await readFile(join(root,"src/config.mjs"),"utf8"),/strict/)},
+  },
 ];
 
 const env={...process.env,VYCEAI_API_KEY:apiKey};
@@ -175,6 +207,7 @@ async function runScenario(scenario){
       cwd:root,provider:"vyceai",model,tools,toolOutputStore:outputStore,executeTool:executor,
       initialMessages:[{role:"system",content:nativeSystemPrompt({tools,permissionMode:"full",projectless:false})}],
       providerTurn:async request=>{
+        const requestNumber=providerRequests.length+1;
         const requestMessages=Array.isArray(request.messages)?request.messages:[],requestTools=Array.isArray(request.tools)?request.tools:[];
         const record={
           messageChars:JSON.stringify(requestMessages).length,
@@ -183,14 +216,15 @@ async function runScenario(scenario){
           requestMetrics:nativeRequestMetrics(requestMessages,requestTools),
         };
         providerRequests.push(record);
-        const response=await manager.turn("vyceai",{...request,provider:"vyceai",model},{signal:request.signal});
+        const effectiveRequest=requestNumber===1&&scenario.forceFirstTool?{...request,toolChoice:scenario.forceFirstTool}:request;
+        const response=await manager.turn("vyceai",{...effectiveRequest,provider:"vyceai",model},{signal:request.signal});
         record.usage=response.usage;record.telemetry=response.telemetry;record.toolCalls=response.toolCalls||[];
         return response;
       },
       onEvent:event=>events.push(event),onUpdate:update=>updates.push(update),
     });
     await session.start({providerSessionId:"bench-"+scenario.name,model});
-    const turnSpecs=Array.isArray(scenario.turns)&&scenario.turns.length?scenario.turns:[{prompt:scenario.prompt,maxModelTurns:10,maxToolCalls:80}],turnResults=[];let turnFailure=null;
+    const turnSpecs=Array.isArray(scenario.turns)&&scenario.turns.length?scenario.turns:[{prompt:scenario.prompt,maxModelTurns:10,maxToolCalls:80,toolAllowlist:scenario.toolAllowlist}],turnResults=[];let turnFailure=null;
     const started=performance.now();
     for(const turn of turnSpecs){
       const packet=await contextEngine.buildPacket({root,task:turn.prompt,focusPaths:Object.prototype.hasOwnProperty.call(scenario.files,"TASK.md")?["TASK.md"]:[]});
@@ -212,6 +246,7 @@ async function runScenario(scenario){
     const completed=events.filter(event=>event.name==="native.model.completed"),toolUpdates=updates.filter(item=>item.update?.sessionUpdate==="tool_call_update");
     const firstRequest=providerRequests[0]||{};
     const repairedToolCalls=events.filter(event=>event.name==="native.tool.call_repaired").length;
+    const sameTurnCooling=events.filter(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="same_turn");
     const failedToolCalls=toolUpdates.filter(item=>item.update?.status==="failed").length;
     const aggregate=providerRequests.reduce((out,item)=>({
       inputTokens:out.inputTokens+Number(item.usage?.inputTokens||0),
@@ -263,6 +298,8 @@ async function runScenario(scenario){
         logicalTokens:Number(item.requestMetrics?.totalLogical?.estimatedTokens||0),
       })),
       virtualizedOutputs:virtualized.length,repairedToolCalls,failedToolCalls,
+      sameTurnCooledOutputs:sameTurnCooling.reduce((sum,event)=>sum+Number(event.data?.count||0),0),
+      sameTurnCooledChars:sameTurnCooling.reduce((sum,event)=>sum+Number(event.data?.savedChars||0),0),
       virtualizedBytes:virtualized.reduce((sum,item)=>sum+Number(item.totalBytes||0),0),
       usedOutputRetrieval:toolUpdates.some(item=>item.update?.namespace==="trebell_output"),
       turnFailure,independentVerificationPassed,independentVerificationError,verificationBeforeEdit,virtualizationSatisfied,
@@ -274,7 +311,7 @@ async function runScenario(scenario){
 }
 
 const selectedName=String(process.env.TREBELL_NATIVE_BENCH_SCENARIO||"").trim();
-const selectedScenarios=selectedName?scenarios.filter(item=>item.name===selectedName):scenarios;
+const selectedScenarios=selectedName?scenarios.filter(item=>item.name===selectedName):scenarios.filter(item=>item.default!==false);
 if(!selectedScenarios.length)throw new Error("Unknown TREBELL_NATIVE_BENCH_SCENARIO: "+selectedName);
 const results=[];
 for(const scenario of selectedScenarios){
