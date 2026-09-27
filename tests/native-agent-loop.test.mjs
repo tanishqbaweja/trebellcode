@@ -267,6 +267,38 @@ test("native current Git branch falls back when branch identity is unavailable",
   assert.equal(executions,1);assert.equal(providerCalls,1);assert.equal(result.text,"provider handled detached state");
 });
 
+test("native agent reports whether one background process is still running without provider inference",async()=>{
+  const processId="123e4567-e89b-12d3-a456-426614174000";
+  for(const [prompt,running] of [[`Is background process \`${processId}\` still running?`,true],[`Tell me whether process ${processId} is running.`,false]]){
+    let providerCalls=0;const executions=[],events=[];
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:prompt}],directProcessRunningStatus:true,onEvent:event=>events.push(event),
+      tools:[{type:"namespace",name:"trebell_process",tools:[{name:"status"}]}],
+      providerTurn:async()=>{providerCalls++;throw new Error("Exact process-running request should not call the provider.")},
+      executeTool:async call=>{executions.push(structuredClone(call));return {processId,running,command:"node server.mjs",cwd:"C:/repo",stdout:"SECRET_OUTPUT",stderr:""}},
+    });
+    assert.equal(providerCalls,0,prompt);assert.equal(result.modelTurns,0,prompt);assert.equal(result.toolCalls,1,prompt);assert.equal(executions.length,1,prompt);
+    assert.equal(executions[0].namespace,"trebell_process",prompt);assert.equal(executions[0].name,"status",prompt);assert.deepEqual(executions[0].arguments,{process_id:processId},prompt);
+    assert.equal(result.text,`Background process ${processId} is ${running?"running":"not running"}.`,prompt);assert.ok(events.some(event=>event.name==="native.process.direct_status"&&event.data?.running===running),prompt);
+    assert.equal(result.text.includes("SECRET_OUTPUT"),false,prompt);assert.equal(result.text.includes("C:/repo"),false,prompt);
+  }
+});
+
+test("native background process status shortcut fails closed for richer or unproven requests",async()=>{
+  const processId="123e4567-e89b-12d3-a456-426614174000";
+  for(const [prompt,output,expectedExecutions] of [
+    [`Is background process \`${processId}\` still running and show me its output?`,{processId,running:true},0],
+    [`Why is background process \`${processId}\` still running?`,{processId,running:true},0],
+    ["Is background process `short` still running?",{processId:"short",running:true},0],
+    [`Is background process \`${processId}\` still running?`,{processId:"different-process-id",running:true},1],
+    [`Is background process \`${processId}\` still running?`,{success:false,error:"process missing"},1],
+  ]){
+    let providerCalls=0,executions=0;
+    const result=await runNativeAgentTurn({model:"test-model",messages:[{role:"user",content:prompt}],directProcessRunningStatus:true,tools:[{type:"namespace",name:"trebell_process",tools:[{name:"status"}]}],providerTurn:async()=>{providerCalls++;return {text:"provider handled process status",toolCalls:[],usage:{}}},executeTool:async()=>{executions++;return output}});
+    assert.equal(providerCalls,1,prompt);assert.equal(executions,expectedExecutions,prompt);assert.equal(result.text,"provider handled process status",prompt);
+  }
+});
+
 test("native direct Git status fails closed for richer wording or incomplete evidence",async()=>{
   for(const prompt of ["Show git status and explain the changes.","Check the repo status.","Run git status and then fix anything wrong.","What branch am I on and what changed?"]){
     let providerCalls=0,executions=0;

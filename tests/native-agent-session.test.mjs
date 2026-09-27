@@ -106,6 +106,14 @@ test("Native session directly returns the current Git branch",async()=>{
   assert.equal(updates.find(item=>item.update?.sessionUpdate==="agent_message_chunk")?.update?.content?.text,"Current Git branch: feature/perf.");assert.ok(events.some(event=>event.name==="native.source_control.direct_status"&&event.data?.mode==="branch"));
 });
 
+test("Native session directly reports one background process running state",async()=>{
+  const processId="123e4567-e89b-12d3-a456-426614174000";let providerCalls=0;const calls=[],updates=[],events=[];
+  const session=new NativeAgentSession({provider:"fixture",model:"model-a",tools:[{type:"namespace",name:"trebell_process",tools:[{name:"status"}]}],onUpdate:update=>updates.push(update),onEvent:event=>events.push(event),providerTurn:async()=>{providerCalls++;throw new Error("Exact process status should bypass provider inference.")},executeTool:async call=>{calls.push(structuredClone(call));return {processId,running:true,command:"node server.mjs",stdout:"hidden"}}});
+  await session.start({providerSessionId:"process-status",model:"model-a"});const result=await session.prompt([{type:"text",text:`Is background process \`${processId}\` still running?`}]);
+  assert.equal(providerCalls,0);assert.equal(result.raw?.modelTurns,0);assert.equal(result.raw?.toolCalls,1);assert.deepEqual(calls[0].arguments,{process_id:processId});
+  assert.equal(updates.find(item=>item.update?.sessionUpdate==="agent_message_chunk")?.update?.content?.text,`Background process ${processId} is running.`);assert.ok(events.some(event=>event.name==="native.process.direct_status"));
+});
+
 test("Native session keeps virtualized direct-status evidence persisted but collapses its first provider-facing view",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-terminal-report-cooling-")),requests=[],events=[];
   try{
