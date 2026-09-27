@@ -130,6 +130,15 @@ function messageText(message){
   return content.map(part=>typeof part==="string"?part:typeof part?.text==="string"?part.text:"").filter(Boolean).join("\n");
 }
 
+function lastUserInstructionText(message){
+  const provenance=message&&typeof message==="object"?message[NATIVE_PROMPT_PROVENANCE]:null;
+  if(Array.isArray(provenance?.userParts)){
+    const parts=provenance.userParts.map(value=>String(value||"").trim()).filter(Boolean);
+    if(parts.length)return parts.at(-1);
+  }
+  return messageText(message);
+}
+
 function escapeRegex(value){return String(value||"").replace(/[.*+?^${}()|[\]\\]/g,"\\$&")}
 
 function explicitlyRequestedTools(messages=[],tools=[]){
@@ -162,6 +171,16 @@ function explicitSummaryAfterVerification(messages=[]){
   const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=messageText(user);
   if(!text)return false;
   return /\b(?:after|once|when)\b[^.\n]{0,220}\b(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful)\b[^.\n]{0,220}\b(?:(?:concise|brief|short)\s+summary|summari[sz]e\s+(?:briefly|concisely)|(?:briefly|concisely)\s+summari[sz]e)\b/i.test(text);
+}
+
+function explicitLiteralAfterVerification(messages=[]){
+  const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=lastUserInstructionText(user);
+  if(!text)return null;
+  const prefix="\\b(?:after|once|when)\\b[^.\\n]{0,220}\\b(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful)\\b[^.\\n]{0,220}\\b(?:answer|respond|reply)\\s+(?:with\\s+)?exactly\\s+";
+  const quoted=text.match(new RegExp(prefix+"([\\\"'`])([^\\r\\n]{1,160})\\1\\s*[.!]?\\s*$","i"));
+  if(quoted)return quoted[2];
+  const token=text.match(new RegExp(prefix+"([A-Za-z0-9][A-Za-z0-9_.:/-]{0,79})\\s*[.!]?\\s*$","i"));
+  return token?token[1]:null;
 }
 
 function conciseReplacementSummary(oldText,newText){
@@ -301,7 +320,7 @@ export async function runNativeAgentTurn({
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
   const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])];
   const explicitlyRequired=explicitlyRequestedTools(conversation,providerVisibleTools(tools,toolAllowlist)),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
-  const finalAfterVerifiedCommand=explicitFinalAnswerAfterVerification(conversation),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),terminalRuns=[],verifiedEdits=[];
+  const finalAfterVerifiedCommand=explicitFinalAnswerAfterVerification(conversation),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),terminalRuns=[],verifiedEdits=[];
   const successfulTerminalRuns=[];
   let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,verifiedFinalizationAllowed=finalAfterVerifiedCommand,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
   const startedAt=Date.now(),started=nowMs(),wallController=budget.maxWallTimeMs!=null?new AbortController():null,deadlineAt=budget.maxWallTimeMs==null?null:Date.now()+budget.maxWallTimeMs;
@@ -363,11 +382,13 @@ export async function runNativeAgentTurn({
     if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_model"})){verifiedFinalizationAllowed=false;verifiedFinalizationReady=false}
     const missingExplicitTool=explicitlyRequired.find(item=>!executedToolKeys.has(item.namespace+"/"+item.name));
     const synthesizedVerifiedSummary=verifiedFinalizationReady&&verifiedFinalizationAllowed&&summaryAfterVerifiedCommand&&!missingExplicitTool?verifiedSummaryText(verifiedEdits):null;
-    if(synthesizedVerifiedSummary){
-      const text=synthesizedVerifiedSummary;conversation.push({role:"assistant",content:text,toolCalls:[]});
+    const synthesizedVerifiedLiteral=verifiedFinalizationReady&&verifiedFinalizationAllowed&&literalAfterVerifiedCommand!=null&&!missingExplicitTool?literalAfterVerifiedCommand:null;
+    const synthesizedVerifiedText=synthesizedVerifiedLiteral??synthesizedVerifiedSummary;
+    if(synthesizedVerifiedText!=null){
+      const exactLiteral=synthesizedVerifiedLiteral!=null,text=synthesizedVerifiedText;conversation.push({role:"assistant",content:text,toolCalls:[]});
       const result={text,model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse:null};
-      emit(onEvent,{name:"native.verification.summary_synthesized",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,changedPaths:[...new Set(verifiedEdits.map(edit=>edit.path))].slice(0,20)}});
-      emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage,syntheticFinalSummary:true}});
+      emit(onEvent,{name:exactLiteral?"native.verification.literal_synthesized":"native.verification.summary_synthesized",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,changedPaths:[...new Set(verifiedEdits.map(edit=>edit.path))].slice(0,20)}});
+      emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage,syntheticFinalSummary:!exactLiteral,syntheticFinalLiteral:exactLiteral}});
       return result;
     }
     if(modelTurns>=budget.maxModelTurns){
