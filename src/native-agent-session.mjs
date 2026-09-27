@@ -138,12 +138,11 @@ function workspaceReadAsSource(file,args={}){
   };
 }
 
-const DEDUPLICABLE_OBSERVATIONS=new Set([
-  "trebell_workspace/read_file",
-  "trebell_repo/read_source",
-  "trebell_repo/search_code",
-  "trebell_repo/search_symbols",
-  "trebell_repo/search_files",
+const DEDUPLICABLE_OBSERVATION_NAMESPACES=new Set([
+  "trebell_repo",
+  "trebell_workspace",
+  "trebell_output",
+  "trebell_source_control",
 ]);
 
 function stableJson(value){
@@ -157,9 +156,10 @@ function observationDigest(value){
   return {hash:createHash("sha256").update(serialized).digest("hex").slice(0,20),bytes:Buffer.byteLength(serialized,"utf8")};
 }
 
-function observationKey(call={}){
+function observationKey(call={},definition=null){
   const namespace=String(call.namespace||""),name=String(call.name||"");
-  if(!DEDUPLICABLE_OBSERVATIONS.has(namespace+"/"+name))return null;
+  const policy=definition?.policy||{};
+  if(!DEDUPLICABLE_OBSERVATION_NAMESPACES.has(namespace)||policy.kind!=="read"||policy.idempotent!==true||policy.externalSideEffect===true)return null;
   return namespace+"/"+name+":"+stableJson(call.arguments&&typeof call.arguments==="object"?call.arguments:{});
 }
 
@@ -236,7 +236,7 @@ export class NativeAgentSession{
           this.onEvent?.({name:"native.tool.read_fallback",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{from:"trebell_repo/read_source",to:"trebell_workspace/read_file",reason:"not_indexed"}});
         }
       }
-      const key=observationKey(call),digest=key?observationDigest(output):null,prior=key?this.observationCache.get(key):null;
+      const key=observationKey(call,definition),digest=key?observationDigest(output):null,prior=key?this.observationCache.get(key):null;
       let observed=output;
       const reusable=Boolean(key)&&output?.success!==false&&output?.uncertain!==true;
       if(reusable&&prior&&prior.hash===digest.hash&&digest.bytes>=512){

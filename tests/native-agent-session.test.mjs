@@ -197,6 +197,66 @@ test("Native session returns changed repository search results in full",async()=
   const repeatedObservation=requests[2].messages.at(-1);assert.equal(repeatedObservation.role,"tool");assert.match(repeatedObservation.content,/needle changed/);assert.doesNotMatch(repeatedObservation.content,/byte-identical/i);
 });
 
+test("Native session policy-deduplicates identical workspace listings",async()=>{
+  const requests=[],events=[];let providerCalls=0,lists=0;
+  const session=new NativeAgentSession({
+    model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {id:"list-1",text:"",toolCalls:[{id:"list-a",namespace:"trebell_workspace",name:"list",arguments:'{"path":"src"}'}],usage:{}};
+      if(providerCalls===2)return {id:"list-2",text:"",toolCalls:[{id:"list-b",namespace:"trebell_workspace",name:"list",arguments:'{"path":"src"}'}],usage:{}};
+      return {id:"done",text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>{
+      lists++;
+      return {path:"src",entries:Array.from({length:80},(_,index)=>({path:"src/file-"+index+".mjs",type:"file",size:1000+index}))};
+    },
+  });
+  await session.start({providerSessionId:"native-list-dedupe",model:"model-a"});await session.prompt([{type:"text",text:"list twice"}]);
+  assert.equal(lists,2);assert.match(requests[1].messages.at(-1).content,/file-79/);assert.match(requests[2].messages.at(-1).content,/byte-identical/i);assert.doesNotMatch(requests[2].messages.at(-1).content,/file-79/);
+  assert.ok(events.some(event=>event.name==="native.tool.observation_deduplicated"&&event.data?.namespace==="trebell_workspace"&&event.data?.name==="list"));
+});
+
+test("Native session never deduplicates edit-tool results even when byte-identical",async()=>{
+  const requests=[],events=[];let providerCalls=0,writes=0;
+  const session=new NativeAgentSession({
+    model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {id:"write-1",text:"",toolCalls:[{id:"write-a",namespace:"trebell_workspace",name:"write_file",arguments:'{"path":"x.txt","content":"same"}'}],usage:{}};
+      if(providerCalls===2)return {id:"write-2",text:"",toolCalls:[{id:"write-b",namespace:"trebell_workspace",name:"write_file",arguments:'{"path":"x.txt","content":"same"}'}],usage:{}};
+      return {id:"done",text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>{
+      writes++;
+      return {success:true,path:"x.txt",message:"W".repeat(2_000)};
+    },
+  });
+  await session.start({providerSessionId:"native-write-no-dedupe",model:"model-a"});await session.prompt([{type:"text",text:"write twice"}]);
+  assert.equal(writes,2);assert.match(requests[1].messages.at(-1).content,/W{1000}/);assert.match(requests[2].messages.at(-1).content,/W{1000}/);assert.doesNotMatch(requests[2].messages.at(-1).content,/byte-identical/i);
+  assert.equal(events.filter(event=>event.name==="native.tool.observation_deduplicated").length,0);
+});
+
+test("Native session never deduplicates recency-sensitive browser snapshots",async()=>{
+  const requests=[],events=[];let providerCalls=0,snapshots=0;
+  const session=new NativeAgentSession({
+    model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_browser",tools:[]}],onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {id:"snap-1",text:"",toolCalls:[{id:"snap-a",namespace:"trebell_browser",name:"snapshot",arguments:"{}"}],usage:{}};
+      if(providerCalls===2)return {id:"snap-2",text:"",toolCalls:[{id:"snap-b",namespace:"trebell_browser",name:"snapshot",arguments:"{}"}],usage:{}};
+      return {id:"done",text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>{
+      snapshots++;
+      return {url:"https://example.test",text:"S".repeat(2_000)};
+    },
+  });
+  await session.start({providerSessionId:"native-browser-no-dedupe",model:"model-a"});await session.prompt([{type:"text",text:"snapshot twice"}]);
+  assert.equal(snapshots,2);assert.match(requests[1].messages.at(-1).content,/S{1000}/);assert.match(requests[2].messages.at(-1).content,/S{1000}/);assert.doesNotMatch(requests[2].messages.at(-1).content,/byte-identical/i);
+  assert.equal(events.filter(event=>event.name==="native.tool.observation_deduplicated").length,0);
+});
+
 test("Native session never deduplicates repeated failed repository search observations",async()=>{
   const requests=[],events=[];let providerCalls=0;
   const session=new NativeAgentSession({
