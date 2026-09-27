@@ -148,6 +148,30 @@ test("Native session preserves already-sent virtualized history for cache-capabl
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
+test("Native session cools large historical workspace edit arguments only after one provider read",async()=>{
+  const requests=[],events=[];let calls=0;
+  const large="A".repeat(12_000);
+  const session=new NativeAgentSession({
+    model:"model-a",provider:"fixture",onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"},{name:"read_file"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));calls++;
+      if(calls===1)return {id:"write",text:"",toolCalls:[{id:"write-1",namespace:"trebell_workspace",name:"write_file",arguments:JSON.stringify({path:"src/generated.txt",content:large})}],usage:{}};
+      if(calls===2)return {id:"read",text:"",toolCalls:[{id:"read-1",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/check.txt"}'}],usage:{}};
+      return {id:"done",text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.name==="write_file"?{success:true,path:"src/generated.txt",size:large.length}:{path:"src/check.txt",content:"ok",size:2},
+  });
+  await session.start({providerSessionId:"native-toolcall-cooling",model:"model-a"});await session.prompt([{type:"text",text:"write then inspect"}]);
+  const secondWrite=requests[1].messages.find(message=>message.role==="assistant")?.toolCalls?.find(call=>call.id==="write-1");
+  const thirdWrite=requests[2].messages.find(message=>message.role==="assistant")?.toolCalls?.find(call=>call.id==="write-1");
+  assert.ok(secondWrite);assert.ok(thirdWrite);
+  assert.ok(String(secondWrite.arguments).length>10_000);
+  assert.ok(String(thirdWrite.arguments).length<1500);assert.match(String(thirdWrite.arguments),/compacted prior tool argument/i);assert.match(String(thirdWrite.arguments),/generated\.txt/);
+  const freshRead=requests[2].messages.filter(message=>message.role==="assistant").flatMap(message=>message.toolCalls||[]).find(call=>call.id==="read-1");assert.ok(freshRead);assert.match(String(freshRead.arguments),/check\.txt/);
+  assert.ok(events.some(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="same_turn"&&event.data?.savedChars>10_000));
+});
+
 test("Native session preserves the OpenAI tool manifest when finalizing after tool budget exhaustion",async()=>{
   const requests=[];let calls=0;
   const tools=[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file",inputSchema:{type:"object",properties:{path:{type:"string"}}}}]}];
