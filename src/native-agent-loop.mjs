@@ -140,10 +140,16 @@ function lastUserInstructionText(message){
   return messageText(message);
 }
 
+function latestUserMessage(messages=[]){
+  const source=Array.isArray(messages)?messages:[];
+  for(let index=source.length-1;index>=0;index--)if(source[index]?.role==="user")return source[index];
+  return null;
+}
+
 function escapeRegex(value){return String(value||"").replace(/[.*+?^${}()|[\]\\]/g,"\\$&")}
 
 function explicitlyRequestedTools(messages=[],tools=[]){
-  const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=messageText(user);
+  const user=latestUserMessage(messages),text=messageText(user);
   if(!text)return [];
   const requested=[];
   for(const namespace of Array.isArray(tools)?tools:[]){
@@ -163,7 +169,7 @@ function explicitlyRequestedTools(messages=[],tools=[]){
 }
 
 function explicitFinalAnswerAfterVerification(messages=[]){
-  const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=messageText(user);
+  const user=latestUserMessage(messages),text=messageText(user);
   if(!text)return null;
   const match=text.match(/\b(?:after|once|when)\b\s*([^.\n]{1,220}?)\s+\b(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful)\b[^.\n]{0,220}\b(?:answer|respond|reply|summari[sz](?:e|ing|ation)?|summary)\b/i);
   if(!match)return null;
@@ -172,13 +178,13 @@ function explicitFinalAnswerAfterVerification(messages=[]){
 }
 
 function explicitSummaryAfterVerification(messages=[]){
-  const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=messageText(user);
+  const user=latestUserMessage(messages),text=messageText(user);
   if(!text)return false;
   return /\b(?:after|once|when)\b[^.\n]{0,220}\b(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful)\b[^.\n]{0,220}\b(?:(?:concise|brief|short)\s+summary|summari[sz]e\s+(?:briefly|concisely)|(?:briefly|concisely)\s+summari[sz]e)\b/i.test(text);
 }
 
 function explicitLiteralAfterVerification(messages=[]){
-  const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=lastUserInstructionText(user);
+  const user=latestUserMessage(messages),text=lastUserInstructionText(user);
   if(!text)return null;
   const prefix="\\b(?:after|once|when)\\b[^.\\n]{0,220}\\b(?:pass(?:es|ed|ing)?|succeed(?:s|ed)?|successful)\\b[^.\\n]{0,220}\\b(?:answer|respond|reply)\\s+(?:with\\s+)?exactly\\s+";
   const quoted=text.match(new RegExp(prefix+"([\\\"'`])([^\\r\\n]{1,160})\\1\\s*[.!]?\\s*$","i"));
@@ -188,7 +194,7 @@ function explicitLiteralAfterVerification(messages=[]){
 }
 
 function explicitVerificationCompletion(messages=[]){
-  const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=lastUserInstructionText(user);
+  const user=latestUserMessage(messages),text=lastUserInstructionText(user);
   if(!text)return null;
   const explicit=text.match(/\b(?:re-?run|keep\s+re-?running)\b\s+([^\n]{1,180}?)\s+\buntil\b[^\n]{0,80}\bpass(?:es|ed|ing)?\b\s*[.!]?\s*$/i);
   if(explicit){
@@ -208,7 +214,7 @@ function explicitVerificationCompletion(messages=[]){
 }
 
 function explicitTerminalStatusRequest(messages=[]){
-  const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=lastUserInstructionText(user);
+  const user=latestUserMessage(messages),text=lastUserInstructionText(user);
   if(!text||/\buntil\b[^\n]{0,100}\bpass(?:es|ed|ing)?\b/i.test(text))return false;
   const runs=[...text.matchAll(/\b(?:run|execute)\b/ig)];if(runs.length!==1)return false;
   const beforeRun=text.slice(0,Number(runs[0].index||0));
@@ -256,7 +262,7 @@ function directVerifierCommandWithOptionalCwd(value){
 }
 function explicitTerminalStatusCommand(messages=[]){
   if(!explicitTerminalStatusRequest(messages))return null;
-  const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=lastUserInstructionText(user),run=[...text.matchAll(/\b(?:run|execute)\b/ig)][0];
+  const user=latestUserMessage(messages),text=lastUserInstructionText(user),run=[...text.matchAll(/\b(?:run|execute)\b/ig)][0];
   if(!run)return null;
   const before=text.slice(0,Number(run.index||0)).trim();let cwd=null;
   if(before&&!/^(?:(?:please|kindly)|(?:can|could|would|will)\s+you)[,:]?$/i.test(before)){
@@ -306,7 +312,7 @@ function explicitWorkspaceRelativeFile(value){
 }
 
 function explicitExactReplacementStatus(messages=[]){
-  const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=lastUserInstructionText(user).trim();
+  const user=latestUserMessage(messages),text=lastUserInstructionText(user).trim();
   if(!text||/[\r\n]/.test(text))return null;
   if(/\b(?:diagnos(?:e|is)|fix|repair|debug|explain|analy[sz]e|investigate|root\s+cause|recommend|suggest|compare|summari[sz]e|read|inspect|search|list|create|delete|write|commit|push|browse)\b/i.test(text))return null;
   const verified=text.match(/^(?:please\s+)?replace\s+(?:(?:exactly|only)\s+|the\s+exact\s+text\s+)(.+?)\s+with\s+(.+?)\s+in\s+(.+?)\s*[,;]?\s*(?:then|and\s+then)\s+(?:run|execute)\s+(.+?)\s+(?:and\s+)?(?:report|show)\s+(?:me\s+)?(?:the\s+)?(?:result|status|outcome)\s*[.!]?$/i);
