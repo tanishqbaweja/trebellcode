@@ -35,9 +35,9 @@ function toolCallIdentityWithId(call={}){
   };
 }
 
-export function compactDirectTerminalStatusProviderHistory(messages=[]){
-  const source=Array.isArray(messages)?messages:[];let out=null,count=0,savedChars=0;
-  for(let index=0;index<source.length;index++){
+function compactDirectTerminalStatusRange(source,start=0,{stableOnly=false}={}){
+  const rangeStart=Math.max(0,Math.min(source.length,Math.trunc(Number(start)||0)));let out=null,count=0,savedChars=0,index=rangeStart;
+  while(index<source.length&&(!stableOnly||index+2<source.length)){
     const assistant=source[index],tool=source[index+1],receipt=source[index+2],calls=messageToolCalls(assistant);
     if(assistant?.role==="assistant"&&calls.length===1&&tool?.role==="tool"&&receipt?.role==="assistant"){
       const call=toolCallIdentityWithId(calls[0]),toolCallId=String(tool.toolCallId||tool.tool_call_id||""),receiptCalls=messageToolCalls(receipt);
@@ -47,13 +47,30 @@ export function compactDirectTerminalStatusProviderHistory(messages=[]){
           const note=`[Full command output handle: ${handle}; inspect via trebell_output/inspect only if needed.]`;
           const compactedReceipt={...receipt,content:receipt.content+"\n"+note};
           savedChars+=JSON.stringify(assistant).length+JSON.stringify(tool).length+JSON.stringify(receipt).length+2-JSON.stringify(compactedReceipt).length;
-          if(!out)out=source.slice(0,index);out.push(compactedReceipt);index+=2;count++;continue;
+          if(!out)out=source.slice(rangeStart,index);out.push(compactedReceipt);index+=3;count++;continue;
         }
       }
     }
-    if(out)out.push(source[index]);
+    if(out)out.push(source[index]);index++;
   }
-  return {messages:out||source,count,savedChars:Math.max(0,savedChars)};
+  const wholeSource=rangeStart===0&&index===source.length&&!stableOnly;
+  return {messages:out||(wholeSource?source:source.slice(rangeStart,index)),count,savedChars:Math.max(0,savedChars),consumed:index};
+}
+
+export function compactDirectTerminalStatusProviderHistory(messages=[]){
+  const source=Array.isArray(messages)?messages:[],result=compactDirectTerminalStatusRange(source);
+  return {messages:result.messages,count:result.count,savedChars:result.savedChars};
+}
+
+export function createDirectTerminalStatusProviderHistoryProjector(){
+  let sourceRef=null,stableThrough=0,stableMessages=[],count=0,savedChars=0;
+  return messages=>{
+    const source=Array.isArray(messages)?messages:[];
+    if(source!==sourceRef||source.length<stableThrough){sourceRef=source;stableThrough=0;stableMessages=[];count=0;savedChars=0}
+    const next=compactDirectTerminalStatusRange(source,stableThrough,{stableOnly:true});
+    if(next.consumed>stableThrough){stableMessages.push(...next.messages);stableThrough=next.consumed;count+=next.count;savedChars+=next.savedChars}
+    return {messages:stableThrough===source.length?[...stableMessages]:[...stableMessages,...source.slice(stableThrough)],count,savedChars};
+  };
 }
 
 function coldPreview(value,maxChars){

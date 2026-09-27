@@ -51,6 +51,7 @@
     "bench:native:direct-terminal-history-overhead": "node scripts/native-direct-terminal-history-overhead-benchmark.mjs",
     "bench:native:direct-terminal-scan": "node --expose-gc scripts/native-direct-terminal-scan-benchmark.mjs",
     "bench:native:direct-status-lazy-output": "node --expose-gc scripts/native-direct-status-lazy-output-benchmark.mjs",
+    "bench:native:direct-terminal-provider-view-incremental": "node --expose-gc scripts/native-direct-terminal-provider-view-incremental-benchmark.mjs",
     "bench:native:request-metrics-overhead": "node --expose-gc scripts/native-request-metrics-overhead-benchmark.mjs",
     "bench:native:message-bucket-metrics": "node --expose-gc scripts/native-message-bucket-metrics-benchmark.mjs",
     "bench:native:message-array-allocation": "node --expose-gc scripts/native-message-array-allocation-benchmark.mjs",
