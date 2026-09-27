@@ -9,7 +9,7 @@ import { assessRepositoryKnowledgeFreshness, captureRepositoryKnowledgeEvidence,
 test("repository knowledge persists explicit facts and filters by repository",async()=>{
   const home=await mkdtemp(join(tmpdir(),"trebell-knowledge-state-"));
   try{
-    const state=new TrebellStateStore({home});
+    const state=new TrebellStateStore({TREBELL_HOME:home});
     const saved=state.upsertRepositoryKnowledge({projectPath:"/repo/a",category:"architecture",fact:"Requests enter through the relay.",scope:"runtime",status:"verified",evidence:[{path:"src/relay.js",fingerprint:"abc"}],lastVerifiedRevision:"deadbeef"});
     state.upsertRepositoryKnowledge({projectPath:"/repo/b",fact:"Other repo fact"});
     assert.equal(state.repositoryKnowledge({projectPath:"/repo/a"}).length,1);assert.equal(state.repositoryKnowledge({projectPath:"/repo/a"})[0].id,saved.id);
