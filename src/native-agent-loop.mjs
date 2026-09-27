@@ -74,6 +74,13 @@ function protocolAliasMatches(namespace,name,tools=[]){
   });
 }
 
+function misplacedToolMatches(namespace,name,tools=[]){
+  const rawNamespace=String(namespace||"").trim(),rawName=String(name||"").trim(),pairs=exposedToolPairs(tools);
+  if(!rawNamespace.startsWith("trebell_")||!rawName||!pairs.some(item=>item.namespace===rawNamespace))return [];
+  if(pairs.some(item=>item.namespace===rawNamespace&&item.name===rawName))return [];
+  return pairs.filter(item=>item.namespace.startsWith("trebell_")&&item.name===rawName);
+}
+
 function repairCorruptedToolCall(call,tools=[]){
   const namespace=String(call?.namespace||"").trim(),name=String(call?.name||"").trim();
   if(!name)return {call,repaired:false};
@@ -81,6 +88,11 @@ function repairCorruptedToolCall(call,tools=[]){
   if(aliasMatches.length===1){
     const target=aliasMatches[0];
     if(target.namespace!==namespace||target.name!==name)return {call:{...call,namespace:target.namespace||null,name:target.name},repaired:true,originalName:name,reason:"protocol_alias"};
+  }
+  const misplacedMatches=misplacedToolMatches(namespace,name,tools);
+  if(misplacedMatches.length===1){
+    const target=misplacedMatches[0];
+    return {call:{...call,namespace:target.namespace||null,name:target.name},repaired:true,originalName:name,reason:"unique_tool_namespace"};
   }
   if(!namespace||!obviousToolNameCorruption(name))return {call,repaired:false};
   const entry=(Array.isArray(tools)?tools:[]).find(item=>item?.type==="namespace"&&String(item.name||"")===namespace);

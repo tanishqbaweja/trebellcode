@@ -37,6 +37,7 @@
     "bench:vyce:native:hot-preview": "node --env-file-if-exists=.env scripts/live-vyce-native-hot-preview-benchmark.mjs --live",
     "bench:vyce:native:post-edit-reread": "node --env-file-if-exists=.env scripts/live-vyce-native-post-edit-reread-benchmark.mjs --live",
     "bench:vyce:native:schema-min": "node --env-file-if-exists=.env scripts/live-vyce-native-schema-min-benchmark.mjs --live",
+    "bench:vyce:native:tool-namespace": "node --env-file-if-exists=.env scripts/live-vyce-native-tool-namespace-benchmark.mjs --live",
     "bench:native:dedupe": "node scripts/native-observation-dedupe-benchmark.mjs",
     "bench:native:cache-history": "node scripts/native-cache-history-benchmark.mjs",
     "bench:vyce:native:search-dedupe": "node --env-file-if-exists=.env scripts/live-vyce-native-search-dedupe-benchmark.mjs --live",

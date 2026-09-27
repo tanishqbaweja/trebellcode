@@ -104,6 +104,60 @@ test("native agent repairs a uniquely identifiable flattened Trebell tool alias 
   const repaired=events.find(event=>event.name==="native.tool.call_repaired");assert.ok(repaired);assert.equal(repaired.data.reason,"protocol_alias");assert.equal(repaired.data.repairedNamespace,"trebell_repo");assert.equal(repaired.data.name,"search_code");
 });
 
+test("native agent repairs an exact visible tool name placed under the wrong visible namespace only when unique",async()=>{
+  let turns=0;const executions=[],events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"replace the exact text"}],onEvent:event=>events.push(event),
+    tools:[
+      {type:"namespace",name:"trebell_repo",tools:[{name:"read_source"}]},
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"},{name:"replace_text"}]},
+    ],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"misplaced",namespace:"trebell_repo",name:"replace_text",arguments:'{"path":"src/a.js","old_text":"1","new_text":"2"}'}],usage:{}};
+      const repairedCall=request.messages.at(-2).toolCalls[0];assert.equal(repairedCall.namespace,"trebell_workspace");assert.equal(repairedCall.name,"replace_text");
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executions.push(call);return {success:true,replacements:1}},
+  });
+  assert.equal(result.text,"done");assert.equal(result.toolCalls,1);
+  assert.equal(executions[0].namespace,"trebell_workspace");assert.equal(executions[0].name,"replace_text");
+  const repaired=events.find(event=>event.name==="native.tool.call_repaired");assert.ok(repaired);assert.equal(repaired.data.reason,"unique_tool_namespace");assert.equal(repaired.data.repairedNamespace,"trebell_workspace");assert.equal(repaired.data.name,"replace_text");
+});
+
+test("native agent does not repair a wrong namespace when the exact tool name is ambiguous",async()=>{
+  const executions=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"take a screenshot"}],
+    tools:[
+      {type:"namespace",name:"trebell_repo",tools:[{name:"read_source"}]},
+      {type:"namespace",name:"trebell_browser",tools:[{name:"screenshot"}]},
+      {type:"namespace",name:"trebell_computer",tools:[{name:"screenshot"}]},
+    ],
+    providerTurn:async request=>request.messages.some(message=>message.role==="tool")
+      ?{text:"stopped",toolCalls:[],usage:{}}
+      :{text:"",toolCalls:[{id:"ambiguous-namespace",namespace:"trebell_repo",name:"screenshot",arguments:"{}"}],usage:{}},
+    executeTool:async call=>{executions.push(call);return {success:false,error:"unknown tool"}},
+  });
+  assert.equal(result.text,"stopped");assert.equal(executions[0].namespace,"trebell_repo");assert.equal(executions[0].name,"screenshot");
+});
+
+test("native agent never moves a misplaced Trebell call into an external namespace",async()=>{
+  const executions=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"use the connected service"}],
+    tools:[
+      {type:"namespace",name:"trebell_repo",tools:[{name:"read_source"}]},
+      {type:"namespace",name:"external_service",tools:[{name:"replace_text"}]},
+    ],
+    providerTurn:async request=>request.messages.some(message=>message.role==="tool")
+      ?{text:"stopped",toolCalls:[],usage:{}}
+      :{text:"",toolCalls:[{id:"external-misplaced",namespace:"trebell_repo",name:"replace_text",arguments:"{}"}],usage:{}},
+    executeTool:async call=>{executions.push(call);return {success:false,error:"unknown tool"}},
+  });
+  assert.equal(result.text,"stopped");assert.equal(executions[0].namespace,"trebell_repo");assert.equal(executions[0].name,"replace_text");
+});
+
 test("native agent does not repair a flattened alias when the target tool name is ambiguous",async()=>{
   const executions=[];
   const result=await runNativeAgentTurn({
