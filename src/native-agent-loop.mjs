@@ -223,12 +223,24 @@ function explicitTerminalStatusRequest(messages=[]){
 
 const DIRECT_STATUS_NATURAL_COMMANDS=new Set(["a","an","the","it","this","that","test","tests","verification","verifier","check","checks","command","script","project","app","application"]);
 const DIRECT_STATUS_SHELLS=new Set(["sh","bash","zsh","fish","cmd","cmd.exe","powershell","powershell.exe","pwsh","pwsh.exe"]);
+function explicitDirectStatusCwd(value){
+  let cwd=String(value||"").trim();
+  const quoted=cwd.match(/^(?:`([^`\n]+)`|"([^"\n]+)"|'([^'\n]+)')$/);if(quoted)cwd=String(quoted[1]||quoted[2]||quoted[3]||"").trim();
+  if(!cwd||cwd.length>240||/[\r\n\0]/.test(cwd)||/^[\\/]/.test(cwd)||/^[A-Za-z]:[\\/]/.test(cwd)||/:\/\//.test(cwd))return null;
+  if(/\s/.test(cwd)||!/[\\/]/.test(cwd))return null;
+  const normalized=cwd.replace(/\\/g,"/"),parts=normalized.split("/");
+  if(parts.some(part=>!part||part===".."||part==="."))return null;
+  if(parts.some(part=>!/^[A-Za-z0-9._@+-]+$/.test(part)))return null;
+  return normalized;
+}
 function explicitTerminalStatusCommand(messages=[]){
   if(!explicitTerminalStatusRequest(messages))return null;
   const user=[...(Array.isArray(messages)?messages:[])].reverse().find(message=>message?.role==="user"),text=lastUserInstructionText(user),run=[...text.matchAll(/\b(?:run|execute)\b/ig)][0];
   if(!run)return null;
-  const before=text.slice(0,Number(run.index||0)).trim();
-  if(before&&!/^(?:(?:please|kindly)|(?:can|could|would|will)\s+you)[,:]?$/i.test(before))return null;
+  const before=text.slice(0,Number(run.index||0)).trim();let cwd=null;
+  if(before&&!/^(?:(?:please|kindly)|(?:can|could|would|will)\s+you)[,:]?$/i.test(before)){
+    const cwdPrefix=before.match(/^(?:please\s+|kindly\s+)?(?:in|from|inside|within)\s+(.+?)[,:]?$/i);cwd=cwdPrefix?explicitDirectStatusCwd(cwdPrefix[1]):null;if(!cwd)return null;
+  }
   let tail=text.slice(Number(run.index||0)+String(run[0]||"").length).trim(),raw="";
   tail=tail.replace(/^(?:the\s+command|command)\s+/i,"");
   const quoted=tail.match(/^`([^`\n]{1,300})`/);
@@ -247,12 +259,14 @@ function explicitTerminalStatusCommand(messages=[]){
     return null;
   }
   raw=raw.replace(/\s+(?:now|please)\s*$/i,"").trim();if(!raw||raw.length>300)return null;
-  if(/\s+(?:in|from|inside|within)\s+/i.test(raw))return null;
-  const normalized=normalizeNativeCommandArguments({command:raw});if(nativeCommandSemanticError(normalized))return null;
+  const cwdSuffix=raw.match(/^(.+?)\s+(?:in|from|inside|within)\s+((?:`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+))$/i);
+  if(cwdSuffix){if(cwd)return null;cwd=explicitDirectStatusCwd(cwdSuffix[2]);if(!cwd)return null;raw=String(cwdSuffix[1]||"").trim()}
+  else if(/\s+(?:in|from|inside|within)\s+/i.test(raw))return null;
+  const normalized=normalizeNativeCommandArguments({command:raw,...(cwd?{cwd}:{})});if(nativeCommandSemanticError(normalized))return null;
   const command=String(normalized.command||"").trim(),args=Array.isArray(normalized.args)?normalized.args.map(value=>String(value)):[];if(!command||/\s/.test(command)||args.length>48)return null;
   const executable=command.replace(/^.*[\\/]/,"").toLowerCase();if(DIRECT_STATUS_NATURAL_COMMANDS.has(executable)||DIRECT_STATUS_SHELLS.has(executable))return null;
   if(args.some(arg=>/^(?:-e|-c|--eval|--execute|--command|-command|-encodedcommand)$/i.test(String(arg))))return null;
-  const direct={command,args};return terminalRunLooksLikeVerifier(direct)?direct:null;
+  const direct={command,args,...(cwd?{cwd}:{})};return terminalRunLooksLikeVerifier(direct)?direct:null;
 }
 
 const TERMINAL_REPORT_SIGNAL=/\b(?:error|failed|failure|exception|assert(?:ion)?|traceback|panic|fatal|timeout|timed out|cannot|can't|invalid|expected|received|not found|undefined|mismatch)\b/i;

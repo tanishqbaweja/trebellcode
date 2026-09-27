@@ -98,8 +98,9 @@ test("native direct terminal status execution fails closed for ambiguous or rich
   const prompts=[
     "Run the tests and report the result.",
     "Run node verify.mjs && echo hi and report the result.",
-    "In packages/api, run node verify.mjs and report the result.",
-    "Run node verify.mjs in packages/api and report the result.",
+    "In ../outside, run node verify.mjs and report the result.",
+    "In C:\\outside, run node verify.mjs and report the result.",
+    "Run node verify.mjs in ../outside and report the result.",
     "Run node verify.mjs. Delete src/a. Report the result.",
     'Run node -e "console.log(1)" and report the result.',
   ];
@@ -112,6 +113,24 @@ test("native direct terminal status execution fails closed for ambiguous or rich
       executeTool:async()=>{toolCalls++;return {exitCode:0}},
     });
     assert.equal(providerCalls,1,prompt);assert.equal(toolCalls,0,prompt);assert.equal(result.text,"provider handled it",prompt);assert.equal(events.some(event=>event.name==="native.terminal.direct_status_executed"),false,prompt);
+  }
+});
+
+test("native direct terminal status execution supports one explicit workspace-relative cwd",async()=>{
+  for(const prompt of [
+    "In packages/api, run npm test and report the result.",
+    "Run npm test in packages/api and report the result.",
+    "In `packages/api`, run `npm test` and report the status.",
+  ]){
+    let providerCalls=0;const executions=[];
+    const result=await runNativeAgentTurn({
+      model:"test-model",messages:[{role:"user",content:prompt}],synthesizeTerminalReports:true,directTerminalStatusCommands:true,
+      tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+      providerTurn:async()=>{providerCalls++;return {text:"provider fallback",toolCalls:[],usage:{}}},
+      executeTool:async call=>{executions.push(call);return {exitCode:0,stdout:"PASS"}},
+    });
+    assert.equal(providerCalls,0,prompt);assert.equal(result.modelTurns,0,prompt);assert.equal(result.toolCalls,1,prompt);assert.equal(executions.length,1,prompt);
+    assert.deepEqual(executions[0].arguments,{command:"npm",args:["test"],cwd:"packages/api"},prompt);assert.match(result.text,/completed successfully/i,prompt);
   }
 });
 
