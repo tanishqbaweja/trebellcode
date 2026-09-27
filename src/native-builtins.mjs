@@ -9,7 +9,7 @@ import {
 } from "./workspace.mjs";
 import { buildRuntimeEnvironment, runtimeEnvironmentKeys } from "./runtime-environment.mjs";
 import { normalizeNativeCommandArguments } from "./native-command-argv.mjs";
-import { conventionalWorkspaceFallback, rootRelativeFallback } from "./native-workspace-path.mjs";
+import { conventionalWorkspaceAlias, conventionalWorkspaceFallback, rootRelativeFallback } from "./native-workspace-path.mjs";
 
 const DEFAULT_READ_BYTES=256*1024;
 const MAX_EDIT_BYTES=2*1024*1024;
@@ -56,6 +56,21 @@ async function localSafePath(root,requested,{mustExist=false}={}){
     const realCandidate=await realpath(candidate);if(!inside(realBase,realCandidate))throw new Error("Path resolves outside the active workspace");return candidate;
   }catch(error){
     if(error?.message?.includes("outside the active workspace"))throw error;
+    const fallback=conventionalWorkspaceFallback(raw);
+    if(fallback!=null){
+      const alternate=resolve(base,fallback);
+      if(!inside(base,alternate))throw new Error("Path is outside the active workspace");
+      try{const realAlternate=await realpath(alternate);if(!inside(realBase,realAlternate))throw new Error("Path resolves outside the active workspace");return alternate}catch(alternateError){if(alternateError?.message?.includes("outside the active workspace"))throw alternateError}
+      const alias=conventionalWorkspaceAlias(raw);
+      if(alias){
+        let literalAliasExists=false;
+        try{const realAlias=await realpath(resolve(base,alias));literalAliasExists=inside(realBase,realAlias)}catch{}
+        if(!literalAliasExists){
+          const alternateParent=await nearestExistingLocalParent(alternate),realAlternateParent=await realpath(alternateParent);
+          if(!inside(realBase,realAlternateParent))throw new Error("Path resolves outside the active workspace");return alternate;
+        }
+      }
+    }
     const existingParent=await nearestExistingLocalParent(candidate),realParent=await realpath(existingParent);
     if(!inside(realBase,realParent))throw new Error("Path resolves outside the active workspace");return candidate;
   }
@@ -98,6 +113,21 @@ async function safeWorkspacePath(root,requested,{environments=null,environmentId
     const realCandidate=await remoteRealpath(environments,environmentId,candidate);if(!inside(realBase,realCandidate,posix))throw new Error("Path resolves outside the active workspace");
   }catch(error){
     if(error?.message?.includes("outside the active workspace"))throw error;
+    const fallback=conventionalWorkspaceFallback(raw);
+    if(fallback!=null){
+      const alternate=environmentWorkspacePath(root,fallback,{environments,environmentId}).path;
+      try{const realAlternate=await remoteRealpath(environments,environmentId,alternate);if(!inside(realBase,realAlternate,posix))throw new Error("Path resolves outside the active workspace");return {path:alternate,remote:true,profile}}catch(alternateError){if(alternateError?.message?.includes("outside the active workspace"))throw alternateError}
+      const alias=conventionalWorkspaceAlias(raw);
+      if(alias){
+        const aliasPath=environmentWorkspacePath(root,alias,{environments,environmentId}).path;
+        let literalAliasExists=false;
+        try{const realAlias=await remoteRealpath(environments,environmentId,aliasPath);literalAliasExists=inside(realBase,realAlias,posix)}catch{}
+        if(!literalAliasExists){
+          const alternateParent=await nearestExistingRemoteParent(environments,environmentId,alternate,base),realAlternateParent=await remoteRealpath(environments,environmentId,alternateParent);
+          if(!inside(realBase,realAlternateParent,posix))throw new Error("Path resolves outside the active workspace");return {path:alternate,remote:true,profile};
+        }
+      }
+    }
     const parent=await nearestExistingRemoteParent(environments,environmentId,candidate,base),realParent=await remoteRealpath(environments,environmentId,parent);
     if(!inside(realBase,realParent,posix))throw new Error("Path resolves outside the active workspace");
   }

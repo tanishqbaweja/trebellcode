@@ -14,9 +14,19 @@ export function conventionalWorkspaceFallback(value){
   const text=String(value??"");
   if(!text||/^[\\/]/.test(text)||/^[a-zA-Z]:[\\/]/.test(text)||/^\\\\/.test(text))return null;
   const normalized=text.replace(/\\/g,"/").replace(/^\.\//,"");
-  if(!/^workspace(?:\/|$)/i.test(normalized))return null;
-  const stripped=normalized.replace(/^workspace(?:\/+|$)/i,"");
+  // Some coding models assume a conventional container root such as /workspace
+  // or /app. This helper is used only after the literal workspace-relative path
+  // failed, so a real top-level workspace/app directory always wins first.
+  if(!/^(?:workspace|app)(?:\/|$)/i.test(normalized))return null;
+  const stripped=normalized.replace(/^(?:workspace|app)(?:\/+|$)/i,"");
   return stripped||".";
+}
+
+export function conventionalWorkspaceAlias(value){
+  const text=String(value??"");
+  if(!text||/^[a-zA-Z]:[\\/]/.test(text)||/^\\\\/.test(text))return null;
+  const normalized=text.replace(/\\/g,"/").replace(/^\/+/,"").replace(/^\.\//,"");
+  const match=/^(workspace|app)(?:\/|$)/i.exec(normalized);return match?match[1].toLowerCase():null;
 }
 
 export function normalizeRepositoryWorkspacePath(root,value){

@@ -56,6 +56,19 @@ const scenarios=[
     forceFirstTool:{namespace:"trebell_workspace",name:"read_file"},
     verify:async root=>assert.equal(await readFile(join(root,"TASK.md"),"utf8"),"RECOVERY_WORKSPACE_CONTENT_7F31C9\n"),
   },
+  {
+    name:"app-workspace-path",
+    marker:"RECOVERY_APP_CONTENT_91D4E2",
+    files:{"TASK.md":"RECOVERY_APP_CONTENT_91D4E2\n"},
+    prompt:[
+      "First call trebell_workspace.read_file with path /app/TASK.md exactly as written.",
+      "The file contains one line whose value is not included in this prompt. Reply with only that exact line after you have successfully read it.",
+      "If the first read fails, recover using another workspace read rather than guessing the file contents.",
+    ].join(" "),
+    toolAllowlist:["trebell_workspace/read_file"],
+    forceFirstTool:{namespace:"trebell_workspace",name:"read_file"},
+    verify:async root=>assert.equal(await readFile(join(root,"TASK.md"),"utf8"),"RECOVERY_APP_CONTENT_91D4E2\n"),
+  },
 ];
 
 const env={...process.env,VYCEAI_API_KEY:apiKey};

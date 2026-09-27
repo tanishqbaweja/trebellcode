@@ -19,8 +19,14 @@ test("Native workspace built-ins read, list, write, and replace exact text insid
     const written=await execute({namespace:"trebell_workspace",name:"write_file",arguments:{path:"src/new.js",content:"export const ready = true;\n"}});assert.equal(written.createdOrReplaced,true);assert.equal(await readFile(join(root,"src","new.js"),"utf8"),"export const ready = true;\n");
     const rooted=await execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"/src/app.js"}});assert.equal(rooted.content,"const value = 2;\n");
     const virtualRooted=await execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"/workspace/src/app.js"}});assert.equal(virtualRooted.content,"const value = 2;\n");
+    const appRooted=await execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"/app/src/app.js"}});assert.equal(appRooted.content,"const value = 2;\n");
+    const appReplaced=await execute({namespace:"trebell_workspace",name:"replace_text",arguments:{path:"/app/src/app.js",old_text:"value = 2",new_text:"value = 3"}});assert.equal(appReplaced.replacements,1);assert.equal(await readFile(join(root,"src","app.js"),"utf8"),"const value = 3;\n");
+    const appWritten=await execute({namespace:"trebell_workspace",name:"write_file",arguments:{path:"/app/src/app.js",content:"const value = 4;\n"}});assert.equal(appWritten.createdOrReplaced,true);assert.equal(await readFile(join(root,"src","app.js"),"utf8"),"const value = 4;\n");
+    const appCreated=await execute({namespace:"trebell_workspace",name:"write_file",arguments:{path:"/app/src/new-app-root.js",content:"export const appRoot = true;\n"}});assert.equal(appCreated.createdOrReplaced,true);assert.equal(await readFile(join(root,"src","new-app-root.js"),"utf8"),"export const appRoot = true;\n");
+    const workspaceCreated=await execute({namespace:"trebell_workspace",name:"write_file",arguments:{path:"workspace/src/new-workspace-root.js",content:"export const workspaceRoot = true;\n"}});assert.equal(workspaceCreated.createdOrReplaced,true);assert.equal(await readFile(join(root,"src","new-workspace-root.js"),"utf8"),"export const workspaceRoot = true;\n");
     const rootList=await execute({namespace:"trebell_workspace",name:"list",arguments:{path:"/",depth:2,limit:20}});assert.ok(rootList.entries.some(item=>item.name==="src"));
     const virtualRootList=await execute({namespace:"trebell_workspace",name:"list",arguments:{path:"/workspace",depth:2,limit:20}});assert.ok(virtualRootList.entries.some(item=>item.name==="src"));
+    const appRootList=await execute({namespace:"trebell_workspace",name:"list",arguments:{path:"/app",depth:2,limit:20}});assert.ok(appRootList.entries.some(item=>item.name==="src"));
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
@@ -50,9 +56,13 @@ test("Native terminal uses a least-privilege environment and workspace cwd",asyn
     assert.equal(conventionalRoot.exitCode,0);assert.equal(conventionalRoot.stdout,root);
     const conventionalSrc=await execute({namespace:"trebell_terminal",name:"run",arguments:{command:process.execPath,args:["-e","process.stdout.write(process.cwd())"],cwd:"workspace/src",timeout_ms:5000,max_output_bytes:65536}});
     assert.equal(conventionalSrc.exitCode,0);assert.equal(conventionalSrc.stdout,join(root,"src"));
+    const appSrc=await execute({namespace:"trebell_terminal",name:"run",arguments:{command:process.execPath,args:["-e","process.stdout.write(process.cwd())"],cwd:"/app/src",timeout_ms:5000,max_output_bytes:65536}});
+    assert.equal(appSrc.exitCode,0);assert.equal(appSrc.stdout,join(root,"src"));
     await mkdir(join(root,"workspace"),{recursive:true});
     const realWorkspaceDir=await execute({namespace:"trebell_terminal",name:"run",arguments:{command:process.execPath,args:["-e","process.stdout.write(process.cwd())"],cwd:"workspace",timeout_ms:5000,max_output_bytes:65536}});
     assert.equal(realWorkspaceDir.exitCode,0);assert.equal(realWorkspaceDir.stdout,join(root,"workspace"));
+    await mkdir(join(root,"app","src"),{recursive:true});await writeFile(join(root,"app","src","literal.js"),"literal\n","utf8");
+    const realAppDir=await execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"/app/src/literal.js"}});assert.equal(realAppDir.content,"literal\n");
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
