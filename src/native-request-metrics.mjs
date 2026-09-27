@@ -15,7 +15,7 @@ function digest(value){return createHash("sha256").update(typeof value==="string
 function hash(value){return digest(value).slice(0,16)}
 function hashParts(...parts){const state=createHash("sha256");for(const part of parts)state.update(String(part));return state.digest("hex").slice(0,16)}
 function jsonArrayText(parts=[]){return `[${parts.map(part=>part.text).join(",")}]`}
-function jsonArrayMetric(parts=[]){let byteCount=2+Math.max(0,parts.length-1);for(const part of parts)byteCount+=part.bytes;return {bytes:byteCount,estimatedTokens:estimate(byteCount)}}
+function jsonArrayMetric(parts=[],itemByteSum=null){let byteCount=2+Math.max(0,parts.length-1);if(itemByteSum!=null&&Number.isFinite(Number(itemByteSum)))byteCount+=Number(itemByteSum);else for(const part of parts)byteCount+=part.bytes;return {bytes:byteCount,estimatedTokens:estimate(byteCount)}}
 function jsonArrayHash(parts=[]){const state=createHash("sha256");state.update("[");for(let index=0;index<parts.length;index++){if(index)state.update(",");state.update(parts[index].text)}state.update("]");return state.digest("hex").slice(0,16)}
 function cachedJsonArrayHash(parts=[],cache=null){
   if(!cache||typeof cache!=="object")return jsonArrayHash(parts);
@@ -40,15 +40,15 @@ function classifiedMessages(source,lastUser,messageSerializationCache=null,class
   const reusable=classificationCache&&typeof classificationCache==="object"&&classificationCache.source===source&&classificationCache.lastUser===lastUser&&Number.isInteger(classificationCache.length)&&classificationCache.length<=source.length;
   let state=reusable?classificationCache:null;
   if(!state){
-    state={source,lastUser,length:0,system:[],developer:[],compacted:[],toolResults:[],history:[],allJson:[],systemJson:[],developerJson:[],compactedJson:[],toolResultsJson:[],historyJson:[],jsonSafe:true};
+    state={source,lastUser,length:0,system:[],developer:[],compacted:[],toolResults:[],history:[],allJson:[],systemJson:[],developerJson:[],compactedJson:[],toolResultsJson:[],historyJson:[],allJsonByteSum:0,systemJsonByteSum:0,developerJsonByteSum:0,compactedJsonByteSum:0,toolResultsJsonByteSum:0,historyJsonByteSum:0,jsonSafe:true};
     if(classificationCache&&typeof classificationCache==="object"){Object.assign(classificationCache,state);state=classificationCache}
   }
   for(let index=state.length;index<source.length;index++){
-    const item=source[index],role=item?.role;let bucket=null,bucketJson=null;
-    if(role==="system"){state.system.push(item);bucket=state.system;bucketJson=state.systemJson}
-    else if(role==="developer"){if(item?.trebellCompaction){state.compacted.push(item);bucket=state.compacted;bucketJson=state.compactedJson}else{state.developer.push(item);bucket=state.developer;bucketJson=state.developerJson}}
-    else if(role==="tool"){state.toolResults.push(item);bucket=state.toolResults;bucketJson=state.toolResultsJson}
-    else if(index!==lastUser){state.history.push(item);bucket=state.history;bucketJson=state.historyJson}
+    const item=source[index],role=item?.role;let bucket=null,bucketJson=null,bucketByteKey=null;
+    if(role==="system"){state.system.push(item);bucket=state.system;bucketJson=state.systemJson;bucketByteKey="systemJsonByteSum"}
+    else if(role==="developer"){if(item?.trebellCompaction){state.compacted.push(item);bucket=state.compacted;bucketJson=state.compactedJson;bucketByteKey="compactedJsonByteSum"}else{state.developer.push(item);bucket=state.developer;bucketJson=state.developerJson;bucketByteKey="developerJsonByteSum"}}
+    else if(role==="tool"){state.toolResults.push(item);bucket=state.toolResults;bucketJson=state.toolResultsJson;bucketByteKey="toolResultsJsonByteSum"}
+    else if(index!==lastUser){state.history.push(item);bucket=state.history;bucketJson=state.historyJson;bucketByteKey="historyJsonByteSum"}
     if(!state.jsonSafe)continue;
     if(item&&typeof item==="object"&&typeof item.toJSON==="function"){state.jsonSafe=false;continue}
     try{
@@ -58,11 +58,11 @@ function classifiedMessages(source,lastUser,messageSerializationCache=null,class
         fragment={text:itemJson,bytes:Buffer.byteLength(itemJson,"utf8")};
         if(item&&typeof item==="object"&&messageSerializationCache&&typeof messageSerializationCache.set==="function")messageSerializationCache.set(item,fragment);
       }
-      state.allJson.push(fragment);if(bucket&&bucketJson)bucketJson.push(fragment);
+      state.allJson.push(fragment);state.allJsonByteSum+=fragment.bytes;if(bucket&&bucketJson){bucketJson.push(fragment);state[bucketByteKey]+=fragment.bytes}
     }catch{state.jsonSafe=false}
   }
   state.length=source.length;
-  return {system:state.system,developer:state.developer,compacted:state.compacted,toolResults:state.toolResults,history:state.history,fragments:state.jsonSafe?{messages:state.allJson,system:state.systemJson,developer:state.developerJson,compacted:state.compactedJson,toolResults:state.toolResultsJson,history:state.historyJson}:null};
+  return {system:state.system,developer:state.developer,compacted:state.compacted,toolResults:state.toolResults,history:state.history,fragments:state.jsonSafe?{messages:state.allJson,system:state.systemJson,developer:state.developerJson,compacted:state.compactedJson,toolResults:state.toolResultsJson,history:state.historyJson,byteSums:{messages:state.allJsonByteSum,system:state.systemJsonByteSum,developer:state.developerJsonByteSum,compacted:state.compactedJsonByteSum,toolResults:state.toolResultsJsonByteSum,history:state.historyJsonByteSum}}:null};
 }
 
 export function attachNativePromptProvenance(target,value){
@@ -100,7 +100,7 @@ function currentTurnBreakdown(message,cache=null){
   return value;
 }
 
-export function nativeRequestMetrics(messages=[],tools=[],{toolSchemaCache=null,messageSerializationCache=null,historyHashCache=null,messageClassificationCache=null,currentTurnBreakdownCache=null}={}){
+export function nativeRequestMetrics(messages=[],tools=[],{toolSchemaCache=null,messageSerializationCache=null,historyHashCache=null,messageClassificationCache=null,currentTurnBreakdownCache=null,reuseClassifiedByteMetrics=true}={}){
   const source=Array.isArray(messages)?messages:[];let lastUser=-1;
   for(let index=source.length-1;index>=0;index--)if(source[index]?.role==="user"){lastUser=index;break}
   const classified=classifiedMessages(source,lastUser,messageSerializationCache,messageClassificationCache),{system,developer,compacted,toolResults,history}=classified;
@@ -112,7 +112,7 @@ export function nativeRequestMetrics(messages=[],tools=[],{toolSchemaCache=null,
     if(value.jsonSafe&&toolSchemaCache&&typeof toolSchemaCache.set==="function")toolSchemaCache.set(toolSchemas,cachedToolSchemas);
   }
   const fragments=classified.fragments,systemJson=fragments?jsonArrayText(fragments.system):json(system),developerJson=fragments?jsonArrayText(fragments.developer):json(developer),systemSerialized=fragments?{text:systemJson,jsonSafe:true}:serialized(system),developerSerialized=fragments?{text:developerJson,jsonSafe:true}:serialized(developer),toolSchemasSerialized=cachedToolSchemas.serialized,toolSchemasJson=toolSchemasSerialized.text;
-  const messagesMetric=fragments?jsonArrayMetric(fragments.messages):metric(source),compactedMetric=fragments?jsonArrayMetric(fragments.compacted):metric(compacted),historyMetric=fragments?jsonArrayMetric(fragments.history):metric(history),toolResultsMetric=fragments?jsonArrayMetric(fragments.toolResults):metric(toolResults),historyHash=fragments?cachedJsonArrayHash(fragments.history,historyHashCache):hash(history),toolsMetric=cachedToolSchemas.metric,toolSchemaDigest=cachedToolSchemas.digest;
+  const byteSums=reuseClassifiedByteMetrics!==false?fragments?.byteSums:null,messagesMetric=fragments?jsonArrayMetric(fragments.messages,byteSums?.messages):metric(source),compactedMetric=fragments?jsonArrayMetric(fragments.compacted,byteSums?.compacted):metric(compacted),historyMetric=fragments?jsonArrayMetric(fragments.history,byteSums?.history):metric(history),toolResultsMetric=fragments?jsonArrayMetric(fragments.toolResults,byteSums?.toolResults):metric(toolResults),historyHash=fragments?cachedJsonArrayHash(fragments.history,historyHashCache):hash(history),toolsMetric=cachedToolSchemas.metric,toolSchemaDigest=cachedToolSchemas.digest;
   const currentBreakdown=currentTurnBreakdown(lastUser>=0?source[lastUser]:null,currentTurnBreakdownCache);
   const prefix={system,developer,tools:toolSchemas};
   const stablePrefixJsonSafe=systemSerialized.jsonSafe&&developerSerialized.jsonSafe&&toolSchemasSerialized.jsonSafe;

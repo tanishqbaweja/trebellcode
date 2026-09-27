@@ -59,6 +59,7 @@
     "bench:native:history-hash-cache": "node --expose-gc scripts/native-history-hash-cache-benchmark.mjs",
     "bench:native:message-classification-cache": "node --expose-gc scripts/native-message-classification-cache-benchmark.mjs",
     "bench:native:current-turn-breakdown-cache": "node --expose-gc scripts/native-current-turn-breakdown-cache-benchmark.mjs",
+    "bench:native:classified-byte-metrics": "node --expose-gc scripts/native-classified-byte-metrics-benchmark.mjs",
     "bench:native:provider-history-projector": "node --expose-gc scripts/native-provider-history-projector-benchmark.mjs",
     "bench:native:provider-history-compacted-identity": "node --expose-gc scripts/native-provider-history-compacted-identity-benchmark.mjs",
     "bench:native:tool-schema-metrics-cache": "node --expose-gc scripts/native-tool-schema-metrics-cache-benchmark.mjs",

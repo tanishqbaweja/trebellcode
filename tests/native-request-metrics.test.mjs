@@ -91,6 +91,13 @@ test("Native request metrics can reuse the current user/context breakdown and in
   const refreshed=nativeRequestMetrics(messages,[],{currentTurnBreakdownCache:cache}),uncached=nativeRequestMetrics(messages,[],{});assert.deepEqual(refreshed,uncached);assert.notEqual(refreshed.workingContext.bytes,baseline.workingContext.bytes);
 });
 
+test("Native request metrics cumulative classified byte sums preserve exact array metrics",()=>{
+  const messages=[{role:"system",content:"sys"},{role:"developer",content:"dev"},{role:"assistant",content:"old"},{role:"tool",toolCallId:"t1",content:"result"},{role:"user",content:"current"}],tools=[],messageSerializationCache=new WeakMap(),historyHashCache={},messageClassificationCache={};
+  const baseline=nativeRequestMetrics(messages,tools,{messageSerializationCache,historyHashCache,messageClassificationCache,reuseClassifiedByteMetrics:false}),candidate=nativeRequestMetrics(messages,tools,{messageSerializationCache,historyHashCache,messageClassificationCache,reuseClassifiedByteMetrics:true});assert.deepEqual(candidate,baseline);
+  messages.push({role:"assistant",content:"new"},{role:"tool",toolCallId:"t2",content:"next"});
+  const grownBaseline=nativeRequestMetrics(messages,tools,{messageSerializationCache,historyHashCache,messageClassificationCache,reuseClassifiedByteMetrics:false}),grownCandidate=nativeRequestMetrics(messages,tools,{messageSerializationCache,historyHashCache,messageClassificationCache,reuseClassifiedByteMetrics:true});assert.deepEqual(grownCandidate,grownBaseline);
+});
+
 test("Native request metrics classification cache falls back when appended JSON semantics become custom",()=>{
   const messages=[{role:"system",content:"system"},{role:"user",content:"request"}],messageCache=new WeakMap(),historyHashCache={},messageClassificationCache={};
   nativeRequestMetrics(messages,[],{messageSerializationCache:messageCache,historyHashCache,messageClassificationCache});
