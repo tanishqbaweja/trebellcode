@@ -215,6 +215,22 @@ function officialOpenAiTools(requestTools=[]){
   }
   return tools;
 }
+const PRE_SERIALIZED_TOP_LEVEL=Symbol("trebell.provider.pre-serialized-top-level");
+function attachPreSerializedTopLevel(body,key,value,json){
+  if(!body||typeof body!=="object"||typeof json!=="string")return body;
+  try{Object.defineProperty(body,PRE_SERIALIZED_TOP_LEVEL,{value:{key:String(key),value,json},enumerable:true,configurable:true})}catch{}
+  return body;
+}
+function stringifyProviderBody(body){
+  const cached=body&&typeof body==="object"?body[PRE_SERIALIZED_TOP_LEVEL]:null;
+  if(!cached||typeof body?.toJSON==="function"||typeof cached.json!=="string"||body[cached.key]!==cached.value)return JSON.stringify(body);
+  const parts=[];
+  for(const key of Object.keys(body)){
+    const valueJson=key===cached.key?cached.json:JSON.stringify(body[key]);
+    if(valueJson!==undefined)parts.push(JSON.stringify(key)+":"+valueJson);
+  }
+  return `{${parts.join(",")}}`;
+}
 function officialOpenAiResponsesBody(request={},toolManifest=null,promptCacheKeyForBody=null){
   const explicitCacheBreakpoints=officialOpenAiExplicitCacheBreakpointsSupported(request.model),body=providerTurnToResponses(request,{preserveInstructionOrder:true,flattenToolCallNames:true,toolResultCacheBreakpoints:explicitCacheBreakpoints});
   const tools=Array.isArray(toolManifest?.tools)?toolManifest.tools:officialOpenAiTools(request.tools);body.tools=tools;
@@ -223,6 +239,7 @@ function officialOpenAiResponsesBody(request={},toolManifest=null,promptCacheKey
     body.prompt_cache_options={mode:"implicit",...(comparisonResponseId?{comparison_response_id:comparisonResponseId}:{})};
   }
   body.prompt_cache_key=typeof promptCacheKeyForBody==="function"?promptCacheKeyForBody(body,toolManifest?.toolsJson):officialOpenAiPromptCacheKey(body,toolManifest?.toolsJson);
+  if(toolManifest?.toolsJson&&body.tools===toolManifest.tools)attachPreSerializedTopLevel(body,"tools",body.tools,toolManifest.toolsJson);
   return body;
 }
 
@@ -325,7 +342,7 @@ function remainingProviderRequestMs(deadlineAt){
 }
 
 export class ProviderManager {
-  constructor({ env = process.env, fetchFn = fetch, requestTimeoutMs = DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS, openAiResponsesWebSocketFactory=null, openAiResponsesWebSocketRetryMs=30_000, openAiToolManifestCacheSize=32, openAiPromptCacheKeyCacheSize=128, anthropicToolManifestCacheSize=32, nowFn=Date.now } = {}) {
+  constructor({ env = process.env, fetchFn = fetch, requestTimeoutMs = DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS, openAiResponsesWebSocketFactory=null, openAiResponsesWebSocketRetryMs=30_000, openAiToolManifestCacheSize=32, openAiPromptCacheKeyCacheSize=128, anthropicToolManifestCacheSize=32, reusePreSerializedToolJson=true, nowFn=Date.now } = {}) {
     this.env = env;
     this.fetchFn = fetchFn;
     const timeoutMs = Math.trunc(Number(requestTimeoutMs));
@@ -337,6 +354,7 @@ export class ProviderManager {
     this.openAiResponsesWebSocketFactory=typeof openAiResponsesWebSocketFactory==="function"?openAiResponsesWebSocketFactory:options=>new OpenAiResponsesWebSocket(options);
     const retryMs=Math.trunc(Number(openAiResponsesWebSocketRetryMs));this.openAiResponsesWebSocketRetryMs=Number.isFinite(retryMs)&&retryMs>=0?retryMs:30_000;this.nowFn=typeof nowFn==="function"?nowFn:Date.now;
     this.openAiResponsesWebSocket=null;this.openAiResponsesWebSocketDisabledUntil=0;this.openAiResponsesWebSocketPermanentlyDisabled=false;
+    this.reusePreSerializedToolJson=reusePreSerializedToolJson!==false;
     const manifestCacheSize=Math.trunc(Number(openAiToolManifestCacheSize));this.openAiToolManifestCacheSize=Number.isFinite(manifestCacheSize)&&manifestCacheSize>=0?Math.min(256,manifestCacheSize):32;this.openAiToolManifestCache=new Map();
     const anthropicManifestCacheSize=Math.trunc(Number(anthropicToolManifestCacheSize));this.anthropicToolManifestCacheSize=Number.isFinite(anthropicManifestCacheSize)&&anthropicManifestCacheSize>=0?Math.min(256,anthropicManifestCacheSize):32;this.anthropicToolManifestCache=new Map();
     const cacheKeyCacheSize=Math.trunc(Number(openAiPromptCacheKeyCacheSize));this.openAiPromptCacheKeyCacheSize=Number.isFinite(cacheKeyCacheSize)&&cacheKeyCacheSize>=0?Math.min(1024,cacheKeyCacheSize):128;this.openAiPromptCacheKeyCache=new Map();
@@ -371,16 +389,16 @@ export class ProviderManager {
 
   #anthropicToolScaffold(request={}){
     const supplied=request?.[NATIVE_TOOL_SCHEMA_FINGERPRINT],fingerprint=/^[a-f0-9]{64}$/i.test(String(supplied||""))?String(supplied).toLowerCase():null;
-    if(!fingerprint||this.anthropicToolManifestCacheSize<=0)return providerTurnAnthropicScaffold(request);
+    if(!fingerprint||this.anthropicToolManifestCacheSize<=0)return {scaffold:providerTurnAnthropicScaffold(request),toolsJson:null};
     const maxOutputTokens=Number.isFinite(Number(request.maxOutputTokens))?Math.max(1,Math.trunc(Number(request.maxOutputTokens))):null,temperature=Number.isFinite(Number(request.temperature))?Number(request.temperature):null;
-    let toolChoiceKey;try{toolChoiceKey=JSON.stringify(request.toolChoice??"auto")}catch{return providerTurnAnthropicScaffold(request)}
+    let toolChoiceKey;try{toolChoiceKey=JSON.stringify(request.toolChoice??"auto")}catch{return {scaffold:providerTurnAnthropicScaffold(request),toolsJson:null}}
     const key=JSON.stringify([fingerprint,String(request.model||""),maxOutputTokens,temperature,toolChoiceKey]);
     if(this.anthropicToolManifestCache.has(key)){
       const cached=this.anthropicToolManifestCache.get(key);this.anthropicToolManifestCache.delete(key);this.anthropicToolManifestCache.set(key,cached);return cached;
     }
-    const scaffold=providerTurnAnthropicScaffold(request);this.anthropicToolManifestCache.set(key,scaffold);
+    const scaffold=providerTurnAnthropicScaffold(request),toolsJson=Array.isArray(scaffold.tools)&&scaffold.tools.length?JSON.stringify(scaffold.tools):null,manifest={scaffold,toolsJson};this.anthropicToolManifestCache.set(key,manifest);
     while(this.anthropicToolManifestCache.size>this.anthropicToolManifestCacheSize)this.anthropicToolManifestCache.delete(this.anthropicToolManifestCache.keys().next().value);
-    return scaffold;
+    return manifest;
   }
 
   #openAiWebSocketCircuitOpen(){
@@ -555,7 +573,7 @@ export class ProviderManager {
     if (provider.protocolCompatibility?.includes("anthropic-messages")) {
       const requestBody = anthropicBody||chatToAnthropic(chatBody);
       if(provider.id==="anthropic"&&promptCaching===true)requestBody.cache_control={type:"ephemeral"};
-      const endpoint=provider.baseUrl + "/messages",body=JSON.stringify(requestBody);onWire?.({endpoint,wireApi:"anthropic-messages",requestBytes:Buffer.byteLength(body,"utf8")});
+      const endpoint=provider.baseUrl + "/messages",body=this.reusePreSerializedToolJson?stringifyProviderBody(requestBody):JSON.stringify(requestBody);onWire?.({endpoint,wireApi:"anthropic-messages",requestBytes:Buffer.byteLength(body,"utf8")});
       const upstream = await this.fetchFn(endpoint, {
         method: "POST",
         headers: {
@@ -600,7 +618,7 @@ export class ProviderManager {
     const key = this.key(provider.id);
     if (!key) throw new Error(`${provider.name} API key is not configured.`);
     const stream = Boolean(responsesBody?.stream);
-    const endpoint=provider.baseUrl + "/responses",body=JSON.stringify(responsesBody);onWire?.({endpoint,wireApi:"openai-responses",requestBytes:Buffer.byteLength(body,"utf8")});
+    const endpoint=provider.baseUrl + "/responses",body=this.reusePreSerializedToolJson?stringifyProviderBody(responsesBody):JSON.stringify(responsesBody);onWire?.({endpoint,wireApi:"openai-responses",requestBytes:Buffer.byteLength(body,"utf8")});
     return await this.fetchFn(endpoint, {
       method: "POST",
       headers: provider.id === "agentrouter"
@@ -633,7 +651,9 @@ export class ProviderManager {
       :null;
     let responsesBody=openAiContinuation?.body||fullResponsesBody;
     if(provider.id==="openai"&&streamResponses===true&&responsesBody){responsesBody.stream=true;if(fullResponsesBody)fullResponsesBody.stream=true}
-    const directAnthropicBody=provider.id==="anthropic"?providerTurnToAnthropic({...request,model},{stream:streamChat===true,scaffold:this.#anthropicToolScaffold({...request,model})}):null;
+    const anthropicScaffold=provider.id==="anthropic"?this.#anthropicToolScaffold({...request,model}):null;
+    const directAnthropicBody=anthropicScaffold?providerTurnToAnthropic({...request,model},{stream:streamChat===true,scaffold:anthropicScaffold.scaffold}):null;
+    if(this.reusePreSerializedToolJson&&directAnthropicBody&&anthropicScaffold?.toolsJson&&directAnthropicBody.tools===anthropicScaffold.scaffold.tools)attachPreSerializedTopLevel(directAnthropicBody,"tools",directAnthropicBody.tools,anthropicScaffold.toolsJson);
     const chatBody=provider.wireApi==="responses"||directAnthropicBody?null:providerTurnToChat({...request,model});
     if(streamChat===true&&chatBody){chatBody.stream=true;chatBody.stream_options={include_usage:true}}
     let openAiWebSocketFallback=null;

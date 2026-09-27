@@ -70,6 +70,7 @@
     "bench:openai:prompt-cache-key-cache": "node --expose-gc scripts/openai-prompt-cache-key-cache-benchmark.mjs",
     "bench:anthropic:direct-input-build": "node --expose-gc scripts/anthropic-direct-input-build-benchmark.mjs",
     "bench:anthropic:tool-manifest-cache": "node --expose-gc scripts/anthropic-tool-manifest-cache-benchmark.mjs",
+    "bench:provider:tool-wire-json": "node --expose-gc scripts/provider-tool-wire-serialization-benchmark.mjs",
     "bench:native:tool-schema": "node scripts/native-tool-schema-benchmark.mjs",
     "bench:native:restart-verifier": "node scripts/native-restart-verifier-benchmark.mjs",
     "bench:native:restart-history": "node scripts/native-restart-history-benchmark.mjs",

@@ -412,6 +412,20 @@ test("official OpenAI Native tool-manifest cache preserves exact wire JSON and i
   const first=JSON.parse(cached[0]),mutated=JSON.parse(cached[2]);assert.notEqual(mutated.prompt_cache_key,first.prompt_cache_key);assert.equal(mutated.tools[0].description,"Read one file exactly");
 });
 
+test("pre-serialized OpenAI tools preserve exact wire JSON through Responses continuation",async()=>{
+  const tools=[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file",description:"Read one file",inputSchema:{type:"object",properties:{path:{type:"string"}},required:["path"]}}]}],firstMessages=[{role:"user",content:"start"}],fingerprint=nativeRequestMetrics(firstMessages,tools)[NATIVE_TOOL_SCHEMA_FINGERPRINT];
+  const run=async reusePreSerializedToolJson=>{
+    const root=mkdtempSync(join(tmpdir(),"trebell-provider-tool-wire-continuation-")),bodies=[];let calls=0;
+    try{
+      const manager=new ProviderManager({env:{TREBELL_HOME:root},reusePreSerializedToolJson,fetchFn:async(_url,init={})=>{const body=String(init.body||"");bodies.push(body);calls++;return Response.json({id:calls===1?"resp-parent":"resp-child",model:"gpt-5.6",status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:calls===1?"done":"next-done"}]}],usage:{}})}});manager.setKey("openai","oa-key");
+      const base={model:"gpt-5.6",tools,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:fingerprint};await manager.turn("openai",{...base,messages:firstMessages});
+      await manager.turn("openai",{...base,messages:[...firstMessages,{role:"assistant",content:"done"},{role:"user",content:"next"}],promptCacheComparisonResponseId:"resp-parent"});
+      return bodies;
+    }finally{rmSync(root,{recursive:true,force:true})}
+  };
+  const baseline=await run(false),candidate=await run(true);assert.deepEqual(candidate,baseline);const second=JSON.parse(candidate[1]);assert.equal(second.previous_response_id,"resp-parent");assert.equal(second.tools[0].name,"trebell_workspace__read_file");
+});
+
 test("official Anthropic Native tool-manifest cache preserves exact wire JSON and invalidates on schema changes",async()=>{
   const tools=[{type:"namespace",name:"trebell_workspace",description:"Workspace tools",tools:[
     {name:"read_file",description:"Read one file",inputSchema:{type:"object",properties:{path:{type:"string"}},required:["path"],additionalProperties:false}},
@@ -421,13 +435,13 @@ test("official Anthropic Native tool-manifest cache preserves exact wire JSON an
     const root=mkdtempSync(join(tmpdir(),"trebell-anthropic-tool-cache-")),bodies=[],runTools=structuredClone(tools),fingerprint=nativeRequestMetrics(messages,runTools)[NATIVE_TOOL_SCHEMA_FINGERPRINT];
     try{
       const manager=new ProviderManager({env:{TREBELL_HOME:root},anthropicToolManifestCacheSize:cacheSize,fetchFn:async(_url,init={})=>{bodies.push(String(init.body||""));const body=JSON.parse(init.body||"{}");return Response.json({id:"msg-"+bodies.length,type:"message",role:"assistant",model:body.model,content:[{type:"text",text:"ok"}],stop_reason:"end_turn",usage:{}})}});manager.setKey("anthropic","an-key");
-      const request={model:"claude-opus-4-8",messages,tools:runTools,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:fingerprint};await manager.turn("anthropic",request);await manager.turn("anthropic",request);
-      runTools[0].tools[0].description="Read one file exactly";const mutatedFingerprint=nativeRequestMetrics(messages,runTools)[NATIVE_TOOL_SCHEMA_FINGERPRINT];await manager.turn("anthropic",{...request,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:mutatedFingerprint});
+      const request={model:"claude-opus-4-8",messages,tools:runTools,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:fingerprint};await manager.turn("anthropic",request,{promptCaching:true});await manager.turn("anthropic",request,{promptCaching:true});
+      runTools[0].tools[0].description="Read one file exactly";const mutatedFingerprint=nativeRequestMetrics(messages,runTools)[NATIVE_TOOL_SCHEMA_FINGERPRINT];await manager.turn("anthropic",{...request,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:mutatedFingerprint},{promptCaching:true});
       return bodies;
     }finally{rmSync(root,{recursive:true,force:true})}
   };
   const uncached=await run(0),cached=await run(8);assert.deepEqual(cached,uncached);assert.equal(cached[0],cached[1]);
-  const first=JSON.parse(cached[0]),mutated=JSON.parse(cached[2]);assert.equal(first.tools[0].description,"Read one file");assert.equal(mutated.tools[0].description,"Read one file exactly");
+  const first=JSON.parse(cached[0]),mutated=JSON.parse(cached[2]);assert.equal(first.tools[0].description,"Read one file");assert.deepEqual(first.cache_control,{type:"ephemeral"});assert.equal(mutated.tools[0].description,"Read one file exactly");
 });
 
 test("official OpenAI prompt-cache key memoization preserves exact wire JSON and invalidates with exact cache-key inputs",async()=>{
