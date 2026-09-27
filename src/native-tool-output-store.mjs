@@ -33,10 +33,19 @@ function importantLines(text,maxChars){
   }
   return out.join("\n");
 }
-function preview(text,maxChars=DEFAULT_PREVIEW_CHARS){
+function failureLike(value){
+  if(!value||typeof value!=="object"||Array.isArray(value))return false;
+  if(value.success===false||value.timedOut===true)return true;
+  if(value.signal!=null&&String(value.signal).trim())return true;
+  if(typeof value.error==="string"&&value.error.trim())return true;
+  const exitCode=Number(value.exitCode);if(Number.isFinite(exitCode)&&exitCode!==0)return true;
+  const status=Number(value.status);if(Number.isFinite(status)&&status>=400)return true;
+  return false;
+}
+function preview(text,maxChars=DEFAULT_PREVIEW_CHARS,{compactSignalPreview=false}={}){
   const value=String(text||"");if(value.length<=maxChars)return value;
   let signals=importantLines(value,Math.min(2200,Math.floor(maxChars*.36)));
-  const target=signals?Math.min(maxChars,DEFAULT_SIGNAL_PREVIEW_CHARS):maxChars;
+  const target=signals&&compactSignalPreview?Math.min(maxChars,DEFAULT_SIGNAL_PREVIEW_CHARS):maxChars;
   if(signals&&target<maxChars)signals=importantLines(value,Math.min(1100,Math.floor(target*.48)));
   const marker="\n...[Trebell virtualized "+(value.length-target).toLocaleString()+" omitted characters]...\n";
   const signalBlock=signals?"\n...[important lines from omitted output]...\n"+signals+"\n...[end important lines]...\n":"";
@@ -82,7 +91,7 @@ export class NativeToolOutputStore{
       virtualized:true,totalBytes,handle,
       value:{
         ...scalarMetadata(safeValue),
-        preview:preview(text),
+        preview:preview(text,DEFAULT_PREVIEW_CHARS,{compactSignalPreview:failureLike(safeValue)}),
         _trebell_output:{
           handle,totalBytes,totalLines:lines,
           note:"Full redacted output is outside hot model context. Preview contains bounded head/tail plus important failure-like lines when found. Use trebell_output/search first, or trebell_output/read for a bounded range, only when more detail is needed.",

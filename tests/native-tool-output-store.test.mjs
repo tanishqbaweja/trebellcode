@@ -34,6 +34,16 @@ test("Native tool output store keeps the wider hot preview when large output has
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
+test("Native tool output store keeps the wider hot preview for successful output with failure-like vocabulary",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-output-success-signal-"));
+  try{
+    const store=new NativeToolOutputStore({directory:root,maxHotBytes:4096});
+    const stdout=("expected 42 tests and received 42 tests successfully\n").repeat(1200);
+    const shaped=await store.virtualize({exitCode:0,stdout},{namespace:"trebell_terminal",name:"run"});
+    assert.equal(shaped.virtualized,true);assert.ok(shaped.value.preview.length>2200);assert.ok(shaped.value.preview.length<=3600);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
 test("Native tool output store leaves small redacted results inline without allocating a handle",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-output-inline-")),secret="small-secret-value";
   try{
