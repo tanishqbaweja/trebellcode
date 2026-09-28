@@ -466,10 +466,10 @@ async function projectActionSuggestions(projectPath){
   };
 }
 
-export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",mock=false,env=process.env}={}){
+export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",mock=false,env=process.env,fetchFn=globalThis.fetch}={}){
   const offlineE2E=env.TREBELL_E2E_OFFLINE==="1"||process.env.TREBELL_E2E_OFFLINE==="1";
   if(offlineE2E&&!mock)throw new Error("Offline browser E2E forbids starting a real Trebell provider or Codex app-server.");
-  const fetchImpl=offlineE2E?offlineE2eFetch(globalThis.fetch):globalThis.fetch;
+  const fetchImpl=offlineE2E?offlineE2eFetch(fetchFn):fetchFn;
   const bootId=randomUUID();
   const dist=String(env.TREBELL_UI_DIST||"").trim()?resolve(String(env.TREBELL_UI_DIST).trim()):resolve(packageRoot,"ui","dist");
   const state=new TrebellStateStore(env);
@@ -1401,7 +1401,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     }finally{client.close()}
   }
 
-  async function selectedModels(){
+  async function selectedModels({nativeProviderCatalog=null}={}){
     const mergeCustom=catalog=>{
       if(!["native","codex","claude","opencode"].includes(selectedAgentRuntime))return catalog;
       const custom=(state.settings().customModels||[]).filter(item=>item&&item.id&&item.runtime===selectedAgentRuntime&&(selectedAgentRuntime!=="native"||item.provider===selectedProvider));
@@ -1434,7 +1434,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       ]);
       return finish({models:models.filter(id=>id.startsWith("freebuff/")),metadata:{...metadata,provider:"freebuff"}});
     }
-    const result=await providers.models(selectedProvider);
+    const result=nativeProviderCatalog||await providers.models(selectedProvider);
     return finish({models:result.models||[],metadata:{provider:selectedProvider,source:result.source,models:result.metadata||[]},error:result.error||null});
   }
 
@@ -1719,13 +1719,13 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         try{
           const body=await readJsonBody(req);
           const provider=normalizeProviderId(body.provider||selectedProvider);
-          let previousKey=null;
+          let previousKey=null,validatedCatalog=null;
           if("apiKey" in body && provider!=="freebuff"){
             previousKey=providers.key(provider);
             providers.setKey(provider,body.apiKey);
             if(String(body.apiKey||"").trim() && ["openai","anthropic","gemini","agentrouter","vyceai"].includes(provider)){
               try{
-                await providers.models(provider);
+                validatedCatalog=await providers.models(provider);
               }catch(error){
                 providers.setKey(provider,previousKey);
                 throw new Error(`${providers.get(provider).name} API key validation failed: ${error instanceof Error?error.message:String(error)}`);
@@ -1737,9 +1737,10 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
             state.updateSettings({modelProvider:provider});
             selectedProvider=provider;
           }
-          const catalog=await selectedModels().catch(error=>({models:[],error:error.message}));
+          const catalog=await selectedModels({nativeProviderCatalog:selectedAgentRuntime==="native"&&provider===selectedProvider?validatedCatalog:null}).catch(error=>({models:[],error:error.message}));
           return json(res,200,{
             selected:selectedProvider,
+            agentRuntime:selectedAgentRuntime,
             providers:providers.definitions(),
             status:providers.status(selectedProvider),
             ready:providerReady(),

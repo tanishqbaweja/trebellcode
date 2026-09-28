@@ -4762,29 +4762,31 @@ test("provider model refresh preserves models when provider status refresh fails
   await page.screenshot({path:auditDir+"provider-bootstrap-refresh-error-1280x800.png",fullPage:true});
 });
 
-test("provider model refresh preserves the same-provider catalog when model refresh fails",async({page})=>{
+test("provider key save reuses the returned catalog without refetching models or bootstrap",async({page})=>{
   test.setTimeout(30_000);
-  let failModels=false;
+  let failModels=false,modelCalls=0,bootstrapCalls=0;
   const provider="agentrouter",settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
   const catalog={provider,agentRuntime:"native",models:["agentrouter/test/coding-fast"],metadata:{provider,models:[{id:"agentrouter/test/coding-fast",name:"Coding Fast",provider}]}};
-  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider,providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"provider-model-refresh-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+  await page.route(/\/api\/bootstrap$/,route=>{bootstrapCalls++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider,providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"provider-model-refresh-fixture",activeEnvironmentId:null,activeEnvironment:null})})});
   await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{}})}));
   await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
-  await page.route(/\/api\/models$/,route=>failModels
+  await page.route(/\/api\/models$/,route=>{modelCalls++;return failModels
     ?route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({provider,agentRuntime:"native",models:[],error:"Deliberate model catalog refresh failure"})})
-    :route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(catalog)}));
+    :route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(catalog)})});
   await page.route(/\/api\/providers$/,route=>{
     if(route.request().method()==="POST")failModels=true;
-    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selected:provider,providers:[{id:provider,name:"AgentRouter",hasKey:true}],status:{id:provider,hasKey:true},ready:true})});
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...catalog,selected:provider,providers:[{id:provider,name:"AgentRouter",hasKey:true}],status:{id:provider,hasKey:true},ready:true})});
   });
   await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
   await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
   await page.goto("/");await expect(page.getByTestId("model-picker")).toContainText("Coding Fast");
   await page.getByRole("button",{name:"Settings",exact:true}).click();await page.getByRole("button",{name:/Agents & models/}).click();
+  const before={modelCalls,bootstrapCalls};
   const keyInput=page.getByTestId("provider-api-key");await keyInput.fill("fixture-key");await page.getByTestId("save-provider-key").click();
-  await expect(page.getByTestId("provider-status")).toContainText("Deliberate model catalog refresh failure");
+  await expect(page.getByTestId("provider-status")).toContainText("API key saved");
+  expect(modelCalls).toBe(before.modelCalls);expect(bootstrapCalls).toBe(before.bootstrapCalls);
   await page.getByRole("button",{name:"Threads",exact:true}).click();await expect(page.getByTestId("model-picker")).toContainText("Coding Fast");await expect(page.getByTestId("model-picker")).toBeEnabled();
-  await page.setViewportSize({width:1280,height:800});const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({path:auditDir+"provider-model-refresh-error-retains-catalog-1280x800.png",fullPage:true});
+  await page.setViewportSize({width:1280,height:800});const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);await page.screenshot({path:auditDir+"provider-key-save-reuses-catalog-1280x800.png",fullPage:true});
 });
 
 test("switching Trebell Native inference provider preserves the active chat and sidebar threads",async({page})=>{
@@ -4827,7 +4829,7 @@ test("switching Trebell Native inference provider preserves the active chat and 
       return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())});
     });
     await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(models())}));
-    await page.route(/\/api\/providers$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selected:provider,providers:[{id:"freebuff",name:"Freebuff",hasKey:true},{id:"agentrouter",name:"AgentRouter",hasKey:true}],status:{id:provider,hasKey:true},ready:true})}));
+    await page.route(/\/api\/providers$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...models(),selected:provider,agentRuntime:"native",providers:[{id:"freebuff",name:"Freebuff",hasKey:true},{id:"agentrouter",name:"AgentRouter",hasKey:true}],status:{id:provider,hasKey:true},ready:true})}));
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
     await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));

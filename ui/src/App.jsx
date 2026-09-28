@@ -928,15 +928,15 @@ export default function App(){
       return null;
     }
   }
-  async function refreshProviderModels({resetThread=false,provider:expectedProvider=null,agentRuntime:expectedRuntime=null}={}){
+  async function refreshProviderModels({resetThread=false,provider:expectedProvider=null,agentRuntime:expectedRuntime=null,catalog=null,refreshBootstrap=true}={}){
     const seq=++modelRefreshSeqRef.current;
     const targetProvider=expectedProvider||provider;
     const targetRuntime=expectedRuntime||agentRuntime;
     const sameScope=targetProvider===provider&&targetRuntime===agentRuntime;
     if(!sameScope){setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("")}
     const [bootResult,modelResult]=await Promise.all([
-      api("/api/bootstrap").then(value=>({value,error:null}),error=>({value:null,error})),
-      api("/api/models").then(value=>({value,error:null}),error=>({value:null,error})),
+      refreshBootstrap?api("/api/bootstrap").then(value=>({value,error:null}),error=>({value:null,error})):Promise.resolve({value:null,error:null}),
+      catalog?Promise.resolve({value:catalog,error:null}):api("/api/models").then(value=>({value,error:null}),error=>({value:null,error})),
     ]);
     if(seq!==modelRefreshSeqRef.current)return modelResult.value;
     if(modelResult.error){
@@ -949,6 +949,7 @@ export default function App(){
     const d=modelResult.value||{models:[]};
     if((d?.provider&&d.provider!==targetProvider)||(d?.agentRuntime&&d.agentRuntime!==targetRuntime))return d;
     if(bootResult.value)setBootstrap(bootResult.value);
+    else if(!refreshBootstrap)setBootstrap(previous=>({...previous,...(d?.provider?{provider:d.provider}:{}),...(typeof d?.ready==="boolean"?{providerReady:d.ready}:{}),...(d?.agentRuntime?{agentRuntime:d.agentRuntime}:{})}));
     else if(bootResult.error)showActionError(bootResult.error,"Models refreshed, but provider status could not refresh");
     const ids=d?.models||[];
     setModelError(d?.error||"");

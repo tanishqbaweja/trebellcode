@@ -7,6 +7,7 @@ import { createServer } from "node:http";
 import { EventEmitter } from "node:events";
 import { createGuiServer, offlineE2eFetch, requestAbortController } from "../src/gui-server.mjs";
 import { git } from "../src/git-service.mjs";
+import { TrebellStateStore } from "../src/trebell-state.mjs";
 
 const packageVersion=JSON.parse(await readFile(new URL("../package.json",import.meta.url),"utf8")).version;
 async function freePort(){const server=createServer();await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port}
@@ -52,6 +53,33 @@ test("offline browser E2E refuses to start a real provider or Codex app-server",
   }finally{
     if(previous==null)delete process.env.TREBELL_E2E_OFFLINE;
     else process.env.TREBELL_E2E_OFFLINE=previous;
+  }
+});
+
+test("saving a Native provider key does not refetch the live model catalog during the immediate UI refresh",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-provider-refresh-"));
+  const env={...process.env,TREBELL_HOME:home,OPENAI_API_KEY:"",ANTHROPIC_API_KEY:"",GEMINI_API_KEY:"",GOOGLE_API_KEY:""};
+  const state=new TrebellStateStore(env);
+  state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"openai",onboardingComplete:true});
+  state.close?.();
+  let modelFetches=0;
+  const fetchFn=async input=>{
+    const url=String(input instanceof URL?input.href:input?.url||input);
+    if(url.endsWith("/models")){
+      modelFetches++;
+      return new Response(JSON.stringify({data:[{id:"gpt-provider-fixture"}]}),{status:200,headers:{"content-type":"application/json"}});
+    }
+    throw new Error("Unexpected external request: "+url);
+  };
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  const gui=await createGuiServer({port,appPort,mock:false,env,fetchFn});
+  try{
+    const saved=await fetch(gui.url+"/api/providers",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({provider:"openai",apiKey:"sk-provider-fixture"})}).then(r=>r.json());
+    assert.equal(saved.ready,true);assert.deepEqual(saved.models,["gpt-provider-fixture"]);
+    assert.equal(modelFetches,1);
+  }finally{
+    await gui.close();
+    await rm(home,{recursive:true,force:true});
   }
 });
 

@@ -341,7 +341,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       setApiKey("");
       setProviderInfo(result);
       setProviderMessage(result.ready?"API key saved. Harness ready.":"API key saved.");
-      await onProviderUpdated?.();
+      await onProviderUpdated?.({provider:result.selected||selected,agentRuntime:result.agentRuntime||selectedAgent,catalog:result,refreshBootstrap:false});
     }catch(error){setProviderMessage(error.message)}
   }
   async function clearProviderKey(){
@@ -352,7 +352,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       setApiKey("");
       setProviderInfo(result);
       setProviderMessage("API key removed.");
-      await onProviderUpdated?.();
+      await onProviderUpdated?.({provider:result.selected||selected,agentRuntime:result.agentRuntime||selectedAgent,catalog:result,refreshBootstrap:false});
     }catch(error){setProviderMessage(error.message)}
   }
   async function refresh({
