@@ -326,6 +326,37 @@ test("OpenAI WebSocket pre-send connection failure trips the circuit breaker and
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
+test("OpenAI WebSocket transient failure preserves a proven continuation for HTTPS fallback",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-continuation-preserve-")),httpBodies=[];let wsCalls=0;
+  try{
+    const manager=new ProviderManager({
+      env:{TREBELL_HOME:root},
+      openAiResponsesWebSocketFactory:options=>({close:()=>{},request:async body=>{
+        wsCalls++;
+        if(wsCalls===1)return {requestBytes:20,response:{id:"resp-parent",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"first"}]}]},telemetry:{responseBytes:20,totalLatencyMs:1,timeToFirstTokenMs:1}};
+        options.onReset?.({reason:"connect_failure"});const error=new Error("socket did not connect");error.transportFailure=true;error.webSocketFailureKind="transport";error.replaySafe=true;error.retryable=false;error.webSocketTelemetry={requestBytes:0,responseBytes:0,timeToFirstTokenMs:null};throw error;
+      }}),
+      fetchFn:async(_url,init={})=>{const body=JSON.parse(init.body||"{}");httpBodies.push(body);return Response.json({id:"resp-http-child",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"fallback"}]}],usage:{}})},
+    });
+    manager.setKey("openai","oa-key");const token={},user={role:"user",content:"First"};
+    const first=await manager.turn("openai",{model:"gpt-5.6",messages:[user],tools:[],metadata:{sessionId:"native_ws_preserve"},[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token},{streamResponses:true});
+    const second=await manager.turn("openai",{model:"gpt-5.6",messages:[user,{role:"assistant",content:first.text,toolCalls:[]},{role:"user",content:"Second"}],tools:[],metadata:{sessionId:"native_ws_preserve"},promptCacheComparisonResponseId:"resp-parent",[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token},{streamResponses:true});
+    assert.equal(second.text,"fallback");assert.equal(httpBodies.length,1);assert.equal(httpBodies[0].previous_response_id,"resp-parent");assert.equal(httpBodies[0].input.length,1);
+    assert.equal(second.telemetry.webSocketFallback.retried,true);assert.equal(second.telemetry.responseContinuation.used,true);assert.equal(second.telemetry.responseContinuation.parentId,"resp-parent");
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("OpenAI WebSocket transient circuit breaker backs off repeated failures exponentially",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-backoff-"));let now=1_000,factoryCalls=0,fetchCalls=0;
+  try{
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},nowFn:()=>now,openAiResponsesWebSocketRetryMs:50,openAiResponsesWebSocketFactory:options=>{factoryCalls++;return {close:()=>{},request:async()=>{options.onReset?.({reason:"connect_failure"});const error=new Error("connect failed");error.transportFailure=true;error.webSocketFailureKind="transport";error.replaySafe=true;error.webSocketTelemetry={requestBytes:0,responseBytes:0,timeToFirstTokenMs:null};throw error}}},fetchFn:async(_url,init={})=>{fetchCalls++;const body=JSON.parse(init.body||"{}");return Response.json({id:"resp-http-"+fetchCalls,model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"http"}]}],usage:{}})}});manager.setKey("openai","oa-key");const request={model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"native_backoff"}};
+    await manager.turn("openai",request,{streamResponses:true});assert.equal(factoryCalls,1);
+    now+=51;await manager.turn("openai",request,{streamResponses:true});assert.equal(factoryCalls,2);
+    now+=51;await manager.turn("openai",request,{streamResponses:true});assert.equal(factoryCalls,2,"second failure should double the cooldown");
+    now+=50;await manager.turn("openai",request,{streamResponses:true});assert.equal(factoryCalls,3);assert.equal(fetchCalls,4);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
 test("OpenAI WebSocket safe HTTPS fallback uses only the remaining end-to-end timeout budget",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-deadline-"));let httpSignal=null,httpStarted=0;
   try{
@@ -334,12 +365,21 @@ test("OpenAI WebSocket safe HTTPS fallback uses only the remaining end-to-end ti
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
-test("OpenAI WebSocket post-send transport failure is not replayed and later turns use HTTPS",async()=>{
+test("OpenAI WebSocket post-send transport failure is caller-retryable and later attempts use HTTPS",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-uncertain-"));let factoryCalls=0,fetchCalls=0;
   try{
     const manager=new ProviderManager({env:{TREBELL_HOME:root},openAiResponsesWebSocketFactory:options=>{factoryCalls++;return {request:async()=>{options.onReset?.({reason:"transport_failure"});const error=new Error("socket broke after send");error.transportFailure=true;error.webSocketFailureKind="transport";error.replaySafe=false;error.retryable=false;error.webSocketTelemetry={requestBytes:91,responseBytes:4,timeToFirstTokenMs:null};throw error}}},fetchFn:async(_url,init={})=>{fetchCalls++;const body=JSON.parse(init.body||"{}");return Response.json({id:"resp-http",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"later http"}]}],usage:{}})}});manager.setKey("openai","oa-key");
-    const request={model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"native_uncertain"}};await assert.rejects(manager.turn("openai",request,{streamResponses:true}),error=>error?.retryable===false&&error?.telemetry?.webSocketFallback?.retried===false);assert.equal(fetchCalls,0);
+    const request={model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"native_uncertain"}};await assert.rejects(manager.turn("openai",request,{streamResponses:true}),error=>error?.retryable===true&&error?.transportFailure===true&&error?.telemetry?.webSocketFallback?.retried===false);assert.equal(fetchCalls,0);
     const second=await manager.turn("openai",request,{streamResponses:true});assert.equal(second.text,"later http");assert.equal(factoryCalls,1);assert.equal(fetchCalls,1);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("OpenAI WebSocket server_error remains caller-retryable through ProviderManager",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-server-error-"));
+  try{
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},openAiResponsesWebSocketFactory:()=>({request:async()=>{const error=new Error("Sorry, something went wrong.");error.webSocketFailureKind="api_error";error.replaySafe=false;error.retryable=true;error.webSocketEvent={type:"error",error:{type:"server_error",code:null,message:error.message}};error.webSocketTelemetry={requestBytes:42,responseBytes:17,timeToFirstTokenMs:5};throw error}}),fetchFn:async()=>{throw new Error("HTTP should not run for a post-send server_error retry handoff")}});
+    manager.setKey("openai","oa-key");const request={model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"native_server_error"}};
+    await assert.rejects(manager.turn("openai",request,{streamResponses:true}),error=>error?.retryable===true&&error?.telemetry?.webSocketFallback?.failureKind==="api_error");
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
@@ -620,6 +660,7 @@ test("official OpenAI requests same-session cache diagnostics and normalizes the
       id:"resp-cache-current",model:seen.model,status:"completed",
       output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"ok"}]}],
       usage:{input_tokens:2000,input_tokens_details:{cached_tokens:1024},output_tokens:1,total_tokens:2001},
+      reasoning:{context:"all_turns"},
       prompt_cache_diagnostics:{type:"cache_miss",reason:"tools_changed",comparison_reusable_tokens:1536,cache_missed_tokens:512},
     });
   }});
@@ -633,13 +674,14 @@ test("official OpenAI requests same-session cache diagnostics and normalizes the
   assert.deepEqual(result.telemetry.promptCacheDiagnostics,{
     type:"cache_miss",reason:"tools_changed",comparisonReusableTokens:1536,cacheMissedTokens:512,
   });
+  assert.equal(result.telemetry.reasoningContext,"all_turns");
 });
 
 test("direct OpenAI Native streaming assembles the completed Responses result and records TTFT",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-openai-stream-"));let seen=null;
   try{
     const encoder=new TextEncoder(),event=value=>`event: ${value.type}\ndata: ${JSON.stringify(value)}\n\n`;
-    const completed={id:"resp-stream",model:"gpt-5.6",status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"hello world"}]}],usage:{input_tokens:8,output_tokens:2,total_tokens:10},prompt_cache_diagnostics:{type:"cache_hit",comparison_reusable_tokens:2048}};
+    const completed={id:"resp-stream",model:"gpt-5.6",status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"hello world"}]}],usage:{input_tokens:8,output_tokens:2,total_tokens:10},reasoning:{context:"current_turn"},prompt_cache_diagnostics:{type:"cache_hit",comparison_reusable_tokens:2048}};
     const manager=new ProviderManager({env:{...process.env,TREBELL_HOME:root},fetchFn:async(url,init={})=>{
       seen={url,headers:init.headers,body:JSON.parse(init.body||"{}")};
       const stream=new ReadableStream({start(controller){
@@ -654,6 +696,7 @@ test("direct OpenAI Native streaming assembles the completed Responses result an
     const result=await manager.turn("openai",{model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[]},{streamResponses:true});
     assert.equal(seen.url,"https://api.openai.com/v1/responses");assert.equal(seen.body.stream,true);assert.match(seen.headers.Accept,/text\/event-stream/);
     assert.equal(result.text,"hello world");assert.equal(result.usage.inputTokens,8);assert.equal(result.telemetry.streaming,true);assert.equal(result.telemetry.providerRequestId,"req-stream");
+    assert.equal(result.telemetry.reasoningContext,"current_turn");
     assert.deepEqual(result.telemetry.promptCacheDiagnostics,{type:"cache_hit",reason:null,comparisonReusableTokens:2048,cacheMissedTokens:null});
     assert.ok(result.telemetry.timeToFirstTokenMs>=0);assert.ok(result.telemetry.responseBytes>0);assert.ok(result.telemetry.totalLatencyMs>=result.telemetry.timeToFirstTokenMs);
   }finally{rmSync(root,{recursive:true,force:true})}

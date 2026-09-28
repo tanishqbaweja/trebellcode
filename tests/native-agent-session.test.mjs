@@ -502,6 +502,24 @@ test("Native session keeps large tool output outside hot provider history behind
   }finally{await rm(root,{recursive:true,force:true})}
 });
 
+test("Native session does not echo terminal command metadata back into model tool context",async()=>{
+  const requests=[],updates=[];let calls=0;
+  const session=new NativeAgentSession({
+    model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],onUpdate:update=>updates.push(update),
+    providerTurn:async request=>{requests.push(structuredClone(request));calls++;return calls===1
+      ?{id:"tool",text:"",toolCalls:[{id:"probe",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["probe.js"],"cwd":"src"}'}],usage:{}}
+      :{id:"done",text:"done",toolCalls:[],usage:{}}},
+    executeTool:async()=>({success:true,exitCode:0,stdout:"probe-ok",stderr:"",durationMs:12,cwd:"/repo/src",command:"node",args:["probe.js"]}),
+  });
+  await session.start({providerSessionId:"terminal-model-compaction",model:"model-a"});
+  await session.prompt([{type:"text",text:"probe then answer"}]);
+  const observation=requests[1].messages.at(-1)?.content||"";
+  assert.match(observation,/probe-ok/);assert.match(observation,/exitCode/);assert.match(observation,/durationMs/);
+  assert.doesNotMatch(observation,/\/repo\/src/);assert.doesNotMatch(observation,/probe\.js/);assert.doesNotMatch(observation,/\"command\"/);assert.doesNotMatch(observation,/\"args\"/);assert.doesNotMatch(observation,/\"cwd\"/);
+  const raw=updates.find(entry=>entry.update?.sessionUpdate==="tool_call_update")?.update?.rawOutput;
+  assert.equal(raw.command,"node");assert.deepEqual(raw.args,["probe.js"]);assert.equal(raw.cwd,"/repo/src");
+});
+
 test("Native session cools virtualized output after one hot same-turn model read",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-hot-output-session-"));const requests=[],events=[];
   try{
@@ -578,6 +596,77 @@ test("Native session delays OpenAI historical read cooling until provider input 
   assert.match(thirdFirstRead,/_trebell_cold_read/);
   const cooled=events.find(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="same_turn");
   assert.ok(cooled);assert.ok(cooled.data.savedChars>20_000);
+});
+
+test("Native session archives small terminal probes hot, then cools older successful probes on non-cache providers",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-terminal-archive-")),requests=[],events=[];let calls=0;
+  try{
+    const store=new NativeToolOutputStore({directory:root,maxHotBytes:16*1024});
+    const probeCalls=Array.from({length:12},(_,index)=>({id:"probe-"+index,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"probe",args:[String(index)]})}));
+    const session=new NativeAgentSession({
+      model:"fixture-model",provider:"fixture",toolOutputStore:store,onEvent:event=>events.push(event),
+      tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"}]},{type:"namespace",name:"trebell_output",tools:[{name:"inspect"}]}],
+      providerTurn:async request=>{
+        requests.push(structuredClone(request));calls++;
+        if(calls===1)return {id:"probe-batch",text:"",toolCalls:probeCalls,usage:{}};
+        if(calls===2)return {id:"pressure",text:"",toolCalls:[{id:"fresh-read",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"notes.txt"}'}],usage:{}};
+        return {id:"done",text:"done",toolCalls:[],usage:{}};
+      },
+      executeTool:async call=>call.namespace==="trebell_terminal"
+        ?{success:true,exitCode:0,stdout:("probe-"+call.id+"\\n")+"x".repeat(5000)}
+        :{success:true,path:"notes.txt",content:"fresh-note",size:10},
+    });
+    await session.start({providerSessionId:"native-terminal-archive",model:"fixture-model"});
+    await session.prompt([{type:"text",text:"Repair the evaluator after probing behavior."}],{maxModelTurns:3,maxToolCalls:20});
+    const hot=requests[1].messages.find(message=>message.role==="tool"&&message.toolCallId==="probe-0")?.content||"";
+    const cooled=requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="probe-0")?.content||"";
+    const recent=requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="probe-11")?.content||"";
+    assert.ok(hot.length>4500);assert.match(hot,/out_[a-zA-Z0-9-]+/);
+    assert.equal(events.filter(event=>event.name==="native.tool.output_archived").length,12);
+    const history=events.find(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="same_turn");assert.ok(history);assert.ok(history.data.savedChars>10_000);
+    assert.ok(cooled.length<1800);assert.match(cooled,/out_[a-zA-Z0-9-]+/);assert.match(cooled,/"preview"/);
+    assert.ok(recent.length>4500);assert.match(recent,/probe-probe-11/);assert.match(recent,/x{1000}/,"the configured recent probe window should remain exact");
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("Native session does not create archive-backed receipts when output retrieval is excluded by the active tool allowlist",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-terminal-archive-allowlist-")),requests=[],events=[];let calls=0;
+  try{
+    const store=new NativeToolOutputStore({directory:root,maxHotBytes:16*1024});
+    const session=new NativeAgentSession({
+      model:"fixture-model",provider:"fixture",toolOutputStore:store,onEvent:event=>events.push(event),
+      tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_output",tools:[{name:"inspect"}]}],
+      providerTurn:async request=>{requests.push(structuredClone(request));calls++;return calls===1
+        ?{id:"probe",text:"",toolCalls:[{id:"probe",namespace:"trebell_terminal",name:"run",arguments:'{"command":"probe","args":["one"]}'}],usage:{inputTokens:10_000}}
+        :{id:"done",text:"done",toolCalls:[],usage:{inputTokens:20_000}};},
+      executeTool:async()=>({success:true,exitCode:0,stdout:"x".repeat(5000)}),
+    });
+    await session.start({providerSessionId:"native-terminal-archive-allowlist",model:"fixture-model"});
+    await session.prompt([{type:"text",text:"Run the allowed probe."}],{maxModelTurns:2,maxToolCalls:4,toolAllowlist:["trebell_terminal/run"]});
+    const observation=requests[1].messages.find(message=>message.role==="tool"&&message.toolCallId==="probe")?.content||"";
+    assert.ok(observation.length>4500);assert.doesNotMatch(observation,/"_trebell_output"/);
+    assert.equal(events.some(event=>event.name==="native.tool.output_archived"),false);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("Native session keeps small terminal probe history byte-stable on prompt-cache providers",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-terminal-cache-stable-")),requests=[],events=[];let calls=0;
+  try{
+    const store=new NativeToolOutputStore({directory:root,maxHotBytes:16*1024});
+    const session=new NativeAgentSession({
+      model:"gpt-6-luna",provider:"openai",toolOutputStore:store,onEvent:event=>events.push(event),
+      tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_output",tools:[{name:"inspect"}]}],
+      providerTurn:async request=>{requests.push(structuredClone(request));calls++;return calls===1
+        ?{id:"probe",text:"",toolCalls:[{id:"probe",namespace:"trebell_terminal",name:"run",arguments:'{"command":"probe","args":["one"]}'}],usage:{inputTokens:170_000}}
+        :{id:"done",text:"done",toolCalls:[],usage:{inputTokens:171_000}};},
+      executeTool:async()=>({success:true,exitCode:0,stdout:"x".repeat(5000)}),
+    });
+    await session.start({providerSessionId:"native-terminal-cache-stable",model:"gpt-6-luna"});
+    await session.prompt([{type:"text",text:"Repair the evaluator after this probe."}],{maxModelTurns:2,maxToolCalls:4});
+    const observation=requests[1].messages.find(message=>message.role==="tool"&&message.toolCallId==="probe")?.content||"";
+    assert.ok(observation.length>4500);assert.doesNotMatch(observation,/"_trebell_output"/);
+    assert.equal(events.some(event=>event.name==="native.tool.output_archived"),false);
+  }finally{await rm(root,{recursive:true,force:true})}
 });
 
 test("Native session uses the conservative 160k OpenAI cooling trigger when the context window is unknown",async()=>{

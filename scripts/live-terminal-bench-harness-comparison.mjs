@@ -70,40 +70,52 @@ async function trialResult(outputRoot,jobName){
   return null;
 }
 
-const releaseLock=await acquirePairLock(),runStamp=stamp(),pairId=`tb4-pair-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`;
+const releaseLock=await acquirePairLock(),runStamp=stamp(),pairId=`tb4-pair-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`,reportPath=join(validationDir,pairId+".json");
 try{
   await run(process.execPath,[join(root,"scripts","build-harbor-native-agent.mjs")]);
   const nativeBundlePath=join(root,"benchmarks","harbor","dist","trebell-native-agent.mjs"),nativeAdapterPath=join(root,"benchmarks","harbor","trebell_native_agent.py");
   const nativeBundleSha256=await sha256File(nativeBundlePath),nativeAdapterSha256=await sha256File(nativeAdapterPath);
   const harbor=await harborBin(),pythonPath=[root,process.env.PYTHONPATH].filter(Boolean).join(delimiter);
   const sharedEnv={...process.env,PYTHONPATH:pythonPath},outputRoot=join(root,".harbor-jobs"),jobs=[];
+  const reportSnapshot=({complete=false,activeHarness=null,activeJobName=null}={})=>({
+    pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,
+    sameModel:true,sameReasoningEffort:true,sequential:true,nativeBundleSha256,nativeAdapterSha256,
+    complete,activeHarness,activeJobName,updatedAt:new Date().toISOString(),jobs,
+  });
+  const persistReport=async state=>writeFile(reportPath,JSON.stringify(reportSnapshot(state),null,2)+"\n","utf8");
   for(const harness of ["native","codex"]){
     if(only.size&&!only.has(harness))continue;
     const agent=harness==="native"?"benchmarks.harbor.trebell_native_agent:TrebellNativeAgent":"codex";
     const jobName=`tb4-${harness}-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`;
     const args=["run","-d",DATASET,"-i",TASK,"-a",agent,"-m",`openai/${MODEL}`,"--ak",`reasoning_effort=${EFFORT}`,"-n","1","-o",outputRoot,"--job-name",jobName,"-y"];
     if(SETUP_TIMEOUT_MULTIPLIER>1)args.push("--agent-setup-timeout-multiplier",String(SETUP_TIMEOUT_MULTIPLIER));
+    await persistReport({complete:false,activeHarness:harness,activeJobName:jobName});
     let runError=null;
     try{await run(harbor,args,{env:sharedEnv})}catch(error){runError=error?.message||String(error)}
     let result=null;
     try{result=JSON.parse(await readFile(join(outputRoot,jobName,"result.json"),"utf8"))}catch{}
     const trial=await trialResult(outputRoot,jobName);
+    const inputTokens=result?.stats?.n_input_tokens??trial?.agent_result?.n_input_tokens??null;
+    const cachedTokens=result?.stats?.n_cache_tokens??trial?.agent_result?.n_cache_tokens??null;
+    const uncachedInputTokens=inputTokens==null||cachedTokens==null?null:Math.max(0,Number(inputTokens)-Number(cachedTokens));
+    const cacheHitPercent=inputTokens==null||Number(inputTokens)<=0||cachedTokens==null?null:Number(((Number(cachedTokens)/Number(inputTokens))*100).toFixed(2));
+    const trebellNative=trial?.agent_result?.metadata?.trebell_native||null;
     jobs.push({
       harness,agent,jobName,runError,
       completed:Number(result?.stats?.n_completed_trials||0),errors:Number(result?.stats?.n_errored_trials||0),
-      inputTokens:result?.stats?.n_input_tokens??trial?.agent_result?.n_input_tokens??null,
-      cachedTokens:result?.stats?.n_cache_tokens??trial?.agent_result?.n_cache_tokens??null,
+      inputTokens,cachedTokens,uncachedInputTokens,cacheHitPercent,
       outputTokens:result?.stats?.n_output_tokens??trial?.agent_result?.n_output_tokens??null,
       costUsd:result?.stats?.cost_usd??trial?.agent_result?.cost_usd??null,
       reward:trial?.verifier_result?.rewards?.reward??null,taskChecksum:trial?.task_checksum??null,
       agentVersion:trial?.agent_info?.version??null,
       setupMs:elapsedMs(trial?.agent_setup),agentExecutionMs:elapsedMs(trial?.agent_execution),verifierMs:elapsedMs(trial?.verifier),
+      ...(trebellNative?{modelTurns:trebellNative.model_turns??null,toolCalls:trebellNative.tool_calls??null,providerRequests:trebellNative.provider_requests??null,reasoningOutputTokens:trebellNative.reasoning_output_tokens??null,cacheWriteInputTokens:trebellNative.cache_write_input_tokens??null,budgets:trebellNative.budgets??null}:{}),
       exceptionType:trial?.exception_info?.exception_type??null,exceptionMessage:trial?.exception_info?.exception_message??null,
       evals:result?.stats?.evals||{},
     });
+    await persistReport({complete:false,activeHarness:null,activeJobName:null});
   }
-  const report={pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,sameModel:true,sameReasoningEffort:true,sequential:true,nativeBundleSha256,nativeAdapterSha256,jobs};
-  const reportPath=join(validationDir,pairId+".json");await writeFile(reportPath,JSON.stringify(report,null,2)+"\n","utf8");
+  const report=reportSnapshot({complete:true,activeHarness:null,activeJobName:null});await writeFile(reportPath,JSON.stringify(report,null,2)+"\n","utf8");
   console.log("TREBELL_TERMINAL_BENCH_REPORT "+JSON.stringify({...report,reportPath},null,2));
   if(jobs.some(job=>job.runError||job.errors>0||job.completed<1))process.exitCode=1;
 }finally{await releaseLock()}

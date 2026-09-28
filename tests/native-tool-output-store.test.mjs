@@ -57,3 +57,19 @@ test("Native tool output store leaves small redacted results inline without allo
     assert.doesNotMatch(JSON.stringify(shaped.value),new RegExp(secret));assert.match(JSON.stringify(shaped.value),/\[redacted\]/);
   }finally{await rm(root,{recursive:true,force:true})}
 });
+
+test("Native tool output store can archive small hot output without forcing immediate virtualization",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-output-archive-")),secret="archive-secret-value";
+  try{
+    const store=new NativeToolOutputStore({directory:root,maxHotBytes:16*1024,environment:{ARCHIVE_SECRET:secret}});
+    const value={success:true,exitCode:0,stdout:"row=42\n".repeat(300)+"token="+secret};
+    const shaped=await store.virtualize(value,{namespace:"trebell_terminal",name:"run"});
+    assert.equal(shaped.virtualized,false);assert.equal(shaped.handle,undefined);
+    const archived=await store.archive(value,{namespace:"trebell_terminal",name:"run",minBytes:1200});
+    assert.equal(archived.archived,true);assert.ok(archived.handle);assert.ok(archived.totalBytes>=1200);
+    const read=await store.read({handle:archived.handle,start_line:1,max_chars:48_000});
+    assert.match(read.content,/row=42/);assert.doesNotMatch(read.content,new RegExp(secret));assert.match(read.content,/\[redacted\]/);
+    const skipped=await store.archive({stdout:"tiny"},{namespace:"trebell_terminal",name:"run",minBytes:1200});
+    assert.equal(skipped.archived,false);assert.equal(skipped.handle,undefined);
+  }finally{await rm(root,{recursive:true,force:true})}
+});

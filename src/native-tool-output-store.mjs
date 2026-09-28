@@ -99,6 +99,17 @@ export class NativeToolOutputStore{
       },
     };
   }
+  async archive(value,{namespace=null,name=null,minBytes=0}={}){
+    const safeValue=redactSecretValue(value,{environment:this.environment,maxDepth:20,maxArray:5000,maxFields:5000});
+    const text=serialized(safeValue),totalBytes=byteLength(text),threshold=Math.max(0,Math.trunc(Number(minBytes)||0));
+    if(totalBytes<threshold)return {archived:false,totalBytes};
+    await mkdir(this.directory,{recursive:true});
+    const handle="out_"+randomUUID(),payload={handle,createdAt:Date.now(),namespace,name,totalBytes,text};
+    await writeFile(this.#path(handle),JSON.stringify(payload),"utf8");
+    await this.#prune();
+    try{this.onVirtualized?.({handle,totalBytes,namespace,name,archived:true})}catch{}
+    return {archived:true,handle,totalBytes,totalLines:text.split(/\r?\n/).length};
+  }
   async #load(handle){
     const parsed=JSON.parse(await readFile(this.#path(handle),"utf8"));
     if(!parsed||parsed.handle!==String(handle)||typeof parsed.text!=="string")throw new Error("Trebell output handle is corrupted");

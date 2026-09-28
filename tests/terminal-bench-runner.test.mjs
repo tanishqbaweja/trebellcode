@@ -12,6 +12,9 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/nativeBundleSha256/);
   assert.match(source,/nativeAdapterSha256/);
   assert.match(source,/agentVersion:trial\?\.agent_info\?\.version/);
+  assert.match(source,/complete,activeHarness,activeJobName/);
+  assert.match(source,/await persistReport\(\{complete:false,activeHarness:harness,activeJobName:jobName\}\)/);
+  assert.match(source,/await persistReport\(\{complete:false,activeHarness:null,activeJobName:null\}\)/);
   assert.match(source,/writeFile\(reportPath,JSON\.stringify\(report,null,2\)/);
 });
 

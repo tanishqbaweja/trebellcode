@@ -19,6 +19,8 @@ test("Native system prompt teaches evidence-driven coding without inventing unav
   assert.match(prompt,/exact paths, commands, URLs/i);
   assert.match(prompt,/comments inside suspect implementation code as hypotheses/i);
   assert.match(prompt,/deterministic local reproducer/i);
+  assert.match(prompt,/arbitrary runtime inputs, policies, configuration, schemas, or equivalent variants/i);
+  assert.match(prompt,/cheap counterfactual case/i);
   assert.match(prompt,/prove live state is preserved while ineligible/i);
   assert.match(prompt,/check each class separately/i);
   assert.match(prompt,/after a merge or state transition/i);

@@ -198,6 +198,10 @@ function normalizedOpenAiPromptCacheDiagnostics(body={}){
     cacheMissedTokens:optionalCount(value.cache_missed_tokens),
   };
 }
+function normalizedOpenAiReasoningContext(body={}){
+  const context=String(body?.reasoning?.context||"").trim().toLowerCase();
+  return ["all_turns","current_turn"].includes(context)?context:null;
+}
 function officialOpenAiTools(requestTools=[]){
   const tools=[];
   for(const entry of Array.isArray(requestTools)?requestTools:[]){
@@ -369,7 +373,7 @@ export class ProviderManager {
     this.openAiResponseContinuations=new OpenAiResponseContinuationTracker();
     this.openAiResponsesWebSocketFactory=typeof openAiResponsesWebSocketFactory==="function"?openAiResponsesWebSocketFactory:options=>new OpenAiResponsesWebSocket(options);
     const retryMs=Math.trunc(Number(openAiResponsesWebSocketRetryMs));this.openAiResponsesWebSocketRetryMs=Number.isFinite(retryMs)&&retryMs>=0?retryMs:30_000;this.nowFn=typeof nowFn==="function"?nowFn:Date.now;
-    this.openAiResponsesWebSocket=null;this.openAiResponsesWebSocketDisabledUntil=0;this.openAiResponsesWebSocketPermanentlyDisabled=false;
+    this.openAiResponsesWebSocket=null;this.openAiResponsesWebSocketDisabledUntil=0;this.openAiResponsesWebSocketPermanentlyDisabled=false;this.openAiResponsesWebSocketTransientFailures=0;
     this.reusePreSerializedToolJson=reusePreSerializedToolJson!==false;
     this.reuseOpenAiContinuationInputBuild=reuseOpenAiContinuationInputBuild!==false;
     this.reuseChatMessageConversion=reuseChatMessageConversion!==false;this.chatMessageConversionCaches=new WeakMap();
@@ -445,10 +449,13 @@ export class ProviderManager {
   }
 
   #resetOpenAiWebSocket(reason="reset"){
-    this.openAiResponseContinuations.clear();
     const normalized=String(reason||""),transport=this.openAiResponsesWebSocket,transient=["connect_failure","send_failure","transport_failure","timeout_failure"].includes(normalized),protocol=normalized==="protocol_failure";
-    if(protocol)this.openAiResponsesWebSocketPermanentlyDisabled=true;
-    if(transient)this.openAiResponsesWebSocketDisabledUntil=Math.max(Number(this.openAiResponsesWebSocketDisabledUntil||0),Number(this.nowFn())+this.openAiResponsesWebSocketRetryMs);
+    if(protocol){this.openAiResponsesWebSocketPermanentlyDisabled=true;this.openAiResponseContinuations.clear()}
+    if(transient){
+      this.openAiResponsesWebSocketTransientFailures=Math.min(16,Number(this.openAiResponsesWebSocketTransientFailures||0)+1);
+      const multiplier=Math.min(16,2**Math.max(0,this.openAiResponsesWebSocketTransientFailures-1)),cooldown=Math.min(300_000,this.openAiResponsesWebSocketRetryMs*multiplier);
+      this.openAiResponsesWebSocketDisabledUntil=Math.max(Number(this.openAiResponsesWebSocketDisabledUntil||0),Number(this.nowFn())+cooldown);
+    }
     if(transient||protocol){this.openAiResponsesWebSocket=null;try{transport?.close?.()}catch{}}
   }
 
@@ -515,7 +522,7 @@ export class ProviderManager {
     if (key) this.secrets[provider.id] = key;
     else delete this.secrets[provider.id];
     this.#save();
-    if(provider.id==="openai"&&previousKey!==key){try{this.openAiResponsesWebSocket?.close?.()}catch{}this.openAiResponsesWebSocket=null;this.openAiResponsesWebSocketDisabledUntil=0;this.openAiResponsesWebSocketPermanentlyDisabled=false;this.openAiResponseContinuations.clear()}
+    if(provider.id==="openai"&&previousKey!==key){try{this.openAiResponsesWebSocket?.close?.()}catch{}this.openAiResponsesWebSocket=null;this.openAiResponsesWebSocketDisabledUntil=0;this.openAiResponsesWebSocketPermanentlyDisabled=false;this.openAiResponsesWebSocketTransientFailures=0;this.openAiResponseContinuations.clear()}
     return { provider: provider.id, hasKey: Boolean(key) };
   }
 
@@ -524,6 +531,7 @@ export class ProviderManager {
     this.openAiResponsesWebSocket=null;
     this.openAiResponsesWebSocketDisabledUntil=0;
     this.openAiResponsesWebSocketPermanentlyDisabled=false;
+    this.openAiResponsesWebSocketTransientFailures=0;
     this.openAiResponseContinuations.clear();
     try{transport?.close?.()}catch{}
   }
@@ -732,11 +740,12 @@ export class ProviderManager {
         try{
           const socketSignal=providerRequestSignal(signal,remainingProviderRequestMs(requestDeadlineAt));
           const socketStarted=performance.now(),socketResult=await transport.request(responsesBody,{streamId:openAiWebSocketStreamId,signal:socketSignal}),result=normalizeResponsesTurnResponse(socketResult.response,provider.id,model);
+          this.openAiResponsesWebSocketTransientFailures=0;
           this.openAiResponseContinuations.record(result.id,openAiContinuation,result);
           result.telemetry={
             endpoint:String(provider.baseUrl||"").replace(/^http/i,"ws")+"/responses",wireApi:"openai-responses-websocket",requestBytes:Number(socketResult.requestBytes||0),responseBytes:Number(socketResult.telemetry?.responseBytes||0),
             responseHeadersLatencyMs:null,responseBodyLatencyMs:Number(socketResult.telemetry?.totalLatencyMs||0),timeToFirstTokenMs:socketResult.telemetry?.timeToFirstTokenMs??null,totalLatencyMs:Number(socketResult.telemetry?.totalLatencyMs??(performance.now()-socketStarted)),streaming:true,providerRequestId:null,providerResponseId:result.id||null,
-            promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(socketResult.response),persistentConnection:true,responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used),attempted:Boolean(openAiContinuation.used),fallback:false,parentId:openAiContinuation.parentId||null,fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts:1}:null,
+            promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(socketResult.response),reasoningContext:normalizedOpenAiReasoningContext(socketResult.response),persistentConnection:true,responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used),attempted:Boolean(openAiContinuation.used),fallback:false,parentId:openAiContinuation.parentId||null,fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts:1}:null,
           };
           return result;
         }catch(error){
@@ -744,15 +753,15 @@ export class ProviderManager {
           const failedWire=Number(error?.webSocketTelemetry?.requestBytes||0);if(failedWire>0)wireRequestBytes+=failedWire;wireAttempts++;
           const responseStatus=Number(error?.webSocketEvent?.status||error?.status||error?.statusCode||0),responseMessage=String(error?.webSocketEvent?.error?.message||error?.message||""),failureKind=String(error?.webSocketFailureKind||((error?.name==="TimeoutError")?"timeout":error?.protocolFailure?"protocol":error?.transportFailure?"transport":"unknown")),continuationRejected=Boolean(openAiContinuation?.used)&&[400,404,409].includes(responseStatus),invalidToolOutputRequest=responseStatus===400&&/no tool output found for function call/i.test(responseMessage),replaySafe=error?.replaySafe===true||continuationRejected||invalidToolOutputRequest;
           openAiWebSocketFallback={transportFailure:Boolean(error?.transportFailure),protocolFailure:Boolean(error?.protocolFailure),failureKind,name:error?.name||null,code:error?.code??null,replaySafe,retried:false,requestBytes:failedWire,responseBytes:Number(error?.webSocketTelemetry?.responseBytes||0),timeToFirstTokenMs:error?.webSocketTelemetry?.timeToFirstTokenMs??null};
-          if(error?.transportFailure)this.#resetOpenAiWebSocket("transport_failure");else if(error?.protocolFailure)this.#resetOpenAiWebSocket("protocol_failure");else if(error?.name==="TimeoutError")this.#resetOpenAiWebSocket("timeout_failure");
-          if(!replaySafe){error.retryable=false;error.telemetry={endpoint:String(provider.baseUrl||"").replace(/^http/i,"ws")+"/responses",wireApi:"openai-responses-websocket",requestBytes:failedWire,responseBytes:Number(error?.webSocketTelemetry?.responseBytes||0),timeToFirstTokenMs:error?.webSocketTelemetry?.timeToFirstTokenMs??null,totalLatencyMs:Number((performance.now()-started).toFixed(3)),streaming:true,persistentConnection:true,webSocketFallback:openAiWebSocketFallback};throw error}
+          if(this.openAiResponsesWebSocket===transport){
+            if(error?.transportFailure)this.#resetOpenAiWebSocket("transport_failure");else if(error?.protocolFailure)this.#resetOpenAiWebSocket("protocol_failure");else if(error?.name==="TimeoutError")this.#resetOpenAiWebSocket("timeout_failure");
+          }
+          if(!replaySafe){error.retryable=error?.retryable===true||Boolean(error?.transportFailure);error.telemetry={endpoint:String(provider.baseUrl||"").replace(/^http/i,"ws")+"/responses",wireApi:"openai-responses-websocket",requestBytes:failedWire,responseBytes:Number(error?.webSocketTelemetry?.responseBytes||0),timeToFirstTokenMs:error?.webSocketTelemetry?.timeToFirstTokenMs??null,totalLatencyMs:Number((performance.now()-started).toFixed(3)),streaming:true,persistentConnection:true,webSocketFallback:openAiWebSocketFallback};throw error}
           try{remainingProviderRequestMs(requestDeadlineAt)}catch{error.retryable=false;error.telemetry={endpoint:String(provider.baseUrl||"").replace(/^http/i,"ws")+"/responses",wireApi:"openai-responses-websocket",requestBytes:failedWire,responseBytes:Number(error?.webSocketTelemetry?.responseBytes||0),timeToFirstTokenMs:error?.webSocketTelemetry?.timeToFirstTokenMs??null,totalLatencyMs:Number((performance.now()-started).toFixed(3)),streaming:true,persistentConnection:true,webSocketFallback:openAiWebSocketFallback};throw error}
           openAiWebSocketFallback.retried=true;
-          const fallbackBody=this.#officialOpenAiResponsesBody({...request,model,promptCacheComparisonResponseId:""});fallbackBody.stream=true;
           if(continuationRejected||invalidToolOutputRequest){
+            const fallbackBody=this.#officialOpenAiResponsesBody({...request,model,promptCacheComparisonResponseId:""});fallbackBody.stream=true;
             fullResponsesBody=fallbackBody;responsesBody=fallbackBody;continuationFallback=true;
-          }else{
-            openAiContinuation=this.openAiResponseContinuations.prepare(fallbackBody,"");responsesBody=fallbackBody;
           }
         }
       }
@@ -774,7 +783,7 @@ export class ProviderManager {
         const streamed=await readOpenAiResponsesStream(upstream.body,{requestStartedAt:started}),bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
         const result=normalizeResponsesTurnResponse(streamed.response,provider.id,model);
         this.openAiResponseContinuations.record(result.id,openAiContinuation,result);
-        result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null,promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(streamed.response),persistentConnection:false,webSocketFallback:openAiWebSocketFallback,responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,parentId:openAiContinuation.parentId||null,fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused&&!continuationFallback),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts}:null};
+        result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null,promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(streamed.response),reasoningContext:normalizedOpenAiReasoningContext(streamed.response),persistentConnection:false,webSocketFallback:openAiWebSocketFallback,responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,parentId:openAiContinuation.parentId||null,fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused&&!continuationFallback),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts}:null};
         return result;
       }catch(error){
         const bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
@@ -826,7 +835,7 @@ export class ProviderManager {
     result.telemetry={
       ...baseTelemetry,
       providerResponseId:result.id||null,
-      ...(provider.id==="openai"?{promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(parsed),responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,parentId:openAiContinuation.parentId||null,fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused&&!continuationFallback),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts}:null}:{}),
+      ...(provider.id==="openai"?{promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(parsed),reasoningContext:normalizedOpenAiReasoningContext(parsed),responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,parentId:openAiContinuation.parentId||null,fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused&&!continuationFallback),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts}:null}:{}),
     };
     return result;
   }

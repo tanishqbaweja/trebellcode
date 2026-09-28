@@ -48,6 +48,12 @@ test("Responses WebSocket response.failed is request-level and does not reset a 
   const second=ws.request({model:"gpt-5.6",input:[]},{streamId:"lane"});await new Promise(resolve=>setImmediate(resolve));assert.equal(FakeSocket.instances.length,1);socket.server({type:"response.completed",stream_id:"lane",response:{id:"resp-ok",status:"completed",output:[]}});assert.equal((await second).response.id,"resp-ok");ws.close();
 });
 
+test("Responses WebSocket server errors are retryable while request-level model errors stay terminal",async()=>{
+  reset();const ws=new OpenAiResponsesWebSocket({apiKey:"secret",WebSocketClass:FakeSocket}),serverFailure=ws.request({model:"gpt-5.6",input:[]},{streamId:"lane"});await new Promise(resolve=>setImmediate(resolve));const socket=FakeSocket.instances[0];
+  socket.server({type:"error",stream_id:"lane",error:{type:"server_error",code:null,message:"Sorry, something went wrong."}});await assert.rejects(serverFailure,error=>error?.retryable===true&&error?.webSocketFailureKind==="api_error"&&error?.replaySafe===false);
+  const modelFailure=ws.request({model:"gpt-5.6",input:[]},{streamId:"lane"});await new Promise(resolve=>setImmediate(resolve));socket.server({type:"response.failed",stream_id:"lane",response:{id:"resp-model",status:"failed",error:{type:"invalid_request_error",code:"model_error",message:"request failed"}}});await assert.rejects(modelFailure,error=>error?.retryable===false&&error?.webSocketFailureKind==="response_failed");ws.close();
+});
+
 test("Responses WebSocket returns response.incomplete without treating it as transport failure",async()=>{
   reset();const resets=[];const ws=new OpenAiResponsesWebSocket({apiKey:"secret",WebSocketClass:FakeSocket,onReset:event=>resets.push(event)}),pending=ws.request({model:"gpt-5.6",input:[]},{streamId:"lane"});await new Promise(resolve=>setImmediate(resolve));FakeSocket.instances[0].server({type:"response.incomplete",stream_id:"lane",response:{id:"resp-inc",status:"incomplete",incomplete_details:{reason:"max_output_tokens"},output:[]}});const result=await pending;assert.equal(result.response.status,"incomplete");assert.equal(resets.length,0);ws.close();
 });
@@ -56,6 +62,27 @@ test("Responses WebSocket request deadline interrupts a hanging initial connecti
   class HangingSocket extends EventEmitter{static CONNECTING=0;static OPEN=1;static CLOSING=2;static CLOSED=3;constructor(){super();this.readyState=HangingSocket.CONNECTING}terminate(){this.readyState=HangingSocket.CLOSED}}
   const ws=new OpenAiResponsesWebSocket({apiKey:"secret",WebSocketClass:HangingSocket,connectTimeoutMs:5000}),started=Date.now(),signal=AbortSignal.timeout(30);
   await assert.rejects(ws.request({model:"gpt-5.6",input:[]},{streamId:"lane",signal}),error=>error?.name==="TimeoutError"&&error?.replaySafe===true);assert.ok(Date.now()-started<500,"request deadline should beat the 5s connection timeout");ws.close();
+});
+
+test("Responses WebSocket close safely aborts a socket that is still connecting",async()=>{
+  class ConnectingSocket extends EventEmitter{
+    static CONNECTING=0;static OPEN=1;static CLOSING=2;static CLOSED=3;
+    constructor(){super();this.readyState=ConnectingSocket.CONNECTING}
+    terminate(){this.readyState=ConnectingSocket.CLOSED;queueMicrotask(()=>{this.emit("error",new Error("WebSocket was closed before the connection was established"));this.emit("close",1006,"terminated")})}
+  }
+  const ws=new OpenAiResponsesWebSocket({apiKey:"secret",WebSocketClass:ConnectingSocket,connectTimeoutMs:5000}),pending=ws.request({model:"gpt-5.6",input:[]},{streamId:"lane"});
+  await new Promise(resolve=>setImmediate(resolve));ws.close();await assert.rejects(pending);await new Promise(resolve=>setImmediate(resolve));
+});
+
+test("Responses WebSocket connect timeout safely terminates a still-connecting socket",async()=>{
+  class ConnectingSocket extends EventEmitter{
+    static CONNECTING=0;static OPEN=1;static CLOSING=2;static CLOSED=3;
+    constructor(){super();this.readyState=ConnectingSocket.CONNECTING}
+    terminate(){this.readyState=ConnectingSocket.CLOSED;queueMicrotask(()=>{this.emit("error",new Error("WebSocket was closed before the connection was established"));this.emit("close",1006,"terminated")})}
+  }
+  const ws=new OpenAiResponsesWebSocket({apiKey:"secret",WebSocketClass:ConnectingSocket,connectTimeoutMs:1000});
+  await assert.rejects(ws.request({model:"gpt-5.6",input:[]},{streamId:"lane"}),error=>error?.transportFailure===true&&error?.replaySafe===true);
+  await new Promise(resolve=>setImmediate(resolve));ws.close();
 });
 
 test("Responses WebSocket fails closed on malformed terminal events",async()=>{

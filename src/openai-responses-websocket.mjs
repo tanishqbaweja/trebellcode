@@ -8,9 +8,10 @@ function websocketUrl(baseUrl){
 }
 
 function responseError(event,message="OpenAI Responses WebSocket request failed",kind="api_error"){
-  const error=new Error(event?.response?.error?.message||event?.error?.message||event?.message||message);
-  error.code=event?.response?.error?.code||event?.error?.code||event?.code||"openai_responses_websocket_error";
-  error.webSocketEvent=event||null;error.webSocketFailureKind=kind;error.replaySafe=false;error.retryable=false;
+  const providerError=event?.response?.error||event?.error||null,error=new Error(providerError?.message||event?.message||message);
+  error.code=providerError?.code||event?.code||"openai_responses_websocket_error";
+  const providerErrorType=String(providerError?.type||"").trim().toLowerCase(),providerErrorCode=String(providerError?.code||"").trim().toLowerCase();
+  error.webSocketEvent=event||null;error.webSocketFailureKind=kind;error.replaySafe=false;error.retryable=providerErrorType==="server_error"||providerErrorCode==="server_error";
   return error;
 }
 
@@ -20,6 +21,12 @@ function transportError(message,cause=null,{replaySafe=false}={}){
 
 function protocolError(message,cause=null){
   const error=new Error(message);error.code="openai_responses_websocket_protocol";error.protocolFailure=true;error.webSocketFailureKind="protocol";error.replaySafe=false;error.retryable=false;if(cause)error.cause=cause;return error;
+}
+
+function terminateSocket(socket,SocketClass){
+  if(!socket||socket.readyState===SocketClass.CLOSED)return;
+  if(socket.readyState===SocketClass.CONNECTING)socket.once?.("error",()=>{});
+  try{socket.terminate?.()}catch{try{socket.close?.()}catch{}}
 }
 
 function laneError(error){
@@ -76,7 +83,7 @@ export class OpenAiResponsesWebSocket{
         const open=()=>{if(settled)return;settled=true;cleanup();socket.on?.("message",data=>this.#message(generation,data));socket.on?.("error",error=>this.#socketFailure(generation,transportError("OpenAI Responses WebSocket transport error.",error)));socket.on?.("close",(code,reason)=>this.#socketFailure(generation,transportError(`OpenAI Responses WebSocket closed (${Number(code)||0}${reason?`: ${String(reason)}`:""}).`)));resolve(socket)};
         const initialError=error=>finishError(transportError("OpenAI Responses WebSocket failed to connect.",error,{replaySafe:true}));
         const initialClose=code=>finishError(transportError(`OpenAI Responses WebSocket closed before opening (${Number(code)||0}).`,null,{replaySafe:true}));
-        const timer=setTimeout(()=>{try{socket.terminate?.()}catch{}finishError(transportError("OpenAI Responses WebSocket connection timed out.",null,{replaySafe:true}))},this.connectTimeoutMs);
+        const timer=setTimeout(()=>{terminateSocket(socket,this.WebSocketClass);finishError(transportError("OpenAI Responses WebSocket connection timed out.",null,{replaySafe:true}))},this.connectTimeoutMs);
         socket.once?.("open",open);socket.once?.("error",initialError);socket.once?.("close",initialClose);
       }).finally(()=>{this.connecting=null});
     }
@@ -122,7 +129,7 @@ export class OpenAiResponsesWebSocket{
 
   #resetSocket({notify=false,reason="reset"}={}){
     const socket=this.socket;this.socket=null;this.connecting=null;this.generation++;
-    if(socket&&socket.readyState!==this.WebSocketClass.CLOSED){try{socket.terminate?.()}catch{try{socket.close?.()}catch{}}}
+    terminateSocket(socket,this.WebSocketClass);
     if(notify)try{this.onReset?.({reason})}catch{}
   }
 

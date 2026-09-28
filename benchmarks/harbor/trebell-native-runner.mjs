@@ -38,9 +38,14 @@ const metricsPath=String(process.env.TREBELL_METRICS_PATH||"/logs/agent/trebell-
 const eventsPath=String(process.env.TREBELL_EVENTS_PATH||"/logs/agent/trebell-native-events.jsonl");
 const probeOnly=String(process.env.TREBELL_HARBOR_PROBE||"").trim()==="1";
 const liveProbe=String(process.env.TREBELL_HARBOR_LIVE_PROBE||"").trim()==="1";
-const maxModelTurns=Math.max(1,Math.trunc(Number(process.env.TREBELL_HARBOR_MAX_MODEL_TURNS)||48));
-const maxToolCalls=Math.max(0,Math.trunc(Number(process.env.TREBELL_HARBOR_MAX_TOOL_CALLS)||220));
-const maxWallTimeMs=Math.max(10_000,Math.trunc(Number(process.env.TREBELL_HARBOR_MAX_WALL_MS)||1_800_000));
+// Harbor already enforces each task's agent timeout. Keep Trebell's internal
+// safety ceilings deliberately non-binding by default so difficult benchmark
+// tasks are not scored under a smaller private resource budget than Codex.
+// Explicit env overrides remain available for diagnostics and cost-bounded runs.
+const maxModelTurns=Math.max(1,Math.trunc(Number(process.env.TREBELL_HARBOR_MAX_MODEL_TURNS)||500));
+const maxToolCalls=Math.max(0,Math.trunc(Number(process.env.TREBELL_HARBOR_MAX_TOOL_CALLS)||5000));
+const configuredMaxWallTimeMs=Math.trunc(Number(process.env.TREBELL_HARBOR_MAX_WALL_MS));
+const maxWallTimeMs=Number.isFinite(configuredMaxWallTimeMs)&&configuredMaxWallTimeMs>0?Math.max(10_000,configuredMaxWallTimeMs):null;
 const liveProbeTurns=Math.max(1,Math.min(8,Math.trunc(Number(process.env.TREBELL_HARBOR_LIVE_PROBE_TURNS)||1)));
 const manager=new ProviderManager({env:process.env});
 if(!probeOnly&&!manager.status(provider).hasKey)throw new Error("OPENAI_API_KEY is not configured.");
@@ -48,6 +53,7 @@ if(!probeOnly&&!manager.status(provider).hasKey)throw new Error("OPENAI_API_KEY 
 const tools=platformDynamicToolNamespaces({
   repository:true,
   progressiveRepository:true,
+  output:true,
   workspaceTools:true,
   terminal:true,
   browser:false,
@@ -175,6 +181,7 @@ const metrics={
   version:VERSION,
   model,
   reasoningEffort,
+  budgets:{maxModelTurns,maxToolCalls,maxWallTimeMs},
   elapsedMs,
   modelTurns:Number(raw.modelTurns)||Number(error?.nativeModelTurns)||requests.length,
   toolCalls:Number(raw.toolCalls)||Number(error?.nativeToolCalls)||0,

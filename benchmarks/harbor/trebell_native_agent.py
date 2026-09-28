@@ -1,4 +1,5 @@
 import json
+import shlex
 from pathlib import Path
 from typing import Literal, override
 
@@ -38,6 +39,7 @@ class TrebellNativeAgent(BaseInstalledAgent):
     options: TrebellNativeOptions
 
     _REMOTE_RUNNER = "/installed-agent/trebell-native-agent.mjs"
+    _REMOTE_RUNTIME = "/installed-agent/runtime"
     _REMOTE_INSTRUCTION = "/installed-agent/instruction.txt"
     _REMOTE_API_KEY = "/installed-agent/openai-api-key"
     _OUTPUT = "/logs/agent/trebell-native.txt"
@@ -50,7 +52,12 @@ class TrebellNativeAgent(BaseInstalledAgent):
 
     @override
     def get_version_command(self) -> str | None:
-        return f". ~/.nvm/nvm.sh >/dev/null 2>&1 || true; node {self._REMOTE_RUNNER} --version"
+        return (
+            f'runtime="$(cat {self._REMOTE_RUNTIME} 2>/dev/null || true)"; '
+            f'if [ "$runtime" = "bun" ]; then bun {self._REMOTE_RUNNER} --version; '
+            f"else . ~/.nvm/nvm.sh >/dev/null 2>&1 || true; "
+            f"node {self._REMOTE_RUNNER} --version; fi"
+        )
 
     @override
     async def install(self, environment: BaseEnvironment) -> None:
@@ -60,26 +67,53 @@ class TrebellNativeAgent(BaseInstalledAgent):
                 f"Missing Trebell Native Harbor bundle: {bundle}. "
                 "Run npm run bench:terminal:bundle first."
             )
-        # The bundled Harbor runner only requires curl here so nvm can install
-        # Node 22. Bash/coreutils are part of the supported task base images,
-        # while repository discovery/search already falls back to bounded
-        # filesystem indexing when Git is unavailable. Installing Git and
-        # ripgrep eagerly made slim TB4 images pull a large dependency set
-        # before the agent could even start.
+        # Harbor already mounts /logs/agent for each trial. Recreating the
+        # mount point is unnecessary and can fail on Docker Desktop/Windows.
+        await self.exec_as_root(environment, command="mkdir -p /installed-agent")
+        if environment.default_user is not None:
+            owner = shlex.quote(str(environment.default_user))
+            await self.exec_as_root(
+                environment, command=f"chown {owner} /installed-agent"
+            )
+        await self._upload_agent_owned_file(
+            environment, bundle, self._REMOTE_RUNNER
+        )
+        # Avoid heavyweight runtime installation when the task image already
+        # ships a compatible JavaScript runtime. Bun-based TB4 images are a
+        # common example; the bundled Native runner is validated directly
+        # before selection so incompatible runtimes fall through safely.
+        try:
+            await self.exec_as_agent(
+                environment,
+                command=(
+                    "set -euo pipefail; "
+                    f"if command -v bun >/dev/null 2>&1 && "
+                    f"bun {self._REMOTE_RUNNER} --version >/dev/null 2>&1; then "
+                    f"printf '%s\\n' bun > {self._REMOTE_RUNTIME}; "
+                    f"elif command -v node >/dev/null 2>&1 && "
+                    f"node {self._REMOTE_RUNNER} --version >/dev/null 2>&1; then "
+                    f"printf '%s\\n' node > {self._REMOTE_RUNTIME}; "
+                    "else exit 42; fi"
+                ),
+            )
+            return
+        except Exception:
+            self.logger.info(
+                "No compatible preinstalled Bun/Node runtime; installing Node 22 fallback."
+            )
+
+        # Fallback only: curl is needed for nvm. Repository discovery/search
+        # already has bounded filesystem fallbacks, so do not eagerly install
+        # Git/ripgrep/coreutils just to boot the agent.
         await self.ensure_system_dependencies(environment, ("curl",))
         await self.exec_as_agent(
             environment,
             command=(
                 "set -euo pipefail; "
                 f"{nvm_node_install_snippet()} && "
-                "node --version"
+                "node --version && "
+                f"printf '%s\\n' node > {self._REMOTE_RUNTIME}"
             ),
-        )
-        # Harbor already mounts /logs/agent for each trial. Recreating the
-        # mount point is unnecessary and can fail on Docker Desktop/Windows.
-        await self.exec_as_root(environment, command="mkdir -p /installed-agent")
-        await self._upload_agent_owned_file(
-            environment, bundle, self._REMOTE_RUNNER
         )
 
     @with_prompt_template
@@ -128,10 +162,13 @@ class TrebellNativeAgent(BaseInstalledAgent):
             environment,
             command=(
                 "set -o pipefail; "
-                ". ~/.nvm/nvm.sh >/dev/null 2>&1 || true; "
+                f'runtime="$(cat {self._REMOTE_RUNTIME} 2>/dev/null || true)"; '
+                '. ~/.nvm/nvm.sh >/dev/null 2>&1 || true; '
                 f'export OPENAI_API_KEY="$(cat {self._REMOTE_API_KEY})"; '
                 f"rm -f {self._REMOTE_API_KEY}; "
-                f"node {self._REMOTE_RUNNER} {self._REMOTE_INSTRUCTION} "
+                f'if [ "$runtime" = "bun" ]; then runtime_cmd=bun; '
+                'else runtime_cmd=node; fi; '
+                f"$runtime_cmd {self._REMOTE_RUNNER} {self._REMOTE_INSTRUCTION} "
                 f"2>&1 | tee {self._OUTPUT}"
             ),
             env=env,
@@ -177,5 +214,6 @@ class TrebellNativeAgent(BaseInstalledAgent):
                 "cache_write_input_tokens": int(
                     usage.get("cacheWriteInputTokens") or 0
                 ),
+                "budgets": metrics.get("budgets") or {},
             },
         }

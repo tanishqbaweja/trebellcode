@@ -687,7 +687,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
         directory:join(trebellHome(runtimeManager.env||process.env),"tool-outputs",String(thread.id).replace(/[^a-zA-Z0-9._-]/g,"_")),
         onVirtualized:info=>{
           if(!stableOutputTools)exposeToolNamespaces(platformDynamicToolNamespaces({repository:false,output:true,workspaceTools:false,terminal:false,browser:false,computer:false,sourceControl:false,delegation:false}));
-          journal?.record?.({runtime:"native",provider:thread.providerMeta?.modelProvider||null,environmentId,threadId:thread.id,category:"tool",name:"native.tool_output.virtualized",status:"completed",data:{handle:info.handle,totalBytes:info.totalBytes,namespace:info.namespace||null,name:info.name||null}});
+          journal?.record?.({runtime:"native",provider:thread.providerMeta?.modelProvider||null,environmentId,threadId:thread.id,category:"tool",name:info.archived?"native.tool_output.archived":"native.tool_output.virtualized",status:"completed",data:{handle:info.handle,totalBytes:info.totalBytes,namespace:info.namespace||null,name:info.name||null}});
         },
       });
       const mcpBroker=new NativeMcpBroker({
