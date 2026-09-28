@@ -102,10 +102,16 @@ class TrebellNativeAgent(BaseInstalledAgent):
                 "No compatible preinstalled Bun/Node runtime; installing Node 22 fallback."
             )
 
-        # Fallback only: curl is needed for nvm. Repository discovery/search
-        # already has bounded filesystem fallbacks, so do not eagerly install
-        # Git/ripgrep/coreutils just to boot the agent.
-        await self.ensure_system_dependencies(environment, ("curl",))
+        # Fallback only: curl is needed for nvm. Avoid Harbor's package-manager
+        # path when the task image already ships curl; apt metadata refreshes
+        # are unrelated benchmark setup and can be much slower or flakier than
+        # the agent work itself.
+        try:
+            await self.exec_as_agent(
+                environment, command="command -v curl >/dev/null 2>&1"
+            )
+        except Exception:
+            await self.ensure_system_dependencies(environment, ("curl",))
         await self.exec_as_agent(
             environment,
             command=(

@@ -66,6 +66,13 @@ test("Pinned Harbor Codex adapter changes only installation and verifies the exa
   assert.doesNotMatch(source,/async def run\(/);
 });
 
+test("Trebell Native Harbor adapter skips package-manager setup when curl already exists",async()=>{
+  const source=await readFile(new URL("../benchmarks/harbor/trebell_native_agent.py",import.meta.url),"utf8");
+  assert.match(source,/command -v curl >\/dev\/null 2>&1/);
+  assert.match(source,/except Exception:\s+await self\.ensure_system_dependencies\(environment, \("curl",\)\)/);
+  assert.ok(source.indexOf("command -v curl")<source.indexOf('ensure_system_dependencies(environment, ("curl",))'));
+});
+
 test("Terminal-Bench single runner uses an absolute output path and the same safer setup-timeout default",async()=>{
   const source=await readFile(new URL("../scripts/run-terminal-bench.mjs",import.meta.url),"utf8");
   assert.match(source,/TREBELL_TERMINAL_BENCH_SETUP_TIMEOUT_MULTIPLIER\|\|3/);
