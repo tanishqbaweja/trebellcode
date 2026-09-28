@@ -65,7 +65,11 @@ export default function ScopedSettingsCard({settings={},models=[],onChanged,scop
       const current=selectionRef.current;
       const stillCurrent=(current.environmentId==="local"?null:current.environmentId)===targetEnvironmentId&&(current.projectId||null)===targetProjectId;
       if(stillCurrent)setScope(result);
-      await load();onChanged?.(result);
+      if(Array.isArray(result.projects)){
+        setProjects(result.projects);
+        onCatalog?.({environmentData,projects:result.projects});
+      }else await load();
+      onChanged?.(result);
       if(stillCurrent)setMessage(targetProjectScope&&next===INHERIT?"Project now inherits the environment default.":"Scoped default saved.");
       return result;
     });
