@@ -3028,19 +3028,19 @@ test("cross-runtime thread open reuses bundled runtime refresh state",async({pag
   const thread={id:"native-catalog-thread",name:"Native catalog thread",preview:"Open across runtimes",cwd:process.cwd(),createdAt:Date.now()/1000-20,updatedAt:Date.now()/1000-10,status:{type:"idle"}};
   const bootstrap=runtime=>({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:runtime,agentRuntimeInstanceId:`${runtime}-default`,agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"cross-runtime-bundle-fixture",activeEnvironmentId:null,activeEnvironment:null});
   const catalog=runtime=>({agentRuntime:runtime,models:[`${runtime}/test-model`],metadata:{provider:runtime==="native"?"freebuff":runtime,models:[{id:`${runtime}/test-model`,name:runtime==="native"?"Native Test model":"Codex Test model",provider:runtime==="native"?"freebuff":runtime,agent:runtime}]}});
-  await page.route(/\\/api\\/bootstrap$/,route=>{requests.bootstrapGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(bootstrap("codex"))})});
-  await page.route(/\\/api\\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{[thread.id]:{runtime:"native",runtimeInstanceId:"native-default",projectless:true,environmentId:null,threadSnapshot:{...thread,runtime:"native",provider:"freebuff"}}}})}));
-  await page.route(/\\/api\\/models$/,route=>{requests.modelGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(catalog("codex"))})});
-  await page.route(/\\/api\\/agent-runtimes$/,route=>{
+  await page.route(/\/api\/bootstrap$/,route=>{requests.bootstrapGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(bootstrap("codex"))})});
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:{onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"},projects:[],threadMeta:{[thread.id]:{runtime:"native",runtimeInstanceId:"native-default",projectless:true,environmentId:null,threadSnapshot:{...thread,runtime:"native",provider:"freebuff"}}}})}));
+  await page.route(/\/api\/models$/,route=>{requests.modelGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(catalog("codex"))})});
+  await page.route(/\/api\/agent-runtimes$/,route=>{
     if(route.request().method()!=="POST")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selectedRuntime:"codex",selectedInstanceId:"codex-default",definitions:[],instances:[],statuses:[]})});
     requests.runtimePosts++;
     const body=route.request().postDataJSON?.()||{};
     expect(body.action).toBe("select");expect(body.runtime).toBe("native");
     return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selectedRuntime:"native",selectedInstanceId:"native-default",selected:{runtime:"native",instance:{id:"native-default",kind:"native"},status:{id:"native-default",kind:"native",available:true}},bootstrap:bootstrap("native"),catalog:catalog("native")})});
   });
-  await page.route(/\\/api\\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
-  await page.route(/\\/api\\/environment\\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
-  await page.route(/\\/api\\/freebuff\\/overview/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({loggedIn:true})}));
+  await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+  await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+  await page.route(/\/api\/freebuff\/overview/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({loggedIn:true})}));
   await page.goto("/");
   await expect(page.getByTestId("model-picker")).toContainText("Codex Test model");
   const baseline={...requests};
