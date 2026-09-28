@@ -167,6 +167,23 @@ test("startup partial failures stay visible while Codex skips unrelated Native p
   await page.screenshot({path:auditDir+"startup-partial-data-error-1280x800.png",fullPage:true});
 });
 
+test("startup launches independent model theme and project requests before core state resolves",async({page})=>{
+  test.setTimeout(30_000);
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  let coreReleased=false;
+  const extrasBeforeCore=new Set();
+  const coreGate=new Promise(resolve=>setTimeout(()=>{coreReleased=true;resolve()},400));
+  const markExtra=name=>{if(!coreReleased)extrasBeforeCore.add(name)};
+  await page.route(/\/api\/bootstrap$/,async route=>{await coreGate;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"startup-parallel-fixture",activeEnvironmentId:null,activeEnvironment:null})})});
+  await page.route(/\/api\/state$/,async route=>{await coreGate;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{}})})});
+  await page.route(/\/api\/models$/,route=>{markExtra("models");return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({models:["freebuff/test/coding-fast"],metadata:{provider:"freebuff",models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider:"freebuff"}]}})})});
+  await page.route(/\/api\/projects$/,route=>{markExtra("projects");return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})})});
+  await page.route(/\/api\/environment\/themes$/,route=>{markExtra("themes");return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})})});
+  await page.goto("/");
+  await expect(page.getByTestId("composer")).toBeVisible();
+  expect([...extrasBeforeCore].sort()).toEqual(["models","projects","themes"]);
+});
+
 test("plain new threads omit unrelated specialized tool groups",async({page})=>{
   test.setTimeout(35_000);
   const seed={id:"lazy-tools-plain-seed",name:"Lazy tools plain seed",preview:"Capability fixture",cwd:process.cwd(),createdAt:Date.now()/1000-10,updatedAt:Date.now()/1000,turns:[]};
@@ -3003,6 +3020,81 @@ test("runtime switch waits for matching bootstrap transport before reconnecting"
   }finally{
     await Promise.all([external.close(),codex.close()]);
   }
+});
+
+test("runtime profile mutations reuse bundled refresh state without follow-up reads",async({page})=>{
+  test.setTimeout(30_000);
+  let selectedRuntime="codex",selectedInstanceId="codex-personal";
+  let instances=[
+    {id:"codex-default",kind:"codex",displayName:"Codex",enabled:true},
+    {id:"codex-personal",kind:"codex",displayName:"Codex Personal",enabled:true,homePath:"C:/codex-personal"},
+    {id:"codex-spare",kind:"codex",displayName:"Codex Spare",enabled:true,homePath:"C:/codex-spare"},
+  ];
+  const requests={settingsGets:0,bootstrapGets:0,modelGets:0,runtimePosts:0,runtimeDeletes:0};
+  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId,modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
+  const snapshot=()=>({
+    selectedRuntime,selectedInstanceId,
+    definitions:[{id:"codex",name:"Codex",protocol:"codex",multipleInstances:true}],
+    instances,
+    statuses:instances.map(item=>({id:item.id,kind:item.kind,name:item.displayName,available:true,installed:true,authenticated:true,version:"fixture"})),
+  });
+  const bootstrap=()=>({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId,agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"runtime-profile-bundle-fixture",activeEnvironmentId:null,activeEnvironment:null});
+  const catalog=()=>({agentRuntime:selectedRuntime,models:["fixture-model"],metadata:{models:[{id:"fixture-model",name:"Fixture model",agent:selectedRuntime}]}});
+  await page.route(/\/api\/bootstrap$/,route=>{requests.bootstrapGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(bootstrap())})});
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:settings(),projects:[],threadMeta:{}})}));
+  await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="GET")requests.settingsGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())})});
+  await page.route(/\/api\/models$/,route=>{requests.modelGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(catalog())})});
+  await page.route(/\/api\/agent-runtimes(?:\?.*)?$/,route=>{
+    if(route.request().method()==="GET")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(snapshot())});
+    if(route.request().method()==="POST"){
+      requests.runtimePosts++;
+      const body=route.request().postDataJSON()||{};
+      if(body.action==="upsert"&&body.instance)instances=instances.map(item=>item.id===body.instance.id?{...item,...body.instance}:item);
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({instance:body.instance,...snapshot(),bootstrap:bootstrap(),catalog:catalog()})});
+    }
+    requests.runtimeDeletes++;
+    const id=new URL(route.request().url()).searchParams.get("id");
+    const wasActive=id===selectedInstanceId;
+    const removed=instances.find(item=>item.id===id);
+    instances=instances.filter(item=>item.id!==id);
+    const resetTo=wasActive?`${removed?.kind||selectedRuntime}-default`:null;
+    if(resetTo)selectedInstanceId=resetTo;
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,resetTo,kind:removed?.kind||selectedRuntime,...snapshot(),...(resetTo?{bootstrap:bootstrap(),catalog:catalog()}:{})})});
+  });
+  await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+  await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+  await page.goto("/");
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await page.getByRole("button",{name:/Agents & models/}).click();
+
+  const personal=page.locator(".runtime-profile-row").filter({hasText:"Codex Personal"});
+  const saveBefore={...requests};
+  await personal.getByRole("button",{name:"Edit",exact:true}).click();
+  await page.getByLabel("Profile name").fill("Codex Personal Updated");
+  await page.getByRole("button",{name:"Save profile",exact:true}).click();
+  await expect(page.locator(".agent-runtime-settings")).toContainText("Runtime profile saved.");
+  expect(requests.runtimePosts-saveBefore.runtimePosts).toBe(1);
+  expect(requests.settingsGets-saveBefore.settingsGets).toBe(0);
+  expect(requests.bootstrapGets-saveBefore.bootstrapGets).toBe(0);
+  expect(requests.modelGets-saveBefore.modelGets).toBe(0);
+
+  const spare=page.locator(".runtime-profile-row").filter({hasText:"Codex Spare"});
+  const spareRemoveBefore={...requests};
+  await spare.getByRole("button",{name:"Remove",exact:true}).click();
+  await expect(spare).toHaveCount(0);
+  expect(requests.runtimeDeletes-spareRemoveBefore.runtimeDeletes).toBe(1);
+  expect(requests.settingsGets-spareRemoveBefore.settingsGets).toBe(0);
+  expect(requests.bootstrapGets-spareRemoveBefore.bootstrapGets).toBe(0);
+  expect(requests.modelGets-spareRemoveBefore.modelGets).toBe(0);
+
+  const activeRemoveBefore={...requests};
+  await page.locator(".runtime-profile-row").filter({hasText:"Codex Personal Updated"}).getByRole("button",{name:"Remove",exact:true}).click();
+  await expect(page.locator(".runtime-profile-row").filter({hasText:"Codex Personal Updated"})).toHaveCount(0);
+  await expect(page.locator(".runtime-profile-row").filter({hasText:"Codex"}).first().getByText("Active",{exact:true})).toBeVisible();
+  expect(requests.runtimeDeletes-activeRemoveBefore.runtimeDeletes).toBe(1);
+  expect(requests.settingsGets-activeRemoveBefore.settingsGets).toBe(0);
+  expect(requests.bootstrapGets-activeRemoveBefore.bootstrapGets).toBe(0);
+  expect(requests.modelGets-activeRemoveBefore.modelGets).toBe(0);
 });
 
 test("Trebell Native is a built-in provider-backed runtime in Settings",async({page,request})=>{

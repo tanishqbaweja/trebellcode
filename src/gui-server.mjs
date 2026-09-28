@@ -1478,6 +1478,20 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
       error:catalog.error||null,
     };
   }
+  async function runtimeRefreshPayload(req,{agentSnapshot=null}={}){
+    const [bootstrap,catalog]=await Promise.all([
+      bootstrapPayload(req,{agentSnapshot}),
+      selectedModelsPayload().catch(error=>({
+        ...(selectedAgentRuntime==="native"?{provider:selectedProvider}:{}),
+        agentRuntime:selectedAgentRuntime,
+        ready:false,
+        models:[],
+        metadata:null,
+        error:error instanceof Error?error.message:String(error),
+      })),
+    ]);
+    return {bootstrap,catalog};
+  }
 
   async function ensureBridge(){
     if(mock) return null;
@@ -1658,23 +1672,14 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
             selectedAgentRuntime=selected.runtime;
             if(selected.runtime==="codex"&&(previousRuntime!=="codex"||previousInstanceId!==selected.instance.id))await restartAppServer();
             const snapshot=await agentRuntimes.snapshot();
-            const [bootstrap,catalog]=await Promise.all([
-              bootstrapPayload(req,{agentSnapshot:snapshot}),
-              selectedModelsPayload().catch(error=>({
-                ...(selectedAgentRuntime==="native"?{provider:selectedProvider}:{}),
-                agentRuntime:selectedAgentRuntime,
-                ready:false,
-                models:[],
-                metadata:null,
-                error:error instanceof Error?error.message:String(error),
-              })),
-            ]);
-            return json(res,200,{...snapshot,selected,bootstrap,catalog});
+            return json(res,200,{...snapshot,selected,...await runtimeRefreshPayload(req,{agentSnapshot:snapshot})});
           }
           if(body.action==="upsert"){
             const instance=agentRuntimes.upsertInstance(body.instance||{});
-            if(instance.kind==="codex"&&agentRuntimes.activeInstance().id===instance.id)await restartAppServer();
-            return json(res,200,{instance,...await agentRuntimes.snapshot()});
+            const active=agentRuntimes.activeInstance().id===instance.id;
+            if(instance.kind==="codex"&&active)await restartAppServer();
+            const snapshot=await agentRuntimes.snapshot();
+            return json(res,200,{instance,...snapshot,...(active?await runtimeRefreshPayload(req,{agentSnapshot:snapshot}):{})});
           }
           if(body.action==="probe"){
             const instance=agentRuntimes.instances().find(item=>item.id===String(body.instanceId||""))||body.runtime;
@@ -1692,7 +1697,8 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
         try{
           const removed=agentRuntimes.removeInstance(id);
           if(removed.resetTo&&removed.kind==="codex")await restartAppServer();
-          return json(res,200,{...removed,...await agentRuntimes.snapshot()});
+          const snapshot=await agentRuntimes.snapshot();
+          return json(res,200,{...removed,...snapshot,...(removed.resetTo?await runtimeRefreshPayload(req,{agentSnapshot:snapshot}):{})});
         }catch(error){return json(res,400,{error:error.message});}
       }
     }

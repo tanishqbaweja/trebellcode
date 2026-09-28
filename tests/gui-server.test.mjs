@@ -389,6 +389,17 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(restoredCodexSelection.selectedRuntime,"codex");assert.equal(restoredCodexSelection.selectedInstanceId,customCodexId);
     assert.equal(restoredCodexSelection.bootstrap.agentRuntime,"codex");assert.equal(restoredCodexSelection.bootstrap.agentRuntimeInstanceId,customCodexId);
     assert.equal(restoredCodexSelection.catalog.agentRuntime,"codex");assert.ok(restoredCodexSelection.catalog.models.length>=1);
+    const activeCodexUpdate=await fetch(gui.url+"/api/agent-runtimes",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"upsert",instance:{id:customCodexId,kind:"codex",displayName:"Settings API updated",homePath:join(home,"codex-settings-test")}})}).then(r=>r.json());
+    assert.equal(activeCodexUpdate.selectedInstanceId,customCodexId);assert.equal(activeCodexUpdate.bootstrap.agentRuntimeInstanceId,customCodexId);assert.equal(activeCodexUpdate.catalog.agentRuntime,"codex");
+    const spareCodexId="codex-delete-test";
+    const spareCodex=await fetch(gui.url+"/api/agent-runtimes",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"upsert",instance:{id:spareCodexId,kind:"codex",displayName:"Delete API test",homePath:join(home,"codex-delete-test")}})}).then(r=>r.json());
+    assert.equal(spareCodex.instance.id,spareCodexId);assert.equal(Object.prototype.hasOwnProperty.call(spareCodex,"bootstrap"),false);
+    const spareSelection=await fetch(gui.url+"/api/agent-runtimes",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"select",runtime:"codex",instanceId:spareCodexId})}).then(r=>r.json());
+    assert.equal(spareSelection.selectedInstanceId,spareCodexId);
+    const removedActiveSpare=await fetch(gui.url+"/api/agent-runtimes?id="+encodeURIComponent(spareCodexId),{method:"DELETE"}).then(r=>r.json());
+    assert.equal(removedActiveSpare.resetTo,"codex-default");assert.equal(removedActiveSpare.selectedInstanceId,"codex-default");assert.equal(removedActiveSpare.bootstrap.agentRuntimeInstanceId,"codex-default");assert.equal(removedActiveSpare.catalog.agentRuntime,"codex");
+    const reselectedCustomCodex=await fetch(gui.url+"/api/agent-runtimes",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"select",runtime:"codex",instanceId:customCodexId})}).then(r=>r.json());
+    assert.equal(reselectedCustomCodex.selectedInstanceId,customCodexId);
     const unavailableClaude=await fetch(gui.url+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({agentRuntime:"claude",agentRuntimeInstanceId:"claude-default"})});
     if(unavailableClaude.status===400){
       const afterRejectedRuntime=await fetch(gui.url+"/api/agent-runtimes").then(r=>r.json());

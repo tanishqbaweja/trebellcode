@@ -143,7 +143,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       const instance={...instanceDraft};delete instance.environmentKeys;
       const result=await api("/api/agent-runtimes",{method:"POST",body:{action:"upsert",instance}});
       setAgentInfo(result);setInstanceDraft(null);setAgentMessage("Runtime profile saved.");
-      if(result.selectedInstanceId===instance.id){onSettings(await api("/api/settings"));await onProviderUpdated?.({resetThread:true,reconnectRuntime:true})}
+      if(result.selectedInstanceId===instance.id)await onProviderUpdated?.({agentRuntime:result.selectedRuntime||instance.kind,provider:selected,resetThread:true,reconnectRuntime:true,catalog:result.catalog||null,bootstrap:result.bootstrap||null,refreshBootstrap:!result.bootstrap});
     }catch(error){setAgentMessage(error.message)}
   }
   async function removeInstance(instance){
@@ -152,8 +152,13 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     setAgentMessage("Removing runtime profile…");
     try{
       const result=await api("/api/agent-runtimes?id="+encodeURIComponent(instance.id),{method:"DELETE"});
-      setAgentInfo(result);setInstanceDraft(null);onSettings(await api("/api/settings"));setAgentMessage("Runtime profile removed.");
-      if(result.resetTo)await onProviderUpdated?.({resetThread:true,reconnectRuntime:true});
+      setAgentInfo(result);setInstanceDraft(null);setAgentMessage("Runtime profile removed.");
+      if(result.resetTo){
+        const selectedRuntime=result.selectedRuntime||result.kind||settings.agentRuntime;
+        const selectedInstanceId=result.selectedInstanceId||result.resetTo;
+        onSettings(previous=>({...previous,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId}));
+        await onProviderUpdated?.({agentRuntime:selectedRuntime,provider:selected,resetThread:true,reconnectRuntime:true,catalog:result.catalog||null,bootstrap:result.bootstrap||null,refreshBootstrap:!result.bootstrap});
+      }
     }catch(error){setAgentMessage(error.message)}
   }
   async function installAgentRuntime(kind){
