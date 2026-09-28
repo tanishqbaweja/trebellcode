@@ -19,6 +19,9 @@ const SETUP_TIMEOUT_MULTIPLIER=Number(setupTimeoutArg?.slice("--agent-setup-time
 if(!Number.isFinite(SETUP_TIMEOUT_MULTIPLIER)||SETUP_TIMEOUT_MULTIPLIER<1)throw new Error("Terminal-Bench setup timeout multiplier must be >= 1.");
 const onlyArg=process.argv.find(arg=>arg.startsWith("--only="));
 const only=new Set(String(onlyArg?.slice("--only=".length)||process.env.TREBELL_TERMINAL_BENCH_ONLY||"").split(",").map(value=>value.trim().toLowerCase()).filter(Boolean));
+const codexAuthArg=process.argv.find(arg=>arg.startsWith("--codex-auth="));
+const CODEX_AUTH_MODE=String(codexAuthArg?.slice("--codex-auth=".length)||process.env.TREBELL_TERMINAL_BENCH_CODEX_AUTH||"oauth").trim().toLowerCase();
+if(!["api","oauth"].includes(CODEX_AUTH_MODE))throw new Error("Terminal-Bench Codex auth mode must be api or oauth.");
 const validationDir=join(root,".harbor-validation"),lockPath=join(validationDir,"terminal-bench-pair.lock");
 
 function run(command,args,{env=process.env}={}){
@@ -77,9 +80,11 @@ try{
   const nativeBundleSha256=await sha256File(nativeBundlePath),nativeAdapterSha256=await sha256File(nativeAdapterPath);
   const harbor=await harborBin(),pythonPath=[root,process.env.PYTHONPATH].filter(Boolean).join(delimiter);
   const sharedEnv={...process.env,PYTHONPATH:pythonPath},outputRoot=join(root,".harbor-jobs"),jobs=[];
+  const willRunCodex=!only.size||only.has("codex");
+  if(CODEX_AUTH_MODE==="oauth"&&willRunCodex)await access(join(homedir(),".codex","auth.json"));
   const reportSnapshot=({complete=false,activeHarness=null,activeJobName=null}={})=>({
     pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,
-    sameModel:true,sameReasoningEffort:true,sequential:true,nativeBundleSha256,nativeAdapterSha256,
+    sameModel:true,sameReasoningEffort:true,sequential:true,codexAuthMode:CODEX_AUTH_MODE,nativeBundleSha256,nativeAdapterSha256,
     complete,activeHarness,activeJobName,updatedAt:new Date().toISOString(),jobs,
   });
   const persistReport=async state=>writeFile(reportPath,JSON.stringify(reportSnapshot(state),null,2)+"\n","utf8");
@@ -89,9 +94,15 @@ try{
     const jobName=`tb4-${harness}-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`;
     const args=["run","-d",DATASET,"-i",TASK,"-a",agent,"-m",`openai/${MODEL}`,"--ak",`reasoning_effort=${EFFORT}`,"-n","1","-o",outputRoot,"--job-name",jobName,"-y"];
     if(SETUP_TIMEOUT_MULTIPLIER>1)args.push("--agent-setup-timeout-multiplier",String(SETUP_TIMEOUT_MULTIPLIER));
+    const harnessEnv={...sharedEnv};
+    if(harness==="codex"){
+      delete harnessEnv.CODEX_AUTH_JSON_PATH;
+      delete harnessEnv.CODEX_FORCE_AUTH_JSON;
+      if(CODEX_AUTH_MODE==="oauth")harnessEnv.CODEX_FORCE_AUTH_JSON="1";
+    }
     await persistReport({complete:false,activeHarness:harness,activeJobName:jobName});
     let runError=null;
-    try{await run(harbor,args,{env:sharedEnv})}catch(error){runError=error?.message||String(error)}
+    try{await run(harbor,args,{env:harnessEnv})}catch(error){runError=error?.message||String(error)}
     let result=null;
     try{result=JSON.parse(await readFile(join(outputRoot,jobName,"result.json"),"utf8"))}catch{}
     const trial=await trialResult(outputRoot,jobName);
@@ -101,7 +112,7 @@ try{
     const cacheHitPercent=inputTokens==null||Number(inputTokens)<=0||cachedTokens==null?null:Number(((Number(cachedTokens)/Number(inputTokens))*100).toFixed(2));
     const trebellNative=trial?.agent_result?.metadata?.trebell_native||null;
     jobs.push({
-      harness,agent,jobName,runError,
+      harness,agent,jobName,runError,authMode:harness==="codex"?CODEX_AUTH_MODE:"api",
       completed:Number(result?.stats?.n_completed_trials||0),errors:Number(result?.stats?.n_errored_trials||0),
       inputTokens,cachedTokens,uncachedInputTokens,cacheHitPercent,
       outputTokens:result?.stats?.n_output_tokens??trial?.agent_result?.n_output_tokens??null,

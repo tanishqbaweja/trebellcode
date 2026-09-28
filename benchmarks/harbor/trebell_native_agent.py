@@ -182,7 +182,7 @@ class TrebellNativeAgent(BaseInstalledAgent):
         if not metrics_path.is_file():
             return
         try:
-            metrics = json.loads(metrics_path.read_text())
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
             usage = metrics.get("usage") or {}
             input_tokens = int(usage.get("inputTokens") or 0)
             cached_tokens = int(usage.get("cachedInputTokens") or 0)

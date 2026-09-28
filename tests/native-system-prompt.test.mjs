@@ -21,6 +21,15 @@ test("Native system prompt teaches evidence-driven coding without inventing unav
   assert.match(prompt,/deterministic local reproducer/i);
   assert.match(prompt,/arbitrary runtime inputs, policies, configuration, schemas, or equivalent variants/i);
   assert.match(prompt,/cheap counterfactual case/i);
+  assert.match(prompt,/required fields from optional fields, defaulted fields, and conditionally valid fields/i);
+  assert.match(prompt,/validate a field when supplied does not by itself make that field required/i);
+  assert.match(prompt,/optional field is omitted but an alternate documented acceptance condition is satisfied/i);
+  assert.match(prompt,/do not infer stricter requiredness than the contract states/i);
+  assert.match(prompt,/canonical happy path through the public entry point/i);
+  assert.match(prompt,/documented defaults or fallbacks/i);
+  assert.match(prompt,/branches by runtime, persistence mode, transport, adapter/i);
+  assert.match(prompt,/passing browser, mock, or in-memory path is not evidence/i);
+  assert.match(prompt,/baseline parity check/i);
   assert.match(prompt,/multiple routes, workflows, components, or acceptance surfaces/i);
   assert.match(prompt,/cover them breadth-first/i);
   assert.match(prompt,/account for every explicitly named surface/i);

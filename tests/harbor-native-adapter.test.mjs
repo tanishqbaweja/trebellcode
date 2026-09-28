@@ -20,6 +20,7 @@ test("Harbor Native adapter stages the OpenAI key instead of passing it through 
   assert.ok(!source.includes('("curl", "bash", "git", "ripgrep", "coreutils")'));
   assert.ok(source.indexOf("_upload_agent_owned_file")<source.indexOf('ensure_system_dependencies(environment, ("curl",))'),"the bundle should be uploaded and existing runtimes probed before installing curl/nvm");
   assert.ok(source.includes('if [ "$runtime" = "bun" ]; then runtime_cmd=bun'));
+  assert.ok(source.includes('metrics_path.read_text(encoding="utf-8")'));
 });
 
 test("Harbor Native runner keeps durable output retrieval available and avoids a smaller private task budget",async()=>{

@@ -11,6 +11,16 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/taskChecksum:trial\?\.task_checksum/);
   assert.match(source,/nativeBundleSha256/);
   assert.match(source,/nativeAdapterSha256/);
+  assert.match(source,/TREBELL_TERMINAL_BENCH_CODEX_AUTH/);
+  assert.match(source,/TREBELL_TERMINAL_BENCH_CODEX_AUTH\|\|"oauth"/);
+  assert.match(source,/Terminal-Bench Codex auth mode must be api or oauth/);
+  assert.match(source,/codexAuthMode:CODEX_AUTH_MODE/);
+  assert.match(source,/const willRunCodex=!only\.size\|\|only\.has\("codex"\)/);
+  assert.match(source,/CODEX_AUTH_MODE==="oauth"&&willRunCodex/);
+  assert.match(source,/CODEX_FORCE_AUTH_JSON="1"/);
+  assert.match(source,/delete harnessEnv\.CODEX_AUTH_JSON_PATH/);
+  assert.match(source,/delete harnessEnv\.CODEX_FORCE_AUTH_JSON/);
+  assert.match(source,/authMode:harness==="codex"\?CODEX_AUTH_MODE:"api"/);
   assert.match(source,/agentVersion:trial\?\.agent_info\?\.version/);
   assert.match(source,/complete,activeHarness,activeJobName/);
   assert.match(source,/await persistReport\(\{complete:false,activeHarness:harness,activeJobName:jobName\}\)/);
