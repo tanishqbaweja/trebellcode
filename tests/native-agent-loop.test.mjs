@@ -128,6 +128,30 @@ test("native implementation checkpoint fires before a fifth read-only model turn
   assert.equal(events.filter(event=>event.name==="native.progress.implementation_pressure").map(event=>event.data?.modelTurn).join(","),"5,6");
 });
 
+test("native turn-based implementation pressure still allows one bounded evidence batch",async()=>{
+  const events=[],executed=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"gpt-6-luna",provider:"openai",messages:[{role:"user",content:"Repair the black-box implementation after enough focused probing."}],
+    tools:[{type:"namespace",name:"trebell_repo",tools:[{name:"search_code"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    maxModelTurns:8,maxToolCalls:40,onEvent:event=>events.push(event),
+    providerTurn:async()=>{
+      turn++;
+      if(turn<=4)return {text:"",toolCalls:[
+        {id:`read-${turn}-a`,namespace:"trebell_repo",name:"search_code",arguments:JSON.stringify({query:`q-${turn}-a`})},
+        {id:`read-${turn}-b`,namespace:"trebell_repo",name:"search_code",arguments:JSON.stringify({query:`q-${turn}-b`})},
+      ],usage:{}};
+      if(turn===5)return {text:"",toolCalls:[{id:"probe-batch",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"bash",args:["-lc","for value in a b c; do probe \"$value\"; done"]})}],usage:{}};
+      if(turn===6)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"write_file",arguments:JSON.stringify({path:"src/fix.py",content:"ready = True\n"})}],usage:{}};
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{success:true,path:"src/fix.py",size:13}:{success:true,exitCode:0,stdout:"evidence"}},
+  });
+  assert.equal(result.text,"done");
+  assert.equal(executed.includes("probe-batch"),true,"turn-based pressure must preserve a genuine bounded batch probe");
+  assert.equal(events.filter(event=>event.name==="native.progress.implementation_checkpoint").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.implementation_call_blocked").length,0);
+});
+
 test("native implementation pressure never activates for a read-only request",async()=>{
   const requests=[];let turn=0;
   const result=await runNativeAgentTurn({
