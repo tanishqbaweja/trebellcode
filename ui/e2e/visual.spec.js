@@ -4770,6 +4770,44 @@ test("provider switching reuses its response without depending on bootstrap refr
   await page.screenshot({path:auditDir+"provider-switch-no-bootstrap-refresh-1280x800.png",fullPage:true});
 });
 
+test("provider switch failure rolls back optimistic selection without a fallback refresh storm",async({page})=>{
+  test.setTimeout(30_000);
+  let provider="freebuff",bootstrapCalls=0,modelCalls=0,providerPosts=0;
+  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
+  const modelCatalog=()=>({models:["freebuff/test/coding-fast"],metadata:{provider,models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider}]}});
+  await page.route(/\/api\/bootstrap$/,route=>{bootstrapCalls++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider,providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"provider-switch-failure-fixture",activeEnvironmentId:null,activeEnvironment:null})})});
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:settings(),projects:[],threadMeta:{}})}));
+  await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())}));
+  await page.route(/\/api\/models$/,route=>{modelCalls++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(modelCatalog())})});
+  await page.route(/\/api\/providers$/,route=>{
+    if(route.request().method()==="POST"){
+      providerPosts++;
+      return route.fulfill({status:503,contentType:"application/json",body:JSON.stringify({error:"Deliberate provider switch failure"})});
+    }
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...modelCatalog(),selected:provider,agentRuntime:"native",providers:[{id:"freebuff",name:"Freebuff",hasKey:true},{id:"agentrouter",name:"AgentRouter",hasKey:true}],status:{id:provider,hasKey:true},ready:true})});
+  });
+  await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+  await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+  await page.route(/\/api\/freebuff\/overview/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({})}));
+  await page.goto("/");
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await page.getByRole("button",{name:/Agents & models/}).click();
+  const selector=page.getByTestId("provider-selector");
+  const before={bootstrapCalls,modelCalls};
+  await selector.selectOption("agentrouter");
+  await expect(selector).toHaveValue("freebuff");
+  await expect(page.getByRole("alert")).toContainText("Deliberate provider switch failure");
+  expect(providerPosts).toBe(1);
+  expect(bootstrapCalls).toBe(before.bootstrapCalls);
+  expect(modelCalls).toBe(before.modelCalls);
+  await page.getByRole("button",{name:"Threads",exact:true}).click();
+  await expect(page.getByTestId("model-picker")).toContainText("Coding Fast");
+  await page.setViewportSize({width:1280,height:800});
+  const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
+  expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
+  await page.screenshot({path:auditDir+"provider-switch-failure-rollback-1280x800.png",fullPage:true});
+});
+
 test("provider key save reuses the returned catalog without refetching models or bootstrap",async({page})=>{
   test.setTimeout(30_000);
   let failModels=false,modelCalls=0,bootstrapCalls=0;
