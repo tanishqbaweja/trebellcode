@@ -21,11 +21,18 @@ test("Native system prompt teaches evidence-driven coding without inventing unav
   assert.match(prompt,/deterministic local reproducer/i);
   assert.match(prompt,/arbitrary runtime inputs, policies, configuration, schemas, or equivalent variants/i);
   assert.match(prompt,/cheap counterfactual case/i);
+  assert.match(prompt,/multiple routes, workflows, components, or acceptance surfaces/i);
+  assert.match(prompt,/cover them breadth-first/i);
+  assert.match(prompt,/account for every explicitly named surface/i);
   assert.match(prompt,/prove live state is preserved while ineligible/i);
   assert.match(prompt,/one-item reproducer is not sufficient evidence/i);
   assert.match(prompt,/two-item partial-progress\/interleaving check/i);
   assert.match(prompt,/check each class separately/i);
   assert.match(prompt,/after a merge or state transition/i);
+  assert.match(prompt,/end-to-end critical path/i);
+  assert.match(prompt,/Parallelizing independent waits still blocks first useful output/i);
+  assert.match(prompt,/nonessential secondary side effects off a latency-critical mutation response path/i);
+  assert.match(prompt,/focused timing\/runtime check/i);
   assert.match(prompt,/Batch independent read-only/i);
   assert.match(prompt,/explicit user ordering constraints/i);
   assert.match(prompt,/exposed repository tools/i);

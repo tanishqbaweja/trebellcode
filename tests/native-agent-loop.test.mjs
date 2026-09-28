@@ -92,6 +92,40 @@ test("native implementation pressure never activates for a read-only request",as
   assert.equal(result.text,"architecture explained");assert.ok(requests.every(request=>request.tools.some(namespace=>namespace?.name==="trebell_repo")));
 });
 
+test("native performance-improvement wording activates implementation pressure",async()=>{
+  const requests=[],events=[],executed=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"gpt-6-luna",provider:"openai",
+    messages:[{role:"user",content:"Improve the performance and responsiveness of this web app while preserving its routes and behavior."}],
+    tools:[{type:"namespace",name:"trebell_repo",tools:[{name:"search_code"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    maxModelTurns:8,maxToolCalls:40,onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turn++;
+      if(turn<=4)return {text:"",toolCalls:Array.from({length:6},(_,index)=>({id:`perf-read-${turn}-${index}`,namespace:"trebell_repo",name:"search_code",arguments:JSON.stringify({query:`perf-${turn}-${index}`})})),usage:{}};
+      if(turn===5)return {text:"",toolCalls:[{id:"perf-extra-read",namespace:"trebell_terminal",name:"run",arguments:'{"command":"cat","args":["src/app.mjs"]}'}],usage:{}};
+      if(turn===6)return {text:"",toolCalls:[{id:"perf-edit",namespace:"trebell_workspace",name:"write_file",arguments:'{"path":"src/app.mjs","content":"export const fast = true;\\n"}'}],usage:{}};
+      return {text:"improved",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{success:true,path:"src/app.mjs",size:26}:{success:true,matches:["evidence"]}},
+  });
+  assert.equal(result.text,"improved");
+  assert.equal(events.filter(event=>event.name==="native.progress.implementation_checkpoint").length,1);
+  assert.equal(executed.includes("perf-extra-read"),false,"performance-improvement requests should not bypass implementation pressure");
+  assert.ok(requests[4].messages.some(message=>message.role==="developer"&&/progress checkpoint/i.test(String(message.content||""))));
+});
+
+test("native improve-understanding wording stays read-only without edit intent",async()=>{
+  const events=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Improve my understanding of this architecture."}],maxModelTurns:6,maxToolCalls:30,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_repo",tools:[{name:"search_code"}]}],
+    providerTurn:async()=>{turn++;return turn<=4?{text:"",toolCalls:Array.from({length:6},(_,index)=>({id:`understand-${turn}-${index}`,namespace:"trebell_repo",name:"search_code",arguments:'{"query":"architecture"}'})),usage:{}}:{text:"explained",toolCalls:[],usage:{}}},
+    executeTool:async()=>({success:true,matches:["evidence"]}),
+  });
+  assert.equal(result.text,"explained");
+  assert.equal(events.some(event=>event.name==="native.progress.implementation_checkpoint"),false);
+});
+
 test("native mutation intent is not suppressed by scoped read-only or no-change requirements",async()=>{
   for(const prompt of [
     "Implement the migration while preserving the read-only fixture directory.",
@@ -211,6 +245,27 @@ test("native agent warns the model before the hard model-turn budget cliff",asyn
   assert.equal(result.text,"done");
   assert.equal(events.filter(event=>event.name==="native.progress.turn_budget_checkpoint").length,1);
   assert.ok(requests[9].messages.some(message=>message.role==="developer"&&/turn-budget checkpoint/i.test(String(message.content||""))));
+});
+
+test("native agent injects one wall-time checkpoint before a finite deadline",async()=>{
+  const requests=[],events=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Inspect these routes and report the result."}],maxModelTurns:4,maxToolCalls:10,maxWallTimeMs:600,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_repo",tools:[{name:"search_code"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone({...request,signal:undefined}));turn++;
+      if(turn===1){
+        await new Promise(resolve=>setTimeout(resolve,380));
+        return {text:"",toolCalls:[{id:"read-1",namespace:"trebell_repo",name:"search_code",arguments:'{"query":"routes"}'}],usage:{}};
+      }
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>({success:true,matches:["evidence"]}),
+  });
+  assert.equal(result.text,"done");assert.equal(requests.length,2);
+  assert.ok(requests[1].messages.some(message=>message.role==="developer"&&/wall-time checkpoint/i.test(String(message.content||""))));
+  const checkpoints=events.filter(event=>event.name==="native.progress.wall_budget_checkpoint");assert.equal(checkpoints.length,1);
+  assert.equal(checkpoints[0].data.maxWallTimeMs,600);assert.ok(checkpoints[0].data.remainingWallTimeMs>0&&checkpoints[0].data.remainingWallTimeMs<=240);
 });
 
 test("native long-horizon turns get a soft convergence checkpoint by turn 36",async()=>{
