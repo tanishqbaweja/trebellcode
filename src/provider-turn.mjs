@@ -116,8 +116,8 @@ export function providerTurnToChat({model,messages=[],tools=[],toolChoice="auto"
     else if(toolChoice.name)result.tool_choice={type:"function",function:{name:flatToolName(toolChoice.namespace,toolChoice.name)}};
     else result.tool_choice=toolChoice;
   }
-  if(Number.isFinite(Number(maxOutputTokens)))result.max_tokens=Math.max(1,Math.trunc(Number(maxOutputTokens)));
-  if(Number.isFinite(Number(temperature)))result.temperature=Number(temperature);
+  if(maxOutputTokens!=null&&Number.isFinite(Number(maxOutputTokens)))result.max_tokens=Math.max(1,Math.trunc(Number(maxOutputTokens)));
+  if(temperature!=null&&Number.isFinite(Number(temperature)))result.temperature=Number(temperature);
   return result;
 }
 
@@ -187,8 +187,8 @@ export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="
     else if(toolChoice.name)result.tool_choice={type:"function",name:flatToolName(toolChoice.namespace,toolChoice.name)};
     else result.tool_choice=toolChoice;
   }
-  if(Number.isFinite(Number(maxOutputTokens)))result.max_output_tokens=Math.max(1,Math.trunc(Number(maxOutputTokens)));
-  if(Number.isFinite(Number(temperature)))result.temperature=Number(temperature);
+  if(maxOutputTokens!=null&&Number.isFinite(Number(maxOutputTokens)))result.max_output_tokens=Math.max(1,Math.trunc(Number(maxOutputTokens)));
+  if(temperature!=null&&Number.isFinite(Number(temperature)))result.temperature=Number(temperature);
   return result;
 }
 

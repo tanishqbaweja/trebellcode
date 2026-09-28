@@ -56,6 +56,15 @@ test("Chat conversion can reuse a prepared tool manifest without changing wire J
   assert.equal(JSON.stringify(prepared),JSON.stringify(ordinary));
 });
 
+test("provider turn omits unset output-token and temperature fields instead of coercing null to zero",()=>{
+  const chat=providerTurnToChat({model:"chat-model",messages:[{role:"user",content:"hello"}]});
+  assert.equal(Object.prototype.hasOwnProperty.call(chat,"max_tokens"),false);
+  assert.equal(Object.prototype.hasOwnProperty.call(chat,"temperature"),false);
+  const responses=providerTurnToResponses({model:"responses-model",messages:[{role:"user",content:"hello"}]});
+  assert.equal(Object.prototype.hasOwnProperty.call(responses,"max_output_tokens"),false);
+  assert.equal(Object.prototype.hasOwnProperty.call(responses,"temperature"),false);
+});
+
 test("Chat conversion can reuse canonical message conversions without changing the request body",()=>{
   const messages=[{role:"system",content:"stable"},{role:"user",content:[{type:"text",text:"hello"}]},{role:"assistant",content:"",toolCalls:[{id:"c1",namespace:"trebell_repo",name:"search_code",arguments:{query:"Session"}}]},{role:"tool",toolCallId:"c1",content:"result"}],request={model:"chat-model",messages,tools:[]},cache=new WeakMap(),baseline=providerTurnToChat(request),candidate=providerTurnToChat(request,{messageCache:cache});
   assert.deepEqual(candidate,baseline);assert.equal(JSON.stringify(candidate),JSON.stringify(baseline));

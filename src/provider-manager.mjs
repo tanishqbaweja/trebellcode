@@ -410,7 +410,7 @@ export class ProviderManager {
   #anthropicToolScaffold(request={}){
     const supplied=request?.[NATIVE_TOOL_SCHEMA_FINGERPRINT],fingerprint=/^[a-f0-9]{64}$/i.test(String(supplied||""))?String(supplied).toLowerCase():null;
     if(!fingerprint||this.anthropicToolManifestCacheSize<=0)return {scaffold:providerTurnAnthropicScaffold(request),toolsJson:null};
-    const maxOutputTokens=Number.isFinite(Number(request.maxOutputTokens))?Math.max(1,Math.trunc(Number(request.maxOutputTokens))):null,temperature=Number.isFinite(Number(request.temperature))?Number(request.temperature):null;
+    const maxOutputTokens=request.maxOutputTokens!=null&&Number.isFinite(Number(request.maxOutputTokens))?Math.max(1,Math.trunc(Number(request.maxOutputTokens))):null,temperature=request.temperature!=null&&Number.isFinite(Number(request.temperature))?Number(request.temperature):null;
     let toolChoiceKey;try{toolChoiceKey=JSON.stringify(request.toolChoice??"auto")}catch{return {scaffold:providerTurnAnthropicScaffold(request),toolsJson:null}}
     const key=JSON.stringify([fingerprint,String(request.model||""),maxOutputTokens,temperature,toolChoiceKey]);
     if(this.anthropicToolManifestCache.has(key)){
