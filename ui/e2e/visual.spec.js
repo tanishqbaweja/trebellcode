@@ -3254,6 +3254,34 @@ test("successful direct runtime authentication reuses the returned runtime snaps
   expect(requests.runtimeGets-runtimeGetsBefore).toBe(0);
 });
 
+test("scoped settings save reuses bundled settings and project state without follow-up reads",async({page,request})=>{
+  test.setTimeout(35_000);
+  await prepare(page,request);
+  const requests={scopedPosts:0,environmentGets:0,projectGets:0,settingsGets:0};
+  page.on("request",req=>{
+    const url=new URL(req.url()),method=req.method();
+    if(url.pathname==="/api/scoped-settings"&&method==="POST")requests.scopedPosts++;
+    else if(url.pathname==="/api/environments"&&method==="GET")requests.environmentGets++;
+    else if(url.pathname==="/api/projects"&&method==="GET")requests.projectGets++;
+    else if(url.pathname==="/api/settings"&&method==="GET")requests.settingsGets++;
+  });
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await page.getByRole("button",{name:/Workspace/}).click();
+  const card=page.getByTestId("scoped-settings-card");
+  await expect(card).toBeVisible();
+  await expect(card).toHaveAttribute("aria-busy","false");
+  await page.waitForTimeout(100);
+  const before={...requests};
+  const permissions=card.getByLabel("Permissions");
+  await permissions.selectOption("edits");
+  await expect(card).toHaveAttribute("aria-busy","false");
+  await expect(permissions).toHaveValue("edits");
+  expect(requests.scopedPosts-before.scopedPosts).toBe(1);
+  expect(requests.environmentGets-before.environmentGets).toBe(0);
+  expect(requests.projectGets-before.projectGets).toBe(0);
+  expect(requests.settingsGets-before.settingsGets).toBe(0);
+});
+
 test("Trebell Native is a built-in provider-backed runtime in Settings",async({page,request})=>{
   test.setTimeout(35_000);
   await prepare(page,request);
