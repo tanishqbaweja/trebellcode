@@ -3365,8 +3365,13 @@ export default function App(){
       throw error;
     }
   }
-  async function onScopedSettingsChanged(){
-    const [nextSettings,projectData]=await Promise.all([api("/api/settings"),api("/api/projects")]);
+  async function onScopedSettingsChanged(result=null){
+    const bundledSettings=result?.settings&&typeof result.settings==="object"?result.settings:null;
+    const bundledProjects=Array.isArray(result?.projects)?result.projects:null;
+    const [nextSettings,projectData]=await Promise.all([
+      bundledSettings?Promise.resolve(bundledSettings):api("/api/settings"),
+      bundledProjects?Promise.resolve({projects:bundledProjects}):api("/api/projects"),
+    ]);
     setSettings(prev=>({...prev,...nextSettings}));
     const project=(projectData.projects||[]).find(item=>item.id===currentProject?.id)||null;
     if(project){
