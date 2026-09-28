@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { readFile } from "node:fs/promises";
+import { lingeringJobProcesses, parsePsProcesses, waitForJobProcessDrain } from "../scripts/terminal-bench-process-drain.mjs";
 
 test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable trial metrics",async()=>{
   const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
@@ -55,7 +59,47 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/complete,activeHarness,activeJobName/);
   assert.match(source,/await persistReport\(\{complete:false,activeHarness:label,activeJobName:jobName\}\)/);
   assert.match(source,/await persistReport\(\{complete:false,activeHarness:null,activeJobName:null\}\)/);
+  assert.match(source,/waitForJobProcessDrain\(jobName,\{/);
+  assert.match(source,/TREBELL_TERMINAL_BENCH_LANE_DRAIN_MS/);
+  assert.match(source,/if\(drainError\)throw new Error\(drainError\)/);
   assert.match(source,/writeFile\(reportPath,JSON\.stringify\(report,null,2\)/);
+});
+
+test("Terminal-Bench lane drain detects a real descendant token and clears after exit",async t=>{
+  const token=`trebell-lane-drain-${randomUUID()}`;
+  assert.deepEqual(await lingeringJobProcesses(token),[]);
+
+  const child=spawn(process.execPath,["-e","setInterval(()=>{},1000)",token],{stdio:"ignore",windowsHide:true});
+  t.after(()=>{try{child.kill()}catch{}});
+
+  let detected=[];
+  for(let attempt=0;attempt<20&&!detected.includes(child.pid);attempt++){
+    detected=await lingeringJobProcesses(token);
+    if(!detected.includes(child.pid))await new Promise(resolveWait=>setTimeout(resolveWait,50));
+  }
+  assert.ok(detected.includes(child.pid),`expected spawned pid ${child.pid} in ${JSON.stringify(detected)}`);
+
+  await assert.rejects(
+    waitForJobProcessDrain(token,{timeoutMs:100,pollMs:20}),
+    /left host processes alive after launcher exit/,
+  );
+
+  child.kill();
+  await once(child,"exit");
+  await waitForJobProcessDrain(token,{timeoutMs:3_000,pollMs:20});
+  assert.deepEqual(await lingeringJobProcesses(token),[]);
+});
+
+test("Terminal-Bench Unix ps parsing only returns processes containing the exact job token",()=>{
+  const token="tb4-native-gpt-6-luna-max-random-task-20260929T010203Z";
+  const ps=[
+    `  101 node worker.js ${token}`,
+    "  202 python unrelated.py",
+    `  303 harbor run --job-name ${token}`,
+    "not-a-process-line",
+  ].join("\n");
+  assert.deepEqual(parsePsProcesses(ps,token),[101,303]);
+  assert.deepEqual(parsePsProcesses(ps,"missing-job-token"),[]);
 });
 
 test("Pinned Harbor Codex adapter changes only installation and verifies the exact official version",async()=>{

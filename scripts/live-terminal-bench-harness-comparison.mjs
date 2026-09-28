@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { loadEnvFile } from "node:process";
 import { fileURLToPath } from "node:url";
+import { waitForJobProcessDrain } from "./terminal-bench-process-drain.mjs";
 
 if(!process.argv.includes("--live"))throw new Error("Refusing to run paid/live Terminal-Bench without --live.");
 
@@ -42,6 +43,7 @@ function run(command,args,{env=process.env}={}){
     child.once("exit",(code,signal)=>code===0?resolveRun({code:0}):reject(Object.assign(new Error(`${command} exited with ${signal||code}`),{code,signal})));
   });
 }
+const LANE_DRAIN_TIMEOUT_MS=Math.max(5_000,Math.trunc(Number(process.env.TREBELL_TERMINAL_BENCH_LANE_DRAIN_MS)||300_000));
 
 async function harborBin(){
   const configured=String(process.env.HARBOR_BIN||"").trim();
@@ -214,6 +216,8 @@ try{
     await persistReport({complete:false,activeHarness:label,activeJobName:jobName});
     let runError=null;
     try{await run(harbor,args,{env:harnessEnv})}catch(error){runError=error?.message||String(error)}
+    let drainError=null;
+    try{await waitForJobProcessDrain(jobName,{timeoutMs:LANE_DRAIN_TIMEOUT_MS,cwd:root})}catch(error){drainError=error?.message||String(error);runError=[runError,drainError].filter(Boolean).join("; ")}
     let result=null;
     try{result=JSON.parse(await readFile(join(outputRoot,jobName,"result.json"),"utf8"))}catch{}
     const recordedTrial=await trialResult(outputRoot,jobName),trial=recordedTrial||await recoverTrialEvidence(outputRoot,jobName);
@@ -237,6 +241,7 @@ try{
       evals:result?.stats?.evals||{},
     });
     await persistReport({complete:false,activeHarness:null,activeJobName:null});
+    if(drainError)throw new Error(drainError);
   }
   const report=reportSnapshot({complete:true,activeHarness:null,activeJobName:null});await writeFile(reportPath,JSON.stringify(report,null,2)+"\n","utf8");
   console.log("TREBELL_TERMINAL_BENCH_REPORT "+JSON.stringify({...report,reportPath},null,2));
