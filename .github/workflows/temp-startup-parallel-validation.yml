@@ -1,4 +1,4 @@
-name: Temporary full Trebell validation
+name: Temporary browser validation
 on:
   push:
     branches:
@@ -7,7 +7,7 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -17,6 +17,5 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run ui:build
-      - run: npm test
-      - run: npx playwright test -c ui/playwright.config.mjs ui/e2e/visual.spec.js -g "startup failures never become a fake empty mock workspace|startup partial failures stay visible while Codex skips unrelated Native provider account state|startup launches independent model theme and project requests before core state resolves"
+      - run: npx playwright test -c ui/playwright.config.mjs ui/e2e/visual.spec.js -g "startup failures never become a fake empty mock workspace|startup partial failures stay visible while Codex skips unrelated Native provider account state|startup launches independent model theme and project requests before core state resolves|successful direct runtime authentication reuses the returned runtime snapshot|runtime install refreshes only the installed active harness and reuses bundled state|cross-runtime thread open reuses bundled runtime refresh state"
       - run: npx playwright test -c ui/playwright.config.mjs ui/e2e/harness.spec.js
