@@ -2885,6 +2885,101 @@ test("Claude runtime profile editor exposes real auto-compaction settings",async
   await page.screenshot({path:auditDir+"claude-right-panel-manual-delegation-1280x800.png",fullPage:true});
 });
 
+test("runtime switch waits for matching bootstrap transport before reconnecting",async({page})=>{
+  test.setTimeout(35_000);
+  const startRpcFixture=async({name,sections=false}={})=>{
+    const methods=[];
+    const server=createServer();
+    const wss=new WebSocketServer({noServer:true});
+    server.on("upgrade",(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>wss.emit("connection",ws,req)));
+    wss.on("connection",ws=>ws.on("message",data=>{
+      const message=JSON.parse(String(data));
+      if(message.id==null||!message.method)return;
+      methods.push(message.method);
+      let result={};
+      if(message.method==="initialize")result={userAgent:name};
+      else if(message.method==="thread/list")result={data:[],nextCursor:null};
+      else if(message.method==="threadSection/list")result={data:sections?["Pinned","Snoozed","Settled"].map(sectionName=>({id:sectionName.toLowerCase(),name:sectionName})):[],nextCursor:null};
+      else if(message.method==="skills/list"||message.method==="collaborationMode/list")result={data:[]};
+      ws.send(JSON.stringify({id:message.id,result}));
+    }));
+    const port=await freePort();
+    await new Promise((resolve,reject)=>server.listen(port,"127.0.0.1",resolve).once("error",reject));
+    return {
+      methods,
+      wsUrl:`ws://127.0.0.1:${port}`,
+      async close(){for(const client of wss.clients)client.terminate();await new Promise(resolve=>server.close(resolve));wss.close()},
+    };
+  };
+  const external=await startRpcFixture({name:"external-runtime-fixture"});
+  const codex=await startRpcFixture({name:"codex-runtime-fixture",sections:true});
+  let selectedRuntime="antigravity";
+  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedRuntime+"-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
+  const agentSnapshot=()=>({
+    selectedRuntime,selectedInstanceId:selectedRuntime+"-default",
+    definitions:[
+      {id:"codex",name:"Codex",protocol:"codex",multipleInstances:true},
+      {id:"antigravity",name:"Antigravity",protocol:"acp",multipleInstances:false},
+    ],
+    instances:[
+      {id:"codex-default",kind:"codex",displayName:"Codex",enabled:true},
+      {id:"antigravity-default",kind:"antigravity",displayName:"Antigravity",enabled:true},
+    ],
+    statuses:[
+      {id:"codex-default",kind:"codex",name:"Codex",available:true,installed:true,authenticated:true,version:"fixture"},
+      {id:"antigravity-default",kind:"antigravity",name:"Antigravity",available:true,installed:true,authenticated:true,version:"fixture"},
+    ],
+  });
+  try{
+    await page.route(/\/api\/bootstrap$/,async route=>{
+      const runtime=selectedRuntime;
+      if(runtime==="codex")await new Promise(resolve=>setTimeout(resolve,250));
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:runtime,agentRuntimeReady:true,appServerReady:true,wsUrl:runtime==="codex"?codex.wsUrl:external.wsUrl,cwd:process.cwd(),platform:process.platform,version:"runtime-switch-fixture",activeEnvironmentId:null,activeEnvironment:null})});
+    });
+    await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:settings(),projects:[],threadMeta:{}})}));
+    await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())}));
+    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({agentRuntime:selectedRuntime,models:["fixture-model"],metadata:{models:[{id:"fixture-model",name:"Fixture model",agent:selectedRuntime}]}})}));
+    await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+    await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+    await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
+    await page.route(/\/api\/agent-runtimes$/,async route=>{
+      if(route.request().method()==="GET")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(agentSnapshot())});
+      const body=route.request().postDataJSON?.()||{};
+      if(body.action==="select")selectedRuntime=body.runtime||selectedRuntime;
+      const snapshot=agentSnapshot(),instance=snapshot.instances.find(item=>item.kind===selectedRuntime),status=snapshot.statuses.find(item=>item.kind===selectedRuntime);
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...snapshot,selected:{runtime:selectedRuntime,instance,status}})});
+    });
+    await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
+    await page.goto("/");
+    await expect.poll(()=>external.methods.includes("thread/list")).toBe(true);
+    expect(external.methods).not.toContain("threadSection/list");
+    await page.getByRole("button",{name:"Settings",exact:true}).click();
+    await page.getByRole("button",{name:/Agents & models/}).click();
+    const codexOption=page.locator(".agent-runtime-option").filter({hasText:"Codex"});
+    await codexOption.locator("button").first().click();
+    await expect(codexOption.getByText("Active",{exact:true})).toBeVisible();
+    await expect.poll(()=>codex.methods.includes("threadSection/list"),{timeout:10_000}).toBe(true);
+    expect(external.methods).not.toContain("threadSection/list");
+    expect(external.methods.filter(method=>method==="initialize")).toHaveLength(1);
+    expect(codex.methods.filter(method=>method==="initialize")).toHaveLength(1);
+    const antigravityOption=page.locator(".agent-runtime-option").filter({hasText:"Antigravity"});
+    await antigravityOption.locator("button").first().click();
+    await expect(antigravityOption.getByText("Active",{exact:true})).toBeVisible();
+    await expect.poll(()=>external.methods.filter(method=>method==="initialize").length,{timeout:10_000}).toBe(2);
+    expect(external.methods).not.toContain("threadSection/list");
+    await codexOption.locator("button").first().click();
+    await expect(codexOption.getByText("Active",{exact:true})).toBeVisible();
+    await expect.poll(()=>codex.methods.filter(method=>method==="initialize").length,{timeout:10_000}).toBe(2);
+    await page.waitForTimeout(350);
+    expect(external.methods.filter(method=>method==="initialize")).toHaveLength(2);
+    expect(codex.methods.filter(method=>method==="initialize")).toHaveLength(2);
+    expect(external.methods).not.toContain("threadSection/list");
+    await expect(page.getByTestId("app-action-error")).toHaveCount(0);
+  }finally{
+    await Promise.all([external.close(),codex.close()]);
+  }
+});
+
 test("Trebell Native is a built-in provider-backed runtime in Settings",async({page,request})=>{
   test.setTimeout(35_000);
   await prepare(page,request);

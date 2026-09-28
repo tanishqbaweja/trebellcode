@@ -1402,7 +1402,9 @@ export default function App(){
   serverRequestHandlerRef.current=handleServerRequest;
 
   useEffect(()=>{
-    if(!bootstrap.wsUrl||bootstrap.mock)return; let disposed=false,retryTimer=null,client=null;
+    if(!bootstrap.wsUrl||bootstrap.mock)return;
+    if(bootstrap.agentRuntime&&bootstrap.agentRuntime!==agentRuntime)return;
+    let disposed=false,retryTimer=null,client=null;
     const connect=async(attempt=0)=>{
       client=new CodexRpcClient(bootstrap.wsUrl,{clientVersion:bootstrap.version||"0.0.0",onStatus:setRpcStatus,onNotification:message=>notificationHandlerRef.current?.(message),onServerRequest:message=>serverRequestHandlerRef.current?.(client,message)}); rpcRef.current=client;setRpc(client);
       try{
@@ -1423,7 +1425,7 @@ export default function App(){
       catch(error){client.close();if(disposed)return;if(attempt<120){setRpcStatus("connecting");retryTimer=setTimeout(()=>connect(attempt+1),500)}else setRpcStatus("error")}
     };
     connect(); return()=>{disposed=true;clearTimeout(retryTimer);client?.close()};
-  },[bootstrap.wsUrl,bootstrap.mock,provider,agentRuntime,providerRevision]);
+  },[bootstrap.wsUrl,bootstrap.mock,bootstrap.agentRuntime,provider,agentRuntime,providerRevision]);
   useEffect(()=>{if(rpcStatus==="connected"&&rpc)loadSkills(rpc,projectPath)},[projectPath,rpcStatus]);
   useEffect(()=>{
     if(runtimeCapabilities.runtimeProfileSwitching&&rpcStatus==="connected"&&rpc&&rpc===rpcRef.current&&activeThread?.id){loadThreadRuntimeProfiles(rpc,activeThread.id);return}
