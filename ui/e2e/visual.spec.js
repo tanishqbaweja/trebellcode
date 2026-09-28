@@ -2913,7 +2913,7 @@ test("runtime switch waits for matching bootstrap transport before reconnecting"
   };
   const external=await startRpcFixture({name:"external-runtime-fixture"});
   const codex=await startRpcFixture({name:"codex-runtime-fixture",sections:true});
-  let selectedRuntime="antigravity",selectedInstanceId="antigravity-default";
+  let selectedRuntime="antigravity",selectedInstanceId="antigravity-default",settingsGets=0;
   const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId,modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
   const agentSnapshot=()=>({
     selectedRuntime,selectedInstanceId,
@@ -2939,7 +2939,7 @@ test("runtime switch waits for matching bootstrap transport before reconnecting"
       return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:runtime,agentRuntimeInstanceId:selectedInstanceId,agentRuntimeReady:true,appServerReady:true,wsUrl:runtime==="codex"?codex.wsUrl:external.wsUrl,cwd:process.cwd(),platform:process.platform,version:"runtime-switch-fixture",activeEnvironmentId:null,activeEnvironment:null})});
     });
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:settings(),projects:[],threadMeta:{}})}));
-    await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())}));
+    await page.route(/\/api\/settings$/,route=>{if(route.request().method()==="GET")settingsGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())})});
     await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({agentRuntime:selectedRuntime,models:["fixture-model"],metadata:{models:[{id:"fixture-model",name:"Fixture model",agent:selectedRuntime}]}})}));
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
@@ -2961,6 +2961,7 @@ test("runtime switch waits for matching bootstrap transport before reconnecting"
     await page.getByRole("button",{name:"Settings",exact:true}).click();
     await page.getByRole("button",{name:/Agents & models/}).click();
     const codexOption=page.locator(".agent-runtime-option").filter({hasText:"Codex"});
+    const settingsBeforeSwitches=settingsGets;
     await codexOption.locator("button").first().click();
     await expect(codexOption.getByText("Active",{exact:true})).toBeVisible();
     await expect.poll(()=>codex.methods.includes("threadSection/list"),{timeout:10_000}).toBe(true);
@@ -2982,6 +2983,7 @@ test("runtime switch waits for matching bootstrap transport before reconnecting"
     await page.waitForTimeout(350);
     expect(external.methods.filter(method=>method==="initialize")).toHaveLength(2);
     expect(codex.methods.filter(method=>method==="initialize")).toHaveLength(3);
+    expect(settingsGets).toBe(settingsBeforeSwitches);
     expect(external.methods).not.toContain("threadSection/list");
     await expect(page.getByTestId("app-action-error")).toHaveCount(0);
   }finally{

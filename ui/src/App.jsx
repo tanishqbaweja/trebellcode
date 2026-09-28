@@ -2239,8 +2239,10 @@ export default function App(){
     pendingRuntimeThreadRef.current={thread,preserveSection,targetRuntime};
     try{
       const selected=await api("/api/agent-runtimes",{method:"POST",body:{action:"select",runtime:targetRuntime,instanceId:meta.runtimeInstanceId||null}});
-      const nextSettings=await api("/api/settings");setSettings(nextSettings);
-      await refreshProviderModels({resetThread:false,provider:nextSettings.modelProvider||provider,agentRuntime:selected.selectedRuntime||targetRuntime});
+      const selectedRuntime=selected.selectedRuntime||selected.selected?.runtime||targetRuntime;
+      const selectedInstanceId=selected.selectedInstanceId||selected.selected?.instance?.id||meta.runtimeInstanceId||`${selectedRuntime}-default`;
+      setSettings(previous=>({...previous,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId}));
+      await refreshProviderModels({resetThread:false,provider,agentRuntime:selectedRuntime});
       return true;
     }catch(error){
       pendingRuntimeThreadRef.current=null;throw error;

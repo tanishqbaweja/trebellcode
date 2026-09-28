@@ -114,9 +114,11 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     try{
       const result=await api("/api/agent-runtimes",{method:"POST",body:{action:"select",runtime:kind,instanceId}});
       setAgentInfo(result);
-      onSettings(await api("/api/settings"));
+      const selectedRuntime=result.selectedRuntime||result.selected?.runtime||kind;
+      const selectedInstanceId=result.selectedInstanceId||result.selected?.instance?.id||instanceId||`${selectedRuntime}-default`;
+      onSettings({...settings,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId});
       setAgentMessage(`${result.selected?.status?.name||kind} selected.`);
-      await onProviderUpdated?.({agentRuntime:result.selectedRuntime||kind,provider:selected,resetThread:true,reconnectRuntime:true});
+      await onProviderUpdated?.({agentRuntime:selectedRuntime,provider:selected,resetThread:true,reconnectRuntime:true});
     }catch(error){setAgentMessage(error.message)}
     finally{setAgentSelectionOverride(null)}
   }
