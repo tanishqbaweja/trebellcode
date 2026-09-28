@@ -30,6 +30,9 @@ const CODEX_INSTALL_MODE=String(codexInstallArg?.slice("--codex-install=".length
 if(!["stock","pinned"].includes(CODEX_INSTALL_MODE))throw new Error("Terminal-Bench Codex install mode must be stock or pinned.");
 const CODEX_PINNED_VERSION="0.158.0";
 const CODEX_PINNED_TARBALL_SHA256="3fe84106aaf2fbfc13299068510d34b3d0157eeb9af4b37be8cf5416f485a6bb";
+const NATIVE_PINNED_NODE_VERSION="22.23.3";
+const NATIVE_PINNED_NODE_TARBALL_SHA256="1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af";
+const NATIVE_PINNED_NODE_URL=`https://nodejs.org/download/release/v${NATIVE_PINNED_NODE_VERSION}/node-v${NATIVE_PINNED_NODE_VERSION}-linux-x64.tar.gz`;
 const validationDir=join(root,".harbor-validation"),lockPath=join(validationDir,"terminal-bench-pair.lock");
 
 function run(command,args,{env=process.env}={}){
@@ -59,6 +62,14 @@ async function ensurePinnedCodexTarball(path,{explicit=false}={}){
   const npmCli=String(process.env.npm_execpath||"").trim(),args=["pack",`@openai/codex@${CODEX_PINNED_VERSION}-linux-x64`,"--pack-destination",dirname(path)];
   if(npmCli)await run(process.execPath,[npmCli,...args]);
   else await run(process.platform==="win32"?"npm.cmd":"npm",args);
+  await access(path);
+}
+async function ensurePinnedNodeTarball(path,{explicit=false}={}){
+  try{await access(path);return}catch(error){if(explicit)throw error}
+  await mkdir(dirname(path),{recursive:true});
+  const response=await fetch(NATIVE_PINNED_NODE_URL,{redirect:"follow"});
+  if(!response.ok)throw new Error(`Failed to download pinned Node runtime: HTTP ${response.status}`);
+  await writeFile(path,Buffer.from(await response.arrayBuffer()));
   await access(path);
 }
 function elapsedMs(range){const start=Date.parse(String(range?.started_at||"")),end=Date.parse(String(range?.finished_at||""));return Number.isFinite(start)&&Number.isFinite(end)?Math.max(0,end-start):null}
@@ -143,6 +154,15 @@ try{
   await run(process.execPath,[join(root,"scripts","build-harbor-native-agent.mjs")]);
   const nativeBundlePath=join(root,"benchmarks","harbor","dist","trebell-native-agent.mjs"),nativeAdapterPath=join(root,"benchmarks","harbor","trebell_native_agent.py");
   const nativeBundleSha256=await sha256File(nativeBundlePath),nativeAdapterSha256=await sha256File(nativeAdapterPath);
+  const nativeLaneSelected=!only.size||only.has("native");
+  let nativePinnedNodeTarballPath=null,nativePinnedNodeTarballSha256=null;
+  if(nativeLaneSelected){
+    const configuredNodeTarball=String(process.env.TREBELL_NODE_PINNED_TARBALL||"").trim();
+    nativePinnedNodeTarballPath=resolve(configuredNodeTarball||join(validationDir,"node-stage",`node-v${NATIVE_PINNED_NODE_VERSION}-linux-x64.tar.gz`));
+    await ensurePinnedNodeTarball(nativePinnedNodeTarballPath,{explicit:Boolean(configuredNodeTarball)});
+    nativePinnedNodeTarballSha256=await sha256File(nativePinnedNodeTarballPath);
+    if(nativePinnedNodeTarballSha256!==NATIVE_PINNED_NODE_TARBALL_SHA256)throw new Error(`Pinned Node tarball SHA-256 mismatch: expected ${NATIVE_PINNED_NODE_TARBALL_SHA256}, got ${nativePinnedNodeTarballSha256}`);
+  }
   const codexPinnedAdapterPath=join(root,"benchmarks","harbor","pinned_codex_agent.py"),codexPinnedAdapterSha256=await sha256File(codexPinnedAdapterPath);
   let codexPinnedTarballPath=null,codexPinnedTarballSha256=null;
   if(CODEX_INSTALL_MODE==="pinned"){
@@ -153,7 +173,7 @@ try{
     if(codexPinnedTarballSha256!==CODEX_PINNED_TARBALL_SHA256)throw new Error(`Pinned Codex tarball SHA-256 mismatch: expected ${CODEX_PINNED_TARBALL_SHA256}, got ${codexPinnedTarballSha256}`);
   }
   const harbor=await harborBin(),pythonPath=[root,process.env.PYTHONPATH].filter(Boolean).join(delimiter);
-  const sharedEnv={...process.env,PYTHONPATH:pythonPath,...(codexPinnedTarballPath?{TREBELL_CODEX_PINNED_TARBALL:codexPinnedTarballPath}: {})},outputRoot=join(root,".harbor-jobs"),jobs=[];
+  const sharedEnv={...process.env,PYTHONPATH:pythonPath,...(nativePinnedNodeTarballPath?{TREBELL_NODE_PINNED_TARBALL:nativePinnedNodeTarballPath}: {}),...(codexPinnedTarballPath?{TREBELL_CODEX_PINNED_TARBALL:codexPinnedTarballPath}: {})},outputRoot=join(root,".harbor-jobs"),jobs=[];
   const codexLaneSelected=authMode=>!only.size||only.has("codex")||only.has(`codex-${authMode}`);
   const willRunCodexApi=CODEX_AUTH_MODES.includes("api")&&codexLaneSelected("api"),willRunCodexOauth=CODEX_AUTH_MODES.includes("oauth")&&codexLaneSelected("oauth");
   if(willRunCodexOauth)await access(join(homedir(),".codex","auth.json"));
@@ -170,6 +190,7 @@ try{
   const reportSnapshot=({complete=false,activeHarness=null,activeJobName=null}={})=>({
     pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,
     sameModel:true,sameReasoningEffort:true,sequential:true,codexAuthMode:CODEX_AUTH_MODE,codexInstallMode:CODEX_INSTALL_MODE,
+    ...(nativePinnedNodeTarballPath?{nativePinnedNodeVersion:NATIVE_PINNED_NODE_VERSION,nativePinnedNodeTarballSha256}:{}),
     ...(codexPinnedTarballPath?{codexPinnedVersion:CODEX_PINNED_VERSION,codexPinnedTarballSha256,codexPinnedAdapterSha256}:{}),
     comparisonLanes:lanes.map(lane=>lane.label),nativeBundleSha256,nativeAdapterSha256,
     complete,activeHarness,activeJobName,updatedAt:new Date().toISOString(),jobs,

@@ -15,6 +15,11 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/taskChecksum:trial\?\.task_checksum/);
   assert.match(source,/nativeBundleSha256/);
   assert.match(source,/nativeAdapterSha256/);
+  assert.match(source,/NATIVE_PINNED_NODE_VERSION="22\.23\.3"/);
+  assert.match(source,/1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af/);
+  assert.match(source,/ensurePinnedNodeTarball/);
+  assert.match(source,/TREBELL_NODE_PINNED_TARBALL/);
+  assert.match(source,/nativePinnedNodeTarballSha256/);
   assert.match(source,/TREBELL_TERMINAL_BENCH_CODEX_AUTH/);
   assert.match(source,/TREBELL_TERMINAL_BENCH_CODEX_AUTH\|\|"both"/);
   assert.match(source,/Terminal-Bench Codex auth mode must be api, oauth, or both/);
@@ -68,6 +73,11 @@ test("Pinned Harbor Codex adapter changes only installation and verifies the exa
 
 test("Trebell Native Harbor adapter skips package-manager setup when curl already exists",async()=>{
   const source=await readFile(new URL("../benchmarks/harbor/trebell_native_agent.py",import.meta.url),"utf8");
+  assert.match(source,/_PINNED_NODE_VERSION = "22\.23\.3"/);
+  assert.match(source,/_PINNED_NODE_TARBALL_SHA256/);
+  assert.match(source,/TREBELL_NODE_PINNED_TARBALL/);
+  assert.match(source,/tar -xzf/);
+  assert.match(source,/Unexpected Node version/);
   assert.match(source,/command -v curl >\/dev\/null 2>&1/);
   assert.match(source,/except Exception:\s+await self\.ensure_system_dependencies\(environment, \("curl",\)\)/);
   assert.ok(source.indexOf("command -v curl")<source.indexOf('ensure_system_dependencies(environment, ("curl",))'));

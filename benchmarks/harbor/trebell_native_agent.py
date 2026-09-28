@@ -1,4 +1,6 @@
+import hashlib
 import json
+import os
 import shlex
 from pathlib import Path
 from typing import Literal, override
@@ -44,6 +46,12 @@ class TrebellNativeAgent(BaseInstalledAgent):
     _REMOTE_API_KEY = "/installed-agent/openai-api-key"
     _OUTPUT = "/logs/agent/trebell-native.txt"
     _METRICS = "/logs/agent/trebell-native-metrics.json"
+    _PINNED_NODE_VERSION = "22.23.3"
+    _PINNED_NODE_TARBALL_SHA256 = (
+        "1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af"
+    )
+    _REMOTE_NODE_ARCHIVE = "/tmp/trebell-node-linux-x64.tar.gz"
+    _REMOTE_NODE_ROOT = "/opt/trebell-node"
 
     @staticmethod
     @override
@@ -116,6 +124,48 @@ class TrebellNativeAgent(BaseInstalledAgent):
         self.logger.info(
             "No compatible preinstalled Bun/Node runtime; installing Node 22 fallback."
         )
+
+        pinned_node_value = os.environ.get("TREBELL_NODE_PINNED_TARBALL", "").strip()
+        if pinned_node_value:
+            pinned_node = Path(pinned_node_value).expanduser().resolve()
+            if not pinned_node.is_file():
+                raise FileNotFoundError(f"Pinned Node tarball not found: {pinned_node}")
+            digest = hashlib.sha256()
+            with pinned_node.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            actual_sha256 = digest.hexdigest()
+            if actual_sha256 != self._PINNED_NODE_TARBALL_SHA256:
+                raise ValueError(
+                    "Pinned Node tarball SHA-256 mismatch: "
+                    f"expected {self._PINNED_NODE_TARBALL_SHA256}, got {actual_sha256}"
+                )
+            await environment.upload_file(pinned_node, self._REMOTE_NODE_ARCHIVE)
+            archive = shlex.quote(self._REMOTE_NODE_ARCHIVE)
+            root = shlex.quote(self._REMOTE_NODE_ROOT)
+            expected = shlex.quote(f"v{self._PINNED_NODE_VERSION}")
+            await self.exec_as_root(
+                environment,
+                command=(
+                    "set -euo pipefail; "
+                    f"rm -rf {root}; mkdir -p {root}; "
+                    f"tar -xzf {archive} -C {root} --strip-components=1; "
+                    f"ln -sf {root}/bin/node /usr/local/bin/node; "
+                    f"ln -sf {root}/bin/npm /usr/local/bin/npm; "
+                    f"ln -sf {root}/bin/npx /usr/local/bin/npx; "
+                    f"if [ -e {root}/bin/corepack ]; then "
+                    f"ln -sf {root}/bin/corepack /usr/local/bin/corepack; fi; "
+                    f"rm -f {archive}; "
+                    'actual="$(node --version)"; '
+                    f'test "$actual" = {expected} || {{ echo "Unexpected Node version: $actual" >&2; exit 1; }}'
+                ),
+            )
+            await self.exec_as_agent(
+                environment,
+                command=f"node {self._REMOTE_RUNNER} --version >/dev/null 2>&1",
+            )
+            await write_runtime_marker("node")
+            return
 
         # Fallback only: curl is needed for nvm. Avoid Harbor's package-manager
         # path when the task image already ships curl; apt metadata refreshes
