@@ -82,10 +82,16 @@ These runs used the same Luna benchmark fixture but are not included in the pair
 | --- | --- | --- | --- | ---: | ---: | ---: | --- |
 | 2026-09-28 | Trebell Native | `gpt-6-luna` | PASS | 35.581 s | 24,117 | 9 | First valid Native Luna run after fixing nullable generation controls. |
 | 2026-09-28 | Codex | `gpt-6-luna` | PASS | 46.735 s | 115,578* | 6 | Codex-only validation after benchmark permissions were corrected. |
+| 2026-09-28 | Codex | `gpt-6-luna` | PASS | 73.663 s | 190,589* | 10 | Separate permission-corrected Codex-only preflight; 187,995 input / 2,594 output tokens, 173,312 cached input. |
 
-### Excluded setup-invalid run
+### Excluded setup-invalid runs
 
-One Codex Luna run was excluded because the benchmark launched Codex with a permission configuration that left the disposable workspace effectively read-only. Codex made zero tool calls and explicitly reported that it could not edit files or run verification. This was a benchmark setup defect, not a Codex coding failure, and is not counted above.
+| Run | Observation | Why excluded |
+| --- | --- | --- |
+| Read-only Codex diagnostic | Native passed in 48.680 s with 7 model turns / 12 tool calls / 31,944 total tokens. Codex returned after 24.612 s with 0 tool calls and explicitly reported that filesystem writes and command execution were blocked. | Invalid permission parity; this diagnosed the benchmark runner rather than Codex coding quality. |
+| Astra transport diagnostic | An early `gpt-6-astra` run exposed a Trebell OpenAI transport bug: an unset output-token control was serialized as `1`, so the API rejected Native before the coding task began. | Native never received a valid model turn, and the benchmark was subsequently standardized on Luna for both harnesses. |
+
+The Astra transport failure produced a real Trebell fix rather than being discarded as noise. Provider request conversion now omits unset output-token and temperature fields instead of coercing JavaScript `null` through `Number(null) === 0` and emitting an unintended numeric value; deterministic regression coverage protects that behavior.
 
 ## Automatically recorded Native-vs-Codex runs
 
