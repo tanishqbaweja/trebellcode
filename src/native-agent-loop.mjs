@@ -910,7 +910,7 @@ export async function runNativeAgentTurn({
       probeBatchingRequired=true;
       emit(onEvent,{name:"native.progress.probe_batch_checkpoint",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,singletonTerminalProbeStreak}});
     }
-    if(workspaceMutationRequested&&!progressCheckpointInjected&&editRevision===0&&((toolCalls>=24&&modelTurns>=3)||modelTurns>=4)){
+    if(workspaceMutationRequested&&!progressCheckpointInjected&&!probeBatchingRequired&&editRevision===0&&((toolCalls>=24&&modelTurns>=3)||modelTurns>=4)){
       conversation.push({role:"developer",content:"Trebell progress checkpoint: substantial read-only exploration has already happened without a workspace edit. If the evidence supports a plausible implementation path, begin the smallest runnable implementation now. If more evidence is genuinely required first, do not continue one inspection or probe per model turn: batch independent read-only searches, reads, or diagnostic probes into one model response (or one bounded shell script when appropriate), then synthesize the result and implement. Singleton pre-edit reconnaissance is now blocked until the first successful workspace edit; batched focused evidence gathering remains available. If implementation is genuinely impossible from the evidence already collected, explain the concrete blocker instead of continuing broad discovery."});
       progressCheckpointInjected=true;
       emit(onEvent,{name:"native.progress.implementation_checkpoint",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision}});
