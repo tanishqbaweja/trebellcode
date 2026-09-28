@@ -3222,6 +3222,38 @@ test("runtime install refreshes only the installed active harness and reuses bun
   expect(requests.modelGets-inactiveBefore.modelGets).toBe(0);
 });
 
+test("successful direct runtime authentication reuses the returned runtime snapshot",async({page})=>{
+  test.setTimeout(30_000);
+  const requests={runtimeGets:0,authPosts:0};
+  let authenticated=false;
+  const settings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"antigravity",agentRuntimeInstanceId:"antigravity-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const snapshot=()=>({
+    selectedRuntime:"antigravity",
+    selectedInstanceId:"antigravity-default",
+    definitions:[{id:"antigravity",name:"Antigravity",protocol:"acp",canAuthenticate:true,installable:false,multipleInstances:false}],
+    instances:[{id:"antigravity-default",kind:"antigravity",displayName:"Antigravity",enabled:true}],
+    statuses:[{id:"antigravity-default",kind:"antigravity",name:"Antigravity",available:authenticated,installed:true,authenticated,version:"fixture"}],
+  });
+  await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"antigravity",agentRuntimeInstanceId:"antigravity-default",agentRuntimeReady:false,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"runtime-auth-snapshot-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings,projects:[],threadMeta:{}})}));
+  await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings)}));
+  await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({agentRuntime:"antigravity",models:["fixture-model"],metadata:{models:[{id:"fixture-model",name:"Fixture model",agent:"antigravity"}]}})}));
+  await page.route(/\/api\/providers$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selected:"freebuff",providers:[{id:"freebuff",name:"Freebuff",hasKey:true}],status:{id:"freebuff",hasKey:true},ready:true})}));
+  await page.route(/\/api\/agent-runtimes$/,route=>{requests.runtimeGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(snapshot())})});
+  await page.route(/\/api\/agent-runtime-auth$/,route=>{requests.authPosts++;authenticated=true;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({ok:true,authenticated:true,auth:{runtime:"antigravity",instanceId:"antigravity-default",methodId:"oauth-personal",methodName:"Log in with Google",methods:[{id:"oauth-personal",name:"Log in with Google"}]},agentSnapshot:snapshot()})})});
+  await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+  await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+  await page.goto("/");
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await page.getByRole("button",{name:/Agents & models/}).click();
+  const runtimeGetsBefore=requests.runtimeGets;
+  await page.getByRole("button",{name:"Sign in",exact:true}).click();
+  await expect(page.locator(".agent-runtime-settings")).toContainText("Antigravity sign in verified.");
+  await expect(page.getByRole("button",{name:"Sign in",exact:true})).toHaveCount(0);
+  expect(requests.authPosts).toBe(1);
+  expect(requests.runtimeGets-runtimeGetsBefore).toBe(0);
+});
+
 test("Trebell Native is a built-in provider-backed runtime in Settings",async({page,request})=>{
   test.setTimeout(35_000);
   await prepare(page,request);

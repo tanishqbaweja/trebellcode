@@ -194,7 +194,8 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       const result=await api("/api/agent-runtime-auth",{method:"POST",body:{action:"login",runtime:kind,instanceId:instanceId||null,environmentId:runtimeEnvironmentId||null,cwd:projectPath||null}});
       if(result?.authenticated){
         setAgentMessage((definition.name||kind)+" sign in verified.");
-        await loadAgentRuntimes();
+        if(result.agentSnapshot)setAgentInfo(result.agentSnapshot);
+        else await loadAgentRuntimes();
       }else{
         setAgentMessage("Complete sign in in the terminal, then refresh runtime status.");
         if(result?.session)onOpenRuntimeAuthTerminal?.(result.session);

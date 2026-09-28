@@ -221,6 +221,11 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.deepEqual(runtimeAuth.auth.args,["auth","login"]);
     assert.equal(runtimeAuth.session.id,"mock-runtime-auth");
     assert.equal(runtimeAuth.session.environmentId,null);
+    const directRuntimeAuth=await fetch(gui.url+"/api/agent-runtime-auth",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"login",runtime:"antigravity",environmentId:null,cwd:process.cwd()})}).then(r=>r.json());
+    assert.equal(directRuntimeAuth.authenticated,true);
+    assert.ok(Array.isArray(directRuntimeAuth.agentSnapshot?.definitions));
+    assert.ok(Array.isArray(directRuntimeAuth.agentSnapshot?.instances));
+    assert.ok(Array.isArray(directRuntimeAuth.agentSnapshot?.statuses));
 
     const projectsBefore=await fetch(gui.url+"/api/projects").then(r=>r.json());
     assert.ok(Array.isArray(projectsBefore.projects));

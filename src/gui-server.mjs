@@ -1716,7 +1716,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           :requestedEnvironmentId(null);
         const cwd=agentRuntimes.runtimeCwd(body.cwd||process.cwd(),environmentId);
         if(instance.kind==="antigravity"){
-          if(mock)return json(res,200,{ok:true,authenticated:true,auth:{runtime:"antigravity",instanceId:instance.id,methodId:"oauth-personal",methodName:"Log in with Google",methods:[{id:"oauth-personal",name:"Log in with Google"}]}});
+          if(mock)return json(res,200,{ok:true,authenticated:true,auth:{runtime:"antigravity",instanceId:instance.id,methodId:"oauth-personal",methodName:"Log in with Google",methods:[{id:"oauth-personal",name:"Log in with Google"}]},agentSnapshot:await agentRuntimes.snapshot()});
           if(environmentId)throw new Error("Antigravity ACP sign-in is currently supported on the local machine only.");
           const command=agentRuntimes.executable(instance),client=new AcpClient({command,args:agentRuntimes.acpArgs(instance,"supervised",cwd),cwd:dirname(command),env:agentRuntimes.childEnv(instance)});
           let sessionId=null;
@@ -1731,7 +1731,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
             await client.authenticate(method.id);
             const verified=await client.createSession({cwd,mcpServers:[]});sessionId=verified?.sessionId||null;
             if(!sessionId)throw new Error("Antigravity authentication finished, but a verified ACP session could not be created.");
-            return json(res,200,{ok:true,authenticated:true,auth:{runtime:"antigravity",instanceId:instance.id,methodId:method.id,methodName:method.name||method.id,methods:methods.map(item=>({id:item.id,name:item.name||item.id}))}});
+            return json(res,200,{ok:true,authenticated:true,auth:{runtime:"antigravity",instanceId:instance.id,methodId:method.id,methodName:method.name||method.id,methods:methods.map(item=>({id:item.id,name:item.name||item.id}))},agentSnapshot:await agentRuntimes.snapshot()});
           }finally{
             if(sessionId)await client.closeSession(sessionId).catch(()=>{});
             await client.stop().catch(()=>{});
