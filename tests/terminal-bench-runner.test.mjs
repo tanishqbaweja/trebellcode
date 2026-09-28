@@ -3,8 +3,11 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { lingeringJobProcesses, parsePsProcesses, waitForJobProcessDrain } from "../scripts/terminal-bench-process-drain.mjs";
+import { launchDetachedDescriptor, readDetachedStatus, writeDetachedDescriptor } from "../scripts/detached-process.mjs";
 
 test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable trial metrics",async()=>{
   const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
@@ -100,6 +103,37 @@ test("Terminal-Bench Unix ps parsing only returns processes containing the exact
   ].join("\n");
   assert.deepEqual(parsePsProcesses(ps,token),[101,303]);
   assert.deepEqual(parsePsProcesses(ps,"missing-job-token"),[]);
+});
+
+test("detached process launcher records a harmless child result outside the caller",async t=>{
+  const dir=await mkdtemp(join(tmpdir(),"trebell-detached-"));
+  t.after(()=>rm(dir,{recursive:true,force:true}));
+  const descriptorPath=join(dir,"descriptor.json"),statusPath=join(dir,"status.json"),stdoutPath=join(dir,"stdout.log"),stderrPath=join(dir,"stderr.log");
+  await writeDetachedDescriptor(descriptorPath,{
+    command:process.execPath,
+    args:["-e","setTimeout(()=>console.log('DETACHED_OK'),150)"],
+    cwd:dir,stdoutPath,stderrPath,statusPath,
+  });
+  const launched=await launchDetachedDescriptor({descriptorPath,cwd:dir});
+  assert.ok(Number.isInteger(launched.pid)&&launched.pid>0);
+  let status=null;
+  for(let attempt=0;attempt<100;attempt++){
+    status=await readDetachedStatus(statusPath);
+    if(status?.state==="finished")break;
+    await new Promise(resolveWait=>setTimeout(resolveWait,50));
+  }
+  assert.equal(status?.state,"finished");
+  assert.equal(status?.code,0);
+  assert.match(await readFile(stdoutPath,"utf8"),/DETACHED_OK/);
+  assert.equal(await readFile(stderrPath,"utf8"),"");
+});
+
+test("detached Terminal-Bench wrapper requires live mode and a task",async()=>{
+  const source=await readFile(new URL("../scripts/launch-terminal-bench-detached.mjs",import.meta.url),"utf8");
+  assert.match(source,/Refusing to launch paid\/live Terminal-Bench without --live/);
+  assert.match(source,/requires --task=<task-id>/);
+  assert.match(source,/live-terminal-bench-harness-comparison\.mjs/);
+  assert.match(source,/\.harbor-validation","detached/);
 });
 
 test("Pinned Harbor Codex adapter changes only installation and verifies the exact official version",async()=>{
