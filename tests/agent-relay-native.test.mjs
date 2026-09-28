@@ -73,6 +73,21 @@ test("Trebell Native relay executes repository tools and switches inference prov
   }
 });
 
+test("Trebell Native relay forwards an explicit reasoning effort and resets to provider default when the model changes",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-effort-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
+  const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"openai",activeEnvironmentId:null});
+  const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env),seen=[];
+  const nativeProviderTurn=async request=>{seen.push({provider:request.provider,model:request.model,reasoningEffort:request.reasoningEffort??null});return{id:"effort-"+seen.length,provider:request.provider,model:request.model,text:"done",toolCalls:[],finishReason:"stop",usage:{}}};
+  const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
+  const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
+  try{
+    const thread=(await rpc.request("thread/start",{model:"gpt-6-luna",modelProvider:"openai",cwd:repo,projectless:false,approvalPolicy:"never",sandbox:"read-only",dynamicTools:[]})).thread;
+    const first=(await rpc.request("turn/start",{threadId:thread.id,model:"gpt-6-luna",modelProvider:"openai",reasoningEffort:"high",approvalPolicy:"never",sandboxPolicy:{type:"readOnly"},input:[{type:"text",text:"first"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===first.id);
+    const second=(await rpc.request("turn/start",{threadId:thread.id,model:"model-b",modelProvider:"hcnsec",approvalPolicy:"never",sandboxPolicy:{type:"readOnly"},input:[{type:"text",text:"second"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===second.id);
+    assert.deepEqual(seen,[{provider:"openai",model:"gpt-6-luna",reasoningEffort:"high"},{provider:"hcnsec",model:"model-b",reasoningEffort:null}]);
+  }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:100})}
+});
+
 test("Trebell Native relay persists a direct verifier-status turn with zero provider inference",async()=>{
   const root=await mkdtemp(join(tmpdir(),"trebell-native-direct-status-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   await writeFile(join(repo,"verify.mjs"),'console.error("DIRECT_STATUS_EXPECTED strict but received legacy");\nprocess.exit(1);\n',"utf8");

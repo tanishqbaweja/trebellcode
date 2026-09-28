@@ -410,9 +410,9 @@ export class ProviderManager {
   #anthropicToolScaffold(request={}){
     const supplied=request?.[NATIVE_TOOL_SCHEMA_FINGERPRINT],fingerprint=/^[a-f0-9]{64}$/i.test(String(supplied||""))?String(supplied).toLowerCase():null;
     if(!fingerprint||this.anthropicToolManifestCacheSize<=0)return {scaffold:providerTurnAnthropicScaffold(request),toolsJson:null};
-    const maxOutputTokens=request.maxOutputTokens!=null&&Number.isFinite(Number(request.maxOutputTokens))?Math.max(1,Math.trunc(Number(request.maxOutputTokens))):null,temperature=request.temperature!=null&&Number.isFinite(Number(request.temperature))?Number(request.temperature):null;
+    const maxOutputTokens=request.maxOutputTokens!=null&&Number.isFinite(Number(request.maxOutputTokens))?Math.max(1,Math.trunc(Number(request.maxOutputTokens))):null,temperature=request.temperature!=null&&Number.isFinite(Number(request.temperature))?Number(request.temperature):null,reasoningEffort=request.reasoningEffort==null?null:String(request.reasoningEffort).trim()||null;
     let toolChoiceKey;try{toolChoiceKey=JSON.stringify(request.toolChoice??"auto")}catch{return {scaffold:providerTurnAnthropicScaffold(request),toolsJson:null}}
-    const key=JSON.stringify([fingerprint,String(request.model||""),maxOutputTokens,temperature,toolChoiceKey]);
+    const key=JSON.stringify([fingerprint,String(request.model||""),maxOutputTokens,temperature,reasoningEffort,toolChoiceKey]);
     if(this.anthropicToolManifestCache.has(key)){
       const cached=this.anthropicToolManifestCache.get(key);this.anthropicToolManifestCache.delete(key);this.anthropicToolManifestCache.set(key,cached);return cached;
     }
@@ -517,6 +517,15 @@ export class ProviderManager {
     this.#save();
     if(provider.id==="openai"&&previousKey!==key){try{this.openAiResponsesWebSocket?.close?.()}catch{}this.openAiResponsesWebSocket=null;this.openAiResponsesWebSocketDisabledUntil=0;this.openAiResponsesWebSocketPermanentlyDisabled=false;this.openAiResponseContinuations.clear()}
     return { provider: provider.id, hasKey: Boolean(key) };
+  }
+
+  close() {
+    const transport=this.openAiResponsesWebSocket;
+    this.openAiResponsesWebSocket=null;
+    this.openAiResponsesWebSocketDisabledUntil=0;
+    this.openAiResponsesWebSocketPermanentlyDisabled=false;
+    this.openAiResponseContinuations.clear();
+    try{transport?.close?.()}catch{}
   }
 
   childEnv(providerId, baseEnv = this.env) {
@@ -714,7 +723,7 @@ export class ProviderManager {
     if(streamChat===true&&chatBody){chatBody.stream=true;chatBody.stream_options={include_usage:true}}
     if(chatBody&&chatMessageCache?.serialized){const messagesJson=preSerializedChatMessages(chatBody.messages,chatMessageCache.serialized);if(messagesJson)attachPreSerializedTopLevel(chatBody,"messages",chatBody.messages,messagesJson)}
     if(this.reusePreSerializedToolJson&&chatBody&&chatManifest?.toolsJson&&chatBody.tools===chatManifest.tools)attachPreSerializedTopLevel(chatBody,"tools",chatBody.tools,chatManifest.toolsJson);
-    let openAiWebSocketFallback=null;
+    let openAiWebSocketFallback=null,continuationFallback=false;
     const openAiWebSocketStreamId=provider.id==="openai"&&streamResponses===true?openAiResponsesWebSocketStreamId(request?.metadata?.sessionId):null;
     const openAiWebSocketEnabled=Boolean(openAiWebSocketStreamId)&&String(this.env.TREBELL_OPENAI_RESPONSES_WEBSOCKET||"1").trim()!=="0"&&!this.#openAiWebSocketCircuitOpen();
     if(openAiWebSocketEnabled){
@@ -733,21 +742,24 @@ export class ProviderManager {
         }catch(error){
           if(signal?.aborted||error?.name==="AbortError")throw error;
           const failedWire=Number(error?.webSocketTelemetry?.requestBytes||0);if(failedWire>0)wireRequestBytes+=failedWire;wireAttempts++;
-          const failureKind=String(error?.webSocketFailureKind||((error?.name==="TimeoutError")?"timeout":error?.protocolFailure?"protocol":error?.transportFailure?"transport":"unknown")),replaySafe=error?.replaySafe===true;
+          const responseStatus=Number(error?.webSocketEvent?.status||error?.status||error?.statusCode||0),responseMessage=String(error?.webSocketEvent?.error?.message||error?.message||""),failureKind=String(error?.webSocketFailureKind||((error?.name==="TimeoutError")?"timeout":error?.protocolFailure?"protocol":error?.transportFailure?"transport":"unknown")),continuationRejected=Boolean(openAiContinuation?.used)&&[400,404,409].includes(responseStatus),invalidToolOutputRequest=responseStatus===400&&/no tool output found for function call/i.test(responseMessage),replaySafe=error?.replaySafe===true||continuationRejected||invalidToolOutputRequest;
           openAiWebSocketFallback={transportFailure:Boolean(error?.transportFailure),protocolFailure:Boolean(error?.protocolFailure),failureKind,name:error?.name||null,code:error?.code??null,replaySafe,retried:false,requestBytes:failedWire,responseBytes:Number(error?.webSocketTelemetry?.responseBytes||0),timeToFirstTokenMs:error?.webSocketTelemetry?.timeToFirstTokenMs??null};
           if(error?.transportFailure)this.#resetOpenAiWebSocket("transport_failure");else if(error?.protocolFailure)this.#resetOpenAiWebSocket("protocol_failure");else if(error?.name==="TimeoutError")this.#resetOpenAiWebSocket("timeout_failure");
           if(!replaySafe){error.retryable=false;error.telemetry={endpoint:String(provider.baseUrl||"").replace(/^http/i,"ws")+"/responses",wireApi:"openai-responses-websocket",requestBytes:failedWire,responseBytes:Number(error?.webSocketTelemetry?.responseBytes||0),timeToFirstTokenMs:error?.webSocketTelemetry?.timeToFirstTokenMs??null,totalLatencyMs:Number((performance.now()-started).toFixed(3)),streaming:true,persistentConnection:true,webSocketFallback:openAiWebSocketFallback};throw error}
           try{remainingProviderRequestMs(requestDeadlineAt)}catch{error.retryable=false;error.telemetry={endpoint:String(provider.baseUrl||"").replace(/^http/i,"ws")+"/responses",wireApi:"openai-responses-websocket",requestBytes:failedWire,responseBytes:Number(error?.webSocketTelemetry?.responseBytes||0),timeToFirstTokenMs:error?.webSocketTelemetry?.timeToFirstTokenMs??null,totalLatencyMs:Number((performance.now()-started).toFixed(3)),streaming:true,persistentConnection:true,webSocketFallback:openAiWebSocketFallback};throw error}
           openAiWebSocketFallback.retried=true;
           const fallbackBody=this.#officialOpenAiResponsesBody({...request,model,promptCacheComparisonResponseId:""});fallbackBody.stream=true;
-          openAiContinuation=this.openAiResponseContinuations.prepare(fallbackBody,"");responsesBody=fallbackBody;
+          if(continuationRejected||invalidToolOutputRequest){
+            fullResponsesBody=fallbackBody;responsesBody=fallbackBody;continuationFallback=true;
+          }else{
+            openAiContinuation=this.openAiResponseContinuations.prepare(fallbackBody,"");responsesBody=fallbackBody;
+          }
         }
       }
     }
     let upstream=provider.wireApi==="responses"
       ?await this.forwardResponses(provider.id,responsesBody,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)})
       :await this.forwardChat(provider.id,chatBody,{signal,onWire,promptCaching,anthropicBody:directAnthropicBody});
-    let continuationFallback=false;
     if(provider.id==="openai"&&openAiContinuation?.used&&!upstream.ok&&[400,404,409].includes(Number(upstream.status))){
       try{await upstream.body?.cancel?.()}catch{}
       if(!fullResponsesBody){fullResponsesBody=this.#officialOpenAiResponsesBody({...request,model});if(streamResponses===true)fullResponsesBody.stream=true}

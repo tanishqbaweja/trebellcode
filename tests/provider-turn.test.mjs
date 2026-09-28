@@ -65,6 +65,13 @@ test("provider turn omits unset output-token and temperature fields instead of c
   assert.equal(Object.prototype.hasOwnProperty.call(responses,"temperature"),false);
 });
 
+test("provider turn maps explicit reasoning effort onto Chat and Responses wire formats",()=>{
+  const chat=providerTurnToChat({model:"gemini-3.8-flash",messages:[{role:"user",content:"hello"}],reasoningEffort:"high"});
+  assert.equal(chat.reasoning_effort,"high");
+  const responses=providerTurnToResponses({model:"gpt-6-luna",messages:[{role:"user",content:"hello"}],reasoningEffort:"max"});
+  assert.deepEqual(responses.reasoning,{effort:"max"});
+});
+
 test("Chat conversion can reuse canonical message conversions without changing the request body",()=>{
   const messages=[{role:"system",content:"stable"},{role:"user",content:[{type:"text",text:"hello"}]},{role:"assistant",content:"",toolCalls:[{id:"c1",namespace:"trebell_repo",name:"search_code",arguments:{query:"Session"}}]},{role:"tool",toolCallId:"c1",content:"result"}],request={model:"chat-model",messages,tools:[]},cache=new WeakMap(),baseline=providerTurnToChat(request),candidate=providerTurnToChat(request,{messageCache:cache});
   assert.deepEqual(candidate,baseline);assert.equal(JSON.stringify(candidate),JSON.stringify(baseline));
@@ -151,4 +158,13 @@ test("provider turn normalizes Responses text, namespaced calls and usage",()=>{
   assert.equal(result.text,"Checking");assert.equal(result.finishReason,"tool_calls");assert.equal(result.provider,"agentrouter");
   assert.deepEqual(result.toolCalls,[{id:"call-9",namespace:"trebell_repo",name:"search_symbols",arguments:'{"query":"Auth"}'}]);
   assert.deepEqual(result.usage,{inputTokens:20,outputTokens:5,totalTokens:25,cachedInputTokens:8,cacheWriteInputTokens:0,reasoningOutputTokens:3});
+});
+
+test("Responses normalization preserves call_id instead of the function-call item id",()=>{
+  const result=normalizeResponsesTurnResponse({
+    id:"resp-1",model:"gpt-6-luna",status:"completed",
+    output:[{type:"function_call",id:"fc-item-1",call_id:"call-continuation-1",name:"trebell_workspace__list",arguments:'{"path":"."}'}],
+    usage:{input_tokens:1,output_tokens:1,total_tokens:2},
+  },"openai");
+  assert.equal(result.toolCalls[0].id,"call-continuation-1");
 });

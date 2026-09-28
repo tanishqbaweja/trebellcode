@@ -13,6 +13,7 @@ import { NativeMcpBroker } from "./native-mcp-broker.mjs";
 import { createNativeToolExecutor } from "./native-tool-executor.mjs";
 import { nativeSystemPrompt } from "./native-system-prompt.mjs";
 import { attachNativePromptProvenance } from "./native-request-metrics.mjs";
+import { configuredReasoningEffort } from "./model-reasoning-effort.mjs";
 import { repositoryDynamicToolNamespace, searchRepositoryToolDefinitions } from "./repository-tool-catalog.mjs";
 import { platformDynamicToolNamespaces } from "./platform-tool-catalog.mjs";
 import { acpMcpServersForSession, claudeMcpServersForSession, nativeMcpServersForSession } from "./mcp-registry.mjs";
@@ -751,7 +752,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const compactionBoundary=storedCompaction?.throughTurnId&&thread.turns?.some(turn=>String(turn.id)===String(storedCompaction.throughTurnId))?storedCompaction:null;
       const compactedMessage=compactionBoundary?nativeCompactionMessage(compactionBoundary.summary):null;
       const runtime=new NativeAgentSession({
-        ...common,provider:thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model:model||thread.model||null,tools,executeTool,toolOutputStore:outputStore,
+        ...common,provider:thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model:model||thread.model||null,reasoningEffort:configuredReasoningEffort(state?.settings?.()||{},"native",thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model||thread.model||null),tools,executeTool,toolOutputStore:outputStore,
         onClose:()=>mcpBroker.close(),
         providerTurn:request=>nativeProviderTurn(request),initialMessages:[
           {role:"system",content:nativeSystemPrompt({tools,permissionMode:effectivePermissionMode,projectless})},
@@ -1312,6 +1313,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       if(thread.runtime==="native"&&Array.isArray(params.dynamicToolNamespaces)&&params.dynamicToolNamespaces.length)thread=(await ensureNativeToolNamespaces(thread,params.dynamicToolNamespaces)).thread;
       const session=await ensureSession(thread,context,{model:params.model||thread.model});
       if(runtime==="native"&&params.modelProvider&&typeof session.setProvider==="function")session.setProvider(params.modelProvider);
+      if(runtime==="native"&&typeof session.setReasoningEffort==="function"){const providerId=params.modelProvider||thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,nextModel=params.model||thread.model||null;session.setReasoningEffort(Object.prototype.hasOwnProperty.call(params,"reasoningEffort")?params.reasoningEffort:configuredReasoningEffort(state?.settings?.()||{},"native",providerId,nextModel))}
       if(runtime==="native"&&typeof session.setPermissionMode==="function")session.setPermissionMode((threadMetadata(thread.id)||thread)?.providerMeta?.permissionProfile||"supervised");
       if(params.model&&params.model!==thread.model){await session.setModel(params.model).catch(()=>{});threadStore.update(thread.id,{model:params.model})}
       if(runtime==="native"&&typeof session.setContextWindow==="function"){

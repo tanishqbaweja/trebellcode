@@ -150,6 +150,8 @@ export function providerTurnToAnthropic(request={},{stream=false,scaffold=null,m
   if(typeof resolvedScaffold.temperature==="number")out.temperature=resolvedScaffold.temperature;
   if(typeof resolvedScaffold.top_p==="number")out.top_p=resolvedScaffold.top_p;
   if(Array.isArray(resolvedScaffold.stop_sequences))out.stop_sequences=resolvedScaffold.stop_sequences;
+  if(resolvedScaffold.thinking)out.thinking=resolvedScaffold.thinking;
+  if(resolvedScaffold.output_config)out.output_config=resolvedScaffold.output_config;
   return out;
 }
 
@@ -228,6 +230,10 @@ export function chatToAnthropic(body={}){
   if(typeof body.temperature==="number")out.temperature=body.temperature;
   if(typeof body.top_p==="number")out.top_p=body.top_p;
   if(Array.isArray(body.stop))out.stop_sequences=body.stop;
+  if(body.reasoning_effort!=null&&String(body.reasoning_effort).trim()){
+    out.thinking={type:"adaptive"};
+    out.output_config={effort:String(body.reasoning_effort).trim()};
+  }
   return out;
 }
 

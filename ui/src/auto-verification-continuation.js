@@ -1,4 +1,4 @@
-const AUTOMATIC_KINDS=new Set(["command","tests"]);
+const AUTOMATIC_KINDS=new Set(["command","tests","behavioral"]);
 
 export function automaticVerificationContinuationSupported(result={}){
   return result?.nextAction?.action==="verify"&&Boolean(result?.nextAction?.nextStep?.id)&&AUTOMATIC_KINDS.has(String(result?.nextAction?.nextStep?.kind||""));

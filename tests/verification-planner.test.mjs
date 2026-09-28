@@ -60,6 +60,26 @@ test("Python changes use deterministic diagnostics and discovered project tests"
   const tests=plan.steps.find(step=>step.id==="project_tests");assert.ok(tests);assert.equal(tests.command,"python -m pytest");
 });
 
+test("code changes without discovered tests still require focused behavioral evidence",()=>{
+  const plan=planVerification({changedPaths:["app/processor.py"],projectCommands:{declared:[],conventional:[]},capabilities:{diagnostics:true}});
+  assert.deepEqual(plan.steps.map(step=>step.id),["diagnostics","focused_behavior"]);
+  const behavior=plan.steps[1];assert.equal(behavior.kind,"behavioral");assert.equal(behavior.required,true);
+  assert.deepEqual(behavior.evidence,["stated-acceptance-behavior"]);
+  assert.match(behavior.reason,/instead of treating syntax diagnostics as behavioral verification/i);
+});
+
+test("retention and GC changes require both positive and preservation boundary checks",()=>{
+  const plan=planVerification({changedPaths:["app/gc.py","app/sessions.py"],projectCommands:{declared:[],conventional:[]},capabilities:{diagnostics:true}});
+  assert.equal(plan.categories.lifecycle,true);
+  assert.equal(plan.categories.auth,false,"generic session-processing files must not be mistaken for authentication code");
+  assert.equal(plan.risk,"medium");
+  const behavior=plan.steps.find(step=>step.id==="focused_behavior");assert.ok(behavior);
+  assert.deepEqual(behavior.evidence,["eligible-transition","ineligible-preservation","state-class-distinction","post-transition-state"]);
+  assert.match(behavior.reason,/preserved while ineligible/i);
+  assert.match(behavior.reason,/each lifecycle state the specification distinguishes/i);
+  assert.match(plan.reasons.join(" "),/Lifecycle\/retention changes need boundary evidence/i);
+});
+
 test("Go changes use gofmt diagnostics before discovered project tests",()=>{
   const plan=planVerification({changedPaths:["cmd/server/main.go"],projectCommands:{conventional:[{name:"test",command:"go test ./...",kind:"test",confidence:"convention"}]},capabilities:{diagnostics:true,semanticDiagnostics:true}});
   assert.equal(plan.categories.go,true);assert.equal(plan.risk,"medium");assert.match(plan.reasons.join(" "),/gofmt syntax diagnostics/i);

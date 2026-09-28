@@ -15,7 +15,15 @@ vendor/freebuff2api/dist/
 test-results/
 visual-audit/
 playwright-report/
+.playwright-cli/
 coverage/
+.harbor-jobs/
+.harbor-*/
+.bench-profile/
+.tb2-task-files.txt
+benchmarks/harbor/dist/
+__pycache__/
+*.pyc
 
 # Desktop packaging output
 desktop-dist/

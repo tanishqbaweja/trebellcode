@@ -7,6 +7,7 @@ import { redactSecretValue, withoutSecretEnvironment } from "./secret-redactor.m
 import { normalizeRecipes } from "./recipes.mjs";
 import { normalizeProjectHooks } from "./project-hooks.mjs";
 import { SqliteStateCollections,threadMetaCatalogProjection } from "./sqlite-state-collections.mjs";
+import { normalizeReasoningEffort } from "./model-reasoning-effort.mjs";
 
 const DEFAULT_STATE = Object.freeze({
   version: 2,
@@ -47,6 +48,7 @@ const DEFAULT_STATE = Object.freeze({
     agentRuntimeInstanceId: "codex-default",
     agentRuntimeInstances: [],
     customModels: [],
+    modelReasoningEfforts: {},
     modelPrices: {},
     mcpServers: [],
     modelProvider: "freebuff",
@@ -297,6 +299,11 @@ export class TrebellStateStore {
     if("sourceControlFollowTemplates" in patch)patch={...patch,sourceControlFollowTemplates:normalizeScopedSetting("sourceControlFollowTemplates",patch.sourceControlFollowTemplates)};
     if("mcpServers" in patch)patch={...patch,mcpServers:normalizeMcpServers(patch.mcpServers)};
     if("agentRuntimeInstances" in patch)patch={...patch,agentRuntimeInstances:normalizeRuntimeInstances(patch.agentRuntimeInstances)};
+    if("modelReasoningEfforts" in patch){
+      const source=patch.modelReasoningEfforts&&typeof patch.modelReasoningEfforts==="object"&&!Array.isArray(patch.modelReasoningEfforts)?patch.modelReasoningEfforts:{},normalized={};
+      for(const [key,value] of Object.entries(source).slice(-500)){const k=String(key||"").slice(0,500),v=normalizeReasoningEffort(value);if(k&&v)normalized[k]=v}
+      patch={...patch,modelReasoningEfforts:normalized};
+    }
     if("panelAnimationMs" in patch){const value=Math.round(Number(patch.panelAnimationMs)||0);patch={...patch,panelAnimationMs:Math.max(0,Math.min(400,value))}}
     this.state.settings={...this.state.settings,...patch};
     this.#save();

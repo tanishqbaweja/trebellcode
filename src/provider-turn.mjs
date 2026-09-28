@@ -24,7 +24,12 @@ function flatToolName(namespace,name){return namespace?String(namespace)+"__"+St
 function normalizeToolCall(call={}){
   const source=call.function||call,split=splitToolName(source.name||call.name||"tool"),namespace=call.namespace||split.namespace;
   return {
-    id:String(call.id||call.call_id||""),
+    // Responses function_call items have both an item id ("fc_...") and a
+    // continuation call_id ("call_..."). Tool outputs must reference call_id;
+    // using the item id makes previous_response_id continuation fail with
+    // "No tool output found for function call ...". Chat tool calls normally
+    // expose only id, so the fallback preserves Chat compatibility.
+    id:String(call.call_id||call.id||""),
     namespace:namespace?String(namespace):null,
     name:String(split.name||call.name||"tool"),
     arguments:jsonArguments(source.arguments??call.arguments??{}),
@@ -101,7 +106,7 @@ export function providerToolsToChat(tools=[]){
   return out;
 }
 
-export function providerTurnToChat({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,parallelToolCalls=true}={}, {preparedTools=null,messageCache=null}={}){
+export function providerTurnToChat({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,reasoningEffort=null,parallelToolCalls=true}={}, {preparedTools=null,messageCache=null}={}){
   const chatMessages=[];
   for(const message of Array.isArray(messages)?messages:[]){
     if(!message||typeof message!=="object")continue;
@@ -118,6 +123,7 @@ export function providerTurnToChat({model,messages=[],tools=[],toolChoice="auto"
   }
   if(maxOutputTokens!=null&&Number.isFinite(Number(maxOutputTokens)))result.max_tokens=Math.max(1,Math.trunc(Number(maxOutputTokens)));
   if(temperature!=null&&Number.isFinite(Number(temperature)))result.temperature=Number(temperature);
+  if(reasoningEffort!=null&&String(reasoningEffort).trim())result.reasoning_effort=String(reasoningEffort).trim();
   return result;
 }
 
@@ -149,7 +155,7 @@ function responseToolOutput(content,{cacheBreakpoint=false}={}){
   return output;
 }
 
-export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,parallelToolCalls=true}={}, {preserveInstructionOrder=false,flattenToolCallNames=false,toolResultCacheBreakpoints=false,inputStartMessageIndex=0}={}){
+export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,reasoningEffort=null,parallelToolCalls=true}={}, {preserveInstructionOrder=false,flattenToolCallNames=false,toolResultCacheBreakpoints=false,inputStartMessageIndex=0}={}){
   const instructions=[],input=[];let instructionPrefixOpen=true;
   const sourceMessages=Array.isArray(messages)?messages:[],inputStart=Math.max(0,Math.trunc(Number(inputStartMessageIndex)||0));
   for(let messageIndex=0;messageIndex<sourceMessages.length;messageIndex++){
@@ -189,6 +195,7 @@ export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="
   }
   if(maxOutputTokens!=null&&Number.isFinite(Number(maxOutputTokens)))result.max_output_tokens=Math.max(1,Math.trunc(Number(maxOutputTokens)));
   if(temperature!=null&&Number.isFinite(Number(temperature)))result.temperature=Number(temperature);
+  if(reasoningEffort!=null&&String(reasoningEffort).trim())result.reasoning={effort:String(reasoningEffort).trim()};
   return result;
 }
 

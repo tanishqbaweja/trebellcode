@@ -23,6 +23,19 @@ test("Native session implements the relay start/prompt contract with usage updat
   const usage=updates.find(item=>item.update.sessionUpdate==="usage_update");assert.equal(usage.update.used,6);assert.equal(usage.update.usage.cache_read_input_tokens,1);
 });
 
+test("Native session forwards the selected reasoning effort to provider turns",async()=>{
+  let seen=null;
+  const session=new NativeAgentSession({
+    provider:"openai",model:"gpt-6-luna",reasoningEffort:"max",
+    providerTurn:async request=>{seen=request.reasoningEffort;return{id:"resp-effort",provider:"openai",model:"gpt-6-luna",text:"done",toolCalls:[],usage:{}}},
+    executeTool:async()=>{throw new Error("not used")},
+  });
+  await session.start({providerSessionId:"effort",model:"gpt-6-luna"});
+  await session.prompt([{type:"text",text:"Solve this"}]);
+  assert.equal(seen,"max");
+  session.setReasoningEffort("high");await session.prompt([{type:"text",text:"Try again"}]);assert.equal(seen,"high");
+});
+
 test("Native session uses deterministic command-only reporting when no richer work is requested",async()=>{
   let providerCalls=0;const updates=[],events=[];
   const session=new NativeAgentSession({
@@ -540,6 +553,55 @@ test("Native session preserves already-sent virtualized history for cache-capabl
     assert.ok(hot.length>3000);assert.equal(later,hot);assert.equal(persisted,hot);
     assert.equal(events.filter(event=>event.name==="native.tool.history_cooled").length,0);
   }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("Native session delays OpenAI historical read cooling until provider input is near the context budget",async()=>{
+  const requests=[],events=[];let calls=0;
+  const readCalls=Array.from({length:8},(_,index)=>({id:"read-"+index,namespace:"trebell_workspace",name:"read_file",arguments:JSON.stringify({path:`src/file-${index}.txt`})}));
+  const session=new NativeAgentSession({
+    model:"gpt-6-luna",provider:"openai",contextWindow:100_000,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));calls++;
+      if(calls===1)return {id:"reads",text:"",toolCalls:readCalls,usage:{inputTokens:10_000}};
+      if(calls===2)return {id:"more",text:"",toolCalls:[{id:"read-8",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/file-8.txt"}'}],usage:{inputTokens:80_000}};
+      return {id:"done",text:"done",toolCalls:[],usage:{inputTokens:80_500}};
+    },
+    executeTool:async call=>({success:true,path:call.arguments.path,content:"x".repeat(10_000)+call.arguments.path,size:10_000}),
+  });
+  await session.start({providerSessionId:"native-openai-late-read-cooling",model:"gpt-6-luna"});
+  await session.prompt([{type:"text",text:"inspect these files"}],{maxModelTurns:3,maxToolCalls:20});
+  const secondFirstRead=requests[1].messages.find(message=>message.role==="tool"&&message.toolCallId==="read-0")?.content||"";
+  const thirdFirstRead=requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="read-0")?.content||"";
+  assert.ok(secondFirstRead.length>9000,"early OpenAI continuation should retain the full already-sent read result");
+  assert.ok(thirdFirstRead.length<3000,"late context pressure should compact old read evidence");
+  assert.match(thirdFirstRead,/_trebell_cold_read/);
+  const cooled=events.find(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="same_turn");
+  assert.ok(cooled);assert.ok(cooled.data.savedChars>20_000);
+});
+
+test("Native session uses the conservative 160k OpenAI cooling trigger when the context window is unknown",async()=>{
+  const requests=[],events=[];let calls=0;
+  const readCalls=Array.from({length:8},(_,index)=>({id:"unknown-read-"+index,namespace:"trebell_workspace",name:"read_file",arguments:JSON.stringify({path:`src/unknown-${index}.txt`})}));
+  const session=new NativeAgentSession({
+    model:"gpt-6-luna",provider:"openai",onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));calls++;
+      if(calls===1)return {id:"reads",text:"",toolCalls:readCalls,usage:{inputTokens:120_000}};
+      if(calls===2)return {id:"more",text:"",toolCalls:[{id:"unknown-read-8",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/unknown-8.txt"}'}],usage:{inputTokens:170_000}};
+      return {id:"done",text:"done",toolCalls:[],usage:{inputTokens:171_000}};
+    },
+    executeTool:async call=>({success:true,path:call.arguments.path,content:"x".repeat(10_000)+call.arguments.path,size:10_000}),
+  });
+  await session.start({providerSessionId:"native-openai-unknown-window",model:"gpt-6-luna"});
+  await session.prompt([{type:"text",text:"inspect these files"}],{maxModelTurns:3,maxToolCalls:20});
+  const secondFirstRead=requests[1].messages.find(message=>message.role==="tool"&&message.toolCallId==="unknown-read-0")?.content||"";
+  const thirdFirstRead=requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="unknown-read-0")?.content||"";
+  assert.ok(secondFirstRead.length>9000,"120k input should preserve OpenAI's already-sent prefix when the window size is unknown");
+  assert.ok(thirdFirstRead.length<3000,"170k input should cross the conservative unknown-window cooling trigger");
+  assert.match(thirdFirstRead,/_trebell_cold_read/);
+  assert.equal(events.filter(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="same_turn").length,1);
 });
 
 test("Native session cools large historical workspace edit arguments only after one provider read",async()=>{

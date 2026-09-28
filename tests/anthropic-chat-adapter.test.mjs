@@ -32,6 +32,15 @@ test("OpenAI chat payload converts to Anthropic messages and tools",()=>{
   assert.equal(body.stream,true);
 });
 
+test("Anthropic conversion maps reasoning effort to adaptive thinking and output effort",()=>{
+  const body=chatToAnthropic({model:"claude-opus-4-8",reasoning_effort:"high",messages:[{role:"user",content:"Fix the bug"}]});
+  assert.deepEqual(body.thinking,{type:"adaptive"});
+  assert.deepEqual(body.output_config,{effort:"high"});
+  const direct=providerTurnToAnthropic({model:"claude-opus-4-8",reasoningEffort:"high",messages:[{role:"user",content:"Fix the bug"}]});
+  assert.deepEqual(direct.thinking,{type:"adaptive"});
+  assert.deepEqual(direct.output_config,{effort:"high"});
+});
+
 test("Anthropic tool results preserve data-URL images as image blocks",()=>{
   const body=chatToAnthropic({
     model:"claude-opus-4-8",stream:false,

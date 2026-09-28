@@ -38,6 +38,12 @@ function assessEntry(step,entry){
     if(missing.length)return {status:"incomplete",reason:`Missing visual evidence: ${missing.join(", ")}.`};
     if(required.length)return explicit==="failed"?{status:"failed",reason:entry.reason||"Visual verification failed."}:{status:"passed",reason:"Required visual evidence was recorded."};
   }
+  if(step.kind==="behavioral"){
+    if(explicit==="failed")return {status:"failed",reason:entry.reason||"Behavioral verification failed."};
+    const types=evidenceTypes(entry),required=array(step.evidence),missing=required.filter(type=>!types.has(type));
+    if(missing.length)return {status:"incomplete",reason:`Missing behavioral evidence: ${missing.join(", ")}.`};
+    if(required.length)return explicit==="passed"?{status:"passed",reason:"Required behavioral evidence was recorded."}:{status:"incomplete",reason:"Required behavioral evidence was recorded without an explicit pass/fail status."};
+  }
   if(step.kind==="browser"){
     if(typeof entry.passed==="boolean")return entry.passed?{status:"passed",reason:"Browser interaction completed successfully."}:{status:"failed",reason:entry.reason||"Browser interaction failed."};
   }

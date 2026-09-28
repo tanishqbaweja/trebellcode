@@ -44,6 +44,104 @@ test("native agent reuses one hidden OpenAI continuation identity across model t
   assert.equal(result.text,"done");assert.equal(tokens.length,2);assert.ok(tokens[0]&&typeof tokens[0]==="object");assert.equal(tokens[0],tokens[1]);assert.equal(Object.getOwnPropertySymbols(requests[0]).includes(NATIVE_OPENAI_CONTINUATION_IDENTITY),true);assert.equal(JSON.stringify(requests[0]).includes("continuation-identity"),false);
 });
 
+test("native agent injects one implementation checkpoint after prolonged read-only exploration",async()=>{
+  const requests=[],events=[],executed=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"gpt-6-luna",provider:"openai",messages:[{role:"user",content:"Implement the requested feature."}],
+    tools:[{type:"namespace",name:"trebell_repo",tools:[{name:"search_code"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    maxModelTurns:8,maxToolCalls:40,onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turn++;
+      if(turn<=4){
+        const toolCalls=Array.from({length:6},(_,index)=>({
+          id:`call-${turn}-${index}`,namespace:"trebell_repo",name:"search_code",
+          arguments:JSON.stringify({query:`q-${turn}-${index}`}),
+        }));
+        return {text:"",toolCalls,usage:{}};
+      }
+      if(turn===5)return {text:"",toolCalls:[{id:"extra-read",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"cat",args:["src/feature.mjs"]})}],usage:{}};
+      if(turn===6)return {text:"",toolCalls:[{id:"write-1",namespace:"trebell_workspace",name:"write_file",arguments:JSON.stringify({path:"src/feature.mjs",content:"export const ready = true;\n"})}],usage:{}};
+      return {text:"implemented",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call);return call.namespace==="trebell_workspace"?{success:true,path:"src/feature.mjs",size:27}:{success:true,matches:["evidence"]}},
+  });
+  assert.equal(result.text,"implemented");assert.equal(requests.length,7);
+  const checkpointRequests=requests.filter(request=>request.messages.some(message=>message.role==="developer"&&/progress checkpoint/i.test(String(message.content||""))));
+  assert.equal(checkpointRequests.length,3);
+  assert.equal(requests[4].tools.some(namespace=>namespace?.name==="trebell_repo"),true,"pressure must preserve the stable provider tool manifest");
+  assert.equal(requests[4].tools.some(namespace=>namespace?.name==="trebell_terminal"),true);
+  assert.deepEqual(requests[4].tools,requests[3].tools,"pressure must not rewrite tool schemas and destroy provider cache identity");
+  assert.equal(executed.some(call=>call.id==="extra-read"),false,"pre-edit reconnaissance should be blocked rather than executed");
+  assert.equal(requests[5].messages.some(message=>message.role==="tool"&&message.toolCallId==="extra-read"&&/implementation pressure/i.test(String(message.content||""))),true);
+  assert.equal(requests[6].tools.some(namespace=>namespace?.name==="trebell_repo"),true,"full tools remain available after the first successful edit");
+  assert.equal(events.filter(event=>event.name==="native.progress.implementation_checkpoint").length,1);
+  const pressureEvents=events.filter(event=>event.name==="native.progress.implementation_pressure");
+  assert.equal(pressureEvents.length,2);
+  assert.deepEqual(pressureEvents.map(event=>event.data?.modelTurn),[5,6]);
+  assert.equal(events.filter(event=>event.name==="native.progress.implementation_call_blocked").length,1);
+});
+
+test("native implementation pressure never activates for a read-only request",async()=>{
+  const requests=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"gpt-6-luna",provider:"openai",messages:[{role:"user",content:"Inspect the repository and explain the architecture. Do not edit anything."}],
+    tools:[{type:"namespace",name:"trebell_repo",tools:[{name:"search_code"}]}],maxModelTurns:6,maxToolCalls:30,
+    providerTurn:async request=>{requests.push(structuredClone(request));turn++;return turn<=4?{text:"",toolCalls:Array.from({length:6},(_,index)=>({id:`read-${turn}-${index}`,namespace:"trebell_repo",name:"search_code",arguments:JSON.stringify({query:"architecture"})})),usage:{}}:{text:"architecture explained",toolCalls:[],usage:{}}},
+    executeTool:async()=>({success:true,matches:["evidence"]}),
+  });
+  assert.equal(result.text,"architecture explained");assert.ok(requests.every(request=>request.tools.some(namespace=>namespace?.name==="trebell_repo")));
+});
+
+test("native implementation pressure does not treat a build-only request as a workspace mutation",async()=>{
+  const requests=[],events=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"gpt-6-luna",provider:"openai",messages:[{role:"user",content:"Build the project and report the compiler output."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],maxModelTurns:6,maxToolCalls:30,onEvent:event=>events.push(event),
+    providerTurn:async request=>{requests.push(structuredClone(request));turn++;return turn<=4?{text:"",toolCalls:Array.from({length:6},(_,index)=>({id:`build-${turn}-${index}`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"echo",args:["build evidence"]})})),usage:{}}:{text:"build output reported",toolCalls:[],usage:{}}},
+    executeTool:async()=>({success:true,stdout:"build evidence",exitCode:0}),
+  });
+  assert.equal(result.text,"build output reported");
+  assert.equal(events.some(event=>event.name==="native.progress.implementation_checkpoint"),false);
+  assert.equal(events.some(event=>event.name==="native.progress.implementation_pressure"),false);
+  assert.equal(events.some(event=>event.name==="native.progress.implementation_call_blocked"),false);
+  assert.equal(requests.length,5);
+});
+
+test("native implementation pressure recognizes declarative broken-software task framing",async()=>{
+  const events=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"gpt-6-luna",provider:"openai",
+    messages:[{role:"user",content:"A session window processor is not working correctly. Recently active sessions disappear and output stalls when sources produce data at different rates."}],
+    tools:[{type:"namespace",name:"trebell_repo",tools:[{name:"search_code"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}],
+    maxModelTurns:7,maxToolCalls:40,onEvent:event=>events.push(event),
+    providerTurn:async()=>{
+      turn++;
+      if(turn<=4)return {text:"",toolCalls:Array.from({length:6},(_,index)=>({id:`read-${turn}-${index}`,namespace:"trebell_repo",name:"search_code",arguments:JSON.stringify({query:"sessions"})})),usage:{}};
+      if(turn===5)return {text:"",toolCalls:[{id:"blocked-read",namespace:"trebell_repo",name:"search_code",arguments:'{"query":"more"}'}],usage:{}};
+      if(turn===6)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"app/sessions.py","old_text":"bad","new_text":"good"}'}],usage:{}};
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{path:"app/sessions.py",replacements:1}:{success:true,matches:["evidence"]},
+  });
+  assert.equal(result.text,"done");
+  assert.equal(events.filter(event=>event.name==="native.progress.implementation_checkpoint").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.implementation_call_blocked").length,1);
+});
+
+test("native declarative defect detection does not turn a diagnosis-only request into an edit task",async()=>{
+  const events=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"gpt-6-luna",provider:"openai",
+    messages:[{role:"user",content:"Diagnose why the session processor is not working correctly and explain the root cause."}],
+    tools:[{type:"namespace",name:"trebell_repo",tools:[{name:"search_code"}]}],maxModelTurns:6,maxToolCalls:30,onEvent:event=>events.push(event),
+    providerTurn:async()=>{turn++;return turn<=4?{text:"",toolCalls:Array.from({length:6},(_,index)=>({id:`diag-${turn}-${index}`,namespace:"trebell_repo",name:"search_code",arguments:'{"query":"sessions"}'})),usage:{}}:{text:"root cause explained",toolCalls:[],usage:{}}},
+    executeTool:async()=>({success:true,matches:["evidence"]}),
+  });
+  assert.equal(result.text,"root cause explained");
+  assert.equal(events.some(event=>event.name==="native.progress.implementation_checkpoint"),false);
+  assert.equal(events.some(event=>event.name==="native.progress.implementation_pressure"),false);
+});
+
 test("native agent gives one bounded recovery chance to an empty terminal provider response",async()=>{
   const requests=[],events=[];
   const result=await runNativeAgentTurn({
@@ -1054,6 +1152,26 @@ test("native agent runs explicitly parallel-safe tool reads concurrently while p
   assert.equal(maxActive,2,"parallel-safe reads should overlap");assert.deepEqual(completed,["fast","slow"],"fixture must prove completion order differed from model order");assert.equal(result.toolCalls,2);assert.equal(result.text,"done");
 });
 
+test("native agent executes multiple non-parallel workspace edits sequentially in model order",async()=>{
+  const executionOrder=[];let providerCalls=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Apply both exact edits."}],maxModelTurns:3,maxToolCalls:5,
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}],
+    providerTurn:async()=>{
+      providerCalls++;
+      if(providerCalls===1)return {text:"",toolCalls:[
+        {id:"edit-1",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"a.txt","old_text":"one","new_text":"ONE"}'},
+        {id:"edit-2",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"a.txt","old_text":"two","new_text":"TWO"}'},
+      ],usage:{}};
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executionOrder.push(call.id);return {success:true,path:"a.txt",replacements:1}},
+  });
+  assert.deepEqual(executionOrder,["edit-1","edit-2"]);
+  assert.equal(result.text,"done");
+  assert.equal(result.modelTurns,2);
+});
+
 test("native parallel-safe batching never starts work beyond the exact tool-call budget",async()=>{
   const executed=[];
   await assert.rejects(()=>runNativeAgentTurn({
@@ -1753,6 +1871,81 @@ test("native agent enforces model-turn and tool-call budgets before extra work s
   assert.equal(turns,2);
 });
 
+test("native agent ends gracefully at the model-turn limit after an edit and successful post-edit command",async()=>{
+  let turns=0;const events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation."}],maxModelTurns:2,maxToolCalls:10,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      return {text:"",toolCalls:[{id:"check",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check.mjs"]}'}],usage:{}};
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0},
+  });
+  assert.equal(turns,2);assert.equal(result.modelTurns,2);assert.equal(result.toolCalls,2);assert.match(result.text,/broader task verification remains unconfirmed/i);
+  const completed=events.find(event=>event.name==="native.turn.completed"&&event.data?.budgetFinalized===true);assert.ok(completed);
+});
+
+test("native agent still reports model-turn exhaustion when the latest edited state has no successful command evidence",async()=>{
+  let turns=0;
+  await assert.rejects(()=>runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation."}],maxModelTurns:2,maxToolCalls:10,
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      return {text:"",toolCalls:[{id:"check",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check.mjs"]}'}],usage:{}};
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:1},
+  }),error=>error?.code==="native_model_turn_budget");
+  assert.equal(turns,2);
+});
+
+test("native agent nudges convergence after multiple distinct successful post-edit checks",async()=>{
+  let turns=0;const requests=[],events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation."}],maxModelTurns:5,maxToolCalls:10,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[
+        {id:"check-a-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-a.mjs"]}'},
+        {id:"check-b",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-b.mjs"]}'},
+        {id:"check-a-2",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-a.mjs"]}'},
+      ],usage:{}};
+      assert.match(String(request.messages.at(-1)?.content||""),/convergence checkpoint/i);
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0},
+  });
+  assert.equal(result.text,"done");assert.equal(turns,3);
+  const checkpoint=events.find(event=>event.name==="native.progress.convergence_checkpoint");assert.ok(checkpoint);assert.equal(checkpoint.data.editRevision,1);assert.equal(checkpoint.data.passedRuns,3);assert.equal(checkpoint.data.distinctPassedRuns,2);
+});
+
+test("native convergence checkpoint does not fire while the latest edit still has a failed terminal check",async()=>{
+  let turns=0;const requests=[],events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation."}],maxModelTurns:4,maxToolCalls:10,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[
+        {id:"check-fail",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-a.mjs"]}'},
+        {id:"check-b",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-b.mjs"]}'},
+        {id:"check-c",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-c.mjs"]}'},
+        {id:"check-d",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-d.mjs"]}'},
+      ],usage:{}};
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.id==="check-fail"?{exitCode:1}:call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0},
+  });
+  assert.equal(result.text,"done");assert.equal(events.some(event=>event.name==="native.progress.convergence_checkpoint"),false);
+  assert.equal(requests[2].messages.some(message=>message.role==="developer"&&/convergence checkpoint/i.test(String(message.content||""))),false);
+});
+
 test("native agent wall-time budget aborts in-flight provider work and reports a budget failure",async()=>{
   const events=[];let providerAborted=false;
   await assert.rejects(()=>runNativeAgentTurn({
@@ -1804,6 +1997,94 @@ test("native agent retries only transient provider inference failures",async()=>
   assert.equal(nativeProviderRetryable(new DOMException("The operation was aborted due to timeout","TimeoutError")),true);
   assert.equal(nativeProviderRetryable(new DOMException("cancelled by caller","AbortError")),false);
   assert.equal(nativeProviderRetryable(Object.assign(new Error("bad request"),{status:400})),false);
+});
+
+test("native agent gives one focused verification recovery when its own final draft admits an edited requirement is unverified",async()=>{
+  const requests=[],events=[];let providerCalls=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation."}],maxModelTurns:6,maxToolCalls:8,onEvent:event=>events.push(event),
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      if(providerCalls===2)return {text:"The edge-case behavior remains unverified.",toolCalls:[],usage:{}};
+      if(providerCalls===3)return {text:"",toolCalls:[{id:"verify",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["focused-check.mjs"]}'}],usage:{}};
+      return {text:"Fixed and verified with the focused check.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0},
+  });
+  assert.equal(result.text,"Fixed and verified with the focused check.");
+  assert.equal(providerCalls,4);
+  assert.ok(requests[2].messages.some(message=>message.role==="developer"&&/explicitly says part of the edited task remains unverified/i.test(String(message.content||""))));
+  assert.equal(events.filter(event=>event.name==="native.verification.self_admitted_gap").length,1);
+});
+
+test("native agent recognizes an explicit Unverified section as a focused verification gap",async()=>{
+  const requests=[];let providerCalls=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation."}],maxModelTurns:6,maxToolCalls:8,
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      if(providerCalls===2)return {text:"Implemented the fix.\n\n**Unverified:** live integration behavior.",toolCalls:[],usage:{}};
+      if(providerCalls===3)return {text:"",toolCalls:[{id:"verify",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["integration-smoke.mjs"]}'}],usage:{}};
+      return {text:"Implemented and locally smoke-tested.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0},
+  });
+  assert.equal(providerCalls,4);
+  assert.equal(result.text,"Implemented and locally smoke-tested.");
+  assert.ok(requests[2].messages.some(message=>message.role==="developer"&&/previous draft explicitly says part of the edited task remains unverified/i.test(String(message.content||""))));
+});
+
+test("native self-verification recovery recognizes speed-up tasks as workspace mutations",async()=>{
+  const requests=[],events=[];let providerCalls=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Speed up worker startup while keeping notification delivery correct."}],maxModelTurns:6,maxToolCalls:8,onEvent:event=>events.push(event),
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/worker.py","old_text":"slow","new_text":"fast"}'}],usage:{}};
+      if(providerCalls===2)return {text:"Implemented the startup optimization.\n\n**Unverified:** live integration behavior.",toolCalls:[],usage:{}};
+      if(providerCalls===3)return {text:"",toolCalls:[{id:"verify",namespace:"trebell_terminal",name:"run",arguments:'{"command":"python","args":["integration-smoke.py"]}'}],usage:{}};
+      return {text:"Optimized and integration-smoke-tested.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{path:"src/worker.py",replacements:1}:{exitCode:0},
+  });
+  assert.equal(providerCalls,4);
+  assert.equal(result.text,"Optimized and integration-smoke-tested.");
+  assert.equal(events.filter(event=>event.name==="native.verification.self_admitted_gap").length,1);
+  assert.ok(requests[2].messages.some(message=>message.role==="developer"&&/previous draft explicitly says part of the edited task remains unverified/i.test(String(message.content||""))));
+});
+
+test("native self-admitted verification-gap recovery is one-shot when local verification is genuinely unavailable",async()=>{
+  let providerCalls=0;const events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation."}],maxModelTurns:5,maxToolCalls:6,onEvent:event=>events.push(event),
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async()=>{
+      providerCalls++;
+      if(providerCalls===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      return {text:"The external integration remains unverified because it is unavailable locally.",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>({path:"src/a.mjs",replacements:1}),
+  });
+  assert.equal(providerCalls,3);
+  assert.match(result.text,/remains unverified/i);
+  assert.equal(events.filter(event=>event.name==="native.verification.self_admitted_gap").length,1);
 });
 
 test("native agent cancellation during provider retry backoff prevents the next request",async()=>{

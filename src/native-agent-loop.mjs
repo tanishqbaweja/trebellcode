@@ -153,6 +153,21 @@ function latestUserMessage(messages=[]){
   return null;
 }
 
+function requestsWorkspaceMutation(messages=[]){
+  const text=lastUserInstructionText(latestUserMessage(messages)).trim();
+  if(!text||/(?:do\s+not|don't|dont|never)\s+(?:edit|change|modify|write|update)|without\s+(?:editing|changing|modifying)|(?:read[- ]only|no\s+changes?)/i.test(text))return false;
+  if(/\b(?:implement|fix|repair|add|create|update|change|modify|refactor|remove|delete|rename|migrate|write|edit|replace|convert|port|upgrade|downgrade)\b/i.test(text))return true;
+  if(/^\s*(?:please\s+)?(?:optimi[sz]e|speed\s+up|accelerate|streamline|harden)\b/i.test(text))return true;
+  const diagnosticOnly=/\b(?:inspect|explain|analy[sz]e|diagnose|investigate|review|report|identify|find)\b[\s\S]{0,120}\b(?:why|cause|root cause|problem|issue|bug|failure|behavior|behaviour)\b/i.test(text)
+    ||/\b(?:why|how|what)\b[\s\S]{0,120}\b(?:broken|failing|fails|not working|incorrect|wrong)\b/i.test(text);
+  if(diagnosticOnly)return false;
+  return /\b(?:not\s+working(?:\s+(?:correctly|properly))?|broken|buggy|malfunction(?:ing|s)?|incorrect(?:ly)?|wrong\s+results?|fails?\b|failing\b|regression\b)\b/i.test(text);
+}
+
+function implementationPressureEditCall(call={}){
+  return call?.namespace==="trebell_workspace"&&["write_file","replace_text"].includes(String(call?.name||""));
+}
+
 function escapeRegex(value){return String(value||"").replace(/[.*+?^${}()|[\]\\]/g,"\\$&")}
 
 function explicitlyRequestedTools(messages=[],tools=[]){
@@ -421,6 +436,12 @@ function terminalRunLooksLikeVerifier(args={}){
   return /(?:^|[\s/\\._:-])(?:verify|verification|verifier|tests?|pytest|jest|vitest|mocha|ava|rspec|checks?|lint|typecheck|tsc)(?:$|[\s/\\._:-])/i.test(rendered);
 }
 
+function selfAdmittedVerificationGap(text){
+  const value=String(text||"");
+  if(!value.trim())return false;
+  return /(?:^|\n)\s*(?:\*\*)?unverified(?:\*\*)?\s*:|\b(?:remains?|still|currently)\s+(?:unverified|untested|unconfirmed)\b|\b(?:not|never)\s+(?:fully\s+)?(?:verified|tested|checked|validated)\b|\b(?:unable|cannot|can't|could\s+not|couldn't)\s+to\s+(?:verify|test|check|validate)\b/i.test(value);
+}
+
 function verificationCompletionMatchesRun(request,args={},terminalRuns=[],editRevision=0){
   const key=terminalRunKey(args);if(!key)return false;
   const normalized=normalizeNativeCommandArguments(args),command=String(normalized.command||"").trim(),argv=Array.isArray(normalized.args)?normalized.args.map(value=>String(value)):[];
@@ -613,19 +634,19 @@ export function nativeAgentBudget(options={}){
 
 export async function runNativeAgentTurn({
   providerTurn,executeTool,model,messages=[],tools=[],provider=null,toolChoice="auto",
-  maxOutputTokens=null,temperature=null,parallelToolCalls=true,maxModelTurns=24,maxToolCalls=100,maxWallTimeMs=null,
+  maxOutputTokens=null,temperature=null,reasoningEffort=null,parallelToolCalls=true,maxModelTurns=24,maxToolCalls=100,maxWallTimeMs=null,
   maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,coolReadToolHistory=null,preserveToolSchemasOnFinalization=false,signal=null,onEvent=null,metadata=null,
   autoRerunVerification=false,priorTerminalRuns=[],synthesizeTerminalReports=false,coolSyntheticTerminalReportOutput=true,directTerminalStatusCommands=false,directExactReplacementStatus=false,directExactWriteStatus=false,directExactReadStatus=false,directExactListStatus=false,directGitStatus=false,directProcessRunningStatus=false,directBrowserRuntimeStatus=false,directBrowserScreenshot=false,prepareProviderMessages=null,
 }={}){
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
-  const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])],visibleTools=providerVisibleTools(tools,toolAllowlist),directVisiblePairs=exposedToolPairs(visibleTools),requestMetricsToolCache=new WeakMap(),requestMetricsMessageCache=new WeakMap(),requestMetricsCurrentTurnCache=new WeakMap(),requestMetricsHistoryHashCache={},requestMetricsClassificationCache=typeof coolReadToolHistory==="function"?null:{},openAiContinuationIdentity={};
+  const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),conversation=[...(Array.isArray(messages)?messages:[])],visibleTools=providerVisibleTools(tools,toolAllowlist),directVisiblePairs=exposedToolPairs(visibleTools),workspaceMutationRequested=requestsWorkspaceMutation(conversation),requestMetricsToolCache=new WeakMap(),requestMetricsMessageCache=new WeakMap(),requestMetricsCurrentTurnCache=new WeakMap(),requestMetricsHistoryHashCache={},requestMetricsClassificationCache=typeof coolReadToolHistory==="function"?null:{},openAiContinuationIdentity={};
   const explicitlyRequired=explicitlyRequestedTools(conversation,visibleTools),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
   const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalStatusRequested=explicitTerminalStatusRequest(conversation),directTerminalStatusCommand=directTerminalStatusCommands===true?explicitTerminalStatusCommand(conversation):null,directReplacementStatus=directExactReplacementStatus===true?explicitExactReplacementStatus(conversation):null,directWriteStatus=directExactWriteStatus===true?explicitExactFileWriteStatus(conversation):null,directReadStatus=directExactReadStatus===true?explicitExactFileReadStatus(conversation):null,directListStatus=directExactListStatus===true?explicitImmediateWorkspaceListStatus(conversation):null,directGitStatusRequest=directGitStatus===true?explicitGitReadRequest(conversation):null,directProcessRunningRequest=directProcessRunningStatus===true?explicitBackgroundProcessRunningRequest(conversation):null,directBrowserRuntimeRequest=directBrowserRuntimeStatus===true&&explicitBrowserRuntimeHealthRequest(conversation),directBrowserScreenshotRequest=directBrowserScreenshot===true&&explicitBrowserScreenshotRequest(conversation),terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
   const verificationFinalizationRequest=verificationCompletionRequest||(finalAfterVerifiedRequest?.target?finalAfterVerifiedRequest:null);
   const successfulTerminalRuns=[];
-  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
+  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,selfVerificationGapRecoveries=0,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,progressCheckpointInjected=false,convergenceCheckpointRevision=0,verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
   const startedAt=Date.now(),started=nowMs(),wallController=budget.maxWallTimeMs!=null?new AbortController():null,deadlineAt=budget.maxWallTimeMs==null?null:Date.now()+budget.maxWallTimeMs;
   let wallTimer=null;
   if(terminalRuns.length)emit(onEvent,{name:"native.verification.prior_terminal_evidence",status:"completed",model:String(model),provider:provider||null,data:{count:terminalRuns.length}});
@@ -851,6 +872,19 @@ export async function runNativeAgentTurn({
         if(Number(cooled.count||0)>0)emit(onEvent,{name:"native.tool.history_cooled",status:"completed",model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,data:{phase:"same_turn",count:Number(cooled.count||0),savedChars:Number(cooled.savedChars||0),toolResultCount:Number(cooled.toolResultCount||0),toolCallArgumentCount:Number(cooled.toolCallArgumentCount||0),toolResultSavedChars:Number(cooled.toolResultSavedChars||0),toolCallArgumentSavedChars:Number(cooled.toolCallArgumentSavedChars||0),beforeModelTurn:modelTurns+1}});
       }
     }
+    if(workspaceMutationRequested&&!progressCheckpointInjected&&editRevision===0&&toolCalls>=24&&modelTurns>=4){
+      conversation.push({role:"developer",content:"Trebell progress checkpoint: substantial read-only exploration has already happened without a workspace edit. If the user's task requires changing the workspace and the evidence now supports a plausible implementation path, stop reconnaissance and begin the smallest runnable implementation now. Until the first successful workspace edit, do not call repository search/read, workspace read/list, terminal, process, browser, or other inspection tools; the next tool call should be trebell_workspace/write_file or trebell_workspace/replace_text. After the first successful edit, the full toolset remains available for focused inspection, build, test, and repair. If implementation is genuinely impossible from the evidence already collected, explain the concrete blocker instead of continuing broad discovery."});
+      progressCheckpointInjected=true;
+      emit(onEvent,{name:"native.progress.implementation_checkpoint",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision}});
+    }
+    if(workspaceMutationRequested&&editRevision>0&&convergenceCheckpointRevision!==editRevision){
+      const revisionRuns=terminalRuns.filter(item=>item?.currentTurn&&item?.editRevision===editRevision),failedRuns=revisionRuns.filter(item=>item?.exitCode!==0),passedRuns=revisionRuns.filter(item=>item?.exitCode===0),distinctPassed=new Set(passedRuns.map(item=>item?.key).filter(Boolean));
+      if(failedRuns.length===0&&passedRuns.length>=3&&distinctPassed.size>=2){
+        conversation.push({role:"developer",content:`Trebell convergence checkpoint: since the latest successful workspace edit, ${passedRuns.length} terminal checks have passed with no terminal failure (${distinctPassed.size} distinct commands). If those checks cover the user's stated acceptance signals, stop speculative polishing and answer now. Continue only if you can name a concrete unmet requirement or a focused verification gap; do not invent extra hardening work.`});
+        convergenceCheckpointRevision=editRevision;
+        emit(onEvent,{name:"native.progress.convergence_checkpoint",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,passedRuns:passedRuns.length,distinctPassedRuns:distinctPassed.size}});
+      }
+    }
     if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_model"})){verifiedFinalizationAllowed=false;verifiedFinalizationReady=false}
     const missingExplicitTool=explicitlyRequired.find(item=>!executedToolKeys.has(item.namespace+"/"+item.name));
     const synthesizedVerifiedSummary=verifiedFinalizationReady&&verifiedFinalizationAllowed&&summaryAfterVerifiedCommand&&!missingExplicitTool?verifiedSummaryText(verifiedEdits):null;
@@ -865,6 +899,16 @@ export async function runNativeAgentTurn({
       return result;
     }
     if(modelTurns>=budget.maxModelTurns){
+      const successfulPostEditRun=workspaceMutationRequested&&editRevision>0&&!missingExplicitTool
+        ?terminalRuns.findLast(item=>item?.exitCode===0&&item?.editRevision===editRevision)
+        :null;
+      if(successfulPostEditRun){
+        const text="Applied workspace changes and completed a post-edit command successfully. The model-turn budget was reached before a final model wrap-up; broader task verification remains unconfirmed.";
+        conversation.push({role:"assistant",content:text,toolCalls:[]});
+        const result={text,model:String(lastResponse?.model||model),provider:lastResponse?.provider||provider||null,messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse:null};
+        emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage,budgetFinalized:true,editRevision}});
+        return result;
+      }
       const error=new Error(`Native agent model-turn budget exhausted (${modelTurns}/${budget.maxModelTurns}).`);error.code="native_model_turn_budget";
       emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(model),provider:provider||null,data:{reason:error.code,modelTurns,toolCalls}});throw error;
     }
@@ -886,7 +930,8 @@ export async function runNativeAgentTurn({
       verifiedFinalizationInjected=true;
     }
     modelTurns++;
-    const requestStarted=nowMs(),requestMessageCount=conversation.length,forcedAllowlist=forcedToolChoice?[forcedToolChoice.namespace?forcedToolChoice.namespace+"/"+forcedToolChoice.name:forcedToolChoice.name]:null,finalAnswerOnly=toolBudgetExhausted||verifiedFinalizationReady,requestTools=finalAnswerOnly&&!preserveToolSchemasOnFinalization?[]:forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):visibleTools,requestToolChoice=finalAnswerOnly?"none":forcedToolChoice||toolChoice;
+    const requestStarted=nowMs(),requestMessageCount=conversation.length,forcedAllowlist=forcedToolChoice?[forcedToolChoice.namespace?forcedToolChoice.namespace+"/"+forcedToolChoice.name:forcedToolChoice.name]:null,finalAnswerOnly=toolBudgetExhausted||verifiedFinalizationReady,implementationPressure=workspaceMutationRequested&&progressCheckpointInjected&&editRevision===0&&!finalAnswerOnly&&!forcedAllowlist,requestTools=finalAnswerOnly&&!preserveToolSchemasOnFinalization?[]:forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):visibleTools,requestToolChoice=finalAnswerOnly?"none":forcedToolChoice||toolChoice;
+    if(implementationPressure)emit(onEvent,{name:"native.progress.implementation_pressure",status:"running",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,visibleToolCount:exposedToolPairs(requestTools).length,blockedUntilFirstEdit:Math.max(0,exposedToolPairs(requestTools).filter(item=>!(item.namespace==="trebell_workspace"&&["write_file","replace_text"].includes(item.name))).length),toolSchemaStable:true}});
     let providerMessages=conversation,providerView=null;
     if(typeof prepareProviderMessages==="function"){
       const prepared=prepareProviderMessages(conversation);
@@ -900,7 +945,7 @@ export async function runNativeAgentTurn({
     const providerAttempts=boundedInteger(maxProviderAttempts,3,{min:1,max:8});let response=null;
     for(let attempt=1;attempt<=providerAttempts;attempt++){
       try{
-        response=await providerTurn({model,provider,messages:providerMessages,tools:requestTools,toolChoice:requestToolChoice,maxOutputTokens,temperature,parallelToolCalls,signal:turnSignal,metadata,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:requestMetrics[NATIVE_TOOL_SCHEMA_FINGERPRINT]||null,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:openAiContinuationIdentity,[NATIVE_CHAT_MESSAGE_CACHE_IDENTITY]:openAiContinuationIdentity});break;
+        response=await providerTurn({model,provider,messages:providerMessages,tools:requestTools,toolChoice:requestToolChoice,maxOutputTokens,temperature,reasoningEffort,parallelToolCalls,signal:turnSignal,metadata,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:requestMetrics[NATIVE_TOOL_SCHEMA_FINGERPRINT]||null,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:openAiContinuationIdentity,[NATIVE_CHAT_MESSAGE_CACHE_IDENTITY]:openAiContinuationIdentity});break;
       }catch(error){
         if(error?.nativeSteered){
           if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"model_request_interrupted"})){
@@ -973,6 +1018,13 @@ export async function runNativeAgentTurn({
     }
     conversation.push({role:"assistant",content:responseText,toolCalls:calls});
     if(!calls.length){
+      const canVerifyLocally=directVisiblePairs.some(item=>item.namespace==="trebell_terminal"&&item.name==="run");
+      if(workspaceMutationRequested&&editRevision>0&&canVerifyLocally&&!toolBudgetExhausted&&!verifiedFinalizationReady&&selfVerificationGapRecoveries<1&&modelTurns<budget.maxModelTurns&&selfAdmittedVerificationGap(responseText)){
+        selfVerificationGapRecoveries++;
+        conversation.push({role:"developer",content:"Your previous draft explicitly says part of the edited task remains unverified. Before ending, use one focused local verification step for that named gap if it is reasonably testable with the available terminal; do not broaden back into general exploration. If it genuinely cannot be verified locally, answer again and keep that limitation explicit."});
+        emit(onEvent,{name:"native.verification.self_admitted_gap",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,recoveryAttempt:selfVerificationGapRecoveries}});
+        continue;
+      }
       const missingRequired=explicitlyRequired.find(item=>!executedToolKeys.has(item.namespace+"/"+item.name));
       if(missingRequired){
         const key=missingRequired.namespace+"/"+missingRequired.name;
@@ -1012,6 +1064,12 @@ export async function runNativeAgentTurn({
       if(toolCalls>=budget.maxToolCalls){
         const error=new Error(`Native agent tool-call budget exhausted (${toolCalls}/${budget.maxToolCalls}).`);error.code="native_tool_call_budget";
         emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(model),provider:provider||null,data:{reason:error.code,modelTurns,toolCalls}});throw error;
+      }
+      if(implementationPressure&&editRevision===0&&!implementationPressureEditCall(call)){
+        const callId=String(call?.id||""),toolCallNumber=toolCalls+1;toolCalls=toolCallNumber;
+        conversation.push({role:"tool",toolCallId:callId,content:"Trebell implementation pressure: this pre-edit reconnaissance call was not executed because the read-only exploration budget is exhausted. Make the smallest evidence-supported workspace edit now with trebell_workspace/write_file or trebell_workspace/replace_text. Full inspection and verification tools become available immediately after the first successful edit."});
+        emit(onEvent,{name:"native.progress.implementation_call_blocked",status:"blocked",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCall:toolCallNumber,callId,namespace:call?.namespace||null,name:call?.name||"tool",reason:"first_workspace_edit_required"}});
+        callIndex++;continue;
       }
       const remainingBudget=budget.maxToolCalls-toolCalls,batch=[call];
       if(canRunParallel(call)){

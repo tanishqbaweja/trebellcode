@@ -21,7 +21,9 @@ export function planVerification({changedPaths=[],projectCommands=null,relatedTe
   const python=lower.some(path=>PYTHON_EXTENSIONS.has(extension(path)));
   const go=lower.some(path=>GO_EXTENSIONS.has(extension(path)));
   const rust=lower.some(path=>extension(path)===".rs"||/(^|\/)cargo\.(toml|lock)$/.test(path));
-  const auth=includesPath(lower,/(^|\/)(auth|oauth|session|token|identity|permission|permissions)(\/|\.|-|$)/)||hints.has("auth");
+  const lifecycle=includesPath(lower,/(^|\/)(?:gc|garbage[-_]?collector|retention|ttl|lifecycle)(?:\/|\.|-|_|$)/)
+    ||["lifecycle","retention","state-transition","state_transition","boundary"].some(hint=>hints.has(hint));
+  const auth=includesPath(lower,/(^|\/)(auth|oauth|token|identity|permission|permissions)(\/|\.|-|$)/)||hints.has("auth");
   const storage=includesPath(lower,/(^|\/)(db|database|storage|migration|migrations|schema|persistence)(\/|\.|-|$)/)||hints.has("storage");
   const release=includesPath(lower,/(^|\/)(release|deploy|deployment|installer|electron-builder|tauri|dockerfile|docker-compose|\.github\/workflows)(\/|\.|-|$)/)||hints.has("release");
   const docsOnly=paths.length>0&&lower.every(path=>/\.(md|mdx|txt|rst)$/.test(path));
@@ -41,10 +43,11 @@ export function planVerification({changedPaths=[],projectCommands=null,relatedTe
   if(auth)reasons.push("Authentication/session/token changes are high-risk and warrant integration coverage.");
   if(storage)reasons.push("Storage/schema/migration changes are high-risk and warrant broader integration coverage.");
   if(release)reasons.push("Release/deployment changes are high-risk and warrant build or packaging evidence.");
+  if(lifecycle)reasons.push("Lifecycle/retention changes need boundary evidence that proves both eligible cleanup/transitions and preservation while state is still ineligible.");
 
   if(docsOnly){
     addStep(steps,{id:"diff_review",kind:"review",scope:"changed",cost:"low",required:true,reason:"Confirm documentation changes match the intended diff."});
-    return {risk,categories:{frontend,jsTs,typescript,python,go,rust,auth,storage,release,docsOnly},reasons,steps,independentReview:false};
+    return {risk,categories:{frontend,jsTs,typescript,python,go,rust,lifecycle,auth,storage,release,docsOnly},reasons,steps,independentReview:false};
   }
 
   if((jsTs||python||go)&&capabilities.diagnostics!==false)addStep(steps,{id:"diagnostics",kind:"diagnostics",scope:"changed",cost:"low",required:true,semantic:Boolean((typescript||python)&&capabilities.semanticDiagnostics),reason:typescript?"Catch syntax/type issues close to the edit.":python?"Catch Python syntax issues close to the edit.":go?"Catch Go syntax issues close to the edit.":"Catch syntax issues close to the edit."});
@@ -54,6 +57,15 @@ export function planVerification({changedPaths=[],projectCommands=null,relatedTe
   const testCommand=commandFor(projectCommands,"test");
   if(relatedTests?.length)addStep(steps,{id:"targeted_tests",kind:"tests",scope:"targeted",cost:"medium",required:true,command:testCommand?.command||null,source:testCommand?.confidence||null,targets:[...new Set(relatedTests.map(item=>typeof item==="string"?item:item?.path).filter(Boolean))].slice(0,80),reason:"Run tests structurally related to the changed code before broad suites."});
   else if(testCommand&&(jsTs||python||go||rust||testsChanged||highRisk))addStep(steps,{id:"project_tests",kind:"tests",scope:"project",cost:"medium",required:highRisk||testsChanged,command:testCommand.command,source:testCommand.confidence,reason:"No narrower related-test set was supplied."});
+  else if(jsTs||python||go||rust){
+    addStep(steps,{
+      id:"focused_behavior",kind:"behavioral",scope:"changed-behavior",cost:"medium",required:true,
+      evidence:lifecycle?["eligible-transition","ineligible-preservation","state-class-distinction","post-transition-state"]:["stated-acceptance-behavior"],
+      reason:lifecycle
+        ?"No repository test command or related tests were discovered. Exercise the changed lifecycle boundary in both directions: prove the transition/cleanup happens when eligible, prove live state is preserved while ineligible, test each lifecycle state the specification distinguishes instead of assuming one uniform policy, and re-check state after merge/transition."
+        :"No repository test command or related tests were discovered. Run a focused executable check for the task's stated acceptance behavior instead of treating syntax diagnostics as behavioral verification.",
+    });
+  }
 
   if(frontend){
     addStep(steps,{id:"browser_interaction",kind:"browser",scope:"changed-flow",cost:"medium",required:true,reason:"Exercise the affected interaction in a real browser."});
@@ -71,5 +83,5 @@ export function planVerification({changedPaths=[],projectCommands=null,relatedTe
     else addStep(steps,{id:"diff_review",kind:"review",scope:"changed",cost:"low",required:true,reason:"No executable project verification command was discovered."});
   }
 
-  return {risk,categories:{frontend,jsTs,typescript,python,go,rust,auth,storage,release,docsOnly},reasons,steps,independentReview:highRisk};
+  return {risk,categories:{frontend,jsTs,typescript,python,go,rust,lifecycle,auth,storage,release,docsOnly},reasons,steps,independentReview:highRisk};
 }
