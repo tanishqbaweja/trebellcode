@@ -113,6 +113,7 @@
     "test:codex:live": "node --env-file-if-exists=.env scripts/live-codex-harness-smoke.mjs --live",
     "bench:harnesses:live": "node --env-file-if-exists=.env scripts/live-harness-comparison.mjs --live",
     "bench:native-vs-codex:live": "node --env-file-if-exists=.env scripts/live-native-codex-coding-benchmark.mjs --live",
+    "bench:native-vs-codex:planner:live": "node --env-file-if-exists=.env scripts/live-native-codex-coding-benchmark.mjs --live --task=planner",
     "trace:export": "node scripts/export-event-replay.mjs",
     "trace:replay": "node scripts/replay-event-bundle.mjs",
     "prepare:icon": "node scripts/materialize-icon.mjs",

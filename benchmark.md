@@ -62,6 +62,48 @@ Current comparison model: **`gpt-6-luna` on both harnesses**.
 
 This is an **early baseline, not a general claim that Native is better than Codex**. It is still one task, now with five counted paired runs. The repeated correctness plus the large model-traffic gap is important evidence for this fixture, but it needs a broader task suite before it is treated as a stable harness-level result. One especially useful detail is that Native did **not** win by simply calling fewer tools: it averaged 10.2 tool calls versus Codex's 8.6 while still using far fewer reported model tokens, pointing at context/prompt traffic as the larger efficiency difference.
 
+### Dependency-graph build planner
+
+Benchmark command:
+
+```text
+npm run bench:native-vs-codex:planner:live
+```
+
+This second task class uses the same runner and `gpt-6-luna` parity, but exercises graph validation and scheduling rather than network-style retry/concurrency code. The agent must repair `src/graph.mjs` and `src/planner.mjs` to support duplicate/unknown dependency validation, deterministic cycle reporting, transitive dependency levels, immutable inputs, priority-aware batching, and a maximum batch size while keeping every dependency in an earlier batch.
+
+- Baseline fixture tree: `e6a08a6082c9aa0ef071e64e08f30edef32c1ada`.
+- Task SHA-256: `aa56473c781479e4e2c608bdb6d3982f5f3dbf5f98d09e64424c68301942784e`.
+- Model: `gpt-6-luna` on both harnesses.
+- Independent verifier remained unchanged and passed after every counted run.
+
+#### Counted planner pairs
+
+| Run | Native verify | Native elapsed | Native tokens | Native cached input | Native turns | Native tools | Codex verify | Codex elapsed | Codex tokens* | Codex cached input | Codex tools |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| 2026-09-28 P1 | PASS | 44.219 s | 19,026 | 12,471 | 5 | 9 | PASS | 84.472 s | 188,738 | 168,192 | 10 |
+| 2026-09-28 P2 | PASS | 52.945 s | 26,919 | 19,981 | 7 | 9 | PASS | 74.178 s | 164,221 | 150,016 | 9 |
+| 2026-09-28 P3 | PASS | 41.461 s | 16,062 | 9,429 | 4 | 7 | PASS | 57.423 s | 131,239 | 119,808 | 7 |
+
+#### Three-run planner aggregate
+
+| Metric | Trebell Native | Codex | Observed delta |
+| --- | ---: | ---: | ---: |
+| Independent verification success | 3 / 3 | 3 / 3 | tied on this fixture |
+| Mean elapsed time | 46.208 s | 72.024 s | Native 35.8% lower |
+| Median elapsed time | 44.219 s | 74.178 s | Native 40.4% lower |
+| Mean total tokens | 20,669 | 161,399 | Native 87.2% lower |
+| Median total tokens | 19,026 | 164,221 | Native 88.4% lower |
+| Mean cached input tokens | 13,960 | 146,005 | Native 90.4% lower reported volume |
+| Mean tool calls | 8.33 | 8.67 | nearly identical |
+| Mean Native model turns | 5.33 | n/a | Codex CLI does not expose a directly comparable count here |
+
+The planner preflights are also retained in the automatic ledger: Native-only passed in **51.015 s / 28,779 total tokens / 11 tools**, and Codex-only passed in **57.469 s / 79,106 derived tokens / 7 tools**. They validated each lane but are not counted in P1-P3.
+
+### Combined strict paired evidence so far
+
+Across the **eight strict paired runs** from the webhook and planner tasks, both harnesses independently verified **8 / 8** outputs. Treating each run equally, Native averaged **44.493 s** versus **67.657 s** for Codex (about **34.2% lower wall time**) and **28,535** reported total tokens versus **152,957** for Codex (about **81.3% lower**). This is stronger evidence than a single fixture, but two task classes are still far too narrow for a general harness-superiority claim. The next useful expansion is a materially different workload such as frontend/browser work, larger-repository debugging, or feature implementation with ambiguous repository discovery.
+
 ### Historical paired Luna runs before permission-parity hardening
 
 These three runs used the same fixture, baseline tree, task SHA-256, and `gpt-6-luna` on both sides, but Codex was launched with its `workspace-write` sandbox while Native used its full local workspace policy. The task required only repository-local edits and `node verify.mjs`, so the runs remain useful evidence, but they are kept out of the strict aggregate above because the effective harness permissions were not yet deliberately matched.
@@ -97,9 +139,14 @@ The Astra transport failure produced a real Trebell fix rather than being discar
 
 Future executions of `npm run bench:native-vs-codex:live` append a compact row here. These raw run records are kept even when only one harness is selected for a diagnostic run; use the counted sections above for curated aggregates.
 
-| Recorded at (UTC) | Model | Native | Native ms | Native tokens | Native tools | Codex | Codex ms | Codex tokens | Codex tools | Baseline tree |
-| --- | --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | --- |
+| Recorded at (UTC) | Task | Model | Native | Native ms | Native tokens | Native tools | Codex | Codex ms | Codex tokens | Codex tools | Baseline tree |
+| --- | --- | --- | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | --- |
 <!-- LIVE_NATIVE_CODEX_RUNS_START -->
+| 2026-09-28T07:47:56.819Z | `dependency-graph-build-planner` | `gpt-6-luna` | PASS | 51015 | 28779 | 11 | not run | n/a | n/a | n/a | `e6a08a6082c9aa0ef071e64e08f30edef32c1ada` |
+| 2026-09-28T07:49:05.336Z | `dependency-graph-build-planner` | `gpt-6-luna` | not run | n/a | n/a | n/a | PASS | 57469 | 79106 | 7 | `e6a08a6082c9aa0ef071e64e08f30edef32c1ada` |
+| 2026-09-28T07:51:29.978Z | `dependency-graph-build-planner` | `gpt-6-luna` | PASS | 44219 | 19026 | 9 | PASS | 84472 | 188738 | 10 | `e6a08a6082c9aa0ef071e64e08f30edef32c1ada` |
+| 2026-09-28T07:54:05.631Z | `dependency-graph-build-planner` | `gpt-6-luna` | PASS | 52945 | 26919 | 9 | PASS | 74178 | 164221 | 9 | `e6a08a6082c9aa0ef071e64e08f30edef32c1ada` |
+| 2026-09-28T07:55:55.929Z | `dependency-graph-build-planner` | `gpt-6-luna` | PASS | 41461 | 16062 | 7 | PASS | 57423 | 131239 | 7 | `e6a08a6082c9aa0ef071e64e08f30edef32c1ada` |
 <!-- LIVE_NATIVE_CODEX_RUNS_END -->
 
 ## Benchmark command inventory
@@ -113,6 +160,7 @@ Future executions of `npm run bench:native-vs-codex:live` append a compact row h
 | `npm run bench:core` | Deterministic core performance benchmark over replay, virtualization, repository reuse, and durable state. |
 | `npm run bench:harnesses:live` | Existing multi-harness live smoke comparison. Useful for reachability/smoke evidence; not the canonical same-model Native-vs-Codex quality comparison. |
 | `npm run bench:native-vs-codex:live` | Same-model, same-fixture end-to-end Trebell Native vs Codex coding benchmark. |
+| `npm run bench:native-vs-codex:planner:live` | Same-model dependency-graph planner benchmark for a different algorithmic/debugging task class. |
 
 ### Native live/provider behavior
 
