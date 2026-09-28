@@ -756,7 +756,15 @@ export class ProviderManager {
           if(this.openAiResponsesWebSocket===transport){
             if(error?.transportFailure)this.#resetOpenAiWebSocket("transport_failure");else if(error?.protocolFailure)this.#resetOpenAiWebSocket("protocol_failure");else if(error?.name==="TimeoutError")this.#resetOpenAiWebSocket("timeout_failure");
           }
-          if(!replaySafe){error.retryable=error?.retryable===true||Boolean(error?.transportFailure);error.telemetry={endpoint:String(provider.baseUrl||"").replace(/^http/i,"ws")+"/responses",wireApi:"openai-responses-websocket",requestBytes:failedWire,responseBytes:Number(error?.webSocketTelemetry?.responseBytes||0),timeToFirstTokenMs:error?.webSocketTelemetry?.timeToFirstTokenMs??null,totalLatencyMs:Number((performance.now()-started).toFixed(3)),streaming:true,persistentConnection:true,webSocketFallback:openAiWebSocketFallback};throw error}
+          if(!replaySafe){
+            // A post-send timeout is not safe to replay inside this provider turn,
+            // but it is safe for the agent loop to retry as a fresh model attempt:
+            // no model tool call is executed until a terminal response is returned.
+            // The timeout reset above also opens the socket cooldown, so that fresh
+            // attempt naturally uses HTTPS instead of repeating the unhealthy lane.
+            error.retryable=error?.retryable===true||Boolean(error?.transportFailure)||error?.name==="TimeoutError";
+            error.telemetry={endpoint:String(provider.baseUrl||"").replace(/^http/i,"ws")+"/responses",wireApi:"openai-responses-websocket",requestBytes:failedWire,responseBytes:Number(error?.webSocketTelemetry?.responseBytes||0),timeToFirstTokenMs:error?.webSocketTelemetry?.timeToFirstTokenMs??null,totalLatencyMs:Number((performance.now()-started).toFixed(3)),streaming:true,persistentConnection:true,webSocketFallback:openAiWebSocketFallback};throw error
+          }
           try{remainingProviderRequestMs(requestDeadlineAt)}catch{error.retryable=false;error.telemetry={endpoint:String(provider.baseUrl||"").replace(/^http/i,"ws")+"/responses",wireApi:"openai-responses-websocket",requestBytes:failedWire,responseBytes:Number(error?.webSocketTelemetry?.responseBytes||0),timeToFirstTokenMs:error?.webSocketTelemetry?.timeToFirstTokenMs??null,totalLatencyMs:Number((performance.now()-started).toFixed(3)),streaming:true,persistentConnection:true,webSocketFallback:openAiWebSocketFallback};throw error}
           openAiWebSocketFallback.retried=true;
           if(continuationRejected||invalidToolOutputRequest){

@@ -435,12 +435,12 @@ test("OpenAI WebSocket invalid tool-output state retries once over HTTPS with fu
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
-test("OpenAI WebSocket timeout is not blindly replayed and disables later socket attempts",async()=>{
+test("OpenAI WebSocket timeout is caller-retryable without blind in-turn replay and disables later socket attempts",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-timeout-"));let factoryCalls=0,fetchCalls=0,closeCalls=0;
   try{
     const manager=new ProviderManager({requestTimeoutMs:25,env:{TREBELL_HOME:root},openAiResponsesWebSocketFactory:()=>{factoryCalls++;return {close:()=>{closeCalls++},request:async(_body,{signal})=>await new Promise((resolve,reject)=>{const fail=()=>reject(signal.reason);if(signal.aborted)return fail();signal.addEventListener("abort",fail,{once:true})})}},fetchFn:async(_url,init={})=>{fetchCalls++;const body=JSON.parse(init.body||"{}");return Response.json({id:"resp-http",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"fallback"}]}],usage:{}})}});manager.setKey("openai","oa-key");
     const request={model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"native_timeout"}};
-    await assert.rejects(manager.turn("openai",request,{streamResponses:true}),error=>error?.name==="TimeoutError"&&error?.retryable===false&&error?.telemetry?.webSocketFallback?.retried===false);assert.equal(factoryCalls,1);assert.equal(fetchCalls,0);assert.equal(closeCalls,1);
+    await assert.rejects(manager.turn("openai",request,{streamResponses:true}),error=>error?.name==="TimeoutError"&&error?.retryable===true&&error?.telemetry?.webSocketFallback?.retried===false);assert.equal(factoryCalls,1);assert.equal(fetchCalls,0);assert.equal(closeCalls,1);
     const second=await manager.turn("openai",request,{streamResponses:true});assert.equal(second.text,"fallback");assert.equal(factoryCalls,1);assert.equal(fetchCalls,1);
   }finally{rmSync(root,{recursive:true,force:true})}
 });
