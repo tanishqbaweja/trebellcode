@@ -4722,16 +4722,16 @@ test("custom theme stays coherent across chat panel and command palette",async({
   await page.screenshot({path:auditDir+"custom-theme-chat-panel-1280x800.png",fullPage:true});
 });
 
-test("provider model refresh preserves models when provider status refresh fails",async({page})=>{
+test("provider switching reuses its response without depending on bootstrap refresh",async({page})=>{
   test.setTimeout(30_000);
-  let provider="freebuff",failBootstrap=false;
+  let provider="freebuff",failBootstrap=false,bootstrapCalls=0;
   const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
   const modelCatalog=()=>provider==="agentrouter"
     ?{models:["agentrouter/test/coding-fast"],metadata:{provider,models:[{id:"agentrouter/test/coding-fast",name:"Coding Fast",provider}]}}
     :{models:["freebuff/test/coding-fast"],metadata:{provider,models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider}]}};
-  await page.route(/\/api\/bootstrap$/,route=>failBootstrap
+  await page.route(/\/api\/bootstrap$/,route=>{bootstrapCalls++;return failBootstrap
     ?route.fulfill({status:500,contentType:"application/json",body:JSON.stringify({error:"Deliberate provider bootstrap refresh failure"})})
-    :route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider,providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"provider-bootstrap-refresh-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    :route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider,providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"provider-bootstrap-refresh-fixture",activeEnvironmentId:null,activeEnvironment:null})})});
   await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:settings(),projects:[],threadMeta:{}})}));
   await page.route(/\/api\/settings$/,route=>{
     if(route.request().method()==="POST"){
@@ -4742,7 +4742,13 @@ test("provider model refresh preserves models when provider status refresh fails
     return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())});
   });
   await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(modelCatalog())}));
-  await page.route(/\/api\/providers$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selected:provider,providers:[{id:"freebuff",name:"Freebuff",hasKey:true},{id:"agentrouter",name:"AgentRouter",hasKey:true}],status:{id:provider,hasKey:true},ready:true})}));
+  await page.route(/\/api\/providers$/,route=>{
+    if(route.request().method()==="POST"){
+      const body=route.request().postDataJSON()||{};
+      if(body.provider){provider=body.provider;failBootstrap=true}
+    }
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...modelCatalog(),selected:provider,agentRuntime:"native",providers:[{id:"freebuff",name:"Freebuff",hasKey:true},{id:"agentrouter",name:"AgentRouter",hasKey:true}],status:{id:provider,hasKey:true},ready:true})});
+  });
   await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
   await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
   await page.route(/\/api\/freebuff\/overview/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({})}));
@@ -4750,16 +4756,18 @@ test("provider model refresh preserves models when provider status refresh fails
   await page.getByRole("button",{name:"Settings",exact:true}).click();
   await page.getByRole("button",{name:/Agents & models/}).click();
   const selector=page.getByTestId("provider-selector");
+  const beforeBootstrap=bootstrapCalls;
   await selector.selectOption("agentrouter");
   await expect(selector).toHaveValue("agentrouter");
-  await expect(page.getByTestId("app-action-error")).toContainText("Models refreshed, but provider status could not refresh: Deliberate provider bootstrap refresh failure");
+  expect(bootstrapCalls).toBe(beforeBootstrap);
+  await expect(page.getByTestId("app-action-error")).toHaveCount(0);
   await expect(page.getByTestId("provider-status")).toContainText("AgentRouter");
   await page.getByRole("button",{name:"Threads",exact:true}).click();
   await expect(page.getByTestId("model-picker")).toContainText("Coding Fast");
   await page.setViewportSize({width:1280,height:800});
   const metrics=await page.locator(".chat-workspace").evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));
   expect(metrics.scroll).toBeLessThanOrEqual(metrics.client+1);
-  await page.screenshot({path:auditDir+"provider-bootstrap-refresh-error-1280x800.png",fullPage:true});
+  await page.screenshot({path:auditDir+"provider-switch-no-bootstrap-refresh-1280x800.png",fullPage:true});
 });
 
 test("provider key save reuses the returned catalog without refetching models or bootstrap",async({page})=>{
@@ -4817,19 +4825,24 @@ test("switching Trebell Native inference provider preserves the active chat and 
   });
   const wsPort=await freePort();await new Promise((resolve,reject)=>wsHttp.listen(wsPort,"127.0.0.1",resolve).once("error",reject));
   let provider="freebuff";
+  const requests={bootstrap:0,settingsPost:0,models:0,providersGet:0,providersPost:0};
   const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"native",modelProvider:provider,defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
   const models=()=>provider==="agentrouter"
     ?{models:["agentrouter/test/coding-fast"],metadata:{provider,models:[{id:"agentrouter/test/coding-fast",name:"Coding Fast",provider}]}}
     :{models:["freebuff/test/coding-fast"],metadata:{provider,models:[{id:"freebuff/test/coding-fast",name:"Coding Fast",provider}]}};
   try{
-    await page.route(/\/api\/bootstrap$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider,providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})}));
+    await page.route(/\/api\/bootstrap$/,route=>{requests.bootstrap++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider,providerReady:true,agentRuntime:"native",agentRuntimeReady:true,appServerReady:true,wsUrl:`ws://127.0.0.1:${wsPort}`,cwd:process.cwd(),platform:process.platform,version:"visual-fixture",activeEnvironmentId:null,activeEnvironment:null})})});
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:settings(),projects:[],threadMeta:{[thread.id]:{projectless:true,environmentId:null}}})}));
     await page.route(/\/api\/settings$/,async route=>{
-      if(route.request().method()==="POST"){const body=route.request().postDataJSON()||{};if(body.modelProvider)provider=body.modelProvider;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())})}
+      if(route.request().method()==="POST"){requests.settingsPost++;const body=route.request().postDataJSON()||{};if(body.modelProvider)provider=body.modelProvider;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())})}
       return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())});
     });
-    await page.route(/\/api\/models$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(models())}));
-    await page.route(/\/api\/providers$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...models(),selected:provider,agentRuntime:"native",providers:[{id:"freebuff",name:"Freebuff",hasKey:true},{id:"agentrouter",name:"AgentRouter",hasKey:true}],status:{id:provider,hasKey:true},ready:true})}));
+    await page.route(/\/api\/models$/,route=>{requests.models++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(models())})});
+    await page.route(/\/api\/providers$/,route=>{
+      if(route.request().method()==="POST"){requests.providersPost++;const body=route.request().postDataJSON()||{};if(body.provider)provider=body.provider}
+      else requests.providersGet++;
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...models(),selected:provider,agentRuntime:"native",providers:[{id:"freebuff",name:"Freebuff",hasKey:true},{id:"agentrouter",name:"AgentRouter",hasKey:true}],status:{id:provider,hasKey:true},ready:true})});
+    });
     await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
     await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
     await page.route(/\/api\/recovery$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({enabled:false,items:[]})}));
@@ -4849,11 +4862,17 @@ test("switching Trebell Native inference provider preserves the active chat and 
     await page.getByRole("button",{name:"Settings",exact:true}).click();
     await page.getByRole("button",{name:/Agents & models/}).click();
     const selector=page.getByTestId("provider-selector");
+    const switchBefore={...requests};
     await selector.selectOption("agentrouter");
     await expect(selector).toHaveValue("agentrouter");
     await expect(page.getByTestId("provider-settings-card")).toHaveAttribute("aria-busy","false");
     await expect(page.getByTestId("provider-status")).toContainText("AgentRouter");
     await expect(page.getByRole("heading",{name:"Settings",level:1})).toBeVisible();
+    expect(requests.settingsPost-switchBefore.settingsPost).toBe(0);
+    expect(requests.providersPost-switchBefore.providersPost).toBe(1);
+    expect(requests.providersGet-switchBefore.providersGet).toBe(0);
+    expect(requests.models-switchBefore.models).toBe(0);
+    expect(requests.bootstrap-switchBefore.bootstrap).toBe(0);
     await page.getByTestId("provider-api-key").fill("fixture-key");
     await page.getByTestId("save-provider-key").click();
     await expect(page.getByTestId("provider-status")).toContainText("API key saved");

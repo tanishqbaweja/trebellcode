@@ -190,8 +190,13 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     const optimistic=providerChange?{...settings,modelProvider:patch.modelProvider}:null;
     if(providerChange)setProviderSwitching(true);
     if(optimistic){onProviderChanging?.(patch.modelProvider);onSettings(optimistic)}
-    let next;
-    try{next=await api("/api/settings",{method:"POST",body:patch})}
+    let next,providerResult=null;
+    try{
+      if(providerChange){
+        providerResult=await api("/api/providers",{method:"POST",body:{provider:patch.modelProvider}});
+        next={...settings,...patch,modelProvider:providerResult.selected||patch.modelProvider};
+      }else next=await api("/api/settings",{method:"POST",body:patch});
+    }
     catch(error){
       if(optimistic){onProviderChanging?.(settings.modelProvider||"freebuff");onSettings(settings)}
       if(providerChange)setProviderSwitching(false);
@@ -204,8 +209,13 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       setProviderMessage("");
       setFreebuffAuthError(false);
       try{
-        const refreshPromise=onProviderUpdated?.({provider:next.modelProvider||patch.modelProvider,agentRuntime:next.agentRuntime||selectedAgent});
-        await Promise.all([loadProviders(),refreshPromise]);
+        if(providerResult){
+          setProviderInfo(providerResult);
+          await onProviderUpdated?.({provider:providerResult.selected||next.modelProvider||patch.modelProvider,agentRuntime:providerResult.agentRuntime||next.agentRuntime||selectedAgent,catalog:providerResult,refreshBootstrap:false});
+        }else{
+          const refreshPromise=onProviderUpdated?.({provider:next.modelProvider||patch.modelProvider,agentRuntime:next.agentRuntime||selectedAgent});
+          await Promise.all([loadProviders(),refreshPromise]);
+        }
       }finally{if(providerChange)setProviderSwitching(false)}
     }
     if("customModels" in patch)await onProviderUpdated?.();
@@ -468,7 +478,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     else if(settingsSection==="diagnostics")refresh({includeRuntime:false,includeUpdate:false,includeStorage:false,includeDesktopUpdates:false,includeSnapshots:false,includeBrowser:false});
     else if(settingsSection==="desktop")refresh({includeRuntime:false,includeUpdate:false,includeDiagnostics:false,includeStorage:false,includeDesktopUpdates:false});
   },[projectPath,settingsSection]);
-  useEffect(()=>{if(settingsSection==="agents")loadProviders()},[selected,settingsSection]);
+  useEffect(()=>{if(settingsSection==="agents")loadProviders()},[settingsSection]);
   useEffect(()=>{if(settingsSection==="agents"||settingsSection==="diagnostics")loadAgentRuntimes()},[selectedAgent,settingsSection]);
   useEffect(()=>{
     setInstanceDraft(null);
