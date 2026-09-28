@@ -27,8 +27,9 @@ test("Native system prompt teaches evidence-driven coding without inventing unav
   assert.match(prompt,/do not infer stricter requiredness than the contract states/i);
   assert.match(prompt,/canonical happy path through the public entry point/i);
   assert.match(prompt,/documented defaults or fallbacks/i);
-  assert.match(prompt,/branches by runtime, persistence mode, transport, adapter/i);
+  assert.match(prompt,/branches by runtime, persistence mode, transport, adapter, test runner, bundler/i);
   assert.match(prompt,/passing browser, mock, or in-memory path is not evidence/i);
+  assert.match(prompt,/one Node launcher is not evidence that a transformed\/test-runner Node surface behaves identically/i);
   assert.match(prompt,/baseline parity check/i);
   assert.match(prompt,/multiple routes, workflows, components, or acceptance surfaces/i);
   assert.match(prompt,/cover them breadth-first/i);
