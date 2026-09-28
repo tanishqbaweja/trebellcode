@@ -6,6 +6,10 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
   assert.match(source,/terminal-bench-pair\.lock/);
   assert.match(source,/Refusing to contaminate benchmark timing/);
+  assert.match(source,/randomUUID/);
+  assert.match(source,/lockId/);
+  assert.match(source,/lockIdentity\(current\)!==lockIdentity\(existing\)/);
+  assert.match(source,/current\?\.lockId===lockId/);
   assert.match(source,/SETUP_TIMEOUT_MULTIPLIER/);
   assert.match(source,/agentExecutionMs:elapsedMs\(trial\?\.agent_execution\)/);
   assert.match(source,/taskChecksum:trial\?\.task_checksum/);
@@ -17,6 +21,7 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/CODEX_AUTH_MODE==="both"\?\["api","oauth"\]/);
   assert.match(source,/codexAuthMode:CODEX_AUTH_MODE/);
   assert.match(source,/TREBELL_TERMINAL_BENCH_CODEX_INSTALL/);
+  assert.match(source,/TREBELL_TERMINAL_BENCH_CODEX_INSTALL\|\|"pinned"/);
   assert.match(source,/Terminal-Bench Codex install mode must be stock or pinned/);
   assert.match(source,/codexInstallMode:CODEX_INSTALL_MODE/);
   assert.match(source,/codexPinnedTarballSha256/);
@@ -26,6 +31,12 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/npm_execpath/);
   assert.match(source,/@openai\/codex@\$\{CODEX_PINNED_VERSION\}-linux-x64/);
   assert.match(source,/benchmarks\.harbor\.pinned_codex_agent:PinnedCodexAgent/);
+  assert.match(source,/loadEnvFile\(join\(root,"\.env"\)\)/);
+  assert.match(source,/\.codex-api-auth-/);
+  assert.match(source,/harnessEnv\.CODEX_AUTH_JSON_PATH=codexApiAuthPath/);
+  assert.match(source,/delete harnessEnv\.OPENAI_API_KEY/);
+  assert.match(source,/recoverTrialEvidence/);
+  assert.match(source,/recoveredFromTrialFiles/);
   assert.match(source,/comparisonLanes:lanes\.map/);
   assert.match(source,/label:`codex-\$\{authMode\}`/);
   assert.match(source,/CODEX_AUTH_MODES\.includes\("oauth"\)&&codexLaneSelected\("oauth"\)/);
