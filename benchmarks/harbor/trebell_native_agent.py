@@ -78,29 +78,44 @@ class TrebellNativeAgent(BaseInstalledAgent):
         await self._upload_agent_owned_file(
             environment, bundle, self._REMOTE_RUNNER
         )
+        async def write_runtime_marker(runtime: str) -> None:
+            if runtime not in {"bun", "node"}:
+                raise ValueError(f"Unsupported Trebell Native runtime marker: {runtime!r}")
+            marker = shlex.quote(self._REMOTE_RUNTIME)
+            value = shlex.quote(runtime)
+            await self.exec_as_root(
+                environment,
+                command=f"printf '%s\\n' {value} > {marker}; chmod 0644 {marker}",
+            )
+
         # Avoid heavyweight runtime installation when the task image already
         # ships a compatible JavaScript runtime. Bun-based TB4 images are a
         # common example; the bundled Native runner is validated directly
         # before selection so incompatible runtimes fall through safely.
+        runtime = None
         try:
-            await self.exec_as_agent(
+            runtime_result = await self.exec_as_agent(
                 environment,
                 command=(
                     "set -euo pipefail; "
                     f"if command -v bun >/dev/null 2>&1 && "
                     f"bun {self._REMOTE_RUNNER} --version >/dev/null 2>&1; then "
-                    f"printf '%s\\n' bun > {self._REMOTE_RUNTIME}; "
+                    "printf '%s\\n' bun; "
                     f"elif command -v node >/dev/null 2>&1 && "
                     f"node {self._REMOTE_RUNNER} --version >/dev/null 2>&1; then "
-                    f"printf '%s\\n' node > {self._REMOTE_RUNTIME}; "
+                    "printf '%s\\n' node; "
                     "else exit 42; fi"
                 ),
             )
-            return
+            runtime = str(runtime_result.stdout or "").strip()
         except Exception:
-            self.logger.info(
-                "No compatible preinstalled Bun/Node runtime; installing Node 22 fallback."
-            )
+            pass
+        if runtime in {"bun", "node"}:
+            await write_runtime_marker(runtime)
+            return
+        self.logger.info(
+            "No compatible preinstalled Bun/Node runtime; installing Node 22 fallback."
+        )
 
         # Fallback only: curl is needed for nvm. Avoid Harbor's package-manager
         # path when the task image already ships curl; apt metadata refreshes
@@ -117,10 +132,10 @@ class TrebellNativeAgent(BaseInstalledAgent):
             command=(
                 "set -euo pipefail; "
                 f"{nvm_node_install_snippet()} && "
-                "node --version && "
-                f"printf '%s\\n' node > {self._REMOTE_RUNTIME}"
+                "node --version"
             ),
         )
+        await write_runtime_marker("node")
 
     @with_prompt_template
     @override

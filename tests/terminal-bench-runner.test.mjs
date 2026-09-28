@@ -73,6 +73,16 @@ test("Trebell Native Harbor adapter skips package-manager setup when curl alread
   assert.ok(source.indexOf("command -v curl")<source.indexOf('ensure_system_dependencies(environment, ("curl",))'));
 });
 
+test("Trebell Native Harbor runtime marker is written as root after agent runtime validation",async()=>{
+  const source=await readFile(new URL("../benchmarks/harbor/trebell_native_agent.py",import.meta.url),"utf8");
+  assert.match(source,/async def write_runtime_marker\(runtime: str\)/);
+  assert.match(source,/runtime_result = await self\.exec_as_agent/);
+  assert.match(source,/runtime = str\(runtime_result\.stdout or ""\)\.strip\(\)/);
+  assert.match(source,/await self\.exec_as_root\([\s\S]*chmod 0644 \{marker\}/);
+  assert.match(source,/await write_runtime_marker\("node"\)/);
+  assert.doesNotMatch(source,/printf '%s\\n' (?:bun|node) > \{self\._REMOTE_RUNTIME\}/);
+});
+
 test("Terminal-Bench single runner uses an absolute output path and the same safer setup-timeout default",async()=>{
   const source=await readFile(new URL("../scripts/run-terminal-bench.mjs",import.meta.url),"utf8");
   assert.match(source,/TREBELL_TERMINAL_BENCH_SETUP_TIMEOUT_MULTIPLIER\|\|3/);
