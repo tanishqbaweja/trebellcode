@@ -3097,6 +3097,49 @@ test("runtime profile mutations reuse bundled refresh state without follow-up re
   expect(requests.modelGets-activeRemoveBefore.modelGets).toBe(0);
 });
 
+test("custom model edits refresh the catalog without refreshing bootstrap",async({page})=>{
+  test.setTimeout(30_000);
+  const requests={bootstrapGets:0,modelGets:0,settingsPosts:0};
+  let currentSettings={onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",modelProvider:"freebuff",customModels:[],defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"};
+  const modelPayload=()=>{
+    const custom=(currentSettings.customModels||[]).filter(item=>item.runtime==="codex");
+    const metadata=[{id:"codex/base",name:"Base",agent:"codex"},...custom.map(item=>({id:item.id,name:item.name||item.id,agent:"codex"}))];
+    return {agentRuntime:"codex",models:metadata.map(item=>item.id),metadata:{models:metadata}};
+  };
+  await page.route(/\/api\/bootstrap$/,route=>{requests.bootstrapGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:"codex",agentRuntimeInstanceId:"codex-default",agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"custom-model-refresh-fixture",activeEnvironmentId:null,activeEnvironment:null})})});
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:currentSettings,projects:[],threadMeta:{}})}));
+  await page.route(/\/api\/settings$/,route=>{
+    if(route.request().method()==="POST"){
+      requests.settingsPosts++;
+      currentSettings={...currentSettings,...(route.request().postDataJSON()||{})};
+    }
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(currentSettings)});
+  });
+  await page.route(/\/api\/models$/,route=>{requests.modelGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(modelPayload())})});
+  await page.route(/\/api\/agent-runtimes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selectedRuntime:"codex",selectedInstanceId:"codex-default",definitions:[{id:"codex",name:"Codex",protocol:"codex",multipleInstances:true}],instances:[{id:"codex-default",kind:"codex",displayName:"Codex",enabled:true}],statuses:[{id:"codex-default",kind:"codex",name:"Codex",available:true,installed:true,authenticated:true,version:"fixture"}]})}));
+  await page.route(/\/api\/providers$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({selected:"freebuff",providers:[{id:"freebuff",name:"Freebuff",hasKey:true}],status:{id:"freebuff",hasKey:true},ready:true})}));
+  await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+  await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+  await page.goto("/");
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await page.getByRole("button",{name:/Agents & models/}).click();
+  const addBefore={...requests};
+  await page.getByRole("button",{name:"Add custom model",exact:true}).click();
+  await page.getByLabel("Model ID").fill("codex/custom-fast");
+  await page.getByLabel("Display name").fill("Custom Fast");
+  await page.getByRole("button",{name:"Save custom model",exact:true}).click();
+  await expect(page.locator(".custom-model-list")).toContainText("Custom Fast");
+  expect(requests.settingsPosts-addBefore.settingsPosts).toBe(1);
+  expect(requests.modelGets-addBefore.modelGets).toBe(1);
+  expect(requests.bootstrapGets-addBefore.bootstrapGets).toBe(0);
+  const removeBefore={...requests};
+  await page.locator(".custom-model-list").filter({hasText:"Custom Fast"}).getByRole("button",{name:"Remove",exact:true}).click();
+  await expect(page.locator(".custom-model-list")).not.toContainText("Custom Fast");
+  expect(requests.settingsPosts-removeBefore.settingsPosts).toBe(1);
+  expect(requests.modelGets-removeBefore.modelGets).toBe(1);
+  expect(requests.bootstrapGets-removeBefore.bootstrapGets).toBe(0);
+});
+
 test("Trebell Native is a built-in provider-backed runtime in Settings",async({page,request})=>{
   test.setTimeout(35_000);
   await prepare(page,request);

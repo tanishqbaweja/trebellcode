@@ -233,7 +233,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
         }
       }finally{if(providerChange)setProviderSwitching(false)}
     }
-    if("customModels" in patch)await onProviderUpdated?.();
+    if("customModels" in patch)await onProviderUpdated?.({refreshBootstrap:false});
     return next;
   }
   function mcpArgs(value){return String(value||"").split(/\r?\n/).map(item=>item.trim()).filter(Boolean).slice(0,64)}
