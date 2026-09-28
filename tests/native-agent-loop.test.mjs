@@ -103,6 +103,31 @@ test("native implementation checkpoint fires before a fourth read-only model tur
   assert.equal(events.filter(event=>event.name==="native.progress.implementation_pressure").map(event=>event.data?.modelTurn).join(","),"4,5");
 });
 
+test("native implementation checkpoint fires before a fifth read-only model turn even with a modest tool count",async()=>{
+  const requests=[],events=[],executed=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"gpt-6-luna",provider:"openai",messages:[{role:"user",content:"Fix the broken implementation."}],
+    tools:[{type:"namespace",name:"trebell_repo",tools:[{name:"search_code"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    maxModelTurns:8,maxToolCalls:40,onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turn++;
+      if(turn<=4)return {text:"",toolCalls:[
+        {id:`read-${turn}-a`,namespace:"trebell_repo",name:"search_code",arguments:JSON.stringify({query:`q-${turn}-a`})},
+        {id:`read-${turn}-b`,namespace:"trebell_repo",name:"search_code",arguments:JSON.stringify({query:`q-${turn}-b`})},
+      ],usage:{}};
+      if(turn===5)return {text:"",toolCalls:[{id:"late-singleton-read",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"cat",args:["src/feature.mjs"]})}],usage:{}};
+      if(turn===6)return {text:"",toolCalls:[{id:"write-1",namespace:"trebell_workspace",name:"write_file",arguments:JSON.stringify({path:"src/feature.mjs",content:"export const ready = true;\n"})}],usage:{}};
+      return {text:"fixed",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{success:true,path:"src/feature.mjs",size:27}:{success:true,matches:["evidence"]}},
+  });
+  assert.equal(result.text,"fixed");
+  assert.equal(requests[4].messages.some(message=>message.role==="developer"&&/progress checkpoint/i.test(String(message.content||""))),true);
+  assert.equal(executed.includes("late-singleton-read"),false,"the fifth read-only turn should already be under implementation pressure");
+  assert.equal(events.filter(event=>event.name==="native.progress.implementation_checkpoint").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.implementation_pressure").map(event=>event.data?.modelTurn).join(","),"5,6");
+});
+
 test("native implementation pressure never activates for a read-only request",async()=>{
   const requests=[];let turn=0;
   const result=await runNativeAgentTurn({
