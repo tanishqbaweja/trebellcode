@@ -116,7 +116,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       setAgentInfo(result);
       onSettings(await api("/api/settings"));
       setAgentMessage(`${result.selected?.status?.name||kind} selected.`);
-      await onProviderUpdated?.({agentRuntime:result.selectedRuntime||kind,provider:selected,resetThread:true});
+      await onProviderUpdated?.({agentRuntime:result.selectedRuntime||kind,provider:selected,resetThread:true,reconnectRuntime:true});
     }catch(error){setAgentMessage(error.message)}
     finally{setAgentSelectionOverride(null)}
   }
@@ -133,7 +133,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       const instance={...instanceDraft};delete instance.environmentKeys;
       const result=await api("/api/agent-runtimes",{method:"POST",body:{action:"upsert",instance}});
       setAgentInfo(result);setInstanceDraft(null);setAgentMessage("Runtime profile saved.");
-      if(result.selectedInstanceId===instance.id){onSettings(await api("/api/settings"));await onProviderUpdated?.({resetThread:true})}
+      if(result.selectedInstanceId===instance.id){onSettings(await api("/api/settings"));await onProviderUpdated?.({resetThread:true,reconnectRuntime:true})}
     }catch(error){setAgentMessage(error.message)}
   }
   async function removeInstance(instance){
@@ -143,7 +143,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     try{
       const result=await api("/api/agent-runtimes?id="+encodeURIComponent(instance.id),{method:"DELETE"});
       setAgentInfo(result);setInstanceDraft(null);onSettings(await api("/api/settings"));setAgentMessage("Runtime profile removed.");
-      if(result.resetTo)await onProviderUpdated?.({resetThread:true});
+      if(result.resetTo)await onProviderUpdated?.({resetThread:true,reconnectRuntime:true});
     }catch(error){setAgentMessage(error.message)}
   }
   async function installAgentRuntime(kind){
@@ -160,7 +160,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       setAgentInfo(result);
       const status=result.installed?.status;
       setAgentMessage(status?.installed&&!status?.authenticated?label+" installed. Sign in with the CLI, then refresh diagnostics.":label+" installed and ready.");
-      await onProviderUpdated?.({resetThread:true});
+      await onProviderUpdated?.({resetThread:true,reconnectRuntime:kind===selectedAgent});
     }catch(error){setAgentMessage(error.message)}finally{setInstallingAgent(null)}
   }
   async function authenticateAgentRuntime(kind,instanceId){

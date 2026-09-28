@@ -2913,20 +2913,22 @@ test("runtime switch waits for matching bootstrap transport before reconnecting"
   };
   const external=await startRpcFixture({name:"external-runtime-fixture"});
   const codex=await startRpcFixture({name:"codex-runtime-fixture",sections:true});
-  let selectedRuntime="antigravity";
-  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedRuntime+"-default",modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
+  let selectedRuntime="antigravity",selectedInstanceId="antigravity-default";
+  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId,modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
   const agentSnapshot=()=>({
-    selectedRuntime,selectedInstanceId:selectedRuntime+"-default",
+    selectedRuntime,selectedInstanceId,
     definitions:[
       {id:"codex",name:"Codex",protocol:"codex",multipleInstances:true},
       {id:"antigravity",name:"Antigravity",protocol:"acp",multipleInstances:false},
     ],
     instances:[
       {id:"codex-default",kind:"codex",displayName:"Codex",enabled:true},
+      {id:"codex-personal",kind:"codex",displayName:"Codex Personal",enabled:true},
       {id:"antigravity-default",kind:"antigravity",displayName:"Antigravity",enabled:true},
     ],
     statuses:[
       {id:"codex-default",kind:"codex",name:"Codex",available:true,installed:true,authenticated:true,version:"fixture"},
+      {id:"codex-personal",kind:"codex",name:"Codex Personal",available:true,installed:true,authenticated:true,version:"fixture"},
       {id:"antigravity-default",kind:"antigravity",name:"Antigravity",available:true,installed:true,authenticated:true,version:"fixture"},
     ],
   });
@@ -2934,7 +2936,7 @@ test("runtime switch waits for matching bootstrap transport before reconnecting"
     await page.route(/\/api\/bootstrap$/,async route=>{
       const runtime=selectedRuntime;
       if(runtime==="codex")await new Promise(resolve=>setTimeout(resolve,250));
-      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:runtime,agentRuntimeReady:true,appServerReady:true,wsUrl:runtime==="codex"?codex.wsUrl:external.wsUrl,cwd:process.cwd(),platform:process.platform,version:"runtime-switch-fixture",activeEnvironmentId:null,activeEnvironment:null})});
+      return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({mock:false,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:runtime,agentRuntimeInstanceId:selectedInstanceId,agentRuntimeReady:true,appServerReady:true,wsUrl:runtime==="codex"?codex.wsUrl:external.wsUrl,cwd:process.cwd(),platform:process.platform,version:"runtime-switch-fixture",activeEnvironmentId:null,activeEnvironment:null})});
     });
     await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:settings(),projects:[],threadMeta:{}})}));
     await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())}));
@@ -2945,8 +2947,11 @@ test("runtime switch waits for matching bootstrap transport before reconnecting"
     await page.route(/\/api\/agent-runtimes$/,async route=>{
       if(route.request().method()==="GET")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(agentSnapshot())});
       const body=route.request().postDataJSON?.()||{};
-      if(body.action==="select")selectedRuntime=body.runtime||selectedRuntime;
-      const snapshot=agentSnapshot(),instance=snapshot.instances.find(item=>item.kind===selectedRuntime),status=snapshot.statuses.find(item=>item.kind===selectedRuntime);
+      if(body.action==="select"){
+        selectedRuntime=body.runtime||selectedRuntime;
+        selectedInstanceId=body.instanceId||`${selectedRuntime}-default`;
+      }
+      const snapshot=agentSnapshot(),instance=snapshot.instances.find(item=>item.id===selectedInstanceId),status=snapshot.statuses.find(item=>item.id===selectedInstanceId);
       return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({...snapshot,selected:{runtime:selectedRuntime,instance,status}})});
     });
     await page.addInitScript(()=>localStorage.setItem("trebell-layout-v1",JSON.stringify({sidebarWidth:258,rightPanelWidth:460,terminalHeight:330})));
@@ -2962,6 +2967,10 @@ test("runtime switch waits for matching bootstrap transport before reconnecting"
     expect(external.methods).not.toContain("threadSection/list");
     expect(external.methods.filter(method=>method==="initialize")).toHaveLength(1);
     expect(codex.methods.filter(method=>method==="initialize")).toHaveLength(1);
+    const personalProfile=page.locator(".runtime-profile-row").filter({hasText:"Codex Personal"});
+    await personalProfile.getByRole("button",{name:/Codex Personal/}).first().click();
+    await expect(personalProfile.getByText("Active",{exact:true})).toBeVisible();
+    await expect.poll(()=>codex.methods.filter(method=>method==="initialize").length,{timeout:10_000}).toBe(2);
     const antigravityOption=page.locator(".agent-runtime-option").filter({hasText:"Antigravity"});
     await antigravityOption.locator("button").first().click();
     await expect(antigravityOption.getByText("Active",{exact:true})).toBeVisible();
@@ -2969,10 +2978,10 @@ test("runtime switch waits for matching bootstrap transport before reconnecting"
     expect(external.methods).not.toContain("threadSection/list");
     await codexOption.locator("button").first().click();
     await expect(codexOption.getByText("Active",{exact:true})).toBeVisible();
-    await expect.poll(()=>codex.methods.filter(method=>method==="initialize").length,{timeout:10_000}).toBe(2);
+    await expect.poll(()=>codex.methods.filter(method=>method==="initialize").length,{timeout:10_000}).toBe(3);
     await page.waitForTimeout(350);
     expect(external.methods.filter(method=>method==="initialize")).toHaveLength(2);
-    expect(codex.methods.filter(method=>method==="initialize")).toHaveLength(2);
+    expect(codex.methods.filter(method=>method==="initialize")).toHaveLength(3);
     expect(external.methods).not.toContain("threadSection/list");
     await expect(page.getByTestId("app-action-error")).toHaveCount(0);
   }finally{
@@ -4843,6 +4852,9 @@ test("switching Trebell Native inference provider preserves the active chat and 
     await expect(page.getByTestId("provider-settings-card")).toHaveAttribute("aria-busy","false");
     await expect(page.getByTestId("provider-status")).toContainText("AgentRouter");
     await expect(page.getByRole("heading",{name:"Settings",level:1})).toBeVisible();
+    await page.getByTestId("provider-api-key").fill("fixture-key");
+    await page.getByTestId("save-provider-key").click();
+    await expect(page.getByTestId("provider-status")).toContainText("API key saved");
 
     await page.getByRole("button",{name:"Threads",exact:true}).click();
     await expect(page.locator('.thread-main[title="Provider independent thread"]')).toBeVisible();
@@ -4852,8 +4864,9 @@ test("switching Trebell Native inference provider preserves the active chat and 
     const after=await page.locator(".thread-main").evaluateAll(nodes=>nodes.map(node=>node.getAttribute("title")||node.textContent.trim()));
     expect(after).toEqual(before);
     await expect(page.locator(".sidebar-provider")).toContainText("AgentRouter");
+    expect(rpcMessages.filter(message=>message.method==="initialize")).toHaveLength(1);
     const listCalls=rpcMessages.filter(message=>message.method==="thread/list");
-    expect(listCalls.length).toBeGreaterThanOrEqual(2);
+    expect(listCalls).toHaveLength(1);
     for(const call of listCalls)expect(Object.prototype.hasOwnProperty.call(call.params||{},"modelProviders")).toBe(false);
     expect(rpcMessages.filter(message=>message.method==="threadSection/create")).toHaveLength(0);
     await page.screenshot({path:auditDir+"provider-switch-threads-after-1600x980.png",fullPage:true});
