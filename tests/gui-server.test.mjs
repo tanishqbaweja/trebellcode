@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { EventEmitter } from "node:events";
 import { createGuiServer, offlineE2eFetch, requestAbortController } from "../src/gui-server.mjs";
+import { AgentRuntimeManager } from "../src/agent-runtime-manager.mjs";
 import { git } from "../src/git-service.mjs";
 import { TrebellStateStore } from "../src/trebell-state.mjs";
 
@@ -53,6 +54,51 @@ test("offline browser E2E refuses to start a real provider or Codex app-server",
   }finally{
     if(previous==null)delete process.env.TREBELL_E2E_OFFLINE;
     else process.env.TREBELL_E2E_OFFLINE=previous;
+  }
+});
+
+test("runtime install endpoint bundles refresh state only for the active harness",async()=>{
+  const home=await mkdtemp(join(tmpdir(),"trebell-runtime-install-refresh-test-"));
+  const originalInstall=AgentRuntimeManager.prototype.install;
+  const originalProbe=AgentRuntimeManager.prototype.probe;
+  const installs=[];
+  AgentRuntimeManager.prototype.install=async function(runtime,{environmentId=undefined}={}){
+    installs.push({runtime,environmentId:environmentId??null});
+    return {ok:true,runtime,status:{id:`${runtime}-default`,kind:runtime,name:runtime,available:true,installed:true,authenticated:true,version:"fixture"}};
+  };
+  AgentRuntimeManager.prototype.probe=async function(instanceOrKind){
+    const instance=typeof instanceOrKind==="string"
+      ?this.instances().find(item=>item.id===instanceOrKind||item.kind===instanceOrKind)
+      :instanceOrKind;
+    const kind=instance?.kind||String(instanceOrKind||"codex");
+    return {id:instance?.id||`${kind}-default`,kind,name:kind,available:true,installed:true,authenticated:true,version:"fixture"};
+  };
+  const env={...process.env,TREBELL_HOME:home,TREBELL_HISTORY_DISABLE_CLAUDE:"1"};
+  const [port,appPort]=await Promise.all([freePort(),freePort()]);
+  let gui=null;
+  try{
+    gui=await createGuiServer({port,appPort,mock:true,env});
+    const inactive=await fetch(gui.url+"/api/agent-runtimes",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"install",runtime:"claude",environmentId:null})}).then(r=>r.json());
+    assert.equal(inactive.selectedRuntime,"codex");
+    assert.equal(Object.prototype.hasOwnProperty.call(inactive,"bootstrap"),false);
+    assert.equal(Object.prototype.hasOwnProperty.call(inactive,"catalog"),false);
+
+    const selected=await fetch(gui.url+"/api/agent-runtimes",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"select",runtime:"claude",instanceId:"claude-default"})}).then(r=>r.json());
+    assert.equal(selected.selectedRuntime,"claude");
+    assert.ok(selected.bootstrap);
+    assert.ok(selected.catalog);
+
+    const active=await fetch(gui.url+"/api/agent-runtimes",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"install",runtime:"claude",environmentId:null})}).then(r=>r.json());
+    assert.equal(active.selectedRuntime,"claude");
+    assert.equal(active.installed.runtime,"claude");
+    assert.ok(active.bootstrap);
+    assert.ok(active.catalog);
+    assert.deepEqual(installs,[{runtime:"claude",environmentId:null},{runtime:"claude",environmentId:null}]);
+  }finally{
+    if(gui)await gui.close();
+    AgentRuntimeManager.prototype.install=originalInstall;
+    AgentRuntimeManager.prototype.probe=originalProbe;
+    await rm(home,{recursive:true,force:true});
   }
 });
 
