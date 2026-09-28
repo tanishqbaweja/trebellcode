@@ -70,7 +70,6 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
   const [themeDraft,setThemeDraft]=useState(null);
   const [themeMessage,setThemeMessage]=useState("");
   const themeImportRef=useRef(null);
-  const skipAgentRuntimeRefreshRef=useRef(false);
   const selected=settings.modelProvider||"freebuff";
   const providerOptions=providerInfo?.providers?.length
     ?providerInfo.providers.map(item=>({id:item.id,name:item.name||PROVIDER_LABELS[item.id]||item.id,official:Boolean(item.official)}))
@@ -117,10 +116,17 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       setAgentInfo(result);
       const selectedRuntime=result.selectedRuntime||result.selected?.runtime||kind;
       const selectedInstanceId=result.selectedInstanceId||result.selected?.instance?.id||instanceId||`${selectedRuntime}-default`;
-      skipAgentRuntimeRefreshRef.current=true;
       onSettings(previous=>({...previous,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId}));
       setAgentMessage(`${result.selected?.status?.name||kind} selected.`);
-      await onProviderUpdated?.({agentRuntime:selectedRuntime,provider:selected,resetThread:true,reconnectRuntime:true});
+      await onProviderUpdated?.({
+        agentRuntime:selectedRuntime,
+        provider:selected,
+        resetThread:true,
+        reconnectRuntime:true,
+        catalog:result.catalog||null,
+        bootstrap:result.bootstrap||null,
+        refreshBootstrap:!result.bootstrap,
+      });
     }catch(error){setAgentMessage(error.message)}
     finally{setAgentSelectionOverride(null)}
   }
@@ -483,11 +489,7 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
     else if(settingsSection==="desktop")refresh({includeRuntime:false,includeUpdate:false,includeDiagnostics:false,includeStorage:false,includeDesktopUpdates:false});
   },[projectPath,settingsSection]);
   useEffect(()=>{if(settingsSection==="agents")loadProviders()},[settingsSection]);
-  useEffect(()=>{
-    if(settingsSection!=="agents"&&settingsSection!=="diagnostics")return;
-    if(skipAgentRuntimeRefreshRef.current){skipAgentRuntimeRefreshRef.current=false;return}
-    loadAgentRuntimes();
-  },[settings.agentRuntime,settingsSection]);
+  useEffect(()=>{if(settingsSection==="agents"||settingsSection==="diagnostics")loadAgentRuntimes()},[settingsSection]);
   useEffect(()=>{
     setInstanceDraft(null);
     setCustomModelEditorOpen(false);

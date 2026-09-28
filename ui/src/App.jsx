@@ -928,14 +928,14 @@ export default function App(){
       return null;
     }
   }
-  async function refreshProviderModels({resetThread=false,provider:expectedProvider=null,agentRuntime:expectedRuntime=null,catalog=null,refreshBootstrap=true}={}){
+  async function refreshProviderModels({resetThread=false,provider:expectedProvider=null,agentRuntime:expectedRuntime=null,catalog=null,bootstrap:bootstrapSnapshot=null,refreshBootstrap=true}={}){
     const seq=++modelRefreshSeqRef.current;
     const targetProvider=expectedProvider||provider;
     const targetRuntime=expectedRuntime||agentRuntime;
     const sameScope=targetProvider===provider&&targetRuntime===agentRuntime;
     if(!sameScope){setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("")}
     const [bootResult,modelResult]=await Promise.all([
-      refreshBootstrap?api("/api/bootstrap").then(value=>({value,error:null}),error=>({value:null,error})):Promise.resolve({value:null,error:null}),
+      bootstrapSnapshot?Promise.resolve({value:bootstrapSnapshot,error:null}):refreshBootstrap?api("/api/bootstrap").then(value=>({value,error:null}),error=>({value:null,error})):Promise.resolve({value:null,error:null}),
       catalog?Promise.resolve({value:catalog,error:null}):api("/api/models").then(value=>({value,error:null}),error=>({value:null,error})),
     ]);
     if(seq!==modelRefreshSeqRef.current)return modelResult.value;

@@ -996,6 +996,36 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
   function providerReady(providerId=selectedProvider){
     return providerId==="freebuff" ? (mock || isLoggedIn(env)) : (mock || providers.hasKey(providerId));
   }
+  async function bootstrapPayload(req,{agentSnapshot=null}={}){
+    const appReady=mock || await appServerReady(appServer,appPort);
+    const activeAgentInstance=agentRuntimes.activeInstance();
+    const activeAgentStatus=agentSnapshot?.statuses?.find(item=>item.id===activeAgentInstance?.id)
+      || await agentRuntimes.probe(activeAgentInstance).catch(()=>null);
+    const runtimeReady=selectedAgentRuntime==="codex"
+      ?Boolean(appReady&&activeAgentStatus?.available)
+      :Boolean(activeAgentStatus?.available);
+    return {
+      mock,
+      loggedIn:mock || isLoggedIn(env),
+      agentRuntime:selectedAgentRuntime,
+      agentRuntimeInstanceId:activeAgentInstance?.id||`${selectedAgentRuntime}-default`,
+      runtimeCapabilities:agentRuntimes.capabilities(activeAgentInstance),
+      agentRuntimeReady:mock||runtimeReady,
+      agentRuntimeStatus:activeAgentStatus,
+      provider:selectedProvider,
+      providerReady:providerReady(),
+      bridgeReady:selectedProvider==="freebuff" ? (mock || await health(DEFAULT_PORT)) : false,
+      appServerReady:appReady,
+      wsUrl:mock ? null : (env.TREBELL_GUI_PUBLIC==="1"
+        ? `${String(req.headers["x-forwarded-proto"]||"https").split(",")[0].trim()==="https"?"wss":"ws"}://${String(req.headers["x-forwarded-host"]||req.headers.host||"").split(",")[0].trim()}${selectedAgentRuntime==="codex"?"/api/codex/ws":"/api/agent/ws"}`
+        : `ws://127.0.0.1:${port}${selectedAgentRuntime==="codex"?"/api/codex/ws":"/api/agent/ws"}`),
+      cwd:process.cwd(),
+      platform:process.platform,
+      version:TREBELL_VERSION,
+      activeEnvironment:appServer?.environment||null,
+      appServerError:appServer?.error||null,
+    };
+  }
   function codexGoalTurns(meta={}){
     const completed=Array.isArray(meta.codexTurnTimings)?meta.codexTurnTimings:[],recovery=meta.restartRecovery;
     if(recovery?.runtime!=="codex"||recovery?.status!=="active"||!recovery.turnId||!Number(recovery.startedAt))return completed;
@@ -1437,6 +1467,17 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     const result=nativeProviderCatalog||await providers.models(selectedProvider);
     return finish({models:result.models||[],metadata:{provider:selectedProvider,source:result.source,models:result.metadata||[]},error:result.error||null});
   }
+  async function selectedModelsPayload(){
+    const catalog=await selectedModels();
+    return {
+      ...(selectedAgentRuntime==="native"?{provider:selectedProvider}:{}),
+      agentRuntime:selectedAgentRuntime,
+      ready:selectedAgentRuntime==="native"?providerReady():true,
+      models:catalog.models||[],
+      metadata:catalog.metadata||null,
+      error:catalog.error||null,
+    };
+  }
 
   async function ensureBridge(){
     if(mock) return null;
@@ -1616,7 +1657,19 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
             const selected=await agentRuntimes.setActive({runtime:body.runtime,instanceId:body.instanceId||null});
             selectedAgentRuntime=selected.runtime;
             if(selected.runtime==="codex"&&(previousRuntime!=="codex"||previousInstanceId!==selected.instance.id))await restartAppServer();
-            return json(res,200,{...await agentRuntimes.snapshot(),selected});
+            const snapshot=await agentRuntimes.snapshot();
+            const [bootstrap,catalog]=await Promise.all([
+              bootstrapPayload(req,{agentSnapshot:snapshot}),
+              selectedModelsPayload().catch(error=>({
+                ...(selectedAgentRuntime==="native"?{provider:selectedProvider}:{}),
+                agentRuntime:selectedAgentRuntime,
+                ready:false,
+                models:[],
+                metadata:null,
+                error:error instanceof Error?error.message:String(error),
+              })),
+            ]);
+            return json(res,200,{...snapshot,selected,bootstrap,catalog});
           }
           if(body.action==="upsert"){
             const instance=agentRuntimes.upsertInstance(body.instance||{});
@@ -2360,33 +2413,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     }
 
     if(url.pathname==="/api/bootstrap"){
-      const appReady=mock || await appServerReady(appServer,appPort);
-      const activeAgentInstance=agentRuntimes.activeInstance();
-      const activeAgentStatus=await agentRuntimes.probe(activeAgentInstance).catch(()=>null);
-      const runtimeReady=selectedAgentRuntime==="codex"
-        ?Boolean(appReady&&activeAgentStatus?.available)
-        :Boolean(activeAgentStatus?.available);
-      return json(res,200,{
-        mock,
-        loggedIn:mock || isLoggedIn(env),
-        agentRuntime:selectedAgentRuntime,
-        agentRuntimeInstanceId:activeAgentInstance?.id||`${selectedAgentRuntime}-default`,
-        runtimeCapabilities:agentRuntimes.capabilities(activeAgentInstance),
-        agentRuntimeReady:mock||runtimeReady,
-        agentRuntimeStatus:activeAgentStatus,
-        provider:selectedProvider,
-        providerReady:providerReady(),
-        bridgeReady:selectedProvider==="freebuff" ? (mock || await health(DEFAULT_PORT)) : false,
-        appServerReady:appReady,
-        wsUrl:mock ? null : (env.TREBELL_GUI_PUBLIC==="1"
-          ? `${String(req.headers["x-forwarded-proto"]||"https").split(",")[0].trim()==="https"?"wss":"ws"}://${String(req.headers["x-forwarded-host"]||req.headers.host||"").split(",")[0].trim()}${selectedAgentRuntime==="codex"?"/api/codex/ws":"/api/agent/ws"}`
-          : `ws://127.0.0.1:${port}${selectedAgentRuntime==="codex"?"/api/codex/ws":"/api/agent/ws"}`),
-        cwd:process.cwd(),
-        platform:process.platform,
-        version:TREBELL_VERSION,
-        activeEnvironment:appServer?.environment||null,
-        appServerError:appServer?.error||null,
-      });
+      return json(res,200,await bootstrapPayload(req));
     }
     if(url.pathname==="/api/runtime"){
       const agentSnapshot=await agentRuntimes.snapshot().catch(()=>({selectedRuntime:selectedAgentRuntime,selectedInstanceId:null,statuses:[]}));
@@ -2843,8 +2870,7 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
     }
     if(url.pathname==="/api/models"){
       try{
-        const catalog=await selectedModels();
-        return json(res,200,{...(selectedAgentRuntime==="native"?{provider:selectedProvider}:{}),agentRuntime:selectedAgentRuntime,ready:selectedAgentRuntime==="native"?providerReady():true,models:catalog.models||[],metadata:catalog.metadata||null,error:catalog.error||null});
+        return json(res,200,await selectedModelsPayload());
       }catch(error){
         return json(res,503,{...(selectedAgentRuntime==="native"?{provider:selectedProvider}:{}),agentRuntime:selectedAgentRuntime,ready:false,models:[],error:error instanceof Error?error.message:String(error)});
       }

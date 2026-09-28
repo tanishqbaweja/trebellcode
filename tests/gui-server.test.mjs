@@ -381,6 +381,14 @@ test("GUI server exposes mock bootstrap, provider models, and health", async () 
     assert.equal(codexRuntimeSnapshot.selectedRuntime,"codex");assert.equal(codexRuntimeSnapshot.selectedInstanceId,customCodexId);
     const codexBootstrap=await fetch(gui.url+"/api/bootstrap").then(r=>r.json());
     assert.equal(codexBootstrap.agentRuntime,"codex");assert.equal(codexBootstrap.agentRuntimeInstanceId,customCodexId);
+    const nativeRuntimeSelection=await fetch(gui.url+"/api/agent-runtimes",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"select",runtime:"native",instanceId:"native-default"})}).then(r=>r.json());
+    assert.equal(nativeRuntimeSelection.selectedRuntime,"native");assert.equal(nativeRuntimeSelection.selectedInstanceId,"native-default");
+    assert.equal(nativeRuntimeSelection.bootstrap.agentRuntime,"native");assert.equal(nativeRuntimeSelection.bootstrap.agentRuntimeInstanceId,"native-default");
+    assert.equal(nativeRuntimeSelection.catalog.agentRuntime,"native");assert.ok(nativeRuntimeSelection.catalog.models.length>=1);
+    const restoredCodexSelection=await fetch(gui.url+"/api/agent-runtimes",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"select",runtime:"codex",instanceId:customCodexId})}).then(r=>r.json());
+    assert.equal(restoredCodexSelection.selectedRuntime,"codex");assert.equal(restoredCodexSelection.selectedInstanceId,customCodexId);
+    assert.equal(restoredCodexSelection.bootstrap.agentRuntime,"codex");assert.equal(restoredCodexSelection.bootstrap.agentRuntimeInstanceId,customCodexId);
+    assert.equal(restoredCodexSelection.catalog.agentRuntime,"codex");assert.ok(restoredCodexSelection.catalog.models.length>=1);
     const unavailableClaude=await fetch(gui.url+"/api/settings",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({agentRuntime:"claude",agentRuntimeInstanceId:"claude-default"})});
     if(unavailableClaude.status===400){
       const afterRejectedRuntime=await fetch(gui.url+"/api/agent-runtimes").then(r=>r.json());
