@@ -9,9 +9,9 @@ permissions:
   contents: read
 
 jobs:
-  validate:
+  browser:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -22,4 +22,15 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run ui:build
       - run: npx playwright test -c ui/playwright.config.mjs ui/e2e/visual.spec.js -g "scoped settings save reuses bundled settings and project state without follow-up reads"
+
+  canonical:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
       - run: npm test
