@@ -933,7 +933,8 @@ export default function App(){
     const targetProvider=expectedProvider||provider;
     const targetRuntime=expectedRuntime||agentRuntime;
     const sameScope=targetProvider===provider&&targetRuntime===agentRuntime;
-    if(!sameScope){setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("")}
+    const bundledCatalogMatches=Boolean(catalog&&(!catalog.provider||catalog.provider===targetProvider)&&(!catalog.agentRuntime||catalog.agentRuntime===targetRuntime));
+    if(!sameScope&&!bundledCatalogMatches){setModels([]);setModel("");setSelectedModels([]);setModelMeta({});setModelError("")}
     const [bootResult,modelResult]=await Promise.all([
       bootstrapSnapshot?Promise.resolve({value:bootstrapSnapshot,error:null}):refreshBootstrap?api("/api/bootstrap").then(value=>({value,error:null}),error=>({value:null,error})):Promise.resolve({value:null,error:null}),
       catalog?Promise.resolve({value:catalog,error:null}):api("/api/models").then(value=>({value,error:null}),error=>({value:null,error})),
@@ -2241,8 +2242,16 @@ export default function App(){
       const selected=await api("/api/agent-runtimes",{method:"POST",body:{action:"select",runtime:targetRuntime,instanceId:meta.runtimeInstanceId||null}});
       const selectedRuntime=selected.selectedRuntime||selected.selected?.runtime||targetRuntime;
       const selectedInstanceId=selected.selectedInstanceId||selected.selected?.instance?.id||meta.runtimeInstanceId||`${selectedRuntime}-default`;
+      modelCatalogScopeRef.current=selectedRuntime+"\0"+provider;
       setSettings(previous=>({...previous,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId}));
-      await refreshProviderModels({resetThread:false,provider,agentRuntime:selectedRuntime});
+      await refreshProviderModels({
+        resetThread:false,
+        provider,
+        agentRuntime:selectedRuntime,
+        catalog:selected.catalog||null,
+        bootstrap:selected.bootstrap||null,
+        refreshBootstrap:!selected.bootstrap,
+      });
       return true;
     }catch(error){
       pendingRuntimeThreadRef.current=null;throw error;
