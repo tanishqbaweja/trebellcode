@@ -175,7 +175,15 @@ export default function SettingsPage({settings,onSettings,onProviderChanging,onP
       setAgentInfo(result);
       const status=result.installed?.status;
       setAgentMessage(status?.installed&&!status?.authenticated?label+" installed. Sign in with the CLI, then refresh diagnostics.":label+" installed and ready.");
-      await onProviderUpdated?.({resetThread:true,reconnectRuntime:kind===selectedAgent});
+      if(kind===selectedAgent)await onProviderUpdated?.({
+        agentRuntime:result.selectedRuntime||kind,
+        provider:selected,
+        resetThread:true,
+        reconnectRuntime:true,
+        catalog:result.catalog||null,
+        bootstrap:result.bootstrap||null,
+        refreshBootstrap:!result.bootstrap,
+      });
     }catch(error){setAgentMessage(error.message)}finally{setInstallingAgent(null)}
   }
   async function authenticateAgentRuntime(kind,instanceId){

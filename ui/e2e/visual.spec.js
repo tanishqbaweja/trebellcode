@@ -3140,6 +3140,59 @@ test("custom model edits refresh the catalog without refreshing bootstrap",async
   expect(requests.bootstrapGets-removeBefore.bootstrapGets).toBe(0);
 });
 
+test("runtime install refreshes only the installed active harness and reuses bundled state",async({page})=>{
+  test.setTimeout(30_000);
+  let selectedRuntime="opencode",selectedInstanceId="opencode-default";
+  const requests={runtimePosts:0,bootstrapGets:0,modelGets:0};
+  const definitions=[
+    {id:"opencode",name:"OpenCode",protocol:"http",multipleInstances:false,installable:true},
+    {id:"antigravity",name:"Antigravity",protocol:"acp",multipleInstances:false,installable:true},
+  ];
+  const instances=[
+    {id:"opencode-default",kind:"opencode",displayName:"OpenCode",enabled:true},
+    {id:"antigravity-default",kind:"antigravity",displayName:"Antigravity",enabled:true},
+  ];
+  const statuses=()=>[
+    {id:"opencode-default",kind:"opencode",name:"OpenCode",available:true,installed:true,authenticated:true,version:"fixture"},
+    {id:"antigravity-default",kind:"antigravity",name:"Antigravity",available:true,installed:true,authenticated:true,version:"fixture"},
+  ];
+  const settings=()=>({onboardingComplete:true,appearance:"dark",appearanceMode:"dark",panelAnimationMs:0,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId,modelProvider:"freebuff",defaultPermissionMode:"supervised",defaultWorkspaceMode:"current"});
+  const snapshot=()=>({selectedRuntime,selectedInstanceId,definitions,instances,statuses:statuses()});
+  const bootstrap=()=>({mock:true,loggedIn:true,provider:"freebuff",providerReady:true,agentRuntime:selectedRuntime,agentRuntimeInstanceId:selectedInstanceId,agentRuntimeReady:true,appServerReady:false,wsUrl:"",cwd:process.cwd(),platform:process.platform,version:"runtime-install-bundle-fixture",activeEnvironmentId:null,activeEnvironment:null});
+  const catalog=()=>({agentRuntime:selectedRuntime,models:["fixture-model"],metadata:{models:[{id:"fixture-model",name:"Fixture model",agent:selectedRuntime}]}});
+  await page.route(/\/api\/bootstrap$/,route=>{requests.bootstrapGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(bootstrap())})});
+  await page.route(/\/api\/state$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({settings:settings(),projects:[],threadMeta:{}})}));
+  await page.route(/\/api\/settings$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(settings())}));
+  await page.route(/\/api\/models$/,route=>{requests.modelGets++;return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(catalog())})});
+  await page.route(/\/api\/agent-runtimes$/,route=>{
+    if(route.request().method()==="GET")return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(snapshot())});
+    requests.runtimePosts++;
+    const body=route.request().postDataJSON()||{};
+    const active=body.runtime===selectedRuntime;
+    return route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({installed:{ok:true,runtime:body.runtime,status:statuses().find(item=>item.kind===body.runtime)},...snapshot(),...(active?{bootstrap:bootstrap(),catalog:catalog()}:{})})});
+  });
+  await page.route(/\/api\/projects$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({projects:[]})}));
+  await page.route(/\/api\/environment\/themes$/,route=>route.fulfill({status:200,contentType:"application/json",body:JSON.stringify({environmentKey:"local",environmentName:"Local machine",directory:"",themes:[]})}));
+  page.on("dialog",dialog=>dialog.accept());
+  await page.goto("/");
+  await page.getByRole("button",{name:"Settings",exact:true}).click();
+  await page.getByRole("button",{name:/Agents & models/}).click();
+  const activeRuntime=page.locator(".agent-runtime-option").filter({hasText:"OpenCode"});
+  const activeBefore={...requests};
+  await activeRuntime.getByRole("button",{name:"Update",exact:true}).click();
+  await expect(page.locator(".agent-runtime-settings")).toContainText("OpenCode installed and ready.");
+  expect(requests.runtimePosts-activeBefore.runtimePosts).toBe(1);
+  expect(requests.bootstrapGets-activeBefore.bootstrapGets).toBe(0);
+  expect(requests.modelGets-activeBefore.modelGets).toBe(0);
+  const inactiveRuntime=page.locator(".agent-runtime-option").filter({hasText:"Antigravity"});
+  const inactiveBefore={...requests};
+  await inactiveRuntime.getByRole("button",{name:"Update",exact:true}).click();
+  await expect.poll(()=>requests.runtimePosts-inactiveBefore.runtimePosts).toBe(1);
+  await page.waitForTimeout(250);
+  expect(requests.bootstrapGets-inactiveBefore.bootstrapGets).toBe(0);
+  expect(requests.modelGets-inactiveBefore.modelGets).toBe(0);
+});
+
 test("Trebell Native is a built-in provider-backed runtime in Settings",async({page,request})=>{
   test.setTimeout(35_000);
   await prepare(page,request);
