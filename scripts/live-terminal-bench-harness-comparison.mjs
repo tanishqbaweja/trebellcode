@@ -23,6 +23,11 @@ const codexAuthArg=process.argv.find(arg=>arg.startsWith("--codex-auth="));
 const CODEX_AUTH_MODE=String(codexAuthArg?.slice("--codex-auth=".length)||process.env.TREBELL_TERMINAL_BENCH_CODEX_AUTH||"both").trim().toLowerCase();
 if(!["api","oauth","both"].includes(CODEX_AUTH_MODE))throw new Error("Terminal-Bench Codex auth mode must be api, oauth, or both.");
 const CODEX_AUTH_MODES=CODEX_AUTH_MODE==="both"?["api","oauth"]:[CODEX_AUTH_MODE];
+const codexInstallArg=process.argv.find(arg=>arg.startsWith("--codex-install="));
+const CODEX_INSTALL_MODE=String(codexInstallArg?.slice("--codex-install=".length)||process.env.TREBELL_TERMINAL_BENCH_CODEX_INSTALL||"stock").trim().toLowerCase();
+if(!["stock","pinned"].includes(CODEX_INSTALL_MODE))throw new Error("Terminal-Bench Codex install mode must be stock or pinned.");
+const CODEX_PINNED_VERSION="0.158.0";
+const CODEX_PINNED_TARBALL_SHA256="3fe84106aaf2fbfc13299068510d34b3d0157eeb9af4b37be8cf5416f485a6bb";
 const validationDir=join(root,".harbor-validation"),lockPath=join(validationDir,"terminal-bench-pair.lock");
 
 function run(command,args,{env=process.env}={}){
@@ -46,6 +51,14 @@ async function harborBin(){
 function safeSlug(value){return String(value||"").replace(/^terminal-bench\//,"").replace(/[^a-z0-9]+/gi,"-").replace(/^-|-$/g,"").toLowerCase().slice(0,80)||"task"}
 function stamp(){return new Date().toISOString().replace(/[-:]/g,"").replace(/\.\d{3}Z$/,"Z")}
 async function sha256File(path){return createHash("sha256").update(await readFile(path)).digest("hex")}
+async function ensurePinnedCodexTarball(path,{explicit=false}={}){
+  try{await access(path);return}catch(error){if(explicit)throw error}
+  await mkdir(dirname(path),{recursive:true});
+  const npmCli=String(process.env.npm_execpath||"").trim(),args=["pack",`@openai/codex@${CODEX_PINNED_VERSION}-linux-x64`,"--pack-destination",dirname(path)];
+  if(npmCli)await run(process.execPath,[npmCli,...args]);
+  else await run(process.platform==="win32"?"npm.cmd":"npm",args);
+  await access(path);
+}
 function elapsedMs(range){const start=Date.parse(String(range?.started_at||"")),end=Date.parse(String(range?.finished_at||""));return Number.isFinite(start)&&Number.isFinite(end)?Math.max(0,end-start):null}
 function processAlive(pid){try{process.kill(Number(pid),0);return true}catch(error){return error?.code==="EPERM"}}
 async function acquirePairLock(){
@@ -79,17 +92,29 @@ try{
   await run(process.execPath,[join(root,"scripts","build-harbor-native-agent.mjs")]);
   const nativeBundlePath=join(root,"benchmarks","harbor","dist","trebell-native-agent.mjs"),nativeAdapterPath=join(root,"benchmarks","harbor","trebell_native_agent.py");
   const nativeBundleSha256=await sha256File(nativeBundlePath),nativeAdapterSha256=await sha256File(nativeAdapterPath);
+  const codexPinnedAdapterPath=join(root,"benchmarks","harbor","pinned_codex_agent.py"),codexPinnedAdapterSha256=await sha256File(codexPinnedAdapterPath);
+  let codexPinnedTarballPath=null,codexPinnedTarballSha256=null;
+  if(CODEX_INSTALL_MODE==="pinned"){
+    const configuredTarball=String(process.env.TREBELL_CODEX_PINNED_TARBALL||"").trim();
+    codexPinnedTarballPath=resolve(configuredTarball||join(validationDir,"codex-stage",`openai-codex-${CODEX_PINNED_VERSION}-linux-x64.tgz`));
+    await ensurePinnedCodexTarball(codexPinnedTarballPath,{explicit:Boolean(configuredTarball)});
+    codexPinnedTarballSha256=await sha256File(codexPinnedTarballPath);
+    if(codexPinnedTarballSha256!==CODEX_PINNED_TARBALL_SHA256)throw new Error(`Pinned Codex tarball SHA-256 mismatch: expected ${CODEX_PINNED_TARBALL_SHA256}, got ${codexPinnedTarballSha256}`);
+  }
   const harbor=await harborBin(),pythonPath=[root,process.env.PYTHONPATH].filter(Boolean).join(delimiter);
-  const sharedEnv={...process.env,PYTHONPATH:pythonPath},outputRoot=join(root,".harbor-jobs"),jobs=[];
-  const willRunCodex=!only.size||only.has("codex")||only.has("codex-api")||only.has("codex-oauth");
-  if(CODEX_AUTH_MODES.includes("oauth")&&willRunCodex)await access(join(homedir(),".codex","auth.json"));
+  const sharedEnv={...process.env,PYTHONPATH:pythonPath,...(codexPinnedTarballPath?{TREBELL_CODEX_PINNED_TARBALL:codexPinnedTarballPath}: {})},outputRoot=join(root,".harbor-jobs"),jobs=[];
+  const codexLaneSelected=authMode=>!only.size||only.has("codex")||only.has(`codex-${authMode}`);
+  const willRunCodexApi=CODEX_AUTH_MODES.includes("api")&&codexLaneSelected("api"),willRunCodexOauth=CODEX_AUTH_MODES.includes("oauth")&&codexLaneSelected("oauth");
+  if(willRunCodexOauth)await access(join(homedir(),".codex","auth.json"));
+  if(willRunCodexApi&&!String(sharedEnv.OPENAI_API_KEY||"").trim())throw new Error("OPENAI_API_KEY is required for the Codex API benchmark lane. Launch through the npm benchmark script or load .env explicitly.");
   const lanes=[
     {label:"native",harness:"native",authMode:"api"},
     ...CODEX_AUTH_MODES.map(authMode=>({label:`codex-${authMode}`,harness:"codex",authMode})),
   ];
   const reportSnapshot=({complete=false,activeHarness=null,activeJobName=null}={})=>({
     pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,
-    sameModel:true,sameReasoningEffort:true,sequential:true,codexAuthMode:CODEX_AUTH_MODE,
+    sameModel:true,sameReasoningEffort:true,sequential:true,codexAuthMode:CODEX_AUTH_MODE,codexInstallMode:CODEX_INSTALL_MODE,
+    ...(codexPinnedTarballPath?{codexPinnedVersion:CODEX_PINNED_VERSION,codexPinnedTarballSha256,codexPinnedAdapterSha256}:{}),
     comparisonLanes:lanes.map(lane=>lane.label),nativeBundleSha256,nativeAdapterSha256,
     complete,activeHarness,activeJobName,updatedAt:new Date().toISOString(),jobs,
   });
@@ -97,7 +122,7 @@ try{
   for(const lane of lanes){
     const {label,harness,authMode}=lane;
     if(only.size&&!only.has(label)&&!only.has(harness))continue;
-    const agent=harness==="native"?"benchmarks.harbor.trebell_native_agent:TrebellNativeAgent":"codex";
+    const agent=harness==="native"?"benchmarks.harbor.trebell_native_agent:TrebellNativeAgent":CODEX_INSTALL_MODE==="pinned"?"benchmarks.harbor.pinned_codex_agent:PinnedCodexAgent":"codex";
     const jobName=`tb4-${label}-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`;
     const args=["run","-d",DATASET,"-i",TASK,"-a",agent,"-m",`openai/${MODEL}`,"--ak",`reasoning_effort=${EFFORT}`,"-n","1","-o",outputRoot,"--job-name",jobName,"-y"];
     if(SETUP_TIMEOUT_MULTIPLIER>1)args.push("--agent-setup-timeout-multiplier",String(SETUP_TIMEOUT_MULTIPLIER));

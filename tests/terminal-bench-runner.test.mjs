@@ -16,10 +16,21 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/Terminal-Bench Codex auth mode must be api, oauth, or both/);
   assert.match(source,/CODEX_AUTH_MODE==="both"\?\["api","oauth"\]/);
   assert.match(source,/codexAuthMode:CODEX_AUTH_MODE/);
+  assert.match(source,/TREBELL_TERMINAL_BENCH_CODEX_INSTALL/);
+  assert.match(source,/Terminal-Bench Codex install mode must be stock or pinned/);
+  assert.match(source,/codexInstallMode:CODEX_INSTALL_MODE/);
+  assert.match(source,/codexPinnedTarballSha256/);
+  assert.match(source,/codexPinnedAdapterSha256/);
+  assert.match(source,/3fe84106aaf2fbfc13299068510d34b3d0157eeb9af4b37be8cf5416f485a6bb/);
+  assert.match(source,/ensurePinnedCodexTarball/);
+  assert.match(source,/npm_execpath/);
+  assert.match(source,/@openai\/codex@\$\{CODEX_PINNED_VERSION\}-linux-x64/);
+  assert.match(source,/benchmarks\.harbor\.pinned_codex_agent:PinnedCodexAgent/);
   assert.match(source,/comparisonLanes:lanes\.map/);
   assert.match(source,/label:`codex-\$\{authMode\}`/);
-  assert.match(source,/only\.has\("codex-api"\)/);
-  assert.match(source,/CODEX_AUTH_MODES\.includes\("oauth"\)&&willRunCodex/);
+  assert.match(source,/CODEX_AUTH_MODES\.includes\("oauth"\)&&codexLaneSelected\("oauth"\)/);
+  assert.match(source,/CODEX_AUTH_MODES\.includes\("api"\)&&codexLaneSelected\("api"\)/);
+  assert.match(source,/OPENAI_API_KEY is required for the Codex API benchmark lane/);
   assert.match(source,/CODEX_FORCE_AUTH_JSON="1"/);
   assert.match(source,/delete harnessEnv\.CODEX_AUTH_JSON_PATH/);
   assert.match(source,/delete harnessEnv\.CODEX_FORCE_AUTH_JSON/);
@@ -29,6 +40,19 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/await persistReport\(\{complete:false,activeHarness:label,activeJobName:jobName\}\)/);
   assert.match(source,/await persistReport\(\{complete:false,activeHarness:null,activeJobName:null\}\)/);
   assert.match(source,/writeFile\(reportPath,JSON\.stringify\(report,null,2\)/);
+});
+
+test("Pinned Harbor Codex adapter changes only installation and verifies the exact official version",async()=>{
+  const source=await readFile(new URL("../benchmarks/harbor/pinned_codex_agent.py",import.meta.url),"utf8");
+  assert.match(source,/class PinnedCodexAgent\(Codex\)/);
+  assert.match(source,/_PINNED_VERSION = "0\.158\.0"/);
+  assert.match(source,/_PINNED_TARBALL_SHA256/);
+  assert.match(source,/hashlib\.sha256/);
+  assert.match(source,/SHA-256 mismatch/);
+  assert.match(source,/TREBELL_CODEX_PINNED_TARBALL/);
+  assert.match(source,/vendor\/x86_64-unknown-linux-musl\/bin\/codex/);
+  assert.match(source,/codex --version/);
+  assert.doesNotMatch(source,/async def run\(/);
 });
 
 test("Terminal-Bench single runner uses an absolute output path and the same safer setup-timeout default",async()=>{
