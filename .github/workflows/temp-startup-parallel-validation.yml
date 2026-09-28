@@ -1,0 +1,20 @@
+name: Temporary startup parallelism validation
+on:
+  push:
+    branches:
+      - ci/startup-parallel-validation-20260928
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run ui:build
+      - run: npx playwright test -c ui/playwright.config.mjs ui/e2e/visual.spec.js -g "startup failures never become a fake empty mock workspace|startup partial failures stay visible while Codex skips unrelated Native provider account state|startup launches independent model theme and project requests before core state resolves"

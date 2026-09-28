@@ -1039,13 +1039,14 @@ export default function App(){
   useEffect(()=>{
     let cancelled=false;
     (async()=>{
+      const extrasPromise=Promise.allSettled([api("/api/models"),api("/api/environment/themes"),api("/api/projects")]);
       let boot,state;
       try{[boot,state]=await Promise.all([api("/api/bootstrap"),api("/api/state")])}
       catch(error){
         if(!cancelled){setInitialLoadError(error?.message||String(error)||"Trebell startup failed.");setInitialLoaded(true)}
         return;
       }
-      const [modelResult,themeResult,projectResult]=await Promise.allSettled([api("/api/models"),api("/api/environment/themes"),api("/api/projects")]);
+      const [modelResult,themeResult,projectResult]=await extrasPromise;
       const modelData=modelResult.status==="fulfilled"?modelResult.value:{models:[],error:modelResult.reason?.message||String(modelResult.reason)};
       const themeCatalog=themeResult.status==="fulfilled"?themeResult.value:environmentThemeCatalog;
       const projectData=projectResult.status==="fulfilled"?projectResult.value:{projects:state.projects||[]};
