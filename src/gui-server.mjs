@@ -2019,11 +2019,11 @@ export async function createGuiServer({port=3210,appPort=23456,host="127.0.0.1",
           if(projectId){
             const project=state.projects().find(item=>item.id===projectId);if(!project)throw new Error("Project was not found");
             const result=state.updateProjectSettings(project.path,project.environmentId,patch,resetKeys);
-            return json(res,200,{scope:"project",environmentId:project.environmentId||null,project:projectWithEnvironment(result.project),defaults:result.defaults,overrides:result.overrides,effective:result.effective});
+            return json(res,200,{scope:"project",environmentId:project.environmentId||null,project:projectWithEnvironment(result.project),defaults:result.defaults,overrides:result.overrides,effective:result.effective,settings:state.settings(),projects:state.projects().map(projectWithEnvironment)});
           }
           const environmentId=Object.prototype.hasOwnProperty.call(body,"environmentId")?requestedEnvironmentId(body.environmentId,{fallback:false}):requestedEnvironmentId(null);
           state.updateEnvironmentDefaults(environmentId,patch,resetKeys);const defaults=state.environmentDefaults(environmentId);
-          return json(res,200,{scope:"environment",environmentId,defaults,overrides:{},effective:defaults});
+          return json(res,200,{scope:"environment",environmentId,defaults,overrides:{},effective:defaults,settings:state.settings(),projects:state.projects().map(projectWithEnvironment)});
         }catch(error){return json(res,400,{error:error.message});}
       }
     }
