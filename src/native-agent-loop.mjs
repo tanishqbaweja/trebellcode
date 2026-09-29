@@ -11,6 +11,10 @@ const NATIVE_TOOL_OBSERVATION_OUTPUT=Symbol("trebell.native.tool-observation-out
 const DIRECT_EXACT_READ_MAX_BYTES=12*1024;
 const DIRECT_EXACT_LIST_MAX_BYTES=12*1024;
 const DIRECT_GIT_STATUS_MAX_BYTES=12*1024;
+const TERMINAL_TOOL_TIMEOUT_DEFAULT_MS=30_000;
+const TERMINAL_TOOL_TIMEOUT_MAX_MS=300_000;
+const TERMINAL_TOOL_WATCHDOG_ABORT_GRACE_MS=500;
+const TERMINAL_TOOL_WATCHDOG_SETTLE_GRACE_MS=3_500;
 
 function abortError(signal){
   const reason=signal?.reason;if(reason?.name==="AbortError")return reason;
@@ -31,6 +35,11 @@ function safeArguments(value){
   if(value&&typeof value==="object"&&!Array.isArray(value))return value;
   try{const parsed=JSON.parse(String(value||"{}"));return parsed&&typeof parsed==="object"&&!Array.isArray(parsed)?parsed:{}}
   catch{return {}}
+}
+
+function terminalToolTimeoutMs(namespace,name,args={}){
+  if(namespace!=="trebell_terminal"||name!=="run")return null;
+  return boundedInteger(args.timeout_ms,TERMINAL_TOOL_TIMEOUT_DEFAULT_MS,{min:1000,max:TERMINAL_TOOL_TIMEOUT_MAX_MS});
 }
 
 function providerVisibleTools(tools=[],toolAllowlist=null){
@@ -697,17 +706,49 @@ export async function runNativeAgentTurn({
     if(namespace)executedToolKeys.add(namespace+"/"+name);
     const toolStarted=nowMs();
     emit(onEvent,{name:"native.tool.requested",status:"running",model:String(model),provider:provider||null,data:{toolCall:toolCallNumber,callId,namespace,name}});
-    let output,success=true,errorMessage=null,uncertain=false,retrySafe=false;
+    let output,success=true,errorMessage=null,uncertain=false,retrySafe=false,terminalTimeoutMs=null,toolController=null,watchdogAbortedTool=false;
     try{
-      output=await executeTool({id:callId,namespace,name,arguments:args,rawArguments:call?.arguments??"{}",signal:turnSignal,modelTurn:modelTurns,toolCall:toolCallNumber});
+      terminalTimeoutMs=terminalToolTimeoutMs(namespace,name,args);toolController=terminalTimeoutMs==null?null:new AbortController();const toolSignal=toolController?(turnSignal?AbortSignal.any([turnSignal,toolController.signal]):toolController.signal):turnSignal;
+      if(terminalTimeoutMs==null){
+        output=await executeTool({id:callId,namespace,name,arguments:args,rawArguments:call?.arguments??"{}",signal:toolSignal,modelTurn:modelTurns,toolCall:toolCallNumber});
+      }else{
+        let abortTimer=null,settleTimer=null;
+        const timedOutOutput=error=>({success:false,exitCode:1,timedOut:true,signal:"SIGKILL",stdout:"",stderr:"",error});
+        const cancelledOutput=()=>timedOutOutput(`Terminal command exceeded its ${terminalTimeoutMs}ms timeout and was cancelled by Trebell's tool watchdog.`);
+        const unsettledOutput=()=>timedOutOutput(`Terminal command exceeded its ${terminalTimeoutMs}ms timeout and did not settle after cancellation.`);
+        const execution=Promise.resolve()
+          .then(()=>executeTool({id:callId,namespace,name,arguments:args,rawArguments:call?.arguments??"{}",signal:toolSignal,modelTurn:modelTurns,toolCall:toolCallNumber}))
+          .catch(error=>{
+            if(toolController.signal.aborted&&!turnSignal?.aborted&&error?.name==="AbortError")return cancelledOutput();
+            throw error;
+          });
+        const watchdog=new Promise(resolveWatchdog=>{
+          abortTimer=setTimeout(()=>{
+            if(!toolController.signal.aborted){
+              watchdogAbortedTool=true;
+              toolController.abort("native-terminal-tool-timeout");
+              emit(onEvent,{name:"native.tool.watchdog_abort",status:"running",model:String(model),provider:provider||null,data:{toolCall:toolCallNumber,callId,namespace,name,timeoutMs:terminalTimeoutMs}});
+            }
+          },terminalTimeoutMs+TERMINAL_TOOL_WATCHDOG_ABORT_GRACE_MS);
+          settleTimer=setTimeout(()=>{
+            emit(onEvent,{name:"native.tool.watchdog_timeout",status:"failed",model:String(model),provider:provider||null,data:{toolCall:toolCallNumber,callId,namespace,name,timeoutMs:terminalTimeoutMs,settlementGraceMs:TERMINAL_TOOL_WATCHDOG_SETTLE_GRACE_MS}});
+            resolveWatchdog(unsettledOutput());
+          },terminalTimeoutMs+TERMINAL_TOOL_WATCHDOG_SETTLE_GRACE_MS);
+        });
+        try{output=await Promise.race([execution,watchdog])}
+        finally{if(abortTimer)clearTimeout(abortTimer);if(settleTimer)clearTimeout(settleTimer)}
+      }
       throwIfAborted(turnSignal);
       if(output?.success===false){success=false;errorMessage=String(output.error||output.message||"Tool execution failed.");uncertain=output?.uncertain===true;retrySafe=output?.retrySafe===true}
       if(success&&namespace==="trebell_terminal"&&name==="run"&&output?.timedOut===true){
         success=false;errorMessage="Terminal command timed out.";
       }
     }catch(error){
-      if(turnSignal?.aborted||error?.name==="AbortError")throw abortError(turnSignal);
-      success=false;errorMessage=error?.message||String(error);output={success:false,error:errorMessage};
+      if(turnSignal?.aborted)throw abortError(turnSignal);
+      if(watchdogAbortedTool&&toolController?.signal.aborted){
+        success=false;errorMessage=`Terminal command exceeded its ${terminalTimeoutMs}ms timeout and was cancelled by Trebell's tool watchdog.`;output={success:false,exitCode:1,timedOut:true,signal:"SIGKILL",stdout:"",stderr:"",error:errorMessage};
+      }else if(error?.name==="AbortError")throw abortError(turnSignal);
+      else{success=false;errorMessage=error?.message||String(error);output={success:false,error:errorMessage}}
     }
     if(success&&output?.success!==false&&output?.timedOut!==true&&output?.signal==null&&namespace==="trebell_terminal"&&name==="run"&&String(args.command||"").trim()&&Array.isArray(args.args)){
       successfulTerminalRuns.push({command:String(args.command).trim(),args:args.args.map(value=>String(value)),cwd:String(args.cwd??"")});

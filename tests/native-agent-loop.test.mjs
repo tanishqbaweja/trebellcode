@@ -1382,6 +1382,47 @@ test("native agent trace records a timed-out terminal command as failed",async()
   assert.equal(result.text,"The check timed out; I will not treat it as verified.");
 });
 
+test("native agent watchdog hard-settles a terminal executor that never resolves",async()=>{
+  let turns=0;const events=[];const started=Date.now();
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"run the bounded check"}],onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"call-hung",namespace:"trebell_terminal",name:"run",arguments:'{"command":"hung-check","args":[],"timeout_ms":1000}'}],usage:{}};
+      const observation=request.messages.at(-1);assert.equal(observation.role,"tool");assert.match(String(observation.content),/did not settle after cancellation/i);
+      return {text:"The hung check was bounded and reported as failed.",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>await new Promise(()=>{}),
+  });
+  assert.ok(Date.now()-started<8000);
+  assert.equal(result.text,"The hung check was bounded and reported as failed.");
+  assert.ok(events.some(event=>event.name==="native.tool.watchdog_abort"));
+  assert.ok(events.some(event=>event.name==="native.tool.watchdog_timeout"));
+  const completed=events.find(event=>event.name==="native.tool.completed");assert.equal(completed.status,"failed");assert.equal(completed.data.success,false);assert.match(completed.data.error,/did not settle/i);
+});
+
+test("native terminal watchdog converts a cooperative tool abort into a failed observation instead of cancelling the turn",async()=>{
+  let turns=0;const events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"run the bounded check"}],onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"call-cooperative-hung",namespace:"trebell_terminal",name:"run",arguments:'{"command":"hung-check","args":[],"timeout_ms":1000}'}],usage:{}};
+      const observation=request.messages.at(-1);assert.equal(observation.role,"tool");assert.match(String(observation.content),/cancelled by Trebell's tool watchdog/i);
+      return {text:"The timed-out check failed, but the agent turn continued.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>await new Promise((resolve,reject)=>{
+      const abort=()=>{const error=new Error("cancelled by tool watchdog");error.name="AbortError";reject(error)};
+      if(call.signal?.aborted)return abort();call.signal?.addEventListener?.("abort",abort,{once:true});
+    }),
+  });
+  assert.equal(result.text,"The timed-out check failed, but the agent turn continued.");
+  assert.ok(events.some(event=>event.name==="native.tool.watchdog_abort"));
+  const completed=events.find(event=>event.name==="native.tool.completed");assert.equal(completed.status,"failed");assert.equal(completed.data.success,false);assert.match(completed.data.error,/cancelled by Trebell's tool watchdog/i);
+});
+
 test("native agent preserves image tool observations for the next model turn",async()=>{
   let turns=0;
   const result=await runNativeAgentTurn({
