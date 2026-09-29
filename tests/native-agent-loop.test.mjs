@@ -2239,6 +2239,24 @@ test("native convergence checkpoint does not fire while the latest edit still ha
   assert.equal(requests[2].messages.some(message=>message.role==="developer"&&/convergence checkpoint/i.test(String(message.content||""))),false);
 });
 
+test("native agent nudges convergence after unusually high workspace edit churn",async()=>{
+  let turns=0;const requests=[],events=[],executed=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation."}],maxModelTurns:12,maxToolCalls:20,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turns++;
+      if(turns<=8)return {text:"",toolCalls:[{id:`edit-${turns}`,namespace:"trebell_workspace",name:"replace_text",arguments:JSON.stringify({path:"src/a.mjs",old_text:`bad-${turns}`,new_text:`good-${turns}`})}],usage:{}};
+      assert.ok(request.messages.some(message=>message.role==="developer"&&/revision-churn checkpoint/i.test(String(message.content||""))));
+      assert.ok(request.messages.some(message=>message.role==="developer"&&/concrete unmet user requirement/i.test(String(message.content||""))));
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return {path:"src/a.mjs",replacements:1}},
+  });
+  assert.equal(result.text,"done");assert.equal(turns,9);assert.equal(executed.length,8);
+  const checkpoints=events.filter(event=>event.name==="native.progress.revision_churn_checkpoint");assert.equal(checkpoints.length,1);assert.equal(checkpoints[0].data.editRevision,8);
+});
+
 test("native agent wall-time budget aborts in-flight provider work and reports a budget failure",async()=>{
   const events=[];let providerAborted=false;
   await assert.rejects(()=>runNativeAgentTurn({
