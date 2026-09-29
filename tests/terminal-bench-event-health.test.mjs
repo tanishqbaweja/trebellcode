@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyHealth, healthAdvanced, summarizeCodexEventHealth, summarizeNativeEventHealth } from "../scripts/terminal-bench-event-health.mjs";
+import { classifyHealth, healthAdvanced, markCodexTailWindowSummary, summarizeCodexEventHealth, summarizeNativeEventHealth } from "../scripts/terminal-bench-event-health.mjs";
 
 test("Native event health reports lifecycle counts only",()=>{
   const marker="payload-marker-xyz";
@@ -45,6 +45,21 @@ test("event health requires an observable event or byte advance",()=>{
   assert.equal(healthAdvanced(before,{...before,summary:{...before.summary,counts:{...before.summary.counts}}}),false);
   assert.equal(healthAdvanced(before,{...before,fileBytes:101}),true);
   assert.equal(healthAdvanced(before,{...before,summary:{...before.summary,lastTimestamp:"2026-01-01T00:00:02Z",counts:{...before.summary.counts,reasoningCompleted:3}}}),true);
+});
+
+test("windowed Codex counts are not treated as monotonic progress",()=>{
+  const before={available:true,fileBytes:100,mtimeMs:1,summary:{kind:"codex",countScope:{kind:"tail",maxLines:900,monotonic:false},counts:{reasoningCompleted:10,toolCalls:4,commandCompleted:4,usageRecords:4},lastTimestamp:"2026-01-01T00:00:01Z"}};
+  const shifted={...before,summary:{...before.summary,counts:{reasoningCompleted:11,toolCalls:5,commandCompleted:4,usageRecords:5}}};
+  assert.equal(healthAdvanced(before,shifted),false);
+  assert.equal(healthAdvanced(before,{...shifted,summary:{...shifted.summary,lastTimestamp:"2026-01-01T00:00:02Z"}}),true);
+  assert.equal(healthAdvanced(before,{...shifted,fileBytes:101}),true);
+});
+
+test("Codex tail-window summaries label pending commands as an estimate",()=>{
+  const marked=markCodexTailWindowSummary({kind:"codex",counts:{toolCalls:5,commandCompleted:3,commandFailed:0},pendingCommands:2,lastTimestamp:"2026-01-01T00:00:01Z"},{maxLines:900});
+  assert.equal(marked.pendingCommands,undefined);
+  assert.equal(marked.pendingCommandsWindowEstimate,2);
+  assert.deepEqual(marked.countScope,{kind:"tail",maxLines:900,monotonic:false});
 });
 
 test("event health distinguishes a short quiet window from stale activity",()=>{

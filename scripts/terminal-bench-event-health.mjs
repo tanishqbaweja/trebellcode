@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync=promisify(execFile);
+const CODEX_EVENT_TAIL_LINES=900;
 
 function rows(text){
   const out=[];
@@ -52,6 +53,14 @@ export function summarizeCodexEventHealth(text){
   return {kind:"codex",counts,lastTimestamp,lastEvent,pendingCommands:Math.max(0,counts.toolCalls-counts.commandCompleted-counts.commandFailed)};
 }
 
+export function markCodexTailWindowSummary(summary,{maxLines=CODEX_EVENT_TAIL_LINES}={}){
+  const marked={...(summary||{})},estimate=Number(marked.pendingCommands);
+  delete marked.pendingCommands;
+  marked.pendingCommandsWindowEstimate=Number.isFinite(estimate)?Math.max(0,estimate):null;
+  marked.countScope={kind:"tail",maxLines,monotonic:false};
+  return marked;
+}
+
 export function healthAdvanced(before,after){
   if(!before||!after)return false;
   if(Number(after.fileBytes||0)>Number(before.fileBytes||0))return true;
@@ -61,8 +70,9 @@ export function healthAdvanced(before,after){
       ||Number(after.summary.counts?.toolCompleted||0)>Number(before.summary.counts?.toolCompleted||0);
   }
   if(after.summary?.kind==="codex"&&before.summary?.kind==="codex"){
-    return String(after.summary.lastTimestamp||"")>String(before.summary.lastTimestamp||"")
-      ||Number(after.summary.counts?.reasoningCompleted||0)>Number(before.summary.counts?.reasoningCompleted||0)
+    if(String(after.summary.lastTimestamp||"")>String(before.summary.lastTimestamp||""))return true;
+    if(after.summary.countScope?.kind==="tail"||before.summary.countScope?.kind==="tail")return false;
+    return Number(after.summary.counts?.reasoningCompleted||0)>Number(before.summary.counts?.reasoningCompleted||0)
       ||Number(after.summary.counts?.toolCalls||0)>Number(before.summary.counts?.toolCalls||0)
       ||Number(after.summary.counts?.commandCompleted||0)>Number(before.summary.counts?.commandCompleted||0)
       ||Number(after.summary.counts?.usageRecords||0)>Number(before.summary.counts?.usageRecords||0);
@@ -125,9 +135,10 @@ async function pairSample(pair,pairPath){
     if(!container)return {kind:"codex",available:false,reason:"Active task container not found yet."};
     const session=await latestCodexSession(container);
     if(!session)return {kind:"codex",available:false,container,reason:"Codex session JSONL not found yet."};
-    const tail=await docker(["exec",container,"tail","-n","900",session.path]);
+    const tail=await docker(["exec",container,"tail","-n",String(CODEX_EVENT_TAIL_LINES),session.path]);
     if(!tail.ok)return {kind:"codex",available:false,container,reason:"Codex session tail unavailable."};
-    return {kind:"codex",available:true,container,fileBytes:session.size,mtimeMs:session.mtime*1000,summary:summarizeCodexEventHealth(tail.stdout)};
+    const summary=markCodexTailWindowSummary(summarizeCodexEventHealth(tail.stdout));
+    return {kind:"codex",available:true,container,fileBytes:session.size,mtimeMs:session.mtime*1000,summary};
   }
   return {kind:String(pair.activeHarness||"unknown"),available:false,reason:"Unsupported active harness."};
 }
