@@ -51,10 +51,14 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/3fe84106aaf2fbfc13299068510d34b3d0157eeb9af4b37be8cf5416f485a6bb/);
   assert.match(source,/ensurePinnedCodexTarball/);
   assert.match(source,/npm_execpath/);
+  assert.match(source,/node_modules","npm","bin","npm-cli\.js/);
   assert.match(source,/shell:process\.platform==="win32"/);
   assert.match(source,/@openai\/codex@\$\{CODEX_PINNED_VERSION\}-linux-x64/);
   assert.match(source,/benchmarks\.harbor\.pinned_codex_agent:PinnedCodexAgent/);
+  assert.match(source,/repositoryRootFromGitCommonDir/);
+  assert.match(source,/execFileSync\("git",\["rev-parse","--git-common-dir"\]/);
   assert.match(source,/loadEnvFile\(join\(root,"\.env"\)\)/);
+  assert.match(source,/loadEnvFile\(join\(repositoryRoot,"\.env"\)\)/);
   assert.match(source,/\.codex-api-auth-/);
   assert.match(source,/harnessEnv\.CODEX_AUTH_JSON_PATH=codexApiAuthPath/);
   assert.match(source,/delete harnessEnv\.OPENAI_API_KEY/);

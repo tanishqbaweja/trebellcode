@@ -1,5 +1,5 @@
 import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
@@ -15,7 +15,16 @@ if(!process.argv.includes("--live"))throw new Error("Refusing to run paid/live T
 
 const here=dirname(fileURLToPath(import.meta.url));
 const root=resolve(here,"..");
-try{loadEnvFile(join(root,".env"))}catch(error){if(error?.code!=="ENOENT")throw error}
+function repositoryRootFromGitCommonDir(){
+  try{
+    const gitCommonDir=String(execFileSync("git",["rev-parse","--git-common-dir"],{cwd:root,encoding:"utf8",windowsHide:true})).trim();
+    return gitCommonDir?dirname(resolve(root,gitCommonDir)):root;
+  }catch{return root}
+}
+const repositoryRoot=repositoryRootFromGitCommonDir();
+let localEnvLoaded=false;
+try{loadEnvFile(join(root,".env"));localEnvLoaded=true}catch(error){if(error?.code!=="ENOENT")throw error}
+if(!localEnvLoaded&&repositoryRoot!==root)try{loadEnvFile(join(repositoryRoot,".env"))}catch(error){if(error?.code!=="ENOENT")throw error}
 const DATASET=String(process.env.TREBELL_TERMINAL_BENCH_DATASET||"terminal-bench/terminal-bench@4.0.0").trim();
 const MODEL=String(process.env.TREBELL_TERMINAL_BENCH_MODEL||"gpt-6-luna").trim();
 const EFFORT=String(process.env.TREBELL_TERMINAL_BENCH_REASONING_EFFORT||"max").trim().toLowerCase();
@@ -90,7 +99,10 @@ async function sha256File(path){return createHash("sha256").update(await readFil
 async function ensurePinnedCodexTarball(path,{explicit=false}={}){
   try{await access(path);return}catch(error){if(explicit)throw error}
   await mkdir(dirname(path),{recursive:true});
-  const npmCli=String(process.env.npm_execpath||"").trim(),args=["pack",`@openai/codex@${CODEX_PINNED_VERSION}-linux-x64`,"--pack-destination",dirname(path)];
+  const configuredNpmCli=String(process.env.npm_execpath||"").trim(),bundledNpmCli=join(dirname(process.execPath),"node_modules","npm","bin","npm-cli.js");
+  let npmCli=null;
+  for(const candidate of [configuredNpmCli,bundledNpmCli].filter(Boolean))try{await access(candidate);npmCli=candidate;break}catch{}
+  const args=["pack",`@openai/codex@${CODEX_PINNED_VERSION}-linux-x64`,"--pack-destination",dirname(path)];
   if(npmCli)await run(process.execPath,[npmCli,...args]);
   else await run(process.platform==="win32"?"npm.cmd":"npm",args,{shell:process.platform==="win32"});
   await access(path);
