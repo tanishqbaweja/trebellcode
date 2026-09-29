@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdtemp,rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,6 +12,19 @@ const packageRoot=resolve(fileURLToPath(new URL("..",import.meta.url)));
 
 async function listen(server){await new Promise((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));return server.address().port}
 async function freePort(){const server=createServer();const port=await listen(server);await new Promise(resolve=>server.close(resolve));return port}
+async function waitForExit(child,timeoutMs=3000){
+  if(child.exitCode!=null)return;
+  await Promise.race([new Promise(resolve=>child.once("exit",resolve)),new Promise(resolve=>setTimeout(resolve,timeoutMs))]);
+}
+async function closeElectronApp(app){
+  if(!app)return;
+  const child=app.process(),closing=app.close().catch(()=>{});await Promise.race([closing,new Promise(resolve=>setTimeout(resolve,3000))]);
+  if(child.exitCode==null){
+    if(process.platform==="win32")spawnSync("taskkill",["/PID",String(child.pid),"/T","/F"],{windowsHide:true,stdio:"ignore"});
+    else child.kill("SIGKILL");
+    await waitForExit(child);
+  }
+}
 
 test("desktop isolated browser reports bounded runtime failures and responsive viewport evidence",{timeout:60_000},async()=>{
   if(process.platform!=="win32")return test.skip("Desktop browser runtime fixture currently targets the Windows desktop build.");
@@ -57,10 +71,7 @@ test("desktop isolated browser reports bounded runtime failures and responsive v
       assert.equal(reopened.open,true);assert.match(reopened.url,/\/clean\?reopen=/);
     }
   }finally{
-    if(app){
-      const child=app.process(),closing=app.close().catch(()=>{});await Promise.race([closing,new Promise(resolve=>setTimeout(resolve,3000))]);
-      if(child.exitCode==null&&!child.killed)child.kill();await Promise.race([closing,new Promise(resolve=>setTimeout(resolve,3000))]);
-    }
+    await closeElectronApp(app);
     fixture.closeAllConnections?.();await new Promise(resolve=>fixture.close(()=>resolve()));await rm(home,{recursive:true,force:true,maxRetries:10,retryDelay:100});
   }
 });
