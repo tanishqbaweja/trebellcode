@@ -48,9 +48,9 @@ const NATIVE_PINNED_NODE_TARBALL_SHA256="1084aa36196bba4c3a5e69a1ee388a6e4ff729d
 const NATIVE_PINNED_NODE_URL=`https://nodejs.org/download/release/v${NATIVE_PINNED_NODE_VERSION}/node-v${NATIVE_PINNED_NODE_VERSION}-linux-x64.tar.gz`;
 const validationDir=join(root,".harbor-validation");
 
-function run(command,args,{env=process.env}={}){
+function run(command,args,{env=process.env,shell=false}={}){
   return new Promise((resolveRun,reject)=>{
-    const child=spawn(command,args,{cwd:root,env,stdio:"inherit",windowsHide:true});
+    const child=spawn(command,args,{cwd:root,env,stdio:"inherit",windowsHide:true,shell});
     child.once("error",reject);
     child.once("exit",(code,signal)=>code===0?resolveRun({code:0}):reject(Object.assign(new Error(`${command} exited with ${signal||code}`),{code,signal})));
   });
@@ -92,7 +92,7 @@ async function ensurePinnedCodexTarball(path,{explicit=false}={}){
   await mkdir(dirname(path),{recursive:true});
   const npmCli=String(process.env.npm_execpath||"").trim(),args=["pack",`@openai/codex@${CODEX_PINNED_VERSION}-linux-x64`,"--pack-destination",dirname(path)];
   if(npmCli)await run(process.execPath,[npmCli,...args]);
-  else await run(process.platform==="win32"?"npm.cmd":"npm",args);
+  else await run(process.platform==="win32"?"npm.cmd":"npm",args,{shell:process.platform==="win32"});
   await access(path);
 }
 async function ensurePinnedNodeTarball(path,{explicit=false}={}){
