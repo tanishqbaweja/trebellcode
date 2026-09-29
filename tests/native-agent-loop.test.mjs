@@ -224,6 +224,37 @@ test("native implementation pressure allows batched pre-edit evidence instead of
   assert.equal(events.filter(event=>event.name==="native.progress.implementation_call_blocked").length,1);
 });
 
+test("native implementation pressure bounds repeated batched evidence rounds before the first edit",async()=>{
+  const events=[],executed=[],requests=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Repair the evaluator after gathering enough evidence to implement the fix."}],maxModelTurns:10,maxToolCalls:50,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_repo",tools:[{name:"search_code"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turn++;
+      if(turn<=4)return {text:"",toolCalls:[
+        {id:`read-${turn}-a`,namespace:"trebell_repo",name:"search_code",arguments:JSON.stringify({query:`q-${turn}-a`})},
+        {id:`read-${turn}-b`,namespace:"trebell_repo",name:"search_code",arguments:JSON.stringify({query:`q-${turn}-b`})},
+      ],usage:{}};
+      if(turn===5)return {text:"",toolCalls:[{id:"batch-1",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"bash",args:["-lc","for value in a b c; do probe \"$value\"; done"]})}],usage:{}};
+      if(turn===6)return {text:"",toolCalls:[{id:"batch-2",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"bash",args:["-lc","for value in d e f; do probe \"$value\"; done"]})}],usage:{}};
+      if(turn===7)return {text:"",toolCalls:[
+        {id:"late-read-a",namespace:"trebell_repo",name:"search_code",arguments:'{"query":"late-a"}'},
+        {id:"late-read-b",namespace:"trebell_repo",name:"search_code",arguments:'{"query":"late-b"}'},
+      ],usage:{}};
+      if(turn===8)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"write_file",arguments:'{"path":"src/fix.py","content":"ready = True\\n"}'}],usage:{}};
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{success:true,path:"src/fix.py",size:13}:{success:true,exitCode:0,stdout:"evidence"}},
+  });
+  assert.equal(result.text,"done");
+  assert.equal(executed.includes("batch-1"),true);assert.equal(executed.includes("batch-2"),true);
+  assert.equal(executed.includes("late-read-a"),false);assert.equal(executed.includes("late-read-b"),false);
+  assert.equal(executed.includes("edit"),true);
+  const escalations=events.filter(event=>event.name==="native.progress.implementation_escalation");assert.equal(escalations.length,1);assert.equal(escalations[0].data.evidenceRounds,2);
+  const blocked=events.filter(event=>event.name==="native.progress.implementation_call_blocked"&&event.data?.reason==="pre_edit_evidence_round_budget");assert.equal(blocked.length,2);
+  assert.ok(requests[6].messages.some(message=>message.role==="developer"&&/implementation escalation/i.test(String(message.content||""))));
+});
+
 test("native repeated singleton terminal probing switches to batch-only evidence before the generic exploration threshold",async()=>{
   const events=[],executed=[],requests=[];let turn=0;
   const result=await runNativeAgentTurn({
