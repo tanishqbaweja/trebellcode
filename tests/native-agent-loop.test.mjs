@@ -2322,6 +2322,37 @@ test("native agent recognizes an explicit Unverified section as a focused verifi
   assert.ok(requests[2].messages.some(message=>message.role==="developer"&&/previous draft explicitly says part of the edited task remains unverified/i.test(String(message.content||""))));
 });
 
+test("native agent escalates a still-admitted verification gap after the first recovery actually used a tool",async()=>{
+  const requests=[],events=[];let providerCalls=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Speed up service restart while preserving request delivery."}],maxModelTurns:9,maxToolCalls:10,onEvent:event=>events.push(event),
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/service.mjs","old_text":"slow","new_text":"fast"}'}],usage:{}};
+      if(providerCalls===2)return {text:"Implemented the restart optimization. Live lifecycle behavior remains unverified.",toolCalls:[],usage:{}};
+      if(providerCalls===3)return {text:"",toolCalls:[{id:"probe",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-config.mjs"]}'}],usage:{}};
+      if(providerCalls===4)return {text:"The focused probe did **not** establish whether the live service preserves delivery during restart. I did not send a real request.",toolCalls:[],usage:{}};
+      if(providerCalls===5)return {text:"",toolCalls:[{id:"acceptance",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["restart-smoke.mjs"]}'}],usage:{}};
+      return {text:"Implemented and verified through the runnable restart smoke path.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{path:"src/service.mjs",replacements:1}:{exitCode:0},
+  });
+  assert.equal(providerCalls,6);
+  assert.equal(result.text,"Implemented and verified through the runnable restart smoke path.");
+  const gapEvents=events.filter(event=>event.name==="native.verification.self_admitted_gap");
+  assert.equal(gapEvents.length,2);
+  assert.equal(gapEvents[0].data.recoveryAttempt,1);
+  assert.equal(gapEvents[1].data.recoveryAttempt,2);
+  assert.equal(gapEvents[1].data.priorRecoveryUsedTool,true);
+  const secondRecoveryRequest=requests[4];
+  assert.ok(secondRecoveryRequest.messages.some(message=>message.role==="developer"&&/same verification gap remains after a local verification attempt/i.test(String(message.content||""))));
+  assert.ok(secondRecoveryRequest.messages.some(message=>message.role==="developer"&&/runnable service, process, restart\/scale script/i.test(String(message.content||""))));
+});
+
 test("native self-verification recovery recognizes speed-up tasks as workspace mutations",async()=>{
   const requests=[],events=[];let providerCalls=0;
   const result=await runNativeAgentTurn({
