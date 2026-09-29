@@ -17,6 +17,7 @@ import {
   searchRepositoryToolDefinitions,
 } from "../../src/repository-tool-catalog.mjs";
 import { repositoryContextEntries } from "../../ui/src/context-provenance.js";
+import { createNativeStrategyMetrics, observeNativeStrategyEvent } from "./native-strategy-metrics.mjs";
 
 const VERSION="trebell-native-harbor/1";
 
@@ -102,9 +103,10 @@ const executor=createNativeToolExecutor({
   },
 });
 
-const requests=[],assistantChunks=[],eventStarted=performance.now();let eventWrites=Promise.resolve();
+const requests=[],assistantChunks=[],eventStarted=performance.now(),strategyMetrics=createNativeStrategyMetrics();let eventWrites=Promise.resolve();
 const onEvent=event=>{
   const row={atMs:Math.round(performance.now()-eventStarted),name:event?.name||null,status:event?.status||null,data:event?.data||null};
+  observeNativeStrategyEvent(strategyMetrics,event,row.atMs);
   eventWrites=eventWrites.then(()=>appendFile(eventsPath,JSON.stringify(row)+"\n","utf8")).catch(()=>{});
 };
 const session=new NativeAgentSession({
@@ -193,6 +195,7 @@ const metrics={
   providerRequests:requests.length,
   providerRequestElapsedMs:requests.reduce((total,item)=>total+Number(item?.elapsedMs||0),0),
   cacheCarryover:nativeCacheCarryover(requests.map(item=>item?.usage||{})),
+  strategy:strategyMetrics,
   finalReply:assistantChunks.join("").trim().slice(-4000),
   error:error?String(error?.stack||error?.message||error).slice(-8000):null,
 };

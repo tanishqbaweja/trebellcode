@@ -291,6 +291,7 @@ class TrebellNativeAgent(BaseInstalledAgent):
                     usage.get("cacheWriteInputTokens") or 0
                 ),
                 "cache_carryover": metrics.get("cacheCarryover") or {},
+                "strategy": metrics.get("strategy") or {},
                 "budgets": metrics.get("budgets") or {},
             },
         }
