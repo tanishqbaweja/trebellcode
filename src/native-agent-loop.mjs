@@ -702,6 +702,9 @@ export async function runNativeAgentTurn({
       output=await executeTool({id:callId,namespace,name,arguments:args,rawArguments:call?.arguments??"{}",signal:turnSignal,modelTurn:modelTurns,toolCall:toolCallNumber});
       throwIfAborted(turnSignal);
       if(output?.success===false){success=false;errorMessage=String(output.error||output.message||"Tool execution failed.");uncertain=output?.uncertain===true;retrySafe=output?.retrySafe===true}
+      if(success&&namespace==="trebell_terminal"&&name==="run"&&output?.timedOut===true){
+        success=false;errorMessage="Terminal command timed out.";
+      }
     }catch(error){
       if(turnSignal?.aborted||error?.name==="AbortError")throw abortError(turnSignal);
       success=false;errorMessage=error?.message||String(error);output={success:false,error:errorMessage};

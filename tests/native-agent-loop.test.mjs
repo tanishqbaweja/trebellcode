@@ -1334,6 +1334,23 @@ test("native agent trace preserves uncertain external tool outcomes",async()=>{
   assert.equal(result.text,"I will inspect state before retrying.");
 });
 
+test("native agent trace records a timed-out terminal command as failed",async()=>{
+  let turns=0;const events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"run the check"}],onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"call-timeout",namespace:"trebell_terminal",name:"run",arguments:'{"command":"slow-check","args":[]}'}],usage:{}};
+      assert.equal(request.messages.at(-1).role,"tool");
+      return {text:"The check timed out; I will not treat it as verified.",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>({exitCode:1,timedOut:true,signal:"SIGKILL",stdout:"",stderr:""}),
+  });
+  const completed=events.find(event=>event.name==="native.tool.completed");
+  assert.equal(completed.status,"failed");assert.equal(completed.data.success,false);assert.match(completed.data.error,/timed out/i);
+  assert.equal(result.text,"The check timed out; I will not treat it as verified.");
+});
+
 test("native agent preserves image tool observations for the next model turn",async()=>{
   let turns=0;
   const result=await runNativeAgentTurn({
