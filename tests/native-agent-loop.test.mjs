@@ -2289,6 +2289,79 @@ test("native convergence guard still allows one bounded batched verification swe
   assert.equal(events.some(event=>event.name==="native.progress.convergence_call_blocked"),false);
 });
 
+test("native post-edit singleton probing switches to batch-only evidence after six reasoning round trips",async()=>{
+  let turns=0;const executed=[],events=[],requests=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation and verify it."}],maxModelTurns:12,maxToolCalls:20,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      if(turns>=2&&turns<=7)return {text:"",toolCalls:[{id:`probe-${turns}`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"probe",args:["same"]})}],usage:{}};
+      if(turns===8){
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/post-edit probe-batching checkpoint/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[{id:"serial-after-checkpoint",namespace:"trebell_terminal",name:"run",arguments:'{"command":"probe","args":["serial"]}'}],usage:{}};
+      }
+      if(turns===9){
+        assert.ok(request.messages.some(message=>message.role==="tool"&&message.toolCallId==="serial-after-checkpoint"&&/post-edit probe batching/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[{id:"batched-after-checkpoint",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"bash",args:["-lc","for value in a b c d; do probe \"$value\"; done"]})}],usage:{}};
+      }
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0}},
+  });
+  assert.equal(result.text,"done");assert.equal(turns,10);
+  assert.equal(executed.includes("serial-after-checkpoint"),false);
+  assert.equal(executed.includes("batched-after-checkpoint"),true);
+  assert.equal(events.filter(event=>event.name==="native.progress.post_edit_probe_batch_checkpoint").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.post_edit_probe_call_blocked").length,1);
+});
+
+test("native post-edit probe batching resets after another successful workspace edit",async()=>{
+  let turns=0;const executed=[],events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation and verify it."}],maxModelTurns:12,maxToolCalls:20,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"edit-1",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"better"}'}],usage:{}};
+      if(turns>=2&&turns<=7)return {text:"",toolCalls:[{id:`probe-${turns}`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"probe",args:[String(turns)]})}],usage:{}};
+      if(turns===8){assert.ok(request.messages.some(message=>message.role==="developer"&&/post-edit probe-batching checkpoint/i.test(String(message.content||""))));return {text:"",toolCalls:[{id:"edit-2",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"better","new_text":"good"}'}],usage:{}}}
+      if(turns===9)return {text:"",toolCalls:[{id:"fresh-singleton",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0}},
+  });
+  assert.equal(result.text,"done");assert.equal(executed.includes("fresh-singleton"),true);
+  assert.equal(events.filter(event=>event.name==="native.progress.post_edit_probe_batch_checkpoint").length,1);
+  assert.equal(events.some(event=>event.name==="native.progress.post_edit_probe_call_blocked"),false);
+});
+
+test("native post-edit evidence rounds stop repeated batch-like scripts from bypassing convergence pressure",async()=>{
+  let turns=0;const executed=[],events=[],requests=[];
+  const batchArgs=turn=>JSON.stringify({command:"bash",args:["-lc",`for value in a b c; do echo ${turn}:$value; done`]});
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation and verify it."}],maxModelTurns:14,maxToolCalls:24,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      if(turns>=2&&turns<=7)return {text:"",toolCalls:[{id:`batch-${turns}`,namespace:"trebell_terminal",name:"run",arguments:batchArgs(turns)}],usage:{}};
+      if(turns===8){assert.ok(request.messages.some(message=>message.role==="developer"&&/post-edit evidence checkpoint/i.test(String(message.content||""))));return {text:"",toolCalls:[{id:"batch-8",namespace:"trebell_terminal",name:"run",arguments:batchArgs(8)}],usage:{}}}
+      if(turns===9)return {text:"",toolCalls:[{id:"batch-9",namespace:"trebell_terminal",name:"run",arguments:batchArgs(9)}],usage:{}};
+      if(turns===10){assert.ok(request.messages.some(message=>message.role==="developer"&&/post-edit evidence escalation/i.test(String(message.content||""))));return {text:"",toolCalls:[{id:"blocked-batch",namespace:"trebell_terminal",name:"run",arguments:batchArgs(10)}],usage:{}}}
+      assert.ok(request.messages.some(message=>message.role==="tool"&&message.toolCallId==="blocked-batch"&&/post-edit evidence escalation/i.test(String(message.content||""))));
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0}},
+  });
+  assert.equal(result.text,"done");assert.equal(turns,11);
+  assert.equal(executed.includes("blocked-batch"),false);
+  assert.equal(events.filter(event=>event.name==="native.progress.post_edit_evidence_checkpoint").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.post_edit_evidence_escalation").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.post_edit_evidence_call_blocked").length,1);
+});
+
 test("native convergence checkpoint does not fire while the latest edit still has a failed terminal check",async()=>{
   let turns=0;const requests=[],events=[];
   const result=await runNativeAgentTurn({
