@@ -19,6 +19,18 @@ test("Native system prompt teaches evidence-driven coding without inventing unav
   assert.match(prompt,/exact paths, commands, URLs/i);
   assert.match(prompt,/comments inside suspect implementation code as hypotheses/i);
   assert.match(prompt,/deterministic local reproducer/i);
+  assert.match(prompt,/authoritative fixtures, configuration, schemas, or data files/i);
+  assert.match(prompt,/compact audit of semantically meaningful input fields/i);
+  assert.match(prompt,/unexplained unused field tied to an acceptance concept/i);
+  assert.match(prompt,/Do not mechanically force metadata or unrelated fields/i);
+  assert.match(prompt,/multiple separately named thresholds for the same resource or state/i);
+  assert.match(prompt,/preserve them as distinct concepts/i);
+  assert.match(prompt,/target\/reserve and a hard minimum\/maximum/i);
+  assert.match(prompt,/boundary where one threshold is satisfied and the other is not/i);
+  assert.match(prompt,/planner, solver, scheduler, allocator, generator/i);
+  assert.match(prompt,/unexpected universal failure, infeasible, empty, or no-solution outcome/i);
+  assert.match(prompt,/constraints shape construction\/selection itself rather than only reject the result afterward/i);
+  assert.match(prompt,/make that conclusion evidence-based/i);
   assert.match(prompt,/arbitrary runtime inputs, policies, configuration, schemas, or equivalent variants/i);
   assert.match(prompt,/cheap counterfactual case/i);
   assert.match(prompt,/required fields from optional fields, defaulted fields, and conditionally valid fields/i);
