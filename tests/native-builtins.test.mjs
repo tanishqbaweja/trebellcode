@@ -75,3 +75,30 @@ test("Native terminal rejects cwd escapes and cancellation kills the running pro
     await assert.rejects(pending,error=>error?.name==="AbortError");
   }finally{await rm(root,{recursive:true,force:true})}
 });
+
+test("Native terminal timeout kills descendant processes that inherit stdio",async()=>{
+  const root=await workspace();
+  try{
+    const execute=createNativeBuiltins({root});
+    const pidPath=join(root,"descendant.pid");
+    const childScript="setInterval(()=>{},1000)";
+    const parentScript=[
+      "const {spawn}=require('node:child_process');",
+      "const fs=require('node:fs');",
+      `const child=spawn(process.execPath,['-e',${JSON.stringify(childScript)}],{stdio:'inherit'});`,
+      `fs.writeFileSync(${JSON.stringify(pidPath)},String(child.pid));`,
+      "setInterval(()=>{},1000);",
+    ].join("");
+    const started=Date.now();
+    const result=await execute({namespace:"trebell_terminal",name:"run",arguments:{command:process.execPath,args:["-e",parentScript],timeout_ms:1000}});
+    assert.equal(result.timedOut,true);
+    assert.ok(Date.now()-started<5000,`timed-out process tree should settle promptly, took ${Date.now()-started} ms`);
+    const descendantPid=Number(await readFile(pidPath,"utf8"));
+    let descendantAlive=true;
+    for(let attempt=0;attempt<20&&descendantAlive;attempt++){
+      try{process.kill(descendantPid,0);await new Promise(resolve=>setTimeout(resolve,50))}
+      catch(error){if(error?.code==="ESRCH")descendantAlive=false;else throw error}
+    }
+    assert.equal(descendantAlive,false,"timed-out terminal command must not leave the descendant process running");
+  }finally{await rm(root,{recursive:true,force:true})}
+});

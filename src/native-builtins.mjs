@@ -134,19 +134,42 @@ async function safeWorkspacePath(root,requested,{environments=null,environmentId
   return {path:candidate,remote:true,profile};
 }
 
-function captureProcess(child,{signal=null,timeoutMs=30_000,maxOutput=DEFAULT_OUTPUT_BYTES}={}){
+function terminateProcessTree(child,{platform=process.platform,processGroup=false}={}){
+  const pid=Number(child?.pid);
+  if(platform==="win32"&&Number.isInteger(pid)&&pid>0){
+    try{
+      const killer=spawn("taskkill",["/pid",String(pid),"/t","/f"],{windowsHide:true,stdio:"ignore"});
+      const fallback=()=>{try{child?.kill?.("SIGKILL")}catch{}};
+      killer.once("error",fallback);killer.once("close",fallback);killer.unref?.();return;
+    }catch{}
+  }else if(processGroup&&Number.isInteger(pid)&&pid>0){
+    try{process.kill(-pid,"SIGKILL");return}catch{}
+  }
+  try{child?.kill?.("SIGKILL")}catch{}
+}
+
+function captureProcess(child,{signal=null,timeoutMs=30_000,maxOutput=DEFAULT_OUTPUT_BYTES,platform=process.platform,processGroup=false}={}){
   return new Promise((resolveCapture,reject)=>{
-    let stdout="",stderr="",settled=false,timedOut=false,truncated=false,aborted=false;
+    let stdout="",stderr="",settled=false,timedOut=false,truncated=false,aborted=false,terminationTimer=null;
     const append=(current,chunk)=>{
       const text=current+String(chunk);if(Buffer.byteLength(text,"utf8")<=maxOutput)return text;
       truncated=true;return Buffer.from(text,"utf8").subarray(0,maxOutput).toString("utf8");
     };
-    const cleanup=()=>{clearTimeout(timer);signal?.removeEventListener?.("abort",onAbort)};
+    const cleanup=()=>{clearTimeout(timer);if(terminationTimer)clearTimeout(terminationTimer);signal?.removeEventListener?.("abort",onAbort)};
     const finish=(error,code=null,processSignal=null)=>{if(settled)return;settled=true;cleanup();error?reject(error):resolveCapture({exitCode:code??1,signal:processSignal,stdout,stderr,timedOut,truncated})};
-    const onAbort=()=>{aborted=true;try{child.kill("SIGKILL")}catch{}};
+    const terminate=()=>{
+      terminateProcessTree(child,{platform,processGroup});
+      terminationTimer=setTimeout(()=>{
+        try{child.stdout?.destroy?.()}catch{}
+        try{child.stderr?.destroy?.()}catch{}
+        aborted?finish(abortError(signal)):finish(null,null,"SIGKILL");
+      },2000);
+      terminationTimer.unref?.();
+    };
+    const onAbort=()=>{if(settled||aborted)return;aborted=true;terminate()};
     child.stdout?.on("data",chunk=>{stdout=append(stdout,chunk)});child.stderr?.on("data",chunk=>{stderr=append(stderr,chunk)});
     child.once("error",error=>finish(aborted?abortError(signal):error));child.once("close",(code,processSignal)=>aborted?finish(abortError(signal)):finish(null,code,processSignal));
-    const timer=setTimeout(()=>{timedOut=true;try{child.kill("SIGKILL")}catch{}},timeoutMs);
+    const timer=setTimeout(()=>{if(settled)return;timedOut=true;terminate()},timeoutMs);
     if(signal?.aborted)return onAbort();signal?.addEventListener?.("abort",onAbort,{once:true});
   });
 }
@@ -156,9 +179,10 @@ async function runArgv({root,environments,environmentId,environment,platform,com
   const info=located.remote?null:await stat(located.path);if(info&&!info.isDirectory())throw new Error("Command working directory is not a directory");
   const started=Date.now(),profile=located.profile;
   let child;
-  if(profile&&profile.type!=="local")child=environments.spawnArgv(profile.id,{command,args,cwd:located.path,stdio:["ignore","pipe","pipe"],environmentNames:runtimeEnvironmentKeys("native")});
-  else child=spawn(command,args,{cwd:located.path,env:buildRuntimeEnvironment("native",{parent:environment,platform}),windowsHide:true,stdio:["ignore","pipe","pipe"]});
-  const result=await captureProcess(child,{signal,timeoutMs,maxOutput});
+  const processGroup=platform!=="win32";
+  if(profile&&profile.type!=="local")child=environments.spawnArgv(profile.id,{command,args,cwd:located.path,stdio:["ignore","pipe","pipe"],environmentNames:runtimeEnvironmentKeys("native"),detached:processGroup});
+  else child=spawn(command,args,{cwd:located.path,env:buildRuntimeEnvironment("native",{parent:environment,platform}),windowsHide:true,stdio:["ignore","pipe","pipe"],detached:processGroup});
+  const result=await captureProcess(child,{signal,timeoutMs,maxOutput,platform,processGroup});
   return {...result,durationMs:Date.now()-started,cwd:located.path,command,args};
 }
 

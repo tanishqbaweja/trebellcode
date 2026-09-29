@@ -271,7 +271,7 @@ export class EnvironmentManager {
     };
   }
 
-  spawnSession(id,{command,cwd=null,stdio=["ignore","pipe","pipe"]}={}){
+  spawnSession(id,{command,cwd=null,stdio=["ignore","pipe","pipe"],detached=false}={}){
     const profile=this.get(id);
     if(!profile) throw new Error("Environment profile was not found");
     const text=String(command||"").trim();
@@ -282,7 +282,7 @@ export class EnvironmentManager {
     if(profile.type==="local"){
       executable=this.platform==="win32"?"cmd.exe":"/bin/sh";
       args=this.platform==="win32"?["/d","/s","/c",text]:["-lc",text];
-      return spawn(executable,args,{cwd:working||undefined,env:this.env,windowsHide:true,stdio});
+      return spawn(executable,args,{cwd:working||undefined,env:this.env,windowsHide:true,stdio,detached});
     }
     if(profile.type==="wsl"){
       if(this.platform!=="win32") throw new Error("WSL environments are available only on Windows");
@@ -290,7 +290,7 @@ export class EnvironmentManager {
       args=[];
       if(profile.distro) args.push("-d",profile.distro);
       args.push("--","bash","-lc",remoteShellCommand(text,working));
-      return spawn(executable,args,{env:this.#transportEnv(),windowsHide:true,stdio});
+      return spawn(executable,args,{env:this.#transportEnv(),windowsHide:true,stdio,detached});
     }
     if(profile.type==="ssh"){
       executable=this.platform==="win32"?"ssh.exe":"ssh";
@@ -298,7 +298,7 @@ export class EnvironmentManager {
       if(profile.identityFile) args.push("-i",profile.identityFile);
       const target=profile.user?(profile.user+"@"+profile.host):profile.host;
       args.push(target,remoteShellCommand(text,working));
-      return spawn(executable,args,{env:this.#transportEnv(),windowsHide:true,stdio});
+      return spawn(executable,args,{env:this.#transportEnv(),windowsHide:true,stdio,detached});
     }
     throw new Error("Unsupported environment type");
   }
@@ -385,14 +385,14 @@ export class EnvironmentManager {
     throw new Error("Unsupported environment type");
   }
 
-  spawnArgv(id,{command,args=[],cwd=null,stdio=["pipe","pipe","pipe"],environmentNames=null,environment=null}={}){
+  spawnArgv(id,{command,args=[],cwd=null,stdio=["pipe","pipe","pipe"],environmentNames=null,environment=null,detached=false}={}){
     const profile=this.get(id);
     if(!profile) throw new Error("Environment profile was not found");
     const executable=String(command||"").trim();
     if(!executable)throw new Error("command is required");
     const working=String(cwd??profile.cwd??"").trim();
-    if(profile.type==="local")return spawn(executable,args,{cwd:working||undefined,env:environment&&typeof environment==="object"?environment:this.env,windowsHide:true,stdio});
-    return this.spawnSession(id,{command:isolatedRemoteEnvironment(shellCommand(executable,args),environmentNames,environment||{}),cwd:working||null,stdio});
+    if(profile.type==="local")return spawn(executable,args,{cwd:working||undefined,env:environment&&typeof environment==="object"?environment:this.env,windowsHide:true,stdio,detached});
+    return this.spawnSession(id,{command:isolatedRemoteEnvironment(shellCommand(executable,args),environmentNames,environment||{}),cwd:working||null,stdio,detached});
   }
 
   async execute(id,{command,cwd=null,timeoutMs=30000,maxOutput=MAX_OUTPUT}={}){
