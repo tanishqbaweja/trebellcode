@@ -20,6 +20,10 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/SETUP_TIMEOUT_MULTIPLIER/);
   assert.match(source,/agentExecutionMs:elapsedMs\(trial\?\.agent_execution\)/);
   assert.match(source,/taskChecksum:trial\?\.task_checksum/);
+  assert.match(source,/sourceGitProvenance/);
+  assert.match(source,/git\",\[\"rev-parse\",\"HEAD\"\]/);
+  assert.match(source,/--untracked-files=no/);
+  assert.match(source,/sourceTrackedDiffSha256/);
   assert.match(source,/nativeBundleSha256/);
   assert.match(source,/nativeAdapterSha256/);
   assert.match(source,/NATIVE_PINNED_NODE_VERSION="22\.23\.3"/);

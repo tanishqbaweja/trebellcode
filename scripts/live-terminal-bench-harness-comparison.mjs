@@ -43,6 +43,23 @@ function run(command,args,{env=process.env}={}){
     child.once("exit",(code,signal)=>code===0?resolveRun({code:0}):reject(Object.assign(new Error(`${command} exited with ${signal||code}`),{code,signal})));
   });
 }
+function capture(command,args,{env=process.env}={}){
+  return new Promise((resolveCapture,reject)=>{
+    const child=spawn(command,args,{cwd:root,env,stdio:["ignore","pipe","pipe"],windowsHide:true});let stdout="",stderr="";
+    child.stdout.setEncoding("utf8");child.stderr.setEncoding("utf8");child.stdout.on("data",chunk=>{stdout+=chunk});child.stderr.on("data",chunk=>{stderr+=chunk});
+    child.once("error",reject);
+    child.once("exit",(code,signal)=>code===0?resolveCapture(stdout):reject(Object.assign(new Error(`${command} exited with ${signal||code}: ${stderr.trim().slice(0,500)}`),{code,signal})));
+  });
+}
+async function sourceGitProvenance(){
+  try{
+    const sourceGitHead=String(await capture("git",["rev-parse","HEAD"])).trim()||null;
+    const trackedStatus=String(await capture("git",["status","--porcelain=v1","--untracked-files=no"]));
+    const sourceTrackedDirty=Boolean(trackedStatus.trim());
+    const sourceTrackedDiffSha256=sourceTrackedDirty?createHash("sha256").update(await capture("git",["diff","--binary","HEAD","--"])).digest("hex"):null;
+    return {sourceGitHead,sourceTrackedDirty,sourceTrackedDiffSha256};
+  }catch{return {sourceGitHead:null,sourceTrackedDirty:null,sourceTrackedDiffSha256:null}}
+}
 const LANE_DRAIN_TIMEOUT_MS=Math.max(5_000,Math.trunc(Number(process.env.TREBELL_TERMINAL_BENCH_LANE_DRAIN_MS)||300_000));
 
 async function harborBin(){
@@ -151,7 +168,7 @@ async function recoverTrialEvidence(outputRoot,jobName){
   return null;
 }
 
-const releaseLock=await acquirePairLock(),runStamp=stamp(),pairId=`tb4-pair-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`,reportPath=join(validationDir,pairId+".json");let codexApiAuthPath=null;
+const releaseLock=await acquirePairLock(),runStamp=stamp(),pairId=`tb4-pair-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`,reportPath=join(validationDir,pairId+".json"),sourceProvenance=await sourceGitProvenance();let codexApiAuthPath=null;
 try{
   await run(process.execPath,[join(root,"scripts","build-harbor-native-agent.mjs")]);
   const nativeBundlePath=join(root,"benchmarks","harbor","dist","trebell-native-agent.mjs"),nativeAdapterPath=join(root,"benchmarks","harbor","trebell_native_agent.py");
@@ -192,6 +209,7 @@ try{
   const reportSnapshot=({complete=false,activeHarness=null,activeJobName=null}={})=>({
     pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,
     sameModel:true,sameReasoningEffort:true,sequential:true,codexAuthMode:CODEX_AUTH_MODE,codexInstallMode:CODEX_INSTALL_MODE,
+    ...sourceProvenance,
     ...(nativePinnedNodeTarballPath?{nativePinnedNodeVersion:NATIVE_PINNED_NODE_VERSION,nativePinnedNodeTarballSha256}:{}),
     ...(codexPinnedTarballPath?{codexPinnedVersion:CODEX_PINNED_VERSION,codexPinnedTarballSha256,codexPinnedAdapterSha256}:{}),
     comparisonLanes:lanes.map(lane=>lane.label),nativeBundleSha256,nativeAdapterSha256,
