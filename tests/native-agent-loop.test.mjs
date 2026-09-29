@@ -2139,6 +2139,8 @@ test("native agent nudges convergence after multiple distinct successful post-ed
       assert.match(String(request.messages.at(-1)?.content||""),/convergence checkpoint/i);
       assert.match(String(request.messages.at(-1)?.content||""),/Command count is not semantic coverage/i);
       assert.match(String(request.messages.at(-1)?.content||""),/behavior-driving structured inputs or configured constraints/i);
+      assert.match(String(request.messages.at(-1)?.content||""),/Explicit quantitative targets still need representative evidence/i);
+      assert.match(String(request.messages.at(-1)?.content||""),/one-shot benchmark\/deploy\/cutover\/release signal/i);
       return {text:"done",toolCalls:[],usage:{}};
     },
     executeTool:async call=>call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0},

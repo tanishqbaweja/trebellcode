@@ -55,6 +55,12 @@ test("Native system prompt teaches evidence-driven coding without inventing unav
   assert.match(prompt,/Parallelizing independent waits still blocks first useful output/i);
   assert.match(prompt,/nonessential secondary side effects off a latency-critical mutation response path/i);
   assert.match(prompt,/focused timing\/runtime check/i);
+  assert.match(prompt,/quantitative target/i);
+  assert.match(prompt,/acceptance gate/i);
+  assert.match(prompt,/representative baseline and candidate path/i);
+  assert.match(prompt,/one-shot benchmark, deployment, cutover, migration completion, release/i);
+  assert.match(prompt,/pre-activation benchmark or bounded proxy/i);
+  assert.match(prompt,/official metric is hidden/i);
   assert.match(prompt,/Batch independent read-only/i);
   assert.match(prompt,/explicit user ordering constraints/i);
   assert.match(prompt,/exposed repository tools/i);
