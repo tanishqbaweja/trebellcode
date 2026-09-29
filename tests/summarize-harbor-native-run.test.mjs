@@ -33,5 +33,13 @@ test("Harbor Native summary aggregates prompt-cache comparison diagnostics",asyn
       cacheMissedReportedTurns:1,
       missReasons:{tools_changed:1},
     });
+    assert.deepEqual(summary.cacheCarryover,{
+      transitions:2,
+      priorRequestInputTokens:4200,
+      knownCachedPriorTokens:3072,
+      retainedKnownCachedTokens:1024,
+      lostKnownCachedTokens:2048,
+      percent:33.333,
+    });
   }finally{await rm(root,{recursive:true,force:true})}
 });
