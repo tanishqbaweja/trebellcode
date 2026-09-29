@@ -258,6 +258,8 @@ export function anthropicSseToChatStream(source,{model=""}={}){
   const decoder=new TextDecoder();
   const encoder=new TextEncoder();
   const id=`chatcmpl_${randomUUID()}`;
+  const reader=source.getReader();
+  let cancelled=false;
   let buffer="";
   let finishReason=null;
   let inputTokens=0;
@@ -270,11 +272,10 @@ export function anthropicSseToChatStream(source,{model=""}={}){
   const line=(value)=>encoder.encode(`data: ${JSON.stringify(value)}\n\n`);
   return new ReadableStream({
     async start(controller){
-      const reader=source.getReader();
       try{
         for(;;){
           const {done,value}=await reader.read();
-          if(done)break;
+          if(done||cancelled)break;
           buffer+=decoder.decode(value,{stream:true});
           const blocks=buffer.split(/\r?\n\r?\n/);
           buffer=blocks.pop()||"";
@@ -318,6 +319,7 @@ export function anthropicSseToChatStream(source,{model=""}={}){
             }
           }
         }
+        if(cancelled)return;
         controller.enqueue(line(openAiChunk({
           id,model,delta:{},finish_reason:finishReason||"stop",
           usage:{
@@ -329,9 +331,10 @@ export function anthropicSseToChatStream(source,{model=""}={}){
         })));
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         controller.close();
-      }catch(error){controller.error(error)}
+      }catch(error){if(!cancelled)controller.error(error)}
       finally{reader.releaseLock()}
     },
+    async cancel(reason){cancelled=true;try{await reader.cancel(reason)}catch{}},
   });
 }
 

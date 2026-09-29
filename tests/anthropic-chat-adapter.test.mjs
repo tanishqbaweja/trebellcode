@@ -106,6 +106,17 @@ test("Anthropic SSE converts to OpenAI chat SSE including tool calls",async()=>{
   assert.match(text,/\[DONE\]/);
 });
 
+test("Anthropic SSE cancellation propagates to the upstream provider body",async()=>{
+  let cancelReason=null;
+  const source=new ReadableStream({pull(){},cancel(reason){cancelReason=reason}});
+  const response=await adaptAnthropicResponse(new Response(source,{status:200,headers:{"content-type":"text/event-stream"}}),{stream:true,model:"claude-opus-4-8"});
+  const reader=response.body.getReader(),pendingRead=reader.read(),reason=new Error("idle timeout");
+  await new Promise(resolve=>setImmediate(resolve));
+  await reader.cancel(reason);
+  await pendingRead;
+  assert.equal(cancelReason,reason);
+});
+
 test("Anthropic JSON converts to OpenAI chat completion",()=>{
   const result=anthropicMessageToChatCompletion({
     id:"msg_1",
