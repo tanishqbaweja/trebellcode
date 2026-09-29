@@ -5,7 +5,7 @@ import { performance } from "node:perf_hooks";
 import { ContextEngine } from "../../src/context-engine.mjs";
 import { createNativeBuiltins } from "../../src/native-builtins.mjs";
 import { NativeAgentSession } from "../../src/native-agent-session.mjs";
-import { attachNativePromptProvenance } from "../../src/native-request-metrics.mjs";
+import { attachNativePromptProvenance, nativeCacheCarryover } from "../../src/native-request-metrics.mjs";
 import { nativeSystemPrompt } from "../../src/native-system-prompt.mjs";
 import { NativeToolOutputStore } from "../../src/native-tool-output-store.mjs";
 import { createNativeToolExecutor } from "../../src/native-tool-executor.mjs";
@@ -188,6 +188,7 @@ const metrics={
   usage:raw.usage||failureUsage||{},
   providerRequests:requests.length,
   providerRequestElapsedMs:requests.reduce((total,item)=>total+Number(item?.elapsedMs||0),0),
+  cacheCarryover:nativeCacheCarryover(requests.map(item=>item?.usage||{})),
   finalReply:assistantChunks.join("").trim().slice(-4000),
   error:error?String(error?.stack||error?.message||error).slice(-8000):null,
 };

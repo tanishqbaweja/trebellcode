@@ -1,5 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
 import { basename, resolve } from "node:path";
+import { nativeCacheCarryover } from "../src/native-request-metrics.mjs";
 
 const root=resolve(process.cwd(),String(process.argv[2]||""));
 if(!process.argv[2])throw new Error("Usage: node scripts/summarize-harbor-native-run.mjs <harbor-job-or-trial-dir>");
@@ -54,17 +55,7 @@ for(const item of cacheDiagnostics){
   const reason=String(item?.reason||"unspecified");cacheMissReasons[reason]=(cacheMissReasons[reason]||0)+1;
 }
 const uncachedInputTokens=Math.max(0,usage.inputTokens-usage.cachedInputTokens);
-let priorRequestInputTokens=0,knownCachedPriorTokens=0,retainedKnownCachedTokens=0,cacheCarryoverTransitions=0;
-for(let index=1;index<models.length;index++){
-  const previousUsage=models[index-1]?.data?.usage||{},previousInput=Number(previousUsage.inputTokens),previousCached=Number(previousUsage.cachedInputTokens),previousCacheWrite=previousUsage.cacheWriteInputTokens==null?0:Number(previousUsage.cacheWriteInputTokens),currentCached=Number(models[index]?.data?.usage?.cachedInputTokens);
-  if(!Number.isFinite(previousInput)||previousInput<0||!Number.isFinite(previousCached)||previousCached<0||!Number.isFinite(previousCacheWrite)||previousCacheWrite<0||!Number.isFinite(currentCached)||currentCached<0)continue;
-  const knownCached=Math.min(previousInput,previousCached+previousCacheWrite);
-  priorRequestInputTokens+=previousInput;
-  knownCachedPriorTokens+=knownCached;
-  retainedKnownCachedTokens+=Math.min(knownCached,currentCached);
-  cacheCarryoverTransitions++;
-}
-const lostKnownCachedTokens=Math.max(0,knownCachedPriorTokens-retainedKnownCachedTokens);
+const cacheCarryover=nativeCacheCarryover(models.map(event=>event.data?.usage||{}));
 let metrics=null;
 try{metrics=JSON.parse(await readFile(resolve(trial,"agent","trebell-native-metrics.json"),"utf8"))}catch{}
 
@@ -90,14 +81,7 @@ console.log(JSON.stringify({
     cacheMissedReportedTurns:cacheMissedValues.length,
     missReasons:cacheMissReasons,
   },
-  cacheCarryover:{
-    transitions:cacheCarryoverTransitions,
-    priorRequestInputTokens,
-    knownCachedPriorTokens,
-    retainedKnownCachedTokens,
-    lostKnownCachedTokens,
-    percent:knownCachedPriorTokens?Number((retainedKnownCachedTokens/knownCachedPriorTokens*100).toFixed(3)):null,
-  },
+  cacheCarryover,
   responseContinuation:{
     used:continuationTelemetry.filter(item=>item?.used===true).length,
     notUsed:continuationTelemetry.filter(item=>item?.used===false).length,

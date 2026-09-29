@@ -58,6 +58,7 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/delete harnessEnv\.CODEX_AUTH_JSON_PATH/);
   assert.match(source,/delete harnessEnv\.CODEX_FORCE_AUTH_JSON/);
   assert.match(source,/harness,label,agent,jobName,runError,authMode/);
+  assert.match(source,/cacheCarryover:trebellNative\.cache_carryover/);
   assert.match(source,/agentVersion:trial\?\.agent_info\?\.version/);
   assert.match(source,/complete,activeHarness,activeJobName/);
   assert.match(source,/await persistReport\(\{complete:false,activeHarness:label,activeJobName:jobName\}\)/);

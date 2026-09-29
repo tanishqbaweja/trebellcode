@@ -14,6 +14,18 @@ function metric(value){
 function digest(value){return createHash("sha256").update(typeof value==="string"?value:json(value)).digest("hex")}
 function hash(value){return digest(value).slice(0,16)}
 function hashParts(...parts){const state=createHash("sha256");for(const part of parts)state.update(String(part));return state.digest("hex").slice(0,16)}
+
+export function nativeCacheCarryover(usages=[]){
+  const source=Array.isArray(usages)?usages:[];let transitions=0,priorRequestInputTokens=0,knownCachedPriorTokens=0,retainedKnownCachedTokens=0;
+  for(let index=1;index<source.length;index++){
+    const previous=source[index-1]||{},current=source[index]||{},previousInput=Number(previous.inputTokens),previousCached=Number(previous.cachedInputTokens),previousCacheWrite=previous.cacheWriteInputTokens==null?0:Number(previous.cacheWriteInputTokens),currentCached=Number(current.cachedInputTokens);
+    if(!Number.isFinite(previousInput)||previousInput<0||!Number.isFinite(previousCached)||previousCached<0||!Number.isFinite(previousCacheWrite)||previousCacheWrite<0||!Number.isFinite(currentCached)||currentCached<0)continue;
+    const knownCached=Math.min(previousInput,previousCached+previousCacheWrite);
+    priorRequestInputTokens+=previousInput;knownCachedPriorTokens+=knownCached;retainedKnownCachedTokens+=Math.min(knownCached,currentCached);transitions++;
+  }
+  const lostKnownCachedTokens=Math.max(0,knownCachedPriorTokens-retainedKnownCachedTokens);
+  return {transitions,priorRequestInputTokens,knownCachedPriorTokens,retainedKnownCachedTokens,lostKnownCachedTokens,percent:knownCachedPriorTokens?Number((retainedKnownCachedTokens/knownCachedPriorTokens*100).toFixed(3)):null};
+}
 function jsonArrayText(parts=[]){return `[${parts.map(part=>part.text).join(",")}]`}
 function jsonArrayMetric(parts=[],itemByteSum=null){let byteCount=2+Math.max(0,parts.length-1);if(itemByteSum!=null&&Number.isFinite(Number(itemByteSum)))byteCount+=Number(itemByteSum);else for(const part of parts)byteCount+=part.bytes;return {bytes:byteCount,estimatedTokens:estimate(byteCount)}}
 function jsonArrayHash(parts=[]){const state=createHash("sha256");state.update("[");for(let index=0;index<parts.length;index++){if(index)state.update(",");state.update(parts[index].text)}state.update("]");return state.digest("hex").slice(0,16)}

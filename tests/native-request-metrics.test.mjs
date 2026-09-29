@@ -1,7 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { attachNativePromptProvenance, nativeRequestMetrics, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
+import { attachNativePromptProvenance, nativeCacheCarryover, nativeRequestMetrics, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
+
+test("Native cache carryover measures retention only for tokens already reported cached or cache-written",()=>{
+  const result=nativeCacheCarryover([
+    {inputTokens:2000,cachedInputTokens:0,cacheWriteInputTokens:1024},
+    {inputTokens:2200,cachedInputTokens:1024,cacheWriteInputTokens:1176},
+    {inputTokens:2500,cachedInputTokens:2200,cacheWriteInputTokens:0},
+  ]);
+  assert.deepEqual(result,{transitions:2,priorRequestInputTokens:4200,knownCachedPriorTokens:3224,retainedKnownCachedTokens:3224,lostKnownCachedTokens:0,percent:100});
+});
 
 test("Native request metrics separate user text from Trebell working context without changing wire-visible messages",()=>{
   const current=attachNativePromptProvenance({role:"user",content:"context block\nuser request"},{
