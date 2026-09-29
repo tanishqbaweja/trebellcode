@@ -41,6 +41,18 @@ const pressureBlocked=events.filter(event=>event.name==="native.progress.impleme
 const providerTelemetry=models.map(event=>event.data?.providerTelemetry).filter(Boolean);
 const cacheDiagnostics=providerTelemetry.map(item=>item?.promptCacheDiagnostics).filter(Boolean);
 const continuationTelemetry=providerTelemetry.map(item=>item?.responseContinuation).filter(Boolean);
+const cacheDiagnosticNumber=(item,key)=>{
+  const value=item?.[key];
+  if(value==null||value==="")return null;
+  const number=Number(value);return Number.isFinite(number)&&number>=0?number:null;
+};
+const comparisonReusableValues=cacheDiagnostics.map(item=>cacheDiagnosticNumber(item,"comparisonReusableTokens")).filter(value=>value!=null);
+const cacheMissedValues=cacheDiagnostics.map(item=>cacheDiagnosticNumber(item,"cacheMissedTokens")).filter(value=>value!=null);
+const cacheMissReasons={};
+for(const item of cacheDiagnostics){
+  if(item?.type!=="cache_miss")continue;
+  const reason=String(item?.reason||"unspecified");cacheMissReasons[reason]=(cacheMissReasons[reason]||0)+1;
+}
 const uncachedInputTokens=Math.max(0,usage.inputTokens-usage.cachedInputTokens);
 let metrics=null;
 try{metrics=JSON.parse(await readFile(resolve(trial,"agent","trebell-native-metrics.json"),"utf8"))}catch{}
@@ -61,6 +73,11 @@ console.log(JSON.stringify({
     hits:cacheDiagnostics.filter(item=>item?.type==="cache_hit").length,
     misses:cacheDiagnostics.filter(item=>item?.type==="cache_miss").length,
     unavailable:cacheDiagnostics.filter(item=>item?.type==="unavailable").length,
+    comparisonReusableTokens:comparisonReusableValues.reduce((sum,value)=>sum+value,0),
+    comparisonReusableReportedTurns:comparisonReusableValues.length,
+    cacheMissedTokens:cacheMissedValues.reduce((sum,value)=>sum+value,0),
+    cacheMissedReportedTurns:cacheMissedValues.length,
+    missReasons:cacheMissReasons,
   },
   responseContinuation:{
     used:continuationTelemetry.filter(item=>item?.used===true).length,
