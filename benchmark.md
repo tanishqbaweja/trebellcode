@@ -12,6 +12,8 @@ This file is the canonical home for Trebell Code benchmark definitions, commands
 - Keep setup-invalid runs separate from counted results. Examples: wrong sandbox permissions, unavailable model, broken benchmark harness, or provider request rejected before the coding task begins.
 - Do not draw a broad superiority conclusion from a single task or a single stochastic run. Repeat tasks and expand the task set.
 - Prefer end-to-end coding tasks over microbenchmarks when deciding whether Trebell Native is becoming a stronger coding harness. Microbenchmarks remain useful for explaining *why* a harness is faster or cheaper.
+- For live-run liveness, process/container existence or high CPU alone is **not** proof of progress. Prefer the payload-free lifecycle summary from `npm run bench:terminal:health`, then corroborate with event/session file growth, canonical pair-state changes, network/block-I/O deltas, and process topology.
+- Keep clean live monitoring payload-free. If task instructions, tool arguments/results, candidate edits, verifier internals, or other task-specific agent payloads are inspected before the comparison closes, mark that task/run diagnostic/contaminated and never reuse it as fresh causal evidence.
 
 ## Current evidence ledger
 
