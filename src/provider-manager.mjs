@@ -263,7 +263,7 @@ function officialOpenAiResponsesBody(request={},toolManifest=null,promptCacheKey
   return body;
 }
 
-async function readOpenAiResponsesStream(source,{requestStartedAt=performance.now()}={}){
+async function readOpenAiResponsesStream(source,{requestStartedAt=performance.now(),signal=null,idleTimeoutMs=DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS}={}){
   if(!source||typeof source.getReader!=="function")throw new Error("OpenAI Responses stream body is unavailable.");
   const reader=source.getReader(),decoder=new TextDecoder();let buffer="",response=null,responseBytes=0,timeToFirstTokenMs=null;
   const consume=block=>{
@@ -281,7 +281,7 @@ async function readOpenAiResponsesStream(source,{requestStartedAt=performance.no
   };
   try{
     for(;;){
-      const {done,value}=await reader.read();if(done)break;
+      const {done,value}=await readProviderStreamChunk(reader,{signal,idleTimeoutMs,label:"OpenAI Responses stream"});if(done)break;
       responseBytes+=Number(value?.byteLength||0);buffer+=decoder.decode(value,{stream:true});
       const blocks=buffer.split(/\r?\n\r?\n/);buffer=blocks.pop()||"";for(const block of blocks)consume(block);
     }
@@ -292,7 +292,7 @@ async function readOpenAiResponsesStream(source,{requestStartedAt=performance.no
   return {response,responseBytes,timeToFirstTokenMs};
 }
 
-async function readOpenAiChatStream(source,{requestStartedAt=performance.now()}={}){
+async function readOpenAiChatStream(source,{requestStartedAt=performance.now(),signal=null,idleTimeoutMs=DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS}={}){
   if(!source||typeof source.getReader!=="function")throw new Error("OpenAI Chat stream body is unavailable.");
   const reader=source.getReader(),decoder=new TextDecoder();let buffer="",responseBytes=0,timeToFirstTokenMs=null,id="",model="",finishReason=null,usage=null,text="",role="assistant";
   const toolCalls=new Map();
@@ -322,7 +322,7 @@ async function readOpenAiChatStream(source,{requestStartedAt=performance.now()}=
   };
   try{
     for(;;){
-      const {done,value}=await reader.read();if(done)break;
+      const {done,value}=await readProviderStreamChunk(reader,{signal,idleTimeoutMs,label:"OpenAI Chat stream"});if(done)break;
       responseBytes+=Number(value?.byteLength||0);buffer+=decoder.decode(value,{stream:true});
       const blocks=buffer.split(/\r?\n\r?\n/);buffer=blocks.pop()||"";for(const block of blocks)consume(block);
     }
@@ -353,6 +353,30 @@ function normalizeProviderKey(value) {
 function providerRequestSignal(signal, timeoutMs = DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS) {
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+}
+
+function providerHeadersSignal(signal, timeoutMs = DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS) {
+  const controller=new AbortController(),duration=Math.max(1,Math.trunc(Number(timeoutMs)||DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS));
+  const timer=setTimeout(()=>controller.abort(new DOMException("Provider response headers timed out.","TimeoutError")),duration);timer.unref?.();
+  return {
+    signal:signal?AbortSignal.any([signal,controller.signal]):controller.signal,
+    release:()=>clearTimeout(timer),
+  };
+}
+
+async function readProviderStreamChunk(reader,{signal=null,idleTimeoutMs=DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS,label="Provider stream"}={}){
+  if(signal?.aborted)throw signal.reason instanceof Error?signal.reason:new DOMException("Aborted","AbortError");
+  const duration=Math.max(1,Math.trunc(Number(idleTimeoutMs)||DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS));
+  return await new Promise((resolve,reject)=>{
+    let settled=false,timer=null;
+    const cleanup=()=>{if(timer)clearTimeout(timer);signal?.removeEventListener?.("abort",onAbort)};
+    const finish=(fn,value)=>{if(settled)return;settled=true;cleanup();fn(value)};
+    const fail=error=>{if(settled)return;try{void Promise.resolve(reader.cancel?.(error)).catch(()=>{})}catch{}finish(reject,error)};
+    const onAbort=()=>fail(signal?.reason instanceof Error?signal.reason:new DOMException("Aborted","AbortError"));
+    timer=setTimeout(()=>fail(new DOMException(`${label} idle timeout exceeded.`,"TimeoutError")),duration);timer.unref?.();
+    signal?.addEventListener?.("abort",onAbort,{once:true});
+    Promise.resolve().then(()=>reader.read()).then(value=>finish(resolve,value),error=>finish(reject,error));
+  });
 }
 
 function remainingProviderRequestMs(deadlineAt){
@@ -628,19 +652,22 @@ export class ProviderManager {
       const requestBody = anthropicBody||chatToAnthropic(chatBody);
       if(provider.id==="anthropic"&&promptCaching===true)requestBody.cache_control={type:"ephemeral"};
       const endpoint=provider.baseUrl + "/messages",body=this.reusePreSerializedToolJson?stringifyProviderBody(requestBody):JSON.stringify(requestBody);onWire?.({endpoint,wireApi:"anthropic-messages",requestBytes:Buffer.byteLength(body,"utf8")});
-      const upstream = await this.fetchFn(endpoint, {
-        method: "POST",
-        headers: {
-          "x-api-key": key,
-          "anthropic-version": "2023-06-01",
-          "Content-Type": "application/json",
-          "Accept": requestBody.stream ? "text/event-stream, application/json" : "application/json",
-          "User-Agent": TREBELL_USER_AGENT,
-        },
-        body,
-        signal: providerRequestSignal(signal, this.requestTimeoutMs),
-      });
-      return await adaptAnthropicResponse(upstream, { stream: requestBody.stream, model: requestBody.model });
+      const headerGuard=requestBody.stream?providerHeadersSignal(signal,this.requestTimeoutMs):null;
+      try{
+        const upstream = await this.fetchFn(endpoint, {
+          method: "POST",
+          headers: {
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+            "Accept": requestBody.stream ? "text/event-stream, application/json" : "application/json",
+            "User-Agent": TREBELL_USER_AGENT,
+          },
+          body,
+          signal: headerGuard?.signal||providerRequestSignal(signal, this.requestTimeoutMs),
+        });
+        return await adaptAnthropicResponse(upstream, { stream: requestBody.stream, model: requestBody.model });
+      }finally{headerGuard?.release()}
     }
 
     const headers = provider.id === "agentrouter"
@@ -656,12 +683,15 @@ export class ProviderManager {
         };
 
     const endpoint=provider.baseUrl + "/chat/completions",body=this.reusePreSerializedToolJson?stringifyProviderBody(chatBody):JSON.stringify(chatBody);onWire?.({endpoint,wireApi:"openai-chat-completions",requestBytes:Buffer.byteLength(body,"utf8")});
-    return await this.fetchFn(endpoint, {
-      method: "POST",
-      headers,
-      body,
-      signal: providerRequestSignal(signal, this.requestTimeoutMs),
-    });
+    const headerGuard=chatBody.stream?providerHeadersSignal(signal,this.requestTimeoutMs):null;
+    try{
+      return await this.fetchFn(endpoint, {
+        method: "POST",
+        headers,
+        body,
+        signal: headerGuard?.signal||providerRequestSignal(signal, this.requestTimeoutMs),
+      });
+    }finally{headerGuard?.release()}
   }
 
   async forwardResponses(providerId, responsesBody, { signal, onWire, timeoutMs=this.requestTimeoutMs } = {}) {
@@ -673,22 +703,25 @@ export class ProviderManager {
     if (!key) throw new Error(`${provider.name} API key is not configured.`);
     const stream = Boolean(responsesBody?.stream);
     const endpoint=provider.baseUrl + "/responses",body=this.reusePreSerializedToolJson?stringifyProviderBody(responsesBody):JSON.stringify(responsesBody);onWire?.({endpoint,wireApi:"openai-responses",requestBytes:Buffer.byteLength(body,"utf8")});
-    return await this.fetchFn(endpoint, {
-      method: "POST",
-      headers: provider.id === "agentrouter"
-        ? agentRouterHeaders(key, {
-            accept: stream ? "text/event-stream, application/json" : "application/json",
-            environment:this.env,
-          })
-        : {
-            Authorization: `Bearer ${key}`,
-            "Content-Type": "application/json",
-            Accept: stream ? "text/event-stream, application/json" : "application/json",
-            "User-Agent": TREBELL_USER_AGENT,
-          },
-      body,
-      signal: providerRequestSignal(signal, timeoutMs),
-    });
+    const headerGuard=stream?providerHeadersSignal(signal,timeoutMs):null;
+    try{
+      return await this.fetchFn(endpoint, {
+        method: "POST",
+        headers: provider.id === "agentrouter"
+          ? agentRouterHeaders(key, {
+              accept: stream ? "text/event-stream, application/json" : "application/json",
+              environment:this.env,
+            })
+          : {
+              Authorization: `Bearer ${key}`,
+              "Content-Type": "application/json",
+              Accept: stream ? "text/event-stream, application/json" : "application/json",
+              "User-Agent": TREBELL_USER_AGENT,
+            },
+        body,
+        signal: headerGuard?.signal||providerRequestSignal(signal, timeoutMs),
+      });
+    }finally{headerGuard?.release()}
   }
 
   async turn(providerId, request={}, { signal, promptCaching=false, streamResponses=false, streamChat=false } = {}) {
@@ -738,8 +771,7 @@ export class ProviderManager {
       const transport=this.#openAiWebSocketTransport();
       if(transport){
         try{
-          const socketSignal=providerRequestSignal(signal,remainingProviderRequestMs(requestDeadlineAt));
-          const socketStarted=performance.now(),socketResult=await transport.request(responsesBody,{streamId:openAiWebSocketStreamId,signal:socketSignal}),result=normalizeResponsesTurnResponse(socketResult.response,provider.id,model);
+          const socketStarted=performance.now(),socketResult=await transport.request(responsesBody,{streamId:openAiWebSocketStreamId,signal,idleTimeoutMs:this.requestTimeoutMs}),result=normalizeResponsesTurnResponse(socketResult.response,provider.id,model);
           this.openAiResponsesWebSocketTransientFailures=0;
           this.openAiResponseContinuations.record(result.id,openAiContinuation,result);
           result.telemetry={
@@ -788,7 +820,7 @@ export class ProviderManager {
     const contentType=String(upstream.headers?.get?.("content-type")||"").toLowerCase();
     if(upstream.ok&&provider.id==="openai"&&streamResponses===true&&upstream.body&&contentType.includes("text/event-stream")){
       try{
-        const streamed=await readOpenAiResponsesStream(upstream.body,{requestStartedAt:started}),bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
+        const streamed=await readOpenAiResponsesStream(upstream.body,{requestStartedAt:started,signal,idleTimeoutMs:this.requestTimeoutMs}),bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
         const result=normalizeResponsesTurnResponse(streamed.response,provider.id,model);
         this.openAiResponseContinuations.record(result.id,openAiContinuation,result);
         result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null,promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(streamed.response),reasoningContext:normalizedOpenAiReasoningContext(streamed.response),persistentConnection:false,webSocketFallback:openAiWebSocketFallback,responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,parentId:openAiContinuation.parentId||null,fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused&&!continuationFallback),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts}:null};
@@ -800,7 +832,7 @@ export class ProviderManager {
     }
     if(upstream.ok&&streamChat===true&&upstream.body&&contentType.includes("text/event-stream")){
       try{
-        const streamed=await readOpenAiChatStream(upstream.body,{requestStartedAt:started}),bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
+        const streamed=await readOpenAiChatStream(upstream.body,{requestStartedAt:started,signal,idleTimeoutMs:this.requestTimeoutMs}),bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
         const result=normalizeChatTurnResponse(streamed.response,provider.id,model);
         result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-chat-completions",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null};
         return result;

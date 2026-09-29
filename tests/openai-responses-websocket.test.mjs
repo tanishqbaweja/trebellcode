@@ -32,6 +32,18 @@ test("Responses WebSocket cancellation resets the shared socket and next request
   const second=ws.request({model:"gpt-5.6",input:[]},{streamId:"second"});await new Promise(resolve=>setImmediate(resolve));assert.equal(FakeSocket.instances.length,2);FakeSocket.instances[1].server({type:"response.completed",stream_id:"second",response:{id:"resp-2",output:[]}});await second;ws.close();
 });
 
+test("Responses WebSocket idle timeout resets after progress instead of enforcing an absolute deadline",async()=>{
+  reset();const ws=new OpenAiResponsesWebSocket({apiKey:"secret",WebSocketClass:FakeSocket}),pending=ws.request({model:"gpt-5.6",input:[]},{streamId:"lane",idleTimeoutMs:100});await new Promise(resolve=>setImmediate(resolve));const socket=FakeSocket.instances[0],started=Date.now();
+  await new Promise(resolve=>setTimeout(resolve,60));socket.server({type:"response.output_text.delta",stream_id:"lane",delta:"still working"});
+  await new Promise(resolve=>setTimeout(resolve,60));socket.server({type:"response.completed",stream_id:"lane",response:{id:"resp-progress",status:"completed",output:[]}});
+  const result=await pending;assert.equal(result.response.id,"resp-progress");assert.ok(Date.now()-started>100,"total response time should be allowed to exceed the idle timeout while events keep arriving");ws.close();
+});
+
+test("Responses WebSocket idle timeout rejects a post-send lane with timeout telemetry",async()=>{
+  reset();const resets=[];const ws=new OpenAiResponsesWebSocket({apiKey:"secret",WebSocketClass:FakeSocket,onReset:event=>resets.push(event)}),pending=ws.request({model:"gpt-5.6",input:[]},{streamId:"lane",idleTimeoutMs:30});await new Promise(resolve=>setImmediate(resolve));
+  await assert.rejects(pending,error=>error?.name==="TimeoutError"&&error?.replaySafe===false&&error?.webSocketFailureKind==="timeout"&&error?.webSocketTelemetry?.requestBytes>0);assert.ok(resets.some(event=>event.reason==="timeout_failure"));ws.close();
+});
+
 test("Responses WebSocket transport failure rejects pending lanes and reports reset",async()=>{
   reset();const resets=[];const ws=new OpenAiResponsesWebSocket({apiKey:"secret",WebSocketClass:FakeSocket,onReset:event=>resets.push(event)}),pending=ws.request({model:"gpt-5.6",input:[]},{streamId:"lane"});await new Promise(resolve=>setImmediate(resolve));FakeSocket.instances[0].emit("error",new Error("boom"));await assert.rejects(pending,error=>error?.transportFailure===true);assert.ok(resets.some(event=>event.reason==="transport_failure"));ws.close();
 });

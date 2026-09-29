@@ -357,11 +357,32 @@ test("OpenAI WebSocket transient circuit breaker backs off repeated failures exp
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
-test("OpenAI WebSocket safe HTTPS fallback uses only the remaining end-to-end timeout budget",async()=>{
-  const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-deadline-"));let httpSignal=null,httpStarted=0;
+test("OpenAI WebSocket safe HTTPS fallback uses only the remaining response-header timeout budget",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-deadline-"));let httpStarted=0;
   try{
-    const manager=new ProviderManager({requestTimeoutMs:200,env:{TREBELL_HOME:root},openAiResponsesWebSocketFactory:()=>({request:async()=>{await new Promise(resolve=>setTimeout(resolve,120));const error=new Error("connect failed late");error.transportFailure=true;error.webSocketFailureKind="transport";error.replaySafe=true;error.retryable=false;throw error}}),fetchFn:async(_url,init={})=>{httpSignal=init.signal;httpStarted=Date.now();const body=JSON.parse(init.body||"{}");return Response.json({id:"resp-http",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"fallback"}]}],usage:{}})}});manager.setKey("openai","oa-key");
-    const result=await manager.turn("openai",{model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"native_deadline"}},{streamResponses:true});assert.equal(result.text,"fallback");assert.ok(httpSignal);const abortedAt=await new Promise(resolve=>{if(httpSignal.aborted)return resolve(Date.now());httpSignal.addEventListener("abort",()=>resolve(Date.now()),{once:true})});assert.ok(abortedAt-httpStarted<185,"fallback received a fresh timeout instead of the remaining request budget");
+    const manager=new ProviderManager({requestTimeoutMs:200,env:{TREBELL_HOME:root},openAiResponsesWebSocketFactory:()=>({request:async()=>{await new Promise(resolve=>setTimeout(resolve,120));const error=new Error("connect failed late");error.transportFailure=true;error.webSocketFailureKind="transport";error.replaySafe=true;error.retryable=false;throw error}}),fetchFn:async(_url,init={})=>{httpStarted=Date.now();await new Promise((resolve,reject)=>{const abort=()=>reject(init.signal.reason);if(init.signal.aborted)return abort();init.signal.addEventListener("abort",abort,{once:true})});throw new Error("unreachable")}});manager.setKey("openai","oa-key");
+    await assert.rejects(manager.turn("openai",{model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"native_deadline"}},{streamResponses:true}),error=>error?.name==="TimeoutError");assert.ok(Date.now()-httpStarted<185,"fallback received a fresh header timeout instead of the remaining request budget");
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("OpenAI HTTPS streaming treats the provider timeout as inactivity after response headers",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-stream-progress-"));const encoder=new TextEncoder();let fetchSignal=null;
+  try{
+    const manager=new ProviderManager({requestTimeoutMs:40,env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{
+      fetchSignal=init.signal;let controller=null;
+      const stream=new ReadableStream({start(value){controller=value;setTimeout(()=>controller.enqueue(encoder.encode('data: {"type":"response.output_text.delta","delta":"working"}\n\n')),25);setTimeout(()=>{controller.enqueue(encoder.encode('data: {"type":"response.completed","response":{"id":"resp-long","model":"gpt-5.6","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}],"usage":{}}}\n\n'));controller.close()},55)}});
+      init.signal?.addEventListener?.("abort",()=>{try{controller.error(init.signal.reason)}catch{}},{once:true});
+      return new Response(stream,{status:200,headers:{"content-type":"text/event-stream"}});
+    }});manager.setKey("openai","oa-key");const started=Date.now();
+    const result=await manager.turn("openai",{model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[]},{streamResponses:true});assert.equal(result.text,"done");assert.ok(Date.now()-started>40,"stream should outlive the original absolute timeout when progress continues");assert.equal(fetchSignal.aborted,false);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("OpenAI HTTPS streaming still times out when the response body makes no progress",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-stream-idle-"));
+  try{
+    const manager=new ProviderManager({requestTimeoutMs:25,env:{TREBELL_HOME:root},fetchFn:async()=>new Response(new ReadableStream({start(){}}),{status:200,headers:{"content-type":"text/event-stream"}})});manager.setKey("openai","oa-key");
+    await assert.rejects(manager.turn("openai",{model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[]},{streamResponses:true}),error=>error?.name==="TimeoutError"&&error?.telemetry?.streaming===true);
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
@@ -438,7 +459,7 @@ test("OpenAI WebSocket invalid tool-output state retries once over HTTPS with fu
 test("OpenAI WebSocket timeout is caller-retryable without blind in-turn replay and disables later socket attempts",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-timeout-"));let factoryCalls=0,fetchCalls=0,closeCalls=0;
   try{
-    const manager=new ProviderManager({requestTimeoutMs:25,env:{TREBELL_HOME:root},openAiResponsesWebSocketFactory:()=>{factoryCalls++;return {close:()=>{closeCalls++},request:async(_body,{signal})=>await new Promise((resolve,reject)=>{const fail=()=>reject(signal.reason);if(signal.aborted)return fail();signal.addEventListener("abort",fail,{once:true})})}},fetchFn:async(_url,init={})=>{fetchCalls++;const body=JSON.parse(init.body||"{}");return Response.json({id:"resp-http",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"fallback"}]}],usage:{}})}});manager.setKey("openai","oa-key");
+    const manager=new ProviderManager({requestTimeoutMs:25,env:{TREBELL_HOME:root},openAiResponsesWebSocketFactory:()=>{factoryCalls++;return {close:()=>{closeCalls++},request:async(_body,{idleTimeoutMs})=>{await new Promise(resolve=>setTimeout(resolve,idleTimeoutMs));const error=new DOMException("idle","TimeoutError");error.replaySafe=false;error.retryable=false;error.webSocketFailureKind="timeout";error.webSocketTelemetry={requestBytes:50,responseBytes:10,timeToFirstTokenMs:null};throw error}}},fetchFn:async(_url,init={})=>{fetchCalls++;const body=JSON.parse(init.body||"{}");return Response.json({id:"resp-http",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"fallback"}]}],usage:{}})}});manager.setKey("openai","oa-key");
     const request={model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"native_timeout"}};
     await assert.rejects(manager.turn("openai",request,{streamResponses:true}),error=>error?.name==="TimeoutError"&&error?.retryable===true&&error?.telemetry?.webSocketFallback?.retried===false);assert.equal(factoryCalls,1);assert.equal(fetchCalls,0);assert.equal(closeCalls,1);
     const second=await manager.turn("openai",request,{streamResponses:true});assert.equal(second.text,"fallback");assert.equal(factoryCalls,1);assert.equal(fetchCalls,1);
