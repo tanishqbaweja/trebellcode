@@ -33,6 +33,22 @@ const MIN_ZOOM_FACTOR=0.7;
 const MAX_ZOOM_FACTOR=2.5;
 const ZOOM_STEP=0.1;
 
+function liveWindowWebContents(win){
+  try{
+    if(!win||win.isDestroyed())return null;
+    const contents=win.webContents;
+    if(!contents||contents.isDestroyed())return null;
+    return contents;
+  }catch{return null}
+}
+
+function disposeAgentBrowser({destroy=false}={}){
+  const browser=agentBrowser;
+  if(agentBrowser===browser)agentBrowser=null;
+  if(!browser)return;
+  try{if(!browser.isDestroyed())destroy?browser.destroy():browser.close()}catch{}
+}
+
 function configureUpdater(){
   if(updaterController)return updaterController.configure();
   updaterController=createUpdaterController({
@@ -40,7 +56,7 @@ function configureUpdater(){
     onState:state=>{try{if(windowRef&&!windowRef.isDestroyed())windowRef.webContents.send("desktop:update:state",state)}catch{}},
     beforeInstall:async()=>{
       quitting=true;
-      try{if(agentBrowser&&!agentBrowser.isDestroyed())agentBrowser.destroy()}catch{}
+      disposeAgentBrowser({destroy:true});
       try{tray?.destroy();tray=null}catch{}
       try{if(registeredSnapshotShortcut)globalShortcut.unregister(registeredSnapshotShortcut);registeredSnapshotShortcut=null}catch{}
       const activeGui=gui;gui=null;await Promise.resolve(activeGui?.close?.()).catch(()=>{});
@@ -331,44 +347,51 @@ async function importBrowserProfile(payload={}){
 
 async function ensureAgentBrowser({show=false}={}){
   const hiddenValidation=process.env.TREBELL_TEST_HIDDEN==="1";
-  if(agentBrowser&&!agentBrowser.isDestroyed()){
-    if(show&&!hiddenValidation){agentBrowser.show();agentBrowser.focus();}
-    return agentBrowser;
+  const existing=agentBrowser;
+  if(liveWindowWebContents(existing)){
+    if(show&&!hiddenValidation){existing.show();existing.focus();}
+    return existing;
   }
-  agentBrowser=new BrowserWindow({
+  const browser=new BrowserWindow({
     width:1280,height:860,show:show&&!hiddenValidation,title:"Trebell Agent Browser",
     icon:appIcon(),
     backgroundColor:"#0a0d14",autoHideMenuBar:true,
     webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,partition:"persist:trebell-agent-browser"},
   });
+  agentBrowser=browser;
   resetBrowserRuntime();
-  agentBrowser.removeMenu();
-  const pushBounded=(key,value)=>{const list=agentBrowserRuntime[key];if(!Array.isArray(list))return;list.push(value);if(list.length>60)list.splice(0,list.length-60)};
-  agentBrowser.webContents.on("console-message",(_event,...args)=>{
+  const contents=browser.webContents;
+  browser.removeMenu();
+  const pushBounded=(key,value)=>{if(agentBrowser!==browser)return;const list=agentBrowserRuntime[key];if(!Array.isArray(list))return;list.push(value);if(list.length>60)list.splice(0,list.length-60)};
+  contents.on("console-message",(_event,...args)=>{
     const details=args.length===1&&args[0]&&typeof args[0]==="object"?args[0]:{level:args[0],message:args[1],lineNumber:args[2],sourceId:args[3]};
     const level=String(details?.level||"").toLowerCase();if(!["error","3"].includes(level))return;
     pushBounded("consoleErrors",{level:"error",message:String(details?.message||"").slice(0,1000),source:String(details?.sourceId||"").slice(0,500),line:Number(details?.lineNumber)||null,at:Date.now()});
   });
-  const webRequest=agentBrowser.webContents.session.webRequest;
+  const webRequest=contents.session.webRequest;
   webRequest.onErrorOccurred(details=>pushBounded("networkFailures",{url:String(details?.url||"").slice(0,1000),method:String(details?.method||""),error:String(details?.error||"").slice(0,500),resourceType:String(details?.resourceType||""),at:Date.now()}));
   webRequest.onCompleted(details=>{const status=Number(details?.statusCode)||0;if(status>=400)pushBounded("networkFailures",{url:String(details?.url||"").slice(0,1000),method:String(details?.method||""),statusCode:status,resourceType:String(details?.resourceType||""),at:Date.now()})});
-  agentBrowser.webContents.setWindowOpenHandler(({url})=>{
-    agentBrowser.loadURL(url).catch(()=>{});
+  contents.setWindowOpenHandler(({url})=>{
+    if(agentBrowser===browser&&!browser.isDestroyed())browser.loadURL(url).catch(()=>{});
     return {action:"deny"};
   });
   const publishState=()=>{
-    if(!windowRef||windowRef.isDestroyed()||!agentBrowser||agentBrowser.isDestroyed())return;
-    windowRef.webContents.send("browser:state",browserState());
+    if(agentBrowser!==browser)return;
+    const targetContents=liveWindowWebContents(windowRef);if(!targetContents)return;
+    try{targetContents.send("browser:state",browserState(browser))}catch{}
   };
-  for(const event of ["did-navigate","did-navigate-in-page","did-start-loading","did-stop-loading","page-title-updated"])agentBrowser.webContents.on(event,publishState);
-  agentBrowser.on("closed",()=>{agentBrowser=null;});
-  return agentBrowser;
+  for(const event of ["did-navigate","did-navigate-in-page","did-start-loading","did-stop-loading","page-title-updated"])contents.on(event,publishState);
+  browser.on("closed",()=>{if(agentBrowser===browser)agentBrowser=null;});
+  return browser;
 }
 
-function browserState(){
-  if(!agentBrowser||agentBrowser.isDestroyed())return {open:false,url:"",title:"",canGoBack:false,canGoForward:false,loading:false,width:null,height:null};
-  const history=agentBrowser.webContents.navigationHistory;const [width,height]=agentBrowser.getContentSize();
-  return {open:true,url:agentBrowser.webContents.getURL(),title:agentBrowser.webContents.getTitle(),canGoBack:history.canGoBack(),canGoForward:history.canGoForward(),loading:agentBrowser.webContents.isLoading(),width,height};
+function browserState(browser=agentBrowser){
+  const contents=liveWindowWebContents(browser);
+  if(!contents)return {open:false,url:"",title:"",canGoBack:false,canGoForward:false,loading:false,width:null,height:null};
+  try{
+    const history=contents.navigationHistory;const [width,height]=browser.getContentSize();
+    return {open:true,url:contents.getURL(),title:contents.getTitle(),canGoBack:history.canGoBack(),canGoForward:history.canGoForward(),loading:contents.isLoading(),width,height};
+  }catch{return {open:false,url:"",title:"",canGoBack:false,canGoForward:false,loading:false,width:null,height:null}}
 }
 
 function resetBrowserRuntime(){agentBrowserRuntime={startedAt:Date.now(),consoleErrors:[],networkFailures:[],viewports:[]}}
@@ -879,7 +902,7 @@ if(!lock){
   ipcMain.handle("browser:importCookies",async(_event,payload)=>importBrowserCookies(payload));
   ipcMain.handle("browser:importSources",async()=>browserImportSources());
   ipcMain.handle("browser:importProfile",async(_event,payload)=>importBrowserProfile(payload||{}));
-  ipcMain.handle("browser:close",async()=>{if(agentBrowser&&!agentBrowser.isDestroyed())agentBrowser.close();agentBrowser=null;return {ok:true};});
+  ipcMain.handle("browser:close",async()=>{disposeAgentBrowser();return {ok:true};});
 
   app.whenReady().then(async()=>{
     if(process.platform==="win32")app.setAppUserModelId("com.trebell.code");
@@ -908,7 +931,7 @@ if(!lock){
     if(quitting) return;
     event.preventDefault();
     quitting=true;
-    try{if(agentBrowser&&!agentBrowser.isDestroyed())agentBrowser.destroy()}catch{}
+    disposeAgentBrowser({destroy:true});
     try{tray?.destroy();tray=null}catch{}
     try{if(registeredSnapshotShortcut)globalShortcut.unregister(registeredSnapshotShortcut);registeredSnapshotShortcut=null}catch{}
     Promise.resolve(gui?.close?.())

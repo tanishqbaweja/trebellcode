@@ -45,6 +45,17 @@ test("desktop isolated browser reports bounded runtime failures and responsive v
     assert.match(history.atTwo.url,/\/two$/);assert.equal(history.atTwo.canGoBack,true);
     assert.match(history.back.url,/\/one$/);assert.equal(history.back.canGoForward,true);
     assert.match(history.forward.url,/\/two$/);assert.equal(history.reloaded.url,history.forward.url);assert.equal(history.reloaded.title,"History two");
+    for(let iteration=0;iteration<12;iteration++){
+      await window.evaluate(async url=>{
+        await Promise.allSettled([
+          window.trebellDesktop.browser.navigate(url),
+          window.trebellDesktop.browser.state(),
+          window.trebellDesktop.browser.close(),
+        ]);
+      },`http://127.0.0.1:${fixturePort}/one?close-race=${iteration}`);
+      const reopened=await window.evaluate(async url=>{await window.trebellDesktop.browser.navigate(url);return window.trebellDesktop.browser.state()},`http://127.0.0.1:${fixturePort}/clean?reopen=${iteration}`);
+      assert.equal(reopened.open,true);assert.match(reopened.url,/\/clean\?reopen=/);
+    }
   }finally{
     if(app){
       const child=app.process(),closing=app.close().catch(()=>{});await Promise.race([closing,new Promise(resolve=>setTimeout(resolve,3000))]);
