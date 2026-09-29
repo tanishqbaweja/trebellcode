@@ -6,6 +6,7 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import { loadEnvFile } from "node:process";
 import { fileURLToPath } from "node:url";
 import { waitForJobProcessDrain } from "./terminal-bench-process-drain.mjs";
+import { jobsForPairReport } from "./terminal-bench-pair-report.mjs";
 import { readJobVerifierSummary } from "./terminal-bench-verifier-summary.mjs";
 
 if(!process.argv.includes("--live"))throw new Error("Refusing to run paid/live Terminal-Bench without --live.");
@@ -217,7 +218,7 @@ try{
     ...(nativePinnedNodeTarballPath?{nativePinnedNodeVersion:NATIVE_PINNED_NODE_VERSION,nativePinnedNodeTarballSha256}:{}),
     ...(codexPinnedTarballPath?{codexPinnedVersion:CODEX_PINNED_VERSION,codexPinnedTarballSha256,codexPinnedAdapterSha256}:{}),
     comparisonLanes:lanes.map(lane=>lane.label),nativeBundleSha256,nativeAdapterSha256,
-    complete,activeHarness,activeJobName,updatedAt:new Date().toISOString(),jobs,
+    complete,activeHarness,activeJobName,updatedAt:new Date().toISOString(),jobs:jobsForPairReport(jobs,{complete}),
   });
   const persistReport=async state=>writeFile(reportPath,JSON.stringify(reportSnapshot(state),null,2)+"\n","utf8");
   for(const lane of lanes){

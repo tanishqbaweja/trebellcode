@@ -74,6 +74,8 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/await persistReport\(\{complete:false,activeHarness:null,activeJobName:null\}\)/);
   assert.match(source,/waitForJobProcessDrain\(jobName,\{/);
   assert.match(source,/readJobVerifierSummary/);
+  assert.match(source,/jobsForPairReport/);
+  assert.match(source,/jobs:jobsForPairReport\(jobs,\{complete\}\)/);
   assert.match(source,/for\(const job of jobs\)job\.verifierChecks=await readJobVerifierSummary/);
   assert.match(source,/TREBELL_TERMINAL_BENCH_LANE_DRAIN_MS/);
   assert.match(source,/if\(drainError\)throw new Error\(drainError\)/);
