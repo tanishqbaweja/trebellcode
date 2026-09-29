@@ -15,6 +15,8 @@ const model=String(values.model||"gpt-6-luna").trim();
 const effort=String(values.effort||"max").trim();
 const setupTimeoutMultiplier=Number(values["agent-setup-timeout-multiplier"]||process.env.TREBELL_TERMINAL_BENCH_SETUP_TIMEOUT_MULTIPLIER||3);
 if(!Number.isFinite(setupTimeoutMultiplier)||setupTimeoutMultiplier<1)throw new Error("Terminal-Bench setup timeout multiplier must be >= 1.");
+const agentTimeoutMultiplier=Number(values["agent-timeout-multiplier"]||process.env.TREBELL_TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER||1);
+if(!Number.isFinite(agentTimeoutMultiplier)||agentTimeoutMultiplier<=0)throw new Error("Terminal-Bench agent timeout multiplier must be > 0.");
 const output=resolve(root,String(values.output||(".harbor-"+agent)));
 const jobName=String(values["job-name"]||(agent+"-"+task.split("/").pop())).trim();
 
@@ -35,6 +37,7 @@ const args=[
   "--ak","reasoning_effort="+effort,
 ];
 if(Number.isFinite(setupTimeoutMultiplier)&&setupTimeoutMultiplier>1)args.push("--agent-setup-timeout-multiplier",String(setupTimeoutMultiplier));
+if(agentTimeoutMultiplier!==1)args.push("--agent-timeout-multiplier",String(agentTimeoutMultiplier));
 if(agent==="native"&&values.probe==="true")args.push("--ak","live_probe=true");
 args.push("-n","1","-o",output,"--job-name",jobName,"-y");
 

@@ -18,6 +18,11 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/lockIdentity\(current\)!==lockIdentity\(existing\)/);
   assert.match(source,/current\?\.lockId===lockId/);
   assert.match(source,/SETUP_TIMEOUT_MULTIPLIER/);
+  assert.match(source,/AGENT_TIMEOUT_MULTIPLIER/);
+  assert.match(source,/TREBELL_TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER\|\|1/);
+  assert.match(source,/Terminal-Bench agent timeout multiplier must be > 0/);
+  assert.match(source,/agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER/);
+  assert.match(source,/--agent-timeout-multiplier/);
   assert.match(source,/agentExecutionMs:elapsedMs\(trial\?\.agent_execution\)/);
   assert.match(source,/taskChecksum:trial\?\.task_checksum/);
   assert.match(source,/sourceGitProvenance/);
@@ -56,6 +61,9 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/delete harnessEnv\.OPENAI_API_KEY/);
   assert.match(source,/recoverTrialEvidence/);
   assert.match(source,/recoveredFromTrialFiles/);
+  assert.match(source,/recoverNativeEventEvidence/);
+  assert.match(source,/recoveredFromNativeEvents/);
+  assert.match(source,/recoveredNative\?\.inputTokens/);
   assert.match(source,/comparisonLanes:lanes\.map/);
   assert.match(source,/label:`codex-\$\{authMode\}`/);
   assert.match(source,/CODEX_AUTH_MODES\.includes\("oauth"\)&&codexLaneSelected\("oauth"\)/);
@@ -191,6 +199,8 @@ test("Trebell Native Harbor runtime marker is written as root after agent runtim
 test("Terminal-Bench single runner uses an absolute output path and the same safer setup-timeout default",async()=>{
   const source=await readFile(new URL("../scripts/run-terminal-bench.mjs",import.meta.url),"utf8");
   assert.match(source,/TREBELL_TERMINAL_BENCH_SETUP_TIMEOUT_MULTIPLIER\|\|3/);
+  assert.match(source,/TREBELL_TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER\|\|1/);
   assert.match(source,/const output=resolve\(root,/);
   assert.match(source,/--agent-setup-timeout-multiplier/);
+  assert.match(source,/--agent-timeout-multiplier/);
 });

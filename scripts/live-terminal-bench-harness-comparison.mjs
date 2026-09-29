@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { waitForJobProcessDrain } from "./terminal-bench-process-drain.mjs";
 import { jobsForPairReport } from "./terminal-bench-pair-report.mjs";
 import { readJobVerifierSummary } from "./terminal-bench-verifier-summary.mjs";
+import { recoverNativeEventEvidence, selectNativeMetric } from "./terminal-bench-native-evidence.mjs";
 
 if(!process.argv.includes("--live"))throw new Error("Refusing to run paid/live Terminal-Bench without --live.");
 
@@ -22,6 +23,9 @@ const TASK=String(taskArg?.slice("--task=".length)||process.env.TREBELL_TERMINAL
 const setupTimeoutArg=process.argv.find(arg=>arg.startsWith("--agent-setup-timeout-multiplier="));
 const SETUP_TIMEOUT_MULTIPLIER=Number(setupTimeoutArg?.slice("--agent-setup-timeout-multiplier=".length)||process.env.TREBELL_TERMINAL_BENCH_SETUP_TIMEOUT_MULTIPLIER||3);
 if(!Number.isFinite(SETUP_TIMEOUT_MULTIPLIER)||SETUP_TIMEOUT_MULTIPLIER<1)throw new Error("Terminal-Bench setup timeout multiplier must be >= 1.");
+const agentTimeoutArg=process.argv.find(arg=>arg.startsWith("--agent-timeout-multiplier="));
+const AGENT_TIMEOUT_MULTIPLIER=Number(agentTimeoutArg?.slice("--agent-timeout-multiplier=".length)||process.env.TREBELL_TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER||1);
+if(!Number.isFinite(AGENT_TIMEOUT_MULTIPLIER)||AGENT_TIMEOUT_MULTIPLIER<=0)throw new Error("Terminal-Bench agent timeout multiplier must be > 0.");
 const onlyArg=process.argv.find(arg=>arg.startsWith("--only="));
 const only=new Set(String(onlyArg?.slice("--only=".length)||process.env.TREBELL_TERMINAL_BENCH_ONLY||"").split(",").map(value=>value.trim().toLowerCase()).filter(Boolean));
 const codexAuthArg=process.argv.find(arg=>arg.startsWith("--codex-auth="));
@@ -212,7 +216,7 @@ try{
     ...CODEX_AUTH_MODES.map(authMode=>({label:`codex-${authMode}`,harness:"codex",authMode})),
   ];
   const reportSnapshot=({complete=false,activeHarness=null,activeJobName=null}={})=>({
-    pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,
+    pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER,
     sameModel:true,sameReasoningEffort:true,sequential:true,codexAuthMode:CODEX_AUTH_MODE,codexInstallMode:CODEX_INSTALL_MODE,nativeReasoningContext:NATIVE_REASONING_CONTEXT,
     ...sourceProvenance,
     ...(nativePinnedNodeTarballPath?{nativePinnedNodeVersion:NATIVE_PINNED_NODE_VERSION,nativePinnedNodeTarballSha256}:{}),
@@ -228,6 +232,7 @@ try{
     const jobName=`tb4-${label}-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`;
     const args=["run","-d",DATASET,"-i",TASK,"-a",agent,"-m",`openai/${MODEL}`,"--ak",`reasoning_effort=${EFFORT}`,"-n","1","-o",outputRoot,"--job-name",jobName,"-y"];
     if(SETUP_TIMEOUT_MULTIPLIER>1)args.push("--agent-setup-timeout-multiplier",String(SETUP_TIMEOUT_MULTIPLIER));
+    if(AGENT_TIMEOUT_MULTIPLIER!==1)args.push("--agent-timeout-multiplier",String(AGENT_TIMEOUT_MULTIPLIER));
     const harnessEnv={...sharedEnv};
     if(harness==="native"){
       if(NATIVE_REASONING_CONTEXT)harnessEnv.TREBELL_OPENAI_REASONING_CONTEXT=NATIVE_REASONING_CONTEXT;
@@ -248,23 +253,34 @@ try{
     let result=null;
     try{result=JSON.parse(await readFile(join(outputRoot,jobName,"result.json"),"utf8"))}catch{}
     const recordedTrial=await trialResult(outputRoot,jobName),trial=recordedTrial||await recoverTrialEvidence(outputRoot,jobName);
-    const inputTokens=result?.stats?.n_input_tokens??trial?.agent_result?.n_input_tokens??null;
-    const cachedTokens=result?.stats?.n_cache_tokens??trial?.agent_result?.n_cache_tokens??null;
+    const recoveredNative=harness==="native"?await recoverNativeEventEvidence(outputRoot,jobName):null;
+    const inputMetric=harness==="native"
+      ?selectNativeMetric(result?.stats?.n_input_tokens,trial?.agent_result?.n_input_tokens,recoveredNative?.inputTokens)
+      :{value:result?.stats?.n_input_tokens??trial?.agent_result?.n_input_tokens??null,recovered:false};
+    const cachedMetric=harness==="native"
+      ?selectNativeMetric(result?.stats?.n_cache_tokens,trial?.agent_result?.n_cache_tokens,recoveredNative?.cachedTokens)
+      :{value:result?.stats?.n_cache_tokens??trial?.agent_result?.n_cache_tokens??null,recovered:false};
+    const outputMetric=harness==="native"
+      ?selectNativeMetric(result?.stats?.n_output_tokens,trial?.agent_result?.n_output_tokens,recoveredNative?.outputTokens)
+      :{value:result?.stats?.n_output_tokens??trial?.agent_result?.n_output_tokens??null,recovered:false};
+    const inputTokens=inputMetric.value,cachedTokens=cachedMetric.value;
     const uncachedInputTokens=inputTokens==null||cachedTokens==null?null:Math.max(0,Number(inputTokens)-Number(cachedTokens));
     const cacheHitPercent=inputTokens==null||Number(inputTokens)<=0||cachedTokens==null?null:Number(((Number(cachedTokens)/Number(inputTokens))*100).toFixed(2));
     const trebellNative=trial?.agent_result?.metadata?.trebell_native||null;
+    const recoveredFromNativeEvents=Boolean(recoveredNative&&(inputMetric.recovered||cachedMetric.recovered||outputMetric.recovered||!trebellNative));
     jobs.push({
       harness,label,agent,jobName,runError,authMode,
       completed:Number(result?.stats?.n_completed_trials||0),errors:Number(result?.stats?.n_errored_trials||0),
       inputTokens,cachedTokens,uncachedInputTokens,cacheHitPercent,
-      outputTokens:result?.stats?.n_output_tokens??trial?.agent_result?.n_output_tokens??null,
+      outputTokens:outputMetric.value,
       costUsd:result?.stats?.cost_usd??trial?.agent_result?.cost_usd??null,
       reward:trial?.verifier_result?.rewards?.reward??null,taskChecksum:trial?.task_checksum??null,
       agentVersion:trial?.agent_info?.version??null,
       setupMs:elapsedMs(trial?.agent_setup),agentExecutionMs:elapsedMs(trial?.agent_execution),verifierMs:elapsedMs(trial?.verifier),
-      ...(trebellNative?{modelTurns:trebellNative.model_turns??null,toolCalls:trebellNative.tool_calls??null,providerRequests:trebellNative.provider_requests??null,reasoningContext:trebellNative.reasoning_context??null,effectiveReasoningContexts:trebellNative.effective_reasoning_contexts??[],reasoningOutputTokens:trebellNative.reasoning_output_tokens??null,cacheWriteInputTokens:trebellNative.cache_write_input_tokens??null,cacheCarryover:trebellNative.cache_carryover??null,strategy:trebellNative.strategy??null,budgets:trebellNative.budgets??null}:{}),
+      ...(trebellNative?{modelTurns:trebellNative.model_turns??recoveredNative?.modelTurns??null,toolCalls:trebellNative.tool_calls??recoveredNative?.toolCalls??null,providerRequests:trebellNative.provider_requests??null,reasoningContext:trebellNative.reasoning_context??null,effectiveReasoningContexts:trebellNative.effective_reasoning_contexts??[],reasoningOutputTokens:trebellNative.reasoning_output_tokens??recoveredNative?.reasoningOutputTokens??null,cacheWriteInputTokens:trebellNative.cache_write_input_tokens??recoveredNative?.cacheWriteInputTokens??null,cacheCarryover:trebellNative.cache_carryover??null,strategy:trebellNative.strategy??null,budgets:trebellNative.budgets??null}:recoveredNative?{modelTurns:recoveredNative.modelTurns,toolCalls:recoveredNative.toolCalls,reasoningOutputTokens:recoveredNative.reasoningOutputTokens,cacheWriteInputTokens:recoveredNative.cacheWriteInputTokens}:{}),
       exceptionType:trial?.exception_info?.exception_type??null,exceptionMessage:trial?.exception_info?.exception_message??null,
       recoveredFromTrialFiles:trial?.recovered_from_trial_files===true,
+      recoveredFromNativeEvents,
       evals:result?.stats?.evals||{},
     });
     await persistReport({complete:false,activeHarness:null,activeJobName:null});
