@@ -119,7 +119,10 @@ test("Terminal-Bench Unix ps parsing only returns processes containing the exact
 
 test("detached process launcher records a harmless child result outside the caller",async t=>{
   const dir=await mkdtemp(join(tmpdir(),"trebell-detached-"));
-  t.after(()=>rm(dir,{recursive:true,force:true}));
+  // On Windows the detached wrapper can remain alive for a few milliseconds
+  // after it has persisted the final status, keeping its cwd locked. Let
+  // fs.rm retry that expected handoff instead of turning it into a suite flake.
+  t.after(()=>rm(dir,{recursive:true,force:true,maxRetries:20,retryDelay:50}));
   const descriptorPath=join(dir,"descriptor.json"),statusPath=join(dir,"status.json"),stdoutPath=join(dir,"stdout.log"),stderrPath=join(dir,"stderr.log");
   await writeDetachedDescriptor(descriptorPath,{
     command:process.execPath,
