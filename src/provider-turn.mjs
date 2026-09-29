@@ -155,7 +155,7 @@ function responseToolOutput(content,{cacheBreakpoint=false}={}){
   return output;
 }
 
-export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,reasoningEffort=null,parallelToolCalls=true}={}, {preserveInstructionOrder=false,flattenToolCallNames=false,toolResultCacheBreakpoints=false,inputStartMessageIndex=0}={}){
+export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="auto",maxOutputTokens=null,temperature=null,reasoningEffort=null,reasoningContext=null,parallelToolCalls=true}={}, {preserveInstructionOrder=false,flattenToolCallNames=false,toolResultCacheBreakpoints=false,inputStartMessageIndex=0}={}){
   const instructions=[],input=[];let instructionPrefixOpen=true;
   const sourceMessages=Array.isArray(messages)?messages:[],inputStart=Math.max(0,Math.trunc(Number(inputStartMessageIndex)||0));
   for(let messageIndex=0;messageIndex<sourceMessages.length;messageIndex++){
@@ -195,7 +195,11 @@ export function providerTurnToResponses({model,messages=[],tools=[],toolChoice="
   }
   if(maxOutputTokens!=null&&Number.isFinite(Number(maxOutputTokens)))result.max_output_tokens=Math.max(1,Math.trunc(Number(maxOutputTokens)));
   if(temperature!=null&&Number.isFinite(Number(temperature)))result.temperature=Number(temperature);
-  if(reasoningEffort!=null&&String(reasoningEffort).trim())result.reasoning={effort:String(reasoningEffort).trim()};
+  const reasoning={};
+  if(reasoningEffort!=null&&String(reasoningEffort).trim())reasoning.effort=String(reasoningEffort).trim();
+  const normalizedReasoningContext=String(reasoningContext||"").trim().toLowerCase();
+  if(["auto","current_turn","all_turns"].includes(normalizedReasoningContext))reasoning.context=normalizedReasoningContext;
+  if(Object.keys(reasoning).length)result.reasoning=reasoning;
   return result;
 }
 

@@ -229,6 +229,9 @@ class TrebellNativeAgent(BaseInstalledAgent):
                 else {}
             ),
         }
+        reasoning_context = os.environ.get("TREBELL_OPENAI_REASONING_CONTEXT", "").strip()
+        if reasoning_context:
+            env["TREBELL_OPENAI_REASONING_CONTEXT"] = reasoning_context
         await self.exec_as_agent(
             environment,
             command=(
@@ -279,6 +282,8 @@ class TrebellNativeAgent(BaseInstalledAgent):
                 "tool_calls": int(metrics.get("toolCalls") or 0),
                 "provider_requests": int(metrics.get("providerRequests") or 0),
                 "reasoning_effort": metrics.get("reasoningEffort"),
+                "reasoning_context": metrics.get("reasoningContext"),
+                "effective_reasoning_contexts": metrics.get("effectiveReasoningContexts") or [],
                 "reasoning_output_tokens": int(
                     usage.get("reasoningOutputTokens") or 0
                 ),

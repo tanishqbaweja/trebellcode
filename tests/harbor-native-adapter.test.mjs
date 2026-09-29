@@ -22,6 +22,9 @@ test("Harbor Native adapter stages the OpenAI key instead of passing it through 
   assert.ok(source.includes('if [ "$runtime" = "bun" ]; then runtime_cmd=bun'));
   assert.ok(source.includes('metrics_path.read_text(encoding="utf-8")'));
   assert.ok(source.includes('"cache_carryover": metrics.get("cacheCarryover") or {}'));
+  assert.ok(source.includes('TREBELL_OPENAI_REASONING_CONTEXT'));
+  assert.ok(source.includes('"reasoning_context": metrics.get("reasoningContext")'));
+  assert.ok(source.includes('"effective_reasoning_contexts": metrics.get("effectiveReasoningContexts") or []'));
 });
 
 test("Harbor Native runner keeps durable output retrieval available and avoids a smaller private task budget",async()=>{
@@ -30,4 +33,6 @@ test("Harbor Native runner keeps durable output retrieval available and avoids a
   assert.match(source,/TREBELL_HARBOR_MAX_MODEL_TURNS\)\|\|500/);
   assert.match(source,/TREBELL_HARBOR_MAX_TOOL_CALLS\)\|\|5000/);
   assert.match(source,/maxWallTimeMs=.*null/);
+  assert.match(source,/TREBELL_OPENAI_REASONING_CONTEXT/);
+  assert.match(source,/effectiveReasoningContexts/);
 });

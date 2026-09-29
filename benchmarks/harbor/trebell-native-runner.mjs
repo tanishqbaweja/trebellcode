@@ -34,6 +34,8 @@ const root=process.cwd();
 const provider="openai";
 const model=String(process.env.TREBELL_MODEL||"gpt-6-luna").trim();
 const reasoningEffort=String(process.env.TREBELL_REASONING_EFFORT||"max").trim().toLowerCase();
+const reasoningContext=String(process.env.TREBELL_OPENAI_REASONING_CONTEXT||"").trim().toLowerCase()||null;
+if(reasoningContext&&!new Set(["auto","current_turn","all_turns"]).has(reasoningContext))throw new Error("TREBELL_OPENAI_REASONING_CONTEXT must be auto, current_turn, or all_turns.");
 const metricsPath=String(process.env.TREBELL_METRICS_PATH||"/logs/agent/trebell-native-metrics.json");
 const eventsPath=String(process.env.TREBELL_EVENTS_PATH||"/logs/agent/trebell-native-events.jsonl");
 const probeOnly=String(process.env.TREBELL_HARBOR_PROBE||"").trim()==="1";
@@ -119,9 +121,9 @@ const session=new NativeAgentSession({
   initialMessages:[{role:"system",content:nativeSystemPrompt({tools,permissionMode:"full",projectless:false})}],
   providerTurn:async request=>{
     if(probeOnly){
-      const wire=providerTurnToResponses({...request,model},{flattenToolCallNames:true,preserveInstructionOrder:true});
+      const wire=providerTurnToResponses({...request,model,reasoningContext},{flattenToolCallNames:true,preserveInstructionOrder:true});
       const probe={
-        model,reasoningEffort,
+        model,reasoningEffort,reasoningContext,
         messageCount:request.messages?.length||0,
         toolNamespaceCount:request.tools?.length||0,
         messageBytes:Buffer.byteLength(JSON.stringify(request.messages||[]),"utf8"),
@@ -135,7 +137,7 @@ const session=new NativeAgentSession({
       return {id:"probe",provider,model,text:"probe complete",toolCalls:[],usage:{inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0}};
     }
     const requestStarted=performance.now();
-    const response=await manager.turn(provider,{...request,provider,model},{signal:request.signal,streamResponses:true});
+    const response=await manager.turn(provider,{...request,provider,model,reasoningContext},{signal:request.signal,streamResponses:true});
     requests.push({elapsedMs:Math.round(performance.now()-requestStarted),usage:response.usage||{},telemetry:response.telemetry||{}});
     if(liveProbe){
       console.log("TREBELL_HARBOR_LIVE_PROBE "+JSON.stringify({
@@ -181,6 +183,8 @@ const metrics={
   version:VERSION,
   model,
   reasoningEffort,
+  reasoningContext,
+  effectiveReasoningContexts:[...new Set(requests.map(item=>String(item?.telemetry?.reasoningContext||"").trim()).filter(Boolean))],
   budgets:{maxModelTurns,maxToolCalls,maxWallTimeMs},
   elapsedMs,
   modelTurns:Number(raw.modelTurns)||Number(error?.nativeModelTurns)||requests.length,

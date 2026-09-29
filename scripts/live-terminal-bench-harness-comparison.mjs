@@ -6,6 +6,7 @@ import { delimiter, dirname, join, resolve } from "node:path";
 import { loadEnvFile } from "node:process";
 import { fileURLToPath } from "node:url";
 import { waitForJobProcessDrain } from "./terminal-bench-process-drain.mjs";
+import { readJobVerifierSummary } from "./terminal-bench-verifier-summary.mjs";
 
 if(!process.argv.includes("--live"))throw new Error("Refusing to run paid/live Terminal-Bench without --live.");
 
@@ -26,6 +27,9 @@ const codexAuthArg=process.argv.find(arg=>arg.startsWith("--codex-auth="));
 const CODEX_AUTH_MODE=String(codexAuthArg?.slice("--codex-auth=".length)||process.env.TREBELL_TERMINAL_BENCH_CODEX_AUTH||"both").trim().toLowerCase();
 if(!["api","oauth","both"].includes(CODEX_AUTH_MODE))throw new Error("Terminal-Bench Codex auth mode must be api, oauth, or both.");
 const CODEX_AUTH_MODES=CODEX_AUTH_MODE==="both"?["api","oauth"]:[CODEX_AUTH_MODE];
+const nativeReasoningContextArg=process.argv.find(arg=>arg.startsWith("--native-reasoning-context="));
+const NATIVE_REASONING_CONTEXT=String(nativeReasoningContextArg?.slice("--native-reasoning-context=".length)||process.env.TREBELL_OPENAI_REASONING_CONTEXT||"").trim().toLowerCase()||null;
+if(NATIVE_REASONING_CONTEXT&&!["auto","current_turn","all_turns"].includes(NATIVE_REASONING_CONTEXT))throw new Error("Native OpenAI reasoning context must be auto, current_turn, or all_turns.");
 const codexInstallArg=process.argv.find(arg=>arg.startsWith("--codex-install="));
 const CODEX_INSTALL_MODE=String(codexInstallArg?.slice("--codex-install=".length)||process.env.TREBELL_TERMINAL_BENCH_CODEX_INSTALL||"pinned").trim().toLowerCase();
 if(!["stock","pinned"].includes(CODEX_INSTALL_MODE))throw new Error("Terminal-Bench Codex install mode must be stock or pinned.");
@@ -208,7 +212,7 @@ try{
   ];
   const reportSnapshot=({complete=false,activeHarness=null,activeJobName=null}={})=>({
     pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,
-    sameModel:true,sameReasoningEffort:true,sequential:true,codexAuthMode:CODEX_AUTH_MODE,codexInstallMode:CODEX_INSTALL_MODE,
+    sameModel:true,sameReasoningEffort:true,sequential:true,codexAuthMode:CODEX_AUTH_MODE,codexInstallMode:CODEX_INSTALL_MODE,nativeReasoningContext:NATIVE_REASONING_CONTEXT,
     ...sourceProvenance,
     ...(nativePinnedNodeTarballPath?{nativePinnedNodeVersion:NATIVE_PINNED_NODE_VERSION,nativePinnedNodeTarballSha256}:{}),
     ...(codexPinnedTarballPath?{codexPinnedVersion:CODEX_PINNED_VERSION,codexPinnedTarballSha256,codexPinnedAdapterSha256}:{}),
@@ -224,6 +228,10 @@ try{
     const args=["run","-d",DATASET,"-i",TASK,"-a",agent,"-m",`openai/${MODEL}`,"--ak",`reasoning_effort=${EFFORT}`,"-n","1","-o",outputRoot,"--job-name",jobName,"-y"];
     if(SETUP_TIMEOUT_MULTIPLIER>1)args.push("--agent-setup-timeout-multiplier",String(SETUP_TIMEOUT_MULTIPLIER));
     const harnessEnv={...sharedEnv};
+    if(harness==="native"){
+      if(NATIVE_REASONING_CONTEXT)harnessEnv.TREBELL_OPENAI_REASONING_CONTEXT=NATIVE_REASONING_CONTEXT;
+      else delete harnessEnv.TREBELL_OPENAI_REASONING_CONTEXT;
+    }
     if(harness==="codex"){
       delete harnessEnv.CODEX_AUTH_JSON_PATH;
       delete harnessEnv.CODEX_FORCE_AUTH_JSON;
@@ -253,7 +261,7 @@ try{
       reward:trial?.verifier_result?.rewards?.reward??null,taskChecksum:trial?.task_checksum??null,
       agentVersion:trial?.agent_info?.version??null,
       setupMs:elapsedMs(trial?.agent_setup),agentExecutionMs:elapsedMs(trial?.agent_execution),verifierMs:elapsedMs(trial?.verifier),
-      ...(trebellNative?{modelTurns:trebellNative.model_turns??null,toolCalls:trebellNative.tool_calls??null,providerRequests:trebellNative.provider_requests??null,reasoningOutputTokens:trebellNative.reasoning_output_tokens??null,cacheWriteInputTokens:trebellNative.cache_write_input_tokens??null,cacheCarryover:trebellNative.cache_carryover??null,budgets:trebellNative.budgets??null}:{}),
+      ...(trebellNative?{modelTurns:trebellNative.model_turns??null,toolCalls:trebellNative.tool_calls??null,providerRequests:trebellNative.provider_requests??null,reasoningContext:trebellNative.reasoning_context??null,effectiveReasoningContexts:trebellNative.effective_reasoning_contexts??[],reasoningOutputTokens:trebellNative.reasoning_output_tokens??null,cacheWriteInputTokens:trebellNative.cache_write_input_tokens??null,cacheCarryover:trebellNative.cache_carryover??null,budgets:trebellNative.budgets??null}:{}),
       exceptionType:trial?.exception_info?.exception_type??null,exceptionMessage:trial?.exception_info?.exception_message??null,
       recoveredFromTrialFiles:trial?.recovered_from_trial_files===true,
       evals:result?.stats?.evals||{},
@@ -261,6 +269,10 @@ try{
     await persistReport({complete:false,activeHarness:null,activeJobName:null});
     if(drainError)throw new Error(drainError);
   }
+  // Keep verifier internals sealed while comparison lanes are still running.
+  // Only after every lane has finished do we read generic CTRF pass/fail totals
+  // and attach them to the final report for correctness-first comparison.
+  for(const job of jobs)job.verifierChecks=await readJobVerifierSummary(outputRoot,job.jobName);
   const report=reportSnapshot({complete:true,activeHarness:null,activeJobName:null});await writeFile(reportPath,JSON.stringify(report,null,2)+"\n","utf8");
   console.log("TREBELL_TERMINAL_BENCH_REPORT "+JSON.stringify({...report,reportPath},null,2));
   if(jobs.some(job=>job.runError||job.errors>0||job.completed<1))process.exitCode=1;

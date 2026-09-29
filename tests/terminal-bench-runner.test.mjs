@@ -36,6 +36,9 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/Terminal-Bench Codex auth mode must be api, oauth, or both/);
   assert.match(source,/CODEX_AUTH_MODE==="both"\?\["api","oauth"\]/);
   assert.match(source,/codexAuthMode:CODEX_AUTH_MODE/);
+  assert.match(source,/--native-reasoning-context=/);
+  assert.match(source,/nativeReasoningContext:NATIVE_REASONING_CONTEXT/);
+  assert.match(source,/harnessEnv\.TREBELL_OPENAI_REASONING_CONTEXT=NATIVE_REASONING_CONTEXT/);
   assert.match(source,/TREBELL_TERMINAL_BENCH_CODEX_INSTALL/);
   assert.match(source,/TREBELL_TERMINAL_BENCH_CODEX_INSTALL\|\|"pinned"/);
   assert.match(source,/Terminal-Bench Codex install mode must be stock or pinned/);
@@ -63,11 +66,14 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/delete harnessEnv\.CODEX_FORCE_AUTH_JSON/);
   assert.match(source,/harness,label,agent,jobName,runError,authMode/);
   assert.match(source,/cacheCarryover:trebellNative\.cache_carryover/);
+  assert.match(source,/reasoningContext:trebellNative\.reasoning_context/);
   assert.match(source,/agentVersion:trial\?\.agent_info\?\.version/);
   assert.match(source,/complete,activeHarness,activeJobName/);
   assert.match(source,/await persistReport\(\{complete:false,activeHarness:label,activeJobName:jobName\}\)/);
   assert.match(source,/await persistReport\(\{complete:false,activeHarness:null,activeJobName:null\}\)/);
   assert.match(source,/waitForJobProcessDrain\(jobName,\{/);
+  assert.match(source,/readJobVerifierSummary/);
+  assert.match(source,/for\(const job of jobs\)job\.verifierChecks=await readJobVerifierSummary/);
   assert.match(source,/TREBELL_TERMINAL_BENCH_LANE_DRAIN_MS/);
   assert.match(source,/if\(drainError\)throw new Error\(drainError\)/);
   assert.match(source,/writeFile\(reportPath,JSON\.stringify\(report,null,2\)/);

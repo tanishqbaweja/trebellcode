@@ -72,6 +72,15 @@ test("provider turn maps explicit reasoning effort onto Chat and Responses wire 
   assert.deepEqual(responses.reasoning,{effort:"max"});
 });
 
+test("Responses can select which prior reasoning turns are rendered into the next sample",()=>{
+  const current=providerTurnToResponses({model:"gpt-6-luna",messages:[{role:"user",content:"hello"}],reasoningEffort:"max",reasoningContext:"current_turn"});
+  assert.deepEqual(current.reasoning,{effort:"max",context:"current_turn"});
+  const contextOnly=providerTurnToResponses({model:"gpt-6-luna",messages:[{role:"user",content:"hello"}],reasoningContext:"all_turns"});
+  assert.deepEqual(contextOnly.reasoning,{context:"all_turns"});
+  const invalid=providerTurnToResponses({model:"gpt-6-luna",messages:[{role:"user",content:"hello"}],reasoningContext:"everything"});
+  assert.equal(Object.prototype.hasOwnProperty.call(invalid,"reasoning"),false);
+});
+
 test("Chat conversion can reuse canonical message conversions without changing the request body",()=>{
   const messages=[{role:"system",content:"stable"},{role:"user",content:[{type:"text",text:"hello"}]},{role:"assistant",content:"",toolCalls:[{id:"c1",namespace:"trebell_repo",name:"search_code",arguments:{query:"Session"}}]},{role:"tool",toolCallId:"c1",content:"result"}],request={model:"chat-model",messages,tools:[]},cache=new WeakMap(),baseline=providerTurnToChat(request),candidate=providerTurnToChat(request,{messageCache:cache});
   assert.deepEqual(candidate,baseline);assert.equal(JSON.stringify(candidate),JSON.stringify(baseline));
