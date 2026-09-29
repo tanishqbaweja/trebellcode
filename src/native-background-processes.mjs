@@ -23,6 +23,19 @@ function cursorOffset(cursor){
 
 function processLabel(command,args=[]){return [String(command||""),...(args||[]).map(String)].join(" ").trim().slice(0,1000)}
 
+function signalLocalProcessTree(child,{platform=process.platform,force=false}={}){
+  const pid=Number(child?.pid);if(!Number.isInteger(pid)||pid<=0){try{child?.kill?.(force?"SIGKILL":"SIGTERM")}catch{};return}
+  if(platform==="win32"){
+    try{
+      const args=["/pid",String(pid),"/t",...(force?["/f"]:[])],killer=spawn("taskkill",args,{windowsHide:true,stdio:"ignore"});
+      killer.once("error",()=>{try{child?.kill?.(force?"SIGKILL":"SIGTERM")}catch{}});killer.unref?.();return;
+    }catch{}
+  }else{
+    try{process.kill(-pid,force?"SIGKILL":"SIGTERM");return}catch{}
+  }
+  try{child?.kill?.(force?"SIGKILL":"SIGTERM")}catch{}
+}
+
 export class NativeBackgroundProcessManager{
   constructor({environments=null,environment=process.env,platform=process.platform,onEvent=null,maxOutputBytes=DEFAULT_OUTPUT_BYTES}={}){
     this.environments=environments;this.environment=environment;this.platform=platform;this.onEvent=onEvent;this.maxOutputBytes=boundedBytes(maxOutputBytes);this.processes=new Map();
@@ -50,9 +63,9 @@ export class NativeBackgroundProcessManager{
     const safeNames=Array.isArray(environmentNames)&&environmentNames.length?environmentNames:runtimeEnvironmentKeys("native");
     let child;
     if(profile&&this.environments){
-      child=this.environments.spawnArgv(profile.id,{command:executable,args:commandArgs,cwd,stdio:["ignore","pipe","pipe"],environmentNames:safeNames,environment:profile.type==="local"?buildRuntimeEnvironment("native",{parent:this.environment,platform:this.platform}):null});
+      child=this.environments.spawnArgv(profile.id,{command:executable,args:commandArgs,cwd,stdio:["ignore","pipe","pipe"],environmentNames:safeNames,environment:profile.type==="local"?buildRuntimeEnvironment("native",{parent:this.environment,platform:this.platform}):null,detached:profile.type==="local"&&this.platform!=="win32"});
     }else{
-      child=spawn(executable,commandArgs,{cwd,env:buildRuntimeEnvironment("native",{parent:this.environment,platform:this.platform}),windowsHide:true,stdio:["ignore","pipe","pipe"]});
+      child=spawn(executable,commandArgs,{cwd,env:buildRuntimeEnvironment("native",{parent:this.environment,platform:this.platform}),windowsHide:true,stdio:["ignore","pipe","pipe"],detached:this.platform!=="win32"});
     }
     const id=randomUUID(),record={id,threadId:String(threadId),command:executable,args:commandArgs,label:processLabel(executable,commandArgs),cwd:String(cwd||""),environmentId:profile?.id||null,environmentType:profile?.type||"local",remote,child,osPid:child.pid??null,running:true,exitCode:null,signal:null,stdout:"",stderr:"",truncated:false,maxOutputBytes:boundedBytes(maxOutputBytes,this.maxOutputBytes),createdAt:Date.now(),updatedAt:Date.now()};
     this.processes.set(id,record);child.stdout?.on("data",chunk=>this.#append(record,"stdout",chunk));child.stderr?.on("data",chunk=>this.#append(record,"stderr",chunk));
@@ -75,8 +88,10 @@ export class NativeBackgroundProcessManager{
     const child=record.child;
     await new Promise(resolve=>{
       let settled=false,forceTimer=null,doneTimer=null;const done=()=>{if(settled)return;settled=true;if(forceTimer)clearTimeout(forceTimer);if(doneTimer)clearTimeout(doneTimer);resolve()};
-      child.once("close",done);try{child.kill("SIGTERM")}catch{done();return}
-      forceTimer=setTimeout(()=>{if(record.running)try{child.kill("SIGKILL")}catch{}},750);forceTimer.unref?.();
+      child.once("close",done);
+      if(record.remote){try{child.kill("SIGTERM")}catch{done();return}}
+      else signalLocalProcessTree(child,{platform:this.platform,force:false});
+      forceTimer=setTimeout(()=>{if(!record.running)return;if(record.remote){try{child.kill("SIGKILL")}catch{}}else signalLocalProcessTree(child,{platform:this.platform,force:true})},750);forceTimer.unref?.();
       doneTimer=setTimeout(done,2000);doneTimer.unref?.();
     });
     if(record.running)throw new Error("Native background process did not stop within 2 seconds");

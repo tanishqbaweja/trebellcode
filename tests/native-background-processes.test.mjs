@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { mkdtemp,mkdir,rm } from "node:fs/promises";
+import { mkdtemp,mkdir,readFile,rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createNativeBuiltins } from "../src/native-builtins.mjs";
@@ -38,4 +38,27 @@ test("Native background processes preserve remote argv isolation metadata instea
     assert.equal(started.environmentType,"ssh");assert.equal(Object.prototype.hasOwnProperty.call(started,"osPid"),false);assert.equal(launch.id,"ssh-1");assert.deepEqual(launch.options.environmentNames,["PATH","HOME"]);assert.equal(launch.options.environment,null);
     await manager.terminate("thread-r",started.processId);
   }finally{await manager.closeAll()}
+});
+
+test("Native background process stop terminates local descendants",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-bg-tree-")),pidPath=join(root,"descendant.pid"),manager=new NativeBackgroundProcessManager();
+  try{
+    const childScript="setInterval(()=>{},1000)";
+    const parentScript=[
+      "const {spawn}=require('node:child_process');",
+      "const fs=require('node:fs');",
+      `const child=spawn(process.execPath,['-e',${JSON.stringify(childScript)}],{stdio:'inherit'});`,
+      `fs.writeFileSync(${JSON.stringify(pidPath)},String(child.pid));`,
+      "setInterval(()=>{},1000);",
+    ].join("");
+    const started=manager.start({threadId:"thread-tree",command:process.execPath,args:["-e",parentScript],cwd:root});
+    const descendantPid=await waitFor(async()=>{try{return Number(await readFile(pidPath,"utf8"))||null}catch{return null}});
+    await manager.terminate("thread-tree",started.processId);
+    let descendantAlive=true;
+    for(let attempt=0;attempt<20&&descendantAlive;attempt++){
+      try{process.kill(descendantPid,0);await new Promise(resolve=>setTimeout(resolve,50))}
+      catch(error){if(error?.code==="ESRCH")descendantAlive=false;else throw error}
+    }
+    assert.equal(descendantAlive,false,"stopping a Native background process must not leave descendants running");
+  }finally{await manager.closeAll();await rm(root,{recursive:true,force:true})}
 });

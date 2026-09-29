@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { EnvironmentManager, remoteEnvironmentCommand, remoteTransportEnvironment } from "../src/environment-manager.mjs";
@@ -220,4 +220,50 @@ test("remote stdin argv forwards its environment allowlist to the spawned sessio
   };
   const result=await manager.executeArgvInput("ssh",{command:"glab",args:["api","projects"],input:"{}",cwd:"/srv/app",environmentNames:["PATH","HOME","GITLAB_TOKEN"]});
   assert.equal(result.exitCode,0);assert.deepEqual(launch.environmentNames,["PATH","HOME","GITLAB_TOKEN"]);assert.equal(launch.command,"glab");
+});
+
+test("bounded local environment command timeout kills descendants that inherit stdio",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-env-tree-")),pidPath=join(root,"descendant.pid");
+  try{
+    const profile={id:"local",name:"Local",type:"local",cwd:root},manager=new EnvironmentManager({state:stateFor([profile])});
+    const childScript="setInterval(()=>{},1000)";
+    const parentScript=[
+      "const {spawn}=require('node:child_process');",
+      "const fs=require('node:fs');",
+      `const child=spawn(process.execPath,['-e',${JSON.stringify(childScript)}],{stdio:'inherit'});`,
+      `fs.writeFileSync(${JSON.stringify(pidPath)},String(child.pid));`,
+      "setInterval(()=>{},1000);",
+    ].join("");
+    const started=Date.now(),result=await manager.executeArgv("local",{command:process.execPath,args:["-e",parentScript],cwd:root,timeoutMs:1000});
+    assert.equal(result.timedOut,true);assert.ok(Date.now()-started<5000);
+    const descendantPid=Number(await readFile(pidPath,"utf8"));let alive=true;
+    for(let attempt=0;attempt<20&&alive;attempt++){
+      try{process.kill(descendantPid,0);await new Promise(resolve=>setTimeout(resolve,50))}
+      catch(error){if(error?.code==="ESRCH")alive=false;else throw error}
+    }
+    assert.equal(alive,false,"timed-out environment command must not leave descendants running");
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("bounded stdin environment command timeout kills descendants that inherit stdio",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-env-stdin-tree-")),pidPath=join(root,"descendant.pid");
+  try{
+    const profile={id:"local",name:"Local",type:"local",cwd:root},manager=new EnvironmentManager({state:stateFor([profile])});
+    const childScript="setInterval(()=>{},1000)";
+    const parentScript=[
+      "const {spawn}=require('node:child_process');",
+      "const fs=require('node:fs');",
+      `const child=spawn(process.execPath,['-e',${JSON.stringify(childScript)}],{stdio:'inherit'});`,
+      `fs.writeFileSync(${JSON.stringify(pidPath)},String(child.pid));`,
+      "process.stdin.resume();setInterval(()=>{},1000);",
+    ].join("");
+    const started=Date.now(),result=await manager.executeArgvInput("local",{command:process.execPath,args:["-e",parentScript],input:"x",cwd:root,timeoutMs:1000});
+    assert.equal(result.timedOut,true);assert.ok(Date.now()-started<5000);
+    const descendantPid=Number(await readFile(pidPath,"utf8"));let alive=true;
+    for(let attempt=0;attempt<20&&alive;attempt++){
+      try{process.kill(descendantPid,0);await new Promise(resolve=>setTimeout(resolve,50))}
+      catch(error){if(error?.code==="ESRCH")alive=false;else throw error}
+    }
+    assert.equal(alive,false,"timed-out stdin environment command must not leave descendants running");
+  }finally{await rm(root,{recursive:true,force:true})}
 });

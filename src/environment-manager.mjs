@@ -78,6 +78,21 @@ function remoteShellCommand(command,working=""){
   return REMOTE_TOOL_PATH_SCRIPT+"\n"+run;
 }
 
+function terminateHostProcessTree(child,{force=true,processGroup=false}={}){
+  const pid=Number(child?.pid),signal=force?"SIGKILL":"SIGTERM";
+  if(!Number.isInteger(pid)||pid<=0){try{child?.kill?.(signal)}catch{};return}
+  if(process.platform==="win32"){
+    try{
+      const args=["/pid",String(pid),"/t",...(force?["/f"]:[])],killer=spawn("taskkill",args,{windowsHide:true,stdio:"ignore"});
+      const fallback=()=>{try{child?.kill?.(signal)}catch{}};
+      killer.once("error",fallback);killer.once("close",fallback);killer.unref?.();return;
+    }catch{}
+  }else if(processGroup){
+    try{process.kill(-pid,signal);return}catch{}
+  }
+  try{child?.kill?.(signal)}catch{}
+}
+
 function publishedTheme(filename,raw){
   const id=String(filename||"").replace(/\.json$/i,"");
   if(!/^[a-z0-9][a-z0-9._-]{0,79}$/i.test(id)||RESERVED_THEME_IDS.has(id.toLowerCase()))return null;
@@ -102,7 +117,9 @@ async function runProcess(command,args=[],{
     let stdout="";
     let stderr="";
     let timedOut=false;
-    const child=spawn(command,args,{cwd,env,windowsHide:true,stdio:["ignore","pipe","pipe"]});
+    let terminationTimer=null;
+    const processGroup=process.platform!=="win32";
+    const child=spawn(command,args,{cwd,env,windowsHide:true,stdio:["ignore","pipe","pipe"],detached:processGroup});
     const append=(current,chunk)=>{
       if(Buffer.byteLength(current,"utf8")>=maxOutput) return current;
       const next=current+String(chunk);
@@ -112,18 +129,25 @@ async function runProcess(command,args=[],{
     };
     child.stdout?.on("data",chunk=>{stdout=append(stdout,chunk)});
     child.stderr?.on("data",chunk=>{stderr=append(stderr,chunk)});
+    const finish=(error,code=null,signal=null)=>{
+      if(settled)return;
+      settled=true;clearTimeout(timer);if(terminationTimer)clearTimeout(terminationTimer);
+      error?reject(error):resolve({exitCode:code??1,signal,timedOut,stdout:cleanText(stdout),stderr:cleanText(stderr)});
+    };
     const timer=setTimeout(()=>{
-      timedOut=true;
-      try{child.kill("SIGKILL")}catch{}
+      if(settled)return;timedOut=true;terminateHostProcessTree(child,{force:true,processGroup});
+      terminationTimer=setTimeout(()=>{
+        try{child.stdout?.destroy?.()}catch{}
+        try{child.stderr?.destroy?.()}catch{}
+        finish(null,null,"SIGKILL");
+      },2000);
+      terminationTimer.unref?.();
     },Math.max(1000,Number(timeoutMs)||15000));
     child.once("error",error=>{
-      if(settled)return;
-      settled=true;clearTimeout(timer);reject(error);
+      finish(error);
     });
     child.once("close",(code,signal)=>{
-      if(settled)return;
-      settled=true;clearTimeout(timer);
-      resolve({exitCode:code,signal,timedOut,stdout:cleanText(stdout),stderr:cleanText(stderr)});
+      finish(null,code,signal);
     });
   });
 }
@@ -444,7 +468,8 @@ export class EnvironmentManager {
   async executeArgvInput(id,{command,args=[],input="",cwd=null,timeoutMs=30000,maxOutput=MAX_OUTPUT,environmentNames=null,environment=null}={}){
     const profile=this.get(id);
     if(!profile)throw new Error("Environment profile was not found");
-    const child=this.spawnArgv(id,{command:String(command||""),args:Array.isArray(args)?args:[],cwd,stdio:["pipe","pipe","pipe"],environmentNames,environment});
+    const processGroup=process.platform!=="win32";
+    const child=this.spawnArgv(id,{command:String(command||""),args:Array.isArray(args)?args:[],cwd,stdio:["pipe","pipe","pipe"],environmentNames,environment,detached:processGroup});
     const limit=Math.max(1024,Math.min(16*1024*1024,Number(maxOutput)||MAX_OUTPUT));
     const append=(current,chunk)=>{
       if(Buffer.byteLength(current,"utf8")>=limit)return current;
@@ -452,15 +477,23 @@ export class EnvironmentManager {
       return Buffer.byteLength(next,"utf8")>limit?Buffer.from(next,"utf8").subarray(0,limit).toString("utf8"):next;
     };
     return new Promise((resolveInput,reject)=>{
-      let stdout="",stderr="",settled=false,timedOut=false;
+      let stdout="",stderr="",settled=false,timedOut=false,terminationTimer=null;
       child.stdout?.on("data",chunk=>{stdout=append(stdout,chunk)});
       child.stderr?.on("data",chunk=>{stderr=append(stderr,chunk)});
-      const timer=setTimeout(()=>{timedOut=true;try{child.kill("SIGKILL")}catch{}},Math.min(300000,Math.max(1000,Number(timeoutMs)||30000)));
       const finish=(error,code=null,signal=null)=>{
-        if(settled)return;settled=true;clearTimeout(timer);
+        if(settled)return;settled=true;clearTimeout(timer);if(terminationTimer)clearTimeout(terminationTimer);
         if(error)reject(error);
         else resolveInput({exitCode:code??1,signal,stdout,stderr,timedOut,profile:{id:profile.id,name:profile.name,type:profile.type}});
       };
+      const timer=setTimeout(()=>{
+        if(settled)return;timedOut=true;terminateHostProcessTree(child,{force:true,processGroup});
+        terminationTimer=setTimeout(()=>{
+          try{child.stdout?.destroy?.()}catch{}
+          try{child.stderr?.destroy?.()}catch{}
+          finish(null,null,"SIGKILL");
+        },2000);
+        terminationTimer.unref?.();
+      },Math.min(300000,Math.max(1000,Number(timeoutMs)||30000)));
       child.once("error",error=>finish(error));
       child.once("close",(code,signal)=>finish(null,code,signal));
       child.stdin?.end(Buffer.from(String(input??""),"utf8"));
