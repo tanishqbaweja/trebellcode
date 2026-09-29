@@ -115,6 +115,7 @@
     "bench:native-vs-codex:live": "node --env-file-if-exists=.env scripts/live-native-codex-coding-benchmark.mjs --live",
     "bench:native-vs-codex:planner:live": "node --env-file-if-exists=.env scripts/live-native-codex-coding-benchmark.mjs --live --task=planner",
     "bench:terminal:bundle": "node scripts/build-harbor-native-agent.mjs",
+    "bench:terminal:health": "node scripts/terminal-bench-event-health.mjs",
     "bench:terminal:tb4:live": "node --env-file-if-exists=.env scripts/live-terminal-bench-harness-comparison.mjs --live",
     "bench:terminal:run": "node --env-file-if-exists=.env scripts/run-terminal-bench.mjs --live",
     "bench:terminal:summarize": "node scripts/summarize-harbor-native-run.mjs",
