@@ -8,15 +8,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { lingeringJobProcesses, parsePsProcesses, waitForJobProcessDrain } from "../scripts/terminal-bench-process-drain.mjs";
 import { launchDetachedDescriptor, readDetachedStatus, writeDetachedDescriptor } from "../scripts/detached-process.mjs";
+import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath } from "../scripts/terminal-bench-pair-lock.mjs";
 
 test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable trial metrics",async()=>{
   const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
-  assert.match(source,/terminal-bench-pair\.lock/);
-  assert.match(source,/Refusing to contaminate benchmark timing/);
-  assert.match(source,/randomUUID/);
-  assert.match(source,/lockId/);
-  assert.match(source,/lockIdentity\(current\)!==lockIdentity\(existing\)/);
-  assert.match(source,/current\?\.lockId===lockId/);
+  assert.match(source,/sharedTerminalBenchLockPath/);
+  assert.match(source,/rev-parse","--git-common-dir/);
+  assert.match(source,/acquireTerminalBenchPairLock/);
   assert.match(source,/SETUP_TIMEOUT_MULTIPLIER/);
   assert.match(source,/AGENT_TIMEOUT_MULTIPLIER/);
   assert.match(source,/TREBELL_TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER\|\|1/);
@@ -64,10 +62,13 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/recoverNativeEventEvidence/);
   assert.match(source,/recoveredFromNativeEvents/);
   assert.match(source,/recoveredNative\?\.inputTokens/);
-  assert.match(source,/comparisonLanes:lanes\.map/);
+  assert.match(source,/comparisonLanes:selectedLanes\.map/);
+  assert.match(source,/configuredComparisonLanes:lanes\.map/);
+  assert.match(source,/Refusing inherited TREBELL_TERMINAL_BENCH_ONLY/);
+  assert.match(source,/for\(const lane of selectedLanes\)/);
   assert.match(source,/label:`codex-\$\{authMode\}`/);
-  assert.match(source,/CODEX_AUTH_MODES\.includes\("oauth"\)&&codexLaneSelected\("oauth"\)/);
-  assert.match(source,/CODEX_AUTH_MODES\.includes\("api"\)&&codexLaneSelected\("api"\)/);
+  assert.match(source,/selectedLanes\.some\(lane=>lane\.label==="codex-oauth"\)/);
+  assert.match(source,/selectedLanes\.some\(lane=>lane\.label==="codex-api"\)/);
   assert.match(source,/OPENAI_API_KEY is required for the Codex API benchmark lane/);
   assert.match(source,/CODEX_FORCE_AUTH_JSON="1"/);
   assert.match(source,/delete harnessEnv\.CODEX_AUTH_JSON_PATH/);
@@ -88,6 +89,20 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/TREBELL_TERMINAL_BENCH_LANE_DRAIN_MS/);
   assert.match(source,/if\(drainError\)throw new Error\(drainError\)/);
   assert.match(source,/writeFile\(reportPath,JSON\.stringify\(report,null,2\)/);
+});
+
+test("Terminal-Bench pair lock is shared across worktrees that use one Git common directory",async t=>{
+  const dir=await mkdtemp(join(tmpdir(),"trebell-global-pair-lock-"));
+  t.after(()=>rm(dir,{recursive:true,force:true}));
+  const sourceRoot=join(dir,"source"),worktreeA=join(dir,"worktree-a"),worktreeB=join(dir,"worktree-b"),gitCommon=join(sourceRoot,".git");
+  const lockA=sharedTerminalBenchLockPath(worktreeA,gitCommon),lockB=sharedTerminalBenchLockPath(worktreeB,gitCommon);
+  assert.equal(lockA,lockB);
+  const release=await acquireTerminalBenchPairLock({lockPath:lockA,task:"terminal-bench/example",model:"gpt-test",effort:"max",pid:111,processAliveFn:pid=>pid===111});
+  await assert.rejects(
+    acquireTerminalBenchPairLock({lockPath:lockB,task:"terminal-bench/other",model:"gpt-test",effort:"max",pid:222,processAliveFn:pid=>pid===111}),
+    /Another Terminal-Bench paired run is active/,
+  );
+  await release();
 });
 
 test("Terminal-Bench lane drain detects a real descendant token and clears after exit",async t=>{

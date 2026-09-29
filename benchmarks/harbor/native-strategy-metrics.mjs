@@ -6,6 +6,7 @@ export function createNativeStrategyMetrics(){
     implementationPressureEvents:0,
     convergenceCallsBlocked:0,
     selfAdmittedVerificationGaps:0,
+    selfAdmittedCompletionGaps:0,
   };
 }
 
@@ -18,5 +19,6 @@ export function observeNativeStrategyEvent(metrics,event,atMs=null){
   else if(name==="native.progress.implementation_pressure")target.implementationPressureEvents=Number(target.implementationPressureEvents||0)+1;
   else if(name==="native.progress.convergence_call_blocked")target.convergenceCallsBlocked=Number(target.convergenceCallsBlocked||0)+1;
   else if(name==="native.verification.self_admitted_gap")target.selfAdmittedVerificationGaps=Number(target.selfAdmittedVerificationGaps||0)+1;
+  else if(name==="native.completion.self_admitted_gap")target.selfAdmittedCompletionGaps=Number(target.selfAdmittedCompletionGaps||0)+1;
   return target;
 }

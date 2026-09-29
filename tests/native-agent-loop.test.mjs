@@ -2503,6 +2503,29 @@ test("native self-admitted verification-gap recovery is one-shot when local veri
   assert.equal(events.filter(event=>event.name==="native.verification.self_admitted_gap").length,1);
 });
 
+test("native recovers from a self-admitted incomplete required deliverable",async()=>{
+  const requests=[],events=[];let providerCalls=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Recover the required outputs and create the result file."}],maxModelTurns:6,maxToolCalls:8,onEvent:event=>events.push(event),
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"write_file",arguments:'{"path":"output/result.json","content":"{\\"partial\\":true}"}'}],usage:{}};
+      if(providerCalls===2)return {text:"Partial analysis; required data not recovered. I could not establish the missing value, so the final output was not created.",toolCalls:[],usage:{}};
+      if(providerCalls===3)return {text:"",toolCalls:[{id:"probe",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["focused-check.mjs"]}'}],usage:{}};
+      return {text:"Recovered the missing value and completed the requested output.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{path:"output/result.json",bytes:16}:{exitCode:0,stdout:"decisive evidence"},
+  });
+  assert.equal(providerCalls,4);
+  assert.equal(result.text,"Recovered the missing value and completed the requested output.");
+  assert.equal(events.filter(event=>event.name==="native.completion.self_admitted_gap").length,1);
+  assert.ok(requests[2].messages.some(message=>message.role==="developer"&&/required part of the task is still incomplete or missing/i.test(String(message.content||""))));
+});
+
 test("native agent cancellation during provider retry backoff prevents the next request",async()=>{
   const controller=new AbortController();let attempts=0;
   const pending=runNativeAgentTurn({

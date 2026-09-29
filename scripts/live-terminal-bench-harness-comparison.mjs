@@ -1,6 +1,6 @@
-import { access, mkdir, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { loadEnvFile } from "node:process";
@@ -9,6 +9,7 @@ import { waitForJobProcessDrain } from "./terminal-bench-process-drain.mjs";
 import { jobsForPairReport } from "./terminal-bench-pair-report.mjs";
 import { readJobVerifierSummary } from "./terminal-bench-verifier-summary.mjs";
 import { recoverNativeEventEvidence, selectNativeMetric } from "./terminal-bench-native-evidence.mjs";
+import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath } from "./terminal-bench-pair-lock.mjs";
 
 if(!process.argv.includes("--live"))throw new Error("Refusing to run paid/live Terminal-Bench without --live.");
 
@@ -27,7 +28,9 @@ const agentTimeoutArg=process.argv.find(arg=>arg.startsWith("--agent-timeout-mul
 const AGENT_TIMEOUT_MULTIPLIER=Number(agentTimeoutArg?.slice("--agent-timeout-multiplier=".length)||process.env.TREBELL_TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER||1);
 if(!Number.isFinite(AGENT_TIMEOUT_MULTIPLIER)||AGENT_TIMEOUT_MULTIPLIER<=0)throw new Error("Terminal-Bench agent timeout multiplier must be > 0.");
 const onlyArg=process.argv.find(arg=>arg.startsWith("--only="));
-const only=new Set(String(onlyArg?.slice("--only=".length)||process.env.TREBELL_TERMINAL_BENCH_ONLY||"").split(",").map(value=>value.trim().toLowerCase()).filter(Boolean));
+const inheritedOnly=String(process.env.TREBELL_TERMINAL_BENCH_ONLY||"").trim();
+if(!onlyArg&&inheritedOnly)throw new Error("Refusing inherited TREBELL_TERMINAL_BENCH_ONLY for a paid benchmark. Pass --only=<lanes> explicitly so lane selection is recorded in the launch command.");
+const only=new Set(String(onlyArg?.slice("--only=".length)||"").split(",").map(value=>value.trim().toLowerCase()).filter(Boolean));
 const codexAuthArg=process.argv.find(arg=>arg.startsWith("--codex-auth="));
 const CODEX_AUTH_MODE=String(codexAuthArg?.slice("--codex-auth=".length)||process.env.TREBELL_TERMINAL_BENCH_CODEX_AUTH||"both").trim().toLowerCase();
 if(!["api","oauth","both"].includes(CODEX_AUTH_MODE))throw new Error("Terminal-Bench Codex auth mode must be api, oauth, or both.");
@@ -43,7 +46,7 @@ const CODEX_PINNED_TARBALL_SHA256="3fe84106aaf2fbfc13299068510d34b3d0157eeb9af4b
 const NATIVE_PINNED_NODE_VERSION="22.23.3";
 const NATIVE_PINNED_NODE_TARBALL_SHA256="1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af";
 const NATIVE_PINNED_NODE_URL=`https://nodejs.org/download/release/v${NATIVE_PINNED_NODE_VERSION}/node-v${NATIVE_PINNED_NODE_VERSION}-linux-x64.tar.gz`;
-const validationDir=join(root,".harbor-validation"),lockPath=join(validationDir,"terminal-bench-pair.lock");
+const validationDir=join(root,".harbor-validation");
 
 function run(command,args,{env=process.env}={}){
   return new Promise((resolveRun,reject)=>{
@@ -101,41 +104,6 @@ async function ensurePinnedNodeTarball(path,{explicit=false}={}){
   await access(path);
 }
 function elapsedMs(range){const start=Date.parse(String(range?.started_at||"")),end=Date.parse(String(range?.finished_at||""));return Number.isFinite(start)&&Number.isFinite(end)?Math.max(0,end-start):null}
-function processAlive(pid){try{process.kill(Number(pid),0);return true}catch(error){return error?.code==="EPERM"}}
-function lockIdentity(value){
-  if(value?.lockId)return `id:${value.lockId}`;
-  if(value&&typeof value==="object")return `legacy:${value.pid||""}:${value.startedAt||""}:${value.task||""}`;
-  return "missing";
-}
-async function readPairLock(){try{return JSON.parse(await readFile(lockPath,"utf8"))}catch{return null}}
-async function acquirePairLock(){
-  await mkdir(validationDir,{recursive:true});
-  const lockId=randomUUID(),lockRecord={lockId,pid:process.pid,task:TASK,model:MODEL,effort:EFFORT,startedAt:new Date().toISOString()};
-  for(let attempt=0;attempt<6;attempt++){
-    try{
-      const handle=await open(lockPath,"wx");
-      await handle.writeFile(JSON.stringify(lockRecord)+"\n");
-      await handle.close();
-      return async()=>{
-        try{
-          const current=await readPairLock();
-          if(current?.lockId===lockId)await rm(lockPath,{force:true});
-        }catch{}
-      };
-    }catch(error){
-      if(error?.code!=="EEXIST")throw error;
-      const existing=await readPairLock();
-      if(existing?.pid&&processAlive(existing.pid))throw new Error(`Another Terminal-Bench paired run is active (pid ${existing.pid}, task ${existing.task||"unknown"}). Refusing to contaminate benchmark timing.`);
-      // A stale-lock cleanup must not delete a lock another contender created
-      // after our first read. Re-read and compare the owner identity immediately
-      // before unlinking; if it changed, loop and evaluate the new owner instead.
-      const current=await readPairLock();
-      if(lockIdentity(current)!==lockIdentity(existing))continue;
-      try{await rm(lockPath)}catch(removeError){if(removeError?.code!=="ENOENT")throw removeError}
-    }
-  }
-  throw new Error("Could not acquire the Terminal-Bench paired-run lock.");
-}
 async function trialResult(outputRoot,jobName){
   let entries=[];try{entries=await readdir(join(outputRoot,jobName),{withFileTypes:true})}catch{return null}
   for(const entry of entries){
@@ -177,12 +145,19 @@ async function recoverTrialEvidence(outputRoot,jobName){
   return null;
 }
 
-const releaseLock=await acquirePairLock(),runStamp=stamp(),pairId=`tb4-pair-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`,reportPath=join(validationDir,pairId+".json"),sourceProvenance=await sourceGitProvenance();let codexApiAuthPath=null;
+const gitCommonDir=String(await capture("git",["rev-parse","--git-common-dir"])).trim(),lockPath=sharedTerminalBenchLockPath(root,gitCommonDir);
+const releaseLock=await acquireTerminalBenchPairLock({lockPath,task:TASK,model:MODEL,effort:EFFORT}),runStamp=stamp(),pairId=`tb4-pair-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`,reportPath=join(validationDir,pairId+".json"),sourceProvenance=await sourceGitProvenance();let codexApiAuthPath=null;
 try{
   await run(process.execPath,[join(root,"scripts","build-harbor-native-agent.mjs")]);
   const nativeBundlePath=join(root,"benchmarks","harbor","dist","trebell-native-agent.mjs"),nativeAdapterPath=join(root,"benchmarks","harbor","trebell_native_agent.py");
   const nativeBundleSha256=await sha256File(nativeBundlePath),nativeAdapterSha256=await sha256File(nativeAdapterPath);
-  const nativeLaneSelected=!only.size||only.has("native");
+  const lanes=[
+    {label:"native",harness:"native",authMode:"api"},
+    ...CODEX_AUTH_MODES.map(authMode=>({label:`codex-${authMode}`,harness:"codex",authMode})),
+  ];
+  const selectedLanes=lanes.filter(lane=>!only.size||only.has(lane.label)||only.has(lane.harness));
+  if(!selectedLanes.length)throw new Error(`Terminal-Bench --only filter selected no lanes: ${[...only].join(",")||"none"}`);
+  const nativeLaneSelected=selectedLanes.some(lane=>lane.harness==="native");
   let nativePinnedNodeTarballPath=null,nativePinnedNodeTarballSha256=null;
   if(nativeLaneSelected){
     const configuredNodeTarball=String(process.env.TREBELL_NODE_PINNED_TARBALL||"").trim();
@@ -202,8 +177,7 @@ try{
   }
   const harbor=await harborBin(),pythonPath=[root,process.env.PYTHONPATH].filter(Boolean).join(delimiter);
   const sharedEnv={...process.env,PYTHONPATH:pythonPath,...(nativePinnedNodeTarballPath?{TREBELL_NODE_PINNED_TARBALL:nativePinnedNodeTarballPath}: {}),...(codexPinnedTarballPath?{TREBELL_CODEX_PINNED_TARBALL:codexPinnedTarballPath}: {})},outputRoot=join(root,".harbor-jobs"),jobs=[];
-  const codexLaneSelected=authMode=>!only.size||only.has("codex")||only.has(`codex-${authMode}`);
-  const willRunCodexApi=CODEX_AUTH_MODES.includes("api")&&codexLaneSelected("api"),willRunCodexOauth=CODEX_AUTH_MODES.includes("oauth")&&codexLaneSelected("oauth");
+  const willRunCodexApi=selectedLanes.some(lane=>lane.label==="codex-api"),willRunCodexOauth=selectedLanes.some(lane=>lane.label==="codex-oauth");
   if(willRunCodexOauth)await access(join(homedir(),".codex","auth.json"));
   if(willRunCodexApi){
     const apiKey=String(sharedEnv.OPENAI_API_KEY||"").trim();
@@ -211,23 +185,18 @@ try{
     codexApiAuthPath=join(validationDir,`.codex-api-auth-${process.pid}-${runStamp}.json`);
     await writeFile(codexApiAuthPath,JSON.stringify({OPENAI_API_KEY:apiKey})+"\n",{encoding:"utf8",mode:0o600});
   }
-  const lanes=[
-    {label:"native",harness:"native",authMode:"api"},
-    ...CODEX_AUTH_MODES.map(authMode=>({label:`codex-${authMode}`,harness:"codex",authMode})),
-  ];
   const reportSnapshot=({complete=false,activeHarness=null,activeJobName=null}={})=>({
     pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER,
     sameModel:true,sameReasoningEffort:true,sequential:true,codexAuthMode:CODEX_AUTH_MODE,codexInstallMode:CODEX_INSTALL_MODE,nativeReasoningContext:NATIVE_REASONING_CONTEXT,
     ...sourceProvenance,
     ...(nativePinnedNodeTarballPath?{nativePinnedNodeVersion:NATIVE_PINNED_NODE_VERSION,nativePinnedNodeTarballSha256}:{}),
     ...(codexPinnedTarballPath?{codexPinnedVersion:CODEX_PINNED_VERSION,codexPinnedTarballSha256,codexPinnedAdapterSha256}:{}),
-    comparisonLanes:lanes.map(lane=>lane.label),nativeBundleSha256,nativeAdapterSha256,
+    comparisonLanes:selectedLanes.map(lane=>lane.label),configuredComparisonLanes:lanes.map(lane=>lane.label),nativeBundleSha256,nativeAdapterSha256,
     complete,activeHarness,activeJobName,updatedAt:new Date().toISOString(),jobs:jobsForPairReport(jobs,{complete}),
   });
   const persistReport=async state=>writeFile(reportPath,JSON.stringify(reportSnapshot(state),null,2)+"\n","utf8");
-  for(const lane of lanes){
+  for(const lane of selectedLanes){
     const {label,harness,authMode}=lane;
-    if(only.size&&!only.has(label)&&!only.has(harness))continue;
     const agent=harness==="native"?"benchmarks.harbor.trebell_native_agent:TrebellNativeAgent":CODEX_INSTALL_MODE==="pinned"?"benchmarks.harbor.pinned_codex_agent:PinnedCodexAgent":"codex";
     const jobName=`tb4-${label}-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`;
     const args=["run","-d",DATASET,"-i",TASK,"-a",agent,"-m",`openai/${MODEL}`,"--ak",`reasoning_effort=${EFFORT}`,"-n","1","-o",outputRoot,"--job-name",jobName,"-y"];
