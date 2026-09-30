@@ -246,7 +246,6 @@ class TrebellNativeAgent(BaseInstalledAgent):
                 f"2>&1 | tee {self._OUTPUT}"
             ),
             env=env,
-            cwd="/app",
         )
 
     @override

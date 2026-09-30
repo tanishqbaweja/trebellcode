@@ -26,6 +26,7 @@ test("Harbor Native adapter stages the OpenAI key instead of passing it through 
   assert.ok(source.includes('TREBELL_OPENAI_REASONING_CONTEXT'));
   assert.ok(source.includes('"reasoning_context": metrics.get("reasoningContext")'));
   assert.ok(source.includes('"effective_reasoning_contexts": metrics.get("effectiveReasoningContexts") or []'));
+  assert.doesNotMatch(source,/cwd="\/app"/,"the Native adapter must preserve Harbor's task-specific container working directory");
 });
 
 test("Harbor Native runner keeps durable output retrieval available and avoids a smaller private task budget",async()=>{
