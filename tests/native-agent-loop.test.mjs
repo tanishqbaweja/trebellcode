@@ -2599,6 +2599,87 @@ test("native recovers from a self-admitted incomplete required deliverable",asyn
   assert.ok(requests[2].messages.some(message=>message.role==="developer"&&/required part of the task is still incomplete or missing/i.test(String(message.content||""))));
 });
 
+test("native recovers from a typographic-apostrophe completion gap after terminal-only investigation",async()=>{
+  const requests=[],events=[],executed=[];let providerCalls=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Restore the required data and produce the verified output."}],maxModelTurns:6,maxToolCalls:10,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {text:"",toolCalls:[{id:"inspect",namespace:"trebell_terminal",name:"run",arguments:'{"command":"python","args":["inspect-data.py"]}'}],usage:{}};
+      if(providerCalls===2)return {text:"I can’t safely restore the required data from the evidence I found. I have not verified the requested output.",toolCalls:[],usage:{}};
+      if(providerCalls===3){
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/one bounded falsification pass/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[{id:"recover",namespace:"trebell_terminal",name:"run",arguments:'{"command":"python","args":["recover-and-verify.py"]}'}],usage:{}};
+      }
+      return {text:"Restored the required data and produced the verified output.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return {exitCode:0,stdout:call.id==="recover"?"verified output":"inspection complete"}},
+  });
+  assert.equal(providerCalls,4);assert.deepEqual(executed,["inspect","recover"]);
+  assert.equal(result.text,"Restored the required data and produced the verified output.");
+  assert.equal(events.filter(event=>event.name==="native.completion.self_admitted_gap").length,1);
+});
+
+test("native recovers from an admitted completion blocker before any recorded workspace edit",async()=>{
+  const requests=[],events=[];let providerCalls=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Restore the intended local data and produce the required checkpoint."}],maxModelTurns:6,maxToolCalls:8,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {text:"",toolCalls:[{id:"inspect",namespace:"trebell_terminal",name:"run",arguments:'{"command":"inspect","args":["local-data"]}'}],usage:{}};
+      if(providerCalls===2)return {text:"I can't safely restore the required data from the evidence I found, so the requested result remains incomplete.",toolCalls:[],usage:{}};
+      if(providerCalls===3){
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/one bounded falsification pass/i.test(String(message.content||""))));
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/reversible transforms or mappings/i.test(String(message.content||""))));
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/do not fabricate, approximate, substitute/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[{id:"recover",namespace:"trebell_terminal",name:"run",arguments:'{"command":"recover","args":["local-data"]}'}],usage:{}};
+      }
+      return {text:"Recovered the required data and produced the checkpoint.",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>({exitCode:0}),
+  });
+  assert.equal(providerCalls,4);
+  assert.equal(result.text,"Recovered the required data and produced the checkpoint.");
+  const gapEvents=events.filter(event=>event.name==="native.completion.self_admitted_gap");
+  assert.equal(gapEvents.length,1);
+  assert.equal(gapEvents[0].data.editRevision,0);
+  assert.equal(gapEvents[0].data.preEditBlockerChallenge,true);
+});
+
+test("native does not turn a read-only admitted limitation into completion recovery",async()=>{
+  let providerCalls=0;const events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Inspect the available data and explain what can be recovered. Do not edit anything."}],maxModelTurns:4,maxToolCalls:4,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{providerCalls++;return {text:"I can't safely restore the missing data from the available evidence.",toolCalls:[],usage:{}}},
+    executeTool:async()=>({exitCode:0}),
+  });
+  assert.equal(providerCalls,1);
+  assert.match(result.text,/can't safely restore/i);
+  assert.equal(events.filter(event=>event.name==="native.completion.self_admitted_gap").length,0);
+});
+
+test("native pre-edit blocker challenge is one-shot when exact reconstruction remains impossible",async()=>{
+  let providerCalls=0;const events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Repair the local data and reconstruct the original records exactly."}],maxModelTurns:6,maxToolCalls:8,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{
+      providerCalls++;
+      if(providerCalls===1)return {text:"",toolCalls:[{id:"inspect",namespace:"trebell_terminal",name:"run",arguments:'{"command":"inspect","args":["local-data"]}'}],usage:{}};
+      if(providerCalls===2)return {text:"I cannot reliably reconstruct the exact original records from the evidence available.",toolCalls:[],usage:{}};
+      if(providerCalls===3)return {text:"",toolCalls:[{id:"check",namespace:"trebell_terminal",name:"run",arguments:'{"command":"check","args":["reversibility"]}'}],usage:{}};
+      return {text:"I still cannot reliably reconstruct the exact records: the focused reversibility check found no recoverable mapping or invariant.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.id==="check"?{exitCode:1,stderr:"no recoverable mapping"}:{exitCode:0},
+  });
+  assert.equal(providerCalls,4);
+  assert.match(result.text,/still cannot reliably reconstruct/i);
+  assert.equal(events.filter(event=>event.name==="native.completion.self_admitted_gap").length,1);
+});
+
 test("native agent cancellation during provider retry backoff prevents the next request",async()=>{
   const controller=new AbortController();let attempts=0;
   const pending=runNativeAgentTurn({

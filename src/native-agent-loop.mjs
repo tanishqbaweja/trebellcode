@@ -172,7 +172,7 @@ function requestsWorkspaceMutation(messages=[]){
     ||/\b(?:make|perform|apply)\s+no\s+(?:code\s+)?changes?\b/i.test(text)
     ||/\bno\s+(?:code\s+)?changes?\s+(?:to|in)\s+(?:the\s+)?(?:workspace|repository|repo|project|codebase)\b/i.test(text);
   if(explicitlyReadOnly)return false;
-  const mutationPattern=/\b(?:implement|fix|repair|add|create|update|change|modify|refactor|remove|delete|rename|migrate|write|edit|replace|convert|port|upgrade|downgrade)\b/ig;
+  const mutationPattern=/\b(?:implement|fix|repair|restore|remediate|add|create|update|change|modify|refactor|remove|delete|rename|migrate|write|edit|replace|convert|port|upgrade|downgrade)\b/ig;
   for(const match of text.matchAll(mutationPattern)){
     const prefix=text.slice(Math.max(0,Number(match.index||0)-56),Number(match.index||0));
     if(!/(?:do\s+not|don't|dont|never|without)(?:\s+\w+){0,2}\s*$/i.test(prefix))return true;
@@ -477,15 +477,15 @@ function terminalRunLooksLikeVerifier(args={}){
 }
 
 function selfAdmittedVerificationGap(text){
-  const value=String(text||"").replace(/\*\*/g,"");
+  const value=String(text||"").replace(/[\u2018\u2019\u02bc\uff07]/g,"'").replace(/\*\*/g,"");
   if(!value.trim())return false;
   return /(?:^|\n)\s*unverified\s*:|\b(?:remains?|still|currently)\s+(?:unverified|untested|unconfirmed)\b|\b(?:not|never)\s+(?:fully\s+)?(?:verified|tested|checked|validated)\b|\b(?:unable|cannot|can't|could\s+not|couldn't)\s+to\s+(?:verify|test|check|validate)\b|\bdid(?:\s+not|n't)\s+(?:establish|determine|confirm)\s+whether\b|\bdid(?:\s+not|n't)\s+(?:run|execute|perform)\s+(?:an?\s+|the\s+)?(?:integration|end[- ]to[- ]end|e2e|smoke|acceptance|timed|performance|benchmark|test)\b|\bdid(?:\s+not|n't)\s+(?:send|make|issue)\s+(?:an?\s+|the\s+)?(?:real|live|actual)\s+(?:http\s+)?(?:request|post|callback)\b|\bdid(?:\s+not|n't)\s+(?:exercise|reproduce)\s+(?:an?\s+|the\s+)?(?:(?:real|live|actual|full|fresh)\s+)?(?:integration|lifecycle|restart|deploy(?:ment)?|behavio(?:u)?r|path)\b/i.test(value);
 }
 
 function selfAdmittedCompletionGap(text){
-  const value=String(text||"").replace(/\*\*/g,"");
+  const value=String(text||"").replace(/[\u2018\u2019\u02bc\uff07]/g,"'").replace(/\*\*/g,"");
   if(!value.trim())return false;
-  return /(?:^|\n)\s*(?:partial|incomplete)\s+(?:analysis|result|solution|implementation|work|completion)\b|\b(?:unable\s+to|cannot|can't|could\s+not|couldn't|failed\s+to)\s+(?:establish|determine|derive|recover|produce|create|generate|write|complete|finish|implement|resolve|fix|decode|decrypt)\b|\b(?:not|never)\s+(?:recovered|derived|produced|created|generated|written|completed|finished|implemented|resolved|fixed|decoded|decrypted)\b|\b(?:was|were|is|are)\s+not\s+(?:created|produced|generated|written|recovered|derived|completed|finished)\b/i.test(value);
+  return /(?:^|\n)\s*(?:partial|incomplete)\s+(?:analysis|result|solution|implementation|work|completion)\b|\b(?:unable\s+to|cannot|can't|could\s+not|couldn't|failed\s+to)(?:\s+\w+){0,2}\s+(?:establish|determine|derive|recover|restore|repair|reconstruct|recreate|rebuild|produce|create|generate|write|complete|finish|implement|resolve|fix|decode|decrypt)\b|\b(?:not|never)\s+(?:recovered|restored|repaired|reconstructed|recreated|rebuilt|derived|produced|created|generated|written|completed|finished|implemented|resolved|fixed|decoded|decrypted)\b|\b(?:was|were|is|are)\s+not\s+(?:created|produced|generated|written|recovered|restored|repaired|reconstructed|recreated|rebuilt|derived|completed|finished)\b/i.test(value);
 }
 
 function verificationCompletionMatchesRun(request,args={},terminalRuns=[],editRevision=0){
@@ -1151,10 +1151,14 @@ export async function runNativeAgentTurn({
       const hasSelfCompletionGap=selfAdmittedCompletionGap(responseText),selfAdmittedGapKind=hasSelfCompletionGap?"completion":hasSelfVerificationGap?"verification":null;
       const priorSelfAdmittedGapRecoveryUsedTool=selfAdmittedGapRecoveries>0&&toolCalls>selfAdmittedGapRecoveryToolBaseline;
       const shouldRecoverSelfAdmittedGap=selfAdmittedGapRecoveries===0||(selfAdmittedGapRecoveries===1&&priorSelfAdmittedGapRecoveryUsedTool);
-      if(workspaceMutationRequested&&editRevision>0&&canVerifyLocally&&!toolBudgetExhausted&&!verifiedFinalizationReady&&selfAdmittedGapRecoveries<2&&shouldRecoverSelfAdmittedGap&&modelTurns<budget.maxModelTurns&&selfAdmittedGapKind){
+      const preEditCompletionBlockerChallenge=hasSelfCompletionGap&&editRevision===0&&selfAdmittedGapRecoveries===0;
+      const selfAdmittedGapCanRecover=preEditCompletionBlockerChallenge||editRevision>0;
+      if(workspaceMutationRequested&&selfAdmittedGapCanRecover&&canVerifyLocally&&!toolBudgetExhausted&&!verifiedFinalizationReady&&selfAdmittedGapRecoveries<2&&shouldRecoverSelfAdmittedGap&&modelTurns<budget.maxModelTurns&&selfAdmittedGapKind){
         selfAdmittedGapRecoveries++;
         selfAdmittedGapRecoveryToolBaseline=toolCalls;
-        const recoveryMessage=selfAdmittedGapKind==="completion"
+        const recoveryMessage=preEditCompletionBlockerChallenge
+          ? "Your previous draft concludes that a required mutation, restoration, or reconstruction cannot be completed before any confirmed workspace edit. Before accepting that blocker, do one bounded falsification pass. Do not fabricate, approximate, substitute, or weaken an exact-data requirement. Test whether the intended state can be reconstructed from local evidence already present: reversible transforms or mappings, internal redundancy, peer/majority consistency, deterministic encodings, checksums or metadata, logs/history, or other invariants that distinguish the intended state. Prefer one batched script or focused tool response that compares the strongest remaining hypotheses. If exact recovery is supported, implement it and exercise the requested acceptance path; if not, end with the blocker and the decisive negative evidence."
+          : selfAdmittedGapKind==="completion"
           ? selfAdmittedGapRecoveries===1
             ? "Your previous draft explicitly says a required part of the task is still incomplete or missing. Do not end yet. Focus only on that named unresolved requirement. Use the evidence already gathered and the available tools to resolve it; prefer one small executable probe or direct inspection that discriminates between the remaining hypotheses, then produce and verify the missing deliverable. Do not restart broad exploration or repeat already-settled work. If a concrete external blocker truly makes completion impossible, answer again with that blocker explicit."
             : "The same required task gap remains after another tool attempt. Do one final focused recovery pass on only that unresolved requirement: re-use the strongest evidence already collected, run the smallest decisive check available, and produce the missing deliverable if the evidence supports it. Do not reopen solved parts of the task. If completion is genuinely blocked by something external, state the concrete blocker rather than continuing broad investigation."
@@ -1162,7 +1166,7 @@ export async function runNativeAgentTurn({
             ? "Your previous draft explicitly says part of the edited task remains unverified. Before ending, use one focused local verification step for that named gap if it is reasonably testable with the available terminal. Prefer the repository's existing runnable acceptance surface and already-available local services/process controls over a static proxy: exercise the closest representative lifecycle or integration path the task already exposes. The absence of an ideal build/deploy mechanism is not by itself proof that the changed behavior cannot be tested. Do not broaden back into general exploration. If no representative local path genuinely exists, answer again and keep that limitation explicit."
             : "The same verification gap remains after a local verification attempt. Do one final acceptance-oriented check before ending: re-read the user's stated acceptance signal, then use any already-discovered runnable service, process, restart/scale script, entrypoint, task runner, or live local dependency that can exercise the changed behavior end to end. Do not spend this recovery merely proving that an ideal container/build/deploy path is absent when a representative local lifecycle can still be exercised. Keep the check bounded and focused. If no representative path genuinely exists, answer again with the concrete limitation rather than opening broad investigation.";
         conversation.push({role:"developer",content:recoveryMessage});
-        emit(onEvent,{name:selfAdmittedGapKind==="completion"?"native.completion.self_admitted_gap":"native.verification.self_admitted_gap",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,recoveryAttempt:selfAdmittedGapRecoveries,priorRecoveryUsedTool:priorSelfAdmittedGapRecoveryUsedTool}});
+        emit(onEvent,{name:selfAdmittedGapKind==="completion"?"native.completion.self_admitted_gap":"native.verification.self_admitted_gap",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,recoveryAttempt:selfAdmittedGapRecoveries,priorRecoveryUsedTool:priorSelfAdmittedGapRecoveryUsedTool,preEditBlockerChallenge:preEditCompletionBlockerChallenge}});
         continue;
       }
       const missingRequired=explicitlyRequired.find(item=>!executedToolKeys.has(item.namespace+"/"+item.name));
