@@ -2445,6 +2445,50 @@ test("native revision-churn escalation blocks speculative edits after convergenc
   assert.equal(events.filter(event=>event.name==="native.progress.revision_churn_edit_blocked").length,1);
 });
 
+test("native revision-churn escalation reopens one repair after a fresh failing terminal check",async()=>{
+  let turns=0;const events=[],executed=[];
+  const terminalBatch=label=>[
+    {id:`${label}-a`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[`${label}-a.mjs`]})},
+    {id:`${label}-b`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[`${label}-b.mjs`]})},
+    {id:`${label}-c`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[`${label}-c.mjs`]})},
+  ];
+  const edit=n=>({text:"",toolCalls:[{id:`edit-${n}`,namespace:"trebell_workspace",name:"replace_text",arguments:JSON.stringify({path:"src/a.mjs",old_text:`bad-${n}`,new_text:`good-${n}`})}],usage:{}});
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation."}],maxModelTurns:28,maxToolCalls:70,onEvent:event=>events.push(event),
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async request=>{
+      turns++;
+      if(turns<=8)return edit(turns);
+      if(turns===9)return {text:"",toolCalls:terminalBatch("verify-8"),usage:{}};
+      if(turns===10)return edit(9);
+      if(turns===11)return {text:"",toolCalls:terminalBatch("verify-9"),usage:{}};
+      if(turns===12)return edit(10);
+      if(turns===13)return edit(11);
+      if(turns===14)return edit(12);
+      if(turns===15)return edit(13);
+      if(turns===16)return {text:"",toolCalls:[{id:"fresh-failure",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:["focused-acceptance.mjs"]})}],usage:{}};
+      if(turns===17)return edit(14);
+      if(turns===18)return edit(15);
+      assert.ok(request.messages.some(message=>message.role==="tool"&&message.toolCallId==="edit-15"&&/fresh failing terminal evidence/i.test(String(message.content||""))));
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{
+      executed.push(call.id);
+      if(call.namespace==="trebell_workspace")return {path:"src/a.mjs",replacements:1};
+      return {exitCode:call.id==="fresh-failure"?1:0};
+    },
+  });
+  assert.equal(result.text,"done");
+  assert.equal(executed.includes("fresh-failure"),true);
+  assert.equal(executed.includes("edit-14"),true);
+  assert.equal(executed.includes("edit-15"),false);
+  assert.equal(events.filter(event=>event.name==="native.progress.revision_churn_escalation").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.revision_churn_edit_blocked").length,1);
+});
+
 test("native agent wall-time budget aborts in-flight provider work and reports a budget failure",async()=>{
   const events=[];let providerAborted=false;
   await assert.rejects(()=>runNativeAgentTurn({
