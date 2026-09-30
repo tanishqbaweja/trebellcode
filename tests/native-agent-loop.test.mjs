@@ -2680,6 +2680,43 @@ test("native pre-edit blocker challenge is one-shot when exact reconstruction re
   assert.equal(events.filter(event=>event.name==="native.completion.self_admitted_gap").length,1);
 });
 
+test("native blocker challenge gets one evidence batch through an exhausted pre-edit investigation gate",async()=>{
+  const requests=[],events=[],executed=[];let providerCalls=0;
+  const read=(id,path)=>({id,namespace:"trebell_workspace",name:"read_file",arguments:JSON.stringify({path})});
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Restore the corrupted local data exactly and verify the result."}],maxModelTurns:11,maxToolCalls:24,onEvent:event=>events.push(event),
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"},{name:"replace_text"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls<=4)return {text:"",toolCalls:[read(`initial-${providerCalls}`,`data/initial-${providerCalls}.bin`)],usage:{}};
+      if(providerCalls===5)return {text:"",toolCalls:[read("batch-5-a","data/a.bin"),read("batch-5-b","data/b.bin")],usage:{}};
+      if(providerCalls===6)return {text:"",toolCalls:[read("batch-6-a","data/c.bin"),read("batch-6-b","data/d.bin")],usage:{}};
+      if(providerCalls===7){
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/implementation escalation/i.test(String(message.content||""))));
+        return {text:"I can't safely restore the exact records from the evidence gathered so far.",toolCalls:[],usage:{}};
+      }
+      if(providerCalls===8){
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/one bounded falsification pass/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[{id:"decisive-recovery-scan",namespace:"trebell_terminal",name:"run",arguments:'{"command":"python","args":["scan-reversible-mapping.py"]}'}],usage:{}};
+      }
+      return {text:"The decisive recovery scan found an exact reversible mapping; restoration and verification are complete.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{
+      executed.push(call.id);
+      if(call.namespace==="trebell_workspace")return {path:JSON.parse(call.arguments).path,content:"evidence"};
+      return {exitCode:0,stdout:"exact reversible mapping found"};
+    },
+  });
+  assert.equal(providerCalls,9);
+  assert.equal(executed.includes("decisive-recovery-scan"),true);
+  assert.equal(events.filter(event=>event.name==="native.progress.implementation_call_blocked"&&event.data?.callId==="decisive-recovery-scan").length,0);
+  assert.equal(events.filter(event=>event.name==="native.completion.blocker_challenge_evidence_allowed").length,1);
+  assert.match(result.text,/exact reversible mapping/i);
+});
+
 test("native agent cancellation during provider retry backoff prevents the next request",async()=>{
   const controller=new AbortController();let attempts=0;
   const pending=runNativeAgentTurn({
