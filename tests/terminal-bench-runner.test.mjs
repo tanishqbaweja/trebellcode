@@ -59,6 +59,7 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/execFileSync\("git",\["rev-parse","--git-common-dir"\]/);
   assert.match(source,/loadEnvFile\(join\(root,"\.env"\)\)/);
   assert.match(source,/loadEnvFile\(join\(repositoryRoot,"\.env"\)\)/);
+  assert.match(source,/process\.platform==="win32"\?\{PYTHONUTF8:"1",PYTHONIOENCODING:"utf-8"\}/);
   assert.match(source,/\.codex-api-auth-/);
   assert.match(source,/harnessEnv\.CODEX_AUTH_JSON_PATH=codexApiAuthPath/);
   assert.match(source,/delete harnessEnv\.OPENAI_API_KEY/);
