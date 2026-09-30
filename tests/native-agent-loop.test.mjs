@@ -2480,6 +2480,34 @@ test("native agent gives one focused verification recovery when its own final dr
   assert.equal(events.filter(event=>event.name==="native.verification.self_admitted_gap").length,1);
 });
 
+test("native treats cannot-certify and not-exhaustively-verified caveats as acceptance gaps",async()=>{
+  const requests=[],events=[];let providerCalls=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Migrate the service with zero downtime, zero failed requests, and no stale reads."}],maxModelTurns:7,maxToolCalls:10,onEvent:event=>events.push(event),
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/cutover.py","old_text":"old","new_text":"new"}'}],usage:{}};
+      if(providerCalls===2)return {text:"Migration completed. A 48-request probe passed, but I cannot certify that no customer request ever exceeded its deadline. Exact parity was not exhaustively verified.",toolCalls:[],usage:{}};
+      if(providerCalls===3){
+        const recovery=request.messages.find(message=>message.role==="developer"&&/part of the edited task remains unverified/i.test(String(message.content||"")));
+        assert.ok(recovery);
+        assert.match(String(recovery.content),/zero failures, zero stale reads, no downtime/i);
+        assert.match(String(recovery.content),/tiny smoke sample/i);
+        return {text:"",toolCalls:[{id:"load",namespace:"trebell_terminal",name:"run",arguments:'{"command":"python","args":["sustained-cutover-check.py"]}'}],usage:{}};
+      }
+      return {text:"Migration completed and sustained concurrent cutover traffic passed without failed or stale requests.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{path:"src/cutover.py",replacements:1}:{exitCode:0,stdout:"0 hard failures; 0 stale reads"},
+  });
+  assert.equal(providerCalls,4);
+  assert.match(result.text,/sustained concurrent cutover traffic passed/i);
+  assert.equal(events.filter(event=>event.name==="native.verification.self_admitted_gap").length,1);
+});
+
 test("native agent recognizes an explicit Unverified section as a focused verification gap",async()=>{
   const requests=[];let providerCalls=0;
   const result=await runNativeAgentTurn({
@@ -2499,6 +2527,29 @@ test("native agent recognizes an explicit Unverified section as a focused verifi
   });
   assert.equal(providerCalls,4);
   assert.equal(result.text,"Implemented and locally smoke-tested.");
+  assert.ok(requests[2].messages.some(message=>message.role==="developer"&&/previous draft explicitly says part of the edited task remains unverified/i.test(String(message.content||""))));
+});
+
+test("native agent treats cannot-certify and not-exhaustively-verified wording as a verification gap",async()=>{
+  const requests=[],events=[];let providerCalls=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Migrate the service while preserving live request availability."}],maxModelTurns:7,maxToolCalls:10,onEvent:event=>events.push(event),
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/service.mjs","old_text":"old","new_text":"new"}'}],usage:{}};
+      if(providerCalls===2)return {text:"Migration completed, but I cannot certify that no customer request exceeded its deadline and exact transition parity was not exhaustively verified.",toolCalls:[],usage:{}};
+      if(providerCalls===3)return {text:"",toolCalls:[{id:"verify",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["live-transition-check.mjs"]}'}],usage:{}};
+      return {text:"Migration completed and the live transition check passed.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{path:"src/service.mjs",replacements:1}:{exitCode:0,stdout:"0 request failures"},
+  });
+  assert.equal(providerCalls,4);
+  assert.equal(result.text,"Migration completed and the live transition check passed.");
+  assert.equal(events.filter(event=>event.name==="native.verification.self_admitted_gap").length,1);
   assert.ok(requests[2].messages.some(message=>message.role==="developer"&&/previous draft explicitly says part of the edited task remains unverified/i.test(String(message.content||""))));
 });
 

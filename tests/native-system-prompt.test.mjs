@@ -51,6 +51,11 @@ test("Native system prompt teaches evidence-driven coding without inventing unav
   assert.match(prompt,/two-item partial-progress\/interleaving check/i);
   assert.match(prompt,/check each class separately/i);
   assert.match(prompt,/after a merge or state transition/i);
+  assert.match(prompt,/live migrations, failovers, rolling restarts, routing changes, deployments, or cutovers/i);
+  assert.match(prompt,/transition window itself as a first-class acceptance surface/i);
+  assert.match(prompt,/bounded rehearsal, shadow or dual-run, or readiness-gate check/i);
+  assert.match(prompt,/hard-error and stale-read counters plus deadline headroom/i);
+  assert.match(prompt,/healthy post-cutover smoke test does not prove zero downtime/i);
   assert.match(prompt,/end-to-end critical path/i);
   assert.match(prompt,/Parallelizing independent waits still blocks first useful output/i);
   assert.match(prompt,/nonessential secondary side effects off a latency-critical mutation response path/i);
