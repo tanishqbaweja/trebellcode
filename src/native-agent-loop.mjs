@@ -694,7 +694,7 @@ export async function runNativeAgentTurn({
   const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalStatusRequested=explicitTerminalStatusRequest(conversation),directTerminalStatusCommand=directTerminalStatusCommands===true?explicitTerminalStatusCommand(conversation):null,directReplacementStatus=directExactReplacementStatus===true?explicitExactReplacementStatus(conversation):null,directWriteStatus=directExactWriteStatus===true?explicitExactFileWriteStatus(conversation):null,directReadStatus=directExactReadStatus===true?explicitExactFileReadStatus(conversation):null,directListStatus=directExactListStatus===true?explicitImmediateWorkspaceListStatus(conversation):null,directGitStatusRequest=directGitStatus===true?explicitGitReadRequest(conversation):null,directProcessRunningRequest=directProcessRunningStatus===true?explicitBackgroundProcessRunningRequest(conversation):null,directBrowserRuntimeRequest=directBrowserRuntimeStatus===true&&explicitBrowserRuntimeHealthRequest(conversation),directBrowserScreenshotRequest=directBrowserScreenshot===true&&explicitBrowserScreenshotRequest(conversation),terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
   const verificationFinalizationRequest=verificationCompletionRequest||(finalAfterVerifiedRequest?.target?finalAfterVerifiedRequest:null);
   const successfulTerminalRuns=[];
-  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,selfAdmittedGapRecoveries=0,selfAdmittedGapRecoveryToolBaseline=0,preEditBlockerChallengeToolAllowance=false,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,progressCheckpointInjected=false,probeBatchingRequired=false,postEditProbeBatchingRequired=false,postEditEvidenceRounds=0,postEditEvidenceCheckpointRevision=0,postEditEvidenceEscalated=false,singletonTerminalProbeStreak=0,implementationPressureEvidenceRounds=0,implementationPressureEscalated=false,turnBudgetCheckpointInjected=false,wallBudgetCheckpointInjected=false,revisionChurnCheckpointInjected=false,convergenceCheckpointRevision=0,verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
+  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,selfAdmittedGapRecoveries=0,selfAdmittedGapRecoveryToolBaseline=0,preEditBlockerChallengeToolAllowance=false,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,progressCheckpointInjected=false,probeBatchingRequired=false,postEditProbeBatchingRequired=false,postEditEvidenceRounds=0,postEditEvidenceCheckpointRevision=0,postEditEvidenceEscalated=false,singletonTerminalProbeStreak=0,implementationPressureEvidenceRounds=0,implementationPressureEscalated=false,turnBudgetCheckpointInjected=false,wallBudgetCheckpointInjected=false,revisionChurnCheckpointInjected=false,revisionChurnCheckpointRevision=0,revisionChurnConvergenceBaseline=0,revisionChurnEscalated=false,revisionChurnGraceEditUsed=false,convergenceCheckpointRevision=0,convergenceCheckpointCount=0,verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
   const startedAt=Date.now(),started=nowMs(),wallController=budget.maxWallTimeMs!=null?new AbortController():null,deadlineAt=budget.maxWallTimeMs==null?null:Date.now()+budget.maxWallTimeMs;
   let wallTimer=null;
   if(terminalRuns.length)emit(onEvent,{name:"native.verification.prior_terminal_evidence",status:"completed",model:String(model),provider:provider||null,data:{count:terminalRuns.length}});
@@ -990,6 +990,7 @@ export async function runNativeAgentTurn({
       if(failedRuns.length===0&&passedRuns.length>=3&&distinctPassed.size>=2){
         conversation.push({role:"developer",content:`Trebell convergence checkpoint: since the latest successful workspace edit, ${passedRuns.length} terminal checks have passed with no terminal failure (${distinctPassed.size} distinct commands). Command count is not semantic coverage: before stopping, compare those checks against the user's stated acceptance signals and any behavior-driving structured inputs or configured constraints already identified. Explicit quantitative targets still need representative evidence, and a one-shot benchmark/deploy/cutover/release signal should not be triggered before its acceptance-critical preconditions are evidenced. For hidden/randomized/workload-variable performance gates, a narrow proxy that only barely clears the threshold is not strong convergence evidence: use broader varied cases and meaningful headroom when feasible, and make sure invariant preprocessing is not still sitting inside the repeated hot path. If that coverage is complete, stop speculative polishing and answer now. Continue only if you can name a concrete unmet requirement or a focused verification gap; do not invent extra hardening work.`});
         convergenceCheckpointRevision=editRevision;
+        convergenceCheckpointCount++;
         emit(onEvent,{name:"native.progress.convergence_checkpoint",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,passedRuns:passedRuns.length,distinctPassedRuns:distinctPassed.size}});
       }
     }
@@ -997,7 +998,14 @@ export async function runNativeAgentTurn({
       const currentRevisionRuns=terminalRuns.filter(item=>item?.currentTurn&&item?.editRevision===editRevision),currentFailures=currentRevisionRuns.filter(item=>item?.exitCode!==0).length;
       conversation.push({role:"developer",content:`Trebell revision-churn checkpoint: ${editRevision} successful workspace edits have already been made in this turn. Do not keep making small speculative tweaks merely to polish the current artifact or to escape a convergence checkpoint. Before another edit, name the concrete unmet user requirement, failing check, or acceptance-critical evidence gap it addresses; if several related changes remain, combine them coherently instead of paying one model round trip per micro-edit. If the current implementation already satisfies the user's stated acceptance signals, stop and answer. Large multi-file work may continue when those edits map to distinct required surfaces.`});
       revisionChurnCheckpointInjected=true;
+      revisionChurnCheckpointRevision=editRevision;
+      revisionChurnConvergenceBaseline=convergenceCheckpointCount;
       emit(onEvent,{name:"native.progress.revision_churn_checkpoint",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,currentRevisionFailures:currentFailures}});
+    }
+    if(workspaceMutationRequested&&revisionChurnCheckpointInjected&&!revisionChurnEscalated&&editRevision>=revisionChurnCheckpointRevision+4&&convergenceCheckpointCount>=revisionChurnConvergenceBaseline+2){
+      conversation.push({role:"developer",content:`Trebell revision-churn escalation: ${editRevision} successful workspace edits have now accumulated after repeated convergence evidence. The next coherent workspace-edit response is the final grace repair batch for any already-known unmet requirement. After that, further workspace edits require fresh failing terminal evidence from the current revision; speculative edits will be blocked instead of resetting convergence budgets again. Batch related changes together. If there is no concrete failing evidence or unmet acceptance signal, finish from the evidence already gathered.`});
+      revisionChurnEscalated=true;
+      emit(onEvent,{name:"native.progress.revision_churn_escalation",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,checkpointRevision:revisionChurnCheckpointRevision,convergenceCheckpoints:convergenceCheckpointCount}});
     }
     const turnBudgetCheckpointAt=Math.min(36,Math.max(8,Math.ceil(budget.maxModelTurns*.75)));
     if(!turnBudgetCheckpointInjected&&modelTurns>=turnBudgetCheckpointAt&&modelTurns<budget.maxModelTurns){
@@ -1190,7 +1198,7 @@ export async function runNativeAgentTurn({
       emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage}});
       return result;
     }
-    const editRevisionBeforeCalls=editRevision,responseHasEditCall=calls.some(implementationPressureEditCall),preEditBlockerChallengeBypass=preEditBlockerChallengeToolAllowance&&editRevision===0;let redirected=false,blockedPreEditCall=false,blockedPostEditProbeCall=false,blockedPostEditEvidenceCall=false,executedPreEditEvidence=false,executedPostEditEvidence=false;
+    const editRevisionBeforeCalls=editRevision,responseHasEditCall=calls.some(implementationPressureEditCall),preEditBlockerChallengeBypass=preEditBlockerChallengeToolAllowance&&editRevision===0,revisionChurnFailureEvidence=revisionChurnEscalated&&terminalRuns.some(item=>item?.currentTurn&&item?.editRevision===editRevisionBeforeCalls&&item?.exitCode!==0);let redirected=false,blockedPreEditCall=false,blockedPostEditProbeCall=false,blockedPostEditEvidenceCall=false,blockedRevisionChurnEdit=false,executedPreEditEvidence=false,executedPostEditEvidence=false;
     if(preEditBlockerChallengeBypass){
       preEditBlockerChallengeToolAllowance=false;
       emit(onEvent,{name:"native.completion.blocker_challenge_evidence_allowed",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,callCount:calls.length}});
@@ -1217,7 +1225,15 @@ export async function runNativeAgentTurn({
       const escalatedPreEditEvidenceBlocked=editRevision===0&&!preEditBlockerChallengeBypass&&implementationPressureEscalated&&!responseHasEditCall&&!implementationPressureEditCall(call);
       const singletonPreEditEvidenceBlocked=editRevision===0&&!preEditBlockerChallengeBypass&&calls.length===1&&!implementationPressureEditCall(call)&&!implementationPressureBatchCall(call)&&(implementationPressure||probeBatchingRequired);
       const escalatedPostEditEvidenceBlocked=editRevision>0&&postEditEvidenceEscalated&&!responseHasEditCall&&!implementationPressureEditCall(call);
+      const escalatedRevisionChurnEditBlocked=revisionChurnEscalated&&revisionChurnGraceEditUsed&&!revisionChurnFailureEvidence&&implementationPressureEditCall(call);
       const singletonPostConvergenceTerminalBlocked=editRevision>0&&convergenceCheckpointRevision===editRevision&&calls.length===1&&call?.namespace==="trebell_terminal"&&call?.name==="run"&&!implementationPressureBatchCall(call);
+      if(escalatedRevisionChurnEditBlocked){
+        const callId=String(call?.id||""),toolCallNumber=toolCalls+1;toolCalls=toolCallNumber;
+        conversation.push({role:"tool",toolCallId:callId,content:"Trebell revision-churn escalation: this workspace edit was not executed because the high-churn grace repair batch has already been used and the current revision has no fresh failing terminal evidence. Run the focused acceptance check that demonstrates the concrete remaining defect, or finish now if the implementation already satisfies the stated requirements. Further speculative edits cannot reset the convergence budget."});
+        blockedRevisionChurnEdit=true;
+        emit(onEvent,{name:"native.progress.revision_churn_edit_blocked",status:"blocked",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCall:toolCallNumber,callId,namespace:call?.namespace||null,name:call?.name||"tool",editRevision,reason:"revision_churn_requires_failing_evidence"}});
+        callIndex++;continue;
+      }
       if(singletonPostConvergenceTerminalBlocked){
         const callId=String(call?.id||""),toolCallNumber=toolCalls+1;toolCalls=toolCallNumber;
         conversation.push({role:"tool",toolCallId:callId,content:"Trebell convergence guard: this singleton terminal check was not executed because the current edit revision already has several distinct passing checks and no terminal failure. If one final verification sweep is genuinely needed, batch the remaining independent checks into one bounded response/script. Otherwise answer now. A new workspace edit remains available if you can name a concrete unmet requirement."});
@@ -1271,12 +1287,13 @@ export async function runNativeAgentTurn({
     if(redirected)continue;
     if(editRevision===0&&implementationPressure&&executedPreEditEvidence)implementationPressureEvidenceRounds++;
     if(editRevision>editRevisionBeforeCalls){
+      if(revisionChurnEscalated)revisionChurnGraceEditUsed=true;
       singletonTerminalProbeStreak=0;
       postEditProbeBatchingRequired=false;
       postEditEvidenceRounds=0;
       postEditEvidenceCheckpointRevision=0;
       postEditEvidenceEscalated=false;
-    }else if(!blockedPreEditCall&&!blockedPostEditProbeCall&&calls.length===1&&calls[0]?.namespace==="trebell_terminal"&&calls[0]?.name==="run"&&!implementationPressureBatchCall(calls[0])){
+    }else if(!blockedPreEditCall&&!blockedPostEditProbeCall&&!blockedRevisionChurnEdit&&calls.length===1&&calls[0]?.namespace==="trebell_terminal"&&calls[0]?.name==="run"&&!implementationPressureBatchCall(calls[0])){
       singletonTerminalProbeStreak++;
     }else if(calls.length>0&&!blockedPreEditCall&&!blockedPostEditProbeCall){
       singletonTerminalProbeStreak=0;

@@ -2402,6 +2402,49 @@ test("native agent nudges convergence after unusually high workspace edit churn"
   const checkpoints=events.filter(event=>event.name==="native.progress.revision_churn_checkpoint");assert.equal(checkpoints.length,1);assert.equal(checkpoints[0].data.editRevision,8);
 });
 
+test("native revision-churn escalation blocks speculative edits after convergence unless fresh failure evidence exists",async()=>{
+  let turns=0;const requests=[],events=[],executed=[];
+  const terminalBatch=label=>[
+    {id:`${label}-a`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[`${label}-a.mjs`]})},
+    {id:`${label}-b`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[`${label}-b.mjs`]})},
+    {id:`${label}-c`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[`${label}-c.mjs`]})},
+  ];
+  const edit=n=>({text:"",toolCalls:[{id:`edit-${n}`,namespace:"trebell_workspace",name:"replace_text",arguments:JSON.stringify({path:"src/a.mjs",old_text:`bad-${n}`,new_text:`good-${n}`})}],usage:{}});
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation."}],maxModelTurns:24,maxToolCalls:60,onEvent:event=>events.push(event),
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turns++;
+      if(turns<=8)return edit(turns);
+      if(turns===9)return {text:"",toolCalls:terminalBatch("verify-8"),usage:{}};
+      if(turns===10)return edit(9);
+      if(turns===11)return {text:"",toolCalls:terminalBatch("verify-9"),usage:{}};
+      if(turns===12)return edit(10);
+      if(turns===13)return edit(11);
+      if(turns===14)return edit(12);
+      if(turns===15){
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/revision-churn escalation/i.test(String(message.content||""))));
+        return edit(13);
+      }
+      if(turns===16)return edit(14);
+      assert.ok(request.messages.some(message=>message.role==="tool"&&message.toolCallId==="edit-14"&&/fresh failing terminal evidence/i.test(String(message.content||""))));
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{
+      executed.push(call.id);
+      return call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0};
+    },
+  });
+  assert.equal(result.text,"done");
+  assert.equal(executed.includes("edit-13"),true);
+  assert.equal(executed.includes("edit-14"),false);
+  assert.equal(events.filter(event=>event.name==="native.progress.revision_churn_escalation").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.revision_churn_edit_blocked").length,1);
+});
+
 test("native agent wall-time budget aborts in-flight provider work and reports a budget failure",async()=>{
   const events=[];let providerAborted=false;
   await assert.rejects(()=>runNativeAgentTurn({

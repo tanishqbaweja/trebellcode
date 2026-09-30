@@ -10,6 +10,8 @@ export function createNativeStrategyMetrics(){
     postEditEvidenceCheckpoints:0,
     postEditEvidenceEscalations:0,
     postEditEvidenceCallsBlocked:0,
+    revisionChurnEscalations:0,
+    revisionChurnEditsBlocked:0,
     selfAdmittedVerificationGaps:0,
     selfAdmittedCompletionGaps:0,
   };
@@ -28,6 +30,8 @@ export function observeNativeStrategyEvent(metrics,event,atMs=null){
   else if(name==="native.progress.post_edit_evidence_checkpoint")target.postEditEvidenceCheckpoints=Number(target.postEditEvidenceCheckpoints||0)+1;
   else if(name==="native.progress.post_edit_evidence_escalation")target.postEditEvidenceEscalations=Number(target.postEditEvidenceEscalations||0)+1;
   else if(name==="native.progress.post_edit_evidence_call_blocked")target.postEditEvidenceCallsBlocked=Number(target.postEditEvidenceCallsBlocked||0)+1;
+  else if(name==="native.progress.revision_churn_escalation")target.revisionChurnEscalations=Number(target.revisionChurnEscalations||0)+1;
+  else if(name==="native.progress.revision_churn_edit_blocked")target.revisionChurnEditsBlocked=Number(target.revisionChurnEditsBlocked||0)+1;
   else if(name==="native.verification.self_admitted_gap")target.selfAdmittedVerificationGaps=Number(target.selfAdmittedVerificationGaps||0)+1;
   else if(name==="native.completion.self_admitted_gap")target.selfAdmittedCompletionGaps=Number(target.selfAdmittedCompletionGaps||0)+1;
   return target;
