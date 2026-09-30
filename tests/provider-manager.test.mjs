@@ -466,6 +466,38 @@ test("OpenAI WebSocket timeout is caller-retryable without blind in-turn replay 
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
+test("OpenAI WebSocket turn has an absolute provider deadline even when the socket never goes idle",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-absolute-deadline-"));
+  try{
+    let closeCalls=0,seenIdleTimeoutMs=null;
+    const manager=new ProviderManager({
+      requestTimeoutMs:35,
+      env:{TREBELL_HOME:root},
+      openAiResponsesWebSocketFactory:()=>({
+        close:()=>{closeCalls++},
+        request:async(_body,{signal,idleTimeoutMs})=>{
+          seenIdleTimeoutMs=idleTimeoutMs;
+          return await new Promise((resolve,reject)=>{
+            const abort=()=>reject(signal.reason);
+            if(signal.aborted)return abort();
+            signal.addEventListener("abort",abort,{once:true});
+          });
+        },
+      }),
+      fetchFn:async()=>{throw new Error("HTTP should not run after a post-send absolute WebSocket deadline")},
+    });
+    manager.setKey("openai","oa-key");
+    const started=Date.now();
+    await assert.rejects(
+      manager.turn("openai",{model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"native_absolute_deadline"}},{streamResponses:true}),
+      error=>error?.name==="TimeoutError"&&error?.retryable===true&&error?.telemetry?.webSocketFallback?.retried===false,
+    );
+    assert.ok(Date.now()-started<500,"absolute provider deadline should settle the WebSocket request promptly");
+    assert.ok(seenIdleTimeoutMs>0&&seenIdleTimeoutMs<=35);
+    assert.equal(closeCalls,1);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
 test("official OpenAI one-shot turns without Native session metadata stay on HTTPS",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-no-session-"));let factoryCalls=0,fetchCalls=0;
   try{

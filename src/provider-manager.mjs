@@ -771,7 +771,7 @@ export class ProviderManager {
       const transport=this.#openAiWebSocketTransport();
       if(transport){
         try{
-          const socketStarted=performance.now(),socketResult=await transport.request(responsesBody,{streamId:openAiWebSocketStreamId,signal,idleTimeoutMs:this.requestTimeoutMs}),result=normalizeResponsesTurnResponse(socketResult.response,provider.id,model);
+          const socketStarted=performance.now(),socketRemainingMs=remainingProviderRequestMs(requestDeadlineAt),socketSignal=providerRequestSignal(signal,socketRemainingMs),socketResult=await transport.request(responsesBody,{streamId:openAiWebSocketStreamId,signal:socketSignal,idleTimeoutMs:Math.min(this.requestTimeoutMs,socketRemainingMs)}),result=normalizeResponsesTurnResponse(socketResult.response,provider.id,model);
           this.openAiResponsesWebSocketTransientFailures=0;
           this.openAiResponseContinuations.record(result.id,openAiContinuation,result);
           result.telemetry={
