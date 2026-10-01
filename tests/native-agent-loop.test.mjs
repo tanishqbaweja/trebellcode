@@ -2500,11 +2500,25 @@ test("native localizes residual structure after an abstraction repair before reo
         assert.match(String(checkpoint.content),/smallest failing output\/source family/i);
         assert.match(String(checkpoint.content),/axis orientation or transpose/i);
         assert.match(String(checkpoint.content),/packing\/interleave\/pair order/i);
+        assert.match(String(checkpoint.content),/Test exactly one such dimension at a time/i);
+        assert.match(String(checkpoint.content),/hold every other reconstruction choice fixed/i);
+        assert.match(String(checkpoint.content),/Do not run a Cartesian product or coupled sweep/i);
+        assert.match(String(checkpoint.content),/Preserve an isolated transform only when it materially improves/i);
+        assert.match(String(checkpoint.content),/Combine transforms only after each component has independent support/i);
         assert.match(String(checkpoint.content),/specialized grouped\/fused\/kernel representation/i);
         assert.equal(events.filter(event=>event.name==="native.progress.assumption_audit_checkpoint").length,1);
         return {text:"",toolCalls:[{id:"local-layout-fix",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"resegmented-verified","new_text":"resegmented-and-local-layout-fixed"}'}],usage:{}};
       }
-      return {text:"done",toolCalls:[],usage:{}};
+      if(turns===17)return {text:"",toolCalls:evidence("residual-descendant-1"),usage:{}};
+      if(turns===18)return {text:"",toolCalls:evidence("residual-descendant-2"),usage:{}};
+      if(turns===19){
+        const checkpoints=request.messages.filter(message=>message.role==="developer"&&/residual-structure checkpoint/i.test(String(message.content||"")));
+        assert.equal(checkpoints.length,2);
+        assert.equal(events.filter(event=>event.name==="native.progress.assumption_audit_checkpoint").length,1);
+        assert.equal(events.filter(event=>event.name==="native.progress.abstraction_boundary_escalation").length,1);
+        return {text:"done",toolCalls:[],usage:{}};
+      }
+      throw new Error("unexpected provider call "+turns);
     },
     executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:"src/decoder.mjs",replacements:1}:{exitCode:0}},
   });
@@ -2516,7 +2530,7 @@ test("native localizes residual structure after an abstraction repair before reo
   assert.equal(events.filter(event=>event.name==="native.progress.abstraction_repair_verification_evidence").length,2);
   assert.equal(events.filter(event=>event.name==="native.progress.abstraction_repair_verification_gate").length,2);
   assert.equal(events.filter(event=>event.name==="native.progress.abstraction_repair_verified").length,1);
-  assert.equal(events.filter(event=>event.name==="native.progress.residual_structure_checkpoint").length,1);
+  const residualCheckpoints=events.filter(event=>event.name==="native.progress.residual_structure_checkpoint");assert.equal(residualCheckpoints.length,2);assert.equal(residualCheckpoints[0].data?.descendantRevision,false);assert.equal(residualCheckpoints[1].data?.descendantRevision,true);
 });
 
 test("native semantic completion gate rejects unsupported completion without task-specific wording",async()=>{
