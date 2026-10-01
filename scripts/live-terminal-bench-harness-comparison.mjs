@@ -267,44 +267,48 @@ try{
     try{await run(harbor,args,{env:harnessEnv})}catch(error){runError=error?.message||String(error)}
     let drainError=null;
     try{await waitForJobProcessDrain(jobName,{timeoutMs:LANE_DRAIN_TIMEOUT_MS,cwd:root})}catch(error){drainError=error?.message||String(error);runError=[runError,drainError].filter(Boolean).join("; ")}
-    let result=null;
-    try{result=JSON.parse(await readFile(join(outputRoot,jobName,"result.json"),"utf8"))}catch{}
-    const recordedTrial=await trialResult(outputRoot,jobName),trial=recordedTrial||await recoverTrialEvidence(outputRoot,jobName);
-    const recoveredNative=harness==="native"?await recoverNativeEventEvidence(outputRoot,jobName):null;
-    const recoveredCodex=harness==="codex"?await recoverCodexSessionEvidence(outputRoot,jobName):null;
-    const recoveredEvidence=recoveredNative||recoveredCodex;
-    const inputMetric=selectNativeMetric(result?.stats?.n_input_tokens,trial?.agent_result?.n_input_tokens,recoveredEvidence?.inputTokens);
-    const cachedMetric=selectNativeMetric(result?.stats?.n_cache_tokens,trial?.agent_result?.n_cache_tokens,recoveredEvidence?.cachedTokens);
-    const outputMetric=selectNativeMetric(result?.stats?.n_output_tokens,trial?.agent_result?.n_output_tokens,recoveredEvidence?.outputTokens);
-    const inputTokens=inputMetric.value,cachedTokens=cachedMetric.value;
-    const uncachedInputTokens=inputTokens==null||cachedTokens==null?null:Math.max(0,Number(inputTokens)-Number(cachedTokens));
-    const cacheHitPercent=inputTokens==null||Number(inputTokens)<=0||cachedTokens==null?null:Number(((Number(cachedTokens)/Number(inputTokens))*100).toFixed(2));
-    const trebellNative=trial?.agent_result?.metadata?.trebell_native||null;
-    const recoveredFromNativeEvents=Boolean(recoveredNative&&(inputMetric.recovered||cachedMetric.recovered||outputMetric.recovered||!trebellNative));
-    const apiEquivalentCostBreakdown=MODEL==="gpt-6-luna"&&recoveredEvidence?.apiEquivalentCostBreakdown
-      ?recoveredEvidence.apiEquivalentCostBreakdown
-      :MODEL==="gpt-6-luna"&&inputTokens!=null&&cachedTokens!=null
-        ?estimateGpt6LunaStandardCostFromAggregate({inputTokens,cachedInputTokens:cachedTokens,cacheWriteInputTokens:trebellNative?.cache_write_input_tokens??recoveredEvidence?.cacheWriteInputTokens??0,outputTokens:outputMetric.value??0},{maxObservedInputTokens:recoveredEvidence?.maxObservedInputTokens??null})
-        :null;
-    jobs[laneIndex]={
-      harness,label,agent,jobName,runError,authMode,
-      completed:Number(result?.stats?.n_completed_trials||0),errors:Number(result?.stats?.n_errored_trials||0),
-      inputTokens,cachedTokens,uncachedInputTokens,cacheHitPercent,
-      outputTokens:outputMetric.value,
-      costUsd:result?.stats?.cost_usd??trial?.agent_result?.cost_usd??null,
-      apiEquivalentCostUsd:apiEquivalentCostBreakdown?.totalUsd??null,
-      apiEquivalentCostBreakdown,
-      reward:trial?.verifier_result?.rewards?.reward??null,taskChecksum:trial?.task_checksum??null,
-      agentVersion:trial?.agent_info?.version??null,
-      setupMs:elapsedMs(trial?.agent_setup),agentExecutionMs:elapsedMs(trial?.agent_execution),verifierMs:elapsedMs(trial?.verifier),
-      ...(trebellNative?{modelTurns:trebellNative.model_turns??recoveredNative?.modelTurns??null,toolCalls:trebellNative.tool_calls??recoveredNative?.toolCalls??null,providerRequests:trebellNative.provider_requests??null,reasoningContext:trebellNative.reasoning_context??null,effectiveReasoningContexts:trebellNative.effective_reasoning_contexts??[],reasoningOutputTokens:trebellNative.reasoning_output_tokens??recoveredNative?.reasoningOutputTokens??null,cacheWriteInputTokens:trebellNative.cache_write_input_tokens??recoveredNative?.cacheWriteInputTokens??null,cacheCarryover:trebellNative.cache_carryover??null,strategy:trebellNative.strategy??null,budgets:trebellNative.budgets??null,contextPolicy:trebellNative.context_policy??null}:recoveredNative?{modelTurns:recoveredNative.modelTurns,toolCalls:recoveredNative.toolCalls,reasoningOutputTokens:recoveredNative.reasoningOutputTokens,cacheWriteInputTokens:recoveredNative.cacheWriteInputTokens}:{}),
-      exceptionType:trial?.exception_info?.exception_type??null,exceptionMessage:trial?.exception_info?.exception_message??null,
-      recoveredFromTrialFiles:trial?.recovered_from_trial_files===true,
-      recoveredFromNativeEvents,
-      recoveredFromCodexSessions:Boolean(recoveredCodex),
-      ...(harness==="codex"&&recoveredCodex?{modelTurns:recoveredCodex.modelTurns,reasoningOutputTokens:recoveredCodex.reasoningOutputTokens,cacheWriteInputTokens:recoveredCodex.cacheWriteInputTokens}:{}),
-      evals:result?.stats?.evals||{},
-    };
+    try{
+      let result=null;
+      try{result=JSON.parse(await readFile(join(outputRoot,jobName,"result.json"),"utf8"))}catch{}
+      const recordedTrial=await trialResult(outputRoot,jobName),trial=recordedTrial||await recoverTrialEvidence(outputRoot,jobName);
+      const recoveredNative=harness==="native"?await recoverNativeEventEvidence(outputRoot,jobName):null;
+      const recoveredCodex=harness==="codex"?await recoverCodexSessionEvidence(outputRoot,jobName):null;
+      const recoveredEvidence=recoveredNative||recoveredCodex;
+      const inputMetric=selectNativeMetric(result?.stats?.n_input_tokens,trial?.agent_result?.n_input_tokens,recoveredEvidence?.inputTokens);
+      const cachedMetric=selectNativeMetric(result?.stats?.n_cache_tokens,trial?.agent_result?.n_cache_tokens,recoveredEvidence?.cachedTokens);
+      const outputMetric=selectNativeMetric(result?.stats?.n_output_tokens,trial?.agent_result?.n_output_tokens,recoveredEvidence?.outputTokens);
+      const inputTokens=inputMetric.value,cachedTokens=cachedMetric.value;
+      const uncachedInputTokens=inputTokens==null||cachedTokens==null?null:Math.max(0,Number(inputTokens)-Number(cachedTokens));
+      const cacheHitPercent=inputTokens==null||Number(inputTokens)<=0||cachedTokens==null?null:Number(((Number(cachedTokens)/Number(inputTokens))*100).toFixed(2));
+      const trebellNative=trial?.agent_result?.metadata?.trebell_native||null;
+      const recoveredFromNativeEvents=Boolean(recoveredNative&&(inputMetric.recovered||cachedMetric.recovered||outputMetric.recovered||!trebellNative));
+      const apiEquivalentCostBreakdown=MODEL==="gpt-6-luna"&&recoveredEvidence?.apiEquivalentCostBreakdown
+        ?recoveredEvidence.apiEquivalentCostBreakdown
+        :MODEL==="gpt-6-luna"&&inputTokens!=null&&cachedTokens!=null
+          ?estimateGpt6LunaStandardCostFromAggregate({inputTokens,cachedInputTokens:cachedTokens,cacheWriteInputTokens:trebellNative?.cache_write_input_tokens??recoveredEvidence?.cacheWriteInputTokens??0,outputTokens:outputMetric.value??0},{maxObservedInputTokens:recoveredEvidence?.maxObservedInputTokens??null})
+          :null;
+      jobs[laneIndex]={
+        harness,label,agent,jobName,runError,authMode,
+        completed:Number(result?.stats?.n_completed_trials||0),errors:Number(result?.stats?.n_errored_trials||0),
+        inputTokens,cachedTokens,uncachedInputTokens,cacheHitPercent,
+        outputTokens:outputMetric.value,
+        costUsd:result?.stats?.cost_usd??trial?.agent_result?.cost_usd??null,
+        apiEquivalentCostUsd:apiEquivalentCostBreakdown?.totalUsd??null,
+        apiEquivalentCostBreakdown,
+        reward:trial?.verifier_result?.rewards?.reward??null,taskChecksum:trial?.task_checksum??null,
+        agentVersion:trial?.agent_info?.version??null,
+        setupMs:elapsedMs(trial?.agent_setup),agentExecutionMs:elapsedMs(trial?.agent_execution),verifierMs:elapsedMs(trial?.verifier),
+        ...(trebellNative?{modelTurns:trebellNative.model_turns??recoveredNative?.modelTurns??null,toolCalls:trebellNative.tool_calls??recoveredNative?.toolCalls??null,providerRequests:trebellNative.provider_requests??null,reasoningContext:trebellNative.reasoning_context??null,effectiveReasoningContexts:trebellNative.effective_reasoning_contexts??[],reasoningOutputTokens:trebellNative.reasoning_output_tokens??recoveredNative?.reasoningOutputTokens??null,cacheWriteInputTokens:trebellNative.cache_write_input_tokens??recoveredNative?.cacheWriteInputTokens??null,cacheCarryover:trebellNative.cache_carryover??null,strategy:trebellNative.strategy??null,budgets:trebellNative.budgets??null,contextPolicy:trebellNative.context_policy??null}:recoveredNative?{modelTurns:recoveredNative.modelTurns,toolCalls:recoveredNative.toolCalls,reasoningOutputTokens:recoveredNative.reasoningOutputTokens,cacheWriteInputTokens:recoveredNative.cacheWriteInputTokens}:{}),
+        exceptionType:trial?.exception_info?.exception_type??null,exceptionMessage:trial?.exception_info?.exception_message??null,
+        recoveredFromTrialFiles:trial?.recovered_from_trial_files===true,
+        recoveredFromNativeEvents,
+        recoveredFromCodexSessions:Boolean(recoveredCodex),
+        evals:result?.stats?.evals||{},
+      };
+    }catch(error){
+      const recoveryError=`lane evidence recovery failed: ${error?.message||String(error)}`;runError=[runError,recoveryError].filter(Boolean).join("; ");
+      jobs[laneIndex]={harness,label,agent,jobName,runError,authMode,completed:0,errors:1,inputTokens:null,cachedTokens:null,uncachedInputTokens:null,cacheHitPercent:null,outputTokens:null,costUsd:null,apiEquivalentCostUsd:null,apiEquivalentCostBreakdown:null,reward:null,taskChecksum:null,agentVersion:null,setupMs:null,agentExecutionMs:null,verifierMs:null,exceptionType:"LaneEvidenceRecoveryError",exceptionMessage:recoveryError,recoveredFromTrialFiles:false,recoveredFromNativeEvents:false,recoveredFromCodexSessions:false,evals:{}};
+    }
     laneState.status=runError?"failed":"finished";laneState.finishedAt=new Date().toISOString();laneState.runError=runError;
     await persistReport({complete:false});
   };
@@ -313,7 +317,10 @@ try{
   // Keep verifier internals sealed while comparison lanes are still running.
   // Only after every lane has finished do we read generic CTRF pass/fail totals
   // and attach them to the final report for correctness-first comparison.
-  for(const job of jobs.filter(Boolean))job.verifierChecks=await readJobVerifierSummary(outputRoot,job.jobName);
+  for(const job of jobs.filter(Boolean)){
+    try{job.verifierChecks=await readJobVerifierSummary(outputRoot,job.jobName)}
+    catch(error){const verifierError=`verifier summary recovery failed: ${error?.message||String(error)}`;job.runError=[job.runError,verifierError].filter(Boolean).join("; ");job.verifierChecks=null}
+  }
   const report=reportSnapshot({complete:true});await writeFile(reportPath,JSON.stringify(report,null,2)+"\n","utf8");
   console.log("TREBELL_TERMINAL_BENCH_REPORT "+JSON.stringify({...report,reportPath},null,2));
   if(jobs.filter(Boolean).some(job=>job.runError||job.errors>0||job.completed<1)||jobs.filter(Boolean).length!==selectedLanes.length)process.exitCode=1;

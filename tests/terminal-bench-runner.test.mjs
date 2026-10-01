@@ -104,9 +104,14 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/readJobVerifierSummary/);
   assert.match(source,/jobsForPairReport/);
   assert.match(source,/jobs:jobsForPairReport\(jobs\.filter\(Boolean\),\{complete\}\)/);
-  assert.match(source,/for\(const job of jobs\.filter\(Boolean\)\)job\.verifierChecks=await readJobVerifierSummary/);
+  assert.match(source,/for\(const job of jobs\.filter\(Boolean\)\)\{/);
+  assert.match(source,/job\.verifierChecks=await readJobVerifierSummary/);
   assert.match(source,/TREBELL_TERMINAL_BENCH_LANE_DRAIN_MS/);
   assert.match(source,/runError=\[runError,drainError\]\.filter\(Boolean\)\.join/);
+  assert.match(source,/lane evidence recovery failed:/);
+  assert.match(source,/exceptionType:"LaneEvidenceRecoveryError"/);
+  assert.match(source,/verifier summary recovery failed:/);
+  assert.match(source,/job\.verifierChecks=null/);
   assert.match(source,/laneState\.status=runError\?"failed":"finished"/);
   assert.match(source,/writeFile\(reportPath,JSON\.stringify\(report,null,2\)/);
 });
