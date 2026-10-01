@@ -2826,7 +2826,19 @@ test("native factorizes a verified localized residual instead of reopening globa
 });
 
 test("native restores the evidence-backed incumbent when an isolated residual recovery edit regresses",async()=>{
-  let turns=0,fileContent="old";const events=[];
+  let turns=0,fileContent="old";const events=[],modelFacingRecoveryCalls=[],internalRecoveryCalls=[];
+  const rawTool=async call=>{
+    if(call.namespace==="trebell_workspace"&&call.name==="read_file")return {path:"src/decoder.mjs",content:fileContent,size:fileContent.length};
+    if(call.namespace==="trebell_workspace"&&call.name==="write_file"){
+      fileContent=String(call.arguments?.content??"");
+      return {path:"src/decoder.mjs",size:fileContent.length,createdOrReplaced:true,existedBefore:true};
+    }
+    if(call.namespace==="trebell_workspace"&&call.name==="replace_text"){
+      const oldText=String(call.arguments?.old_text??""),newText=String(call.arguments?.new_text??"");
+      assert.ok(fileContent.includes(oldText));fileContent=fileContent.replace(oldText,newText);return {path:"src/decoder.mjs",replacements:1};
+    }
+    return {exitCode:0,stdout:String(call.id||"")==="verify-regression"?"exact_error=14":"evidence"};
+  };
   const evidence=label=>[
     {id:label+"-a",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-a.mjs"]})},
     {id:label+"-b",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-b.mjs"]})},
@@ -2834,7 +2846,7 @@ test("native restores the evidence-backed incumbent when an isolated residual re
   const result=await runNativeAgentTurn({
     model:"test-model",semanticCompletionGate:true,maxCompletionRecoveryEpochs:1,maxModelTurns:24,maxToolCalls:40,onEvent:event=>events.push(event),
     messages:[{role:"user",content:"Fix the binary reconstruction and preserve the strongest exact-acceptance candidate."}],
-    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"},{name:"replace_text"},{name:"write_file"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"},{name:"write_file"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
     providerTurn:async request=>{
       turns++;
       if(turns===1)return {text:"",toolCalls:[{id:"initial",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"old","new_text":"candidate"}'}],usage:{}};
@@ -2861,23 +2873,21 @@ test("native restores the evidence-backed incumbent when an isolated residual re
       throw new Error("unexpected provider call "+turns);
     },
     executeTool:async call=>{
-      if(call.namespace==="trebell_workspace"&&call.name==="read_file")return {path:"src/decoder.mjs",content:fileContent,size:fileContent.length};
-      if(call.namespace==="trebell_workspace"&&call.name==="write_file"){
-        fileContent=String(call.arguments?.content??"");
-        return {path:"src/decoder.mjs",size:fileContent.length,createdOrReplaced:true,existedBefore:true};
+      if(/^native-recovery-/.test(String(call.id||""))){
+        modelFacingRecoveryCalls.push(String(call.id||""));
+        return {success:true,path:"src/decoder.mjs",preview:"virtualized model-facing result",_trebell_output:{handle:"out_fixture"}};
       }
-      if(call.namespace==="trebell_workspace"&&call.name==="replace_text"){
-        const oldText=String(call.arguments?.old_text??""),newText=String(call.arguments?.new_text??"");
-        assert.ok(fileContent.includes(oldText));fileContent=fileContent.replace(oldText,newText);return {path:"src/decoder.mjs",replacements:1};
-      }
-      return {exitCode:0,stdout:String(call.id||"")==="verify-regression"?"exact_error=14":"evidence"};
+      return rawTool(call);
     },
+    executeInternalTool:async call=>{internalRecoveryCalls.push(String(call.id||""));return rawTool(call)},
   });
   assert.equal(turns,19);
   const snapshots=events.filter(event=>event.name==="native.completion.recovery_candidate_snapshot");assert.equal(snapshots.length,1,JSON.stringify(events.filter(event=>/abstraction|residual|completion\.recovery|completion\.gate/.test(event.name)).map(event=>({name:event.name,data:event.data}))));assert.equal(snapshots[0].data?.restorable,true);
   const regressedGate=events.find(event=>event.name==="native.completion.gate"&&event.data?.progress==="regressed");assert.ok(regressedGate);
   assert.equal(fileContent,"reframed");
   const restored=events.filter(event=>event.name==="native.completion.recovery_incumbent_restored");assert.equal(restored.length,1,JSON.stringify(events.filter(event=>/incumbent|candidate_snapshot|completion\.gate/.test(event.name)).map(event=>({name:event.name,status:event.status,data:event.data}))));assert.equal(restored[0].data?.progress,"regressed");assert.equal(restored[0].data?.pathCount,1);
+  assert.deepEqual(modelFacingRecoveryCalls,[]);
+  assert.ok(internalRecoveryCalls.some(id=>id.startsWith("native-recovery-snapshot-")));assert.ok(internalRecoveryCalls.some(id=>id.startsWith("native-recovery-restore-check-")));assert.ok(internalRecoveryCalls.some(id=>id.startsWith("native-recovery-restore-")));
   const exhausted=events.find(event=>event.name==="native.completion.recovery_exhausted");assert.equal(exhausted?.data?.incumbentRestores,1);assert.equal(exhausted?.data?.incumbentWorkspaceAligned,true);
   assert.match(result.text,/strongest evidence-backed workspace state has been preserved or restored/i);
 });

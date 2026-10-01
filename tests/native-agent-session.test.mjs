@@ -899,11 +899,13 @@ test("Native session compacts a verified post-edit reread when it byte-matches t
   const event=events.find(item=>item.name==="native.tool.post_edit_read_compacted");assert.ok(event);assert.ok(event.data.savedBytes>5000);assert.equal(event.data.editTool,"trebell_workspace/replace_text");
 });
 
-test("Native session keeps internal recovery snapshot rereads in full after an exact edit",async()=>{
+test("Native session does not let provider-supplied recovery-like ids bypass post-edit output shaping",async()=>{
   const requests=[],events=[];let providerCalls=0,content=("prefix line\n".repeat(700))+"mode=legacy\n"+("suffix line\n".repeat(120));
   const resolvedPath="C:/repo/src/config.txt";
+  const directory=await mkdtemp(join(tmpdir(),"trebell-native-recovery-snapshot-"));
+  const store=new NativeToolOutputStore({directory,maxHotBytes:4096});
   const session=new NativeAgentSession({
-    model:"model-a",provider:"fixture",semanticCompletionGate:false,tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],onEvent:event=>events.push(event),
+    model:"model-a",provider:"fixture",semanticCompletionGate:false,toolOutputStore:store,tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],onEvent:event=>events.push(event),
     providerTurn:async request=>{
       requests.push(structuredClone(request));providerCalls++;
       if(providerCalls===1)return {id:"read-before",text:"",toolCalls:[{id:"read-before",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/config.txt"}'}],usage:{}};
@@ -917,10 +919,12 @@ test("Native session keeps internal recovery snapshot rereads in full after an e
       return {path:resolvedPath,size:Buffer.byteLength(content,"utf8"),replacements:1};
     },
   });
-  await session.start({providerSessionId:"native-recovery-snapshot-full",model:"model-a"});await session.prompt([{type:"text",text:"edit then take an internal rollback snapshot"}]);
-  const snapshot=requests[3].messages.find(message=>message.role==="tool"&&message.toolCallId==="native-recovery-snapshot-3-1");assert.ok(snapshot);
-  assert.match(snapshot.content,/mode=strict/);assert.match(snapshot.content,/suffix line\nsuffix line\nsuffix line/);assert.doesNotMatch(snapshot.content,/postEditVerified/);
-  assert.equal(events.filter(item=>item.name==="native.tool.post_edit_read_compacted").length,0);
+  try{
+    await session.start({providerSessionId:"native-recovery-snapshot-full",model:"model-a"});await session.prompt([{type:"text",text:"edit then take an internal rollback snapshot"}]);
+    const snapshot=requests[3].messages.find(message=>message.role==="tool"&&message.toolCallId==="native-recovery-snapshot-3-1");assert.ok(snapshot);
+    assert.match(snapshot.content,/postEditVerified/);assert.match(snapshot.content,/byte-match the exact successful edit/i);assert.doesNotMatch(snapshot.content,/suffix line\nsuffix line\nsuffix line/);
+    assert.equal(events.filter(item=>item.name==="native.tool.post_edit_read_compacted").length,1);
+  }finally{await rm(directory,{recursive:true,force:true})}
 });
 
 test("Native session keeps a post-edit reread in full when the workspace changed after the edit",async()=>{

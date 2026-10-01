@@ -352,38 +352,37 @@ export class NativeAgentSession{
       };
     };
     if(priorContext.count)this.onEvent?.({name:"native.context.history_cooled",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{count:priorContext.count,savedChars:priorContext.savedChars,supersededEntries:Number(priorContext.supersededEntries||0),retainedEntries:Number(priorContext.retainedEntries||0)}});
+    const controllerToolContext={toolAllowlist:Array.isArray(toolAllowlist)?toolAllowlist:null};
+    const rawExecutor=call=>this.executeTool(call,controllerToolContext);
     const wrappedExecutor=async call=>{
       const definition=platformToolDefinition(call.namespace,call.name),kind=definition?.policy?.kind||"other";
       const internalRecoveryRead=call.namespace==="trebell_workspace"&&call.name==="read_file"&&/^native-recovery-(?:snapshot|restore-check)-/.test(String(call.id||""));
       this.onUpdate({update:{sessionUpdate:"tool_call",toolCallId:call.id,namespace:call.namespace||"native",tool:call.name,title:(call.namespace?call.namespace+" / ":"")+call.name,kind,rawInput:call.arguments,status:"in_progress"}});
-      const toolContext={toolAllowlist:Array.isArray(toolAllowlist)?toolAllowlist:null};
-      let output=await this.executeTool(call,toolContext);
+      let output=await rawExecutor(call);
       if(call.namespace==="trebell_terminal"&&call.name==="run"&&output?.success!==false&&output?.uncertain!==true&&output?.timedOut!==true&&output?.signal==null&&Number.isFinite(Number(output?.exitCode))){
         let args={};try{args=structuredClone(call.arguments&&typeof call.arguments==="object"?call.arguments:{})}catch{}
         currentTerminalRuns.push({arguments:args,exitCode:Number(output.exitCode)});
       }
       if(unindexedSourceFailure(call,output)&&exposesTool(this.tools,"trebell_workspace","read_file")){
-        const fallback=await this.executeTool({
+        const fallback=await rawExecutor({
           id:String(call.id||"")+":workspace-fallback",namespace:"trebell_workspace",name:"read_file",signal:call.signal||null,
           arguments:{path:String(call.arguments?.path||""),max_bytes:256*1024},
-        },toolContext);
+        });
         if(fallback?.success!==false&&typeof fallback?.content==="string"){
           output=workspaceReadAsSource(fallback,call.arguments||{});
           this.onEvent?.({name:"native.tool.read_fallback",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{from:"trebell_repo/read_source",to:"trebell_workspace/read_file",reason:"not_indexed"}});
         }
       }
-      const key=internalRecoveryRead?null:observationKey(call,definition),digest=key?observationDigest(output):null,prior=key?this.observationCache.get(key):null;
+      const key=observationKey(call,definition),digest=key?observationDigest(output):null,prior=key?this.observationCache.get(key):null;
       let observed=output;
       const resolvedPath=exactWorkspacePath(output);
       if(call.namespace==="trebell_workspace"&&call.name==="read_file"&&output?.success!==false&&output?.uncertain!==true&&output?.truncated!==true&&resolvedPath&&typeof output?.content==="string"){
         const expected=postEditExpected.get(resolvedPath);
         if(expected&&String(output.content)===expected.content){
-          if(!internalRecoveryRead){
-            const receipt=postEditReadReceipt(output,expected),originalBytes=Buffer.byteLength(JSON.stringify(output),"utf8"),receiptBytes=Buffer.byteLength(JSON.stringify(receipt),"utf8");
-            if(originalBytes-receiptBytes>=256){
-              observed=receipt;
-              this.onEvent?.({name:"native.tool.post_edit_read_compacted",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{path:resolvedPath,originalBytes,receiptBytes,savedBytes:originalBytes-receiptBytes,editToolCallId:expected.toolCallId||null,editTool:expected.tool||null}});
-            }
+          const receipt=postEditReadReceipt(output,expected),originalBytes=Buffer.byteLength(JSON.stringify(output),"utf8"),receiptBytes=Buffer.byteLength(JSON.stringify(receipt),"utf8");
+          if(originalBytes-receiptBytes>=256){
+            observed=receipt;
+            this.onEvent?.({name:"native.tool.post_edit_read_compacted",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{path:resolvedPath,originalBytes,receiptBytes,savedBytes:originalBytes-receiptBytes,editToolCallId:expected.toolCallId||null,editTool:expected.tool||null}});
           }
           postEditExpected.delete(resolvedPath);
         }else if(expected){
@@ -458,7 +457,7 @@ export class NativeAgentSession{
             if(modelController.signal.aborted&&!request.signal?.aborted){const steered=new Error("Native model request interrupted by steering");steered.code="NATIVE_STEER";steered.nativeSteered=true;throw steered}
             throw error;
           }finally{if(this.modelController===modelController)this.modelController=null}
-        },executeTool:wrappedExecutor,
+        },executeTool:wrappedExecutor,executeInternalTool:rawExecutor,
       });
       if(preserveCacheHistory){
         this.messages=result.messages;

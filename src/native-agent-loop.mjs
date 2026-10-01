@@ -736,7 +736,7 @@ export function nativeAgentBudget(options={}){
 }
 
 export async function runNativeAgentTurn({
-  providerTurn,executeTool,model,messages=[],tools=[],provider=null,toolChoice="auto",
+  providerTurn,executeTool,executeInternalTool=null,model,messages=[],tools=[],provider=null,toolChoice="auto",
   maxOutputTokens=null,temperature=null,reasoningEffort=null,parallelToolCalls=true,maxModelTurns=24,maxToolCalls=100,maxWallTimeMs=null,
   maxCompletionRecoveryEpochs=8,
   maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,coolReadToolHistory=null,preserveToolSchemasOnFinalization=false,signal=null,onEvent=null,metadata=null,
@@ -745,6 +745,7 @@ export async function runNativeAgentTurn({
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
+  const executeControllerTool=typeof executeInternalTool==="function"?executeInternalTool:executeTool;
   const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),completionRecoveryEpochLimit=boundedInteger(maxCompletionRecoveryEpochs,8,{min:1,max:16}),conversation=[...(Array.isArray(messages)?messages:[])],visibleTools=providerVisibleTools(tools,toolAllowlist),directVisiblePairs=exposedToolPairs(visibleTools),workspaceMutationRequested=requestsWorkspaceMutation(conversation),requestMetricsToolCache=new WeakMap(),requestMetricsMessageCache=new WeakMap(),requestMetricsCurrentTurnCache=new WeakMap(),requestMetricsHistoryHashCache={},requestMetricsClassificationCache=typeof coolReadToolHistory==="function"?null:{},openAiContinuationIdentity={};
   const explicitlyRequired=explicitlyRequestedTools(conversation,visibleTools),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
   const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalStatusRequested=explicitTerminalStatusRequest(conversation),directTerminalStatusCommand=directTerminalStatusCommands===true?explicitTerminalStatusCommand(conversation):null,directReplacementStatus=directExactReplacementStatus===true?explicitExactReplacementStatus(conversation):null,directWriteStatus=directExactWriteStatus===true?explicitExactFileWriteStatus(conversation):null,directReadStatus=directExactReadStatus===true?explicitExactFileReadStatus(conversation):null,directListStatus=directExactListStatus===true?explicitImmediateWorkspaceListStatus(conversation):null,directGitStatusRequest=directGitStatus===true?explicitGitReadRequest(conversation):null,directProcessRunningRequest=directProcessRunningStatus===true?explicitBackgroundProcessRunningRequest(conversation):null,directBrowserRuntimeRequest=directBrowserRuntimeStatus===true&&explicitBrowserRuntimeHealthRequest(conversation),directBrowserScreenshotRequest=directBrowserScreenshot===true&&explicitBrowserScreenshotRequest(conversation),terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
@@ -789,10 +790,8 @@ export async function runNativeAgentTurn({
   const captureRecoveryWorkspaceSnapshot=async(call)=>{
     if(call?.namespace!=="trebell_workspace"||!["write_file","replace_text"].includes(String(call?.name||"")))return null;
     const args=safeArguments(call?.arguments),path=String(args.path||"").trim();if(!path)return null;
-    const canReadSnapshot=directVisiblePairs.some(item=>item.namespace==="trebell_workspace"&&item.name==="read_file"),canRestoreSnapshot=directVisiblePairs.some(item=>item.namespace==="trebell_workspace"&&item.name==="replace_text");
-    if(!canReadSnapshot||!canRestoreSnapshot)return {path,restorable:false,reason:"workspace snapshot/restore tools are not exposed by this runtime"};
     try{
-      const output=await executeTool({id:`native-recovery-snapshot-${modelTurns}-${editRevision}`,namespace:"trebell_workspace",name:"read_file",arguments:{path,max_bytes:1024*1024},rawArguments:JSON.stringify({path,max_bytes:1024*1024}),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
+      const output=await executeControllerTool({id:`native-recovery-snapshot-${modelTurns}-${editRevision}`,namespace:"trebell_workspace",name:"read_file",arguments:{path,max_bytes:1024*1024},rawArguments:JSON.stringify({path,max_bytes:1024*1024}),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
       if(output?.success===false||typeof output?.content!=="string")return {path,restorable:false,reason:"workspace snapshot was unavailable"};
       const content=output.content,kind=String(call?.name||""),beforeSha256=sha256Text(content);
       let candidateContent=null;
@@ -811,14 +810,14 @@ export async function runNativeAgentTurn({
     for(const snapshot of snapshots){
       const path=String(snapshot.path||"").trim();if(!path)return {restored:false,paths:restored,reason:"snapshot path was unavailable"};
       try{
-        const current=await executeTool({id:`native-recovery-restore-check-${modelTurns}-${restored.length+1}`,namespace:"trebell_workspace",name:"read_file",arguments:{path,max_bytes:1024*1024},rawArguments:JSON.stringify({path,max_bytes:1024*1024}),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
+        const current=await executeControllerTool({id:`native-recovery-restore-check-${modelTurns}-${restored.length+1}`,namespace:"trebell_workspace",name:"read_file",arguments:{path,max_bytes:1024*1024},rawArguments:JSON.stringify({path,max_bytes:1024*1024}),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
         if(current?.success===false||typeof current?.content!=="string")return {restored:false,paths:restored,reason:"current workspace state could not be checked before restore"};
         const currentSha256=sha256Text(current.content);
         if(snapshot.candidateSha256&&currentSha256!==snapshot.candidateSha256)return {restored:false,paths:restored,reason:"workspace changed after the recovery candidate was written"};
         if(current.content===snapshot.content){restored.push(path);continue}
         if(!current.content.length)return {restored:false,paths:restored,reason:"an empty edited file could not be restored fail-closed"};
         const restoreArguments={path,old_text:current.content,new_text:snapshot.content,expected_replacements:1};
-        const output=await executeTool({id:`native-recovery-restore-${modelTurns}-${restored.length+1}`,namespace:"trebell_workspace",name:"replace_text",arguments:restoreArguments,rawArguments:JSON.stringify(restoreArguments),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
+        const output=await executeControllerTool({id:`native-recovery-restore-${modelTurns}-${restored.length+1}`,namespace:"trebell_workspace",name:"replace_text",arguments:restoreArguments,rawArguments:JSON.stringify(restoreArguments),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
         if(output?.success===false||output?.uncertain===true)return {restored:false,paths:restored,reason:String(output?.error||output?.message||"workspace restore failed").slice(0,240)};
         restored.push(path);
       }catch(error){return {restored:false,paths:restored,reason:String(error?.message||error||"workspace restore failed").slice(0,240)}}
@@ -1653,7 +1652,10 @@ export async function runNativeAgentTurn({
         }
       }
       completionRecoveryEditTransaction=transactionSnapshots.length?{recoveryEpoch:completionRecoveryEpoch,beforeRevision:editRevisionBeforeCalls,afterRevision:editRevision,verifiedEditsLengthBefore:verifiedEditsBeforeCalls,snapshots:transactionSnapshots}:null;
-      if(transactionSnapshots.length)emit(onEvent,{name:"native.completion.recovery_candidate_snapshot",status:transactionSnapshots.every(item=>item?.restorable)?"completed":"uncertain",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,editRevision,recoveryEpoch:completionRecoveryEpoch,pathCount:transactionSnapshots.length,restorable:transactionSnapshots.every(item=>item?.restorable)}});
+      if(transactionSnapshots.length){
+        const failedSnapshot=transactionSnapshots.find(item=>!item?.restorable);
+        emit(onEvent,{name:"native.completion.recovery_candidate_snapshot",status:transactionSnapshots.every(item=>item?.restorable)?"completed":"uncertain",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,editRevision,recoveryEpoch:completionRecoveryEpoch,pathCount:transactionSnapshots.length,restorable:transactionSnapshots.every(item=>item?.restorable),...(failedSnapshot?.reason?{reason:String(failedSnapshot.reason).slice(0,240)}:{})}});
+      }
       completionRecoveryEditResponsesRemaining=Math.max(0,completionRecoveryEditResponsesRemaining-1);
       completionRecoveryEditConsumedEpoch=completionRecoveryEpoch;
       completionRecoveryPostEditEvidenceResponsesRemaining=completionRecoveryEvidenceRoundsRemaining<=0?1:0;
