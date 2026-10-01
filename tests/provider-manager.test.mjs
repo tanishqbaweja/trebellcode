@@ -508,6 +508,30 @@ test("OpenAI WebSocket server_error remains caller-retryable through ProviderMan
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
+test("OpenAI WebSocket retryable response failure cools the lane so the caller retry uses HTTPS",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-response-retry-"));let factoryCalls=0,fetchCalls=0,closed=0;
+  try{
+    const manager=new ProviderManager({
+      env:{TREBELL_HOME:root},
+      openAiResponsesWebSocketFactory:()=>{factoryCalls++;return {
+        close:()=>{closed++},
+        request:async()=>{
+          const error=new Error("An error occurred while processing your request. You can retry your request.");
+          error.webSocketFailureKind="response_failed";error.replaySafe=false;error.retryable=true;
+          error.webSocketTelemetry={requestBytes:43,responseBytes:19,timeToFirstTokenMs:3};
+          throw error;
+        },
+      }},
+      fetchFn:async(_url,init={})=>{fetchCalls++;const body=JSON.parse(init.body||"{}");return Response.json({id:"resp-http-retry",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"recovered over http"}]}],usage:{}})},
+    });
+    manager.setKey("openai","oa-key");const request={model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"native_response_retry"}};
+    await assert.rejects(manager.turn("openai",request,{streamResponses:true}),error=>error?.retryable===true&&error?.telemetry?.webSocketFallback?.failureKind==="response_failed");
+    assert.equal(closed,1);
+    const recovered=await manager.turn("openai",request,{streamResponses:true});
+    assert.equal(recovered.text,"recovered over http");assert.equal(recovered.telemetry.persistentConnection,false);assert.equal(factoryCalls,1);assert.equal(fetchCalls,1);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
 test("OpenAI WebSocket transient circuit breaker probes a fresh socket on a later turn after cooldown",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-cooldown-"));let now=1_000,factoryCalls=0,fetchCalls=0;
   try{

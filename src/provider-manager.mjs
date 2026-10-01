@@ -482,7 +482,7 @@ export class ProviderManager {
   }
 
   #resetOpenAiWebSocket(reason="reset"){
-    const normalized=String(reason||""),transport=this.openAiResponsesWebSocket,transient=["connect_failure","send_failure","transport_failure","timeout_failure"].includes(normalized),protocol=normalized==="protocol_failure";
+    const normalized=String(reason||""),transport=this.openAiResponsesWebSocket,transient=["connect_failure","send_failure","transport_failure","timeout_failure","api_failure"].includes(normalized),protocol=normalized==="protocol_failure";
     if(protocol){this.openAiResponsesWebSocketPermanentlyDisabled=true;this.openAiResponseContinuations.clear();this.openAiWebSocketResponseOrigins.clear()}
     if(transient){
       this.openAiResponsesWebSocketTransientFailures=Math.min(16,Number(this.openAiResponsesWebSocketTransientFailures||0)+1);
@@ -816,7 +816,10 @@ export class ProviderManager {
           const responseStatus=Number(error?.webSocketEvent?.status||error?.status||error?.statusCode||0),responseMessage=String(error?.webSocketEvent?.error?.message||error?.message||""),failureKind=String(error?.webSocketFailureKind||((error?.name==="TimeoutError")?"timeout":error?.protocolFailure?"protocol":error?.transportFailure?"transport":"unknown")),continuationRejected=Boolean(openAiContinuation?.used)&&[400,404,409].includes(responseStatus),invalidToolOutputRequest=responseStatus===400&&/no tool output found for function call/i.test(responseMessage),replaySafe=error?.replaySafe===true||continuationRejected||invalidToolOutputRequest;
           openAiWebSocketFallback={transportFailure:Boolean(error?.transportFailure),protocolFailure:Boolean(error?.protocolFailure),failureKind,name:error?.name||null,code:error?.code??null,replaySafe,retried:false,requestBytes:failedWire,responseBytes:Number(error?.webSocketTelemetry?.responseBytes||0),timeToFirstTokenMs:error?.webSocketTelemetry?.timeToFirstTokenMs??null};
           if(this.openAiResponsesWebSocket===transport){
-            if(error?.transportFailure)this.#resetOpenAiWebSocket("transport_failure");else if(error?.protocolFailure)this.#resetOpenAiWebSocket("protocol_failure");else if(error?.name==="TimeoutError")this.#resetOpenAiWebSocket("timeout_failure");
+            if(error?.transportFailure)this.#resetOpenAiWebSocket("transport_failure");
+            else if(error?.protocolFailure)this.#resetOpenAiWebSocket("protocol_failure");
+            else if(error?.name==="TimeoutError")this.#resetOpenAiWebSocket("timeout_failure");
+            else if(error?.retryable===true&&["api_error","response_failed"].includes(failureKind))this.#resetOpenAiWebSocket("api_failure");
           }
           if(!replaySafe){
             // A post-send timeout is not safe to replay inside this provider turn,
