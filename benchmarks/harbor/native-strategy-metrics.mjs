@@ -7,6 +7,7 @@ export function createNativeStrategyMetrics(){
     convergenceCallsBlocked:0,
     postEditProbeBatchCheckpoints:0,
     postEditProbeCallsBlocked:0,
+    assumptionAuditCheckpoints:0,
     postEditEvidenceCheckpoints:0,
     postEditEvidenceEscalations:0,
     postEditEvidenceCallsBlocked:0,
@@ -27,6 +28,7 @@ export function observeNativeStrategyEvent(metrics,event,atMs=null){
   else if(name==="native.progress.convergence_call_blocked")target.convergenceCallsBlocked=Number(target.convergenceCallsBlocked||0)+1;
   else if(name==="native.progress.post_edit_probe_batch_checkpoint")target.postEditProbeBatchCheckpoints=Number(target.postEditProbeBatchCheckpoints||0)+1;
   else if(name==="native.progress.post_edit_probe_call_blocked")target.postEditProbeCallsBlocked=Number(target.postEditProbeCallsBlocked||0)+1;
+  else if(name==="native.progress.assumption_audit_checkpoint")target.assumptionAuditCheckpoints=Number(target.assumptionAuditCheckpoints||0)+1;
   else if(name==="native.progress.post_edit_evidence_checkpoint")target.postEditEvidenceCheckpoints=Number(target.postEditEvidenceCheckpoints||0)+1;
   else if(name==="native.progress.post_edit_evidence_escalation")target.postEditEvidenceEscalations=Number(target.postEditEvidenceEscalations||0)+1;
   else if(name==="native.progress.post_edit_evidence_call_blocked")target.postEditEvidenceCallsBlocked=Number(target.postEditEvidenceCallsBlocked||0)+1;

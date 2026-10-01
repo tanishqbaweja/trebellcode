@@ -2372,6 +2372,37 @@ test("native post-edit evidence rounds stop repeated batch-like scripts from byp
   assert.equal(events.filter(event=>event.name==="native.progress.post_edit_evidence_call_blocked").length,1);
 });
 
+test("native audits upstream assumptions before exhausting repeated post-edit evidence rounds",async()=>{
+  let turns=0;const requests=[],events=[],executed=[];
+  const evidenceBatch=label=>[
+    {id:label+"-raw",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-raw.mjs"]})},
+    {id:label+"-derived",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-derived.mjs"]})},
+  ];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the decoder and verify the result."}],maxModelTurns:9,maxToolCalls:20,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"old","new_text":"candidate"}'}],usage:{}};
+      if(turns>=2&&turns<=5)return {text:"",toolCalls:evidenceBatch("probe-"+turns),usage:{}};
+      if(turns===6){
+        const audit=request.messages.find(message=>message.role==="developer"&&/assumption-audit checkpoint/i.test(String(message.content||"")));
+        assert.ok(audit);
+        assert.match(String(audit.content),/earliest shared assumption/i);
+        assert.match(String(audit.content),/source-of-truth invariant/i);
+        assert.match(String(audit.content),/current parser\/adapter\/interpretation/i);
+        return {text:"",toolCalls:[{id:"upstream-fix",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"candidate","new_text":"reparsed"}'}],usage:{}};
+      }
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:"src/decoder.mjs",replacements:1}:{exitCode:0}},
+  });
+  assert.equal(result.text,"done");
+  assert.equal(executed.includes("upstream-fix"),true);
+  assert.equal(events.filter(event=>event.name==="native.progress.assumption_audit_checkpoint").length,1);
+  assert.equal(events.some(event=>event.name==="native.progress.post_edit_evidence_checkpoint"),false);
+});
+
 test("native convergence checkpoint does not fire while the latest edit still has a failed terminal check",async()=>{
   let turns=0;const requests=[],events=[];
   const result=await runNativeAgentTurn({
