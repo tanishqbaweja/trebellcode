@@ -2460,8 +2460,18 @@ test("native localizes residual structure after an abstraction repair before reo
         assert.ok(request.messages.some(message=>message.role==="developer"&&/abstraction-boundary escalation/i.test(String(message.content||""))));
         return {text:"",toolCalls:[{id:"upstream-repair",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"candidate","new_text":"resegmented"}'}],usage:{}};
       }
-      if(turns===9)return {text:"",toolCalls:[{id:"follow-up-edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"resegmented","new_text":"resegmented-follow-up"}'}],usage:{}};
-      if(turns===10)return {text:"",toolCalls:evidence("residual-1"),usage:{}};
+      if(turns===9){
+        const verification=request.messages.find(message=>message.role==="developer"&&/abstraction-repair verification checkpoint/i.test(String(message.content||"")));
+        assert.ok(verification);
+        assert.match(String(verification.content),/independent source-of-truth invariant/i);
+        assert.match(String(verification.content),/remove downstream compensations/i);
+        return {text:"",toolCalls:[{id:"follow-up-edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"resegmented","new_text":"resegmented-follow-up"}'}],usage:{}};
+      }
+      if(turns===10){
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/abstraction-repair verification checkpoint/i.test(String(message.content||""))));
+        assert.equal(request.messages.some(message=>message.role==="developer"&&/residual-structure checkpoint/i.test(String(message.content||""))),false);
+        return {text:"",toolCalls:evidence("repair-verification"),usage:{}};
+      }
       if(turns===11)return {text:"",toolCalls:evidence("residual-2"),usage:{}};
       if(turns===12){
         const checkpoint=request.messages.find(message=>message.role==="developer"&&/residual-structure checkpoint/i.test(String(message.content||"")));
@@ -2480,7 +2490,9 @@ test("native localizes residual structure after an abstraction repair before reo
   assert.equal(result.text,"done");
   assert.equal(executed.includes("upstream-repair"),true);assert.equal(executed.includes("follow-up-edit"),true);assert.equal(executed.includes("local-layout-fix"),true);
   assert.equal(events.filter(event=>event.name==="native.progress.abstraction_boundary_escalation").length,1);
-  assert.equal(events.filter(event=>event.name==="native.progress.abstraction_repair_applied").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.abstraction_repair_applied").length,2);
+  assert.equal(events.filter(event=>event.name==="native.progress.abstraction_repair_verification_checkpoint").length,2);
+  assert.equal(events.filter(event=>event.name==="native.progress.abstraction_repair_verification_evidence").length,1);
   assert.equal(events.filter(event=>event.name==="native.progress.residual_structure_checkpoint").length,1);
 });
 

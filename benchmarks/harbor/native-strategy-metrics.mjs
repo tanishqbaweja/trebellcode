@@ -9,6 +9,8 @@ export function createNativeStrategyMetrics(){
     postEditProbeCallsBlocked:0,
     assumptionAuditCheckpoints:0,
     abstractionBoundaryEscalations:0,
+    abstractionRepairVerificationCheckpoints:0,
+    abstractionRepairVerificationEvidence:0,
     residualStructureCheckpoints:0,
     completionGateChecks:0,
     completionGateRecoveries:0,
@@ -42,6 +44,8 @@ export function observeNativeStrategyEvent(metrics,event,atMs=null){
   else if(name==="native.progress.post_edit_probe_call_blocked")target.postEditProbeCallsBlocked=Number(target.postEditProbeCallsBlocked||0)+1;
   else if(name==="native.progress.assumption_audit_checkpoint")target.assumptionAuditCheckpoints=Number(target.assumptionAuditCheckpoints||0)+1;
   else if(name==="native.progress.abstraction_boundary_escalation")target.abstractionBoundaryEscalations=Number(target.abstractionBoundaryEscalations||0)+1;
+  else if(name==="native.progress.abstraction_repair_verification_checkpoint")target.abstractionRepairVerificationCheckpoints=Number(target.abstractionRepairVerificationCheckpoints||0)+1;
+  else if(name==="native.progress.abstraction_repair_verification_evidence")target.abstractionRepairVerificationEvidence=Number(target.abstractionRepairVerificationEvidence||0)+1;
   else if(name==="native.progress.residual_structure_checkpoint")target.residualStructureCheckpoints=Number(target.residualStructureCheckpoints||0)+1;
   else if(name==="native.completion.gate")target.completionGateChecks=Number(target.completionGateChecks||0)+1;
   else if(name==="native.completion.gate_recovery")target.completionGateRecoveries=Number(target.completionGateRecoveries||0)+1;
