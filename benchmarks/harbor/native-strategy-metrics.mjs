@@ -23,6 +23,7 @@ export function createNativeStrategyMetrics(){
     completionRecoveryStrategyResets:0,
     completionRecoveryResidualFactorizations:0,
     completionRecoveryEditUses:0,
+    completionRecoveryUnsupportedEditsSkipped:0,
     completionRecoveryCandidateSnapshots:0,
     completionRecoveryIncumbentRestores:0,
     completionRecoveryIncumbentRestoreFailures:0,
@@ -69,6 +70,7 @@ export function observeNativeStrategyEvent(metrics,event,atMs=null){
     if(String(data?.strategy||"")==="residual_factorization")target.completionRecoveryResidualFactorizations=Number(target.completionRecoveryResidualFactorizations||0)+1;
   }
   else if(name==="native.completion.recovery_allowance_used"&&data?.kind==="edit")target.completionRecoveryEditUses=Number(target.completionRecoveryEditUses||0)+1;
+  else if(name==="native.completion.recovery_edit_skipped"&&data?.reason==="unsupported_by_evidence")target.completionRecoveryUnsupportedEditsSkipped=Number(target.completionRecoveryUnsupportedEditsSkipped||0)+1;
   else if(name==="native.completion.recovery_candidate_snapshot")target.completionRecoveryCandidateSnapshots=Number(target.completionRecoveryCandidateSnapshots||0)+1;
   else if(name==="native.completion.recovery_incumbent_restored")target.completionRecoveryIncumbentRestores=Number(target.completionRecoveryIncumbentRestores||0)+1;
   else if(name==="native.completion.recovery_incumbent_restore_failed")target.completionRecoveryIncumbentRestoreFailures=Number(target.completionRecoveryIncumbentRestoreFailures||0)+1;

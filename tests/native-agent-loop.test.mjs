@@ -2734,6 +2734,48 @@ test("native requires the owed corrective edit before reopening recovery evidenc
   const editRequired=events.filter(event=>event.name==="native.completion.recovery_edit_required");assert.ok(editRequired.length>=2);assert.ok(editRequired.every(event=>event.data?.toolSchemaStable===true&&event.data?.visibleToolCount===3&&event.data?.visibleEditToolCount===2));
 });
 
+test("native advances recovery without forcing an edit when exhausted evidence explicitly supports no correction",async()=>{
+  let turns=0;const executed=[],events=[],requests=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxCompletionRecoveryEpochs:2,maxModelTurns:12,maxToolCalls:16,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Fix src/a.mjs until the exact acceptance condition passes."}],
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"},{name:"write_file"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"initial",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"candidate"}'}],usage:{}};
+      if(turns===2)return {text:"The current candidate still misses exact acceptance.",toolCalls:[],usage:{}};
+      if(turns===3)return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"uncertain","unresolved":["exact acceptance still fails"],"reason":"Two focused discriminators can test the current hypothesis class."}',toolCalls:[],usage:{}};
+      if(turns===4)return {text:"",toolCalls:[{id:"evidence-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["candidate-a.mjs"]}'}],usage:{}};
+      if(turns===5)return {text:"",toolCalls:[{id:"evidence-2",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["candidate-b.mjs"]}'}],usage:{}};
+      if(turns===6)return {text:"Both isolated alternatives are worse; the current hypothesis class has no evidence-supported correction.",toolCalls:[],usage:{}};
+      if(turns===7)return {text:'{"status":"incomplete","progress":"unchanged","edit_support":"unsupported","unresolved":["exact acceptance still fails"],"reason":"Both isolated alternatives are worse, so no evidence-supported corrective edit is available in this hypothesis class."}',toolCalls:[],usage:{}};
+      if(turns===8){
+        assert.notEqual(request.toolChoice,"required");
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/without forcing a speculative workspace edit/i.test(String(message.content||""))));
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/starts a bounded semantic-recovery window/i.test(String(message.content||""))));
+        return {text:"The task remains unresolved after moving to the next bounded strategy.",toolCalls:[],usage:{}};
+      }
+      if(turns===9)return {text:'{"status":"blocked","progress":"unchanged","edit_support":"uncertain","unresolved":["external fixture is unavailable"],"reason":"The remaining requirement now genuinely depends on unavailable external evidence."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{
+      executed.push(call.id);
+      return call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0,stdout:"alternative is worse"};
+    },
+  });
+  assert.equal(turns,9);
+  assert.deepEqual(executed.filter(id=>!String(id).startsWith("native-recovery-snapshot-")),["initial","evidence-1","evidence-2"]);
+  assert.match(result.text,/remains unresolved/i);
+  const skipped=events.filter(event=>event.name==="native.completion.recovery_edit_skipped");assert.equal(skipped.length,1);assert.equal(skipped[0].data?.recoveryEpoch,1);assert.equal(skipped[0].data?.reason,"unsupported_by_evidence");
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,0);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_edit_required").length,0);
+  const recoveries=events.filter(event=>event.name==="native.completion.gate_recovery");assert.deepEqual(recoveries.map(event=>[event.data?.recoveryEpoch,event.data?.evidenceRoundsAllowed,event.data?.editResponsesAllowed]),[[1,2,1],[2,2,1]]);
+  const unsupportedGate=events.find(event=>event.name==="native.completion.gate"&&event.data?.editSupport==="unsupported");assert.ok(unsupportedGate);
+});
+
 test("native changes recovery strategy after three incomplete semantic epochs without adding budget",async()=>{
   let turns=0;const events=[];
   const result=await runNativeAgentTurn({

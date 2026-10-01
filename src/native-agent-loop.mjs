@@ -519,9 +519,10 @@ function parseCompletionGateVerdict(text){
       const parsed=JSON.parse(candidate),status=String(parsed?.status||"").trim().toLowerCase();
       if(!["complete","incomplete","blocked"].includes(status))continue;
       const rawProgress=String(parsed?.progress||"").trim().toLowerCase(),progress=["improved","unchanged","regressed","uncertain"].includes(rawProgress)?rawProgress:"uncertain";
+      const rawEditSupport=String(parsed?.edit_support||"").trim().toLowerCase(),editSupport=["supported","unsupported","uncertain"].includes(rawEditSupport)?rawEditSupport:"uncertain";
       const unresolved=Array.isArray(parsed?.unresolved)?parsed.unresolved.map(item=>String(item||"").trim()).filter(Boolean).slice(0,8):[];
       const reason=String(parsed?.reason||"").trim().slice(0,2000);
-      return {status,progress,progressProvided:Boolean(rawProgress),unresolved,reason};
+      return {status,progress,progressProvided:Boolean(rawProgress),editSupport,editSupportProvided:Boolean(rawEditSupport),unresolved,reason};
     }catch{}
   }
   return null;
@@ -1342,7 +1343,7 @@ export async function runNativeAgentTurn({
           if(completionGateInvalidResponses<1&&modelTurns<budget.maxModelTurns){
             completionGateInvalidResponses++;
             conversation.length=candidate.conversationLength;
-            conversation.push({role:"developer",content:"Trebell completion gate parser could not read the previous control response. Return only one valid JSON object with exactly these fields: {\"status\":\"complete|incomplete|blocked\",\"progress\":\"improved|unchanged|regressed|uncertain\",\"unresolved\":[\"...\"],\"reason\":\"...\"}. Do not call tools and do not address the user."});
+            conversation.push({role:"developer",content:"Trebell completion gate parser could not read the previous control response. Return only one valid JSON object with exactly these fields: {\"status\":\"complete|incomplete|blocked\",\"progress\":\"improved|unchanged|regressed|uncertain\",\"edit_support\":\"supported|unsupported|uncertain\",\"unresolved\":[\"...\"],\"reason\":\"...\"}. Do not call tools and do not address the user."});
             emit(onEvent,{name:"native.completion.gate_retry",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,invalidResponses:completionGateInvalidResponses}});
             continue;
           }
@@ -1356,7 +1357,7 @@ export async function runNativeAgentTurn({
           const reportedProgress=verdict.progress;verdict.progress="unchanged";
           emit(onEvent,{name:"native.completion.recovery_progress_normalized",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,recoveryEpoch:completionRecoveryEpoch,reportedProgress,normalizedProgress:"unchanged",incumbentEditRevision:completionRecoveryIncumbent.editRevision}});
         }
-        emit(onEvent,{name:"native.completion.gate",status:verdict.status==="complete"?"completed":verdict.status==="blocked"?"blocked":"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,verdict:verdict.status,progress:verdict.progress,unresolved:verdict.unresolved,reason:verdict.reason}});
+        emit(onEvent,{name:"native.completion.gate",status:verdict.status==="complete"?"completed":verdict.status==="blocked"?"blocked":"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,verdict:verdict.status,progress:verdict.progress,editSupport:verdict.editSupport,unresolved:verdict.unresolved,reason:verdict.reason}});
         if(verdict.status==="complete"||verdict.status==="blocked"){
           const result={
             text:candidate.text,model:candidate.model,provider:candidate.provider,
@@ -1397,6 +1398,15 @@ export async function runNativeAgentTurn({
           completionRecoveryEditTransaction=null;
         }
         completionGateRecoveries++;
+        const unsupportedRecoveryEdit=completionRecoveryEpoch>0&&completionRecoveryEvidenceRoundsRemaining<=0&&completionRecoveryEditResponsesRemaining>0&&completionRecoverySupportVerificationRemaining<=0&&verdict.editSupport==="unsupported";
+        if(unsupportedRecoveryEdit){
+          completionRecoveryEditResponsesRemaining=0;
+          completionRecoveryEditRequired=false;
+          completionRecoveryEditRequiredMisses=0;
+          completionRecoverySupportWritesRemaining=0;
+          conversation.push({role:"developer",content:"Trebell closed the current recovery epoch without forcing a speculative workspace edit because the semantic gate explicitly found that the exhausted evidence does not support a corrective edit in this hypothesis class. Do not mutate merely to consume an allowance. Advance to the next bounded recovery strategy from the preserved evidence-backed workspace state."});
+          emit(onEvent,{name:"native.completion.recovery_edit_skipped",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,recoveryEpoch:completionRecoveryEpoch,reason:"unsupported_by_evidence",unresolved:verdict.unresolved}});
+        }
         const unresolvedRecoveryEdit=completionRecoveryEpoch>0&&completionRecoveryEvidenceRoundsRemaining<=0&&completionRecoveryEditResponsesRemaining>0;
         if(unresolvedRecoveryEdit){
           completionRecoveryEditRequired=true;
@@ -1510,7 +1520,7 @@ export async function runNativeAgentTurn({
         const incumbentComparison=incumbent
           ?`\nRecovery incumbent to compare against: unresolved=${JSON.stringify(incumbent.unresolved||[])}; reason=${JSON.stringify(String(incumbent.reason||"").slice(0,1200))}. Set progress=improved only when the current evidence materially moves the same acceptance condition closer to satisfaction than this incumbent, progress=regressed when it materially moves farther away, progress=unchanged when it is materially equivalent, and progress=uncertain when the evidence is not comparable or does not establish direction. Compare the strongest actual acceptance evidence, not confidence, narration, process exit codes, or amount of work performed.`
           :"\nThere is no prior recovery incumbent yet, so set progress=uncertain.";
-        conversation.push({role:"developer",content:"Trebell semantic completion gate. This is an internal control check, not the user-visible answer. Evaluate the immediately preceding candidate final answer against the user's full request and the evidence in this conversation. Return only one JSON object: {\"status\":\"complete|incomplete|blocked\",\"progress\":\"improved|unchanged|regressed|uncertain\",\"unresolved\":[\"material unmet requirement\"],\"reason\":\"brief evidence-based rationale\"}. Use status=complete only when every material requested deliverable and acceptance condition is supported by the available evidence. Use status=incomplete when additional local tool work could still resolve an unmet or uncertain requirement. Use status=blocked only when a material requirement genuinely cannot be completed with the available inputs/tools or depends on an unavailable external condition. A Trebell-internal convergence, evidence-budget, or revision-churn guard rejecting a recent tool call is not by itself a genuine blocker: if the underlying tool/input still exists and further focused work could resolve the requirement, return incomplete so the recovery controller can reopen a bounded allowance. Do not infer success merely from a process exit code when tool output, measurements, or the candidate answer contradict the actual requirement. Judge semantics and evidence, not wording. Do not call tools and do not address the user."+incumbentComparison});
+        conversation.push({role:"developer",content:"Trebell semantic completion gate. This is an internal control check, not the user-visible answer. Evaluate the immediately preceding candidate final answer against the user's full request and the evidence in this conversation. Return only one JSON object: {\"status\":\"complete|incomplete|blocked\",\"progress\":\"improved|unchanged|regressed|uncertain\",\"edit_support\":\"supported|unsupported|uncertain\",\"unresolved\":[\"material unmet requirement\"],\"reason\":\"brief evidence-based rationale\"}. Use status=complete only when every material requested deliverable and acceptance condition is supported by the available evidence. Use status=incomplete when additional local tool work could still resolve an unmet or uncertain requirement. Use status=blocked only when a material requirement genuinely cannot be completed with the available inputs/tools or depends on an unavailable external condition. Set edit_support=supported only when the evidence available to this gate supports a concrete corrective implementation/deliverable edit now. Set edit_support=unsupported only when the bounded evidence actually argues against the tested corrections or otherwise establishes that no evidence-supported corrective edit is available in the current hypothesis class; do not use unsupported merely because the answer is incomplete or the exact fix is uncertain. Use edit_support=uncertain when the evidence does not justify either conclusion. A Trebell-internal convergence, evidence-budget, or revision-churn guard rejecting a recent tool call is not by itself a genuine blocker: if the underlying tool/input still exists and further focused work could resolve the requirement, return incomplete so the recovery controller can reopen a bounded allowance. Do not infer success merely from a process exit code when tool output, measurements, or the candidate answer contradict the actual requirement. Judge semantics and evidence, not wording. Do not call tools and do not address the user."+incumbentComparison});
         emit(onEvent,{name:"native.completion.gate_requested",status:"running",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,toolCalls}});
         continue;
       }
