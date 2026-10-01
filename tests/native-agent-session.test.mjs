@@ -899,6 +899,30 @@ test("Native session compacts a verified post-edit reread when it byte-matches t
   const event=events.find(item=>item.name==="native.tool.post_edit_read_compacted");assert.ok(event);assert.ok(event.data.savedBytes>5000);assert.equal(event.data.editTool,"trebell_workspace/replace_text");
 });
 
+test("Native session keeps internal recovery snapshot rereads in full after an exact edit",async()=>{
+  const requests=[],events=[];let providerCalls=0,content=("prefix line\n".repeat(700))+"mode=legacy\n"+("suffix line\n".repeat(120));
+  const resolvedPath="C:/repo/src/config.txt";
+  const session=new NativeAgentSession({
+    model:"model-a",provider:"fixture",semanticCompletionGate:false,tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {id:"read-before",text:"",toolCalls:[{id:"read-before",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/config.txt"}'}],usage:{}};
+      if(providerCalls===2)return {id:"edit",text:"",toolCalls:[{id:"edit-1",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/config.txt","old_text":"mode=legacy","new_text":"mode=strict"}'}],usage:{}};
+      if(providerCalls===3)return {id:"snapshot",text:"",toolCalls:[{id:"native-recovery-snapshot-3-1",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/config.txt"}'}],usage:{}};
+      return {id:"done",text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{
+      if(call.name==="read_file")return {path:resolvedPath,name:"config.txt",size:Buffer.byteLength(content,"utf8"),content};
+      const oldText=String(call.arguments?.old_text||""),newText=String(call.arguments?.new_text||"");content=content.split(oldText).join(newText);
+      return {path:resolvedPath,size:Buffer.byteLength(content,"utf8"),replacements:1};
+    },
+  });
+  await session.start({providerSessionId:"native-recovery-snapshot-full",model:"model-a"});await session.prompt([{type:"text",text:"edit then take an internal rollback snapshot"}]);
+  const snapshot=requests[3].messages.find(message=>message.role==="tool"&&message.toolCallId==="native-recovery-snapshot-3-1");assert.ok(snapshot);
+  assert.match(snapshot.content,/mode=strict/);assert.match(snapshot.content,/suffix line\nsuffix line\nsuffix line/);assert.doesNotMatch(snapshot.content,/postEditVerified/);
+  assert.equal(events.filter(item=>item.name==="native.tool.post_edit_read_compacted").length,0);
+});
+
 test("Native session keeps a post-edit reread in full when the workspace changed after the edit",async()=>{
   const requests=[];let providerCalls=0,content="A".repeat(3000)+"mode=legacy\n";
   const resolvedPath="C:/repo/src/config.txt";

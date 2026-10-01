@@ -354,6 +354,7 @@ export class NativeAgentSession{
     if(priorContext.count)this.onEvent?.({name:"native.context.history_cooled",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{count:priorContext.count,savedChars:priorContext.savedChars,supersededEntries:Number(priorContext.supersededEntries||0),retainedEntries:Number(priorContext.retainedEntries||0)}});
     const wrappedExecutor=async call=>{
       const definition=platformToolDefinition(call.namespace,call.name),kind=definition?.policy?.kind||"other";
+      const internalRecoveryRead=call.namespace==="trebell_workspace"&&call.name==="read_file"&&/^native-recovery-(?:snapshot|restore-check)-/.test(String(call.id||""));
       this.onUpdate({update:{sessionUpdate:"tool_call",toolCallId:call.id,namespace:call.namespace||"native",tool:call.name,title:(call.namespace?call.namespace+" / ":"")+call.name,kind,rawInput:call.arguments,status:"in_progress"}});
       const toolContext={toolAllowlist:Array.isArray(toolAllowlist)?toolAllowlist:null};
       let output=await this.executeTool(call,toolContext);
@@ -371,16 +372,18 @@ export class NativeAgentSession{
           this.onEvent?.({name:"native.tool.read_fallback",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{from:"trebell_repo/read_source",to:"trebell_workspace/read_file",reason:"not_indexed"}});
         }
       }
-      const key=observationKey(call,definition),digest=key?observationDigest(output):null,prior=key?this.observationCache.get(key):null;
+      const key=internalRecoveryRead?null:observationKey(call,definition),digest=key?observationDigest(output):null,prior=key?this.observationCache.get(key):null;
       let observed=output;
       const resolvedPath=exactWorkspacePath(output);
       if(call.namespace==="trebell_workspace"&&call.name==="read_file"&&output?.success!==false&&output?.uncertain!==true&&output?.truncated!==true&&resolvedPath&&typeof output?.content==="string"){
         const expected=postEditExpected.get(resolvedPath);
         if(expected&&String(output.content)===expected.content){
-          const receipt=postEditReadReceipt(output,expected),originalBytes=Buffer.byteLength(JSON.stringify(output),"utf8"),receiptBytes=Buffer.byteLength(JSON.stringify(receipt),"utf8");
-          if(originalBytes-receiptBytes>=256){
-            observed=receipt;
-            this.onEvent?.({name:"native.tool.post_edit_read_compacted",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{path:resolvedPath,originalBytes,receiptBytes,savedBytes:originalBytes-receiptBytes,editToolCallId:expected.toolCallId||null,editTool:expected.tool||null}});
+          if(!internalRecoveryRead){
+            const receipt=postEditReadReceipt(output,expected),originalBytes=Buffer.byteLength(JSON.stringify(output),"utf8"),receiptBytes=Buffer.byteLength(JSON.stringify(receipt),"utf8");
+            if(originalBytes-receiptBytes>=256){
+              observed=receipt;
+              this.onEvent?.({name:"native.tool.post_edit_read_compacted",status:"completed",model:String(this.model||""),provider:this.provider||null,data:{path:resolvedPath,originalBytes,receiptBytes,savedBytes:originalBytes-receiptBytes,editToolCallId:expected.toolCallId||null,editTool:expected.tool||null}});
+            }
           }
           postEditExpected.delete(resolvedPath);
         }else if(expected){
