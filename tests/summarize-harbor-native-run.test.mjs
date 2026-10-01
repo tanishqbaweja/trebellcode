@@ -14,9 +14,9 @@ test("Harbor Native summary aggregates prompt-cache comparison diagnostics",asyn
   try{
     await mkdir(agent,{recursive:true});
     const events=[
-      {name:"native.model.completed",atMs:100,data:{modelTurn:1,durationMs:10,usage:{inputTokens:2000,cachedInputTokens:1024},providerTelemetry:{promptCacheDiagnostics:{type:"cache_miss",reason:"tools_changed",comparisonReusableTokens:1536,cacheMissedTokens:512}}}},
-      {name:"native.model.completed",atMs:200,data:{modelTurn:2,durationMs:10,usage:{inputTokens:2200,cachedInputTokens:2048},providerTelemetry:{promptCacheDiagnostics:{type:"cache_hit",reason:null,comparisonReusableTokens:2048,cacheMissedTokens:null}}}},
-      {name:"native.model.completed",atMs:300,data:{modelTurn:3,durationMs:10,usage:{inputTokens:10,cachedInputTokens:0},providerTelemetry:{promptCacheDiagnostics:{type:"unavailable",reason:"not_supported",comparisonReusableTokens:null,cacheMissedTokens:null}}}},
+      {name:"native.model.completed",atMs:100,data:{modelTurn:1,durationMs:10,usage:{inputTokens:2000,cachedInputTokens:1024},providerTelemetry:{promptCacheDiagnostics:{type:"cache_miss",reason:"tools_changed",comparisonReusableTokens:1536,cacheMissedTokens:512},responseContinuation:{used:true,attempted:true,fallback:false,parentExpired:false,savedRequestBytes:120}}}},
+      {name:"native.model.completed",atMs:200,data:{modelTurn:2,durationMs:10,usage:{inputTokens:2200,cachedInputTokens:2048},providerTelemetry:{promptCacheDiagnostics:{type:"cache_hit",reason:null,comparisonReusableTokens:2048,cacheMissedTokens:null},responseContinuation:{used:false,attempted:false,fallback:false,parentExpired:true,savedRequestBytes:0}}}},
+      {name:"native.model.completed",atMs:300,data:{modelTurn:3,durationMs:10,usage:{inputTokens:10,cachedInputTokens:0},providerTelemetry:{promptCacheDiagnostics:{type:"unavailable",reason:"not_supported",comparisonReusableTokens:null,cacheMissedTokens:null},responseContinuation:{used:false,attempted:true,fallback:true,parentExpired:false,savedRequestBytes:0}}}},
       {name:"native.turn.completed",atMs:400,status:"completed",data:{}},
     ];
     await writeFile(join(agent,"trebell-native-events.jsonl"),events.map(event=>JSON.stringify(event)).join("\n")+"\n","utf8");
@@ -41,5 +41,6 @@ test("Harbor Native summary aggregates prompt-cache comparison diagnostics",asyn
       lostKnownCachedTokens:2048,
       percent:33.333,
     });
+    assert.deepEqual(summary.responseContinuation,{used:1,notUsed:2,attempted:2,fallbacks:1,expiredParents:1,savedRequestBytes:120});
   }finally{await rm(root,{recursive:true,force:true})}
 });

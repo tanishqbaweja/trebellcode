@@ -37,6 +37,14 @@ test("OpenAI continuation tracker is bounded and clearable",()=>{
   assert.equal(tracker.entries.size,2);assert.equal(tracker.prepare(body([]),"resp-1").used,false);tracker.clear();assert.equal(tracker.entries.size,0);
 });
 
+test("OpenAI continuation expires an aged wire parent while retaining local prefix reuse",()=>{
+  let now=1_000;const tracker=new OpenAiResponseContinuationTracker({maxParentAgeMs:1_000,now:()=>now}),token={},userRef={role:"user",content:"Task"},assistantRef={role:"assistant",content:"Done"},nextRef={role:"user",content:"Next"},user={type:"message",role:"user",content:[{type:"input_text",text:"Task"}]},first=tracker.prepare(body([user]),"",{messageRefs:[userRef],identityToken:token});
+  tracker.record("resp-stale",first,{model:"gpt-5.6",text:"Done",toolCalls:[]});now=2_001;
+  const full=body([user,...openAiContinuationOutputItems({text:"Done"}),{type:"message",role:"user",content:[{type:"input_text",text:"Next"}]}]),prepared=tracker.prepare(full,"resp-stale",{messageRefs:[userRef,assistantRef,nextRef],identityToken:token});
+  assert.equal(tracker.preflight("resp-stale",{messageRefs:[userRef,assistantRef,nextRef],identityToken:token,model:"gpt-5.6"}),null);
+  assert.equal(prepared.used,false);assert.equal(prepared.parentExpired,true);assert.equal(Object.prototype.hasOwnProperty.call(prepared.body,"previous_response_id"),false);assert.equal(prepared.fastPrefixCount,1);
+});
+
 test("OpenAI continuation saved-byte telemetry matches exact full-body serialization",()=>{
   const tracker=new OpenAiResponseContinuationTracker(),firstInput=[{type:"message",role:"user",content:[{type:"input_text",text:"Task"}]}],first=tracker.prepare(body(firstInput));
   tracker.record("resp-1",first,{model:"gpt-5.6",text:"",toolCalls:[{id:"call-1",namespace:"trebell_workspace",name:"read_file",arguments:{path:"src/a.mjs"}}]});

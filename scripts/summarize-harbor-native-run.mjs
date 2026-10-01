@@ -85,7 +85,9 @@ console.log(JSON.stringify({
   responseContinuation:{
     used:continuationTelemetry.filter(item=>item?.used===true).length,
     notUsed:continuationTelemetry.filter(item=>item?.used===false).length,
+    attempted:continuationTelemetry.filter(item=>item?.attempted===true).length,
     fallbacks:continuationTelemetry.filter(item=>item?.fallback===true).length,
+    expiredParents:continuationTelemetry.filter(item=>item?.parentExpired===true).length,
     savedRequestBytes:continuationTelemetry.reduce((sum,item)=>sum+Number(item?.savedRequestBytes||0),0),
   },
   historyCooling:{
