@@ -2579,7 +2579,12 @@ test("native completion-gate recovery reopens a bounded post-edit evidence windo
       if(turns===12)return {text:"",toolCalls:[{id:"recovery-evidence-1",namespace:"trebell_terminal",name:"run",arguments:batchArgs(12)}],usage:{}};
       if(turns===13)return {text:"",toolCalls:[{id:"recovery-evidence-2",namespace:"trebell_terminal",name:"run",arguments:batchArgs(13)}],usage:{}};
       if(turns===14)return {text:"",toolCalls:[{id:"recovery-evidence-blocked",namespace:"trebell_terminal",name:"run",arguments:batchArgs(14)}],usage:{}};
-      if(turns===15)return {text:"",toolCalls:[{id:"repair",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"candidate","new_text":"fixed"}'}],usage:{}};
+      if(turns===15){
+        assert.equal(request.toolChoice,"required");
+        const pairs=request.tools.flatMap(entry=>entry?.type==="namespace"&&Array.isArray(entry.tools)?entry.tools.map(tool=>entry.name+"/"+tool.name):[]);
+        assert.deepEqual(pairs.sort(),["trebell_terminal/run","trebell_workspace/replace_text"]);
+        return {text:"",toolCalls:[{id:"repair",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"candidate","new_text":"fixed"}'}],usage:{}};
+      }
       if(turns===16)return {text:"The acceptance condition is now satisfied.",toolCalls:[],usage:{}};
       if(turns===17)return {text:'{"status":"complete","unresolved":[],"reason":"The focused recovery produced and verified the required repair."}',toolCalls:[],usage:{}};
       throw new Error("unexpected provider call "+turns);
@@ -2592,7 +2597,7 @@ test("native completion-gate recovery reopens a bounded post-edit evidence windo
   assert.equal(executed.includes("recovery-evidence-blocked"),false);
   assert.equal(executed.includes("repair"),true);
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="evidence").length,2);
-  const blockedEvidence=events.filter(event=>event.name==="native.completion.recovery_evidence_call_blocked");assert.equal(blockedEvidence.length,1);assert.equal(blockedEvidence[0].data?.callId,"recovery-evidence-blocked");assert.equal(blockedEvidence[0].data?.reason,"recovery_evidence_response_budget");
+  const blockedEvidence=events.filter(event=>event.name==="native.completion.recovery_evidence_call_blocked");assert.equal(blockedEvidence.length,1);assert.equal(blockedEvidence[0].data?.callId,"recovery-evidence-blocked");assert.equal(blockedEvidence[0].data?.reason,"recovery_evidence_response_budget");assert.equal(blockedEvidence[0].data?.editRequiredAfterBlock,true);
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,1);
 });
 

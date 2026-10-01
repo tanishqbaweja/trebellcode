@@ -1425,9 +1425,11 @@ export async function runNativeAgentTurn({
       const reservedSupportVerification=completionRecoverySupportVerificationRemaining>0&&call?.namespace==="trebell_terminal"&&call?.name==="run";
       if(recoveryEvidenceExhausted&&!recoveryCorrectiveEditCall(call)&&!recoverySupportWriteCandidate(call)&&!reservedSupportVerification){
         const callId=String(call?.id||""),toolCallNumber=toolCalls+1;toolCalls=toolCallNumber;
+        const editRequiredAfterBlock=completionRecoverySupportVerificationRemaining<=0;
+        if(editRequiredAfterBlock){completionRecoveryEditRequired=true;completionRecoveryEditRequiredMisses=0}
         conversation.push({role:"tool",toolCallId:callId,content:"Trebell semantic recovery: this evidence tool call was not executed because the current recovery epoch has already consumed its bounded evidence responses. Use the reserved corrective implementation edit if the gathered evidence supports one, or submit the best current completion candidate so the semantic gate can judge it and, if needed, open a new bounded recovery epoch. Do not spend another evidence-only tool call in this epoch."});
         blockedCompletionRecoveryEvidence=true;
-        emit(onEvent,{name:"native.completion.recovery_evidence_call_blocked",status:"blocked",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCall:toolCallNumber,callId,namespace:call?.namespace||null,name:call?.name||"tool",editRevision,recoveryEpoch:completionRecoveryEpoch,reason:"recovery_evidence_response_budget"}});
+        emit(onEvent,{name:"native.completion.recovery_evidence_call_blocked",status:"blocked",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCall:toolCallNumber,callId,namespace:call?.namespace||null,name:call?.name||"tool",editRevision,recoveryEpoch:completionRecoveryEpoch,reason:"recovery_evidence_response_budget",editRequiredAfterBlock}});
         callIndex++;continue;
       }
       const sameResponsePostEditEvidenceAllowance=recoveryEditAppliedInCurrentResponse&&completionRecoveryEvidenceRoundsRemaining<=0&&!executedPostEditEvidence;
