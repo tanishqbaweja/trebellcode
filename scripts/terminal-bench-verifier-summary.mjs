@@ -34,3 +34,10 @@ export async function readJobVerifierSummary(outputRoot,jobName){
   for(const summary of summaries)for(const key of ["tests","passed","failed","pending","skipped","other"])total[key]+=summary[key];
   return total;
 }
+
+export async function readTrialVerifierSummary(trialDir){
+  try{
+    const parsed=JSON.parse(await readFile(join(trialDir,"verifier","ctrf.json"),"utf8")),summary=normalizeCtrfVerifierSummary(parsed);
+    return summary?{trials:1,...summary}:null;
+  }catch{return null}
+}

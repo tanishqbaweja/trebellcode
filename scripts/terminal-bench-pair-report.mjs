@@ -12,6 +12,8 @@ export function jobsForPairReport(jobs,{complete=false}={}){
     return {
       ...job,
       runError:sealFreeformDetail(job.runError),
+      runnerError:sealFreeformDetail(job.runnerError),
+      drainError:sealFreeformDetail(job.drainError),
       exceptionMessage:sealFreeformDetail(job.exceptionMessage),
     };
   });

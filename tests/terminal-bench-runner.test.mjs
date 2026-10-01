@@ -77,6 +77,14 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/recoveredFromTrialFiles/);
   assert.match(source,/recoverNativeEventEvidence/);
   assert.match(source,/recoveredFromNativeEvents/);
+  assert.match(source,/recoverDroppedNativeTrial/);
+  assert.match(source,/STANDALONE_NATIVE_RERUN&&harness==="native"/);
+  assert.match(source,/args\.push\("--no-delete"\)/);
+  assert.match(source,/nativeEnvironmentRetention:STANDALONE_NATIVE_RERUN/);
+  assert.match(source,/recoveredByRegrade/);
+  assert.match(source,/regradeTrialDir/);
+  assert.match(source,/cleanupDockerProject/);
+  assert.match(source,/readTrialVerifierSummary/);
   assert.match(source,/recoveredEvidence\?\.inputTokens/);
   assert.match(source,/recoverCodexSessionEvidence/);
   assert.match(source,/recoveredFromCodexSessions/);
@@ -100,12 +108,13 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/activeLanes:laneStates\.filter/);
   assert.match(source,/lanes:laneStates\.map/);
   assert.match(source,/terminal-bench-latest\.json/);
-  assert.match(source,/waitForJobProcessDrain\(jobName,\{/);
+  assert.match(source,/trialProcessDrainNeedles\(outputRoot,jobName\)/);
+  assert.match(source,/waitForJobProcessDrain\(jobName,\{timeoutMs:LANE_DRAIN_TIMEOUT_MS,cwd:root,additionalNeedles\}/);
   assert.match(source,/readJobVerifierSummary/);
   assert.match(source,/jobsForPairReport/);
   assert.match(source,/jobs:jobsForPairReport\(jobs\.filter\(Boolean\),\{complete\}\)/);
   assert.match(source,/for\(const job of jobs\.filter\(Boolean\)\)\{/);
-  assert.match(source,/job\.verifierChecks=await readJobVerifierSummary/);
+  assert.match(source,/job\.regradeTrialDir\?await readTrialVerifierSummary\(job\.regradeTrialDir\):await readJobVerifierSummary/);
   assert.match(source,/TREBELL_TERMINAL_BENCH_LANE_DRAIN_MS/);
   assert.match(source,/runError=\[runError,drainError\]\.filter\(Boolean\)\.join/);
   assert.match(source,/lane evidence recovery failed:/);
@@ -166,14 +175,39 @@ test("Terminal-Bench lane drain detects a real descendant token and clears after
 
 test("Terminal-Bench Unix ps parsing only returns processes containing the exact job token",()=>{
   const token="tb4-native-gpt-6-luna-max-random-task-20260929T010203Z";
+  const trial="random-task__AbC123";
   const ps=[
     `  101 node worker.js ${token}`,
     "  202 python unrelated.py",
     `  303 harbor run --job-name ${token}`,
+    `  404 docker compose --project-name random-task__abc123__env exec main bash -c agent`,
     "not-a-process-line",
   ].join("\n");
-  assert.deepEqual(parsePsProcesses(ps,token),[101,303]);
+  assert.deepEqual(parsePsProcesses(ps,token,[trial]),[101,303,404]);
   assert.deepEqual(parsePsProcesses(ps,"missing-job-token"),[]);
+});
+
+test("Terminal-Bench lane drain detects a surviving trial-token process even without the job name",async t=>{
+  const jobToken=`trebell-job-${randomUUID()}`;
+  const trialToken=`task__${randomUUID().replaceAll("-","")}`;
+  const child=spawn(process.execPath,["-e","setInterval(()=>{},1000)",trialToken.toLowerCase()],{stdio:"ignore",windowsHide:true});
+  t.after(()=>{try{child.kill()}catch{}});
+
+  let detected=[];
+  for(let attempt=0;attempt<20&&!detected.includes(child.pid);attempt++){
+    detected=await lingeringJobProcesses(jobToken,{additionalNeedles:[trialToken]});
+    if(!detected.includes(child.pid))await new Promise(resolveWait=>setTimeout(resolveWait,50));
+  }
+  assert.ok(detected.includes(child.pid),`expected trial-token pid ${child.pid} in ${JSON.stringify(detected)}`);
+
+  await assert.rejects(
+    waitForJobProcessDrain(jobToken,{additionalNeedles:[trialToken],timeoutMs:100,pollMs:20}),
+    /left host processes alive after launcher exit/,
+  );
+
+  child.kill();
+  await once(child,"exit");
+  await waitForJobProcessDrain(jobToken,{additionalNeedles:[trialToken],timeoutMs:3_000,pollMs:20});
 });
 
 test("detached process launcher records a harmless child result outside the caller",async t=>{

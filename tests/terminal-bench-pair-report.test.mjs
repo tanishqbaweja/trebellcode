@@ -6,6 +6,8 @@ test("live Terminal-Bench pair reports seal free-form lane errors without mutati
   const jobs=[{
     label:"codex-api",
     runError:"harbor failed with sensitive task-bearing output",
+    runnerError:"host runner failed with sensitive output",
+    drainError:"host drain diagnostic with task-bearing output",
     exceptionType:"NonZeroAgentExitCodeError",
     exceptionMessage:"codex exec -- 'full task instruction'",
     reward:0,
@@ -14,6 +16,8 @@ test("live Terminal-Bench pair reports seal free-form lane errors without mutati
 
   assert.notEqual(live,jobs);
   assert.equal(live[0].runError,SEALED_LIVE_DETAIL);
+  assert.equal(live[0].runnerError,SEALED_LIVE_DETAIL);
+  assert.equal(live[0].drainError,SEALED_LIVE_DETAIL);
   assert.equal(live[0].exceptionMessage,SEALED_LIVE_DETAIL);
   assert.equal(live[0].exceptionType,"NonZeroAgentExitCodeError");
   assert.equal(live[0].reward,0);
@@ -34,7 +38,9 @@ test("completed Terminal-Bench pair reports retain full lane diagnostics",()=>{
 });
 
 test("live Terminal-Bench pair reports preserve null error details",()=>{
-  const [job]=jobsForPairReport([{runError:null,exceptionMessage:null}],{complete:false});
+  const [job]=jobsForPairReport([{runError:null,runnerError:null,drainError:null,exceptionMessage:null}],{complete:false});
   assert.equal(job.runError,null);
+  assert.equal(job.runnerError,null);
+  assert.equal(job.drainError,null);
   assert.equal(job.exceptionMessage,null);
 });

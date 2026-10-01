@@ -7,11 +7,12 @@ import { loadEnvFile } from "node:process";
 import { fileURLToPath } from "node:url";
 import { waitForJobProcessDrain } from "./terminal-bench-process-drain.mjs";
 import { jobsForPairReport } from "./terminal-bench-pair-report.mjs";
-import { readJobVerifierSummary } from "./terminal-bench-verifier-summary.mjs";
+import { readJobVerifierSummary, readTrialVerifierSummary } from "./terminal-bench-verifier-summary.mjs";
 import { recoverNativeEventEvidence, selectNativeMetric } from "./terminal-bench-native-evidence.mjs";
 import { recoverCodexSessionEvidence } from "./terminal-bench-codex-evidence.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "./terminal-bench-pair-lock.mjs";
 import { estimateGpt6LunaStandardCostFromAggregate, GPT6_LUNA_STANDARD_PRICING } from "./terminal-bench-cost.mjs";
+import { cleanupDockerProject, composeProjectForTrial, findNativeTrialDir, recoverDroppedNativeTrial } from "./terminal-bench-native-salvage.mjs";
 
 if(!process.argv.includes("--live"))throw new Error("Refusing to run paid/live Terminal-Bench without --live.");
 
@@ -62,6 +63,7 @@ const NATIVE_PINNED_NODE_TARBALL_SHA256="1084aa36196bba4c3a5e69a1ee388a6e4ff729d
 const NATIVE_PINNED_NODE_URL=`https://nodejs.org/download/release/v${NATIVE_PINNED_NODE_VERSION}/node-v${NATIVE_PINNED_NODE_VERSION}-linux-x64.tar.gz`;
 const NATIVE_CONTEXT_WINDOW=Math.max(1,Math.trunc(Number(process.env.TREBELL_HARBOR_CONTEXT_WINDOW)||272_000));
 const NATIVE_COMPACT_THRESHOLD=Math.max(1,Math.trunc(Number(process.env.TREBELL_HARBOR_COMPACT_THRESHOLD)||245_000));
+const NATIVE_SALVAGE_WAIT_MS=Math.max(5_000,Math.trunc(Number(process.env.TREBELL_TERMINAL_BENCH_NATIVE_SALVAGE_WAIT_MS)||180_000));
 if(NATIVE_COMPACT_THRESHOLD>=NATIVE_CONTEXT_WINDOW)throw new Error("Native Harbor compact threshold must be below its operating context window.");
 const validationDir=join(root,".harbor-validation");
 
@@ -131,6 +133,11 @@ async function trialResult(outputRoot,jobName){
     try{return JSON.parse(await readFile(join(outputRoot,jobName,entry.name,"result.json"),"utf8"))}catch{}
   }
   return null;
+}
+
+async function trialProcessDrainNeedles(outputRoot,jobName){
+  let entries=[];try{entries=await readdir(join(outputRoot,jobName),{withFileTypes:true})}catch{return []}
+  return entries.filter(entry=>entry.isDirectory()).map(entry=>entry.name);
 }
 
 function recoveredExceptionInfo(text){
@@ -221,6 +228,7 @@ try{
   const reportSnapshot=({complete=false}={})=>({
     pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER,
     sameModel:true,sameReasoningEffort:true,sequential:!PARALLEL,parallel:PARALLEL,codexAuthMode:CODEX_AUTH_MODE,codexInstallMode:CODEX_INSTALL_MODE,nativeReasoningContext:NATIVE_REASONING_CONTEXT,
+    nativeEnvironmentRetention:STANDALONE_NATIVE_RERUN?"retain-until-sealed-or-regraded":"harbor-default",
     nativeContextPolicy:{operatingContextWindow:NATIVE_CONTEXT_WINDOW,serverCompactionThreshold:NATIVE_COMPACT_THRESHOLD,retroactiveOpenAiReadCooling:false},
     ...sourceProvenance,
     ...(nativePinnedNodeTarballPath?{nativePinnedNodeVersion:NATIVE_PINNED_NODE_VERSION,nativePinnedNodeTarballSha256}:{}),
@@ -248,6 +256,8 @@ try{
     const agent=harness==="native"?"benchmarks.harbor.trebell_native_agent:TrebellNativeAgent":CODEX_INSTALL_MODE==="pinned"?"benchmarks.harbor.pinned_codex_agent:PinnedCodexAgent":"codex";
     const laneState=laneStates[laneIndex],jobName=laneState.jobName;
     const args=["run","-d",DATASET,"-i",TASK,"-a",agent,"-m",`openai/${MODEL}`,"--ak",`reasoning_effort=${EFFORT}`,"-n","1","-o",outputRoot,"--job-name",jobName,"-y"];
+    const retainNativeEnvironment=STANDALONE_NATIVE_RERUN&&harness==="native";
+    if(retainNativeEnvironment)args.push("--no-delete");
     if(SETUP_TIMEOUT_MULTIPLIER>1)args.push("--agent-setup-timeout-multiplier",String(SETUP_TIMEOUT_MULTIPLIER));
     if(AGENT_TIMEOUT_MULTIPLIER!==1)args.push("--agent-timeout-multiplier",String(AGENT_TIMEOUT_MULTIPLIER));
     const harnessEnv={...sharedEnv};
@@ -263,14 +273,29 @@ try{
       else harnessEnv.CODEX_AUTH_JSON_PATH=codexApiAuthPath;
     }
     laneState.status="running";laneState.startedAt=new Date().toISOString();await persistReport({complete:false});
-    let runError=null;
-    try{await run(harbor,args,{env:harnessEnv})}catch(error){runError=error?.message||String(error)}
+    let runError=null,runnerError=null,regradeRecovery=null;
+    try{await run(harbor,args,{env:harnessEnv})}catch(error){runnerError=error?.message||String(error);runError=runnerError}
     let drainError=null;
-    try{await waitForJobProcessDrain(jobName,{timeoutMs:LANE_DRAIN_TIMEOUT_MS,cwd:root})}catch(error){drainError=error?.message||String(error);runError=[runError,drainError].filter(Boolean).join("; ")}
+    try{
+      const additionalNeedles=await trialProcessDrainNeedles(outputRoot,jobName);
+      await waitForJobProcessDrain(jobName,{timeoutMs:LANE_DRAIN_TIMEOUT_MS,cwd:root,additionalNeedles});
+    }catch(error){drainError=error?.message||String(error);runError=[runError,drainError].filter(Boolean).join("; ")}
+    if(retainNativeEnvironment&&runnerError){
+      let alreadyGraded=null;try{alreadyGraded=await trialResult(outputRoot,jobName)}catch{}
+      if(!alreadyGraded?.verifier_result){
+        regradeRecovery=await recoverDroppedNativeTrial({
+          outputRoot,jobName,harbor,validationDir,home:homedir(),waitTimeoutMs:NATIVE_SALVAGE_WAIT_MS,
+          captureFn:(command,args)=>capture(command,args,{env:harnessEnv}),
+          runFn:(command,args)=>run(command,args,{env:harnessEnv}),
+        });
+        if(regradeRecovery.ok)runError=null;
+        else runError=[runError,`Native salvage/regrade failed: ${regradeRecovery.reason||"unknown recovery failure"}`].filter(Boolean).join("; ");
+      }
+    }
     try{
       let result=null;
       try{result=JSON.parse(await readFile(join(outputRoot,jobName,"result.json"),"utf8"))}catch{}
-      const recordedTrial=await trialResult(outputRoot,jobName),trial=recordedTrial||await recoverTrialEvidence(outputRoot,jobName);
+      const recordedTrial=await trialResult(outputRoot,jobName),trial=regradeRecovery?.ok&&regradeRecovery.regrade?.result?regradeRecovery.regrade.result:recordedTrial||await recoverTrialEvidence(outputRoot,jobName);
       const recoveredNative=harness==="native"?await recoverNativeEventEvidence(outputRoot,jobName):null;
       const recoveredCodex=harness==="codex"?await recoverCodexSessionEvidence(outputRoot,jobName):null;
       const recoveredEvidence=recoveredNative||recoveredCodex;
@@ -288,8 +313,8 @@ try{
           ?estimateGpt6LunaStandardCostFromAggregate({inputTokens,cachedInputTokens:cachedTokens,cacheWriteInputTokens:trebellNative?.cache_write_input_tokens??recoveredEvidence?.cacheWriteInputTokens??0,outputTokens:outputMetric.value??0},{maxObservedInputTokens:recoveredEvidence?.maxObservedInputTokens??null})
           :null;
       jobs[laneIndex]={
-        harness,label,agent,jobName,runError,authMode,
-        completed:Number(result?.stats?.n_completed_trials||0),errors:Number(result?.stats?.n_errored_trials||0),
+        harness,label,agent,jobName,runError,runnerError,drainError,authMode,
+        completed:regradeRecovery?.ok?1:Number(result?.stats?.n_completed_trials||0),errors:regradeRecovery?.ok?0:Number(result?.stats?.n_errored_trials||0),
         inputTokens,cachedTokens,uncachedInputTokens,cacheHitPercent,
         outputTokens:outputMetric.value,
         costUsd:result?.stats?.cost_usd??trial?.agent_result?.cost_usd??null,
@@ -303,11 +328,18 @@ try{
         recoveredFromTrialFiles:trial?.recovered_from_trial_files===true,
         recoveredFromNativeEvents,
         recoveredFromCodexSessions:Boolean(recoveredCodex),
+        recoveredByRegrade:regradeRecovery?.ok===true,
+        regradeTrialDir:regradeRecovery?.ok?regradeRecovery.regrade?.regradeTrialDir||null:null,
         evals:result?.stats?.evals||{},
       };
     }catch(error){
       const recoveryError=`lane evidence recovery failed: ${error?.message||String(error)}`;runError=[runError,recoveryError].filter(Boolean).join("; ");
       jobs[laneIndex]={harness,label,agent,jobName,runError,authMode,completed:0,errors:1,inputTokens:null,cachedTokens:null,uncachedInputTokens:null,cacheHitPercent:null,outputTokens:null,costUsd:null,apiEquivalentCostUsd:null,apiEquivalentCostBreakdown:null,reward:null,taskChecksum:null,agentVersion:null,setupMs:null,agentExecutionMs:null,verifierMs:null,exceptionType:"LaneEvidenceRecoveryError",exceptionMessage:recoveryError,recoveredFromTrialFiles:false,recoveredFromNativeEvents:false,recoveredFromCodexSessions:false,evals:{}};
+    }
+    if(retainNativeEnvironment&&!runError&&Number(jobs[laneIndex]?.completed||0)>=1){
+      const trialDir=regradeRecovery?.trialDir||await findNativeTrialDir(outputRoot,jobName);
+      const project=composeProjectForTrial(trialDir);
+      if(project)await cleanupDockerProject(project,{captureFn:(command,args)=>capture(command,args,{env:harnessEnv}),runFn:(command,args)=>run(command,args,{env:harnessEnv})});
     }
     laneState.status=runError?"failed":"finished";laneState.finishedAt=new Date().toISOString();laneState.runError=runError;
     await persistReport({complete:false});
@@ -318,7 +350,7 @@ try{
   // Only after every lane has finished do we read generic CTRF pass/fail totals
   // and attach them to the final report for correctness-first comparison.
   for(const job of jobs.filter(Boolean)){
-    try{job.verifierChecks=await readJobVerifierSummary(outputRoot,job.jobName)}
+    try{job.verifierChecks=job.regradeTrialDir?await readTrialVerifierSummary(job.regradeTrialDir):await readJobVerifierSummary(outputRoot,job.jobName)}
     catch(error){const verifierError=`verifier summary recovery failed: ${error?.message||String(error)}`;job.runError=[job.runError,verifierError].filter(Boolean).join("; ");job.verifierChecks=null}
   }
   const report=reportSnapshot({complete:true});await writeFile(reportPath,JSON.stringify(report,null,2)+"\n","utf8");
