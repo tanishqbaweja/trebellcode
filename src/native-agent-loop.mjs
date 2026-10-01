@@ -1407,6 +1407,12 @@ export async function runNativeAgentTurn({
           emit(onEvent,{name:"native.completion.gate_recovery",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,recoveryAttempt:completionGateRecoveries,recoveryEpoch:completionRecoveryEpoch,evidenceRoundsAllowed:0,editResponsesAllowed:completionRecoveryEditResponsesRemaining,editRequired:true,unresolved:verdict.unresolved}});
           continue;
         }
+        const finalEpochOrdinaryEvidenceRemaining=completionRecoveryEpoch>0&&completionRecoveryEvidenceRoundsRemaining>0&&completionRecoveryEpoch>=completionRecoveryEpochLimit&&completionRecoveryEditResponsesRemaining<=0;
+        if(finalEpochOrdinaryEvidenceRemaining){
+          conversation.push({role:"developer",content:"The current bounded recovery epoch still has evidence allowance remaining. Continue in this same epoch and use only the remaining focused evidence on the unresolved acceptance condition before proposing completion again."});
+          emit(onEvent,{name:"native.completion.gate_recovery",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,recoveryAttempt:completionGateRecoveries,recoveryEpoch:completionRecoveryEpoch,evidenceRoundsAllowed:completionRecoveryEvidenceRoundsRemaining,postEditEvidenceRoundsAllowed:completionRecoveryPostEditEvidenceResponsesRemaining,supportVerificationAllowed:completionRecoverySupportVerificationRemaining,editResponsesAllowed:completionRecoveryEditResponsesRemaining,sameEpoch:true,unresolved:verdict.unresolved}});
+          continue;
+        }
         if(completionRecoveryEpoch>=completionRecoveryEpochLimit){
           const unresolved=verdict.unresolved.length?verdict.unresolved:["A material acceptance condition remains unresolved."];
           const preservation=completionRecoveryIncumbentWorkspaceAligned?"The strongest evidence-backed workspace state has been preserved or restored":"The current workspace state could not be proven identical to the strongest evidence-backed recovery incumbent";

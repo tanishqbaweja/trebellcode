@@ -2951,6 +2951,35 @@ test("native does not advance a recovery incumbent from directional judge prose 
   assert.match(result.text,/stopped after 1 bounded semantic recovery epoch/i);
 });
 
+test("native keeps the current recovery epoch open while post-edit evidence allowance remains",async()=>{
+  let turns=0;const events=[],executed=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxCompletionRecoveryEpochs:1,maxModelTurns:14,maxToolCalls:20,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Fix src/a.mjs until exact acceptance passes."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"initial",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"candidate"}'}],usage:{}};
+      if(turns===2)return {text:"The initial candidate remains incomplete.",toolCalls:[],usage:{}};
+      if(turns===3)return {text:'{"status":"incomplete","progress":"uncertain","unresolved":["exact acceptance remains"],"reason":"Focused recovery is still possible."}',toolCalls:[],usage:{}};
+      if(turns===4)return {text:"",toolCalls:[{id:"early-edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"candidate","new_text":"candidate2"}'}],usage:{}};
+      if(turns===5)return {text:"",toolCalls:[{id:"evidence-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-1.mjs"]}'}],usage:{}};
+      if(turns===6)return {text:"The edited candidate still misses exact acceptance.",toolCalls:[],usage:{}};
+      if(turns===7)return {text:'{"status":"incomplete","progress":"unchanged","unresolved":["exact acceptance remains"],"reason":"One bounded evidence response still remains in this recovery epoch."}',toolCalls:[],usage:{}};
+      if(turns===8)return {text:"",toolCalls:[{id:"evidence-2",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-2.mjs"]}'}],usage:{}};
+      if(turns===9)return {text:"The second focused check still fails exact acceptance.",toolCalls:[],usage:{}};
+      if(turns===10)return {text:'{"status":"incomplete","progress":"unchanged","unresolved":["exact acceptance remains"],"reason":"The bounded recovery epoch is now fully spent."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{executed.push(String(call.id||""));return call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:1,stdout:"",stderr:"exact acceptance failed"}},
+  });
+  assert.equal(turns,10);
+  assert.deepEqual(executed,["initial","early-edit","evidence-1","evidence-2"]);
+  const sameEpoch=events.filter(event=>event.name==="native.completion.gate_recovery"&&event.data?.sameEpoch===true);assert.equal(sameEpoch.length,1);assert.equal(sameEpoch[0].data?.recoveryEpoch,1);assert.equal(sameEpoch[0].data?.evidenceRoundsAllowed,1);
+  const exhausted=events.filter(event=>event.name==="native.completion.recovery_exhausted");assert.equal(exhausted.length,1);assert.equal(exhausted[0].data?.recoveryEpoch,1);
+  assert.match(result.text,/stopped after 1 bounded semantic recovery epoch/i);
+});
+
 test("native completion recovery blocks a second corrective edit response in one epoch",async()=>{
   let turns=0;const executed=[],events=[];
   const result=await runNativeAgentTurn({
