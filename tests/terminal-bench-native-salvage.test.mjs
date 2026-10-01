@@ -1,15 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import {
   cachedTaskPathFromLock,
   composeProjectForTrial,
   dockerResourceIdsForProject,
+  dockerServiceContainersForProject,
   ensureRegradableNativeResult,
   nativeArtifactManifest,
   nativeTerminalEvent,
+  readTaskSalvagePlan,
   recoverDroppedNativeTrial,
   regradeSalvagedNativeTrial,
   salvageNativeArtifact,
@@ -30,16 +32,95 @@ test("Native salvage waits for a terminal event without requiring Harbor to rema
   assert.equal(event?.name,"native.turn.completed");assert.equal(reads,2);
 });
 
-test("Native salvage copies the artifact from the exact retained Compose project and writes Harbor manifest",async()=>{
-  const captures=[],runs=[],writes=[];
-  const captureFn=async(command,args)=>{captures.push([command,args]);if(args[0]==="ps")return "container123\n";return ""};
-  const runFn=async(command,args)=>{runs.push([command,args])};
-  const trialDir=join("H:/jobs","mp-checkpoint-consolidation__Lc6RhE4");
-  const result=await salvageNativeArtifact(trialDir,{captureFn,runFn,mkdirFn:async()=>{},writeFileFn:async(path,content)=>writes.push([path,content])});
-  assert.equal(result.ok,true);assert.equal(result.containerId,"container123");
-  assert.ok(captures.some(([,args])=>args.includes("label=com.docker.compose.project=mp-checkpoint-consolidation__lc6rhe4__env")));
-  assert.deepEqual(runs[0],["docker",["cp","container123:/app/output/model.safetensors",join(trialDir,"artifacts","app","output","model.safetensors")]]);
-  assert.equal(basename(writes[0][0]),"manifest.json");assert.deepEqual(JSON.parse(writes[0][1]),nativeArtifactManifest());
+test("Native salvage derives static task artifacts, copies them from retained services, and writes a Harbor-compatible manifest",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-artifacts-")),trialDir=join(root,"mp-checkpoint-consolidation__Lc6RhE4"),taskPath=join(root,"task");
+  const captures=[],runs=[];
+  try{
+    const preexisting=join(trialDir,"artifacts","app","output","model.safetensors");
+    await mkdir(join(trialDir,"artifacts","app","output"),{recursive:true});await writeFile(preexisting,"older-partial-artifact");
+    const taskConfig=JSON.stringify({artifacts:["/app/output/model.safetensors"],steps:[],verifier_collect:[]});
+    const captureFn=async(command,args)=>{
+      captures.push([command,args]);
+      if(command==="py"||command==="python"||command==="python3")return taskConfig;
+      if(args[0]==="ps"&&args.includes("--format")&&String(args.at(-1)).includes("compose.service"))return "container123\tmain\n";
+      if(args[0]==="ps")return "container123\n";
+      return "";
+    };
+    const runFn=async(command,args)=>{
+      runs.push([command,args]);
+      if(command!=="docker"||args[0]!=="cp")return;
+      const source=args[1],target=args[2];
+      if(source.endsWith(":/logs/artifacts")){await mkdir(target,{recursive:true});return}
+      await mkdir(join(target,".."),{recursive:true});await writeFile(target,"artifact");
+    };
+    const result=await salvageNativeArtifact(trialDir,{taskPath,captureFn,runFn});
+    assert.equal(result.ok,true,JSON.stringify(result,null,2));assert.equal(result.containerId,"container123");
+    assert.ok(captures.some(([,args])=>args.includes("label=com.docker.compose.project=mp-checkpoint-consolidation__lc6rhe4__env")));
+    assert.ok(runs.some(([command,args])=>command==="docker"&&args[0]==="cp"&&args[1]==="container123:/app/output/model.safetensors"));
+    const preserved=result.preservedTargets.find(item=>item.target===preexisting);
+    assert.ok(preserved);assert.equal(await readFile(preserved.preserved,"utf8"),"older-partial-artifact");
+    assert.equal(await readFile(preexisting,"utf8"),"artifact");
+    assert.deepEqual(result.manifest,[
+      {source:"/logs/artifacts",destination:"artifacts/logs/artifacts",type:"directory",status:"empty",service:null,exclude:[]},
+      {source:"/app/output/model.safetensors",destination:"artifacts/app/output/model.safetensors",type:"file",status:"ok",service:null,exclude:[]},
+    ]);
+    assert.deepEqual(JSON.parse(await (await import("node:fs/promises")).readFile(join(trialDir,"artifacts","manifest.json"),"utf8")),result.manifest);
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("Native salvage plan refuses task structures it cannot replay faithfully",async()=>{
+  const captureFor=value=>async(command)=>{if(["py","python","python3"].includes(command))return JSON.stringify(value);throw new Error("unexpected command")};
+  const multi=await readTaskSalvagePlan("task",{captureFn:captureFor({artifacts:[],steps:[{name:"two"}],verifier_collect:[]})});
+  assert.equal(multi.ok,false);assert.match(multi.reason,/multi-step/);
+  const hook=await readTaskSalvagePlan("task",{captureFn:captureFor({artifacts:[],steps:[],verifier_collect:[{command:"snapshot"}]})});
+  assert.equal(hook.ok,false);assert.match(hook.reason,/collect hooks/);
+  const excluded=await readTaskSalvagePlan("task",{captureFn:captureFor({artifacts:[{source:"/tmp/output",exclude:["*.tmp"]}],steps:[],verifier_collect:[]})});
+  assert.equal(excluded.ok,false);assert.match(excluded.reason,/exclude filters/);
+});
+
+test("Native salvage discovers Compose service containers independently of the job name",async()=>{
+  const calls=[];
+  const services=await dockerServiceContainersForProject("trial__env",{captureFn:async(_command,args)=>{calls.push(args);return "main-id\tmain\nredis-id\tredis\n"}});
+  assert.equal(services.get("main"),"main-id");assert.equal(services.get("redis"),"redis-id");
+  assert.ok(calls[0].includes("label=com.docker.compose.project=trial__env"));
+  assert.equal(calls[0].some(value=>String(value).includes("org.harborframework.terminal-bench.role")),false);
+});
+
+test("Native salvage preserves explicit destinations and sidecar service provenance",async()=>{
+  const root=await mkdtemp(join(tmpdir(),"trebell-native-sidecar-")),trialDir=join(root,"task__SideCar"),taskPath=join(root,"task");
+  try{
+    const taskConfig=JSON.stringify({artifacts:[{source:"/var/export/data.json",destination:"snapshot/data.json",service:"redis"}],steps:[],verifier_collect:[]});
+    const copies=[];
+    const captureFn=async(command,args)=>{
+      if(command==="py"||command==="python"||command==="python3")return taskConfig;
+      if(args[0]==="ps"&&args.includes("--format")&&String(args.at(-1)).includes("compose.service"))return "main-id\tmain\nredis-id\tredis\n";
+      return args[0]==="ps"?"main-id\n":"";
+    };
+    const runFn=async(command,args)=>{
+      if(command!=="docker"||args[0]!=="cp")return;
+      copies.push(args.slice());
+      if(args[1].endsWith(":/logs/artifacts")){await mkdir(args[2],{recursive:true});return}
+      await mkdir(join(args[2],".."),{recursive:true});await writeFile(args[2],"sidecar");
+    };
+    const result=await salvageNativeArtifact(trialDir,{taskPath,captureFn,runFn});
+    assert.equal(result.ok,true,JSON.stringify(result,null,2));
+    assert.ok(copies.some(args=>args[1]==="redis-id:/var/export/data.json"));
+    assert.deepEqual(result.manifest[1],{
+      source:"/var/export/data.json",destination:"artifacts/snapshot/data.json",type:"file",status:"ok",service:"redis",exclude:[],
+    });
+  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+test("Native salvage mirrors Windows container artifact drives using Harbor's host layout",async()=>{
+  let observedPath=null;
+  const manifest=await nativeArtifactManifest("H:/trial",[
+    {source:"C:/logs/output.txt",destination:null,exclude:[],service:null},
+  ],{
+    lstatFn:async path=>{observedPath=path;return {isDirectory:()=>false}},
+    readdirFn:async()=>[],
+  });
+  assert.equal(observedPath,join("H:/trial","artifacts","C","logs","output.txt"));
+  assert.equal(manifest[0].destination,"artifacts/C/logs/output.txt");
 });
 
 test("Native salvage resource discovery is scoped to one Compose project",async()=>{
@@ -77,10 +158,18 @@ test("Native dropped-run recovery waits for completion, salvages the artifact, a
     await writeFile(join(trialDir,"lock.json"),JSON.stringify({task:{name:"terminal-bench/mp-checkpoint-consolidation",digest:"sha256:abc123"}}));
     await writeFile(join(trialDir,"agent","trebell-native-metrics.json"),JSON.stringify({version:"trebell-native-harbor/1",model:"gpt-6-luna",modelTurns:3,toolCalls:4,providerRequests:3,usage:{inputTokens:123,cachedInputTokens:100,outputTokens:9},error:null}));
     const commands=[];
-    const captureFn=async(_command,args)=>args[0]==="ps"?"container42\n":"";
+    const taskConfig=JSON.stringify({artifacts:["/app/output/model.safetensors"],steps:[],verifier_collect:[]});
+    const captureFn=async(command,args)=>{
+      if(command==="py"||command==="python"||command==="python3")return taskConfig;
+      if(args[0]==="ps"&&args.includes("--format")&&String(args.at(-1)).includes("compose.service"))return "container42\tmain\n";
+      return args[0]==="ps"?"container42\n":"";
+    };
     const runFn=async(command,args)=>{
       commands.push([command,args]);
-      if(command==="docker"&&args[0]==="cp"){await mkdir(join(trialDir,"artifacts","app","output"),{recursive:true});await writeFile(args[2],"artifact");return}
+      if(command==="docker"&&args[0]==="cp"){
+        if(args[1].endsWith(":/logs/artifacts")){await mkdir(args[2],{recursive:true});return}
+        await mkdir(join(args[2],".."),{recursive:true});await writeFile(args[2],"artifact");return
+      }
       if(command==="harbor"){
         const out=args[args.indexOf("-o")+1],name=args[args.indexOf("--trial-name")+1],target=join(out,name);
         await mkdir(target,{recursive:true});await writeFile(join(target,"result.json"),JSON.stringify({verifier_result:{rewards:{reward:0}},agent_result:{n_input_tokens:123}}));return;

@@ -1,6 +1,6 @@
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { basename, join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const TERMINAL_EVENT_NAMES=new Set(["native.turn.completed","native.turn.blocked"]);
@@ -48,11 +48,96 @@ export function cachedTaskPathFromLock(lock,{home}={}){
   return join(home,".cache","harbor","tasks","packages",parts[0],...parts.slice(1),digest);
 }
 
-export function nativeArtifactManifest(){
-  return [
-    {source:"/logs/artifacts",destination:"artifacts/logs/artifacts",type:"directory",status:"empty",service:null,exclude:[]},
-    {source:"/app/output/model.safetensors",destination:"artifacts/app/output/model.safetensors",type:"file",status:"ok",service:null,exclude:[]},
-  ];
+function normalizedArtifact(entry){
+  if(typeof entry==="string")return {source:entry,destination:null,exclude:[],service:null};
+  if(!entry||typeof entry!=="object"||typeof entry.source!=="string")return null;
+  return {
+    source:entry.source,
+    destination:typeof entry.destination==="string"&&entry.destination?entry.destination:null,
+    exclude:Array.isArray(entry.exclude)?entry.exclude.map(String):[],
+    service:typeof entry.service==="string"&&entry.service?entry.service:null,
+  };
+}
+
+function artifactRelativeSource(source){
+  const normalized=String(source||"").replaceAll("\\","/");
+  const drive=normalized.match(/^([A-Za-z]):(?:\/|$)/);
+  const rest=(drive?normalized.slice(drive[0].length):normalized.replace(/^\/+/, "")).split("/").filter(part=>part&&part!==".");
+  return drive?[drive[1].toUpperCase(),...rest]:rest;
+}
+
+function artifactHostPath(trialDir,artifact){
+  return artifact.destination
+    ?join(trialDir,"artifacts",...String(artifact.destination).split("/").filter(Boolean))
+    :join(trialDir,"artifacts",...artifactRelativeSource(artifact.source));
+}
+
+function artifactManifestDestination(trialDir,target){
+  return relative(trialDir,target).replaceAll("\\","/");
+}
+
+function pathsOverlap(first,second){
+  const a=String(first).replaceAll("\\","/").replace(/\/+$/,""),b=String(second).replaceAll("\\","/").replace(/\/+$/,"");
+  return a===b||a.startsWith(b+"/")||b.startsWith(a+"/");
+}
+
+export async function readTaskSalvagePlan(taskPath,{captureFn,platform=process.platform}={}){
+  if(!taskPath||typeof captureFn!=="function")return {ok:false,reason:"task salvage-plan inputs are incomplete"};
+  const taskToml=join(taskPath,"task.toml");
+  const python=[
+    "import json,sys,tomllib",
+    "from pathlib import Path",
+    "d=tomllib.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))",
+    "v=d.get('verifier') or {}",
+    "print(json.dumps({'artifacts':d.get('artifacts') or [],'steps':d.get('steps') or [],'verifier_collect':v.get('collect') or []}))",
+  ].join(";");
+  const candidates=platform==="win32"
+    ?[["py",["-3","-c",python,taskToml]],["python",["-c",python,taskToml]]]
+    :[["python3",["-c",python,taskToml]],["python",["-c",python,taskToml]]];
+  let parsed=null,lastError=null;
+  for(const [command,args] of candidates){
+    try{parsed=JSON.parse(await captureFn(command,args));break}catch(error){lastError=error}
+  }
+  if(!parsed)return {ok:false,reason:`task.toml could not be parsed with Python tomllib: ${lastError?.message||lastError||"no Python interpreter available"}`};
+  if(Array.isArray(parsed.steps)&&parsed.steps.length)return {ok:false,reason:"Native dropped-run salvage does not yet support multi-step tasks"};
+  if(Array.isArray(parsed.verifier_collect)&&parsed.verifier_collect.length)return {ok:false,reason:"Native dropped-run salvage cannot safely replay verifier collect hooks"};
+  const artifacts=(Array.isArray(parsed.artifacts)?parsed.artifacts:[]).map(normalizedArtifact);
+  if(artifacts.some(entry=>!entry))return {ok:false,reason:"task.toml contains an unsupported artifact declaration"};
+  if(artifacts.some(entry=>entry.exclude.length))return {ok:false,reason:"Native dropped-run salvage does not yet support artifact exclude filters"};
+  const convention={source:"/logs/artifacts",destination:null,exclude:[],service:null};
+  if(!artifacts.some(entry=>(entry.service==null||entry.service==="main")&&entry.source.replace(/\/+$/,"")==="/logs/artifacts"))artifacts.unshift(convention);
+  const targets=artifacts.map(entry=>artifactHostPath("__trial__",entry));
+  for(let i=0;i<targets.length;i++)for(let j=i+1;j<targets.length;j++)if(pathsOverlap(targets[i],targets[j]))return {ok:false,reason:`Native dropped-run salvage refuses overlapping artifact targets: ${artifacts[i].source} and ${artifacts[j].source}`};
+  return {ok:true,taskPath,artifacts};
+}
+
+export async function dockerServiceContainersForProject(project,{captureFn}={}){
+  if(!project||typeof captureFn!=="function")return new Map();
+  const label=`com.docker.compose.project=${project}`;
+  const output=await captureFn("docker",["ps","-a","--filter",`label=${label}`,"--format",'{{.ID}}\t{{.Label "com.docker.compose.service"}}']).catch(()=>"");
+  const result=new Map();
+  for(const line of splitLines(output)){
+    const [id,service]=line.split("\t");
+    if(id&&service&&!result.has(service))result.set(service,id);
+  }
+  return result;
+}
+
+export async function nativeArtifactManifest(trialDir,artifacts,{lstatFn=lstat,readdirFn=readdir}={}){
+  const entries=[];
+  for(const artifact of artifacts){
+    const target=artifactHostPath(trialDir,artifact),stats=await lstatFn(target);
+    const isDirectory=stats.isDirectory(),status=isDirectory&&(await readdirFn(target)).length===0?"empty":"ok";
+    entries.push({
+      source:artifact.source,
+      destination:artifactManifestDestination(trialDir,target),
+      type:isDirectory?"directory":"file",
+      status,
+      service:artifact.service,
+      exclude:isDirectory?[...artifact.exclude]:[],
+    });
+  }
+  return entries;
 }
 
 export async function ensureRegradableNativeResult(trialDir,{readFileFn=readFile,writeFileFn=writeFile}={}){
@@ -136,15 +221,34 @@ export async function cleanupDockerProject(project,{captureFn,runFn}={}){
   return {...resources,cleaned:true};
 }
 
-export async function salvageNativeArtifact(trialDir,{captureFn,runFn,mkdirFn=mkdir,writeFileFn=writeFile}={}){
+export async function salvageNativeArtifact(trialDir,{taskPath,captureFn,runFn,mkdirFn=mkdir,renameFn=rename,writeFileFn=writeFile,lstatFn=lstat,readdirFn=readdir,platform=process.platform}={}){
   const project=composeProjectForTrial(trialDir),resources=await dockerResourceIdsForProject(project,{captureFn}),containerId=resources.containers[0]||null;
   if(!containerId)return {ok:false,trialDir,project,reason:"retained Native task container was not found",resources};
-  const artifactDir=join(trialDir,"artifacts","app","output"),artifactPath=join(artifactDir,"model.safetensors");
-  await mkdirFn(artifactDir,{recursive:true});
-  try{await runFn("docker",["cp",`${containerId}:/app/output/model.safetensors`,artifactPath])}
-  catch(error){return {ok:false,trialDir,project,containerId,artifactPath,reason:String(error?.message||error||"artifact copy failed"),resources}}
-  await writeFileFn(join(trialDir,"artifacts","manifest.json"),JSON.stringify(nativeArtifactManifest(),null,2)+"\n","utf8");
-  return {ok:true,trialDir,project,containerId,artifactPath,resources};
+  const plan=await readTaskSalvagePlan(taskPath,{captureFn,platform});
+  if(!plan.ok)return {ok:false,trialDir,project,containerId,resources,reason:plan.reason,plan};
+  const serviceContainers=await dockerServiceContainersForProject(project,{captureFn});
+  const preservedTargets=[];
+  for(const artifact of plan.artifacts){
+    const service=artifact.service||"main",sourceContainer=serviceContainers.get(service);
+    if(!sourceContainer)return {ok:false,trialDir,project,containerId,resources,plan,reason:`retained task container for artifact service ${service} was not found`};
+    const target=artifactHostPath(trialDir,artifact);
+    await mkdirFn(dirname(target),{recursive:true});
+    try{
+      await lstatFn(target);
+      const preserved=`${target}.trebell-salvage-${randomUUID()}`;
+      await renameFn(target,preserved);
+      preservedTargets.push({target,preserved});
+    }catch(error){
+      if(error?.code!=="ENOENT")return {ok:false,trialDir,project,containerId,resources,plan,artifact,reason:`existing artifact target could not be preserved before salvage: ${error?.message||error}`};
+    }
+    try{await runFn("docker",["cp",`${sourceContainer}:${artifact.source}`,target])}
+    catch(error){return {ok:false,trialDir,project,containerId,resources,plan,artifact,reason:`artifact copy failed for ${artifact.source}: ${error?.message||error}`}}
+  }
+  let manifest;
+  try{manifest=await nativeArtifactManifest(trialDir,plan.artifacts,{lstatFn,readdirFn})}
+  catch(error){return {ok:false,trialDir,project,containerId,resources,plan,reason:`artifact manifest reconstruction failed: ${error?.message||error}`}}
+  await writeFileFn(join(trialDir,"artifacts","manifest.json"),JSON.stringify(manifest,null,2)+"\n","utf8");
+  return {ok:true,trialDir,project,containerId,resources,plan,manifest,preservedTargets};
 }
 
 export async function regradeSalvagedNativeTrial({trialDir,harbor,validationDir,home,runFn,readFileFn=readFile,mkdirFn=mkdir}={}){
@@ -167,11 +271,14 @@ export async function regradeSalvagedNativeTrial({trialDir,harbor,validationDir,
 export async function recoverDroppedNativeTrial({outputRoot,jobName,harbor,validationDir,home,waitTimeoutMs=180_000,captureFn,runFn,readFileFn=readFile,readdirFn=readdir}={}){
   const trialDir=await findNativeTrialDir(outputRoot,jobName,{readdirFn});
   if(!trialDir)return {ok:false,reason:"Native trial directory was not found"};
+  let lock=null;try{lock=JSON.parse(await readFileFn(join(trialDir,"lock.json"),"utf8"))}catch{}
+  const taskPath=cachedTaskPathFromLock(lock,{home});
+  if(!taskPath)return {ok:false,trialDir,reason:"cached task path could not be derived from the trial lock"};
   const project=composeProjectForTrial(trialDir),resources=await dockerResourceIdsForProject(project,{captureFn});
   if(!resources.containers.length)return {ok:false,trialDir,project,reason:"retained Native task container was not found",resources};
   const terminalEvent=await waitForNativeTerminalEvent(trialDir,{timeoutMs:waitTimeoutMs,readFileFn});
   if(!terminalEvent)return {ok:false,trialDir,reason:"Native terminal event did not arrive before salvage timeout"};
-  const salvage=await salvageNativeArtifact(trialDir,{captureFn,runFn});
+  const salvage=await salvageNativeArtifact(trialDir,{taskPath,captureFn,runFn});
   if(!salvage.ok)return {ok:false,trialDir,terminalEvent,salvage,reason:salvage.reason};
   const sourceResult=await ensureRegradableNativeResult(trialDir,{readFileFn});
   if(!sourceResult.result)return {ok:false,trialDir,terminalEvent,salvage,sourceResult,reason:sourceResult.reason||"regradable Native source result could not be recovered"};
