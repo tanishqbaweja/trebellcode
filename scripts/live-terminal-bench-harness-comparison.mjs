@@ -39,7 +39,10 @@ if(!Number.isFinite(SETUP_TIMEOUT_MULTIPLIER)||SETUP_TIMEOUT_MULTIPLIER<1)throw 
 const agentTimeoutArg=process.argv.find(arg=>arg.startsWith("--agent-timeout-multiplier="));
 const AGENT_TIMEOUT_MULTIPLIER=Number(agentTimeoutArg?.slice("--agent-timeout-multiplier=".length)||process.env.TREBELL_TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER||1);
 if(!Number.isFinite(AGENT_TIMEOUT_MULTIPLIER)||AGENT_TIMEOUT_MULTIPLIER<=0)throw new Error("Terminal-Bench agent timeout multiplier must be > 0.");
-const PARALLEL=process.argv.includes("--parallel")||String(process.env.TREBELL_TERMINAL_BENCH_PARALLEL||"").trim()==="1";
+const sequentialRequested=process.argv.includes("--sequential")||String(process.env.TREBELL_TERMINAL_BENCH_SEQUENTIAL||"").trim()==="1";
+const parallelRequested=process.argv.includes("--parallel")||String(process.env.TREBELL_TERMINAL_BENCH_PARALLEL||"").trim()==="1";
+if(sequentialRequested&&parallelRequested)throw new Error("Terminal-Bench comparison cannot be both --parallel and --sequential.");
+const PARALLEL=!sequentialRequested;
 const STANDALONE_NATIVE_RERUN=process.argv.includes("--standalone-native-rerun");
 const onlyArg=process.argv.find(arg=>arg.startsWith("--only="));
 const inheritedOnly=String(process.env.TREBELL_TERMINAL_BENCH_ONLY||"").trim();
