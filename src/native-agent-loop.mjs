@@ -1298,7 +1298,7 @@ export async function runNativeAgentTurn({
       const error=new Error("Native provider emitted tool-call markup after the tool budget was exhausted and no finalization retry remained.");error.code="native_invalid_tool_budget_finalization";
       emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{reason:error.code,modelTurns,toolCalls}});throw error;
     }
-    if(!calls.length&&!responseText.trim()){
+    if(!controlGateMode&&!calls.length&&!responseText.trim()){
       if(emptyCompletionRecoveries<1&&modelTurns<budget.maxModelTurns){
         emptyCompletionRecoveries++;
         conversation.push({role:"developer",content:"The previous provider response contained no tool calls and no user-visible assistant text. Complete the user's task with a concise final answer now. Do not repeat completed tool calls unless they are genuinely needed for accuracy."});

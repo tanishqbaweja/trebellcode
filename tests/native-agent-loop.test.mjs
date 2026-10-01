@@ -431,6 +431,40 @@ test("native agent fails visibly when the bounded empty-completion recovery is a
   assert.equal(turns,2);
 });
 
+test("native empty control-gate response uses the gate retry instead of final-answer recovery",async()=>{
+  let turns=0;const events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",
+    messages:[{role:"user",content:"Fix the implementation and verify it."}],
+    semanticCompletionGate:true,
+    maxModelTurns:8,
+    maxToolCalls:8,
+    onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/app.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      if(turns===2)return {text:"Done.",toolCalls:[],usage:{}};
+      if(turns===3){
+        assert.equal(request.toolChoice,"none");
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[],usage:{}};
+      }
+      if(turns===4){
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/completion gate parser could not read/i.test(String(message.content||""))));
+        return {text:'{"status":"complete","progress":"uncertain","edit_support":"uncertain","unresolved":[],"reason":"The requested implementation edit is present."}',toolCalls:[],usage:{}};
+      }
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async()=>({path:"src/app.mjs",replacements:1}),
+  });
+  assert.equal(result.text,"Done.");
+  assert.equal(turns,4);
+  assert.equal(events.filter(event=>event.name==="native.completion.gate_retry").length,1);
+  assert.equal(events.some(event=>event.name==="native.model.empty_completion"),false);
+  assert.equal(events.some(event=>event.name==="native.turn.blocked"&&event.data?.reason==="native_empty_completion"),false);
+});
+
 test("native agent feeds namespaced tool observations back into the same model loop",async()=>{
   const requests=[],executions=[];
   const result=await runNativeAgentTurn({
