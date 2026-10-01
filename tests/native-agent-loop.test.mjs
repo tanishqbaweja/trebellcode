@@ -2538,6 +2538,51 @@ test("native completion-gate recovery reopens a bounded post-edit evidence windo
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,1);
 });
 
+test("native requires the owed corrective edit before reopening recovery evidence",async()=>{
+  let turns=0;const executed=[],events=[],requests=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxModelTurns:14,maxToolCalls:20,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Fix src/a.mjs until the acceptance condition passes."}],
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"},{name:"write_file"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"initial",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"candidate"}'}],usage:{}};
+      if(turns===2)return {text:"The current candidate still misses acceptance.",toolCalls:[],usage:{}};
+      if(turns===3)return {text:'{"status":"incomplete","unresolved":["acceptance still fails"],"reason":"Two focused checks can isolate the remaining defect."}',toolCalls:[],usage:{}};
+      if(turns===4)return {text:"",toolCalls:[{id:"evidence-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["evidence-1.mjs"]}'}],usage:{}};
+      if(turns===5)return {text:"",toolCalls:[{id:"evidence-2",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["evidence-2.mjs"]}'}],usage:{}};
+      if(turns===6)return {text:"The evidence still shows the same acceptance failure.",toolCalls:[],usage:{}};
+      if(turns===7)return {text:'{"status":"incomplete","unresolved":["the implementation still needs a corrective change"],"reason":"The evidence budget is exhausted and the implementation remains incorrect."}',toolCalls:[],usage:{}};
+      if(turns===8){
+        assert.equal(request.toolChoice,"required");
+        const pairs=request.tools.flatMap(entry=>entry?.type==="namespace"&&Array.isArray(entry.tools)?entry.tools.map(tool=>entry.name+"/"+tool.name):[]);
+        assert.deepEqual(pairs.sort(),["trebell_workspace/replace_text","trebell_workspace/write_file"]);
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/still owes one corrective implementation edit/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[{id:"repair",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"candidate","new_text":"fixed"}'}],usage:{}};
+      }
+      if(turns===9)return {text:"The corrected implementation now satisfies acceptance.",toolCalls:[],usage:{}};
+      if(turns===10)return {text:'{"status":"complete","unresolved":[],"reason":"The corrective implementation edit resolved the acceptance failure."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{
+      executed.push(call.id);
+      return call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0,stdout:"same failure"};
+    },
+  });
+  assert.equal(turns,10);
+  assert.deepEqual(executed,["initial","evidence-1","evidence-2","repair"]);
+  assert.match(result.text,/now satisfies acceptance/i);
+  const recoveries=events.filter(event=>event.name==="native.completion.gate_recovery");
+  assert.equal(recoveries.length,2);
+  assert.equal(recoveries[1].data?.editRequired,true);
+  assert.equal(recoveries[1].data?.evidenceRoundsAllowed,0);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="evidence").length,2);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,1);
+});
+
 test("native completion-gate recovery permits one corrective edit after revision-churn grace is exhausted",async()=>{
   let turns=0;const executed=[],events=[];
   const terminalBatch=label=>[

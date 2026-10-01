@@ -8,12 +8,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { lingeringJobProcesses, parsePsProcesses, waitForJobProcessDrain } from "../scripts/terminal-bench-process-drain.mjs";
 import { launchDetachedDescriptor, readDetachedStatus, writeDetachedDescriptor } from "../scripts/detached-process.mjs";
-import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath } from "../scripts/terminal-bench-pair-lock.mjs";
+import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "../scripts/terminal-bench-pair-lock.mjs";
 
 test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable trial metrics",async()=>{
   const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
   const nativeRunnerSource=await readFile(new URL("../benchmarks/harbor/trebell-native-runner.mjs",import.meta.url),"utf8");
   assert.match(source,/sharedTerminalBenchLockPath/);
+  assert.match(source,/sharedTerminalBenchNativeRerunLockPath/);
   assert.match(source,/rev-parse","--git-common-dir/);
   assert.match(source,/acquireTerminalBenchPairLock/);
   assert.match(source,/SETUP_TIMEOUT_MULTIPLIER/);
@@ -108,6 +109,15 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/runError=\[runError,drainError\]\.filter\(Boolean\)\.join/);
   assert.match(source,/laneState\.status=runError\?"failed":"finished"/);
   assert.match(source,/writeFile\(reportPath,JSON\.stringify\(report,null,2\)/);
+});
+
+test("Terminal-Bench standalone Native rerun lock is shared across worktrees but separate from the pair lock",()=>{
+  const root="H:\\repo\\worktree-a",gitCommon="..\\.git";
+  const pair=sharedTerminalBenchLockPath(root,gitCommon),rerun=sharedTerminalBenchNativeRerunLockPath(root,gitCommon);
+  assert.notEqual(rerun,pair);
+  assert.match(rerun,/terminal-bench-native-rerun\.lock$/);
+  const other=sharedTerminalBenchNativeRerunLockPath("H:\\repo\\worktree-b","..\\.git");
+  assert.equal(other,rerun);
 });
 
 test("Terminal-Bench pair lock is shared across worktrees that use one Git common directory",async t=>{

@@ -10,7 +10,7 @@ import { jobsForPairReport } from "./terminal-bench-pair-report.mjs";
 import { readJobVerifierSummary } from "./terminal-bench-verifier-summary.mjs";
 import { recoverNativeEventEvidence, selectNativeMetric } from "./terminal-bench-native-evidence.mjs";
 import { recoverCodexSessionEvidence } from "./terminal-bench-codex-evidence.mjs";
-import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath } from "./terminal-bench-pair-lock.mjs";
+import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "./terminal-bench-pair-lock.mjs";
 import { estimateGpt6LunaStandardCostFromAggregate, GPT6_LUNA_STANDARD_PRICING } from "./terminal-bench-cost.mjs";
 
 if(!process.argv.includes("--live"))throw new Error("Refusing to run paid/live Terminal-Bench without --live.");
@@ -165,8 +165,8 @@ async function recoverTrialEvidence(outputRoot,jobName){
   return null;
 }
 
-const gitCommonDir=String(await capture("git",["rev-parse","--git-common-dir"])).trim(),lockPath=sharedTerminalBenchLockPath(root,gitCommonDir);
-const releaseLock=STANDALONE_NATIVE_RERUN?async()=>{}:await acquireTerminalBenchPairLock({lockPath,task:TASK,model:MODEL,effort:EFFORT}),runStamp=stamp(),pairId=`${STANDALONE_NATIVE_RERUN?"tb4-native-rerun":"tb4-pair"}-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`,reportPath=join(validationDir,pairId+".json"),sourceProvenance=await sourceGitProvenance();let codexApiAuthPath=null;
+const gitCommonDir=String(await capture("git",["rev-parse","--git-common-dir"])).trim(),lockPath=STANDALONE_NATIVE_RERUN?sharedTerminalBenchNativeRerunLockPath(root,gitCommonDir):sharedTerminalBenchLockPath(root,gitCommonDir);
+const releaseLock=await acquireTerminalBenchPairLock({lockPath,task:TASK,model:MODEL,effort:EFFORT}),runStamp=stamp(),pairId=`${STANDALONE_NATIVE_RERUN?"tb4-native-rerun":"tb4-pair"}-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`,reportPath=join(validationDir,pairId+".json"),sourceProvenance=await sourceGitProvenance();let codexApiAuthPath=null;
 try{
   await run(process.execPath,[join(root,"scripts","build-harbor-native-agent.mjs")]);
   const nativeBundlePath=join(root,"benchmarks","harbor","dist","trebell-native-agent.mjs"),nativeAdapterPath=join(root,"benchmarks","harbor","trebell_native_agent.py");

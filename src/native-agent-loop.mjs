@@ -730,7 +730,7 @@ export async function runNativeAgentTurn({
   const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalStatusRequested=explicitTerminalStatusRequest(conversation),directTerminalStatusCommand=directTerminalStatusCommands===true?explicitTerminalStatusCommand(conversation):null,directReplacementStatus=directExactReplacementStatus===true?explicitExactReplacementStatus(conversation):null,directWriteStatus=directExactWriteStatus===true?explicitExactFileWriteStatus(conversation):null,directReadStatus=directExactReadStatus===true?explicitExactFileReadStatus(conversation):null,directListStatus=directExactListStatus===true?explicitImmediateWorkspaceListStatus(conversation):null,directGitStatusRequest=directGitStatus===true?explicitGitReadRequest(conversation):null,directProcessRunningRequest=directProcessRunningStatus===true?explicitBackgroundProcessRunningRequest(conversation):null,directBrowserRuntimeRequest=directBrowserRuntimeStatus===true&&explicitBrowserRuntimeHealthRequest(conversation),directBrowserScreenshotRequest=directBrowserScreenshot===true&&explicitBrowserScreenshotRequest(conversation),terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
   const verificationFinalizationRequest=verificationCompletionRequest||(finalAfterVerifiedRequest?.target?finalAfterVerifiedRequest:null);
   const successfulTerminalRuns=[];
-  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,selfAdmittedGapRecoveries=0,selfAdmittedGapRecoveryToolBaseline=0,preEditBlockerChallengeToolAllowance=false,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,progressCheckpointInjected=false,probeBatchingRequired=false,postEditProbeBatchingRequired=false,postEditEvidenceRounds=0,postEditAssumptionAuditRevision=0,postEditAbstractionEscalationRevision=0,postEditEvidenceCheckpointRevision=0,postEditEvidenceEscalated=false,singletonTerminalProbeStreak=0,implementationPressureEvidenceRounds=0,implementationPressureEscalated=false,turnBudgetCheckpointInjected=false,wallBudgetCheckpointInjected=false,revisionChurnCheckpointInjected=false,revisionChurnCheckpointRevision=0,revisionChurnConvergenceBaseline=0,revisionChurnEscalated=false,revisionChurnGraceEditUsed=false,convergenceCheckpointRevision=0,convergenceCheckpointCount=0,completionGateCandidate=null,completionGateInvalidResponses=0,completionGateChecks=0,completionGateRecoveries=0,completionRecoveryEpoch=0,completionRecoveryEvidenceRoundsRemaining=0,completionRecoveryEditResponsesRemaining=0,completionRecoverySupportWritesRemaining=0,completionRecoverySupportVerificationRemaining=0,completionRecoveryImplementationPaths=new Set(),completionRecoverySupportPaths=new Set(),verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
+  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,selfAdmittedGapRecoveries=0,selfAdmittedGapRecoveryToolBaseline=0,preEditBlockerChallengeToolAllowance=false,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,progressCheckpointInjected=false,probeBatchingRequired=false,postEditProbeBatchingRequired=false,postEditEvidenceRounds=0,postEditAssumptionAuditRevision=0,postEditAbstractionEscalationRevision=0,postEditEvidenceCheckpointRevision=0,postEditEvidenceEscalated=false,singletonTerminalProbeStreak=0,implementationPressureEvidenceRounds=0,implementationPressureEscalated=false,turnBudgetCheckpointInjected=false,wallBudgetCheckpointInjected=false,revisionChurnCheckpointInjected=false,revisionChurnCheckpointRevision=0,revisionChurnConvergenceBaseline=0,revisionChurnEscalated=false,revisionChurnGraceEditUsed=false,convergenceCheckpointRevision=0,convergenceCheckpointCount=0,completionGateCandidate=null,completionGateInvalidResponses=0,completionGateChecks=0,completionGateRecoveries=0,completionRecoveryEpoch=0,completionRecoveryEvidenceRoundsRemaining=0,completionRecoveryEditResponsesRemaining=0,completionRecoveryEditRequired=false,completionRecoveryEditRequiredMisses=0,completionRecoverySupportWritesRemaining=0,completionRecoverySupportVerificationRemaining=0,completionRecoveryImplementationPaths=new Set(),completionRecoverySupportPaths=new Set(),verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
   const normalizedEditPath=call=>String(safeArguments(call?.arguments).path||"").trim().replace(/\\/g,"/");
   const userRequestedEditPath=path=>{
     const value=String(path||"").trim();if(!value)return false;
@@ -1141,7 +1141,8 @@ export async function runNativeAgentTurn({
       verifiedFinalizationInjected=true;
     }
     modelTurns++;
-    const requestStarted=nowMs(),requestMessageCount=conversation.length,forcedAllowlist=forcedToolChoice?[forcedToolChoice.namespace?forcedToolChoice.namespace+"/"+forcedToolChoice.name:forcedToolChoice.name]:null,completionGateMode=Boolean(completionGateCandidate),finalAnswerOnly=toolBudgetExhausted||verifiedFinalizationReady||completionGateMode,implementationPressure=workspaceMutationRequested&&progressCheckpointInjected&&editRevision===0&&!finalAnswerOnly&&!forcedAllowlist,requestTools=completionGateMode?(preserveToolSchemasOnFinalization?visibleTools:[]):finalAnswerOnly&&!preserveToolSchemasOnFinalization?[]:forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):visibleTools,requestToolChoice=finalAnswerOnly?"none":forcedToolChoice||toolChoice;
+    const requestStarted=nowMs(),requestMessageCount=conversation.length,forcedAllowlist=forcedToolChoice?[forcedToolChoice.namespace?forcedToolChoice.namespace+"/"+forcedToolChoice.name:forcedToolChoice.name]:null,completionGateMode=Boolean(completionGateCandidate),finalAnswerOnly=toolBudgetExhausted||verifiedFinalizationReady||completionGateMode,recoveryEditMode=completionRecoveryEditRequired&&!completionGateMode&&!finalAnswerOnly,implementationPressure=workspaceMutationRequested&&progressCheckpointInjected&&editRevision===0&&!finalAnswerOnly&&!forcedAllowlist,recoveryEditAllowlist=["trebell_workspace/replace_text","trebell_workspace/write_file"],requestTools=completionGateMode?(preserveToolSchemasOnFinalization?visibleTools:[]):finalAnswerOnly&&!preserveToolSchemasOnFinalization?[]:recoveryEditMode?providerVisibleTools(visibleTools,recoveryEditAllowlist):forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):visibleTools,requestToolChoice=finalAnswerOnly?"none":recoveryEditMode?"required":forcedToolChoice||toolChoice;
+    if(recoveryEditMode)emit(onEvent,{name:"native.completion.recovery_edit_required",status:"running",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,recoveryEpoch:completionRecoveryEpoch,visibleEditToolCount:exposedToolPairs(requestTools).length}});
     if(implementationPressure)emit(onEvent,{name:"native.progress.implementation_pressure",status:"running",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,visibleToolCount:exposedToolPairs(requestTools).length,blockedUntilFirstEdit:Math.max(0,exposedToolPairs(requestTools).filter(item=>!(item.namespace==="trebell_workspace"&&["write_file","replace_text"].includes(item.name))).length),toolSchemaStable:true}});
     let providerMessages=conversation,providerView=null;
     if(typeof prepareProviderMessages==="function"){
@@ -1256,9 +1257,21 @@ export async function runNativeAgentTurn({
           return result;
         }
         completionGateRecoveries++;
+        const unresolvedRecoveryEdit=completionRecoveryEpoch>0&&completionRecoveryEvidenceRoundsRemaining<=0&&completionRecoveryEditResponsesRemaining>0;
+        if(unresolvedRecoveryEdit){
+          completionRecoveryEditRequired=true;
+          completionRecoveryEditRequiredMisses=0;
+          const unresolved=verdict.unresolved.length?verdict.unresolved.map(item=>"- "+item).join("\n"):"- Re-evaluate the user's material acceptance requirements against the evidence.";
+          const reason=verdict.reason?"\nGate rationale: "+verdict.reason:"";
+          conversation.push({role:"developer",content:"Trebell semantic completion gate still finds the task incomplete, but the current recovery epoch has already consumed its bounded evidence allowance and still owes one corrective implementation edit. Do not run more probes and do not propose completion again yet. Use the evidence already gathered to make one evidence-supported change to the actual implementation/deliverable. Trebell will expose only workspace edit tools on the next turn. If a newly-created support file is attempted instead, it will not discharge this edit debt.\nUnresolved requirements:\n"+unresolved+reason});
+          emit(onEvent,{name:"native.completion.gate_recovery",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,recoveryAttempt:completionGateRecoveries,recoveryEpoch:completionRecoveryEpoch,evidenceRoundsAllowed:0,editResponsesAllowed:completionRecoveryEditResponsesRemaining,editRequired:true,unresolved:verdict.unresolved}});
+          continue;
+        }
         completionRecoveryEpoch++;
         completionRecoveryEvidenceRoundsRemaining=2;
         completionRecoveryEditResponsesRemaining=1;
+        completionRecoveryEditRequired=false;
+        completionRecoveryEditRequiredMisses=0;
         completionRecoverySupportWritesRemaining=1;
         completionRecoverySupportVerificationRemaining=0;
         completionRecoveryImplementationPaths=new Set(verifiedEdits.filter(item=>item&&!item.supportOnly).map(item=>String(item.path||"").trim().replace(/\\/g,"/")).filter(Boolean));
@@ -1308,6 +1321,16 @@ export async function runNativeAgentTurn({
         continue;
       }
       if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_completion"})){verifiedFinalizationAllowed=false;verifiedFinalizationReady=false;continue}
+      if(completionRecoveryEditRequired&&completionRecoveryEditResponsesRemaining>0){
+        if(completionRecoveryEditRequiredMisses<1&&modelTurns<budget.maxModelTurns){
+          completionRecoveryEditRequiredMisses++;
+          conversation.push({role:"developer",content:"Trebell recovery still requires the reserved corrective implementation edit before another completion attempt. Do not answer yet. On the next turn, call one of the available workspace edit tools and modify the actual implementation/deliverable using the evidence already gathered."});
+          emit(onEvent,{name:"native.completion.recovery_edit_retry",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,recoveryEpoch:completionRecoveryEpoch,misses:completionRecoveryEditRequiredMisses}});
+          continue;
+        }
+        const error=new Error("Native completion recovery failed to perform the required corrective implementation edit.");error.code="native_recovery_edit_not_called";
+        emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{reason:error.code,modelTurns,toolCalls,editRevision,recoveryEpoch:completionRecoveryEpoch}});throw error;
+      }
       if(semanticCompletionGate===true&&workspaceMutationRequested&&modelTurns<budget.maxModelTurns){
         completionGateCandidate={text:responseText,model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,lastResponse,conversationLength:conversation.length};
         completionGateInvalidResponses=0;
@@ -1413,6 +1436,8 @@ export async function runNativeAgentTurn({
     if(redirected)continue;
     if(editRevision>editRevisionBeforeCalls&&completionRecoveryEditResponsesRemaining>0){
       completionRecoveryEditResponsesRemaining=Math.max(0,completionRecoveryEditResponsesRemaining-1);
+      completionRecoveryEditRequired=false;
+      completionRecoveryEditRequiredMisses=0;
       emit(onEvent,{name:"native.completion.recovery_allowance_used",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,editRevision,recoveryEpoch:completionRecoveryEpoch,kind:"edit",remaining:completionRecoveryEditResponsesRemaining}});
     }
     if(executedPostEditEvidence&&completionRecoveryEvidenceRoundsRemaining>0){

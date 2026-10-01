@@ -17,6 +17,11 @@ export function sharedTerminalBenchLockPath(root,gitCommonDir){
   return join(dirname(common),".harbor-validation","terminal-bench-pair.lock");
 }
 
+export function sharedTerminalBenchNativeRerunLockPath(root,gitCommonDir){
+  const common=resolve(root,String(gitCommonDir||"").trim());
+  return join(dirname(common),".harbor-validation","terminal-bench-native-rerun.lock");
+}
+
 export async function acquireTerminalBenchPairLock({lockPath,task,model,effort,pid=process.pid,processAliveFn=processAlive}={}){
   if(!lockPath)throw new Error("Terminal-Bench paired-run lock path is required.");
   await mkdir(dirname(lockPath),{recursive:true});
