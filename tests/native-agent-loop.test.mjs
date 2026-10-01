@@ -2391,6 +2391,9 @@ test("native audits upstream assumptions before exhausting repeated post-edit ev
         assert.match(String(audit.content),/earliest shared assumption/i);
         assert.match(String(audit.content),/source-of-truth invariant/i);
         assert.match(String(audit.content),/current parser\/adapter\/interpretation/i);
+        assert.match(String(audit.content),/cross the abstraction boundary/i);
+        assert.match(String(audit.content),/do not use that same abstraction to generate both sides/i);
+        assert.match(String(audit.content),/raw bytes\/records, physical offsets\/framing\/order/i);
         return {text:"",toolCalls:[{id:"upstream-fix",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"candidate","new_text":"reparsed"}'}],usage:{}};
       }
       return {text:"done",toolCalls:[],usage:{}};
@@ -2653,6 +2656,8 @@ test("native failed acceptance overrides a stale verified-finalization-ready heu
         assert.ok(recovery);
         assert.match(String(recovery.content),/contradicts a documented invariant/i);
         assert.match(String(recovery.content),/upstream parsing, decoding, measurement, or ordering assumption/i);
+        assert.match(String(recovery.content),/falsification must cross that abstraction boundary/i);
+        assert.match(String(recovery.content),/do not reuse the suspect parser\/decoder\/adapter\/mapper/i);
         return {text:"",toolCalls:[{id:"diagnose",namespace:"trebell_terminal",name:"run",arguments:'{"command":"python","args":["diagnose-upstream.py"]}'}],usage:{}};
       }
       return {text:"The upstream decode was repaired and the exact acceptance path now passes.",toolCalls:[],usage:{}};
@@ -2669,6 +2674,35 @@ test("native failed acceptance overrides a stale verified-finalization-ready heu
   assert.match(result.text,/exact acceptance path now passes/i);
   assert.ok(events.some(event=>event.name==="native.verification.finalizing"));
   assert.ok(events.some(event=>event.name==="native.verification.self_admitted_gap"));
+});
+
+test("native recovers when the model says a required check did not pass and the artifact is not acceptance-valid",async()=>{
+  const requests=[],events=[];let providerCalls=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Reconstruct the artifact and verify exact logits."}],maxModelTurns:7,maxToolCalls:10,onEvent:event=>events.push(event),
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {text:"",toolCalls:[{id:"candidate",namespace:"trebell_workspace",name:"write_file",arguments:'{"path":"output/model.bin","content":"candidate"}'}],usage:{}};
+      if(providerCalls===2)return {text:"The output contains all required tensors, but the required logit check did not: every compared value still differs. The generated artifact should therefore not be treated as acceptance-valid.",toolCalls:[],usage:{}};
+      if(providerCalls===3){
+        const recovery=request.messages.find(message=>message.role==="developer"&&/required acceptance or verification check actually failed/i.test(String(message.content||"")));
+        assert.ok(recovery);
+        assert.match(String(recovery.content),/lower-level source independently/i);
+        return {text:"",toolCalls:[{id:"raw",namespace:"trebell_terminal",name:"run",arguments:'{"command":"python","args":["inspect-raw-format.py"]}'}],usage:{}};
+      }
+      return {text:"Re-derived the raw layout and the exact acceptance check passes.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{path:"output/model.bin",bytes:9}:{exitCode:0,stdout:"raw framing mismatch isolated"},
+  });
+  assert.equal(providerCalls,4);
+  assert.match(result.text,/exact acceptance check passes/i);
+  const gaps=events.filter(event=>event.name==="native.verification.self_admitted_gap");
+  assert.equal(gaps.length,1);
+  assert.equal(gaps[0].data.recoveryAttempt,1);
 });
 
 test("native treats cannot-certify and not-exhaustively-verified caveats as acceptance gaps",async()=>{
