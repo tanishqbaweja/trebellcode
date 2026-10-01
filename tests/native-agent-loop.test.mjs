@@ -2473,6 +2473,83 @@ test("native semantic completion gate rejects a novel pre-edit blocker without r
   assert.equal(events.filter(event=>event.name==="native.completion.gate_recovery").length,1);
 });
 
+test("native completion-gate recovery reopens a bounded post-edit evidence window",async()=>{
+  let turns=0;const executed=[],events=[];
+  const batchArgs=turn=>JSON.stringify({command:"bash",args:["-lc","echo evidence-"+turn+"; echo second-"+turn]});
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxModelTurns:22,maxToolCalls:32,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Fix src/a.mjs and verify the acceptance condition."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"edit-1",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"candidate"}'}],usage:{}};
+      if(turns>=2&&turns<=9)return {text:"",toolCalls:[{id:"evidence-"+turns,namespace:"trebell_terminal",name:"run",arguments:batchArgs(turns)}],usage:{}};
+      if(turns===10)return {text:"The candidate is ready.",toolCalls:[],usage:{}};
+      if(turns===11)return {text:'{"status":"incomplete","unresolved":["acceptance condition still fails"],"reason":"Further focused evidence can isolate the defect."}',toolCalls:[],usage:{}};
+      if(turns===12)return {text:"",toolCalls:[{id:"recovery-evidence-1",namespace:"trebell_terminal",name:"run",arguments:batchArgs(12)}],usage:{}};
+      if(turns===13)return {text:"",toolCalls:[{id:"recovery-evidence-2",namespace:"trebell_terminal",name:"run",arguments:batchArgs(13)}],usage:{}};
+      if(turns===14)return {text:"",toolCalls:[{id:"recovery-evidence-blocked",namespace:"trebell_terminal",name:"run",arguments:batchArgs(14)}],usage:{}};
+      if(turns===15)return {text:"",toolCalls:[{id:"repair",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"candidate","new_text":"fixed"}'}],usage:{}};
+      if(turns===16)return {text:"The acceptance condition is now satisfied.",toolCalls:[],usage:{}};
+      if(turns===17)return {text:'{"status":"complete","unresolved":[],"reason":"The focused recovery produced and verified the required repair."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0,stdout:"evidence"}},
+  });
+  assert.equal(result.text,"The acceptance condition is now satisfied.");
+  assert.equal(executed.includes("recovery-evidence-1"),true);
+  assert.equal(executed.includes("recovery-evidence-2"),true);
+  assert.equal(executed.includes("recovery-evidence-blocked"),false);
+  assert.equal(executed.includes("repair"),true);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="evidence").length,2);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,1);
+});
+
+test("native completion-gate recovery permits one corrective edit after revision-churn grace is exhausted",async()=>{
+  let turns=0;const executed=[],events=[];
+  const terminalBatch=label=>[
+    {id:label+"-a",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-a.mjs"]})},
+    {id:label+"-b",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-b.mjs"]})},
+    {id:label+"-c",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-c.mjs"]})},
+  ];
+  const edit=n=>({text:"",toolCalls:[{id:"edit-"+n,namespace:"trebell_workspace",name:"replace_text",arguments:JSON.stringify({path:"src/a.mjs",old_text:"bad-"+n,new_text:"good-"+n})}],usage:{}});
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxModelTurns:30,maxToolCalls:64,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Fix src/a.mjs until the requested acceptance condition is satisfied."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns<=8)return edit(turns);
+      if(turns===9)return {text:"",toolCalls:terminalBatch("verify-8"),usage:{}};
+      if(turns===10)return edit(9);
+      if(turns===11)return {text:"",toolCalls:terminalBatch("verify-9"),usage:{}};
+      if(turns===12)return edit(10);
+      if(turns===13)return edit(11);
+      if(turns===14)return edit(12);
+      if(turns===15)return edit(13);
+      if(turns===16)return edit(14);
+      if(turns===17){
+        assert.ok(request.messages.some(message=>message.role==="tool"&&message.toolCallId==="edit-14"&&/fresh failing terminal evidence/i.test(String(message.content||""))));
+        return {text:"The current candidate still misses the acceptance condition.",toolCalls:[],usage:{}};
+      }
+      if(turns===18)return {text:'{"status":"incomplete","unresolved":["acceptance condition remains unmet"],"reason":"A targeted corrective edit is still available."}',toolCalls:[],usage:{}};
+      if(turns===19)return edit(15);
+      if(turns===20)return {text:"The corrected implementation satisfies the acceptance condition.",toolCalls:[],usage:{}};
+      if(turns===21)return {text:'{"status":"complete","unresolved":[],"reason":"The targeted corrective edit resolves the remaining requirement."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0,stdout:"pass"}},
+  });
+  assert.equal(result.text,"The corrected implementation satisfies the acceptance condition.");
+  assert.equal(executed.includes("edit-13"),true);
+  assert.equal(executed.includes("edit-14"),false);
+  assert.equal(executed.includes("edit-15"),true);
+  assert.equal(events.some(event=>event.name==="native.progress.revision_churn_escalation"),true);
+  assert.equal(events.some(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit"),true);
+  assert.equal(events.some(event=>event.name==="native.progress.revision_churn_edit_blocked"&&event.data?.callId==="edit-14"),true);
+  assert.equal(events.some(event=>event.name==="native.progress.revision_churn_edit_blocked"&&event.data?.callId==="edit-15"),false);
+});
+
 test("native convergence checkpoint does not fire while the latest edit still has a failed terminal check",async()=>{
   let turns=0;const requests=[],events=[];
   const result=await runNativeAgentTurn({
