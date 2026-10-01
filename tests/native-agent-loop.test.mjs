@@ -2406,6 +2406,47 @@ test("native audits upstream assumptions before exhausting repeated post-edit ev
   assert.equal(events.some(event=>event.name==="native.progress.post_edit_evidence_checkpoint"),false);
 });
 
+test("native semantic completion gate rejects unsupported completion without task-specific wording",async()=>{
+  const requests=[],events=[],executed=[];let providerCalls=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",
+    messages:[{role:"user",content:"Modify src/worker.mjs to reduce the worker's p95 latency below 100 ms and leave the implementation in the workspace."}],
+    maxModelTurns:10,maxToolCalls:12,semanticCompletionGate:true,onEvent:event=>events.push(event),
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/worker.mjs","old_text":"slow","new_text":"faster"}'}],usage:{}};
+      if(providerCalls===2)return {text:"The optimized file is in place. The latest p95 measurement is 141 ms against the requested 100 ms ceiling.",toolCalls:[],usage:{}};
+      if(providerCalls===3){
+        assert.equal(request.toolChoice,"none");
+        assert.deepEqual(request.tools,[]);
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||""))));
+        return {text:'{"status":"incomplete","unresolved":["p95 latency is still above the requested ceiling"],"reason":"The latest measured p95 is 141 ms, so the requested performance target is not satisfied."}',toolCalls:[],usage:{}};
+      }
+      if(providerCalls===4){
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/completion gate rejected the proposed final answer as incomplete/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[{id:"measure",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["measure-latency.mjs"]}'}],usage:{}};
+      }
+      if(providerCalls===5)return {text:"The implementation is updated and the latest measured p95 is 84 ms, below the requested 100 ms ceiling.",toolCalls:[],usage:{}};
+      if(providerCalls===6)return {text:'{"status":"complete","unresolved":[],"reason":"The requested workspace change exists and the latest measured p95 is 84 ms, satisfying the stated ceiling."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call");
+    },
+    executeTool:async call=>{
+      executed.push(call.id);
+      return call.namespace==="trebell_workspace"?{path:"src/worker.mjs",replacements:1}:{exitCode:0,stdout:"p95_ms=84"};
+    },
+  });
+  assert.equal(providerCalls,6);
+  assert.deepEqual(executed,["edit","measure"]);
+  assert.match(result.text,/84 ms/);
+  assert.equal(events.filter(event=>event.name==="native.completion.gate").length,2);
+  assert.equal(events.filter(event=>event.name==="native.completion.gate_recovery").length,1);
+  assert.equal(events.find(event=>event.name==="native.completion.gate"&&event.data?.verdict==="complete")?.status,"completed");
+});
+
 test("native convergence checkpoint does not fire while the latest edit still has a failed terminal check",async()=>{
   let turns=0;const requests=[],events=[];
   const result=await runNativeAgentTurn({
@@ -2674,35 +2715,6 @@ test("native failed acceptance overrides a stale verified-finalization-ready heu
   assert.match(result.text,/exact acceptance path now passes/i);
   assert.ok(events.some(event=>event.name==="native.verification.finalizing"));
   assert.ok(events.some(event=>event.name==="native.verification.self_admitted_gap"));
-});
-
-test("native recovers when the model says a required check did not pass and the artifact is not acceptance-valid",async()=>{
-  const requests=[],events=[];let providerCalls=0;
-  const result=await runNativeAgentTurn({
-    model:"test-model",messages:[{role:"user",content:"Reconstruct the artifact and verify exact logits."}],maxModelTurns:7,maxToolCalls:10,onEvent:event=>events.push(event),
-    tools:[
-      {type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]},
-      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
-    ],
-    providerTurn:async request=>{
-      requests.push(structuredClone(request));providerCalls++;
-      if(providerCalls===1)return {text:"",toolCalls:[{id:"candidate",namespace:"trebell_workspace",name:"write_file",arguments:'{"path":"output/model.bin","content":"candidate"}'}],usage:{}};
-      if(providerCalls===2)return {text:"The output contains all required tensors, but the required logit check did not: every compared value still differs. The generated artifact should therefore not be treated as acceptance-valid.",toolCalls:[],usage:{}};
-      if(providerCalls===3){
-        const recovery=request.messages.find(message=>message.role==="developer"&&/required acceptance or verification check actually failed/i.test(String(message.content||"")));
-        assert.ok(recovery);
-        assert.match(String(recovery.content),/lower-level source independently/i);
-        return {text:"",toolCalls:[{id:"raw",namespace:"trebell_terminal",name:"run",arguments:'{"command":"python","args":["inspect-raw-format.py"]}'}],usage:{}};
-      }
-      return {text:"Re-derived the raw layout and the exact acceptance check passes.",toolCalls:[],usage:{}};
-    },
-    executeTool:async call=>call.namespace==="trebell_workspace"?{path:"output/model.bin",bytes:9}:{exitCode:0,stdout:"raw framing mismatch isolated"},
-  });
-  assert.equal(providerCalls,4);
-  assert.match(result.text,/exact acceptance check passes/i);
-  const gaps=events.filter(event=>event.name==="native.verification.self_admitted_gap");
-  assert.equal(gaps.length,1);
-  assert.equal(gaps[0].data.recoveryAttempt,1);
 });
 
 test("native treats cannot-certify and not-exhaustively-verified caveats as acceptance gaps",async()=>{

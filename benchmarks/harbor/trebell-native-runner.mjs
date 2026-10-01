@@ -116,6 +116,7 @@ const session=new NativeAgentSession({
   cwd:root,
   provider,
   model,
+  semanticCompletionGate:true,
   contextWindow,
   openAiServerCompactionThreshold:compactionThreshold,
   reasoningEffort,

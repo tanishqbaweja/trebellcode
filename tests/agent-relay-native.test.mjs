@@ -356,6 +356,11 @@ test("Trebell Native relay can edit workspace files and run bounded terminal com
   const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);let step=0;
   const nativeProviderTurn=async request=>{
     step++;
+    if(step===4){
+      assert.equal(request.toolChoice,"none");assert.deepEqual(request.tools,[]);
+      assert.ok(request.messages.some(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||""))));
+      return {id:"coding-gate",provider:request.provider,model:request.model,text:'{"status":"complete","unresolved":[],"reason":"The requested edit is present and the terminal verification observed 42."}',toolCalls:[],finishReason:"stop",usage:{}};
+    }
     const namespaces=(request.tools||[]).map(item=>item.name);assert.ok(namespaces.includes("trebell_workspace"));assert.ok(namespaces.includes("trebell_terminal"));
     if(step===1)return {id:"coding-edit",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"edit-1",namespace:"trebell_workspace",name:"replace_text",arguments:JSON.stringify({path:"app.js",old_text:"answer = 1",new_text:"answer = 42"})}],finishReason:"tool_calls",usage:{}};
     if(step===2){assert.equal(request.messages.at(-1).role,"tool");assert.match(request.messages.at(-1).content,/replacements.*1/);return {id:"coding-run",provider:request.provider,model:request.model,text:"",toolCalls:[{id:"run-1",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:process.execPath,args:["-e","import('./app.js').then(m=>process.stdout.write(String(m.answer)))"],cwd:".",timeout_ms:5000})}],finishReason:"tool_calls",usage:{}}}

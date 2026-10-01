@@ -752,7 +752,7 @@ export function attachAgentRelay(server,{runtimeManager,threadStore,terminals,st
       const compactionBoundary=storedCompaction?.throughTurnId&&thread.turns?.some(turn=>String(turn.id)===String(storedCompaction.throughTurnId))?storedCompaction:null;
       const compactedMessage=compactionBoundary?nativeCompactionMessage(compactionBoundary.summary):null;
       const runtime=new NativeAgentSession({
-        ...common,provider:thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model:model||thread.model||null,reasoningEffort:configuredReasoningEffort(state?.settings?.()||{},"native",thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model||thread.model||null),tools,executeTool,toolOutputStore:outputStore,
+        ...common,provider:thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model:model||thread.model||null,reasoningEffort:configuredReasoningEffort(state?.settings?.()||{},"native",thread.providerMeta?.modelProvider||state?.settings?.().modelProvider||null,model||thread.model||null),semanticCompletionGate:true,tools,executeTool,toolOutputStore:outputStore,
         onClose:()=>mcpBroker.close(),
         providerTurn:request=>nativeProviderTurn(request),initialMessages:[
           {role:"system",content:nativeSystemPrompt({tools,permissionMode:effectivePermissionMode,projectless})},

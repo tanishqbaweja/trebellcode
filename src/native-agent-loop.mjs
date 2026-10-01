@@ -492,30 +492,36 @@ function terminalRunLooksLikeVerifier(args={}){
 function selfAdmittedVerificationGap(text){
   const value=String(text||"").replace(/[\u2018\u2019\u02bc\uff07]/g,"'").replace(/\*\*/g,"");
   if(!value.trim())return false;
-  if(selfAdmittedFailedAcceptanceGap(value))return true;
+  if(/\brequired\b[^\n.!?]{0,100}\b(?:check|verification|validation|test)\s+(?:has\s+)?failed\b|\b(?:file|artifact|deliverable|result|solution)\s+(?:is|remains?)\s+(?:therefore\s+)?provisional\b|\bnot\s+(?:a\s+)?verified\s+(?:deliverable|artifact|result|solution)\b/i.test(value))return true;
   return /(?:^|\n)\s*unverified\s*:|\b(?:remains?|still|currently)\s+(?:unverified|untested|unconfirmed)\b|\b(?:not|never)\s+(?:(?:fully|completely|exhaustively|thoroughly|end[- ]to[- ]end)\s+)?(?:verified|tested|checked|validated|confirmed)\b|\b(?:unable|cannot|can't|could\s+not|couldn't)\s+to\s+(?:verify|test|check|validate|confirm|certify|prove|demonstrate)\b|\b(?:cannot|can't|unable\s+to|could\s+not|couldn't)\s+(?:certify|prove|demonstrate|confirm)\s+(?:that|whether)\b|\bdid(?:\s+not|n't)\s+(?:establish|determine|confirm|prove|demonstrate)\s+whether\b|\bdid(?:\s+not|n't)\s+(?:run|execute|perform)\s+(?:an?\s+|the\s+)?(?:integration|end[- ]to[- ]end|e2e|smoke|acceptance|timed|performance|benchmark|test)\b|\bdid(?:\s+not|n't)\s+(?:send|make|issue)\s+(?:an?\s+|the\s+)?(?:real|live|actual)\s+(?:http\s+)?(?:request|post|callback)\b|\bdid(?:\s+not|n't)\s+(?:exercise|reproduce)\s+(?:an?\s+|the\s+)?(?:(?:real|live|actual|full|fresh)\s+)?(?:integration|lifecycle|restart|deploy(?:ment)?|behavio(?:u)?r|path)\b/i.test(value);
 }
 
 function selfAdmittedFailedAcceptanceGap(text){
   const value=String(text||"").replace(/[\u2018\u2019\u02bc\uff07]/g,"'").replace(/\*\*/g,"");
-  if(!value.trim())return false;
-  return [
-    /\brequired\b[^\n.!?]{0,140}\b(?:check|verification|validation|test|criterion|criteria|requirement)\b[^\n.!?]{0,48}\b(?:has\s+failed|failed|fails|is\s+failing|remains?\s+failing|did(?:\s+not|n't)\s+(?:pass|succeed)|does(?:\s+not|n't)\s+(?:pass|succeed)|has(?:\s+not|n't)\s+passed)\b/i,
-    /\b(?:the\s+)?required(?:\s+[\w-]+){0,8}\s+(?:check|verification|validation|test)\s+did(?:\s+not|n't)(?:\s+(?:pass|succeed))?(?=\s*[:;,.—-]|\s*$)/i,
-    /\b(?:acceptance|verification|validation)\s+(?:check|criterion|criteria|requirement|path)?\s*(?:is|remains?)\s+(?:failed|failing|unmet|unsatisfied|invalid)\b/i,
-    /\b(?:required|exact|acceptance)\s+(?:criterion|criteria|requirement)\s+(?:is|remains?)\s+(?:unmet|unsatisfied|failed|failing)\b/i,
-    /\b(?:does|did)\s+not\s+(?:meet|satisfy|pass)\s+(?:the\s+)?(?:required|exact|acceptance)\s+(?:check|verification|validation|criterion|criteria|requirement|path)\b/i,
-    /\b(?:fails?|failed)\s+(?:the\s+)?(?:required|exact|acceptance)\s+(?:check|verification|validation|criterion|criteria|requirement|path)\b/i,
-    /\bnot\b[^\n.!?]{0,64}\bacceptance[- ](?:valid|ready)\b/i,
-    /\b(?:file|artifact|deliverable|result|solution)\s+(?:is|remains?)\s+(?:therefore\s+)?provisional\b/i,
-    /\bnot\s+(?:a\s+)?verified\s+(?:deliverable|artifact|result|solution)\b/i,
-  ].some(pattern=>pattern.test(value));
+  return /\brequired\b[^\n.!?]{0,100}\b(?:check|verification|validation|test)\s+(?:has\s+)?failed\b|\b(?:file|artifact|deliverable|result|solution)\s+(?:is|remains?)\s+(?:therefore\s+)?provisional\b|\bnot\s+(?:a\s+)?verified\s+(?:deliverable|artifact|result|solution)\b/i.test(value);
 }
 
 function selfAdmittedCompletionGap(text){
   const value=String(text||"").replace(/[\u2018\u2019\u02bc\uff07]/g,"'").replace(/\*\*/g,"");
   if(!value.trim())return false;
   return /(?:^|\n)\s*(?:partial|incomplete)\s+(?:analysis|result|solution|implementation|work|completion)\b|\b(?:unable\s+to|cannot|can't|could\s+not|couldn't|failed\s+to)(?:\s+\w+){0,2}\s+(?:establish|determine|derive|recover|restore|repair|reconstruct|recreate|rebuild|produce|create|generate|write|complete|finish|implement|resolve|fix|decode|decrypt)\b|\b(?:not|never)\s+(?:recovered|restored|repaired|reconstructed|recreated|rebuilt|derived|produced|created|generated|written|completed|finished|implemented|resolved|fixed|decoded|decrypted)\b|\b(?:was|were|is|are)\s+not\s+(?:created|produced|generated|written|recovered|restored|repaired|reconstructed|recreated|rebuilt|derived|completed|finished)\b/i.test(value);
+}
+
+function parseCompletionGateVerdict(text){
+  const value=String(text||"").trim();if(!value)return null;
+  const unfenced=value.replace(/^\s*```(?:json)?\s*/i,"").replace(/\s*```\s*$/,"").trim();
+  const candidates=[unfenced],first=unfenced.indexOf("{"),last=unfenced.lastIndexOf("}");
+  if(first>=0&&last>first&&!(first===0&&last===unfenced.length-1))candidates.push(unfenced.slice(first,last+1));
+  for(const candidate of candidates){
+    try{
+      const parsed=JSON.parse(candidate),status=String(parsed?.status||"").trim().toLowerCase();
+      if(!["complete","incomplete","blocked"].includes(status))continue;
+      const unresolved=Array.isArray(parsed?.unresolved)?parsed.unresolved.map(item=>String(item||"").trim()).filter(Boolean).slice(0,8):[];
+      const reason=String(parsed?.reason||"").trim().slice(0,2000);
+      return {status,unresolved,reason};
+    }catch{}
+  }
+  return null;
 }
 
 function verificationCompletionMatchesRun(request,args={},terminalRuns=[],editRevision=0){
@@ -714,7 +720,7 @@ export async function runNativeAgentTurn({
   providerTurn,executeTool,model,messages=[],tools=[],provider=null,toolChoice="auto",
   maxOutputTokens=null,temperature=null,reasoningEffort=null,parallelToolCalls=true,maxModelTurns=24,maxToolCalls=100,maxWallTimeMs=null,
   maxProviderAttempts=3,retryBaseDelayMs=250,consumeSteering=null,isToolParallelSafe=null,maxParallelToolCalls=8,toolAllowlist=null,coolReadToolHistory=null,preserveToolSchemasOnFinalization=false,signal=null,onEvent=null,metadata=null,
-  autoRerunVerification=false,priorTerminalRuns=[],synthesizeTerminalReports=false,coolSyntheticTerminalReportOutput=true,directTerminalStatusCommands=false,directExactReplacementStatus=false,directExactWriteStatus=false,directExactReadStatus=false,directExactListStatus=false,directGitStatus=false,directProcessRunningStatus=false,directBrowserRuntimeStatus=false,directBrowserScreenshot=false,prepareProviderMessages=null,
+  autoRerunVerification=false,semanticCompletionGate=false,priorTerminalRuns=[],synthesizeTerminalReports=false,coolSyntheticTerminalReportOutput=true,directTerminalStatusCommands=false,directExactReplacementStatus=false,directExactWriteStatus=false,directExactReadStatus=false,directExactListStatus=false,directGitStatus=false,directProcessRunningStatus=false,directBrowserRuntimeStatus=false,directBrowserScreenshot=false,prepareProviderMessages=null,
 }={}){
   if(typeof providerTurn!=="function")throw new Error("Native agent loop requires a providerTurn function.");
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
@@ -724,7 +730,7 @@ export async function runNativeAgentTurn({
   const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalStatusRequested=explicitTerminalStatusRequest(conversation),directTerminalStatusCommand=directTerminalStatusCommands===true?explicitTerminalStatusCommand(conversation):null,directReplacementStatus=directExactReplacementStatus===true?explicitExactReplacementStatus(conversation):null,directWriteStatus=directExactWriteStatus===true?explicitExactFileWriteStatus(conversation):null,directReadStatus=directExactReadStatus===true?explicitExactFileReadStatus(conversation):null,directListStatus=directExactListStatus===true?explicitImmediateWorkspaceListStatus(conversation):null,directGitStatusRequest=directGitStatus===true?explicitGitReadRequest(conversation):null,directProcessRunningRequest=directProcessRunningStatus===true?explicitBackgroundProcessRunningRequest(conversation):null,directBrowserRuntimeRequest=directBrowserRuntimeStatus===true&&explicitBrowserRuntimeHealthRequest(conversation),directBrowserScreenshotRequest=directBrowserScreenshot===true&&explicitBrowserScreenshotRequest(conversation),terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
   const verificationFinalizationRequest=verificationCompletionRequest||(finalAfterVerifiedRequest?.target?finalAfterVerifiedRequest:null);
   const successfulTerminalRuns=[];
-  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,selfAdmittedGapRecoveries=0,selfAdmittedGapRecoveryToolBaseline=0,preEditBlockerChallengeToolAllowance=false,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,progressCheckpointInjected=false,probeBatchingRequired=false,postEditProbeBatchingRequired=false,postEditEvidenceRounds=0,postEditAssumptionAuditRevision=0,postEditEvidenceCheckpointRevision=0,postEditEvidenceEscalated=false,singletonTerminalProbeStreak=0,implementationPressureEvidenceRounds=0,implementationPressureEscalated=false,turnBudgetCheckpointInjected=false,wallBudgetCheckpointInjected=false,revisionChurnCheckpointInjected=false,revisionChurnCheckpointRevision=0,revisionChurnConvergenceBaseline=0,revisionChurnEscalated=false,revisionChurnGraceEditUsed=false,convergenceCheckpointRevision=0,convergenceCheckpointCount=0,verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
+  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,selfAdmittedGapRecoveries=0,selfAdmittedGapRecoveryToolBaseline=0,preEditBlockerChallengeToolAllowance=false,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,progressCheckpointInjected=false,probeBatchingRequired=false,postEditProbeBatchingRequired=false,postEditEvidenceRounds=0,postEditAssumptionAuditRevision=0,postEditEvidenceCheckpointRevision=0,postEditEvidenceEscalated=false,singletonTerminalProbeStreak=0,implementationPressureEvidenceRounds=0,implementationPressureEscalated=false,turnBudgetCheckpointInjected=false,wallBudgetCheckpointInjected=false,revisionChurnCheckpointInjected=false,revisionChurnCheckpointRevision=0,revisionChurnConvergenceBaseline=0,revisionChurnEscalated=false,revisionChurnGraceEditUsed=false,convergenceCheckpointRevision=0,convergenceCheckpointCount=0,completionGateCandidate=null,completionGateInvalidResponses=0,completionGateChecks=0,completionGateRecoveries=0,verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
   const startedAt=Date.now(),started=nowMs(),wallController=budget.maxWallTimeMs!=null?new AbortController():null,deadlineAt=budget.maxWallTimeMs==null?null:Date.now()+budget.maxWallTimeMs;
   let wallTimer=null;
   if(terminalRuns.length)emit(onEvent,{name:"native.verification.prior_terminal_evidence",status:"completed",model:String(model),provider:provider||null,data:{count:terminalRuns.length}});
@@ -1102,7 +1108,7 @@ export async function runNativeAgentTurn({
       verifiedFinalizationInjected=true;
     }
     modelTurns++;
-    const requestStarted=nowMs(),requestMessageCount=conversation.length,forcedAllowlist=forcedToolChoice?[forcedToolChoice.namespace?forcedToolChoice.namespace+"/"+forcedToolChoice.name:forcedToolChoice.name]:null,finalAnswerOnly=toolBudgetExhausted||verifiedFinalizationReady,implementationPressure=workspaceMutationRequested&&progressCheckpointInjected&&editRevision===0&&!finalAnswerOnly&&!forcedAllowlist,requestTools=finalAnswerOnly&&!preserveToolSchemasOnFinalization?[]:forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):visibleTools,requestToolChoice=finalAnswerOnly?"none":forcedToolChoice||toolChoice;
+    const requestStarted=nowMs(),requestMessageCount=conversation.length,forcedAllowlist=forcedToolChoice?[forcedToolChoice.namespace?forcedToolChoice.namespace+"/"+forcedToolChoice.name:forcedToolChoice.name]:null,completionGateMode=Boolean(completionGateCandidate),finalAnswerOnly=toolBudgetExhausted||verifiedFinalizationReady||completionGateMode,implementationPressure=workspaceMutationRequested&&progressCheckpointInjected&&editRevision===0&&!finalAnswerOnly&&!forcedAllowlist,requestTools=completionGateMode?[]:finalAnswerOnly&&!preserveToolSchemasOnFinalization?[]:forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):visibleTools,requestToolChoice=finalAnswerOnly?"none":forcedToolChoice||toolChoice;
     if(implementationPressure)emit(onEvent,{name:"native.progress.implementation_pressure",status:"running",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,visibleToolCount:exposedToolPairs(requestTools).length,blockedUntilFirstEdit:Math.max(0,exposedToolPairs(requestTools).filter(item=>!(item.namespace==="trebell_workspace"&&["write_file","replace_text"].includes(item.name))).length),toolSchemaStable:true}});
     let providerMessages=conversation,providerView=null;
     if(typeof prepareProviderMessages==="function"){
@@ -1190,6 +1196,38 @@ export async function runNativeAgentTurn({
     }
     conversation.push({role:"assistant",content:responseText,toolCalls:calls});
     if(!calls.length){
+      if(completionGateCandidate){
+        completionGateChecks++;
+        const candidate=completionGateCandidate,verdict=parseCompletionGateVerdict(responseText);
+        if(!verdict){
+          if(completionGateInvalidResponses<1&&modelTurns<budget.maxModelTurns){
+            completionGateInvalidResponses++;
+            conversation.push({role:"developer",content:"Trebell completion gate parser could not read the previous control response. Return only one valid JSON object with exactly these fields: {\"status\":\"complete|incomplete|blocked\",\"unresolved\":[\"...\"],\"reason\":\"...\"}. Do not call tools and do not address the user."});
+            emit(onEvent,{name:"native.completion.gate_retry",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,invalidResponses:completionGateInvalidResponses}});
+            continue;
+          }
+          completionGateCandidate=null;completionGateInvalidResponses=0;completionGateRecoveries++;
+          conversation.push({role:"developer",content:"Trebell completion gate could not establish that the proposed final answer is complete. Continue the task instead of finalizing. Re-read the user's requirements and the strongest recent evidence, identify the single most important unresolved acceptance condition, and use the available tools to resolve or decisively falsify it. Do not weaken the user's requirement merely because the prior control response was malformed."});
+          emit(onEvent,{name:"native.completion.gate",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,verdict:"invalid",recoveryAttempt:completionGateRecoveries}});
+          continue;
+        }
+        completionGateCandidate=null;completionGateInvalidResponses=0;
+        emit(onEvent,{name:"native.completion.gate",status:verdict.status==="complete"?"completed":verdict.status==="blocked"?"blocked":"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,verdict:verdict.status,unresolved:verdict.unresolved,reason:verdict.reason}});
+        if(verdict.status==="complete"||verdict.status==="blocked"){
+          const result={
+            text:candidate.text,model:candidate.model,provider:candidate.provider,
+            messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse,
+          };
+          emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage,completionGateVerdict:verdict.status}});
+          return result;
+        }
+        completionGateRecoveries++;
+        const unresolved=verdict.unresolved.length?verdict.unresolved.map(item=>"- "+item).join("\n"):"- Re-evaluate the user's material acceptance requirements against the evidence.";
+        const reason=verdict.reason?"\nGate rationale: "+verdict.reason:"";
+        conversation.push({role:"developer",content:"Trebell semantic completion gate rejected the proposed final answer as incomplete. Continue working; do not simply restate the candidate answer. Resolve the highest-value unmet requirement using the evidence and tools already available. If current evidence contradicts an upstream parser/decoder/adapter/schema/measurement assumption, validate that assumption from a lower-level independent source rather than permuting outputs produced by the same suspect abstraction.\nUnresolved requirements:\n"+unresolved+reason});
+        emit(onEvent,{name:"native.completion.gate_recovery",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,recoveryAttempt:completionGateRecoveries,unresolved:verdict.unresolved}});
+        continue;
+      }
       const canVerifyLocally=directVisiblePairs.some(item=>item.namespace==="trebell_terminal"&&item.name==="run");
       const hasSelfVerificationGap=selfAdmittedVerificationGap(responseText),hasFailedAcceptanceGap=selfAdmittedFailedAcceptanceGap(responseText);
       const hasSelfCompletionGap=selfAdmittedCompletionGap(responseText),selfAdmittedGapKind=hasSelfCompletionGap?"completion":hasSelfVerificationGap?"verification":null;
@@ -1230,6 +1268,13 @@ export async function runNativeAgentTurn({
         continue;
       }
       if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_completion"})){verifiedFinalizationAllowed=false;verifiedFinalizationReady=false;continue}
+      if(semanticCompletionGate===true&&workspaceMutationRequested&&editRevision>0&&modelTurns<budget.maxModelTurns){
+        completionGateCandidate={text:responseText,model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null};
+        completionGateInvalidResponses=0;
+        conversation.push({role:"developer",content:"Trebell semantic completion gate. This is an internal control check, not the user-visible answer. Evaluate the immediately preceding candidate final answer against the user's full request and the evidence in this conversation. Return only one JSON object: {\"status\":\"complete|incomplete|blocked\",\"unresolved\":[\"material unmet requirement\"],\"reason\":\"brief evidence-based rationale\"}. Use status=complete only when every material requested deliverable and acceptance condition is supported by the available evidence. Use status=incomplete when additional local tool work could still resolve an unmet or uncertain requirement. Use status=blocked only when a material requirement genuinely cannot be completed with the available inputs/tools or depends on an unavailable external condition. Do not infer success merely from a process exit code when tool output, measurements, or the candidate answer contradict the actual requirement. Judge semantics and evidence, not wording. Do not call tools and do not address the user."});
+        emit(onEvent,{name:"native.completion.gate_requested",status:"running",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,toolCalls}});
+        continue;
+      }
       const result={
         text:responseText,model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,
         messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse,

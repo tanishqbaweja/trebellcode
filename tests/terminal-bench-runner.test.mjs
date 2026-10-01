@@ -12,6 +12,7 @@ import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath } from "../sc
 
 test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable trial metrics",async()=>{
   const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
+  const nativeRunnerSource=await readFile(new URL("../benchmarks/harbor/trebell-native-runner.mjs",import.meta.url),"utf8");
   assert.match(source,/sharedTerminalBenchLockPath/);
   assert.match(source,/rev-parse","--git-common-dir/);
   assert.match(source,/acquireTerminalBenchPairLock/);
@@ -20,6 +21,7 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/TREBELL_TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER\|\|1/);
   assert.match(source,/Terminal-Bench agent timeout multiplier must be > 0/);
   assert.match(source,/agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER/);
+  assert.match(nativeRunnerSource,/semanticCompletionGate:true/);
   assert.match(source,/NATIVE_CONTEXT_WINDOW/);
   assert.match(source,/272_000/);
   assert.match(source,/NATIVE_COMPACT_THRESHOLD/);
