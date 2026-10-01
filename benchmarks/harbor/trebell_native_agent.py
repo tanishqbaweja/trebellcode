@@ -249,7 +249,15 @@ class TrebellNativeAgent(BaseInstalledAgent):
                 f'if [ "$runtime" = "bun" ]; then runtime_cmd=bun; '
                 'else runtime_cmd=node; fi; '
                 f"$runtime_cmd {self._REMOTE_RUNNER} {self._REMOTE_INSTRUCTION} "
-                f"2>&1 | tee {self._OUTPUT}"
+                f"2>&1 | tee {self._OUTPUT}; "
+                'pipeline_status=$?; '
+                'if [ "$pipeline_status" -eq 0 ]; then exit 0; fi; '
+                f"if [ -s {self._METRICS} ] && "
+                f"grep -Eq '\"error\"[[:space:]]*:[[:space:]]*null' {self._METRICS}; then "
+                'echo "Trebell Native runner returned non-zero after persisting clean metrics; continuing to Harbor artifact collection and verification." >&2; '
+                "exit 0; "
+                "fi; "
+                'exit "$pipeline_status"'
             ),
             env=env,
         )

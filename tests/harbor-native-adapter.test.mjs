@@ -26,6 +26,10 @@ test("Harbor Native adapter stages the OpenAI key instead of passing it through 
   assert.ok(source.includes('TREBELL_OPENAI_REASONING_CONTEXT'));
   assert.ok(source.includes('"reasoning_context": metrics.get("reasoningContext")'));
   assert.ok(source.includes('"effective_reasoning_contexts": metrics.get("effectiveReasoningContexts") or []'));
+  assert.ok(source.includes("pipeline_status=$?"));
+  assert.match(source,/grep -Eq '[^']*error[^']*null'/);
+  assert.match(source,/continuing to Harbor artifact collection and verification/);
+  assert.ok(source.indexOf("pipeline_status=$?")<source.indexOf("continuing to Harbor artifact collection and verification"));
   assert.doesNotMatch(source,/cwd="\/app"/,"the Native adapter must preserve Harbor's task-specific container working directory");
 });
 
