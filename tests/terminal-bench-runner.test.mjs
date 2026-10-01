@@ -67,11 +67,14 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/recoveredFromTrialFiles/);
   assert.match(source,/recoverNativeEventEvidence/);
   assert.match(source,/recoveredFromNativeEvents/);
-  assert.match(source,/recoveredNative\?\.inputTokens/);
+  assert.match(source,/recoveredEvidence\?\.inputTokens/);
+  assert.match(source,/recoverCodexSessionEvidence/);
+  assert.match(source,/recoveredFromCodexSessions/);
   assert.match(source,/comparisonLanes:selectedLanes\.map/);
   assert.match(source,/configuredComparisonLanes:lanes\.map/);
   assert.match(source,/Refusing inherited TREBELL_TERMINAL_BENCH_ONLY/);
-  assert.match(source,/for\(const lane of selectedLanes\)/);
+  assert.match(source,/const PARALLEL=/);
+  assert.match(source,/Promise\.all\(selectedLanes\.map\(\(lane,index\)=>runLane\(lane,index\)\)\)/);
   assert.match(source,/label:`codex-\$\{authMode\}`/);
   assert.match(source,/selectedLanes\.some\(lane=>lane\.label==="codex-oauth"\)/);
   assert.match(source,/selectedLanes\.some\(lane=>lane\.label==="codex-api"\)/);
@@ -84,16 +87,17 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/strategy:trebellNative\.strategy/);
   assert.match(source,/reasoningContext:trebellNative\.reasoning_context/);
   assert.match(source,/agentVersion:trial\?\.agent_info\?\.version/);
-  assert.match(source,/complete,activeHarness,activeJobName/);
-  assert.match(source,/await persistReport\(\{complete:false,activeHarness:label,activeJobName:jobName\}\)/);
-  assert.match(source,/await persistReport\(\{complete:false,activeHarness:null,activeJobName:null\}\)/);
+  assert.match(source,/activeLanes:laneStates\.filter/);
+  assert.match(source,/lanes:laneStates\.map/);
+  assert.match(source,/terminal-bench-latest\.json/);
   assert.match(source,/waitForJobProcessDrain\(jobName,\{/);
   assert.match(source,/readJobVerifierSummary/);
   assert.match(source,/jobsForPairReport/);
-  assert.match(source,/jobs:jobsForPairReport\(jobs,\{complete\}\)/);
-  assert.match(source,/for\(const job of jobs\)job\.verifierChecks=await readJobVerifierSummary/);
+  assert.match(source,/jobs:jobsForPairReport\(jobs\.filter\(Boolean\),\{complete\}\)/);
+  assert.match(source,/for\(const job of jobs\.filter\(Boolean\)\)job\.verifierChecks=await readJobVerifierSummary/);
   assert.match(source,/TREBELL_TERMINAL_BENCH_LANE_DRAIN_MS/);
-  assert.match(source,/if\(drainError\)throw new Error\(drainError\)/);
+  assert.match(source,/runError=\[runError,drainError\]\.filter\(Boolean\)\.join/);
+  assert.match(source,/laneState\.status=runError\?"failed":"finished"/);
   assert.match(source,/writeFile\(reportPath,JSON\.stringify\(report,null,2\)/);
 });
 
@@ -192,6 +196,8 @@ test("Pinned Harbor Codex adapter changes only installation and verifies the exa
   assert.match(source,/TREBELL_CODEX_PINNED_TARBALL/);
   assert.match(source,/vendor\/x86_64-unknown-linux-musl\/bin\/codex/);
   assert.match(source,/codex --version/);
+  assert.match(source,/\/logs\/agent\/codex-sessions/);
+  assert.match(source,/ln -s \/logs\/agent\/codex-sessions \/tmp\/codex-home\/sessions/);
   assert.doesNotMatch(source,/async def run\(/);
 });
 

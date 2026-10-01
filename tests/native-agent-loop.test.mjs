@@ -1,9 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { nativeAgentBudget, nativeProviderRetryable, runNativeAgentTurn } from "../src/native-agent-loop.mjs";
+import { nativeAgentBudget, nativeProviderRetryable, nativeTerminalAuditMetadata, runNativeAgentTurn } from "../src/native-agent-loop.mjs";
 import { attachNativePromptProvenance, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "../src/native-request-metrics.mjs";
 import { NATIVE_OPENAI_CONTINUATION_IDENTITY } from "../src/openai-response-continuation.mjs";
 const IMAGE_DATA_URL="data:image/png;base64,iVBORw0KGgo=";
+
+test("native terminal audit metadata records network intent while redacting secrets",()=>{
+  const secret="sk-1234567890abcdef";
+  const audit=nativeTerminalAuditMetadata("trebell_terminal","run",{command:"curl",args:["https://example.com/data","--api-key",secret]});
+  assert.equal(audit.networkLike,true);assert.equal(audit.packageManager,false);assert.deepEqual(audit.hosts,["example.com"]);
+  assert.equal(audit.redactedCommand.includes(secret),false);assert.match(audit.redactedCommand,/\[redacted\]/);assert.equal(audit.commandHash.length,64);
+  const local=nativeTerminalAuditMetadata("trebell_terminal","run",{command:"python",args:["verify.py"]});
+  assert.equal(local.networkLike,false);assert.equal(local.packageManager,false);assert.deepEqual(local.hosts,[]);
+  assert.equal(nativeTerminalAuditMetadata("trebell_workspace","read_file",{path:"a.txt"}),null);
+});
 
 test("native agent completes a plain model turn without inventing tool work",async()=>{
   const requests=[],events=[];
@@ -2735,6 +2745,39 @@ test("native recovers from a self-admitted incomplete required deliverable",asyn
   assert.equal(result.text,"Recovered the missing value and completed the requested output.");
   assert.equal(events.filter(event=>event.name==="native.completion.self_admitted_gap").length,1);
   assert.ok(requests[2].messages.some(message=>message.role==="developer"&&/required part of the task is still incomplete or missing/i.test(String(message.content||""))));
+});
+
+test("native preserves a safe best-known artifact on the final completion-gap recovery",async()=>{
+  const requests=[],events=[],executed=[];let providerCalls=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Reconstruct the checkpoint and write the required output/model.safetensors artifact."}],maxModelTurns:10,maxToolCalls:12,onEvent:event=>events.push(event),
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {text:"",toolCalls:[{id:"draft",namespace:"trebell_workspace",name:"write_file",arguments:'{"path":"consolidate.py","content":"candidate"}'}],usage:{}};
+      if(providerCalls===2)return {text:"The required checkpoint was not produced because exact verification is unresolved.",toolCalls:[],usage:{}};
+      if(providerCalls===3)return {text:"",toolCalls:[{id:"probe1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"python","args":["probe-one.py"]}'}],usage:{}};
+      if(providerCalls===4)return {text:"I could not produce the required checkpoint; one mapping remains unresolved.",toolCalls:[],usage:{}};
+      if(providerCalls===5){
+        const recovery=request.messages.find(message=>message.role==="developer"&&/same required task gap remains after another tool attempt/i.test(String(message.content||"")));
+        assert.ok(recovery);
+        assert.match(String(recovery.content),/do not withhold or delete that candidate solely because exact verification remains unresolved/i);
+        assert.match(String(recovery.content),/do not .*claim verification passed/i);
+        return {text:"",toolCalls:[{id:"preserve",namespace:"trebell_workspace",name:"write_file",arguments:'{"path":"output/model.safetensors","content":"best-safe-candidate"}'}],usage:{}};
+      }
+      return {text:"Preserved the strongest candidate at output/model.safetensors. Exact equality remains unverified.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_terminal"?{exitCode:0,stdout:"candidate remains close but not exact"}:{path:String(call.arguments?.path||"output/model.safetensors"),bytes:19}},
+  });
+  assert.equal(providerCalls,6);
+  assert.deepEqual(executed,["draft","probe1","preserve"]);
+  assert.match(result.text,/preserved the strongest candidate/i);
+  const gapEvents=events.filter(event=>event.name==="native.completion.self_admitted_gap");
+  assert.equal(gapEvents.length,2);
+  assert.equal(gapEvents[1].data.recoveryAttempt,2);
 });
 
 test("native recovers from a typographic-apostrophe completion gap after terminal-only investigation",async()=>{

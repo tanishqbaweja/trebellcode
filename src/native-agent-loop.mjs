@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { createHash } from "node:crypto";
 import { nativeRequestMetrics, NATIVE_PROMPT_PROVENANCE, NATIVE_TOOL_SCHEMA_FINGERPRINT } from "./native-request-metrics.mjs";
 import { platformToolAllowedByAllowlist } from "./shared-tool-gateway.mjs";
 import { nativeCommandSemanticError, normalizeNativeCommandArguments } from "./native-command-argv.mjs";
@@ -40,6 +41,18 @@ function safeArguments(value){
 function terminalToolTimeoutMs(namespace,name,args={}){
   if(namespace!=="trebell_terminal"||name!=="run")return null;
   return boundedInteger(args.timeout_ms,TERMINAL_TOOL_TIMEOUT_DEFAULT_MS,{min:1000,max:TERMINAL_TOOL_TIMEOUT_MAX_MS});
+}
+
+export function nativeTerminalAuditMetadata(namespace,name,args={}){
+  if(namespace!=="trebell_terminal"||name!=="run")return null;
+  const normalized=normalizeNativeCommandArguments(args),command=String(normalized.command||"").trim(),argv=Array.isArray(normalized.args)?normalized.args.map(value=>String(value)):[];
+  const redacted=redactSecretText([command,...argv].join(" "),{redactHomes:true,trim:true}).slice(0,1200);
+  const executable=String(command).split(/[\\/]/).pop()?.slice(0,120)||null;
+  const urls=[...redacted.matchAll(/https?:\/\/[^\s'"<>]+/gi)].map(match=>match[0].slice(0,300));
+  const hosts=[...new Set(urls.map(value=>{try{return new URL(value).hostname.toLowerCase()}catch{return null}}).filter(Boolean))].slice(0,20);
+  const networkLike=/(?:^|\s)(?:curl|wget|git\s+(?:clone|fetch|pull)|npm\s+(?:install|i|view|info|pack)|pnpm\s+(?:install|add)|yarn\s+(?:add|install)|pip\d*\s+install|python\s+-m\s+pip\s+install|apt(?:-get)?\s+(?:install|update)|apk\s+add|brew\s+install|invoke-webrequest|irm|iwr)(?:\s|$)/i.test(redacted)||urls.length>0;
+  const packageManager=/(?:^|\s)(?:npm|pnpm|yarn|pip\d*|apt|apt-get|apk|brew)(?:\s|$)/i.test(redacted);
+  return {executable,commandHash:createHash("sha256").update(redacted).digest("hex"),networkLike,packageManager,hosts,redactedCommand:redacted};
 }
 
 function providerVisibleTools(tools=[],toolAllowlist=null){
@@ -711,7 +724,8 @@ export async function runNativeAgentTurn({
     const callId=String(call?.id||("native-tool-"+toolCallNumber)),namespace=call?.namespace?String(call.namespace):null,name=String(call?.name||"tool"),args=safeArguments(call?.arguments);
     if(namespace)executedToolKeys.add(namespace+"/"+name);
     const toolStarted=nowMs();
-    emit(onEvent,{name:"native.tool.requested",status:"running",model:String(model),provider:provider||null,data:{toolCall:toolCallNumber,callId,namespace,name}});
+    const terminalAudit=nativeTerminalAuditMetadata(namespace,name,args);
+    emit(onEvent,{name:"native.tool.requested",status:"running",model:String(model),provider:provider||null,data:{toolCall:toolCallNumber,callId,namespace,name,...(terminalAudit?{terminalAudit}:{})}});
     let output,success=true,errorMessage=null,uncertain=false,retrySafe=false,terminalTimeoutMs=null,toolController=null,watchdogAbortedTool=false;
     try{
       terminalTimeoutMs=terminalToolTimeoutMs(namespace,name,args);toolController=terminalTimeoutMs==null?null:new AbortController();const toolSignal=toolController?(turnSignal?AbortSignal.any([turnSignal,toolController.signal]):toolController.signal):turnSignal;
@@ -1158,10 +1172,11 @@ export async function runNativeAgentTurn({
       const hasSelfVerificationGap=selfAdmittedVerificationGap(responseText);
       const hasSelfCompletionGap=selfAdmittedCompletionGap(responseText),selfAdmittedGapKind=hasSelfCompletionGap?"completion":hasSelfVerificationGap?"verification":null;
       const priorSelfAdmittedGapRecoveryUsedTool=selfAdmittedGapRecoveries>0&&toolCalls>selfAdmittedGapRecoveryToolBaseline;
-      const shouldRecoverSelfAdmittedGap=selfAdmittedGapRecoveries===0||(selfAdmittedGapRecoveries===1&&priorSelfAdmittedGapRecoveryUsedTool);
+      const shouldRecoverSelfAdmittedGap=selfAdmittedGapRecoveries===0||priorSelfAdmittedGapRecoveryUsedTool;
       const preEditCompletionBlockerChallenge=hasSelfCompletionGap&&editRevision===0&&selfAdmittedGapRecoveries===0;
       const selfAdmittedGapCanRecover=preEditCompletionBlockerChallenge||editRevision>0;
-      if(workspaceMutationRequested&&selfAdmittedGapCanRecover&&canVerifyLocally&&!toolBudgetExhausted&&!verifiedFinalizationReady&&selfAdmittedGapRecoveries<2&&shouldRecoverSelfAdmittedGap&&modelTurns<budget.maxModelTurns&&selfAdmittedGapKind){
+      const maxSelfAdmittedGapRecoveries=2;
+      if(workspaceMutationRequested&&selfAdmittedGapCanRecover&&canVerifyLocally&&!toolBudgetExhausted&&!verifiedFinalizationReady&&selfAdmittedGapRecoveries<maxSelfAdmittedGapRecoveries&&shouldRecoverSelfAdmittedGap&&modelTurns<budget.maxModelTurns&&selfAdmittedGapKind){
         selfAdmittedGapRecoveries++;
         selfAdmittedGapRecoveryToolBaseline=toolCalls;
         const recoveryMessage=preEditCompletionBlockerChallenge
@@ -1169,7 +1184,7 @@ export async function runNativeAgentTurn({
           : selfAdmittedGapKind==="completion"
           ? selfAdmittedGapRecoveries===1
             ? "Your previous draft explicitly says a required part of the task is still incomplete or missing. Do not end yet. Focus only on that named unresolved requirement. Use the evidence already gathered and the available tools to resolve it; prefer one small executable probe or direct inspection that discriminates between the remaining hypotheses, then produce and verify the missing deliverable. Do not restart broad exploration or repeat already-settled work. If a concrete external blocker truly makes completion impossible, answer again with that blocker explicit."
-            : "The same required task gap remains after another tool attempt. Do one final focused recovery pass on only that unresolved requirement: re-use the strongest evidence already collected, run the smallest decisive check available, and produce the missing deliverable if the evidence supports it. Do not reopen solved parts of the task. If completion is genuinely blocked by something external, state the concrete blocker rather than continuing broad investigation."
+            : "The same required task gap remains after another tool attempt. Do one final focused recovery pass on only that unresolved requirement. Re-use the strongest evidence already collected and run only the smallest decisive check still needed. If a requested local artifact has already been constructed, or can be emitted from the strongest candidate using only safe and reversible local writes, do not withhold or delete that candidate solely because exact verification remains unresolved. Preserve the strongest candidate at the requested path and make the remaining verification uncertainty explicit in the final answer. Do not fabricate missing bytes or values, weaken the user's acceptance criteria, or claim verification passed when it did not. If no meaningful candidate exists, or writing one would be destructive or unsafe, state the concrete blocker instead."
           : selfAdmittedGapRecoveries===1
             ? "Your previous draft explicitly says part of the edited task remains unverified. Before ending, use one focused local verification step for that named gap if it is reasonably testable with the available terminal. Prefer the repository's existing runnable acceptance surface and already-available local services/process controls over a static proxy: exercise the closest representative lifecycle or integration path the task already exposes. If the acceptance requirement is absolute or quantitative (for example zero failures, zero stale reads, no downtime, a timeout, or a latency/error ceiling), a tiny smoke sample that merely happens to pass is not representative evidence: use the closest sustained/concurrent check feasible under the user's stated timing/load conditions and inspect failures by class. The absence of an ideal build/deploy mechanism is not by itself proof that the changed behavior cannot be tested. Do not broaden back into general exploration. If no representative local path genuinely exists, answer again and keep that limitation explicit."
             : "The same verification gap remains after a local verification attempt. Do one final acceptance-oriented check before ending: re-read the user's stated acceptance signal, then use any already-discovered runnable service, process, restart/scale script, entrypoint, task runner, or live local dependency that can exercise the changed behavior end to end. If the previous check was materially weaker than an absolute or quantitative acceptance condition, strengthen that exact check rather than adding unrelated tests: match the user's timeout/load/concurrency conditions as closely as feasible and inspect any failures instead of relying on a small passing sample. Do not spend this recovery merely proving that an ideal container/build/deploy path is absent when a representative local lifecycle can still be exercised. Keep the check bounded and focused. If no representative path genuinely exists, answer again with the concrete limitation rather than opening broad investigation.";

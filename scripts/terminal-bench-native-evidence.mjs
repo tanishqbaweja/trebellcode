@@ -1,5 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { estimateGpt6LunaStandardCostFromRecords } from "./terminal-bench-cost.mjs";
 
 function rows(text){
   const out=[];
@@ -19,6 +20,7 @@ export function summarizeNativeEventEvidence(text){
     for(const key of Object.keys(usage))usage[key]+=Number(turn?.[key]||0);
   }
   const uncachedInputTokens=Math.max(0,usage.inputTokens-usage.cachedInputTokens);
+  const requestUsage=models.map(event=>event?.data?.usage||{}),cost=estimateGpt6LunaStandardCostFromRecords(requestUsage);
   return {
     modelTurns:models.length,
     toolCalls:tools.length,
@@ -29,6 +31,9 @@ export function summarizeNativeEventEvidence(text){
     outputTokens:usage.outputTokens,
     reasoningOutputTokens:usage.reasoningOutputTokens,
     cacheWriteInputTokens:usage.cacheWriteInputTokens,
+    maxObservedInputTokens:requestUsage.reduce((max,turn)=>Math.max(max,Number(turn?.inputTokens||turn?.input_tokens||0)),0),
+    apiEquivalentCostUsd:cost.totalUsd,
+    apiEquivalentCostBreakdown:cost,
   };
 }
 

@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
@@ -9,7 +9,9 @@ import { waitForJobProcessDrain } from "./terminal-bench-process-drain.mjs";
 import { jobsForPairReport } from "./terminal-bench-pair-report.mjs";
 import { readJobVerifierSummary } from "./terminal-bench-verifier-summary.mjs";
 import { recoverNativeEventEvidence, selectNativeMetric } from "./terminal-bench-native-evidence.mjs";
+import { recoverCodexSessionEvidence } from "./terminal-bench-codex-evidence.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath } from "./terminal-bench-pair-lock.mjs";
+import { estimateGpt6LunaStandardCostFromAggregate, GPT6_LUNA_STANDARD_PRICING } from "./terminal-bench-cost.mjs";
 
 if(!process.argv.includes("--live"))throw new Error("Refusing to run paid/live Terminal-Bench without --live.");
 
@@ -36,6 +38,7 @@ if(!Number.isFinite(SETUP_TIMEOUT_MULTIPLIER)||SETUP_TIMEOUT_MULTIPLIER<1)throw 
 const agentTimeoutArg=process.argv.find(arg=>arg.startsWith("--agent-timeout-multiplier="));
 const AGENT_TIMEOUT_MULTIPLIER=Number(agentTimeoutArg?.slice("--agent-timeout-multiplier=".length)||process.env.TREBELL_TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER||1);
 if(!Number.isFinite(AGENT_TIMEOUT_MULTIPLIER)||AGENT_TIMEOUT_MULTIPLIER<=0)throw new Error("Terminal-Bench agent timeout multiplier must be > 0.");
+const PARALLEL=process.argv.includes("--parallel")||String(process.env.TREBELL_TERMINAL_BENCH_PARALLEL||"").trim()==="1";
 const onlyArg=process.argv.find(arg=>arg.startsWith("--only="));
 const inheritedOnly=String(process.env.TREBELL_TERMINAL_BENCH_ONLY||"").trim();
 if(!onlyArg&&inheritedOnly)throw new Error("Refusing inherited TREBELL_TERMINAL_BENCH_ONLY for a paid benchmark. Pass --only=<lanes> explicitly so lane selection is recorded in the launch command.");
@@ -203,20 +206,39 @@ try{
     codexApiAuthPath=join(validationDir,`.codex-api-auth-${process.pid}-${runStamp}.json`);
     await writeFile(codexApiAuthPath,JSON.stringify({OPENAI_API_KEY:apiKey})+"\n",{encoding:"utf8",mode:0o600});
   }
-  const reportSnapshot=({complete=false,activeHarness=null,activeJobName=null}={})=>({
+  const laneStates=selectedLanes.map(lane=>({
+    label:lane.label,harness:lane.harness,authMode:lane.authMode,
+    jobName:`tb4-${lane.label}-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`,
+    status:"pending",startedAt:null,finishedAt:null,runError:null,
+  }));
+  const reportSnapshot=({complete=false}={})=>({
     pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER,
-    sameModel:true,sameReasoningEffort:true,sequential:true,codexAuthMode:CODEX_AUTH_MODE,codexInstallMode:CODEX_INSTALL_MODE,nativeReasoningContext:NATIVE_REASONING_CONTEXT,
+    sameModel:true,sameReasoningEffort:true,sequential:!PARALLEL,parallel:PARALLEL,codexAuthMode:CODEX_AUTH_MODE,codexInstallMode:CODEX_INSTALL_MODE,nativeReasoningContext:NATIVE_REASONING_CONTEXT,
     ...sourceProvenance,
     ...(nativePinnedNodeTarballPath?{nativePinnedNodeVersion:NATIVE_PINNED_NODE_VERSION,nativePinnedNodeTarballSha256}:{}),
     ...(codexPinnedTarballPath?{codexPinnedVersion:CODEX_PINNED_VERSION,codexPinnedTarballSha256,codexPinnedAdapterSha256}:{}),
     comparisonLanes:selectedLanes.map(lane=>lane.label),configuredComparisonLanes:lanes.map(lane=>lane.label),nativeBundleSha256,nativeAdapterSha256,
-    complete,activeHarness,activeJobName,updatedAt:new Date().toISOString(),jobs:jobsForPairReport(jobs,{complete}),
+    pricingSnapshot:MODEL==="gpt-6-luna"?GPT6_LUNA_STANDARD_PRICING:null,
+    complete,
+    activeHarness:laneStates.filter(lane=>lane.status==="running").length===1?laneStates.find(lane=>lane.status==="running")?.label||null:null,
+    activeJobName:laneStates.filter(lane=>lane.status==="running").length===1?laneStates.find(lane=>lane.status==="running")?.jobName||null:null,
+    activeLanes:laneStates.filter(lane=>lane.status==="running").map(lane=>lane.label),
+    lanes:laneStates.map(lane=>({...lane})),
+    updatedAt:new Date().toISOString(),jobs:jobsForPairReport(jobs.filter(Boolean),{complete}),
   });
-  const persistReport=async state=>writeFile(reportPath,JSON.stringify(reportSnapshot(state),null,2)+"\n","utf8");
-  for(const lane of selectedLanes){
+  let reportWrite=Promise.resolve();
+  const persistReport=(state={})=>{
+    const snapshot=reportSnapshot(state),tmpPath=reportPath+`.tmp-${process.pid}`;
+    reportWrite=reportWrite.then(async()=>{await writeFile(tmpPath,JSON.stringify(snapshot,null,2)+"\n","utf8");await rename(tmpPath,reportPath)});
+    return reportWrite;
+  };
+  const latestPointerPath=join(validationDir,"terminal-bench-latest.json");
+  await writeFile(latestPointerPath,JSON.stringify({pairId,reportPath,task:TASK,model:MODEL,reasoningEffort:EFFORT,parallel:PARALLEL,lanes:laneStates.map(lane=>({label:lane.label,jobName:lane.jobName}))},null,2)+"\n","utf8");
+  await persistReport({complete:false});
+  const runLane=async(lane,laneIndex)=>{
     const {label,harness,authMode}=lane;
     const agent=harness==="native"?"benchmarks.harbor.trebell_native_agent:TrebellNativeAgent":CODEX_INSTALL_MODE==="pinned"?"benchmarks.harbor.pinned_codex_agent:PinnedCodexAgent":"codex";
-    const jobName=`tb4-${label}-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`;
+    const laneState=laneStates[laneIndex],jobName=laneState.jobName;
     const args=["run","-d",DATASET,"-i",TASK,"-a",agent,"-m",`openai/${MODEL}`,"--ak",`reasoning_effort=${EFFORT}`,"-n","1","-o",outputRoot,"--job-name",jobName,"-y"];
     if(SETUP_TIMEOUT_MULTIPLIER>1)args.push("--agent-setup-timeout-multiplier",String(SETUP_TIMEOUT_MULTIPLIER));
     if(AGENT_TIMEOUT_MULTIPLIER!==1)args.push("--agent-timeout-multiplier",String(AGENT_TIMEOUT_MULTIPLIER));
@@ -232,7 +254,7 @@ try{
       if(authMode==="oauth")harnessEnv.CODEX_FORCE_AUTH_JSON="1";
       else harnessEnv.CODEX_AUTH_JSON_PATH=codexApiAuthPath;
     }
-    await persistReport({complete:false,activeHarness:label,activeJobName:jobName});
+    laneState.status="running";laneState.startedAt=new Date().toISOString();await persistReport({complete:false});
     let runError=null;
     try{await run(harbor,args,{env:harnessEnv})}catch(error){runError=error?.message||String(error)}
     let drainError=null;
@@ -241,26 +263,29 @@ try{
     try{result=JSON.parse(await readFile(join(outputRoot,jobName,"result.json"),"utf8"))}catch{}
     const recordedTrial=await trialResult(outputRoot,jobName),trial=recordedTrial||await recoverTrialEvidence(outputRoot,jobName);
     const recoveredNative=harness==="native"?await recoverNativeEventEvidence(outputRoot,jobName):null;
-    const inputMetric=harness==="native"
-      ?selectNativeMetric(result?.stats?.n_input_tokens,trial?.agent_result?.n_input_tokens,recoveredNative?.inputTokens)
-      :{value:result?.stats?.n_input_tokens??trial?.agent_result?.n_input_tokens??null,recovered:false};
-    const cachedMetric=harness==="native"
-      ?selectNativeMetric(result?.stats?.n_cache_tokens,trial?.agent_result?.n_cache_tokens,recoveredNative?.cachedTokens)
-      :{value:result?.stats?.n_cache_tokens??trial?.agent_result?.n_cache_tokens??null,recovered:false};
-    const outputMetric=harness==="native"
-      ?selectNativeMetric(result?.stats?.n_output_tokens,trial?.agent_result?.n_output_tokens,recoveredNative?.outputTokens)
-      :{value:result?.stats?.n_output_tokens??trial?.agent_result?.n_output_tokens??null,recovered:false};
+    const recoveredCodex=harness==="codex"?await recoverCodexSessionEvidence(outputRoot,jobName):null;
+    const recoveredEvidence=recoveredNative||recoveredCodex;
+    const inputMetric=selectNativeMetric(result?.stats?.n_input_tokens,trial?.agent_result?.n_input_tokens,recoveredEvidence?.inputTokens);
+    const cachedMetric=selectNativeMetric(result?.stats?.n_cache_tokens,trial?.agent_result?.n_cache_tokens,recoveredEvidence?.cachedTokens);
+    const outputMetric=selectNativeMetric(result?.stats?.n_output_tokens,trial?.agent_result?.n_output_tokens,recoveredEvidence?.outputTokens);
     const inputTokens=inputMetric.value,cachedTokens=cachedMetric.value;
     const uncachedInputTokens=inputTokens==null||cachedTokens==null?null:Math.max(0,Number(inputTokens)-Number(cachedTokens));
     const cacheHitPercent=inputTokens==null||Number(inputTokens)<=0||cachedTokens==null?null:Number(((Number(cachedTokens)/Number(inputTokens))*100).toFixed(2));
     const trebellNative=trial?.agent_result?.metadata?.trebell_native||null;
     const recoveredFromNativeEvents=Boolean(recoveredNative&&(inputMetric.recovered||cachedMetric.recovered||outputMetric.recovered||!trebellNative));
-    jobs.push({
+    const apiEquivalentCostBreakdown=MODEL==="gpt-6-luna"&&recoveredEvidence?.apiEquivalentCostBreakdown
+      ?recoveredEvidence.apiEquivalentCostBreakdown
+      :MODEL==="gpt-6-luna"&&inputTokens!=null&&cachedTokens!=null
+        ?estimateGpt6LunaStandardCostFromAggregate({inputTokens,cachedInputTokens:cachedTokens,cacheWriteInputTokens:trebellNative?.cache_write_input_tokens??recoveredEvidence?.cacheWriteInputTokens??0,outputTokens:outputMetric.value??0},{maxObservedInputTokens:recoveredEvidence?.maxObservedInputTokens??null})
+        :null;
+    jobs[laneIndex]={
       harness,label,agent,jobName,runError,authMode,
       completed:Number(result?.stats?.n_completed_trials||0),errors:Number(result?.stats?.n_errored_trials||0),
       inputTokens,cachedTokens,uncachedInputTokens,cacheHitPercent,
       outputTokens:outputMetric.value,
       costUsd:result?.stats?.cost_usd??trial?.agent_result?.cost_usd??null,
+      apiEquivalentCostUsd:apiEquivalentCostBreakdown?.totalUsd??null,
+      apiEquivalentCostBreakdown,
       reward:trial?.verifier_result?.rewards?.reward??null,taskChecksum:trial?.task_checksum??null,
       agentVersion:trial?.agent_info?.version??null,
       setupMs:elapsedMs(trial?.agent_setup),agentExecutionMs:elapsedMs(trial?.agent_execution),verifierMs:elapsedMs(trial?.verifier),
@@ -268,16 +293,20 @@ try{
       exceptionType:trial?.exception_info?.exception_type??null,exceptionMessage:trial?.exception_info?.exception_message??null,
       recoveredFromTrialFiles:trial?.recovered_from_trial_files===true,
       recoveredFromNativeEvents,
+      recoveredFromCodexSessions:Boolean(recoveredCodex),
+      ...(harness==="codex"&&recoveredCodex?{modelTurns:recoveredCodex.modelTurns,reasoningOutputTokens:recoveredCodex.reasoningOutputTokens,cacheWriteInputTokens:recoveredCodex.cacheWriteInputTokens}:{}),
       evals:result?.stats?.evals||{},
-    });
-    await persistReport({complete:false,activeHarness:null,activeJobName:null});
-    if(drainError)throw new Error(drainError);
-  }
+    };
+    laneState.status=runError?"failed":"finished";laneState.finishedAt=new Date().toISOString();laneState.runError=runError;
+    await persistReport({complete:false});
+  };
+  if(PARALLEL)await Promise.all(selectedLanes.map((lane,index)=>runLane(lane,index)));
+  else for(let index=0;index<selectedLanes.length;index++)await runLane(selectedLanes[index],index);
   // Keep verifier internals sealed while comparison lanes are still running.
   // Only after every lane has finished do we read generic CTRF pass/fail totals
   // and attach them to the final report for correctness-first comparison.
-  for(const job of jobs)job.verifierChecks=await readJobVerifierSummary(outputRoot,job.jobName);
-  const report=reportSnapshot({complete:true,activeHarness:null,activeJobName:null});await writeFile(reportPath,JSON.stringify(report,null,2)+"\n","utf8");
+  for(const job of jobs.filter(Boolean))job.verifierChecks=await readJobVerifierSummary(outputRoot,job.jobName);
+  const report=reportSnapshot({complete:true});await writeFile(reportPath,JSON.stringify(report,null,2)+"\n","utf8");
   console.log("TREBELL_TERMINAL_BENCH_REPORT "+JSON.stringify({...report,reportPath},null,2));
-  if(jobs.some(job=>job.runError||job.errors>0||job.completed<1))process.exitCode=1;
+  if(jobs.filter(Boolean).some(job=>job.runError||job.errors>0||job.completed<1)||jobs.filter(Boolean).length!==selectedLanes.length)process.exitCode=1;
 }finally{if(codexApiAuthPath)await rm(codexApiAuthPath,{force:true}).catch(()=>{});await releaseLock()}

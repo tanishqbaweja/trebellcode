@@ -57,6 +57,10 @@ class PinnedCodexAgent(Codex):
                 f"tar -xzf {archive_remote} -C {root} --strip-components=1; "
                 f"chmod 0755 {binary}; ln -sf {binary} /usr/local/bin/codex; "
                 f"rm -f {archive_remote}; "
+                "mkdir -p /tmp/codex-home /logs/agent/codex-sessions; "
+                "rm -rf /tmp/codex-home/sessions; "
+                "ln -s /logs/agent/codex-sessions /tmp/codex-home/sessions; "
+                "chmod 0777 /logs/agent/codex-sessions; "
                 "actual=\"$(codex --version | sed -E 's/^codex-cli[[:space:]]+//')\"; "
                 f"test \"$actual\" = {expected} || {{ echo \"Unexpected Codex version: $actual\" >&2; exit 1; }}"
             ),

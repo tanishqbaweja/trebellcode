@@ -13,7 +13,10 @@ test("Native event evidence recovers failed-lane token metrics without exposing 
     {name:"native.model.completed",data:{usage:{inputTokens:1200,cachedInputTokens:1000,outputTokens:70,reasoningOutputTokens:30,cacheWriteInputTokens:7},payload:marker}},
   ].map(JSON.stringify).join("\n");
   const summary=summarizeNativeEventEvidence(text);
-  assert.deepEqual(summary,{modelTurns:2,toolCalls:1,inputTokens:2200,cachedTokens:1900,uncachedInputTokens:300,cacheHitPercent:86.36,outputTokens:120,reasoningOutputTokens:50,cacheWriteInputTokens:12});
+  assert.equal(summary.modelTurns,2);assert.equal(summary.toolCalls,1);
+  assert.equal(summary.inputTokens,2200);assert.equal(summary.cachedTokens,1900);assert.equal(summary.uncachedInputTokens,300);
+  assert.equal(summary.cacheHitPercent,86.36);assert.equal(summary.outputTokens,120);assert.equal(summary.reasoningOutputTokens,50);assert.equal(summary.cacheWriteInputTokens,12);
+  assert.equal(summary.maxObservedInputTokens,1200);assert.ok(summary.apiEquivalentCostUsd>0);assert.equal(summary.apiEquivalentCostBreakdown.contextPricingExact,true);
   assert.equal(JSON.stringify(summary).includes(marker),false);
 });
 
