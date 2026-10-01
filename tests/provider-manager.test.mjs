@@ -337,6 +337,32 @@ test("official OpenAI Native uses exact call_id for incremental tool-result cont
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
+test("official OpenAI replays full local context before using a parent from a replaced WebSocket connection",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-reconnect-parent-")),requests=[];let factoryCalls=0,fetchCalls=0,resetFirst=null;
+  try{
+    const manager=new ProviderManager({
+      env:{TREBELL_HOME:root},openAiResponsesWebSocketRetryMs:0,
+      fetchFn:async()=>{fetchCalls++;throw new Error("HTTP should not be needed for proactive WebSocket recovery")},
+      openAiResponsesWebSocketFactory:options=>{
+        factoryCalls++;const instance=factoryCalls;let open=true,generation=1;
+        const transport={
+          connectionState:()=>({open,generation}),
+          close:()=>{open=false;generation++},
+          request:async body=>{requests.push({instance,body:structuredClone(body)});return {requestBytes:50,response:{id:instance===1?"resp-old-socket":"resp-new-socket",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:instance===1?"first":"second"}]}]},telemetry:{responseBytes:40,totalLatencyMs:1,timeToFirstTokenMs:1}}},
+        };
+        if(instance===1)resetFirst=()=>options.onReset?.({reason:"transport_failure"});
+        return transport;
+      },
+    });
+    manager.setKey("openai","oa-key");const token={},user={role:"user",content:"First"};
+    const first=await manager.turn("openai",{model:"gpt-5.6",messages:[user],tools:[],metadata:{sessionId:"native_ws_reconnect_parent"},[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token},{streamResponses:true});
+    resetFirst();
+    const second=await manager.turn("openai",{model:"gpt-5.6",messages:[user,{role:"assistant",content:first.text,toolCalls:[]},{role:"user",content:"Second"}],tools:[],metadata:{sessionId:"native_ws_reconnect_parent"},promptCacheComparisonResponseId:"resp-old-socket",[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token},{streamResponses:true});
+    assert.equal(factoryCalls,2);assert.equal(fetchCalls,0);assert.equal(requests.length,2);assert.equal(requests[1].instance,2);assert.equal(Object.prototype.hasOwnProperty.call(requests[1].body,"previous_response_id"),false);assert.equal(requests[1].body.input.length,3);
+    assert.equal(second.text,"second");assert.equal(second.telemetry.responseContinuation.attempted,true);assert.equal(second.telemetry.responseContinuation.used,false);assert.equal(second.telemetry.responseContinuation.fallback,true);assert.equal(second.telemetry.responseContinuation.fallbackReason,"websocket_connection_replaced");assert.equal(second.telemetry.responseContinuation.savedRequestBytes,0);assert.equal(second.telemetry.responseContinuation.inputBuildReused,false);assert.equal(second.telemetry.responseContinuation.wireAttempts,1);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
 test("official OpenAI can force a control turn onto HTTPS without disturbing the Native WebSocket lane",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-control-http-")),bodies=[];let factoryCalls=0;
   try{

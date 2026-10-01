@@ -70,6 +70,10 @@ export class OpenAiResponsesWebSocket{
     this.socket=null;this.connecting=null;this.pending=new Map();this.closed=false;this.generation=0;
   }
 
+  connectionState(){
+    return {generation:this.generation,open:this.socket?.readyState===this.WebSocketClass.OPEN};
+  }
+
   async #connect(signal=null){
     if(this.closed)throw transportError("OpenAI Responses WebSocket is closed.",null,{replaySafe:true});
     if(this.socket?.readyState===this.WebSocketClass.OPEN)return this.socket;

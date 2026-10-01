@@ -403,6 +403,7 @@ export class ProviderManager {
     mkdirSync(dirname(this.path), { recursive: true });
     this.secrets = this.#load();
     this.openAiResponseContinuations=new OpenAiResponseContinuationTracker();
+    this.openAiWebSocketResponseOrigins=new Map();
     this.openAiResponsesWebSocketFactory=typeof openAiResponsesWebSocketFactory==="function"?openAiResponsesWebSocketFactory:options=>new OpenAiResponsesWebSocket(options);
     const retryMs=Math.trunc(Number(openAiResponsesWebSocketRetryMs));this.openAiResponsesWebSocketRetryMs=Number.isFinite(retryMs)&&retryMs>=0?retryMs:30_000;this.nowFn=typeof nowFn==="function"?nowFn:Date.now;
     this.openAiResponsesWebSocket=null;this.openAiResponsesWebSocketDisabledUntil=0;this.openAiResponsesWebSocketPermanentlyDisabled=false;this.openAiResponsesWebSocketTransientFailures=0;
@@ -482,7 +483,7 @@ export class ProviderManager {
 
   #resetOpenAiWebSocket(reason="reset"){
     const normalized=String(reason||""),transport=this.openAiResponsesWebSocket,transient=["connect_failure","send_failure","transport_failure","timeout_failure"].includes(normalized),protocol=normalized==="protocol_failure";
-    if(protocol){this.openAiResponsesWebSocketPermanentlyDisabled=true;this.openAiResponseContinuations.clear()}
+    if(protocol){this.openAiResponsesWebSocketPermanentlyDisabled=true;this.openAiResponseContinuations.clear();this.openAiWebSocketResponseOrigins.clear()}
     if(transient){
       this.openAiResponsesWebSocketTransientFailures=Math.min(16,Number(this.openAiResponsesWebSocketTransientFailures||0)+1);
       const multiplier=Math.min(16,2**Math.max(0,this.openAiResponsesWebSocketTransientFailures-1)),cooldown=Math.min(300_000,this.openAiResponsesWebSocketRetryMs*multiplier);
@@ -500,6 +501,21 @@ export class ProviderManager {
       onReset:event=>this.#resetOpenAiWebSocket(event?.reason||"reset"),
     });
     return this.openAiResponsesWebSocket;
+  }
+
+  #recordOpenAiWebSocketResponseOrigin(responseId,transport){
+    const id=String(responseId||"").trim();if(!id||!transport)return;
+    const state=typeof transport.connectionState==="function"?transport.connectionState():null;
+    this.openAiWebSocketResponseOrigins.delete(id);
+    this.openAiWebSocketResponseOrigins.set(id,{transport,generation:Number.isFinite(Number(state?.generation))?Number(state.generation):null});
+    while(this.openAiWebSocketResponseOrigins.size>128)this.openAiWebSocketResponseOrigins.delete(this.openAiWebSocketResponseOrigins.keys().next().value);
+  }
+
+  #openAiWebSocketParentAvailable(parentId,transport){
+    const id=String(parentId||"").trim(),origin=id?this.openAiWebSocketResponseOrigins.get(id):null;if(!origin)return true;
+    if(origin.transport!==transport)return false;
+    if(origin.generation==null||typeof transport?.connectionState!=="function")return true;
+    const state=transport.connectionState();return state?.open===true&&Number(state?.generation)===origin.generation;
   }
 
   #load() {
@@ -554,7 +570,7 @@ export class ProviderManager {
     if (key) this.secrets[provider.id] = key;
     else delete this.secrets[provider.id];
     this.#save();
-    if(provider.id==="openai"&&previousKey!==key){try{this.openAiResponsesWebSocket?.close?.()}catch{}this.openAiResponsesWebSocket=null;this.openAiResponsesWebSocketDisabledUntil=0;this.openAiResponsesWebSocketPermanentlyDisabled=false;this.openAiResponsesWebSocketTransientFailures=0;this.openAiResponseContinuations.clear()}
+    if(provider.id==="openai"&&previousKey!==key){try{this.openAiResponsesWebSocket?.close?.()}catch{}this.openAiResponsesWebSocket=null;this.openAiResponsesWebSocketDisabledUntil=0;this.openAiResponsesWebSocketPermanentlyDisabled=false;this.openAiResponsesWebSocketTransientFailures=0;this.openAiResponseContinuations.clear();this.openAiWebSocketResponseOrigins.clear()}
     return { provider: provider.id, hasKey: Boolean(key) };
   }
 
@@ -565,6 +581,7 @@ export class ProviderManager {
     this.openAiResponsesWebSocketPermanentlyDisabled=false;
     this.openAiResponsesWebSocketTransientFailures=0;
     this.openAiResponseContinuations.clear();
+    this.openAiWebSocketResponseOrigins.clear();
     try{transport?.close?.()}catch{}
   }
 
@@ -772,20 +789,25 @@ export class ProviderManager {
     if(streamChat===true&&chatBody){chatBody.stream=true;chatBody.stream_options={include_usage:true}}
     if(chatBody&&chatMessageCache?.serialized){const messagesJson=preSerializedChatMessages(chatBody.messages,chatMessageCache.serialized);if(messagesJson)attachPreSerializedTopLevel(chatBody,"messages",chatBody.messages,messagesJson)}
     if(this.reusePreSerializedToolJson&&chatBody&&chatManifest?.toolsJson&&chatBody.tools===chatManifest.tools)attachPreSerializedTopLevel(chatBody,"tools",chatBody.tools,chatManifest.toolsJson);
-    let openAiWebSocketFallback=null,continuationFallback=false;
+    let openAiWebSocketFallback=null,continuationFallback=false,continuationFallbackReason=null;
     const openAiWebSocketStreamId=provider.id==="openai"&&streamResponses===true?openAiResponsesWebSocketStreamId(request?.metadata?.sessionId):null;
     const openAiWebSocketEnabled=request?.openAiDisableWebSocket!==true&&Boolean(openAiWebSocketStreamId)&&String(this.env.TREBELL_OPENAI_RESPONSES_WEBSOCKET||"1").trim()!=="0"&&!this.#openAiWebSocketCircuitOpen();
     if(openAiWebSocketEnabled){
       const transport=this.#openAiWebSocketTransport();
       if(transport){
         try{
+          if(openAiContinuation?.used&&!this.#openAiWebSocketParentAvailable(openAiContinuation.parentId,transport)){
+            const fallbackBody=this.#officialOpenAiResponsesBody({...request,model,promptCacheComparisonResponseId:""});fallbackBody.stream=true;
+            fullResponsesBody=fallbackBody;responsesBody=fallbackBody;continuationFallback=true;continuationFallbackReason="websocket_connection_replaced";
+          }
           const socketStarted=performance.now(),socketRemainingMs=remainingProviderRequestMs(requestDeadlineAt),socketSignal=providerRequestSignal(signal,socketRemainingMs),socketResult=await transport.request(responsesBody,{streamId:openAiWebSocketStreamId,signal:socketSignal,idleTimeoutMs:Math.min(this.requestTimeoutMs,socketRemainingMs)}),result=normalizeResponsesTurnResponse(socketResult.response,provider.id,model);
           this.openAiResponsesWebSocketTransientFailures=0;
           this.openAiResponseContinuations.record(result.id,openAiContinuation,result);
+          this.#recordOpenAiWebSocketResponseOrigin(result.id,transport);
           result.telemetry={
             endpoint:String(provider.baseUrl||"").replace(/^http/i,"ws")+"/responses",wireApi:"openai-responses-websocket",requestBytes:Number(socketResult.requestBytes||0),responseBytes:Number(socketResult.telemetry?.responseBytes||0),
             responseHeadersLatencyMs:null,responseBodyLatencyMs:Number(socketResult.telemetry?.totalLatencyMs||0),timeToFirstTokenMs:socketResult.telemetry?.timeToFirstTokenMs??null,totalLatencyMs:Number(socketResult.telemetry?.totalLatencyMs??(performance.now()-socketStarted)),streaming:true,providerRequestId:null,providerResponseId:result.id||null,
-            promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(socketResult.response),reasoningContext:normalizedOpenAiReasoningContext(socketResult.response),persistentConnection:true,responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used),attempted:Boolean(openAiContinuation.used),fallback:false,parentId:openAiContinuation.parentId||null,parentExpired:Boolean(openAiContinuation.parentExpired),fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts:1}:null,
+            promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(socketResult.response),reasoningContext:normalizedOpenAiReasoningContext(socketResult.response),persistentConnection:true,responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,...(continuationFallbackReason?{fallbackReason:continuationFallbackReason}:{}),parentId:openAiContinuation.parentId||null,parentExpired:Boolean(openAiContinuation.parentExpired),fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:continuationFallback?Number(openAiContinuation.fullInputCount||0):Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused&&!continuationFallback),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts:1}:null,
           };
           return result;
         }catch(error){
@@ -809,7 +831,7 @@ export class ProviderManager {
           openAiWebSocketFallback.retried=true;
           if(continuationRejected||invalidToolOutputRequest){
             const fallbackBody=this.#officialOpenAiResponsesBody({...request,model,promptCacheComparisonResponseId:""});fallbackBody.stream=true;
-            fullResponsesBody=fallbackBody;responsesBody=fallbackBody;continuationFallback=true;
+            fullResponsesBody=fallbackBody;responsesBody=fallbackBody;continuationFallback=true;continuationFallbackReason=continuationRejected?"previous_response_unavailable":"invalid_tool_output_state";
           }
         }
       }
@@ -820,7 +842,7 @@ export class ProviderManager {
     if(provider.id==="openai"&&openAiContinuation?.used&&!upstream.ok&&[400,404,409].includes(Number(upstream.status))){
       try{await upstream.body?.cancel?.()}catch{}
       if(!fullResponsesBody){fullResponsesBody=this.#officialOpenAiResponsesBody({...request,model});if(streamResponses===true)fullResponsesBody.stream=true}
-      upstream=await this.forwardResponses(provider.id,fullResponsesBody,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)});continuationFallback=true;
+      upstream=await this.forwardResponses(provider.id,fullResponsesBody,{signal,onWire,timeoutMs:remainingProviderRequestMs(requestDeadlineAt)});continuationFallback=true;if(!continuationFallbackReason)continuationFallbackReason="previous_response_unavailable";
     }
     const headersLatencyMs=Number((performance.now()-started).toFixed(3));
     const providerRequestId=upstream.headers?.get?.("x-request-id")||upstream.headers?.get?.("request-id")||upstream.headers?.get?.("x-amzn-requestid")||null;
@@ -831,7 +853,7 @@ export class ProviderManager {
         const streamed=await readOpenAiResponsesStream(upstream.body,{requestStartedAt:started,signal,idleTimeoutMs:this.requestTimeoutMs}),bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
         const result=normalizeResponsesTurnResponse(streamed.response,provider.id,model);
         this.openAiResponseContinuations.record(result.id,openAiContinuation,result);
-        result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null,promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(streamed.response),reasoningContext:normalizedOpenAiReasoningContext(streamed.response),persistentConnection:false,webSocketFallback:openAiWebSocketFallback,responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,parentId:openAiContinuation.parentId||null,parentExpired:Boolean(openAiContinuation.parentExpired),fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused&&!continuationFallback),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts}:null};
+        result.telemetry={endpoint:wire.endpoint,wireApi:wire.wireApi||"openai-responses",requestBytes:wireRequestBytes||Number(wire.requestBytes)||0,responseBytes:streamed.responseBytes,responseHeadersLatencyMs:headersLatencyMs,responseBodyLatencyMs:bodyLatencyMs,timeToFirstTokenMs:streamed.timeToFirstTokenMs,totalLatencyMs,streaming:true,providerRequestId,providerResponseId:result.id||null,promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(streamed.response),reasoningContext:normalizedOpenAiReasoningContext(streamed.response),persistentConnection:false,webSocketFallback:openAiWebSocketFallback,responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,...(continuationFallbackReason?{fallbackReason:continuationFallbackReason}:{}),parentId:openAiContinuation.parentId||null,parentExpired:Boolean(openAiContinuation.parentExpired),fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:continuationFallback?Number(openAiContinuation.fullInputCount||0):Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused&&!continuationFallback),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts}:null};
         return result;
       }catch(error){
         const bodyLatencyMs=Number((performance.now()-bodyStarted).toFixed(3)),totalLatencyMs=Number((performance.now()-started).toFixed(3));
@@ -883,7 +905,7 @@ export class ProviderManager {
     result.telemetry={
       ...baseTelemetry,
       providerResponseId:result.id||null,
-      ...(provider.id==="openai"?{promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(parsed),reasoningContext:normalizedOpenAiReasoningContext(parsed),responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,parentId:openAiContinuation.parentId||null,parentExpired:Boolean(openAiContinuation.parentExpired),fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused&&!continuationFallback),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts}:null}:{}),
+      ...(provider.id==="openai"?{promptCacheDiagnostics:normalizedOpenAiPromptCacheDiagnostics(parsed),reasoningContext:normalizedOpenAiReasoningContext(parsed),responseContinuation:openAiContinuation?{used:Boolean(openAiContinuation.used&&!continuationFallback),attempted:Boolean(openAiContinuation.used),fallback:continuationFallback,...(continuationFallbackReason?{fallbackReason:continuationFallbackReason}:{}),parentId:openAiContinuation.parentId||null,parentExpired:Boolean(openAiContinuation.parentExpired),fullInputCount:Number(openAiContinuation.fullInputCount||0),deltaInputCount:continuationFallback?Number(openAiContinuation.fullInputCount||0):Number(openAiContinuation.deltaInputCount||0),savedRequestBytes:continuationFallback?0:Number(openAiContinuation.savedRequestBytes||0),inputBuildReused:Boolean(openAiContinuation.inputBuildReused&&!continuationFallback),canonicalPrefixMessageCount:Number(openAiContinuation.canonicalPrefixMessageCount||0),wireAttempts}:null}:{}),
     };
     return result;
   }

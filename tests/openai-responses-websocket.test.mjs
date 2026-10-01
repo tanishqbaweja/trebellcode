@@ -32,6 +32,13 @@ test("Responses WebSocket cancellation resets the shared socket and next request
   const second=ws.request({model:"gpt-5.6",input:[]},{streamId:"second"});await new Promise(resolve=>setImmediate(resolve));assert.equal(FakeSocket.instances.length,2);FakeSocket.instances[1].server({type:"response.completed",stream_id:"second",response:{id:"resp-2",output:[]}});await second;ws.close();
 });
 
+test("Responses WebSocket exposes connection generation across reconnects",async()=>{
+  reset();const ws=new OpenAiResponsesWebSocket({apiKey:"secret",WebSocketClass:FakeSocket});assert.deepEqual(ws.connectionState(),{generation:0,open:false});
+  const first=ws.request({model:"gpt-5.6",input:[]},{streamId:"lane"});await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(ws.connectionState(),{generation:1,open:true});FakeSocket.instances[0].server({type:"response.completed",stream_id:"lane",response:{id:"resp-1",output:[]}});await first;
+  FakeSocket.instances[0].emit("error",new Error("connection replaced"));assert.equal(ws.connectionState().open,false);const resetGeneration=ws.connectionState().generation;assert.ok(resetGeneration>1);
+  const second=ws.request({model:"gpt-5.6",input:[]},{streamId:"lane"});await new Promise(resolve=>setImmediate(resolve));assert.equal(ws.connectionState().open,true);assert.ok(ws.connectionState().generation>resetGeneration);FakeSocket.instances[1].server({type:"response.completed",stream_id:"lane",response:{id:"resp-2",output:[]}});await second;ws.close();
+});
+
 test("Responses WebSocket idle timeout resets after progress instead of enforcing an absolute deadline",async()=>{
   reset();const ws=new OpenAiResponsesWebSocket({apiKey:"secret",WebSocketClass:FakeSocket}),pending=ws.request({model:"gpt-5.6",input:[]},{streamId:"lane",idleTimeoutMs:100});await new Promise(resolve=>setImmediate(resolve));const socket=FakeSocket.instances[0],started=Date.now();
   await new Promise(resolve=>setTimeout(resolve,60));socket.server({type:"response.output_text.delta",stream_id:"lane",delta:"still working"});
