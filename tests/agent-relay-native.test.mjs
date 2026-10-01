@@ -199,8 +199,8 @@ test("Trebell Native expands specialized tools on a later turn without replacing
   const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env),events=[];let calls=0;
   const nativeProviderTurn=async request=>{
     calls++;const browser=(request.tools||[]).find(item=>item.name==="trebell_browser");
-    if(calls===1){assert.equal(browser,undefined);return{id:"plain-done",provider:request.provider,model:request.model,text:"Parser fix complete.",toolCalls:[],finishReason:"stop",usage:{}}}
-    assert.ok(browser);assert.ok(browser.tools.some(tool=>tool.name==="screenshot"));assert.ok(request.messages.some(message=>message.role==="assistant"&&/Parser fix complete/.test(String(message.content||""))));
+    if(calls===1){assert.equal(browser,undefined);return{id:"plain-done",provider:request.provider,model:request.model,text:"Parser inspection complete.",toolCalls:[],finishReason:"stop",usage:{}}}
+    assert.ok(browser);assert.ok(browser.tools.some(tool=>tool.name==="screenshot"));assert.ok(request.messages.some(message=>message.role==="assistant"&&/Parser inspection complete/.test(String(message.content||""))));
     return{id:"browser-done",provider:request.provider,model:request.model,text:"Browser capability available on the same thread.",toolCalls:[],finishReason:"stop",usage:{}};
   };
   const journal={record:event=>events.push(event),recordProtocol:()=>{}},server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test",journal});
@@ -208,7 +208,7 @@ test("Trebell Native expands specialized tools on a later turn without replacing
   try{
     const thread=(await rpc.request("thread/start",{model:"model-a",modelProvider:"agentrouter",cwd:repo,projectless:false,permissionProfile:"read-only",dynamicTools:[]})).thread;
     threadStore.update(thread.id,{providerMeta:{...threadStore.get(thread.id).providerMeta,dynamicToolNamespaces:["trebell_device"]}});
-    const first=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"read-only",input:[{type:"text",text:"Fix the parser"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===first.id);
+    const first=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"read-only",input:[{type:"text",text:"Inspect the parser"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===first.id);
     assert.deepEqual(threadStore.get(thread.id).providerMeta.dynamicToolNamespaces,[],"retired mobile-device tool metadata should be scrubbed when an old Native thread resumes");
     const second=(await rpc.request("turn/start",{threadId:thread.id,model:"model-a",modelProvider:"agentrouter",permissionProfile:"read-only",dynamicToolNamespaces:["trebell_browser"],input:[{type:"text",text:"Now verify it in the browser"}]})).turn;await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===second.id);
     const persisted=threadStore.get(thread.id);assert.equal(persisted.id,thread.id);assert.equal(persisted.turns.length,2);assert.deepEqual(persisted.providerMeta.dynamicToolNamespaces,["trebell_browser"]);assert.equal(calls,2);
@@ -384,7 +384,11 @@ test("Trebell Native verification repair reuses the same thread and persisted fa
   const root=await mkdtemp(join(tmpdir(),"trebell-native-repair-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
   const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);const providerRequests=[];
-  const nativeProviderTurn=async request=>{providerRequests.push(structuredClone({...request,signal:undefined}));return {id:"repair-answer",provider:request.provider,model:request.model,text:"Repaired and rechecked.",toolCalls:[],finishReason:"stop",usage:{}}};
+  const nativeProviderTurn=async request=>{
+    providerRequests.push(structuredClone({...request,signal:undefined}));
+    if(request.metadata?.completionGate)return {id:"repair-gate",provider:request.provider,model:request.model,text:'{"status":"complete","unresolved":[],"reason":"The requested repair response is supported by the verification context."}',toolCalls:[],finishReason:"stop",usage:{}};
+    return {id:"repair-answer",provider:request.provider,model:request.model,text:"Repaired and rechecked.",toolCalls:[],finishReason:"stop",usage:{}};
+  };
   const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
   const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
   try{
@@ -394,7 +398,7 @@ test("Trebell Native verification repair reuses the same thread and persisted fa
     const current=await rpc.request("thread/verification/get",{threadId:thread.id});assert.equal(current.record.id,"native-repair-record");assert.equal(current.nextAction.action,"repair");
     const repaired=await rpc.request("thread/verification/repair",{threadId:thread.id});assert.equal(repaired.record.id,"native-repair-record");assert.equal(repaired.nextAction.action,"repair");assert.ok(repaired.turn?.id);
     await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===repaired.turn.id);
-    assert.equal(providerRequests.length,1);const prompt=JSON.stringify(providerRequests[0].messages.at(-1)?.content||"");assert.match(prompt,/Repair the failed verification/i);assert.match(prompt,/Parser regression failed/);assert.doesNotMatch(prompt,/SHOULD_NOT_BE_IN_REPAIR_CONTEXT/);
+    assert.equal(providerRequests.length,2);const prompt=JSON.stringify(providerRequests[0].messages.at(-1)?.content||"");assert.match(prompt,/Repair the failed verification/i);assert.match(prompt,/Parser regression failed/);assert.doesNotMatch(prompt,/SHOULD_NOT_BE_IN_REPAIR_CONTEXT/);assert.equal(providerRequests[1].metadata?.completionGate,true);
     const persisted=(await rpc.request("thread/read",{threadId:thread.id})).thread;assert.equal(persisted.id,thread.id);assert.equal(persisted.turns.length,1);assert.ok(persisted.turns[0].items.some(item=>item.type==="agentMessage"&&/Repaired and rechecked/.test(item.text)));
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}
 });
@@ -403,7 +407,11 @@ test("Trebell Native verification continuation reuses the same thread and only t
   const root=await mkdtemp(join(tmpdir(),"trebell-native-verify-relay-")),home=join(root,"home"),repo=join(root,"repo");await mkdir(repo,{recursive:true});
   const env={...process.env,TREBELL_HOME:home},state=new TrebellStateStore(env);state.updateSettings({agentRuntime:"native",agentRuntimeInstanceId:"native-default",modelProvider:"agentrouter",activeEnvironmentId:null});
   const runtimeManager=new AgentRuntimeManager({state,env}),threadStore=new AgentThreadStore(env);const providerRequests=[];
-  const nativeProviderTurn=async request=>{providerRequests.push(structuredClone({...request,signal:undefined}));return {id:"verify-answer",provider:request.provider,model:request.model,text:"Ran the requested test only.",toolCalls:[],finishReason:"stop",usage:{}}};
+  const nativeProviderTurn=async request=>{
+    providerRequests.push(structuredClone({...request,signal:undefined}));
+    if(request.metadata?.completionGate)return {id:"verify-gate",provider:request.provider,model:request.model,text:'{"status":"complete","unresolved":[],"reason":"The requested verification continuation was completed."}',toolCalls:[],finishReason:"stop",usage:{}};
+    return {id:"verify-answer",provider:request.provider,model:request.model,text:"Ran the requested test only.",toolCalls:[],finishReason:"stop",usage:{}};
+  };
   const server=createServer((_req,res)=>{res.writeHead(404);res.end()});const relay=attachAgentRelay(server,{runtimeManager,threadStore,terminals:{},state,contextEngine:new ContextEngine(),nativeProviderTurn,version:"test"});
   const port=await listen(server),ws=new WebSocket(`ws://127.0.0.1:${port}/api/agent/ws`);await new Promise((resolve,reject)=>{ws.once("open",resolve);ws.once("error",reject)});const rpc=client(ws);
   try{
@@ -413,7 +421,7 @@ test("Trebell Native verification continuation reuses the same thread and only t
     const current=await rpc.request("thread/verification/get",{threadId:thread.id});assert.equal(current.record.id,"native-verify-record");assert.equal(current.nextAction.action,"verify");assert.equal(current.nextAction.nextStep.id,"tests");
     const continued=await rpc.request("thread/verification/continue",{threadId:thread.id,recordId:"native-verify-record",auto:true});assert.equal(continued.record.id,"native-verify-record");assert.equal(continued.nextAction.nextStep.id,"tests");assert.ok(continued.turn?.id);
     await rpc.waitFor(message=>message.method==="turn/completed"&&message.params?.turn?.id===continued.turn.id);
-    assert.equal(providerRequests.length,1);const prompt=JSON.stringify(providerRequests[0].messages.at(-1)?.content||"");assert.match(prompt,/Continue verification/i);assert.match(prompt,/npm test/);assert.match(prompt,/single next required verification step/i);assert.doesNotMatch(prompt,/SHOULD_NOT_BE_IN_VERIFY_CONTEXT/);
+    assert.equal(providerRequests.length,2);const prompt=JSON.stringify(providerRequests[0].messages.at(-1)?.content||"");assert.match(prompt,/Continue verification/i);assert.match(prompt,/npm test/);assert.match(prompt,/single next required verification step/i);assert.doesNotMatch(prompt,/SHOULD_NOT_BE_IN_VERIFY_CONTEXT/);assert.equal(providerRequests[1].metadata?.completionGate,true);
     const meta=state.threadMeta(thread.id);assert.equal(meta.verificationContinuationChain?.lastContinuationTurnId,continued.turn.id);assert.equal(meta.verificationAutomationChain?.lastAutomaticTurnId,continued.turn.id);assert.equal(meta.verificationAutomationChain?.lastAction,"verify");
     const persisted=(await rpc.request("thread/read",{threadId:thread.id})).thread;assert.equal(persisted.id,thread.id);assert.equal(persisted.turns.length,1);assert.ok(persisted.turns[0].items.some(item=>item.type==="agentMessage"&&/requested test only/.test(item.text)));
   }finally{try{ws.close()}catch{}await relay.close();await new Promise(resolve=>server.close(()=>resolve()));await rm(root,{recursive:true,force:true})}

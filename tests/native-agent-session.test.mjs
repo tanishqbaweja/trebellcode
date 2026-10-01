@@ -54,6 +54,34 @@ test("Native session semantic completion gate only streams the accepted answer w
   assert.equal(visible.some(text=>text.includes('"status"')),false);
 });
 
+test("Native OpenAI completion gate preserves tool-schema cache shape and keeps the candidate continuation parent",async()=>{
+  const requests=[],updates=[];let calls=0;
+  const tools=[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
+  const session=new NativeAgentSession({
+    provider:"openai",model:"gpt-6-luna",semanticCompletionGate:true,tools,onUpdate:update=>updates.push(update),
+    providerTurn:async request=>{
+      requests.push(structuredClone({...request,signal:undefined}));calls++;
+      if(calls===1)return {id:"resp-edit",provider:"openai",model:"gpt-6-luna",text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"old","new_text":"new"}'}],usage:{},telemetry:{providerResponseId:"resp-edit"}};
+      if(calls===2)return {id:"resp-candidate",provider:"openai",model:"gpt-6-luna",text:"Implemented the requested change.",toolCalls:[],usage:{},telemetry:{providerResponseId:"resp-candidate"}};
+      if(calls===3){
+        assert.equal(request.metadata?.completionGate,true);
+        assert.equal(request.promptCacheComparisonResponseId,"resp-candidate");
+        assert.equal(request.toolChoice,"none");
+        assert.deepEqual(request.tools,tools);
+        return {id:"resp-gate",provider:"openai",model:"gpt-6-luna",text:'{"status":"complete","unresolved":[],"reason":"The requested workspace edit is present."}',toolCalls:[],usage:{},telemetry:{providerResponseId:"resp-gate"}};
+      }
+      throw new Error("unexpected provider call");
+    },
+    executeTool:async()=>({path:"src/a.mjs",replacements:1}),
+  });
+  await session.start({providerSessionId:"openai-semantic-gate",model:"gpt-6-luna"});
+  const result=await session.prompt([{type:"text",text:"Modify src/a.mjs to apply the requested change."}]);
+  assert.equal(calls,3);
+  assert.equal(session.lastProviderResponseId,"resp-candidate");
+  assert.equal(result.providerMessageId,"resp-candidate");
+  assert.deepEqual(updates.filter(item=>item.update?.sessionUpdate==="agent_message_chunk").map(item=>item.update.content.text),["Implemented the requested change."]);
+});
+
 test("Native session forwards the selected reasoning effort to provider turns",async()=>{
   let seen=null;
   const session=new NativeAgentSession({
