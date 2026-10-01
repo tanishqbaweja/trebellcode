@@ -2476,7 +2476,7 @@ test("native localizes residual structure after an abstraction repair before reo
         assert.equal(request.toolChoice,"none");
         assert.deepEqual(request.tools,[]);
         assert.equal(request.maxOutputTokens,2048);
-        assert.equal(request.reasoningEffort,"low");
+        assert.equal(request.reasoningEffort,"max");
         assert.ok(request.messages.some(message=>message.role==="developer"&&/abstraction-repair verification gate/i.test(String(message.content||""))));
         return {text:'{"status":"failed","reason":"The independent replica invariant still disagrees after the repair."}',toolCalls:[],usage:{}};
       }
@@ -2494,7 +2494,7 @@ test("native localizes residual structure after an abstraction repair before reo
         assert.equal(request.toolChoice,"none");
         assert.deepEqual(request.tools,[]);
         assert.equal(request.maxOutputTokens,2048);
-        assert.equal(request.reasoningEffort,"low");
+        assert.equal(request.reasoningEffort,"max");
         return {text:'{"status":"verified","reason":"The independent replica invariant now matches the raw source on every checked rank."}',toolCalls:[],usage:{}};
       }
       if(turns===15)return {text:"",toolCalls:evidence("residual-2"),usage:{}};
@@ -2555,7 +2555,7 @@ test("native semantic completion gate rejects unsupported completion without tas
         assert.equal(request.toolChoice,"none");
         assert.deepEqual(request.tools,[]);
         assert.equal(request.maxOutputTokens,2048);
-        assert.equal(request.reasoningEffort,"low");
+        assert.equal(request.reasoningEffort,"max");
         assert.ok(request.messages.some(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||""))));
         return {text:'{"status":"incomplete","unresolved":["p95 latency is still above the requested ceiling"],"reason":"The latest measured p95 is 141 ms, so the requested performance target is not satisfied."}',toolCalls:[],usage:{}};
       }
@@ -2566,7 +2566,7 @@ test("native semantic completion gate rejects unsupported completion without tas
       if(providerCalls===5)return {text:"The implementation is updated and the latest measured p95 is 84 ms, below the requested 100 ms ceiling.",toolCalls:[],usage:{}};
       if(providerCalls===6){
         assert.equal(request.maxOutputTokens,2048);
-        assert.equal(request.reasoningEffort,"low");
+        assert.equal(request.reasoningEffort,"max");
         return {text:'{"status":"complete","unresolved":[],"reason":"The requested workspace change exists and the latest measured p95 is 84 ms, satisfying the stated ceiling."}',toolCalls:[],usage:{}};
       }
       throw new Error("unexpected provider call");
