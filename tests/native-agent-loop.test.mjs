@@ -2602,6 +2602,44 @@ test("native does not accept a provisional artifact after its required exact che
   assert.equal(events.filter(event=>event.name==="native.verification.self_admitted_gap").length,1);
 });
 
+test("native failed acceptance overrides a stale verified-finalization-ready heuristic",async()=>{
+  const requests=[],events=[];let providerCalls=0,verifyRuns=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the reconstruction. After the verifier passes, answer with the current result."}],maxModelTurns:10,maxToolCalls:12,onEvent:event=>events.push(event),
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {text:"",toolCalls:[{id:"edit1",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/reconstruct.py","old_text":"v1","new_text":"v2"}'}],usage:{}};
+      if(providerCalls===2)return {text:"",toolCalls:[{id:"check1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"python","args":["exact-check.py"]}'}],usage:{}};
+      if(providerCalls===3)return {text:"",toolCalls:[{id:"edit2",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/reconstruct.py","old_text":"v2","new_text":"v3"}'}],usage:{}};
+      if(providerCalls===4)return {text:"",toolCalls:[{id:"check2",namespace:"trebell_terminal",name:"run",arguments:'{"command":"python","args":["exact-check.py"]}'}],usage:{}};
+      if(providerCalls===5)return {text:"The required exact verification check failed. The artifact is provisional, not a verified deliverable.",toolCalls:[],usage:{}};
+      if(providerCalls===6){
+        const recovery=request.messages.find(message=>message.role==="developer"&&/required acceptance or verification check actually failed/i.test(String(message.content||"")));
+        assert.ok(recovery);
+        assert.match(String(recovery.content),/contradicts a documented invariant/i);
+        assert.match(String(recovery.content),/upstream parsing, decoding, measurement, or ordering assumption/i);
+        return {text:"",toolCalls:[{id:"diagnose",namespace:"trebell_terminal",name:"run",arguments:'{"command":"python","args":["diagnose-upstream.py"]}'}],usage:{}};
+      }
+      return {text:"The upstream decode was repaired and the exact acceptance path now passes.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{
+      if(call.namespace==="trebell_workspace")return {path:"src/reconstruct.py",replacements:1};
+      if(call.id==="check1"){verifyRuns++;return {exitCode:1,stderr:"exact mismatch"}}
+      if(call.id==="check2"){verifyRuns++;return {exitCode:0,stdout:"command exited 0 but semantic exactness is still disputed"}}
+      return {exitCode:0,stdout:"upstream format contract mismatch isolated"};
+    },
+  });
+  assert.equal(verifyRuns,2);
+  assert.equal(providerCalls,7);
+  assert.match(result.text,/exact acceptance path now passes/i);
+  assert.ok(events.some(event=>event.name==="native.verification.finalizing"));
+  assert.ok(events.some(event=>event.name==="native.verification.self_admitted_gap"));
+});
+
 test("native treats cannot-certify and not-exhaustively-verified caveats as acceptance gaps",async()=>{
   const requests=[],events=[];let providerCalls=0;
   const result=await runNativeAgentTurn({
