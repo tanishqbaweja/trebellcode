@@ -446,8 +446,9 @@ export class NativeAgentSession{
             const comparisonResponseId=this.provider==="openai"?String(this.lastProviderResponseId||"").trim():"";
             const response=await this.providerTurn({...request,provider:this.provider,signal,...(comparisonResponseId?{promptCacheComparisonResponseId:comparisonResponseId}:{}),...(this.provider==="openai"&&this.openAiServerCompactionThreshold?{contextManagement:[{type:"compaction",compactThreshold:this.openAiServerCompactionThreshold}]}:{})});
             if(this.provider==="openai"){
-              lastOpenAiInputTokens=Math.max(0,Math.trunc(Number(response?.usage?.inputTokens)||0));
-              const responseId=String(response?.telemetry?.providerResponseId||response?.id||"").trim();if(responseId)this.lastProviderResponseId=responseId;
+              const completionGate=request?.metadata?.completionGate===true;
+              if(!completionGate)lastOpenAiInputTokens=Math.max(0,Math.trunc(Number(response?.usage?.inputTokens)||0));
+              const responseId=String(response?.telemetry?.providerResponseId||response?.id||"").trim();if(responseId&&!completionGate)this.lastProviderResponseId=responseId;
             }
             return response;
           }

@@ -1108,7 +1108,7 @@ export async function runNativeAgentTurn({
       verifiedFinalizationInjected=true;
     }
     modelTurns++;
-    const requestStarted=nowMs(),requestMessageCount=conversation.length,forcedAllowlist=forcedToolChoice?[forcedToolChoice.namespace?forcedToolChoice.namespace+"/"+forcedToolChoice.name:forcedToolChoice.name]:null,completionGateMode=Boolean(completionGateCandidate),finalAnswerOnly=toolBudgetExhausted||verifiedFinalizationReady||completionGateMode,implementationPressure=workspaceMutationRequested&&progressCheckpointInjected&&editRevision===0&&!finalAnswerOnly&&!forcedAllowlist,requestTools=completionGateMode?[]:finalAnswerOnly&&!preserveToolSchemasOnFinalization?[]:forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):visibleTools,requestToolChoice=finalAnswerOnly?"none":forcedToolChoice||toolChoice;
+    const requestStarted=nowMs(),requestMessageCount=conversation.length,forcedAllowlist=forcedToolChoice?[forcedToolChoice.namespace?forcedToolChoice.namespace+"/"+forcedToolChoice.name:forcedToolChoice.name]:null,completionGateMode=Boolean(completionGateCandidate),finalAnswerOnly=toolBudgetExhausted||verifiedFinalizationReady||completionGateMode,implementationPressure=workspaceMutationRequested&&progressCheckpointInjected&&editRevision===0&&!finalAnswerOnly&&!forcedAllowlist,requestTools=completionGateMode?(preserveToolSchemasOnFinalization?visibleTools:[]):finalAnswerOnly&&!preserveToolSchemasOnFinalization?[]:forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):visibleTools,requestToolChoice=finalAnswerOnly?"none":forcedToolChoice||toolChoice;
     if(implementationPressure)emit(onEvent,{name:"native.progress.implementation_pressure",status:"running",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,visibleToolCount:exposedToolPairs(requestTools).length,blockedUntilFirstEdit:Math.max(0,exposedToolPairs(requestTools).filter(item=>!(item.namespace==="trebell_workspace"&&["write_file","replace_text"].includes(item.name))).length),toolSchemaStable:true}});
     let providerMessages=conversation,providerView=null;
     if(typeof prepareProviderMessages==="function"){
@@ -1119,11 +1119,11 @@ export async function runNativeAgentTurn({
     const requestMetrics=nativeRequestMetrics(providerMessages,requestTools,{toolSchemaCache:requestMetricsToolCache,messageSerializationCache:requestMetricsMessageCache,currentTurnBreakdownCache:requestMetricsCurrentTurnCache,historyHashCache:requestMetricsHistoryHashCache,messageClassificationCache:requestMetricsClassificationCache});
     const inferenceId=(metadata?.sessionId?String(metadata.sessionId):"native")+":inference:"+modelTurns;
     if(Number(providerView?.count||0)>0)emit(onEvent,{name:"native.context.provider_view_compacted",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,count:Number(providerView.count||0),savedChars:Number(providerView.savedChars||0)}});
-    emit(onEvent,{name:"native.model.requested",status:"running",model:String(model),provider:provider||null,data:{inferenceId,modelTurn:modelTurns,messageCount:providerMessages.length,toolCount:Array.isArray(requestTools)?requestTools.length:0,sessionId:metadata?.sessionId||null,compaction:Boolean(metadata?.compaction),requestMetrics}});
+    emit(onEvent,{name:"native.model.requested",status:"running",model:String(model),provider:provider||null,data:{inferenceId,modelTurn:modelTurns,messageCount:providerMessages.length,toolCount:Array.isArray(requestTools)?requestTools.length:0,sessionId:metadata?.sessionId||null,compaction:Boolean(metadata?.compaction),completionGate:completionGateMode,requestMetrics}});
     const providerAttempts=boundedInteger(maxProviderAttempts,3,{min:1,max:8});let response=null;
     for(let attempt=1;attempt<=providerAttempts;attempt++){
       try{
-        response=await providerTurn({model,provider,messages:providerMessages,tools:requestTools,toolChoice:requestToolChoice,maxOutputTokens,temperature,reasoningEffort,parallelToolCalls,signal:turnSignal,metadata,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:requestMetrics[NATIVE_TOOL_SCHEMA_FINGERPRINT]||null,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:openAiContinuationIdentity,[NATIVE_CHAT_MESSAGE_CACHE_IDENTITY]:openAiContinuationIdentity});break;
+        response=await providerTurn({model,provider,messages:providerMessages,tools:requestTools,toolChoice:requestToolChoice,maxOutputTokens,temperature,reasoningEffort,parallelToolCalls,signal:turnSignal,metadata:completionGateMode?{...(metadata&&typeof metadata==="object"?metadata:{}),completionGate:true}:metadata,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:requestMetrics[NATIVE_TOOL_SCHEMA_FINGERPRINT]||null,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:openAiContinuationIdentity,[NATIVE_CHAT_MESSAGE_CACHE_IDENTITY]:openAiContinuationIdentity});break;
       }catch(error){
         if(error?.nativeSteered){
           if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"model_request_interrupted"})){
@@ -1202,21 +1202,22 @@ export async function runNativeAgentTurn({
         if(!verdict){
           if(completionGateInvalidResponses<1&&modelTurns<budget.maxModelTurns){
             completionGateInvalidResponses++;
+            conversation.length=candidate.conversationLength;
             conversation.push({role:"developer",content:"Trebell completion gate parser could not read the previous control response. Return only one valid JSON object with exactly these fields: {\"status\":\"complete|incomplete|blocked\",\"unresolved\":[\"...\"],\"reason\":\"...\"}. Do not call tools and do not address the user."});
             emit(onEvent,{name:"native.completion.gate_retry",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,invalidResponses:completionGateInvalidResponses}});
             continue;
           }
-          completionGateCandidate=null;completionGateInvalidResponses=0;completionGateRecoveries++;
+          conversation.length=candidate.conversationLength;completionGateCandidate=null;completionGateInvalidResponses=0;completionGateRecoveries++;
           conversation.push({role:"developer",content:"Trebell completion gate could not establish that the proposed final answer is complete. Continue the task instead of finalizing. Re-read the user's requirements and the strongest recent evidence, identify the single most important unresolved acceptance condition, and use the available tools to resolve or decisively falsify it. Do not weaken the user's requirement merely because the prior control response was malformed."});
           emit(onEvent,{name:"native.completion.gate",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,verdict:"invalid",recoveryAttempt:completionGateRecoveries}});
           continue;
         }
-        completionGateCandidate=null;completionGateInvalidResponses=0;
+        conversation.length=candidate.conversationLength;completionGateCandidate=null;completionGateInvalidResponses=0;
         emit(onEvent,{name:"native.completion.gate",status:verdict.status==="complete"?"completed":verdict.status==="blocked"?"blocked":"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,verdict:verdict.status,unresolved:verdict.unresolved,reason:verdict.reason}});
         if(verdict.status==="complete"||verdict.status==="blocked"){
           const result={
             text:candidate.text,model:candidate.model,provider:candidate.provider,
-            messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse,
+            messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse:candidate.lastResponse,
           };
           emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage,completionGateVerdict:verdict.status}});
           return result;
@@ -1268,8 +1269,8 @@ export async function runNativeAgentTurn({
         continue;
       }
       if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"before_completion"})){verifiedFinalizationAllowed=false;verifiedFinalizationReady=false;continue}
-      if(semanticCompletionGate===true&&workspaceMutationRequested&&editRevision>0&&modelTurns<budget.maxModelTurns){
-        completionGateCandidate={text:responseText,model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null};
+      if(semanticCompletionGate===true&&workspaceMutationRequested&&modelTurns<budget.maxModelTurns){
+        completionGateCandidate={text:responseText,model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,lastResponse,conversationLength:conversation.length};
         completionGateInvalidResponses=0;
         conversation.push({role:"developer",content:"Trebell semantic completion gate. This is an internal control check, not the user-visible answer. Evaluate the immediately preceding candidate final answer against the user's full request and the evidence in this conversation. Return only one JSON object: {\"status\":\"complete|incomplete|blocked\",\"unresolved\":[\"material unmet requirement\"],\"reason\":\"brief evidence-based rationale\"}. Use status=complete only when every material requested deliverable and acceptance condition is supported by the available evidence. Use status=incomplete when additional local tool work could still resolve an unmet or uncertain requirement. Use status=blocked only when a material requirement genuinely cannot be completed with the available inputs/tools or depends on an unavailable external condition. Do not infer success merely from a process exit code when tool output, measurements, or the candidate answer contradict the actual requirement. Judge semantics and evidence, not wording. Do not call tools and do not address the user."});
         emit(onEvent,{name:"native.completion.gate_requested",status:"running",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,toolCalls}});

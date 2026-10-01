@@ -2447,6 +2447,32 @@ test("native semantic completion gate rejects unsupported completion without tas
   assert.equal(events.find(event=>event.name==="native.completion.gate"&&event.data?.verdict==="complete")?.status,"completed");
 });
 
+test("native semantic completion gate rejects a novel pre-edit blocker without relying on blocker wording",async()=>{
+  const events=[],executed=[];let calls=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxModelTurns:8,maxToolCalls:8,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Implement the requested retention behavior in src/store.mjs and leave the working implementation in the workspace."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}],
+    providerTurn:async request=>{
+      calls++;
+      if(calls===1)return {text:"The present topology does not admit the requested guarantee, so I am leaving the repository untouched.",toolCalls:[],usage:{}};
+      if(calls===2){
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||""))));
+        return {text:'{"status":"incomplete","unresolved":["the requested workspace implementation has not been attempted"],"reason":"No implementation evidence exists yet and the claimed limitation has not been established."}',toolCalls:[],usage:{}};
+      }
+      if(calls===3)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/store.mjs","old_text":"legacy","new_text":"retained"}'}],usage:{}};
+      if(calls===4)return {text:"The requested retention behavior is now implemented in src/store.mjs.",toolCalls:[],usage:{}};
+      if(calls===5)return {text:'{"status":"complete","unresolved":[],"reason":"The requested workspace mutation is now present and no additional acceptance condition was specified."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call");
+    },
+    executeTool:async call=>{executed.push(call.id);return {path:"src/store.mjs",replacements:1}},
+  });
+  assert.equal(calls,5);
+  assert.deepEqual(executed,["edit"]);
+  assert.match(result.text,/now implemented/i);
+  assert.equal(events.filter(event=>event.name==="native.completion.gate_recovery").length,1);
+});
+
 test("native convergence checkpoint does not fire while the latest edit still has a failed terminal check",async()=>{
   let turns=0;const requests=[],events=[];
   const result=await runNativeAgentTurn({

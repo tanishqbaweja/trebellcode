@@ -285,7 +285,7 @@ test("Native session expires prior verifier evidence after an intervening turn w
   let providerCalls=0,verifierRuns=0;
   const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
   const session=new NativeAgentSession({
-    provider:"fixture",model:"model-a",tools,
+    provider:"fixture",model:"model-a",tools,semanticCompletionGate:false,
     providerTurn:async()=>{
       providerCalls++;
       if(providerCalls===1)return {text:"",toolCalls:[{id:"verify",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
@@ -845,7 +845,7 @@ test("Native session compacts a verified post-edit reread when it byte-matches t
   const requests=[],events=[];let providerCalls=0,content=("prefix line\n".repeat(700))+"mode=legacy\n"+("suffix line\n".repeat(120));
   const resolvedPath="C:/repo/src/config.txt";
   const session=new NativeAgentSession({
-    model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],onEvent:event=>events.push(event),
+    model:"model-a",provider:"fixture",semanticCompletionGate:false,tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],onEvent:event=>events.push(event),
     providerTurn:async request=>{
       requests.push(structuredClone(request));providerCalls++;
       if(providerCalls===1)return {id:"read-before",text:"",toolCalls:[{id:"read-before",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/config.txt"}'}],usage:{}};
@@ -873,7 +873,7 @@ test("Native session keeps a post-edit reread in full when the workspace changed
   const requests=[];let providerCalls=0,content="A".repeat(3000)+"mode=legacy\n";
   const resolvedPath="C:/repo/src/config.txt";
   const session=new NativeAgentSession({
-    model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],
+    model:"model-a",provider:"fixture",semanticCompletionGate:false,tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],
     providerTurn:async request=>{
       requests.push(structuredClone(request));providerCalls++;
       if(providerCalls===1)return {id:"read-before",text:"",toolCalls:[{id:"read-before",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/config.txt"}'}],usage:{}};
@@ -914,7 +914,7 @@ test("Native session compacts a verified reread after an exact successful write_
 test("Native session keeps tiny verified post-edit rereads inline when a receipt would not save enough",async()=>{
   const requests=[];let providerCalls=0,content="mode=legacy\n",resolvedPath="C:/repo/tiny.txt";
   const session=new NativeAgentSession({
-    model:"model-a",provider:"fixture",tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],
+    model:"model-a",provider:"fixture",semanticCompletionGate:false,tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],
     providerTurn:async request=>{
       requests.push(structuredClone(request));providerCalls++;
       if(providerCalls===1)return {id:"read",text:"",toolCalls:[{id:"read-before",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"tiny.txt"}'}],usage:{}};
@@ -1165,7 +1165,7 @@ test("Native restart does not reconstruct terminal evidence from an unfinished o
   ]){
     let providerCalls=0,verifierRuns=0;
     const tools=[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}];
-    const session=new NativeAgentSession({provider:"fixture",model:"model-a",tools,initialMessages:nativeMessagesFromThread({turns:[{items:fixture.items}]}),providerTurn:async()=>{providerCalls++;if(providerCalls===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};return {text:"provider final",toolCalls:[],usage:{}}},executeTool:async call=>{if(call.namespace==="trebell_terminal")verifierRuns++;return {path:"src/a.mjs",replacements:1}}});
+    const session=new NativeAgentSession({provider:"fixture",model:"model-a",tools,semanticCompletionGate:false,initialMessages:nativeMessagesFromThread({turns:[{items:fixture.items}]}),providerTurn:async()=>{providerCalls++;if(providerCalls===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};return {text:"provider final",toolCalls:[],usage:{}}},executeTool:async call=>{if(call.namespace==="trebell_terminal")verifierRuns++;return {path:"src/a.mjs",replacements:1}}});
     await session.start({providerSessionId:"restart-"+fixture.name,model:"model-a"});const result=await session.prompt([{type:"text",text:"Now fix it and rerun node verify.mjs until it passes."}]);
     assert.equal(providerCalls,2,fixture.name);assert.equal(verifierRuns,0,fixture.name);assert.equal(result.raw?.modelTurns,2,fixture.name);
   }
@@ -1293,7 +1293,7 @@ test("Native steering interrupts only the in-flight model request and continues 
 
 test("Native steering skips remaining old-plan tools without replaying side effects",async()=>{
   const requests=[],executed=[];let session,turn=0;
-  session=new NativeAgentSession({provider:"fixture",model:"model",tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],providerTurn:async request=>{
+  session=new NativeAgentSession({provider:"fixture",model:"model",semanticCompletionGate:false,tools:[{type:"namespace",name:"trebell_workspace",tools:[]}],providerTurn:async request=>{
     requests.push(structuredClone({...request,signal:undefined}));turn++;
     if(turn===1)return {id:"old-plan",text:"",toolCalls:[
       {id:"tool-one",namespace:"trebell_workspace",name:"write_file",arguments:'{"path":"one.txt","content":"one"}'},
