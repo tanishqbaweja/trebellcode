@@ -132,7 +132,8 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/exceptionType:"LaneEvidenceRecoveryError"/);
   assert.match(source,/verifier summary recovery failed:/);
   assert.match(source,/job\.verifierChecks=null/);
-  assert.match(source,/laneState\.status=runError\?"failed":"finished"/);
+  assert.match(source,/const laneFailed=Boolean\(runError\)\|\|Number\(jobs\[laneIndex\]\?\.errors\|\|0\)>0\|\|Number\(jobs\[laneIndex\]\?\.completed\|\|0\)<1/);
+  assert.match(source,/laneState\.status=laneFailed\?"failed":"finished"/);
   assert.match(source,/writeFile\(reportPath,JSON\.stringify\(report,null,2\)/);
 });
 

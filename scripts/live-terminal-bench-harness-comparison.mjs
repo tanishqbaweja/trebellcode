@@ -344,7 +344,8 @@ try{
       const project=composeProjectForTrial(trialDir);
       if(project)await cleanupDockerProject(project,{captureFn:(command,args)=>capture(command,args,{env:harnessEnv}),runFn:(command,args)=>run(command,args,{env:harnessEnv})});
     }
-    laneState.status=runError?"failed":"finished";laneState.finishedAt=new Date().toISOString();laneState.runError=runError;
+    const laneFailed=Boolean(runError)||Number(jobs[laneIndex]?.errors||0)>0||Number(jobs[laneIndex]?.completed||0)<1;
+    laneState.status=laneFailed?"failed":"finished";laneState.finishedAt=new Date().toISOString();laneState.runError=runError;
     await persistReport({complete:false});
   };
   if(PARALLEL)await Promise.all(selectedLanes.map((lane,index)=>runLane(lane,index)));
