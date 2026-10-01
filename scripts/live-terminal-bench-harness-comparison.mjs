@@ -58,6 +58,9 @@ const CODEX_PINNED_TARBALL_SHA256="3fe84106aaf2fbfc13299068510d34b3d0157eeb9af4b
 const NATIVE_PINNED_NODE_VERSION="22.23.3";
 const NATIVE_PINNED_NODE_TARBALL_SHA256="1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af";
 const NATIVE_PINNED_NODE_URL=`https://nodejs.org/download/release/v${NATIVE_PINNED_NODE_VERSION}/node-v${NATIVE_PINNED_NODE_VERSION}-linux-x64.tar.gz`;
+const NATIVE_CONTEXT_WINDOW=Math.max(1,Math.trunc(Number(process.env.TREBELL_HARBOR_CONTEXT_WINDOW)||272_000));
+const NATIVE_COMPACT_THRESHOLD=Math.max(1,Math.trunc(Number(process.env.TREBELL_HARBOR_COMPACT_THRESHOLD)||245_000));
+if(NATIVE_COMPACT_THRESHOLD>=NATIVE_CONTEXT_WINDOW)throw new Error("Native Harbor compact threshold must be below its operating context window.");
 const validationDir=join(root,".harbor-validation");
 
 function run(command,args,{env=process.env,shell=false}={}){
@@ -194,6 +197,8 @@ try{
   const sharedEnv={
     ...process.env,
     PYTHONPATH:pythonPath,
+    TREBELL_HARBOR_CONTEXT_WINDOW:String(NATIVE_CONTEXT_WINDOW),
+    TREBELL_HARBOR_COMPACT_THRESHOLD:String(NATIVE_COMPACT_THRESHOLD),
     ...(process.platform==="win32"?{PYTHONUTF8:"1",PYTHONIOENCODING:"utf-8"}:{}),
     ...(nativePinnedNodeTarballPath?{TREBELL_NODE_PINNED_TARBALL:nativePinnedNodeTarballPath}: {}),
     ...(codexPinnedTarballPath?{TREBELL_CODEX_PINNED_TARBALL:codexPinnedTarballPath}: {}),
@@ -214,6 +219,7 @@ try{
   const reportSnapshot=({complete=false}={})=>({
     pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER,
     sameModel:true,sameReasoningEffort:true,sequential:!PARALLEL,parallel:PARALLEL,codexAuthMode:CODEX_AUTH_MODE,codexInstallMode:CODEX_INSTALL_MODE,nativeReasoningContext:NATIVE_REASONING_CONTEXT,
+    nativeContextPolicy:{operatingContextWindow:NATIVE_CONTEXT_WINDOW,serverCompactionThreshold:NATIVE_COMPACT_THRESHOLD,retroactiveOpenAiReadCooling:false},
     ...sourceProvenance,
     ...(nativePinnedNodeTarballPath?{nativePinnedNodeVersion:NATIVE_PINNED_NODE_VERSION,nativePinnedNodeTarballSha256}:{}),
     ...(codexPinnedTarballPath?{codexPinnedVersion:CODEX_PINNED_VERSION,codexPinnedTarballSha256,codexPinnedAdapterSha256}:{}),
@@ -289,7 +295,7 @@ try{
       reward:trial?.verifier_result?.rewards?.reward??null,taskChecksum:trial?.task_checksum??null,
       agentVersion:trial?.agent_info?.version??null,
       setupMs:elapsedMs(trial?.agent_setup),agentExecutionMs:elapsedMs(trial?.agent_execution),verifierMs:elapsedMs(trial?.verifier),
-      ...(trebellNative?{modelTurns:trebellNative.model_turns??recoveredNative?.modelTurns??null,toolCalls:trebellNative.tool_calls??recoveredNative?.toolCalls??null,providerRequests:trebellNative.provider_requests??null,reasoningContext:trebellNative.reasoning_context??null,effectiveReasoningContexts:trebellNative.effective_reasoning_contexts??[],reasoningOutputTokens:trebellNative.reasoning_output_tokens??recoveredNative?.reasoningOutputTokens??null,cacheWriteInputTokens:trebellNative.cache_write_input_tokens??recoveredNative?.cacheWriteInputTokens??null,cacheCarryover:trebellNative.cache_carryover??null,strategy:trebellNative.strategy??null,budgets:trebellNative.budgets??null}:recoveredNative?{modelTurns:recoveredNative.modelTurns,toolCalls:recoveredNative.toolCalls,reasoningOutputTokens:recoveredNative.reasoningOutputTokens,cacheWriteInputTokens:recoveredNative.cacheWriteInputTokens}:{}),
+      ...(trebellNative?{modelTurns:trebellNative.model_turns??recoveredNative?.modelTurns??null,toolCalls:trebellNative.tool_calls??recoveredNative?.toolCalls??null,providerRequests:trebellNative.provider_requests??null,reasoningContext:trebellNative.reasoning_context??null,effectiveReasoningContexts:trebellNative.effective_reasoning_contexts??[],reasoningOutputTokens:trebellNative.reasoning_output_tokens??recoveredNative?.reasoningOutputTokens??null,cacheWriteInputTokens:trebellNative.cache_write_input_tokens??recoveredNative?.cacheWriteInputTokens??null,cacheCarryover:trebellNative.cache_carryover??null,strategy:trebellNative.strategy??null,budgets:trebellNative.budgets??null,contextPolicy:trebellNative.context_policy??null}:recoveredNative?{modelTurns:recoveredNative.modelTurns,toolCalls:recoveredNative.toolCalls,reasoningOutputTokens:recoveredNative.reasoningOutputTokens,cacheWriteInputTokens:recoveredNative.cacheWriteInputTokens}:{}),
       exceptionType:trial?.exception_info?.exception_type??null,exceptionMessage:trial?.exception_info?.exception_message??null,
       recoveredFromTrialFiles:trial?.recovered_from_trial_files===true,
       recoveredFromNativeEvents,

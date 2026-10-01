@@ -270,10 +270,10 @@ function coolRestartProviderHistory(messages=[],provider=null){
 }
 
 export class NativeAgentSession{
-  constructor({cwd=process.cwd(),providerTurn,executeTool,toolOutputStore=null,provider=null,model=null,contextWindow=null,reasoningEffort=null,tools=[],permissionMode="supervised",onUpdate=()=>{},onEvent=null,onClose=null,initialMessages=[]}={}){
+  constructor({cwd=process.cwd(),providerTurn,executeTool,toolOutputStore=null,provider=null,model=null,contextWindow=null,openAiServerCompactionThreshold=null,reasoningEffort=null,tools=[],permissionMode="supervised",onUpdate=()=>{},onEvent=null,onClose=null,initialMessages=[]}={}){
     if(typeof providerTurn!=="function")throw new Error("NativeAgentSession requires providerTurn");
     if(typeof executeTool!=="function")throw new Error("NativeAgentSession requires executeTool");
-    this.cwd=cwd;this.providerTurn=providerTurn;this.executeTool=executeTool;this.toolOutputStore=toolOutputStore;this.provider=provider;this.model=model;this.reasoningEffort=reasoningEffort?String(reasoningEffort):null;this.contextWindow=null;this.setContextWindow(contextWindow);this.tools=Array.isArray(tools)?tools:[];this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onEvent=onEvent;this.onClose=onClose;const reconstructed=[...(Array.isArray(initialMessages)?initialMessages:[])],restartCooling=coolRestartProviderHistory(reconstructed,provider);this.messages=restartCooling.messages;this.restartHistoryCooling=restartCooling.count?restartCooling:null;this.sessionId=null;this.controller=null;this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.closed=false;this.observationCache=new Map();this.lastProviderResponseId=null;this.previousTerminalRuns=recentPersistedTerminalRuns(this.messages);
+    this.cwd=cwd;this.providerTurn=providerTurn;this.executeTool=executeTool;this.toolOutputStore=toolOutputStore;this.provider=provider;this.model=model;this.reasoningEffort=reasoningEffort?String(reasoningEffort):null;this.contextWindow=null;this.setContextWindow(contextWindow);const compactThreshold=Math.trunc(Number(openAiServerCompactionThreshold));this.openAiServerCompactionThreshold=Number.isFinite(compactThreshold)&&compactThreshold>0?compactThreshold:null;this.tools=Array.isArray(tools)?tools:[];this.permissionMode=permissionMode;this.onUpdate=onUpdate;this.onEvent=onEvent;this.onClose=onClose;const reconstructed=[...(Array.isArray(initialMessages)?initialMessages:[])],restartCooling=coolRestartProviderHistory(reconstructed,provider);this.messages=restartCooling.messages;this.restartHistoryCooling=restartCooling.count?restartCooling:null;this.sessionId=null;this.controller=null;this.modelController=null;this.pendingSteering=[];this.turnActive=false;this.closed=false;this.observationCache=new Map();this.lastProviderResponseId=null;this.previousTerminalRuns=recentPersistedTerminalRuns(this.messages);
   }
   async start({providerSessionId=null,model=null}={}){
     if(this.closed)throw new Error("Native session is closed");
@@ -434,7 +434,7 @@ export class NativeAgentSession{
         autoRerunVerification:true,priorTerminalRuns,synthesizeTerminalReports:true,directTerminalStatusCommands:true,directExactReplacementStatus:true,directExactWriteStatus:true,directExactReadStatus:true,directExactListStatus:true,directGitStatus:true,directProcessRunningStatus:true,directBrowserRuntimeStatus:true,directBrowserScreenshot:true,
         metadata:{contextWindow:this.contextWindow,sessionId:this.sessionId},
         toolAllowlist:Array.isArray(toolAllowlist)?toolAllowlist:null,
-        coolReadToolHistory:this.provider==="openai"?coolOpenAiLongTurnHistory:preserveCacheHistory?null:coolProviderHistory,
+        coolReadToolHistory:this.provider==="openai"?(this.openAiServerCompactionThreshold?null:coolOpenAiLongTurnHistory):preserveCacheHistory?null:coolProviderHistory,
         preserveToolSchemasOnFinalization:preserveCacheHistory,
         prepareProviderMessages:projectProviderHistory,
         isToolParallelSafe:call=>platformToolParallelSafe(call?.namespace,call?.name),
@@ -444,7 +444,7 @@ export class NativeAgentSession{
           const signals=[request.signal,modelController.signal].filter(Boolean),signal=signals.length>1?AbortSignal.any(signals):signals[0];
           try{
             const comparisonResponseId=this.provider==="openai"?String(this.lastProviderResponseId||"").trim():"";
-            const response=await this.providerTurn({...request,provider:this.provider,signal,...(comparisonResponseId?{promptCacheComparisonResponseId:comparisonResponseId}:{})});
+            const response=await this.providerTurn({...request,provider:this.provider,signal,...(comparisonResponseId?{promptCacheComparisonResponseId:comparisonResponseId}:{}),...(this.provider==="openai"&&this.openAiServerCompactionThreshold?{contextManagement:[{type:"compaction",compactThreshold:this.openAiServerCompactionThreshold}]}:{})});
             if(this.provider==="openai"){
               lastOpenAiInputTokens=Math.max(0,Math.trunc(Number(response?.usage?.inputTokens)||0));
               const responseId=String(response?.telemetry?.providerResponseId||response?.id||"").trim();if(responseId)this.lastProviderResponseId=responseId;

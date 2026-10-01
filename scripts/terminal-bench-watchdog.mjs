@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { recoverNativeEventEvidence } from "./terminal-bench-native-evidence.mjs";
@@ -39,7 +39,14 @@ async function snapshot(){
 }
 async function persist(snap){
   const dir=join(validationDir,"watchdog",snap.pairId);await mkdir(dir,{recursive:true});
-  const latest=join(dir,"latest.json");await writeFile(latest,JSON.stringify(snap,null,2)+"\n","utf8");return latest;
+  const latest=join(dir,"latest.json"),history=join(dir,"history.jsonl"),stamp=snap.capturedAt.replace(/[:.]/g,"-"),archived=join(dir,`snapshot-${stamp}.json`);
+  const pretty=JSON.stringify(snap,null,2)+"\n";
+  await Promise.all([
+    writeFile(latest,pretty,"utf8"),
+    writeFile(archived,pretty,"utf8"),
+    appendFile(history,JSON.stringify(snap)+"\n","utf8"),
+  ]);
+  return latest;
 }
 function render(snap,saved){
   const lines=[];

@@ -693,6 +693,29 @@ test("Native session uses the conservative 160k OpenAI cooling trigger when the 
   assert.equal(events.filter(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="same_turn").length,1);
 });
 
+test("Native session preserves OpenAI history when server-side compaction owns context management",async()=>{
+  const requests=[],events=[];let calls=0;
+  const readCalls=Array.from({length:8},(_,index)=>({id:"managed-read-"+index,namespace:"trebell_workspace",name:"read_file",arguments:JSON.stringify({path:`src/managed-${index}.txt`})}));
+  const session=new NativeAgentSession({
+    model:"gpt-6-luna",provider:"openai",contextWindow:272_000,openAiServerCompactionThreshold:245_000,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));calls++;
+      if(calls===1)return {id:"reads",text:"",toolCalls:readCalls,usage:{inputTokens:200_000}};
+      if(calls===2)return {id:"more",text:"",toolCalls:[{id:"managed-read-8",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/managed-8.txt"}'}],usage:{inputTokens:250_000}};
+      return {id:"done",text:"done",toolCalls:[],usage:{inputTokens:120_000}};
+    },
+    executeTool:async call=>({success:true,path:call.arguments.path,content:"x".repeat(10_000)+call.arguments.path,size:10_000}),
+  });
+  await session.start({providerSessionId:"native-openai-server-compaction",model:"gpt-6-luna"});
+  await session.prompt([{type:"text",text:"inspect these files"}],{maxModelTurns:3,maxToolCalls:20});
+  const thirdFirstRead=requests[2].messages.find(message=>message.role==="tool"&&message.toolCallId==="managed-read-0")?.content||"";
+  assert.ok(thirdFirstRead.length>9000,"server-side compaction should own history reduction instead of Trebell rewriting old reads");
+  assert.deepEqual(requests[0].contextManagement,[{type:"compaction",compactThreshold:245_000}]);
+  assert.deepEqual(requests[2].contextManagement,[{type:"compaction",compactThreshold:245_000}]);
+  assert.equal(events.some(event=>event.name==="native.tool.history_cooled"&&event.data?.phase==="same_turn"),false);
+});
+
 test("Native session cools large historical workspace edit arguments only after one provider read",async()=>{
   const requests=[],events=[];let calls=0;
   const large="A".repeat(12_000);

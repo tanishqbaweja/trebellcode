@@ -20,6 +20,13 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/TREBELL_TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER\|\|1/);
   assert.match(source,/Terminal-Bench agent timeout multiplier must be > 0/);
   assert.match(source,/agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER/);
+  assert.match(source,/NATIVE_CONTEXT_WINDOW/);
+  assert.match(source,/272_000/);
+  assert.match(source,/NATIVE_COMPACT_THRESHOLD/);
+  assert.match(source,/245_000/);
+  assert.match(source,/nativeContextPolicy:/);
+  assert.match(source,/TREBELL_HARBOR_CONTEXT_WINDOW:String\(NATIVE_CONTEXT_WINDOW\)/);
+  assert.match(source,/TREBELL_HARBOR_COMPACT_THRESHOLD:String\(NATIVE_COMPACT_THRESHOLD\)/);
   assert.match(source,/--agent-timeout-multiplier/);
   assert.match(source,/agentExecutionMs:elapsedMs\(trial\?\.agent_execution\)/);
   assert.match(source,/taskChecksum:trial\?\.task_checksum/);
@@ -184,6 +191,14 @@ test("detached Terminal-Bench wrapper requires live mode and a task",async()=>{
   assert.match(source,/requires --task=<task-id>/);
   assert.match(source,/live-terminal-bench-harness-comparison\.mjs/);
   assert.match(source,/\.harbor-validation","detached/);
+});
+
+test("Terminal-Bench watchdog persists latest and timestamped history snapshots",async()=>{
+  const source=await readFile(new URL("../scripts/terminal-bench-watchdog.mjs",import.meta.url),"utf8");
+  assert.match(source,/history\.jsonl/);
+  assert.match(source,/snapshot-\$\{stamp\}\.json/);
+  assert.match(source,/appendFile\(history,JSON\.stringify\(snap\)/);
+  assert.match(source,/terminal-bench-latest\.json/);
 });
 
 test("Pinned Harbor Codex adapter changes only installation and verifies the exact official version",async()=>{

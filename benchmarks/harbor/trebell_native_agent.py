@@ -220,6 +220,12 @@ class TrebellNativeAgent(BaseInstalledAgent):
             "TREBELL_REASONING_EFFORT": self.options.reasoning_effort,
             "TREBELL_HOME": "/tmp/trebell-home",
             "TREBELL_METRICS_PATH": self._METRICS,
+            "TREBELL_HARBOR_CONTEXT_WINDOW": os.environ.get(
+                "TREBELL_HARBOR_CONTEXT_WINDOW", "272000"
+            ),
+            "TREBELL_HARBOR_COMPACT_THRESHOLD": os.environ.get(
+                "TREBELL_HARBOR_COMPACT_THRESHOLD", "245000"
+            ),
             **(
                 {
                     "TREBELL_HARBOR_LIVE_PROBE": "1",
@@ -292,5 +298,6 @@ class TrebellNativeAgent(BaseInstalledAgent):
                 "cache_carryover": metrics.get("cacheCarryover") or {},
                 "strategy": metrics.get("strategy") or {},
                 "budgets": metrics.get("budgets") or {},
+                "context_policy": metrics.get("contextPolicy") or {},
             },
         }

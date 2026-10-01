@@ -37,6 +37,9 @@ const model=String(process.env.TREBELL_MODEL||"gpt-6-luna").trim();
 const reasoningEffort=String(process.env.TREBELL_REASONING_EFFORT||"max").trim().toLowerCase();
 const reasoningContext=String(process.env.TREBELL_OPENAI_REASONING_CONTEXT||"").trim().toLowerCase()||null;
 if(reasoningContext&&!new Set(["auto","current_turn","all_turns"]).has(reasoningContext))throw new Error("TREBELL_OPENAI_REASONING_CONTEXT must be auto, current_turn, or all_turns.");
+const contextWindow=Math.max(1,Math.trunc(Number(process.env.TREBELL_HARBOR_CONTEXT_WINDOW)||272_000));
+const compactionThreshold=Math.max(1,Math.trunc(Number(process.env.TREBELL_HARBOR_COMPACT_THRESHOLD)||245_000));
+if(compactionThreshold>=contextWindow)throw new Error("TREBELL_HARBOR_COMPACT_THRESHOLD must be below TREBELL_HARBOR_CONTEXT_WINDOW.");
 const metricsPath=String(process.env.TREBELL_METRICS_PATH||"/logs/agent/trebell-native-metrics.json");
 const eventsPath=String(process.env.TREBELL_EVENTS_PATH||"/logs/agent/trebell-native-events.jsonl");
 const probeOnly=String(process.env.TREBELL_HARBOR_PROBE||"").trim()==="1";
@@ -113,6 +116,8 @@ const session=new NativeAgentSession({
   cwd:root,
   provider,
   model,
+  contextWindow,
+  openAiServerCompactionThreshold:compactionThreshold,
   reasoningEffort,
   tools,
   permissionMode:"full",
@@ -186,6 +191,7 @@ const metrics={
   model,
   reasoningEffort,
   reasoningContext,
+  contextPolicy:{operatingContextWindow:contextWindow,serverCompactionThreshold:compactionThreshold,retroactiveOpenAiReadCooling:false},
   effectiveReasoningContexts:[...new Set(requests.map(item=>String(item?.telemetry?.reasoningContext||"").trim()).filter(Boolean))],
   budgets:{maxModelTurns,maxToolCalls,maxWallTimeMs},
   elapsedMs,
