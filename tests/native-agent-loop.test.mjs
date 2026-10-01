@@ -2803,9 +2803,9 @@ test("native recovery support files do not consume or reset the corrective imple
   });
   assert.equal(result.text,"The implementation now satisfies acceptance.");
   const classified=events.find(event=>event.name==="native.completion.recovery_write_classified"&&event.data?.path==="notes-one.mjs");assert.ok(classified,JSON.stringify(events.filter(event=>/completion\.(gate|recovery)/.test(event.name)).map(event=>({name:event.name,data:event.data}))));assert.equal(classified.data.supportOnly,true,JSON.stringify(classified.data));
-  const supportEvents=events.filter(event=>event.name==="native.completion.recovery_support_write");assert.equal(supportEvents.length,2);assert.equal(supportEvents[0].data.editRevision,1);assert.equal(supportEvents[1].data.editRevision,1);assert.equal(supportEvents[0].data.allowanceUsed,true);assert.equal(supportEvents[1].data.allowanceUsed,false);
-  assert.deepEqual(executed,["initial","e1","e2","support-1","support-2","support-check","repair"]);
-  assert.equal(events.some(event=>event.name==="native.completion.recovery_support_write_blocked"),false);
+  const supportEvents=events.filter(event=>event.name==="native.completion.recovery_support_write");assert.equal(supportEvents.length,1);assert.equal(supportEvents[0].data.editRevision,1);assert.equal(supportEvents[0].data.allowanceUsed,true);
+  assert.deepEqual(executed,["initial","e1","e2","support-1","support-check","repair"]);
+  const blockedSupport=events.find(event=>event.name==="native.completion.recovery_evidence_call_blocked"&&event.data?.callId==="support-2");assert.ok(blockedSupport);assert.equal(blockedSupport.data?.reason,"recovery_evidence_response_budget");
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,1);
   assert.equal(events.some(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="support_verification"),true);
 });
