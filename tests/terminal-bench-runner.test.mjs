@@ -6,7 +6,7 @@ import { once } from "node:events";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { lingeringJobProcesses, parsePsProcesses, waitForJobProcessDrain } from "../scripts/terminal-bench-process-drain.mjs";
+import { harborLaneProcessCommand, lingeringJobProcesses, parsePsProcesses, waitForJobProcessDrain } from "../scripts/terminal-bench-process-drain.mjs";
 import { launchDetachedDescriptor, readDetachedStatus, writeDetachedDescriptor } from "../scripts/detached-process.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "../scripts/terminal-bench-pair-lock.mjs";
 
@@ -152,7 +152,7 @@ test("Terminal-Bench lane drain detects a real descendant token and clears after
   const token=`trebell-lane-drain-${randomUUID()}`;
   assert.deepEqual(await lingeringJobProcesses(token),[]);
 
-  const child=spawn(process.execPath,["-e","setInterval(()=>{},1000)",token],{stdio:"ignore",windowsHide:true});
+  const child=spawn(process.execPath,["-e","setInterval(()=>{},1000)","harbor","run","--job-name",token],{stdio:"ignore",windowsHide:true});
   t.after(()=>{try{child.kill()}catch{}});
 
   let detected=[];
@@ -181,16 +181,17 @@ test("Terminal-Bench Unix ps parsing only returns processes containing the exact
     "  202 python unrelated.py",
     `  303 harbor run --job-name ${token}`,
     `  404 docker compose --project-name random-task__abc123__env exec main bash -c agent`,
+    `  505 powershell Get-Content .harbor-validation/${token}.json`,
     "not-a-process-line",
   ].join("\n");
-  assert.deepEqual(parsePsProcesses(ps,token,[trial]),[101,303,404]);
+  assert.deepEqual(parsePsProcesses(ps,token,[trial]),[303,404]);
   assert.deepEqual(parsePsProcesses(ps,"missing-job-token"),[]);
 });
 
 test("Terminal-Bench lane drain detects a surviving trial-token process even without the job name",async t=>{
   const jobToken=`trebell-job-${randomUUID()}`;
   const trialToken=`task__${randomUUID().replaceAll("-","")}`;
-  const child=spawn(process.execPath,["-e","setInterval(()=>{},1000)",trialToken.toLowerCase()],{stdio:"ignore",windowsHide:true});
+  const child=spawn(process.execPath,["-e","setInterval(()=>{},1000)","docker","compose","--project-name",`${trialToken.toLowerCase()}__env`,"exec","main"],{stdio:"ignore",windowsHide:true});
   t.after(()=>{try{child.kill()}catch{}});
 
   let detected=[];
@@ -208,6 +209,14 @@ test("Terminal-Bench lane drain detects a surviving trial-token process even wit
   child.kill();
   await once(child,"exit");
   await waitForJobProcessDrain(jobToken,{additionalNeedles:[trialToken],timeoutMs:3_000,pollMs:20});
+});
+
+test("Terminal-Bench lane drain ignores observers that merely mention benchmark identifiers",()=>{
+  const job="tb4-native-gpt-6-luna-max-task-20261001T212950Z",trial="task__hP3FS7B";
+  assert.equal(harborLaneProcessCommand(`powershell Get-Content .harbor-validation/${job}.json`,job,{additionalNeedles:[trial]}),false);
+  assert.equal(harborLaneProcessCommand(`node watcher.mjs ${job} ${trial}`,job,{additionalNeedles:[trial]}),false);
+  assert.equal(harborLaneProcessCommand(`harbor run -d dataset --job-name ${job}`,job,{additionalNeedles:[trial]}),true);
+  assert.equal(harborLaneProcessCommand(`docker compose --project-name ${trial.toLowerCase()}__env exec main bash`,job,{additionalNeedles:[trial]}),true);
 });
 
 test("detached process launcher records a harmless child result outside the caller",async t=>{

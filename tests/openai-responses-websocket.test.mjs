@@ -73,6 +73,15 @@ test("Responses WebSocket server errors are retryable while request-level model 
   const modelFailure=ws.request({model:"gpt-5.6",input:[]},{streamId:"lane"});await new Promise(resolve=>setImmediate(resolve));socket.server({type:"response.failed",stream_id:"lane",response:{id:"resp-model",status:"failed",error:{type:"invalid_request_error",code:"model_error",message:"request failed"}}});await assert.rejects(modelFailure,error=>error?.retryable===false&&error?.webSocketFailureKind==="response_failed");ws.close();
 });
 
+test("Responses WebSocket retries an untyped explicit provider processing failure without broadening model errors",async()=>{
+  reset();const ws=new OpenAiResponsesWebSocket({apiKey:"secret",WebSocketClass:FakeSocket}),pending=ws.request({model:"gpt-5.6",input:[]},{streamId:"lane"});await new Promise(resolve=>setImmediate(resolve));const socket=FakeSocket.instances[0];
+  socket.server({type:"response.failed",stream_id:"lane",response:{id:"resp-transient",status:"failed",error:{message:"An error occurred while processing your request. You can retry your request, or contact support if the error persists."}}});
+  await assert.rejects(pending,error=>error?.retryable===true&&error?.replaySafe===false&&error?.webSocketFailureKind==="response_failed");
+  const knownModelFailure=ws.request({model:"gpt-5.6",input:[]},{streamId:"lane"});await new Promise(resolve=>setImmediate(resolve));
+  socket.server({type:"response.failed",stream_id:"lane",response:{id:"resp-known-model",status:"failed",error:{type:"invalid_request_error",code:"model_error",message:"An error occurred while processing your request. You can retry your request."}}});
+  await assert.rejects(knownModelFailure,error=>error?.retryable===false&&error?.code==="model_error");ws.close();
+});
+
 test("Responses WebSocket returns response.incomplete without treating it as transport failure",async()=>{
   reset();const resets=[];const ws=new OpenAiResponsesWebSocket({apiKey:"secret",WebSocketClass:FakeSocket,onReset:event=>resets.push(event)}),pending=ws.request({model:"gpt-5.6",input:[]},{streamId:"lane"});await new Promise(resolve=>setImmediate(resolve));FakeSocket.instances[0].server({type:"response.incomplete",stream_id:"lane",response:{id:"resp-inc",status:"incomplete",incomplete_details:{reason:"max_output_tokens"},output:[]}});const result=await pending;assert.equal(result.response.status,"incomplete");assert.equal(resets.length,0);ws.close();
 });

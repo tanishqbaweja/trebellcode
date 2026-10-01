@@ -10,8 +10,12 @@ function websocketUrl(baseUrl){
 function responseError(event,message="OpenAI Responses WebSocket request failed",kind="api_error"){
   const providerError=event?.response?.error||event?.error||null,error=new Error(providerError?.message||event?.message||message);
   error.code=providerError?.code||event?.code||"openai_responses_websocket_error";
-  const providerErrorType=String(providerError?.type||"").trim().toLowerCase(),providerErrorCode=String(providerError?.code||"").trim().toLowerCase();
-  error.webSocketEvent=event||null;error.webSocketFailureKind=kind;error.replaySafe=false;error.retryable=providerErrorType==="server_error"||providerErrorCode==="server_error";
+  const providerErrorType=String(providerError?.type||"").trim().toLowerCase(),providerErrorCode=String(providerError?.code||"").trim().toLowerCase(),providerMessage=String(providerError?.message||event?.message||"");
+  const explicitTransientProcessingFailure=!providerErrorType&&!providerErrorCode&&(
+    /\ban error occurred while processing your request\b[\s\S]*\byou can retry your request\b/i.test(providerMessage)||
+    /\bthe server had an error while processing your request\b/i.test(providerMessage)
+  );
+  error.webSocketEvent=event||null;error.webSocketFailureKind=kind;error.replaySafe=false;error.retryable=providerErrorType==="server_error"||providerErrorCode==="server_error"||explicitTransientProcessingFailure;
   return error;
 }
 
