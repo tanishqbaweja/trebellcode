@@ -39,10 +39,12 @@ const agentTimeoutArg=process.argv.find(arg=>arg.startsWith("--agent-timeout-mul
 const AGENT_TIMEOUT_MULTIPLIER=Number(agentTimeoutArg?.slice("--agent-timeout-multiplier=".length)||process.env.TREBELL_TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER||1);
 if(!Number.isFinite(AGENT_TIMEOUT_MULTIPLIER)||AGENT_TIMEOUT_MULTIPLIER<=0)throw new Error("Terminal-Bench agent timeout multiplier must be > 0.");
 const PARALLEL=process.argv.includes("--parallel")||String(process.env.TREBELL_TERMINAL_BENCH_PARALLEL||"").trim()==="1";
+const STANDALONE_NATIVE_RERUN=process.argv.includes("--standalone-native-rerun");
 const onlyArg=process.argv.find(arg=>arg.startsWith("--only="));
 const inheritedOnly=String(process.env.TREBELL_TERMINAL_BENCH_ONLY||"").trim();
 if(!onlyArg&&inheritedOnly)throw new Error("Refusing inherited TREBELL_TERMINAL_BENCH_ONLY for a paid benchmark. Pass --only=<lanes> explicitly so lane selection is recorded in the launch command.");
 const only=new Set(String(onlyArg?.slice("--only=".length)||"").split(",").map(value=>value.trim().toLowerCase()).filter(Boolean));
+if(STANDALONE_NATIVE_RERUN&&!(only.size===1&&only.has("native")))throw new Error("--standalone-native-rerun requires explicit --only=native.");
 const codexAuthArg=process.argv.find(arg=>arg.startsWith("--codex-auth="));
 const CODEX_AUTH_MODE=String(codexAuthArg?.slice("--codex-auth=".length)||process.env.TREBELL_TERMINAL_BENCH_CODEX_AUTH||"both").trim().toLowerCase();
 if(!["api","oauth","both"].includes(CODEX_AUTH_MODE))throw new Error("Terminal-Bench Codex auth mode must be api, oauth, or both.");
@@ -164,7 +166,7 @@ async function recoverTrialEvidence(outputRoot,jobName){
 }
 
 const gitCommonDir=String(await capture("git",["rev-parse","--git-common-dir"])).trim(),lockPath=sharedTerminalBenchLockPath(root,gitCommonDir);
-const releaseLock=await acquireTerminalBenchPairLock({lockPath,task:TASK,model:MODEL,effort:EFFORT}),runStamp=stamp(),pairId=`tb4-pair-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`,reportPath=join(validationDir,pairId+".json"),sourceProvenance=await sourceGitProvenance();let codexApiAuthPath=null;
+const releaseLock=STANDALONE_NATIVE_RERUN?async()=>{}:await acquireTerminalBenchPairLock({lockPath,task:TASK,model:MODEL,effort:EFFORT}),runStamp=stamp(),pairId=`${STANDALONE_NATIVE_RERUN?"tb4-native-rerun":"tb4-pair"}-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`,reportPath=join(validationDir,pairId+".json"),sourceProvenance=await sourceGitProvenance();let codexApiAuthPath=null;
 try{
   await run(process.execPath,[join(root,"scripts","build-harbor-native-agent.mjs")]);
   const nativeBundlePath=join(root,"benchmarks","harbor","dist","trebell-native-agent.mjs"),nativeAdapterPath=join(root,"benchmarks","harbor","trebell_native_agent.py");
@@ -238,7 +240,7 @@ try{
     reportWrite=reportWrite.then(async()=>{await writeFile(tmpPath,JSON.stringify(snapshot,null,2)+"\n","utf8");await rename(tmpPath,reportPath)});
     return reportWrite;
   };
-  const latestPointerPath=join(validationDir,"terminal-bench-latest.json");
+  const latestPointerPath=join(validationDir,STANDALONE_NATIVE_RERUN?"terminal-bench-native-rerun-latest.json":"terminal-bench-latest.json");
   await writeFile(latestPointerPath,JSON.stringify({pairId,reportPath,task:TASK,model:MODEL,reasoningEffort:EFFORT,parallel:PARALLEL,lanes:laneStates.map(lane=>({label:lane.label,jobName:lane.jobName}))},null,2)+"\n","utf8");
   await persistReport({complete:false});
   const runLane=async(lane,laneIndex)=>{

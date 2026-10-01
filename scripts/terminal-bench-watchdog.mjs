@@ -14,7 +14,7 @@ async function newestTrialDir(jobName){
 }
 async function fileState(path){try{const info=await stat(path);return {bytes:info.size,lastWriteAt:info.mtime.toISOString(),ageSeconds:Math.max(0,Math.round((Date.now()-info.mtimeMs)/1000))}}catch{return null}}
 async function laneState(lane,report,recovered=null){
-  const trialDir=await newestTrialDir(lane.jobName),job=report?.jobs?.find(item=>item.label===lane.label)||null;
+  const sourceLabel=lane.sourceLabel||lane.label,trialDir=await newestTrialDir(lane.jobName),job=report?.jobs?.find(item=>item.label===sourceLabel)||null;
   const liveEvidence=job?null:lane.harness==="native"?await recoverNativeEventEvidence(jobsDir,lane.jobName):lane.harness==="codex"?await recoverCodexSessionEvidence(jobsDir,lane.jobName):null;
   let activity=null;
   if(trialDir){
@@ -26,7 +26,7 @@ async function laneState(lane,report,recovered=null){
     ...(job||{}),
     apiEquivalentCostUsd:job?.apiEquivalentCostUsd??liveEvidence?.apiEquivalentCostUsd??null,
   }:null;
-  const recoveredLane=recovered?.lanes?.[lane.label]||null;
+  const recoveredLane=recovered?.lanes?.[sourceLabel]||null;
   if(effectiveJob&&recoveredLane?.checks){
     effectiveJob.recoveredVerifierChecks=recoveredLane.checks;
     effectiveJob.verifierRecovered=true;
@@ -41,7 +41,18 @@ async function snapshot(){
   const report=await json(pointer.reportPath)||{};
   const recovered=await json(String(pointer.reportPath||"").replace(/\.json$/,".recovered-verifier.json"));
   const lanes=await Promise.all((report.lanes||pointer.lanes||[]).map(lane=>laneState(lane,report,recovered)));
-  return {capturedAt:new Date().toISOString(),pairId:pointer.pairId,task:pointer.task,model:pointer.model,parallel:pointer.parallel,complete:Boolean(report.complete),reportPath:pointer.reportPath,lanes};
+  const rerunPointer=await json(join(validationDir,"terminal-bench-native-rerun-latest.json"));
+  let nativeRerun=null;
+  if(rerunPointer?.reportPath&&rerunPointer?.task===pointer.task&&rerunPointer?.model===pointer.model){
+    const rerunReport=await json(rerunPointer.reportPath)||{},rerunRecovered=await json(String(rerunPointer.reportPath||"").replace(/\.json$/,".recovered-verifier.json"));
+    const sourceLane=(rerunReport.lanes||rerunPointer.lanes||[]).find(lane=>lane.label==="native");
+    if(sourceLane){
+      nativeRerun=await laneState({...sourceLane,label:"native-rerun",sourceLabel:"native"},rerunReport,rerunRecovered);
+      nativeRerun.sourcePairId=rerunPointer.pairId;
+      nativeRerun.sourceReportPath=rerunPointer.reportPath;
+    }
+  }
+  return {capturedAt:new Date().toISOString(),pairId:pointer.pairId,task:pointer.task,model:pointer.model,parallel:pointer.parallel,complete:Boolean(report.complete),reportPath:pointer.reportPath,nativeRerunReportPath:nativeRerun?.sourceReportPath||null,lanes:nativeRerun?[lanes[0],nativeRerun,...lanes.slice(1)]:lanes};
 }
 async function persist(snap){
   const dir=join(validationDir,"watchdog",snap.pairId);await mkdir(dir,{recursive:true});
@@ -71,6 +82,7 @@ function render(snap,saved){
     if(lane.runError)lines.push(`  error: ${String(lane.runError).slice(0,180)}`);
   }
   lines.push("");lines.push(`Saved snapshot: ${saved}`);lines.push(`Full report: ${snap.reportPath}`);
+  if(snap.nativeRerunReportPath)lines.push(`Native rerun report: ${snap.nativeRerunReportPath}`);
   return lines.join("\n");
 }
 do{
