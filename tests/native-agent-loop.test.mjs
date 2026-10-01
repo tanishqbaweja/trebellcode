@@ -2670,6 +2670,36 @@ test("native requires the owed corrective edit before reopening recovery evidenc
   const editRequired=events.filter(event=>event.name==="native.completion.recovery_edit_required");assert.ok(editRequired.length>=2);assert.ok(editRequired.every(event=>event.data?.toolSchemaStable===true&&event.data?.visibleToolCount===3&&event.data?.visibleEditToolCount===2));
 });
 
+test("native changes recovery strategy after three incomplete semantic epochs without adding budget",async()=>{
+  let turns=0;const events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxCompletionRecoveryEpochs:3,maxModelTurns:12,maxToolCalls:12,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Fix src/a.mjs until the exact acceptance condition passes."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"initial",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"candidate"}'}],usage:{}};
+      if(turns===2||turns===4||turns===6)return {text:"The candidate is still provisional.",toolCalls:[],usage:{}};
+      if(turns===3||turns===5)return {text:'{"status":"incomplete","unresolved":["exact acceptance still fails"],"reason":"More local work remains possible."}',toolCalls:[],usage:{}};
+      if(turns===7)return {text:'{"status":"incomplete","unresolved":["exact acceptance still fails"],"reason":"The same gap survived another bounded epoch."}',toolCalls:[],usage:{}};
+      if(turns===8){
+        const reset=request.messages.find(message=>message.role==="developer"&&/cross-epoch recovery strategy reset/i.test(String(message.content||"")));
+        assert.ok(reset);
+        assert.match(String(reset.content),/changes the method, not the recovery budget/i);
+        return {text:"The result remains unverified after changing strategy.",toolCalls:[],usage:{}};
+      }
+      if(turns===9)return {text:'{"status":"incomplete","unresolved":["exact acceptance still fails"],"reason":"The bounded semantic recovery budget is exhausted."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0},
+  });
+  assert.equal(turns,9);
+  assert.match(result.text,/stopped after 3 bounded semantic recovery epochs/i);
+  const recoveries=events.filter(event=>event.name==="native.completion.gate_recovery");assert.equal(recoveries.length,3);assert.deepEqual(recoveries.map(event=>[event.data?.recoveryEpoch,event.data?.evidenceRoundsAllowed,event.data?.editResponsesAllowed]),[[1,2,1],[2,2,1],[3,2,1]]);
+  const resets=events.filter(event=>event.name==="native.completion.recovery_strategy_reset");assert.equal(resets.length,1);assert.equal(resets[0].data?.recoveryEpoch,3);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_exhausted").length,1);
+});
+
 test("native completion recovery stops after the configured number of incomplete epochs",async()=>{
   let turns=0;const events=[];
   const result=await runNativeAgentTurn({
