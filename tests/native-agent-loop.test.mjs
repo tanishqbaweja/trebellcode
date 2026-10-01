@@ -2580,6 +2580,7 @@ test("native completion-gate recovery reopens a bounded post-edit evidence windo
   assert.equal(executed.includes("recovery-evidence-blocked"),false);
   assert.equal(executed.includes("repair"),true);
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="evidence").length,2);
+  const blockedEvidence=events.filter(event=>event.name==="native.completion.recovery_evidence_call_blocked");assert.equal(blockedEvidence.length,1);assert.equal(blockedEvidence[0].data?.callId,"recovery-evidence-blocked");assert.equal(blockedEvidence[0].data?.reason,"recovery_evidence_response_budget");
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,1);
 });
 
@@ -2692,6 +2693,39 @@ test("native completion recovery blocks a second corrective edit response in one
   assert.deepEqual(executed,["initial","e1","e2","repair-1"]);
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,1);
   const blocked=events.filter(event=>event.name==="native.completion.recovery_edit_call_blocked");assert.equal(blocked.length,1);assert.equal(blocked[0].data?.callId,"repair-2");assert.equal(blocked[0].data?.reason,"recovery_edit_response_budget");
+});
+
+test("native semantic recovery owns later self-admitted acceptance gaps",async()=>{
+  let turns=0;const events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxCompletionRecoveryEpochs:1,maxModelTurns:14,maxToolCalls:20,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Fix src/a.mjs until the exact acceptance check passes."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"initial",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"candidate"}'}],usage:{}};
+      if(turns===2)return {text:"Candidate one is ready.",toolCalls:[],usage:{}};
+      if(turns===3)return {text:'{"status":"incomplete","unresolved":["exact acceptance still fails"],"reason":"Focused evidence can isolate it."}',toolCalls:[],usage:{}};
+      if(turns===4)return {text:"",toolCalls:[{id:"e1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["e1.mjs"]}'}],usage:{}};
+      if(turns===5)return {text:"",toolCalls:[{id:"e2",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["e2.mjs"]}'}],usage:{}};
+      if(turns===6)return {text:"The current candidate still fails exact acceptance.",toolCalls:[],usage:{}};
+      if(turns===7)return {text:'{"status":"incomplete","unresolved":["one corrective implementation change remains"],"reason":"The evidence window is exhausted."}',toolCalls:[],usage:{}};
+      if(turns===8)return {text:"",toolCalls:[{id:"repair",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"candidate","new_text":"repaired"}'}],usage:{}};
+      if(turns===9)return {text:"The exact acceptance check still failed, so this result is provisional and not verified.",toolCalls:[],usage:{}};
+      if(turns===10){
+        assert.equal(request.metadata?.completionGate,true);
+        return {text:'{"status":"incomplete","unresolved":["exact acceptance still fails"],"reason":"The bounded semantic recovery budget is exhausted."}',toolCalls:[],usage:{}};
+      }
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0,stdout:"still failing"},
+  });
+  assert.equal(turns,10);
+  assert.match(result.text,/stopped after 1 bounded semantic recovery epoch/i);
+  assert.equal(events.filter(event=>event.name==="native.verification.self_admitted_gap").length,0);
+  assert.equal(events.filter(event=>event.name==="native.completion.self_admitted_gap").length,0);
+  assert.equal(events.filter(event=>event.name==="native.completion.gate").length,3);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_exhausted").length,1);
 });
 
 test("native completion-gate recovery permits one corrective edit after revision-churn grace is exhausted",async()=>{

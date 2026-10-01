@@ -749,6 +749,12 @@ export async function runNativeAgentTurn({
     if(call?.name==="replace_text")return true;
     return completionRecoveryImplementationPaths.has(path);
   };
+  const recoverySupportWriteCandidate=call=>{
+    if(completionRecoverySupportWritesRemaining<=0||call?.namespace!=="trebell_workspace"||call?.name!=="write_file")return false;
+    const path=normalizedEditPath(call);if(!path)return false;
+    if(completionRecoverySupportPaths.has(path))return true;
+    return completionRecoveryImplementationPaths.size>0&&!completionRecoveryImplementationPaths.has(path)&&!userRequestedEditPath(path);
+  };
   const startedAt=Date.now(),started=nowMs(),wallController=budget.maxWallTimeMs!=null?new AbortController():null,deadlineAt=budget.maxWallTimeMs==null?null:Date.now()+budget.maxWallTimeMs;
   let wallTimer=null;
   if(terminalRuns.length)emit(onEvent,{name:"native.verification.prior_terminal_evidence",status:"completed",model:String(model),provider:provider||null,data:{count:terminalRuns.length}});
@@ -1312,7 +1318,7 @@ export async function runNativeAgentTurn({
       const preEditCompletionBlockerChallenge=hasSelfCompletionGap&&editRevision===0&&selfAdmittedGapRecoveries===0;
       const selfAdmittedGapCanRecover=preEditCompletionBlockerChallenge||editRevision>0;
       const maxSelfAdmittedGapRecoveries=hasFailedAcceptanceGap?3:2;
-      if(workspaceMutationRequested&&selfAdmittedGapCanRecover&&canVerifyLocally&&!toolBudgetExhausted&&(!verifiedFinalizationReady||hasFailedAcceptanceGap)&&selfAdmittedGapRecoveries<maxSelfAdmittedGapRecoveries&&shouldRecoverSelfAdmittedGap&&modelTurns<budget.maxModelTurns&&selfAdmittedGapKind){
+      if(completionRecoveryEpoch===0&&workspaceMutationRequested&&selfAdmittedGapCanRecover&&canVerifyLocally&&!toolBudgetExhausted&&(!verifiedFinalizationReady||hasFailedAcceptanceGap)&&selfAdmittedGapRecoveries<maxSelfAdmittedGapRecoveries&&shouldRecoverSelfAdmittedGap&&modelTurns<budget.maxModelTurns&&selfAdmittedGapKind){
         selfAdmittedGapRecoveries++;
         selfAdmittedGapRecoveryToolBaseline=toolCalls;
         const recoveryMessage=preEditCompletionBlockerChallenge
@@ -1368,7 +1374,7 @@ export async function runNativeAgentTurn({
       emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage}});
       return result;
     }
-    const editRevisionBeforeCalls=editRevision,responseHasEditCall=calls.some(recoveryCorrectiveEditCall),preEditBlockerChallengeBypass=preEditBlockerChallengeToolAllowance&&editRevision===0,revisionChurnFailureEvidence=revisionChurnEscalated&&terminalRuns.some(item=>item?.currentTurn&&item?.editRevision===editRevisionBeforeCalls&&item?.exitCode!==0),completionRecoveryEditBypass=completionRecoveryEditResponsesRemaining>0,completionRecoveryEditAllowanceConsumed=completionRecoveryEpoch>0&&completionRecoveryEditConsumedEpoch===completionRecoveryEpoch&&completionRecoveryEditResponsesRemaining<=0;let redirected=false,blockedPreEditCall=false,blockedPostEditProbeCall=false,blockedPostEditEvidenceCall=false,blockedRevisionChurnEdit=false,blockedCompletionRecoveryEdit=false,executedPreEditEvidence=false,executedPostEditEvidence=false,executedSupportVerification=false;
+    const editRevisionBeforeCalls=editRevision,responseHasEditCall=calls.some(recoveryCorrectiveEditCall),preEditBlockerChallengeBypass=preEditBlockerChallengeToolAllowance&&editRevision===0,revisionChurnFailureEvidence=revisionChurnEscalated&&terminalRuns.some(item=>item?.currentTurn&&item?.editRevision===editRevisionBeforeCalls&&item?.exitCode!==0),completionRecoveryEditBypass=completionRecoveryEditResponsesRemaining>0,completionRecoveryEditAllowanceConsumed=completionRecoveryEpoch>0&&completionRecoveryEditConsumedEpoch===completionRecoveryEpoch&&completionRecoveryEditResponsesRemaining<=0;let redirected=false,blockedPreEditCall=false,blockedPostEditProbeCall=false,blockedPostEditEvidenceCall=false,blockedRevisionChurnEdit=false,blockedCompletionRecoveryEdit=false,blockedCompletionRecoveryEvidence=false,executedPreEditEvidence=false,executedPostEditEvidence=false,executedSupportVerification=false;
     if(preEditBlockerChallengeBypass){
       preEditBlockerChallengeToolAllowance=false;
       emit(onEvent,{name:"native.completion.blocker_challenge_evidence_allowed",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,callCount:calls.length}});
@@ -1402,6 +1408,15 @@ export async function runNativeAgentTurn({
         const callId=String(call?.id||""),toolCallNumber=toolCalls+1;toolCalls=toolCallNumber;
         conversation.push({role:"tool",toolCallId:callId,content:"Trebell semantic recovery: this non-edit tool call was not executed because the current recovery step requires the reserved corrective implementation edit. Use one workspace replace_text or write_file call on the actual implementation/deliverable. Evidence-only tools become available again after the recovery edit is resolved or a later bounded recovery epoch opens."});
         emit(onEvent,{name:"native.completion.recovery_non_edit_call_blocked",status:"blocked",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCall:toolCallNumber,callId,namespace:call?.namespace||null,name:call?.name||"tool",editRevision,recoveryEpoch:completionRecoveryEpoch,reason:"recovery_edit_required"}});
+        callIndex++;continue;
+      }
+      const recoveryEvidenceExhausted=completionRecoveryEpoch>0&&completionRecoveryEvidenceRoundsRemaining<=0&&completionRecoveryEditResponsesRemaining>0;
+      const reservedSupportVerification=completionRecoverySupportVerificationRemaining>0&&call?.namespace==="trebell_terminal"&&call?.name==="run";
+      if(recoveryEvidenceExhausted&&!recoveryCorrectiveEditCall(call)&&!recoverySupportWriteCandidate(call)&&!reservedSupportVerification){
+        const callId=String(call?.id||""),toolCallNumber=toolCalls+1;toolCalls=toolCallNumber;
+        conversation.push({role:"tool",toolCallId:callId,content:"Trebell semantic recovery: this evidence tool call was not executed because the current recovery epoch has already consumed its bounded evidence responses. Use the reserved corrective implementation edit if the gathered evidence supports one, or submit the best current completion candidate so the semantic gate can judge it and, if needed, open a new bounded recovery epoch. Do not spend another evidence-only tool call in this epoch."});
+        blockedCompletionRecoveryEvidence=true;
+        emit(onEvent,{name:"native.completion.recovery_evidence_call_blocked",status:"blocked",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCall:toolCallNumber,callId,namespace:call?.namespace||null,name:call?.name||"tool",editRevision,recoveryEpoch:completionRecoveryEpoch,reason:"recovery_evidence_response_budget"}});
         callIndex++;continue;
       }
       if(completionRecoveryEditAllowanceConsumed&&recoveryCorrectiveEditCall(call)){
@@ -1495,7 +1510,7 @@ export async function runNativeAgentTurn({
       postEditAbstractionEscalationRevision=0;
       postEditEvidenceCheckpointRevision=0;
       postEditEvidenceEscalated=false;
-    }else if(!blockedPreEditCall&&!blockedPostEditProbeCall&&!blockedRevisionChurnEdit&&!blockedCompletionRecoveryEdit&&calls.length===1&&calls[0]?.namespace==="trebell_terminal"&&calls[0]?.name==="run"&&!implementationPressureBatchCall(calls[0])){
+    }else if(!blockedPreEditCall&&!blockedPostEditProbeCall&&!blockedRevisionChurnEdit&&!blockedCompletionRecoveryEdit&&!blockedCompletionRecoveryEvidence&&calls.length===1&&calls[0]?.namespace==="trebell_terminal"&&calls[0]?.name==="run"&&!implementationPressureBatchCall(calls[0])){
       singletonTerminalProbeStreak++;
     }else if(calls.length>0&&!blockedPreEditCall&&!blockedPostEditProbeCall){
       singletonTerminalProbeStreak=0;

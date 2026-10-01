@@ -13,6 +13,7 @@ export function createNativeStrategyMetrics(){
     completionGateChecks:0,
     completionGateRecoveries:0,
     completionRecoveryEvidenceUses:0,
+    completionRecoveryEvidenceCallsBlocked:0,
     completionRecoveryEditUses:0,
     completionRecoveryExhaustions:0,
     completionRecoveryEditsBlocked:0,
@@ -43,6 +44,7 @@ export function observeNativeStrategyEvent(metrics,event,atMs=null){
   else if(name==="native.completion.gate")target.completionGateChecks=Number(target.completionGateChecks||0)+1;
   else if(name==="native.completion.gate_recovery")target.completionGateRecoveries=Number(target.completionGateRecoveries||0)+1;
   else if(name==="native.completion.recovery_allowance_used"&&data?.kind==="evidence")target.completionRecoveryEvidenceUses=Number(target.completionRecoveryEvidenceUses||0)+1;
+  else if(name==="native.completion.recovery_evidence_call_blocked")target.completionRecoveryEvidenceCallsBlocked=Number(target.completionRecoveryEvidenceCallsBlocked||0)+1;
   else if(name==="native.completion.recovery_allowance_used"&&data?.kind==="edit")target.completionRecoveryEditUses=Number(target.completionRecoveryEditUses||0)+1;
   else if(name==="native.completion.recovery_exhausted")target.completionRecoveryExhaustions=Number(target.completionRecoveryExhaustions||0)+1;
   else if(name==="native.completion.recovery_edit_call_blocked")target.completionRecoveryEditsBlocked=Number(target.completionRecoveryEditsBlocked||0)+1;
