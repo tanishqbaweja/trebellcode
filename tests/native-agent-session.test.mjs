@@ -23,6 +23,37 @@ test("Native session implements the relay start/prompt contract with usage updat
   const usage=updates.find(item=>item.update.sessionUpdate==="usage_update");assert.equal(usage.update.used,6);assert.equal(usage.update.usage.cache_read_input_tokens,1);
 });
 
+test("Native session semantic completion gate only streams the accepted answer when enabled",async()=>{
+  const updates=[],events=[],requests=[];let calls=0;
+  const session=new NativeAgentSession({
+    provider:"fixture",model:"model-a",semanticCompletionGate:true,onUpdate:update=>updates.push(update),onEvent:event=>events.push(event),
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async request=>{
+      requests.push(structuredClone({...request,signal:undefined}));calls++;
+      if(calls===1)return {id:"edit",text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/cache.mjs","old_text":"old","new_text":"candidate"}'}],usage:{}};
+      if(calls===2)return {id:"candidate-1",text:"The cache rewrite is installed. The latest measured error rate is 4.2%, while the requested ceiling is 1%.",toolCalls:[],usage:{}};
+      if(calls===3)return {id:"gate-1",text:'{"status":"incomplete","unresolved":["measured error rate exceeds the requested ceiling"],"reason":"4.2% is above 1%."}',toolCalls:[],usage:{}};
+      if(calls===4)return {id:"verify",text:"",toolCalls:[{id:"verify",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["measure-errors.mjs"]}'}],usage:{}};
+      if(calls===5)return {id:"candidate-2",text:"The cache rewrite is installed and the measured error rate is now 0.6%, below the requested 1% ceiling.",toolCalls:[],usage:{}};
+      if(calls===6)return {id:"gate-2",text:'{"status":"complete","unresolved":[],"reason":"The implementation exists and the latest evidence satisfies the requested ceiling."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call");
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{path:"src/cache.mjs",replacements:1}:{exitCode:0,stdout:"error_rate=0.6%"},
+  });
+  await session.start({providerSessionId:"semantic-gate-default",model:"model-a"});
+  await session.prompt([{type:"text",text:"Modify src/cache.mjs so the measured error rate is below 1%."}]);
+  assert.equal(calls,6);
+  assert.equal(requests[2].toolChoice,"none");
+  assert.deepEqual(requests[2].tools,[]);
+  assert.equal(events.filter(event=>event.name==="native.completion.gate_recovery").length,1);
+  const visible=updates.filter(item=>item.update?.sessionUpdate==="agent_message_chunk").map(item=>item.update.content.text);
+  assert.deepEqual(visible,["The cache rewrite is installed and the measured error rate is now 0.6%, below the requested 1% ceiling."]);
+  assert.equal(visible.some(text=>text.includes('"status"')),false);
+});
+
 test("Native session forwards the selected reasoning effort to provider turns",async()=>{
   let seen=null;
   const session=new NativeAgentSession({
