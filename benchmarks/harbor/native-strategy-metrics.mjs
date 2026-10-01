@@ -8,6 +8,7 @@ export function createNativeStrategyMetrics(){
     postEditProbeBatchCheckpoints:0,
     postEditProbeCallsBlocked:0,
     assumptionAuditCheckpoints:0,
+    abstractionBoundaryEscalations:0,
     completionGateChecks:0,
     completionGateRecoveries:0,
     completionRecoveryEvidenceUses:0,
@@ -33,6 +34,7 @@ export function observeNativeStrategyEvent(metrics,event,atMs=null){
   else if(name==="native.progress.post_edit_probe_batch_checkpoint")target.postEditProbeBatchCheckpoints=Number(target.postEditProbeBatchCheckpoints||0)+1;
   else if(name==="native.progress.post_edit_probe_call_blocked")target.postEditProbeCallsBlocked=Number(target.postEditProbeCallsBlocked||0)+1;
   else if(name==="native.progress.assumption_audit_checkpoint")target.assumptionAuditCheckpoints=Number(target.assumptionAuditCheckpoints||0)+1;
+  else if(name==="native.progress.abstraction_boundary_escalation")target.abstractionBoundaryEscalations=Number(target.abstractionBoundaryEscalations||0)+1;
   else if(name==="native.completion.gate")target.completionGateChecks=Number(target.completionGateChecks||0)+1;
   else if(name==="native.completion.gate_recovery")target.completionGateRecoveries=Number(target.completionGateRecoveries||0)+1;
   else if(name==="native.completion.recovery_allowance_used"&&data?.kind==="evidence")target.completionRecoveryEvidenceUses=Number(target.completionRecoveryEvidenceUses||0)+1;

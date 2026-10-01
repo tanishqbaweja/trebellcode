@@ -2394,6 +2394,8 @@ test("native audits upstream assumptions before exhausting repeated post-edit ev
         assert.match(String(audit.content),/cross the abstraction boundary/i);
         assert.match(String(audit.content),/do not use that same abstraction to generate both sides/i);
         assert.match(String(audit.content),/raw bytes\/records, physical offsets\/framing\/order/i);
+        assert.match(String(audit.content),/not independent when its offsets, boundaries, ordering/i);
+        assert.match(String(audit.content),/selecting one copy, averaging, splicing/i);
         return {text:"",toolCalls:[{id:"upstream-fix",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"candidate","new_text":"reparsed"}'}],usage:{}};
       }
       return {text:"done",toolCalls:[],usage:{}};
@@ -2404,6 +2406,37 @@ test("native audits upstream assumptions before exhausting repeated post-edit ev
   assert.equal(executed.includes("upstream-fix"),true);
   assert.equal(events.filter(event=>event.name==="native.progress.assumption_audit_checkpoint").length,1);
   assert.equal(events.some(event=>event.name==="native.progress.post_edit_evidence_checkpoint"),false);
+});
+
+test("native escalates across the abstraction boundary when evidence continues after an assumption audit",async()=>{
+  let turns=0;const events=[],executed=[];
+  const evidence=label=>[
+    {id:label+"-raw",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-raw.mjs"]})},
+    {id:label+"-derived",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-derived.mjs"]})},
+  ];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the parser and verify the exact result."}],maxModelTurns:11,maxToolCalls:24,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/parser.mjs","old_text":"old","new_text":"candidate"}'}],usage:{}};
+      if(turns>=2&&turns<=7)return {text:"",toolCalls:evidence("probe-"+turns),usage:{}};
+      if(turns===8){
+        const escalation=request.messages.find(message=>message.role==="developer"&&/abstraction-boundary escalation/i.test(String(message.content||"")));
+        assert.ok(escalation);
+        assert.match(String(escalation.content),/alternative source segmentation\/order\/framing\/unit\/mapping/i);
+        assert.match(String(escalation.content),/Selecting a supposedly authoritative replica, averaging contradictory copies/i);
+        assert.match(String(escalation.content),/explains several independent invariants simultaneously/i);
+        return {text:"",toolCalls:[{id:"parser-fix",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/parser.mjs","old_text":"candidate","new_text":"resegmented"}'}],usage:{}};
+      }
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:"src/parser.mjs",replacements:1}:{exitCode:0}},
+  });
+  assert.equal(result.text,"done");
+  assert.equal(executed.includes("parser-fix"),true);
+  assert.equal(events.filter(event=>event.name==="native.progress.assumption_audit_checkpoint").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.abstraction_boundary_escalation").length,1);
 });
 
 test("native semantic completion gate rejects unsupported completion without task-specific wording",async()=>{
