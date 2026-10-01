@@ -12,6 +12,8 @@ import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTermin
 
 test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable trial metrics",async()=>{
   const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
+  const singleRunnerSource=await readFile(new URL("../scripts/run-terminal-bench.mjs",import.meta.url),"utf8");
+  const detachedSource=await readFile(new URL("../scripts/detached-process.mjs",import.meta.url),"utf8");
   const nativeRunnerSource=await readFile(new URL("../benchmarks/harbor/trebell-native-runner.mjs",import.meta.url),"utf8");
   assert.match(source,/sharedTerminalBenchLockPath/);
   assert.match(source,/sharedTerminalBenchNativeRerunLockPath/);
@@ -63,6 +65,12 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/npm_execpath/);
   assert.match(source,/node_modules","npm","bin","npm-cli\.js/);
   assert.match(source,/shell:process\.platform==="win32"/);
+  assert.match(source,/windowsHide:true/);
+  assert.match(singleRunnerSource,/windowsHide:true/);
+  assert.doesNotMatch(singleRunnerSource,/windowsHide:false/);
+  assert.match(detachedSource,/Start-Process/);
+  assert.match(detachedSource,/-WindowStyle Hidden/);
+  assert.match(detachedSource,/win32-hidden-start-process/);
   assert.match(source,/@openai\/codex@\$\{CODEX_PINNED_VERSION\}-linux-x64/);
   assert.match(source,/benchmarks\.harbor\.pinned_codex_agent:PinnedCodexAgent/);
   assert.match(source,/repositoryRootFromGitCommonDir/);

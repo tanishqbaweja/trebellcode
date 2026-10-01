@@ -42,6 +42,6 @@ if(agent==="native"&&values.probe==="true")args.push("--ak","live_probe=true");
 args.push("-n","1","-o",output,"--job-name",jobName,"-y");
 
 const env={...process.env,PYTHONPATH:[root,process.env.PYTHONPATH].filter(Boolean).join(process.platform==="win32"?";":":")};
-const child=spawn(harbor,args,{cwd:root,env,stdio:"inherit",windowsHide:false});
+const child=spawn(harbor,args,{cwd:root,env,stdio:"inherit",windowsHide:true});
 child.on("error",error=>{console.error(error);process.exitCode=1});
 child.on("exit",(code,signal)=>{if(signal)console.error("Harbor exited via signal "+signal);process.exitCode=code??1});

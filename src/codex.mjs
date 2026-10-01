@@ -63,7 +63,7 @@ async function runInherited(command, args, env) {
     env,
     cwd: process.cwd(),
     stdio: "inherit",
-    windowsHide: false,
+    windowsHide: true,
   });
   return await new Promise((resolve, reject) => {
     child.once("error", reject);

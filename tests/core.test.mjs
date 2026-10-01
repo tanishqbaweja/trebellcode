@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -30,6 +30,12 @@ test("Codex args preserve Codex native provider configuration", () => {
     ["-m", "gpt-5.6-sol", "exec", "hi"],
   );
   assert.throws(()=>codexArgs({provider:"freebuff"}),/native account\/provider configuration/i);
+});
+
+test("standalone Codex inherited process stays hidden on Windows",()=>{
+  const source=readFileSync(new URL("../src/codex.mjs",import.meta.url),"utf8");
+  assert.match(source,/stdio:\s*"inherit"[\s\S]{0,120}windowsHide:\s*true/);
+  assert.doesNotMatch(source,/windowsHide:\s*false/);
 });
 
 test("standalone Codex child environment preserves Codex-native credentials without unrelated host secrets",()=>{

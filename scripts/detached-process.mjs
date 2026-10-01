@@ -29,20 +29,20 @@ export async function launchDetachedDescriptor({descriptorPath,cwd=process.cwd()
   }
 
   const childScript=fileURLToPath(new URL("./detached-process-child.mjs",import.meta.url));
-  const commandLine=[process.execPath,childScript,descriptorPath].map(quoteWindowsArg).join(" ");
+  const argumentLine=[childScript,descriptorPath].map(quoteWindowsArg).join(" ");
   const ps=[
-    "$result=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine=$env:TREBELL_DETACHED_COMMAND;CurrentDirectory=$env:TREBELL_DETACHED_CWD}",
-    "$result | Select-Object ReturnValue,ProcessId | ConvertTo-Json -Compress",
+    "$process=Start-Process -FilePath $env:TREBELL_DETACHED_NODE -ArgumentList $env:TREBELL_DETACHED_ARGS -WorkingDirectory $env:TREBELL_DETACHED_CWD -WindowStyle Hidden -PassThru",
+    "[pscustomobject]@{ReturnValue=0;ProcessId=$process.Id} | ConvertTo-Json -Compress",
   ].join("; ");
   const {stdout}=await capture("powershell.exe",["-NoProfile","-Command",ps],{
     cwd,
-    env:{...process.env,TREBELL_DETACHED_COMMAND:commandLine,TREBELL_DETACHED_CWD:cwd},
+    env:{...process.env,TREBELL_DETACHED_NODE:process.execPath,TREBELL_DETACHED_ARGS:argumentLine,TREBELL_DETACHED_CWD:cwd},
   });
   const result=JSON.parse(stdout.trim());
   if(Number(result?.ReturnValue)!==0||!Number.isInteger(Number(result?.ProcessId))){
-    throw new Error(`Win32_Process.Create failed: ${stdout.trim()||"no result"}`);
+    throw new Error(`Hidden detached process launch failed: ${stdout.trim()||"no result"}`);
   }
-  return {pid:Number(result.ProcessId),method:"win32-cim"};
+  return {pid:Number(result.ProcessId),method:"win32-hidden-start-process"};
 }
 
 export async function readDetachedStatus(statusPath){
