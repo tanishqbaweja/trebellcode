@@ -2425,6 +2425,10 @@ test("native escalates across the abstraction boundary when evidence continues a
         const escalation=request.messages.find(message=>message.role==="developer"&&/abstraction-boundary escalation/i.test(String(message.content||"")));
         assert.ok(escalation);
         assert.match(String(escalation.content),/alternative source segmentation\/order\/framing\/unit\/mapping/i);
+        assert.match(String(escalation.content),/internal field\/subfield packing order/i);
+        assert.match(String(escalation.content),/axis orientation/i);
+        assert.match(String(escalation.content),/writer\/serializer\/kernel\/producer/i);
+        assert.match(String(escalation.content),/distinct producer paths as distinct schemas/i);
         assert.match(String(escalation.content),/Selecting a supposedly authoritative replica, averaging contradictory copies/i);
         assert.match(String(escalation.content),/explains several independent invariants simultaneously/i);
         return {text:"",toolCalls:[{id:"parser-fix",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/parser.mjs","old_text":"candidate","new_text":"resegmented"}'}],usage:{}};
@@ -2437,6 +2441,46 @@ test("native escalates across the abstraction boundary when evidence continues a
   assert.equal(executed.includes("parser-fix"),true);
   assert.equal(events.filter(event=>event.name==="native.progress.assumption_audit_checkpoint").length,1);
   assert.equal(events.filter(event=>event.name==="native.progress.abstraction_boundary_escalation").length,1);
+});
+
+test("native localizes residual structure after an abstraction repair before reopening global assumptions",async()=>{
+  let turns=0;const events=[],executed=[];
+  const evidence=label=>[
+    {id:label+"-a",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-a.mjs"]})},
+    {id:label+"-b",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-b.mjs"]})},
+  ];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the binary decoder and verify the exact reconstructed output."}],maxModelTurns:14,maxToolCalls:40,onEvent:event=>events.push(event),
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"initial",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"old","new_text":"candidate"}'}],usage:{}};
+      if(turns>=2&&turns<=7)return {text:"",toolCalls:evidence("pre-"+turns),usage:{}};
+      if(turns===8){
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/abstraction-boundary escalation/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[{id:"upstream-repair",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"candidate","new_text":"resegmented"}'}],usage:{}};
+      }
+      if(turns===9)return {text:"",toolCalls:evidence("residual-1"),usage:{}};
+      if(turns===10)return {text:"",toolCalls:evidence("residual-2"),usage:{}};
+      if(turns===11){
+        const checkpoint=request.messages.find(message=>message.role==="developer"&&/residual-structure checkpoint/i.test(String(message.content||"")));
+        assert.ok(checkpoint);
+        assert.match(String(checkpoint.content),/smallest failing output\/source family/i);
+        assert.match(String(checkpoint.content),/axis orientation or transpose/i);
+        assert.match(String(checkpoint.content),/packing\/interleave\/pair order/i);
+        assert.match(String(checkpoint.content),/specialized grouped\/fused\/kernel representation/i);
+        assert.equal(events.filter(event=>event.name==="native.progress.assumption_audit_checkpoint").length,1);
+        return {text:"",toolCalls:[{id:"local-layout-fix",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"resegmented","new_text":"resegmented-and-local-layout-fixed"}'}],usage:{}};
+      }
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:"src/decoder.mjs",replacements:1}:{exitCode:0}},
+  });
+  assert.equal(result.text,"done");
+  assert.equal(executed.includes("upstream-repair"),true);assert.equal(executed.includes("local-layout-fix"),true);
+  assert.equal(events.filter(event=>event.name==="native.progress.abstraction_boundary_escalation").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.abstraction_repair_applied").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.residual_structure_checkpoint").length,1);
 });
 
 test("native semantic completion gate rejects unsupported completion without task-specific wording",async()=>{

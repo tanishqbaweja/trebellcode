@@ -444,7 +444,7 @@ export class NativeAgentSession{
           const signals=[request.signal,modelController.signal].filter(Boolean),signal=signals.length>1?AbortSignal.any(signals):signals[0];
           try{
             const comparisonResponseId=this.provider==="openai"?String(this.lastProviderResponseId||"").trim():"",completionGate=request?.metadata?.completionGate===true;
-            const response=await this.providerTurn({...request,provider:this.provider,signal,...(comparisonResponseId?{promptCacheComparisonResponseId:comparisonResponseId}:{}),...(this.provider==="openai"?{openAiContinuationResponseId:completionGate?"":comparisonResponseId}:{}),...(this.provider==="openai"&&this.openAiServerCompactionThreshold?{contextManagement:[{type:"compaction",compactThreshold:this.openAiServerCompactionThreshold}]}:{})});
+            const response=await this.providerTurn({...request,provider:this.provider,signal,...(comparisonResponseId?{promptCacheComparisonResponseId:comparisonResponseId}:{}),...(this.provider==="openai"?{openAiContinuationResponseId:completionGate?"":comparisonResponseId,openAiDisableWebSocket:completionGate}:{}),...(this.provider==="openai"&&this.openAiServerCompactionThreshold?{contextManagement:[{type:"compaction",compactThreshold:this.openAiServerCompactionThreshold}]}:{})});
             if(this.provider==="openai"){
               if(!completionGate)lastOpenAiInputTokens=Math.max(0,Math.trunc(Number(response?.usage?.inputTokens)||0));
               const responseId=String(response?.telemetry?.providerResponseId||response?.id||"").trim();if(responseId&&!completionGate)this.lastProviderResponseId=responseId;

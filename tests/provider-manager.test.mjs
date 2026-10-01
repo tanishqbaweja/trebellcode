@@ -320,6 +320,35 @@ test("official OpenAI Native uses exact call_id for incremental tool-result cont
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
+test("official OpenAI can force a control turn onto HTTPS without disturbing the Native WebSocket lane",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-control-http-")),bodies=[];let factoryCalls=0;
+  try{
+    const manager=new ProviderManager({
+      env:{TREBELL_HOME:root},
+      openAiResponsesWebSocketFactory:()=>{factoryCalls++;throw new Error("completion control turn must not open the persistent WebSocket")},
+      fetchFn:async(_url,init={})=>{
+        const body=JSON.parse(init.body||"{}");bodies.push(body);
+        return Response.json({id:"resp-http-control",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:'{"status":"complete"}'}]}],usage:{input_tokens:10,output_tokens:2,total_tokens:12}});
+      },
+    });
+    manager.setKey("openai","oa-key");
+    const result=await manager.turn("openai",{
+      model:"gpt-5.6",
+      messages:[{role:"user",content:"task"},{role:"assistant",content:"candidate"},{role:"developer",content:"judge"}],
+      tools:[],
+      metadata:{sessionId:"native_control_http"},
+      promptCacheComparisonResponseId:"resp-main-candidate",
+      openAiContinuationResponseId:"",
+      openAiDisableWebSocket:true,
+    },{streamResponses:true});
+    assert.equal(factoryCalls,0);assert.equal(bodies.length,1);
+    assert.equal(Object.prototype.hasOwnProperty.call(bodies[0],"previous_response_id"),false);
+    assert.deepEqual(bodies[0].prompt_cache_options,{mode:"implicit",comparison_response_id:"resp-main-candidate"});
+    assert.equal(result.telemetry.persistentConnection,false);
+    assert.equal(result.telemetry.responseContinuation.attempted,false);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
 test("OpenAI WebSocket continuation validation rejection retries once with full HTTPS context",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-continuation-fallback-")),httpBodies=[];let wsCalls=0;
   try{
@@ -535,6 +564,33 @@ test("official OpenAI one-shot turns without Native session metadata stay on HTT
   try{
     const manager=new ProviderManager({env:{TREBELL_HOME:root},openAiResponsesWebSocketFactory:()=>{factoryCalls++;throw new Error("not expected")},fetchFn:async(_url,init={})=>{fetchCalls++;const body=JSON.parse(init.body||"{}");return Response.json({id:"resp-http",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"http"}]}],usage:{}})}});manager.setKey("openai","oa-key");
     const result=await manager.turn("openai",{model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[]},{streamResponses:true});assert.equal(result.text,"http");assert.equal(factoryCalls,0);assert.equal(fetchCalls,1);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
+test("OpenAI completion-gate transport bypasses the persistent WebSocket without disabling later socket turns",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-gate-http-isolation-")),socketBodies=[],httpBodies=[];let factoryCalls=0,socketCalls=0;
+  try{
+    const manager=new ProviderManager({
+      env:{TREBELL_HOME:root},
+      openAiResponsesWebSocketFactory:()=>{factoryCalls++;return {
+        request:async body=>{
+          socketBodies.push(body);socketCalls++;
+          return {requestBytes:10,response:{id:"resp-socket-"+socketCalls,model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"socket-"+socketCalls}]}],usage:{input_tokens:4,output_tokens:1,total_tokens:5}},telemetry:{responseBytes:10,totalLatencyMs:1,timeToFirstTokenMs:1}};
+        },
+      }},
+      fetchFn:async(_url,init={})=>{
+        const body=JSON.parse(init.body||"{}");httpBodies.push(body);
+        return Response.json({id:"resp-gate-http",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"gate-http"}]}],usage:{input_tokens:4,output_tokens:1,total_tokens:5}});
+      },
+    });
+    manager.setKey("openai","oa-key");
+    const token={},metadata={sessionId:"gate-http-isolation"},first={role:"user",content:"Implement the change"};
+    const a=await manager.turn("openai",{model:"gpt-5.6",messages:[first],tools:[],metadata,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token},{streamResponses:true});
+    const gate=await manager.turn("openai",{model:"gpt-5.6",messages:[first,{role:"assistant",content:a.text},{role:"developer",content:"Judge completion"}],tools:[],metadata,openAiDisableWebSocket:true,openAiContinuationResponseId:"",promptCacheComparisonResponseId:a.id,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token},{streamResponses:true});
+    const c=await manager.turn("openai",{model:"gpt-5.6",messages:[{role:"user",content:"Continue implementation"}],tools:[],metadata,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token},{streamResponses:true});
+    assert.equal(a.text,"socket-1");assert.equal(gate.text,"gate-http");assert.equal(c.text,"socket-2");
+    assert.equal(factoryCalls,1);assert.equal(socketCalls,2);assert.equal(socketBodies.length,2);assert.equal(httpBodies.length,1);
+    assert.equal(Object.prototype.hasOwnProperty.call(httpBodies[0],"previous_response_id"),false);
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
