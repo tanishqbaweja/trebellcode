@@ -253,7 +253,7 @@ class TrebellNativeAgent(BaseInstalledAgent):
                 'pipeline_status=$?; '
                 'if [ "$pipeline_status" -eq 0 ]; then exit 0; fi; '
                 f"if [ -s {self._METRICS} ] && "
-                f"grep -Eq '\"error\"[[:space:]]*:[[:space:]]*null' {self._METRICS}; then "
+                f'"$runtime_cmd" -e \'const fs=require("fs"); const metrics=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); process.exit(metrics.error===null?0:1)\' {self._METRICS}; then '
                 'echo "Trebell Native runner returned non-zero after persisting clean metrics; continuing to Harbor artifact collection and verification." >&2; '
                 "exit 0; "
                 "fi; "
