@@ -2460,9 +2460,10 @@ test("native localizes residual structure after an abstraction repair before reo
         assert.ok(request.messages.some(message=>message.role==="developer"&&/abstraction-boundary escalation/i.test(String(message.content||""))));
         return {text:"",toolCalls:[{id:"upstream-repair",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"candidate","new_text":"resegmented"}'}],usage:{}};
       }
-      if(turns===9)return {text:"",toolCalls:evidence("residual-1"),usage:{}};
-      if(turns===10)return {text:"",toolCalls:evidence("residual-2"),usage:{}};
-      if(turns===11){
+      if(turns===9)return {text:"",toolCalls:[{id:"follow-up-edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"resegmented","new_text":"resegmented-follow-up"}'}],usage:{}};
+      if(turns===10)return {text:"",toolCalls:evidence("residual-1"),usage:{}};
+      if(turns===11)return {text:"",toolCalls:evidence("residual-2"),usage:{}};
+      if(turns===12){
         const checkpoint=request.messages.find(message=>message.role==="developer"&&/residual-structure checkpoint/i.test(String(message.content||"")));
         assert.ok(checkpoint);
         assert.match(String(checkpoint.content),/smallest failing output\/source family/i);
@@ -2470,14 +2471,14 @@ test("native localizes residual structure after an abstraction repair before reo
         assert.match(String(checkpoint.content),/packing\/interleave\/pair order/i);
         assert.match(String(checkpoint.content),/specialized grouped\/fused\/kernel representation/i);
         assert.equal(events.filter(event=>event.name==="native.progress.assumption_audit_checkpoint").length,1);
-        return {text:"",toolCalls:[{id:"local-layout-fix",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"resegmented","new_text":"resegmented-and-local-layout-fixed"}'}],usage:{}};
+        return {text:"",toolCalls:[{id:"local-layout-fix",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"resegmented-follow-up","new_text":"resegmented-and-local-layout-fixed"}'}],usage:{}};
       }
       return {text:"done",toolCalls:[],usage:{}};
     },
     executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:"src/decoder.mjs",replacements:1}:{exitCode:0}},
   });
   assert.equal(result.text,"done");
-  assert.equal(executed.includes("upstream-repair"),true);assert.equal(executed.includes("local-layout-fix"),true);
+  assert.equal(executed.includes("upstream-repair"),true);assert.equal(executed.includes("follow-up-edit"),true);assert.equal(executed.includes("local-layout-fix"),true);
   assert.equal(events.filter(event=>event.name==="native.progress.abstraction_boundary_escalation").length,1);
   assert.equal(events.filter(event=>event.name==="native.progress.abstraction_repair_applied").length,1);
   assert.equal(events.filter(event=>event.name==="native.progress.residual_structure_checkpoint").length,1);
