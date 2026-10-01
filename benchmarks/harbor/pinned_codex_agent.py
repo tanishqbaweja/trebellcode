@@ -9,7 +9,7 @@ from harbor.environments.base import BaseEnvironment
 
 
 class PinnedCodexAgent(Codex):
-    """Stock Harbor Codex with only the installer replaced by a pinned binary upload."""
+    """Pinned stock Harbor Codex with Windows-safe persisted-session lookup."""
 
     _PINNED_VERSION = "0.158.0"
     _PINNED_TARBALL_SHA256 = (
@@ -20,6 +20,46 @@ class PinnedCodexAgent(Codex):
     _REMOTE_BINARY = (
         _REMOTE_ROOT + "/vendor/x86_64-unknown-linux-musl/bin/codex"
     )
+
+    @override
+    def _get_session_dir(self) -> Path | None:
+        # The benchmark persists Codex sessions in a real /logs/agent directory.
+        # Harbor also syncs the CODEX_HOME sessions symlink itself, which becomes
+        # an inaccessible reparse point on Windows hosts (WinError 1920).
+        #
+        # Never fall back to Harbor's agent/sessions path here. There is a
+        # small post-run race where codex-sessions may not be visible yet;
+        # touching the reparse point in that window converts an otherwise
+        # completed solve into a trial infrastructure error before the verifier
+        # can run. Usage can be recovered from the persisted Codex rollout by
+        # Trebell's pair reporter, so "no session visible yet" is safer than an
+        # unsafe fallback.
+        sessions_dir = self.logs_dir / "codex-sessions"
+        try:
+            if not sessions_dir.exists():
+                return None
+            session_dirs = []
+            for candidate in sessions_dir.rglob("*"):
+                try:
+                    if candidate.is_dir():
+                        session_dirs.append(candidate)
+                except OSError:
+                    continue
+            if not session_dirs:
+                return None
+            max_depth = max(len(d.parts) for d in session_dirs)
+            deepest = [d for d in session_dirs if len(d.parts) == max_depth]
+            if not deepest:
+                return None
+            existing = []
+            for candidate in deepest:
+                try:
+                    existing.append((candidate.stat().st_mtime, candidate))
+                except OSError:
+                    continue
+            return max(existing)[1] if existing else None
+        except OSError:
+            return None
 
     @override
     async def install(self, environment: BaseEnvironment) -> None:

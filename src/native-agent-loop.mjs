@@ -492,7 +492,13 @@ function terminalRunLooksLikeVerifier(args={}){
 function selfAdmittedVerificationGap(text){
   const value=String(text||"").replace(/[\u2018\u2019\u02bc\uff07]/g,"'").replace(/\*\*/g,"");
   if(!value.trim())return false;
+  if(/\brequired\b[^\n.!?]{0,100}\b(?:check|verification|validation|test)\s+(?:has\s+)?failed\b|\b(?:file|artifact|deliverable|result|solution)\s+(?:is|remains?)\s+(?:therefore\s+)?provisional\b|\bnot\s+(?:a\s+)?verified\s+(?:deliverable|artifact|result|solution)\b/i.test(value))return true;
   return /(?:^|\n)\s*unverified\s*:|\b(?:remains?|still|currently)\s+(?:unverified|untested|unconfirmed)\b|\b(?:not|never)\s+(?:(?:fully|completely|exhaustively|thoroughly|end[- ]to[- ]end)\s+)?(?:verified|tested|checked|validated|confirmed)\b|\b(?:unable|cannot|can't|could\s+not|couldn't)\s+to\s+(?:verify|test|check|validate|confirm|certify|prove|demonstrate)\b|\b(?:cannot|can't|unable\s+to|could\s+not|couldn't)\s+(?:certify|prove|demonstrate|confirm)\s+(?:that|whether)\b|\bdid(?:\s+not|n't)\s+(?:establish|determine|confirm|prove|demonstrate)\s+whether\b|\bdid(?:\s+not|n't)\s+(?:run|execute|perform)\s+(?:an?\s+|the\s+)?(?:integration|end[- ]to[- ]end|e2e|smoke|acceptance|timed|performance|benchmark|test)\b|\bdid(?:\s+not|n't)\s+(?:send|make|issue)\s+(?:an?\s+|the\s+)?(?:real|live|actual)\s+(?:http\s+)?(?:request|post|callback)\b|\bdid(?:\s+not|n't)\s+(?:exercise|reproduce)\s+(?:an?\s+|the\s+)?(?:(?:real|live|actual|full|fresh)\s+)?(?:integration|lifecycle|restart|deploy(?:ment)?|behavio(?:u)?r|path)\b/i.test(value);
+}
+
+function selfAdmittedFailedAcceptanceGap(text){
+  const value=String(text||"").replace(/[\u2018\u2019\u02bc\uff07]/g,"'").replace(/\*\*/g,"");
+  return /\brequired\b[^\n.!?]{0,100}\b(?:check|verification|validation|test)\s+(?:has\s+)?failed\b|\b(?:file|artifact|deliverable|result|solution)\s+(?:is|remains?)\s+(?:therefore\s+)?provisional\b|\bnot\s+(?:a\s+)?verified\s+(?:deliverable|artifact|result|solution)\b/i.test(value);
 }
 
 function selfAdmittedCompletionGap(text){
@@ -1169,18 +1175,20 @@ export async function runNativeAgentTurn({
     conversation.push({role:"assistant",content:responseText,toolCalls:calls});
     if(!calls.length){
       const canVerifyLocally=directVisiblePairs.some(item=>item.namespace==="trebell_terminal"&&item.name==="run");
-      const hasSelfVerificationGap=selfAdmittedVerificationGap(responseText);
+      const hasSelfVerificationGap=selfAdmittedVerificationGap(responseText),hasFailedAcceptanceGap=selfAdmittedFailedAcceptanceGap(responseText);
       const hasSelfCompletionGap=selfAdmittedCompletionGap(responseText),selfAdmittedGapKind=hasSelfCompletionGap?"completion":hasSelfVerificationGap?"verification":null;
       const priorSelfAdmittedGapRecoveryUsedTool=selfAdmittedGapRecoveries>0&&toolCalls>selfAdmittedGapRecoveryToolBaseline;
       const shouldRecoverSelfAdmittedGap=selfAdmittedGapRecoveries===0||priorSelfAdmittedGapRecoveryUsedTool;
       const preEditCompletionBlockerChallenge=hasSelfCompletionGap&&editRevision===0&&selfAdmittedGapRecoveries===0;
       const selfAdmittedGapCanRecover=preEditCompletionBlockerChallenge||editRevision>0;
-      const maxSelfAdmittedGapRecoveries=2;
+      const maxSelfAdmittedGapRecoveries=hasFailedAcceptanceGap?3:2;
       if(workspaceMutationRequested&&selfAdmittedGapCanRecover&&canVerifyLocally&&!toolBudgetExhausted&&!verifiedFinalizationReady&&selfAdmittedGapRecoveries<maxSelfAdmittedGapRecoveries&&shouldRecoverSelfAdmittedGap&&modelTurns<budget.maxModelTurns&&selfAdmittedGapKind){
         selfAdmittedGapRecoveries++;
         selfAdmittedGapRecoveryToolBaseline=toolCalls;
         const recoveryMessage=preEditCompletionBlockerChallenge
           ? "Your previous draft concludes that a required mutation, restoration, or reconstruction cannot be completed before any confirmed workspace edit. Before accepting that blocker, do one bounded falsification pass. Do not fabricate, approximate, substitute, or weaken an exact-data requirement. Test whether the intended state can be reconstructed from local evidence already present: reversible transforms or mappings, internal redundancy, peer/majority consistency, deterministic encodings, checksums or metadata, logs/history, or other invariants that distinguish the intended state. Prefer one batched script or focused tool response that compares the strongest remaining hypotheses. If exact recovery is supported, implement it and exercise the requested acceptance path; if not, end with the blocker and the decisive negative evidence."
+          : selfAdmittedGapKind==="verification"&&hasFailedAcceptanceGap&&selfAdmittedGapRecoveries===1
+            ? "Your previous draft says a required acceptance or verification check actually failed, so the task is not complete. Do not merely rerun the same failing check or weaken its acceptance criterion. Treat the failure as diagnostic evidence: identify the earliest or most specific mismatch you can measure, compare the strongest remaining hypotheses in one bounded batched probe, make the evidence-supported repair, and rerun the exact acceptance path. Preserve the user's original exactness requirement."
           : selfAdmittedGapKind==="completion"
           ? selfAdmittedGapRecoveries===1
             ? "Your previous draft explicitly says a required part of the task is still incomplete or missing. Do not end yet. Focus only on that named unresolved requirement. Use the evidence already gathered and the available tools to resolve it; prefer one small executable probe or direct inspection that discriminates between the remaining hypotheses, then produce and verify the missing deliverable. Do not restart broad exploration or repeat already-settled work. If a concrete external blocker truly makes completion impossible, answer again with that blocker explicit."

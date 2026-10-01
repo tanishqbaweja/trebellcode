@@ -13,7 +13,7 @@ async function newestTrialDir(jobName){
   const dirs=entries.filter(entry=>entry.isDirectory());return dirs[0]?join(jobsDir,jobName,dirs[0].name):null;
 }
 async function fileState(path){try{const info=await stat(path);return {bytes:info.size,lastWriteAt:info.mtime.toISOString(),ageSeconds:Math.max(0,Math.round((Date.now()-info.mtimeMs)/1000))}}catch{return null}}
-async function laneState(lane,report){
+async function laneState(lane,report,recovered=null){
   const trialDir=await newestTrialDir(lane.jobName),job=report?.jobs?.find(item=>item.label===lane.label)||null;
   const liveEvidence=job?null:lane.harness==="native"?await recoverNativeEventEvidence(jobsDir,lane.jobName):lane.harness==="codex"?await recoverCodexSessionEvidence(jobsDir,lane.jobName):null;
   let activity=null;
@@ -26,6 +26,11 @@ async function laneState(lane,report){
     ...(job||{}),
     apiEquivalentCostUsd:job?.apiEquivalentCostUsd??liveEvidence?.apiEquivalentCostUsd??null,
   }:null;
+  const recoveredLane=recovered?.lanes?.[lane.label]||null;
+  if(effectiveJob&&recoveredLane?.checks){
+    effectiveJob.recoveredVerifierChecks=recoveredLane.checks;
+    effectiveJob.verifierRecovered=true;
+  }
   return {...lane,activity,job:effectiveJob,liveEvidence:Boolean(liveEvidence&&!job)};
 }
 function money(value){return value==null?"-":`$${Number(value).toFixed(4)}`}
@@ -34,7 +39,8 @@ async function snapshot(){
   const pointer=await json(join(validationDir,"terminal-bench-latest.json"));
   if(!pointer)throw new Error("No saved Terminal-Bench run pointer found yet.");
   const report=await json(pointer.reportPath)||{};
-  const lanes=await Promise.all((report.lanes||pointer.lanes||[]).map(lane=>laneState(lane,report)));
+  const recovered=await json(String(pointer.reportPath||"").replace(/\.json$/,".recovered-verifier.json"));
+  const lanes=await Promise.all((report.lanes||pointer.lanes||[]).map(lane=>laneState(lane,report,recovered)));
   return {capturedAt:new Date().toISOString(),pairId:pointer.pairId,task:pointer.task,model:pointer.model,parallel:pointer.parallel,complete:Boolean(report.complete),reportPath:pointer.reportPath,lanes};
 }
 async function persist(snap){
@@ -58,7 +64,7 @@ function render(snap,saved){
   lines.push("LANE          STATUS     ACTIVITY   VERIFY  INPUT        OUTPUT       CACHE      API-EQ COST");
   lines.push("------------  ---------  ---------  ------  -----------  -----------  ---------  -----------");
   for(const lane of snap.lanes){
-    const checks=lane.job?.verifierChecks,verify=checks?`${checks.passed}/${checks.tests}`:"-";
+    const checks=lane.job?.verifierChecks||lane.job?.recoveredVerifierChecks,verify=checks?`${checks.passed}/${checks.tests}${lane.job?.verifierRecovered?"*":""}`:"-";
     const age=lane.activity?.state?.ageSeconds,activity=age==null?"-":age<30?"active":age<180?`${age}s ago`:`${Math.round(age/60)}m ago`;
     const cache=lane.job?.cacheHitPercent==null?"-":`${Number(lane.job.cacheHitPercent).toFixed(1)}%`;
     lines.push(`${lane.label.padEnd(12)}  ${String(lane.status||"?").padEnd(9)}  ${String(activity).padEnd(9)}  ${verify.padEnd(6)}  ${count(lane.job?.inputTokens).padEnd(11)}  ${count(lane.job?.outputTokens).padEnd(11)}  ${cache.padEnd(9)}  ${money(lane.job?.apiEquivalentCostUsd)}`);

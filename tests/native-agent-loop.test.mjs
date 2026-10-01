@@ -2577,6 +2577,31 @@ test("native agent gives one focused verification recovery when its own final dr
   assert.equal(events.filter(event=>event.name==="native.verification.self_admitted_gap").length,1);
 });
 
+test("native does not accept a provisional artifact after its required exact check failed",async()=>{
+  const requests=[],events=[];let providerCalls=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Write the reconstructed checkpoint artifact exactly."}],maxModelTurns:8,maxToolCalls:10,onEvent:event=>events.push(event),
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"write_file",arguments:'{"path":"output/model.bin","content":"candidate"}'}],usage:{}};
+      if(providerCalls===2)return {text:"The required exact-logit check failed. The file is therefore provisional, not a verified deliverable.",toolCalls:[],usage:{}};
+      if(providerCalls===3){
+        const recovery=request.messages.find(message=>message.role==="developer"&&/required acceptance or verification check actually failed/i.test(String(message.content||"")));
+        assert.ok(recovery);assert.match(String(recovery.content),/do not merely rerun/i);assert.match(String(recovery.content),/strongest remaining hypotheses/i);assert.match(String(recovery.content),/original exactness requirement/i);
+        return {text:"",toolCalls:[{id:"diagnose",namespace:"trebell_terminal",name:"run",arguments:'{"command":"python","args":["diagnose-layout.py"]}'}],usage:{}};
+      }
+      return {text:"Repaired the mapping and the exact acceptance check now passes.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{path:"output/model.bin",bytes:9}:{exitCode:0,stdout:"first mismatch isolated"},
+  });
+  assert.equal(providerCalls,4);assert.match(result.text,/exact acceptance check now passes/i);
+  assert.equal(events.filter(event=>event.name==="native.verification.self_admitted_gap").length,1);
+});
+
 test("native treats cannot-certify and not-exhaustively-verified caveats as acceptance gaps",async()=>{
   const requests=[],events=[];let providerCalls=0;
   const result=await runNativeAgentTurn({

@@ -201,7 +201,7 @@ test("Terminal-Bench watchdog persists latest and timestamped history snapshots"
   assert.match(source,/terminal-bench-latest\.json/);
 });
 
-test("Pinned Harbor Codex adapter changes only installation and verifies the exact official version",async()=>{
+test("Pinned Harbor Codex adapter pins the official version and uses Windows-safe persisted sessions",async()=>{
   const source=await readFile(new URL("../benchmarks/harbor/pinned_codex_agent.py",import.meta.url),"utf8");
   assert.match(source,/class PinnedCodexAgent\(Codex\)/);
   assert.match(source,/_PINNED_VERSION = "0\.158\.0"/);
@@ -213,6 +213,11 @@ test("Pinned Harbor Codex adapter changes only installation and verifies the exa
   assert.match(source,/codex --version/);
   assert.match(source,/\/logs\/agent\/codex-sessions/);
   assert.match(source,/ln -s \/logs\/agent\/codex-sessions \/tmp\/codex-home\/sessions/);
+  assert.match(source,/def _get_session_dir\(self\)/);
+  assert.match(source,/self\.logs_dir \/ "codex-sessions"/);
+  assert.match(source,/WinError 1920/);
+  assert.match(source,/except OSError:/);
+  assert.doesNotMatch(source,/super\(\)\._get_session_dir\(\)/);
   assert.doesNotMatch(source,/async def run\(/);
 });
 
