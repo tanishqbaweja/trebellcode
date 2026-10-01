@@ -2584,6 +2584,40 @@ test("native completion-gate recovery reopens a bounded post-edit evidence windo
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,1);
 });
 
+test("native recovery can verify a repair in the same response then blocks further probing",async()=>{
+  let turns=0;const executed=[],events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxModelTurns:14,maxToolCalls:20,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Fix src/a.mjs until the acceptance check passes."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"initial",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"candidate"}'}],usage:{}};
+      if(turns===2)return {text:"Candidate is ready.",toolCalls:[],usage:{}};
+      if(turns===3)return {text:'{"status":"incomplete","unresolved":["acceptance still fails"],"reason":"Focused recovery is available."}',toolCalls:[],usage:{}};
+      if(turns===4)return {text:"",toolCalls:[{id:"e1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["e1.mjs"]}'}],usage:{}};
+      if(turns===5)return {text:"",toolCalls:[{id:"e2",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["e2.mjs"]}'}],usage:{}};
+      if(turns===6)return {text:"",toolCalls:[
+        {id:"repair",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"candidate","new_text":"fixed"}'},
+        {id:"post-check",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'},
+      ],usage:{}};
+      if(turns===7)return {text:"",toolCalls:[{id:"extra-post-check",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["probe-again.mjs"]}'}],usage:{}};
+      if(turns===8)return {text:"The repaired implementation now satisfies acceptance.",toolCalls:[],usage:{}};
+      if(turns===9)return {text:'{"status":"complete","unresolved":[],"reason":"The repaired implementation passed the reserved post-edit verification."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{
+      executed.push(call.id);
+      return call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0,stdout:"verified"};
+    },
+  });
+  assert.equal(turns,9);
+  assert.equal(result.text,"The repaired implementation now satisfies acceptance.");
+  assert.deepEqual(executed,["initial","e1","e2","repair","post-check"]);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="post_edit_verification").length,1);
+  const blocked=events.find(event=>event.name==="native.completion.recovery_evidence_call_blocked"&&event.data?.callId==="extra-post-check");assert.ok(blocked);assert.equal(blocked.data?.reason,"recovery_post_edit_evidence_budget");
+});
+
 test("native requires the owed corrective edit before reopening recovery evidence",async()=>{
   let turns=0;const executed=[],events=[],requests=[];
   const result=await runNativeAgentTurn({
