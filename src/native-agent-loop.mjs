@@ -1352,6 +1352,10 @@ export async function runNativeAgentTurn({
           continue;
         }
         conversation.length=candidate.conversationLength;completionGateCandidate=null;completionGateInvalidResponses=0;
+        if(completionRecoveryIncumbent&&completionRecoveryIncumbent.editRevision===editRevision&&["improved","regressed"].includes(verdict.progress)){
+          const reportedProgress=verdict.progress;verdict.progress="unchanged";
+          emit(onEvent,{name:"native.completion.recovery_progress_normalized",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,recoveryEpoch:completionRecoveryEpoch,reportedProgress,normalizedProgress:"unchanged",incumbentEditRevision:completionRecoveryIncumbent.editRevision}});
+        }
         emit(onEvent,{name:"native.completion.gate",status:verdict.status==="complete"?"completed":verdict.status==="blocked"?"blocked":"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,verdict:verdict.status,progress:verdict.progress,unresolved:verdict.unresolved,reason:verdict.reason}});
         if(verdict.status==="complete"||verdict.status==="blocked"){
           const result={
