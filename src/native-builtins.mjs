@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { access, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, posix, relative, resolve, sep } from "node:path";
 import {
@@ -190,6 +191,8 @@ function occurrences(text,needle){
   if(!needle)return 0;let count=0,offset=0;for(;;){const index=text.indexOf(needle,offset);if(index<0)return count;count++;offset=index+needle.length}
 }
 
+function sha256Text(value){return createHash("sha256").update(String(value??""),"utf8").digest("hex")}
+
 export function createNativeBuiltins({root,environments=null,environmentId=null,environment=process.env,platform=process.platform,backgroundProcesses=null,threadId=null,environmentNames=null}={}){
   if(!root)throw new Error("Native built-in tools require an active workspace root");
   return async function execute(call={}){
@@ -213,10 +216,12 @@ export function createNativeBuiltins({root,environments=null,environmentId=null,
       if(name==="replace_text"){
         const oldText=String(args.old_text??"");if(!oldText)throw new Error("old_text must not be empty");
         const located=await safeWorkspacePath(root,args.path,{environments,environmentId,mustExist:true});
-        const file=await environmentWorkspaceFile(located.path,MAX_EDIT_BYTES,{root,environments,environmentId}),expected=boundedInteger(args.expected_replacements,1,1,100),count=occurrences(file.content,oldText);
+        const file=await environmentWorkspaceFile(located.path,MAX_EDIT_BYTES,{root,environments,environmentId}),beforeSha256=sha256Text(file.content),expectedSha256=String(args.expected_sha256||"").trim().toLowerCase();
+        if(expectedSha256&&expectedSha256!==beforeSha256)throw new Error(`Expected current SHA-256 ${expectedSha256} for ${args.path}, found ${beforeSha256}. No changes were written.`);
+        const expected=boundedInteger(args.expected_replacements,1,1,100),count=occurrences(file.content,oldText);
         if(count!==expected)throw new Error(`Expected ${expected} exact replacement${expected===1?"":"s"} in ${args.path}, found ${count}. No changes were written.`);
         const next=file.content.split(oldText).join(String(args.new_text??""));if(Buffer.byteLength(next,"utf8")>MAX_EDIT_BYTES)throw new Error("Edited file exceeds the 2 MB Native edit limit");
-        const written=await environmentWorkspaceWriteFile(located.path,next,{root,environments,environmentId});return {path:written.path,size:written.size,replacements:count};
+        const written=await environmentWorkspaceWriteFile(located.path,next,{root,environments,environmentId});return {path:written.path,size:written.size,replacements:count,beforeSha256,afterSha256:sha256Text(next)};
       }
       throw new Error(`Unknown Native workspace tool: ${name}`);
     }

@@ -37,6 +37,10 @@ test("Native exact replacement fails closed and workspace paths cannot escape",a
     const execute=createNativeBuiltins({root});
     await assert.rejects(()=>execute({namespace:"trebell_workspace",name:"replace_text",arguments:{path:"src/app.js",old_text:"missing text",new_text:"oops"}}),/found 0.*No changes were written/i);
     assert.equal(await readFile(join(root,"src","app.js"),"utf8"),"const value = 1;\n");
+    const guarded=await execute({namespace:"trebell_workspace",name:"replace_text",arguments:{path:"src/app.js",old_text:"value = 1",new_text:"value = 2"}});
+    assert.match(guarded.beforeSha256,/^[a-f0-9]{64}$/);assert.match(guarded.afterSha256,/^[a-f0-9]{64}$/);assert.notEqual(guarded.beforeSha256,guarded.afterSha256);
+    await assert.rejects(()=>execute({namespace:"trebell_workspace",name:"replace_text",arguments:{path:"src/app.js",old_text:"value = 2",new_text:"value = 3",expected_sha256:guarded.beforeSha256}}),/Expected current SHA-256.*No changes were written/i);
+    assert.equal(await readFile(join(root,"src","app.js"),"utf8"),"const value = 2;\n");
     await assert.rejects(()=>execute({namespace:"trebell_workspace",name:"write_file",arguments:{path:"../"+outside.split(/[\\/]/).pop(),content:"escape"}}),/outside the active workspace/i);
     await assert.rejects(()=>execute({namespace:"trebell_workspace",name:"read_file",arguments:{path:"../does-not-belong.txt"}}),/outside the active workspace/i);
     await writeFile(outside,"outside","utf8");

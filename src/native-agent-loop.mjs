@@ -38,6 +38,8 @@ function safeArguments(value){
   catch{return {}}
 }
 
+function sha256Text(value){return createHash("sha256").update(String(value??""),"utf8").digest("hex")}
+
 function terminalToolTimeoutMs(namespace,name,args={}){
   if(namespace!=="trebell_terminal"||name!=="run")return null;
   return boundedInteger(args.timeout_ms,TERMINAL_TOOL_TIMEOUT_DEFAULT_MS,{min:1000,max:TERMINAL_TOOL_TIMEOUT_MAX_MS});
@@ -516,9 +518,10 @@ function parseCompletionGateVerdict(text){
     try{
       const parsed=JSON.parse(candidate),status=String(parsed?.status||"").trim().toLowerCase();
       if(!["complete","incomplete","blocked"].includes(status))continue;
+      const rawProgress=String(parsed?.progress||"").trim().toLowerCase(),progress=["improved","unchanged","regressed","uncertain"].includes(rawProgress)?rawProgress:"uncertain";
       const unresolved=Array.isArray(parsed?.unresolved)?parsed.unresolved.map(item=>String(item||"").trim()).filter(Boolean).slice(0,8):[];
       const reason=String(parsed?.reason||"").trim().slice(0,2000);
-      return {status,unresolved,reason};
+      return {status,progress,progressProvided:Boolean(rawProgress),unresolved,reason};
     }catch{}
   }
   return null;
@@ -747,7 +750,7 @@ export async function runNativeAgentTurn({
   const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalStatusRequested=explicitTerminalStatusRequest(conversation),directTerminalStatusCommand=directTerminalStatusCommands===true?explicitTerminalStatusCommand(conversation):null,directReplacementStatus=directExactReplacementStatus===true?explicitExactReplacementStatus(conversation):null,directWriteStatus=directExactWriteStatus===true?explicitExactFileWriteStatus(conversation):null,directReadStatus=directExactReadStatus===true?explicitExactFileReadStatus(conversation):null,directListStatus=directExactListStatus===true?explicitImmediateWorkspaceListStatus(conversation):null,directGitStatusRequest=directGitStatus===true?explicitGitReadRequest(conversation):null,directProcessRunningRequest=directProcessRunningStatus===true?explicitBackgroundProcessRunningRequest(conversation):null,directBrowserRuntimeRequest=directBrowserRuntimeStatus===true&&explicitBrowserRuntimeHealthRequest(conversation),directBrowserScreenshotRequest=directBrowserScreenshot===true&&explicitBrowserScreenshotRequest(conversation),terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
   const verificationFinalizationRequest=verificationCompletionRequest||(finalAfterVerifiedRequest?.target?finalAfterVerifiedRequest:null);
   const successfulTerminalRuns=[];
-  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,selfAdmittedGapRecoveries=0,selfAdmittedGapRecoveryToolBaseline=0,preEditBlockerChallengeToolAllowance=false,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,progressCheckpointInjected=false,probeBatchingRequired=false,postEditProbeBatchingRequired=false,postEditEvidenceRounds=0,postEditAssumptionAuditRevision=0,postEditAbstractionEscalationRevision=0,pendingAbstractionRepair=false,abstractionRepairRevision=0,abstractionRepairVerificationPending=false,abstractionRepairVerificationPromptRevision=0,abstractionRepairVerificationGateCandidate=null,abstractionRepairVerificationGateInvalidResponses=0,postEditResidualStructureRevision=0,postEditEvidenceCheckpointRevision=0,postEditEvidenceEscalated=false,singletonTerminalProbeStreak=0,implementationPressureEvidenceRounds=0,implementationPressureEscalated=false,turnBudgetCheckpointInjected=false,wallBudgetCheckpointInjected=false,revisionChurnCheckpointInjected=false,revisionChurnCheckpointRevision=0,revisionChurnConvergenceBaseline=0,revisionChurnEscalated=false,revisionChurnGraceEditUsed=false,convergenceCheckpointRevision=0,convergenceCheckpointCount=0,completionGateCandidate=null,completionGateInvalidResponses=0,completionGateChecks=0,completionGateRecoveries=0,completionRecoveryEpoch=0,completionRecoveryEvidenceRoundsRemaining=0,completionRecoveryEditResponsesRemaining=0,completionRecoveryEditConsumedEpoch=0,completionRecoveryPostEditEvidenceResponsesRemaining=0,completionRecoveryEditRequired=false,completionRecoveryEditRequiredMisses=0,completionRecoverySupportWritesRemaining=0,completionRecoverySupportVerificationRemaining=0,completionRecoveryImplementationPaths=new Set(),completionRecoverySupportPaths=new Set(),verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
+  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,selfAdmittedGapRecoveries=0,selfAdmittedGapRecoveryToolBaseline=0,preEditBlockerChallengeToolAllowance=false,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,progressCheckpointInjected=false,probeBatchingRequired=false,postEditProbeBatchingRequired=false,postEditEvidenceRounds=0,postEditAssumptionAuditRevision=0,postEditAbstractionEscalationRevision=0,pendingAbstractionRepair=false,abstractionRepairRevision=0,abstractionRepairVerificationPending=false,abstractionRepairVerificationPromptRevision=0,abstractionRepairVerificationGateCandidate=null,abstractionRepairVerificationGateInvalidResponses=0,postEditResidualStructureRevision=0,postEditEvidenceCheckpointRevision=0,postEditEvidenceEscalated=false,singletonTerminalProbeStreak=0,implementationPressureEvidenceRounds=0,implementationPressureEscalated=false,turnBudgetCheckpointInjected=false,wallBudgetCheckpointInjected=false,revisionChurnCheckpointInjected=false,revisionChurnCheckpointRevision=0,revisionChurnConvergenceBaseline=0,revisionChurnEscalated=false,revisionChurnGraceEditUsed=false,convergenceCheckpointRevision=0,convergenceCheckpointCount=0,completionGateCandidate=null,completionGateInvalidResponses=0,completionGateChecks=0,completionGateRecoveries=0,completionRecoveryEpoch=0,completionRecoveryEvidenceRoundsRemaining=0,completionRecoveryEditResponsesRemaining=0,completionRecoveryEditConsumedEpoch=0,completionRecoveryPostEditEvidenceResponsesRemaining=0,completionRecoveryEditRequired=false,completionRecoveryEditRequiredMisses=0,completionRecoverySupportWritesRemaining=0,completionRecoverySupportVerificationRemaining=0,completionRecoveryImplementationPaths=new Set(),completionRecoverySupportPaths=new Set(),completionRecoveryIncumbent=null,completionRecoveryEditTransaction=null,completionRecoveryIncumbentRestores=0,completionRecoveryIncumbentWorkspaceAligned=true,verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
   const normalizedEditPath=call=>String(safeArguments(call?.arguments).path||"").trim().replace(/\\/g,"/");
   const userRequestedEditPath=path=>{
     const value=String(path||"").trim();if(!value)return false;
@@ -783,6 +786,45 @@ export async function runNativeAgentTurn({
   const turnSignal=wallController?(signal?AbortSignal.any([signal,wallController.signal]):wallController.signal):signal;
   const parallelLimit=boundedInteger(maxParallelToolCalls,8,{min:1,max:32});
   const canRunParallel=call=>parallelToolCalls===true&&typeof isToolParallelSafe==="function"&&isToolParallelSafe(call)===true;
+  const captureRecoveryWorkspaceSnapshot=async(call)=>{
+    if(call?.namespace!=="trebell_workspace"||!["write_file","replace_text"].includes(String(call?.name||"")))return null;
+    const args=safeArguments(call?.arguments),path=String(args.path||"").trim();if(!path)return null;
+    const canReadSnapshot=directVisiblePairs.some(item=>item.namespace==="trebell_workspace"&&item.name==="read_file"),canRestoreSnapshot=directVisiblePairs.some(item=>item.namespace==="trebell_workspace"&&item.name==="replace_text");
+    if(!canReadSnapshot||!canRestoreSnapshot)return {path,restorable:false,reason:"workspace snapshot/restore tools are not exposed by this runtime"};
+    try{
+      const output=await executeTool({id:`native-recovery-snapshot-${modelTurns}-${editRevision}`,namespace:"trebell_workspace",name:"read_file",arguments:{path,max_bytes:1024*1024},rawArguments:JSON.stringify({path,max_bytes:1024*1024}),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
+      if(output?.success===false||typeof output?.content!=="string")return {path,restorable:false,reason:"workspace snapshot was unavailable"};
+      const content=output.content,kind=String(call?.name||""),beforeSha256=sha256Text(content);
+      let candidateContent=null;
+      if(kind==="write_file")candidateContent=String(args.content??"");
+      else if(kind==="replace_text"){
+        const oldText=String(args.old_text??""),newText=String(args.new_text??"");
+        if(oldText)candidateContent=content.split(oldText).join(newText);
+      }
+      return {path,restorable:true,content,beforeSha256,candidateSha256:candidateContent==null?null:sha256Text(candidateContent)};
+    }catch(error){return {path,restorable:false,reason:String(error?.message||error||"workspace snapshot failed").slice(0,240)}}
+  };
+  const restoreRecoveryEditTransaction=async transaction=>{
+    const snapshots=Array.isArray(transaction?.snapshots)?transaction.snapshots:[];
+    if(!snapshots.length||snapshots.some(item=>!item?.restorable||typeof item?.content!=="string"))return {restored:false,paths:[],reason:"one or more edited files did not have a restorable pre-edit snapshot"};
+    const restored=[];
+    for(const snapshot of snapshots){
+      const path=String(snapshot.path||"").trim();if(!path)return {restored:false,paths:restored,reason:"snapshot path was unavailable"};
+      try{
+        const current=await executeTool({id:`native-recovery-restore-check-${modelTurns}-${restored.length+1}`,namespace:"trebell_workspace",name:"read_file",arguments:{path,max_bytes:1024*1024},rawArguments:JSON.stringify({path,max_bytes:1024*1024}),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
+        if(current?.success===false||typeof current?.content!=="string")return {restored:false,paths:restored,reason:"current workspace state could not be checked before restore"};
+        const currentSha256=sha256Text(current.content);
+        if(snapshot.candidateSha256&&currentSha256!==snapshot.candidateSha256)return {restored:false,paths:restored,reason:"workspace changed after the recovery candidate was written"};
+        if(current.content===snapshot.content){restored.push(path);continue}
+        if(!current.content.length)return {restored:false,paths:restored,reason:"an empty edited file could not be restored fail-closed"};
+        const restoreArguments={path,old_text:current.content,new_text:snapshot.content,expected_replacements:1};
+        const output=await executeTool({id:`native-recovery-restore-${modelTurns}-${restored.length+1}`,namespace:"trebell_workspace",name:"replace_text",arguments:restoreArguments,rawArguments:JSON.stringify(restoreArguments),signal:turnSignal,modelTurn:modelTurns,toolCall:toolCalls});
+        if(output?.success===false||output?.uncertain===true)return {restored:false,paths:restored,reason:String(output?.error||output?.message||"workspace restore failed").slice(0,240)};
+        restored.push(path);
+      }catch(error){return {restored:false,paths:restored,reason:String(error?.message||error||"workspace restore failed").slice(0,240)}}
+    }
+    return {restored:true,paths:restored,reason:null};
+  };
   const executeOneTool=async(call,toolCallNumber)=>{
     const callId=String(call?.id||("native-tool-"+toolCallNumber)),namespace=call?.namespace?String(call.namespace):null,name=String(call?.name||"tool"),args=safeArguments(call?.arguments);
     if(namespace)executedToolKeys.add(namespace+"/"+name);
@@ -844,7 +886,7 @@ export async function runNativeAgentTurn({
         const supportAllowanceAvailable=completionRecoverySupportWritesRemaining>0;
         if(supportAllowanceAvailable)completionRecoverySupportWritesRemaining=Math.max(0,completionRecoverySupportWritesRemaining-1);
         if(supportAllowanceAvailable&&completionRecoveryEvidenceRoundsRemaining<=0)completionRecoverySupportVerificationRemaining=Math.max(completionRecoverySupportVerificationRemaining,1);
-        if(path)verifiedEdits.push({path,kind:name,replacements:0,summary:null,supportOnly:true});
+        if(path)verifiedEdits.push({path,kind:name,replacements:0,summary:null,supportOnly:true,beforeSha256:String(output?.beforeSha256||"")||null,afterSha256:String(output?.afterSha256||"")||null});
         emit(onEvent,{name:"native.completion.recovery_support_write",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,recoveryEpoch:completionRecoveryEpoch,path:redactSecretText(path,{trim:true}).slice(0,240),allowanceUsed:supportAllowanceAvailable,supportVerificationAllowed:supportAllowanceAvailable&&completionRecoverySupportVerificationRemaining>0}});
       }else{
         editRevision++;
@@ -852,7 +894,7 @@ export async function runNativeAgentTurn({
           abstractionRepairRevision=editRevision;pendingAbstractionRepair=false;abstractionRepairVerificationPending=true;abstractionRepairVerificationPromptRevision=0;postEditResidualStructureRevision=0;
           emit(onEvent,{name:"native.progress.abstraction_repair_applied",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,path:redactSecretText(path,{trim:true}).slice(0,240),verificationPending:true}});
         }
-        if(normalizedPath){completionRecoverySupportPaths.delete(normalizedPath);completionRecoveryImplementationPaths.add(normalizedPath)}if(path)verifiedEdits.push({path,kind:name,replacements:name==="replace_text"?Math.max(0,Math.trunc(Number(output?.replacements)||0)):0,summary:name==="replace_text"?conciseReplacementSummary(args.old_text,args.new_text):null,supportOnly:false});
+        if(normalizedPath){completionRecoverySupportPaths.delete(normalizedPath);completionRecoveryImplementationPaths.add(normalizedPath)}if(path)verifiedEdits.push({path,kind:name,replacements:name==="replace_text"?Math.max(0,Math.trunc(Number(output?.replacements)||0)):0,summary:name==="replace_text"?conciseReplacementSummary(args.old_text,args.new_text):null,supportOnly:false,beforeSha256:String(output?.beforeSha256||"")||null,afterSha256:String(output?.afterSha256||"")||null});
       }
     }
     if(success&&output?.success!==false&&output?.timedOut!==true&&output?.signal==null&&namespace==="trebell_terminal"&&name==="run"){
@@ -1180,7 +1222,7 @@ export async function runNativeAgentTurn({
       verifiedFinalizationInjected=true;
     }
     modelTurns++;
-    const requestStarted=nowMs(),requestMessageCount=conversation.length,forcedAllowlist=forcedToolChoice?[forcedToolChoice.namespace?forcedToolChoice.namespace+"/"+forcedToolChoice.name:forcedToolChoice.name]:null,completionGateMode=Boolean(completionGateCandidate),abstractionRepairVerificationGateMode=Boolean(abstractionRepairVerificationGateCandidate),controlGateMode=completionGateMode||abstractionRepairVerificationGateMode,finalAnswerOnly=toolBudgetExhausted||verifiedFinalizationReady||controlGateMode,recoveryEditMode=completionRecoveryEditRequired&&!controlGateMode&&!finalAnswerOnly,implementationPressure=workspaceMutationRequested&&progressCheckpointInjected&&editRevision===0&&!finalAnswerOnly&&!forcedAllowlist,recoveryEditAllowlist=["trebell_workspace/replace_text","trebell_workspace/write_file"],requestTools=controlGateMode?(preserveToolSchemasOnFinalization?visibleTools:[]):finalAnswerOnly&&!preserveToolSchemasOnFinalization?[]:forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):visibleTools,requestToolChoice=finalAnswerOnly?"none":recoveryEditMode?"required":forcedToolChoice||toolChoice;
+    const requestStarted=nowMs(),requestMessageCount=conversation.length,forcedAllowlist=forcedToolChoice?[forcedToolChoice.namespace?forcedToolChoice.namespace+"/"+forcedToolChoice.name:forcedToolChoice.name]:null,completionGateMode=Boolean(completionGateCandidate),abstractionRepairVerificationGateMode=Boolean(abstractionRepairVerificationGateCandidate),controlGateMode=completionGateMode||abstractionRepairVerificationGateMode,finalAnswerOnly=toolBudgetExhausted||verifiedFinalizationReady||controlGateMode,recoveryEditMode=completionRecoveryEditRequired&&!controlGateMode&&!finalAnswerOnly,implementationPressure=workspaceMutationRequested&&progressCheckpointInjected&&editRevision===0&&!finalAnswerOnly&&!forcedAllowlist,recoveryEditAllowlist=["trebell_workspace/replace_text","trebell_workspace/write_file"],requestTools=controlGateMode?(preserveToolSchemasOnFinalization?visibleTools:[]):finalAnswerOnly&&!preserveToolSchemasOnFinalization?[]:forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):visibleTools,requestToolChoice=finalAnswerOnly?"none":recoveryEditMode?"required":forcedToolChoice||toolChoice,requestMaxOutputTokens=controlGateMode?(maxOutputTokens==null?2048:Math.min(Number(maxOutputTokens)||2048,2048)):maxOutputTokens,requestReasoningEffort=controlGateMode?"low":reasoningEffort;
     if(recoveryEditMode)emit(onEvent,{name:"native.completion.recovery_edit_required",status:"running",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,recoveryEpoch:completionRecoveryEpoch,visibleEditToolCount:exposedToolPairs(providerVisibleTools(visibleTools,recoveryEditAllowlist)).length,visibleToolCount:exposedToolPairs(requestTools).length,toolSchemaStable:true}});
     if(implementationPressure)emit(onEvent,{name:"native.progress.implementation_pressure",status:"running",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,visibleToolCount:exposedToolPairs(requestTools).length,blockedUntilFirstEdit:Math.max(0,exposedToolPairs(requestTools).filter(item=>!(item.namespace==="trebell_workspace"&&["write_file","replace_text"].includes(item.name))).length),toolSchemaStable:true}});
     let providerMessages=conversation,providerView=null;
@@ -1196,7 +1238,7 @@ export async function runNativeAgentTurn({
     const providerAttempts=boundedInteger(maxProviderAttempts,3,{min:1,max:8});let response=null;
     for(let attempt=1;attempt<=providerAttempts;attempt++){
       try{
-        response=await providerTurn({model,provider,messages:providerMessages,tools:requestTools,toolChoice:requestToolChoice,maxOutputTokens,temperature,reasoningEffort,parallelToolCalls,signal:turnSignal,metadata:controlGateMode?{...(metadata&&typeof metadata==="object"?metadata:{}),completionGate:true,abstractionRepairVerificationGate:abstractionRepairVerificationGateMode}:metadata,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:requestMetrics[NATIVE_TOOL_SCHEMA_FINGERPRINT]||null,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:openAiContinuationIdentity,[NATIVE_CHAT_MESSAGE_CACHE_IDENTITY]:openAiContinuationIdentity});break;
+        response=await providerTurn({model,provider,messages:providerMessages,tools:requestTools,toolChoice:requestToolChoice,maxOutputTokens:requestMaxOutputTokens,temperature,reasoningEffort:requestReasoningEffort,parallelToolCalls,signal:turnSignal,metadata:controlGateMode?{...(metadata&&typeof metadata==="object"?metadata:{}),completionGate:true,abstractionRepairVerificationGate:abstractionRepairVerificationGateMode}:metadata,[NATIVE_TOOL_SCHEMA_FINGERPRINT]:requestMetrics[NATIVE_TOOL_SCHEMA_FINGERPRINT]||null,[NATIVE_OPENAI_CONTINUATION_IDENTITY]:openAiContinuationIdentity,[NATIVE_CHAT_MESSAGE_CACHE_IDENTITY]:openAiContinuationIdentity});break;
       }catch(error){
         if(error?.nativeSteered){
           if(applySteering(conversation,consumeSteering,onEvent,{model,provider,modelTurn:modelTurns,toolCalls,stage:"model_request_interrupted"})){
@@ -1301,7 +1343,7 @@ export async function runNativeAgentTurn({
           if(completionGateInvalidResponses<1&&modelTurns<budget.maxModelTurns){
             completionGateInvalidResponses++;
             conversation.length=candidate.conversationLength;
-            conversation.push({role:"developer",content:"Trebell completion gate parser could not read the previous control response. Return only one valid JSON object with exactly these fields: {\"status\":\"complete|incomplete|blocked\",\"unresolved\":[\"...\"],\"reason\":\"...\"}. Do not call tools and do not address the user."});
+            conversation.push({role:"developer",content:"Trebell completion gate parser could not read the previous control response. Return only one valid JSON object with exactly these fields: {\"status\":\"complete|incomplete|blocked\",\"progress\":\"improved|unchanged|regressed|uncertain\",\"unresolved\":[\"...\"],\"reason\":\"...\"}. Do not call tools and do not address the user."});
             emit(onEvent,{name:"native.completion.gate_retry",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,invalidResponses:completionGateInvalidResponses}});
             continue;
           }
@@ -1311,7 +1353,7 @@ export async function runNativeAgentTurn({
           continue;
         }
         conversation.length=candidate.conversationLength;completionGateCandidate=null;completionGateInvalidResponses=0;
-        emit(onEvent,{name:"native.completion.gate",status:verdict.status==="complete"?"completed":verdict.status==="blocked"?"blocked":"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,verdict:verdict.status,unresolved:verdict.unresolved,reason:verdict.reason}});
+        emit(onEvent,{name:"native.completion.gate",status:verdict.status==="complete"?"completed":verdict.status==="blocked"?"blocked":"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,verdict:verdict.status,progress:verdict.progress,unresolved:verdict.unresolved,reason:verdict.reason}});
         if(verdict.status==="complete"||verdict.status==="blocked"){
           const result={
             text:candidate.text,model:candidate.model,provider:candidate.provider,
@@ -1319,6 +1361,37 @@ export async function runNativeAgentTurn({
           };
           emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage,completionGateVerdict:verdict.status}});
           return result;
+        }
+        if(!completionRecoveryIncumbent){
+          completionRecoveryIncumbent={editRevision,unresolved:[...verdict.unresolved],reason:verdict.reason};
+          completionRecoveryIncumbentWorkspaceAligned=true;
+          completionRecoveryEditTransaction=null;
+          emit(onEvent,{name:"native.completion.recovery_incumbent_established",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,recoveryEpoch:completionRecoveryEpoch}});
+        }else if(verdict.progress==="improved"){
+          completionRecoveryIncumbent={editRevision,unresolved:[...verdict.unresolved],reason:verdict.reason};
+          completionRecoveryIncumbentWorkspaceAligned=true;
+          completionRecoveryEditTransaction=null;
+          emit(onEvent,{name:"native.completion.recovery_incumbent_advanced",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,recoveryEpoch:completionRecoveryEpoch}});
+        }else if(candidate.residualMonotonicRecovery&&candidate.recoveryTransaction&&["unchanged","regressed","uncertain"].includes(verdict.progress)){
+          const restore=await restoreRecoveryEditTransaction(candidate.recoveryTransaction);
+          if(restore.restored){
+            const rejectedRevision=editRevision;editRevision++;
+            if(Number.isInteger(candidate.recoveryTransaction?.verifiedEditsLengthBefore))verifiedEdits.length=Math.min(verifiedEdits.length,Math.max(0,candidate.recoveryTransaction.verifiedEditsLengthBefore));
+            completionRecoveryIncumbentRestores++;
+            completionRecoveryIncumbentWorkspaceAligned=true;
+            completionRecoveryEditTransaction=null;
+            singletonTerminalProbeStreak=0;postEditProbeBatchingRequired=false;postEditEvidenceRounds=0;postEditAssumptionAuditRevision=0;postEditAbstractionEscalationRevision=0;postEditEvidenceCheckpointRevision=0;postEditEvidenceEscalated=false;
+            postEditResidualStructureRevision=editRevision;
+            conversation.push({role:"developer",content:`Trebell restored the stronger evidence-backed recovery incumbent because the isolated residual candidate was ${verdict.progress}, not an independently supported improvement. Continue from the restored workspace state. This rollback does not grant extra recovery evidence or edit budget.`});
+            emit(onEvent,{name:"native.completion.recovery_incumbent_restored",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,rejectedRevision,recoveryEpoch:completionRecoveryEpoch,progress:verdict.progress,pathCount:restore.paths.length,incumbentEditRevision:completionRecoveryIncumbent?.editRevision??null}});
+          }else{
+            completionRecoveryIncumbentWorkspaceAligned=false;
+            completionRecoveryEditTransaction=null;
+            emit(onEvent,{name:"native.completion.recovery_incumbent_restore_failed",status:"uncertain",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,recoveryEpoch:completionRecoveryEpoch,progress:verdict.progress,reason:restore.reason}});
+          }
+        }else if(candidate.recoveryTransaction){
+          completionRecoveryIncumbentWorkspaceAligned=verdict.progress==="unchanged";
+          completionRecoveryEditTransaction=null;
         }
         completionGateRecoveries++;
         const unresolvedRecoveryEdit=completionRecoveryEpoch>0&&completionRecoveryEvidenceRoundsRemaining<=0&&completionRecoveryEditResponsesRemaining>0;
@@ -1333,13 +1406,14 @@ export async function runNativeAgentTurn({
         }
         if(completionRecoveryEpoch>=completionRecoveryEpochLimit){
           const unresolved=verdict.unresolved.length?verdict.unresolved:["A material acceptance condition remains unresolved."];
-          const exhaustionText=`Trebell stopped after ${completionRecoveryEpochLimit} bounded semantic recovery epochs because the completion gate still found the task incomplete. The strongest workspace state has been preserved, but completion is not verified. Unresolved: ${unresolved.join("; ")}`;
-          conversation.push({role:"developer",content:`Trebell exhausted its bounded semantic completion-recovery budget (${completionRecoveryEpochLimit} epochs). The immediately preceding candidate was not accepted as complete. Preserve the current workspace state and do not treat that candidate as verified completion on a later turn unless new evidence resolves the remaining acceptance gap.`});
+          const preservation=completionRecoveryIncumbentWorkspaceAligned?"The strongest evidence-backed workspace state has been preserved or restored":"The current workspace state could not be proven identical to the strongest evidence-backed recovery incumbent";
+          const exhaustionText=`Trebell stopped after ${completionRecoveryEpochLimit} bounded semantic recovery epochs because the completion gate still found the task incomplete. ${preservation}, and completion is not verified. Unresolved: ${unresolved.join("; ")}`;
+          conversation.push({role:"developer",content:`Trebell exhausted its bounded semantic completion-recovery budget (${completionRecoveryEpochLimit} epochs). The immediately preceding candidate was not accepted as complete. ${completionRecoveryIncumbentWorkspaceAligned?"The stronger evidence-backed recovery incumbent is the current workspace state.":"The current workspace may differ from the strongest evidence-backed recovery incumbent because a safe rollback could not be established."} Do not treat the rejected candidate as verified completion on a later turn unless new evidence resolves the remaining acceptance gap.`});
           const result={
             text:exhaustionText,model:candidate.model,provider:candidate.provider,
             messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse:candidate.lastResponse,
           };
-          emit(onEvent,{name:"native.completion.recovery_exhausted",status:"blocked",model:result.model,provider:result.provider,data:{modelTurn:modelTurns,toolCalls,editRevision,recoveryAttempt:completionGateRecoveries,recoveryEpoch:completionRecoveryEpoch,maxRecoveryEpochs:completionRecoveryEpochLimit,unresolved:verdict.unresolved}});
+          emit(onEvent,{name:"native.completion.recovery_exhausted",status:"blocked",model:result.model,provider:result.provider,data:{modelTurn:modelTurns,toolCalls,editRevision,recoveryAttempt:completionGateRecoveries,recoveryEpoch:completionRecoveryEpoch,maxRecoveryEpochs:completionRecoveryEpochLimit,unresolved:verdict.unresolved,incumbentRestores:completionRecoveryIncumbentRestores,incumbentWorkspaceAligned:completionRecoveryIncumbentWorkspaceAligned}});
           emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage,completionGateVerdict:"incomplete",completionRecoveryExhausted:true}});
           return result;
         }
@@ -1419,9 +1493,15 @@ export async function runNativeAgentTurn({
         emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{reason:error.code,modelTurns,toolCalls,editRevision,recoveryEpoch:completionRecoveryEpoch}});throw error;
       }
       if(semanticCompletionGate===true&&workspaceMutationRequested&&modelTurns<budget.maxModelTurns){
-        completionGateCandidate={text:responseText,model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,lastResponse,conversationLength:conversation.length};
+        const residualMonotonicRecovery=completionRecoveryEpoch>0&&abstractionRepairRevision>0&&!pendingAbstractionRepair&&!abstractionRepairVerificationPending&&postEditResidualStructureRevision>=abstractionRepairRevision;
+        const recoveryTransaction=completionRecoveryEditTransaction?.recoveryEpoch===completionRecoveryEpoch?completionRecoveryEditTransaction:null;
+        const incumbent=completionRecoveryIncumbent?{...completionRecoveryIncumbent}:null;
+        completionGateCandidate={text:responseText,model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,lastResponse,conversationLength:conversation.length,recoveryTransaction,residualMonotonicRecovery,incumbent};
         completionGateInvalidResponses=0;
-        conversation.push({role:"developer",content:"Trebell semantic completion gate. This is an internal control check, not the user-visible answer. Evaluate the immediately preceding candidate final answer against the user's full request and the evidence in this conversation. Return only one JSON object: {\"status\":\"complete|incomplete|blocked\",\"unresolved\":[\"material unmet requirement\"],\"reason\":\"brief evidence-based rationale\"}. Use status=complete only when every material requested deliverable and acceptance condition is supported by the available evidence. Use status=incomplete when additional local tool work could still resolve an unmet or uncertain requirement. Use status=blocked only when a material requirement genuinely cannot be completed with the available inputs/tools or depends on an unavailable external condition. A Trebell-internal convergence, evidence-budget, or revision-churn guard rejecting a recent tool call is not by itself a genuine blocker: if the underlying tool/input still exists and further focused work could resolve the requirement, return incomplete so the recovery controller can reopen a bounded allowance. Do not infer success merely from a process exit code when tool output, measurements, or the candidate answer contradict the actual requirement. Judge semantics and evidence, not wording. Do not call tools and do not address the user."});
+        const incumbentComparison=incumbent
+          ?`\nRecovery incumbent to compare against: unresolved=${JSON.stringify(incumbent.unresolved||[])}; reason=${JSON.stringify(String(incumbent.reason||"").slice(0,1200))}. Set progress=improved only when the current evidence materially moves the same acceptance condition closer to satisfaction than this incumbent, progress=regressed when it materially moves farther away, progress=unchanged when it is materially equivalent, and progress=uncertain when the evidence is not comparable or does not establish direction. Compare the strongest actual acceptance evidence, not confidence, narration, process exit codes, or amount of work performed.`
+          :"\nThere is no prior recovery incumbent yet, so set progress=uncertain.";
+        conversation.push({role:"developer",content:"Trebell semantic completion gate. This is an internal control check, not the user-visible answer. Evaluate the immediately preceding candidate final answer against the user's full request and the evidence in this conversation. Return only one JSON object: {\"status\":\"complete|incomplete|blocked\",\"progress\":\"improved|unchanged|regressed|uncertain\",\"unresolved\":[\"material unmet requirement\"],\"reason\":\"brief evidence-based rationale\"}. Use status=complete only when every material requested deliverable and acceptance condition is supported by the available evidence. Use status=incomplete when additional local tool work could still resolve an unmet or uncertain requirement. Use status=blocked only when a material requirement genuinely cannot be completed with the available inputs/tools or depends on an unavailable external condition. A Trebell-internal convergence, evidence-budget, or revision-churn guard rejecting a recent tool call is not by itself a genuine blocker: if the underlying tool/input still exists and further focused work could resolve the requirement, return incomplete so the recovery controller can reopen a bounded allowance. Do not infer success merely from a process exit code when tool output, measurements, or the candidate answer contradict the actual requirement. Judge semantics and evidence, not wording. Do not call tools and do not address the user."+incumbentComparison});
         emit(onEvent,{name:"native.completion.gate_requested",status:"running",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,toolCalls}});
         continue;
       }
@@ -1432,7 +1512,7 @@ export async function runNativeAgentTurn({
       emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage}});
       return result;
     }
-    const editRevisionBeforeCalls=editRevision,responseHasEditCall=calls.some(recoveryCorrectiveEditCall),preEditBlockerChallengeBypass=preEditBlockerChallengeToolAllowance&&editRevision===0,revisionChurnFailureEvidence=revisionChurnEscalated&&terminalRuns.some(item=>item?.currentTurn&&item?.editRevision===editRevisionBeforeCalls&&item?.exitCode!==0),completionRecoveryEditBypass=completionRecoveryEditResponsesRemaining>0,completionRecoveryEditAllowanceConsumed=completionRecoveryEpoch>0&&completionRecoveryEditConsumedEpoch===completionRecoveryEpoch&&completionRecoveryEditResponsesRemaining<=0;let redirected=false,blockedPreEditCall=false,blockedPostEditProbeCall=false,blockedPostEditEvidenceCall=false,blockedRevisionChurnEdit=false,blockedCompletionRecoveryEdit=false,blockedCompletionRecoveryEvidence=false,executedPreEditEvidence=false,executedPostEditEvidence=false,executedSupportVerification=false;
+    const editRevisionBeforeCalls=editRevision,verifiedEditsBeforeCalls=verifiedEdits.length,recoverySnapshots=new Map(),responseHasEditCall=calls.some(recoveryCorrectiveEditCall),preEditBlockerChallengeBypass=preEditBlockerChallengeToolAllowance&&editRevision===0,revisionChurnFailureEvidence=revisionChurnEscalated&&terminalRuns.some(item=>item?.currentTurn&&item?.editRevision===editRevisionBeforeCalls&&item?.exitCode!==0),completionRecoveryEditBypass=completionRecoveryEditResponsesRemaining>0,completionRecoveryEditAllowanceConsumed=completionRecoveryEpoch>0&&completionRecoveryEditConsumedEpoch===completionRecoveryEpoch&&completionRecoveryEditResponsesRemaining<=0;let redirected=false,blockedPreEditCall=false,blockedPostEditProbeCall=false,blockedPostEditEvidenceCall=false,blockedRevisionChurnEdit=false,blockedCompletionRecoveryEdit=false,blockedCompletionRecoveryEvidence=false,executedPreEditEvidence=false,executedPostEditEvidence=false,executedSupportVerification=false;
     if(preEditBlockerChallengeBypass){
       preEditBlockerChallengeToolAllowance=false;
       emit(onEvent,{name:"native.completion.blocker_challenge_evidence_allowed",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,callCount:calls.length}});
@@ -1544,6 +1624,15 @@ export async function runNativeAgentTurn({
         }
       }
       const prepared=batch.map((item,index)=>({call:item,toolCallNumber:toolCalls+index+1}));
+      const transactionalResidualEdit=completionRecoveryEpoch>0&&completionRecoveryEditResponsesRemaining>0&&abstractionRepairRevision>0&&!pendingAbstractionRepair&&!abstractionRepairVerificationPending&&postEditResidualStructureRevision>=abstractionRepairRevision;
+      if(transactionalResidualEdit){
+        for(const item of prepared){
+          if(!recoveryCorrectiveEditCall(item.call))continue;
+          const path=String(safeArguments(item.call?.arguments).path||"").trim().replace(/\\/g,"/");
+          if(!path||recoverySnapshots.has(path))continue;
+          recoverySnapshots.set(path,await captureRecoveryWorkspaceSnapshot(item.call));
+        }
+      }
       if(editRevision===0&&implementationPressure&&!responseHasEditCall&&prepared.some(item=>!implementationPressureEditCall(item.call)))executedPreEditEvidence=true;
       if(editRevisionBeforeCalls>0&&(!responseHasEditCall||editRevision>editRevisionBeforeCalls)&&prepared.some(item=>!implementationPressureEditCall(item.call)))executedPostEditEvidence=true;
       toolCalls+=prepared.length;
@@ -1556,6 +1645,15 @@ export async function runNativeAgentTurn({
     }
     if(redirected)continue;
     if(editRevision>editRevisionBeforeCalls&&completionRecoveryEditResponsesRemaining>0){
+      const implementationEdits=verifiedEdits.slice(verifiedEditsBeforeCalls).filter(item=>item&&!item.supportOnly),transactionSnapshots=[];
+      if(recoverySnapshots.size>0){
+        for(const item of implementationEdits){
+          const path=String(item?.path||"").trim().replace(/\\/g,"/");if(!path||transactionSnapshots.some(snapshot=>snapshot?.path===path))continue;
+          transactionSnapshots.push(recoverySnapshots.get(path)||{path,restorable:false,reason:"pre-edit workspace snapshot was unavailable"});
+        }
+      }
+      completionRecoveryEditTransaction=transactionSnapshots.length?{recoveryEpoch:completionRecoveryEpoch,beforeRevision:editRevisionBeforeCalls,afterRevision:editRevision,verifiedEditsLengthBefore:verifiedEditsBeforeCalls,snapshots:transactionSnapshots}:null;
+      if(transactionSnapshots.length)emit(onEvent,{name:"native.completion.recovery_candidate_snapshot",status:transactionSnapshots.every(item=>item?.restorable)?"completed":"uncertain",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,editRevision,recoveryEpoch:completionRecoveryEpoch,pathCount:transactionSnapshots.length,restorable:transactionSnapshots.every(item=>item?.restorable)}});
       completionRecoveryEditResponsesRemaining=Math.max(0,completionRecoveryEditResponsesRemaining-1);
       completionRecoveryEditConsumedEpoch=completionRecoveryEpoch;
       completionRecoveryPostEditEvidenceResponsesRemaining=completionRecoveryEvidenceRoundsRemaining<=0?1:0;

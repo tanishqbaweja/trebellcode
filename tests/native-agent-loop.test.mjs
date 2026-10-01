@@ -2450,7 +2450,7 @@ test("native localizes residual structure after an abstraction repair before reo
     {id:label+"-b",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-b.mjs"]})},
   ];
   const result=await runNativeAgentTurn({
-    model:"test-model",messages:[{role:"user",content:"Fix the binary decoder and verify the exact reconstructed output."}],maxModelTurns:20,maxToolCalls:50,onEvent:event=>events.push(event),
+    model:"test-model",messages:[{role:"user",content:"Fix the binary decoder and verify the exact reconstructed output."}],maxOutputTokens:32000,reasoningEffort:"max",maxModelTurns:20,maxToolCalls:50,onEvent:event=>events.push(event),
     tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
     providerTurn:async request=>{
       turns++;
@@ -2475,6 +2475,8 @@ test("native localizes residual structure after an abstraction repair before reo
       if(turns===11){
         assert.equal(request.toolChoice,"none");
         assert.deepEqual(request.tools,[]);
+        assert.equal(request.maxOutputTokens,2048);
+        assert.equal(request.reasoningEffort,"low");
         assert.ok(request.messages.some(message=>message.role==="developer"&&/abstraction-repair verification gate/i.test(String(message.content||""))));
         return {text:'{"status":"failed","reason":"The independent replica invariant still disagrees after the repair."}',toolCalls:[],usage:{}};
       }
@@ -2491,6 +2493,8 @@ test("native localizes residual structure after an abstraction repair before reo
       if(turns===14){
         assert.equal(request.toolChoice,"none");
         assert.deepEqual(request.tools,[]);
+        assert.equal(request.maxOutputTokens,2048);
+        assert.equal(request.reasoningEffort,"low");
         return {text:'{"status":"verified","reason":"The independent replica invariant now matches the raw source on every checked rank."}',toolCalls:[],usage:{}};
       }
       if(turns===15)return {text:"",toolCalls:evidence("residual-2"),usage:{}};
@@ -2538,7 +2542,7 @@ test("native semantic completion gate rejects unsupported completion without tas
   const result=await runNativeAgentTurn({
     model:"test-model",
     messages:[{role:"user",content:"Modify src/worker.mjs to reduce the worker's p95 latency below 100 ms and leave the implementation in the workspace."}],
-    maxModelTurns:10,maxToolCalls:12,semanticCompletionGate:true,onEvent:event=>events.push(event),
+    maxOutputTokens:32000,reasoningEffort:"max",maxModelTurns:10,maxToolCalls:12,semanticCompletionGate:true,onEvent:event=>events.push(event),
     tools:[
       {type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},
       {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
@@ -2550,6 +2554,8 @@ test("native semantic completion gate rejects unsupported completion without tas
       if(providerCalls===3){
         assert.equal(request.toolChoice,"none");
         assert.deepEqual(request.tools,[]);
+        assert.equal(request.maxOutputTokens,2048);
+        assert.equal(request.reasoningEffort,"low");
         assert.ok(request.messages.some(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||""))));
         return {text:'{"status":"incomplete","unresolved":["p95 latency is still above the requested ceiling"],"reason":"The latest measured p95 is 141 ms, so the requested performance target is not satisfied."}',toolCalls:[],usage:{}};
       }
@@ -2558,7 +2564,11 @@ test("native semantic completion gate rejects unsupported completion without tas
         return {text:"",toolCalls:[{id:"measure",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["measure-latency.mjs"]}'}],usage:{}};
       }
       if(providerCalls===5)return {text:"The implementation is updated and the latest measured p95 is 84 ms, below the requested 100 ms ceiling.",toolCalls:[],usage:{}};
-      if(providerCalls===6)return {text:'{"status":"complete","unresolved":[],"reason":"The requested workspace change exists and the latest measured p95 is 84 ms, satisfying the stated ceiling."}',toolCalls:[],usage:{}};
+      if(providerCalls===6){
+        assert.equal(request.maxOutputTokens,2048);
+        assert.equal(request.reasoningEffort,"low");
+        return {text:'{"status":"complete","unresolved":[],"reason":"The requested workspace change exists and the latest measured p95 is 84 ms, satisfying the stated ceiling."}',toolCalls:[],usage:{}};
+      }
       throw new Error("unexpected provider call");
     },
     executeTool:async call=>{
@@ -2595,7 +2605,7 @@ test("native semantic completion gate rejects a novel pre-edit blocker without r
     executeTool:async call=>{executed.push(call.id);return {path:"src/store.mjs",replacements:1}},
   });
   assert.equal(calls,5);
-  assert.deepEqual(executed,["edit"]);
+  assert.deepEqual(executed.filter(id=>!String(id).startsWith("native-recovery-snapshot-")),["edit"]);
   assert.match(result.text,/now implemented/i);
   assert.equal(events.filter(event=>event.name==="native.completion.gate_recovery").length,1);
 });
@@ -2667,7 +2677,7 @@ test("native recovery can verify a repair in the same response then blocks furth
   });
   assert.equal(turns,9);
   assert.equal(result.text,"The repaired implementation now satisfies acceptance.");
-  assert.deepEqual(executed,["initial","e1","e2","repair","post-check"]);
+  assert.deepEqual(executed.filter(id=>!String(id).startsWith("native-recovery-snapshot-")),["initial","e1","e2","repair","post-check"]);
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="post_edit_verification").length,1);
   const blocked=events.find(event=>event.name==="native.completion.recovery_evidence_call_blocked"&&event.data?.callId==="extra-post-check");assert.ok(blocked);assert.equal(blocked.data?.reason,"recovery_post_edit_evidence_budget");
 });
@@ -2712,7 +2722,7 @@ test("native requires the owed corrective edit before reopening recovery evidenc
     },
   });
   assert.equal(turns,11);
-  assert.deepEqual(executed,["initial","evidence-1","evidence-2","repair"]);
+  assert.deepEqual(executed.filter(id=>!String(id).startsWith("native-recovery-snapshot-")),["initial","evidence-1","evidence-2","repair"]);
   assert.match(result.text,/now satisfies acceptance/i);
   const recoveries=events.filter(event=>event.name==="native.completion.gate_recovery");
   assert.equal(recoveries.length,2);
@@ -2815,6 +2825,63 @@ test("native factorizes a verified localized residual instead of reopening globa
   const resets=events.filter(event=>event.name==="native.completion.recovery_strategy_reset");assert.equal(resets.length,1);assert.equal(resets[0].data?.strategy,"residual_factorization");assert.equal(resets[0].data?.recoveryEpoch,3);
 });
 
+test("native restores the evidence-backed incumbent when an isolated residual recovery edit regresses",async()=>{
+  let turns=0,fileContent="old";const events=[];
+  const evidence=label=>[
+    {id:label+"-a",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-a.mjs"]})},
+    {id:label+"-b",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-b.mjs"]})},
+  ];
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxCompletionRecoveryEpochs:1,maxModelTurns:24,maxToolCalls:40,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Fix the binary reconstruction and preserve the strongest exact-acceptance candidate."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"},{name:"replace_text"},{name:"write_file"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"initial",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"old","new_text":"candidate"}'}],usage:{}};
+      if(turns>=2&&turns<=7)return {text:"",toolCalls:evidence("pre-"+turns),usage:{}};
+      if(turns===8)return {text:"",toolCalls:[{id:"upstream-repair",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"candidate","new_text":"reframed"}'}],usage:{}};
+      if(turns===9)return {text:"",toolCalls:evidence("verify-upstream"),usage:{}};
+      if(turns===10)return {text:'{"status":"verified","reason":"The independent raw invariant verifies the repaired framing."}',toolCalls:[],usage:{}};
+      if(turns===11)return {text:"",toolCalls:evidence("localize-residual"),usage:{}};
+      if(turns===12){
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/residual-structure checkpoint/i.test(String(message.content||""))));
+        return {text:"The verified framing is the strongest candidate so far; one local exact mismatch remains.",toolCalls:[],usage:{}};
+      }
+      if(turns===13)return {text:'{"status":"incomplete","progress":"uncertain","unresolved":["one localized exact mismatch remains"],"reason":"Baseline exact error is 10 and focused residual work remains possible."}',toolCalls:[],usage:{}};
+      if(turns===14)return {text:"",toolCalls:[{id:"residual-evidence-1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["residual-a.mjs"]}'}],usage:{}};
+      if(turns===15)return {text:"",toolCalls:[{id:"residual-evidence-2",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["residual-b.mjs"]}'}],usage:{}};
+      if(turns===16)return {text:"",toolCalls:[{id:"regressing-edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"reframed","new_text":"worse"}'}],usage:{}};
+      if(turns===17)return {text:"",toolCalls:[{id:"verify-regression",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["exact-check.mjs"]}'}],usage:{}};
+      if(turns===18)return {text:"The isolated candidate regressed the exact metric from 10 to 14.",toolCalls:[],usage:{}};
+      if(turns===19){
+        const gate=request.messages.findLast(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||"")));
+        assert.ok(gate);assert.match(String(gate.content),/Recovery incumbent to compare against/i);assert.match(String(gate.content),/progress=regressed/i);
+        return {text:'{"status":"incomplete","progress":"regressed","unresolved":["one localized exact mismatch remains"],"reason":"Exact error worsened from incumbent 10 to candidate 14."}',toolCalls:[],usage:{}};
+      }
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{
+      if(call.namespace==="trebell_workspace"&&call.name==="read_file")return {path:"src/decoder.mjs",content:fileContent,size:fileContent.length};
+      if(call.namespace==="trebell_workspace"&&call.name==="write_file"){
+        fileContent=String(call.arguments?.content??"");
+        return {path:"src/decoder.mjs",size:fileContent.length,createdOrReplaced:true,existedBefore:true};
+      }
+      if(call.namespace==="trebell_workspace"&&call.name==="replace_text"){
+        const oldText=String(call.arguments?.old_text??""),newText=String(call.arguments?.new_text??"");
+        assert.ok(fileContent.includes(oldText));fileContent=fileContent.replace(oldText,newText);return {path:"src/decoder.mjs",replacements:1};
+      }
+      return {exitCode:0,stdout:String(call.id||"")==="verify-regression"?"exact_error=14":"evidence"};
+    },
+  });
+  assert.equal(turns,19);
+  const snapshots=events.filter(event=>event.name==="native.completion.recovery_candidate_snapshot");assert.equal(snapshots.length,1,JSON.stringify(events.filter(event=>/abstraction|residual|completion\.recovery|completion\.gate/.test(event.name)).map(event=>({name:event.name,data:event.data}))));assert.equal(snapshots[0].data?.restorable,true);
+  const regressedGate=events.find(event=>event.name==="native.completion.gate"&&event.data?.progress==="regressed");assert.ok(regressedGate);
+  assert.equal(fileContent,"reframed");
+  const restored=events.filter(event=>event.name==="native.completion.recovery_incumbent_restored");assert.equal(restored.length,1,JSON.stringify(events.filter(event=>/incumbent|candidate_snapshot|completion\.gate/.test(event.name)).map(event=>({name:event.name,status:event.status,data:event.data}))));assert.equal(restored[0].data?.progress,"regressed");assert.equal(restored[0].data?.pathCount,1);
+  const exhausted=events.find(event=>event.name==="native.completion.recovery_exhausted");assert.equal(exhausted?.data?.incumbentRestores,1);assert.equal(exhausted?.data?.incumbentWorkspaceAligned,true);
+  assert.match(result.text,/strongest evidence-backed workspace state has been preserved or restored/i);
+});
+
 test("native completion recovery stops after the configured number of incomplete epochs",async()=>{
   let turns=0;const events=[];
   const result=await runNativeAgentTurn({
@@ -2869,7 +2936,7 @@ test("native completion recovery blocks a second corrective edit response in one
     executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0,stdout:"same failure"}},
   });
   assert.match(result.text,/now satisfies acceptance/i);
-  assert.deepEqual(executed,["initial","e1","e2","repair-1"]);
+  assert.deepEqual(executed.filter(id=>!String(id).startsWith("native-recovery-snapshot-")),["initial","e1","e2","repair-1"]);
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,1);
   const blocked=events.filter(event=>event.name==="native.completion.recovery_edit_call_blocked");assert.equal(blocked.length,1);assert.equal(blocked[0].data?.callId,"repair-2");assert.equal(blocked[0].data?.reason,"recovery_edit_response_budget");
 });
@@ -2957,7 +3024,7 @@ test("native recovery support files do not consume or reset the corrective imple
   const result=await runNativeAgentTurn({
     model:"test-model",semanticCompletionGate:true,maxModelTurns:16,maxToolCalls:24,onEvent:event=>events.push(event),
     messages:[{role:"user",content:"Fix src/a.mjs until the acceptance check passes."}],
-    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"},{name:"write_file"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"read_file"},{name:"replace_text"},{name:"write_file"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
     providerTurn:async()=>{
       turns++;
       if(turns===1)return {text:"",toolCalls:[{id:"initial",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"candidate"}'}],usage:{}};
@@ -2983,7 +3050,7 @@ test("native recovery support files do not consume or reset the corrective imple
   assert.equal(result.text,"The implementation now satisfies acceptance.");
   const classified=events.find(event=>event.name==="native.completion.recovery_write_classified"&&event.data?.path==="notes-one.mjs");assert.ok(classified,JSON.stringify(events.filter(event=>/completion\.(gate|recovery)/.test(event.name)).map(event=>({name:event.name,data:event.data}))));assert.equal(classified.data.supportOnly,true,JSON.stringify(classified.data));
   const supportEvents=events.filter(event=>event.name==="native.completion.recovery_support_write");assert.equal(supportEvents.length,1);assert.equal(supportEvents[0].data.editRevision,1);assert.equal(supportEvents[0].data.allowanceUsed,true);
-  assert.deepEqual(executed,["initial","e1","e2","support-1","support-check","repair"]);
+  assert.deepEqual(executed.filter(id=>!String(id).startsWith("native-recovery-snapshot-")),["initial","e1","e2","support-1","support-check","repair"]);
   const blockedSupport=events.find(event=>event.name==="native.completion.recovery_evidence_call_blocked"&&event.data?.callId==="support-2");assert.ok(blockedSupport);assert.equal(blockedSupport.data?.reason,"recovery_evidence_response_budget");
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,1);
   assert.equal(events.some(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="support_verification"),true);
