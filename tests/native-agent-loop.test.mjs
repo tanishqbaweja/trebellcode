@@ -2450,7 +2450,7 @@ test("native localizes residual structure after an abstraction repair before reo
     {id:label+"-b",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-b.mjs"]})},
   ];
   const result=await runNativeAgentTurn({
-    model:"test-model",messages:[{role:"user",content:"Fix the binary decoder and verify the exact reconstructed output."}],maxModelTurns:14,maxToolCalls:40,onEvent:event=>events.push(event),
+    model:"test-model",messages:[{role:"user",content:"Fix the binary decoder and verify the exact reconstructed output."}],maxModelTurns:20,maxToolCalls:50,onEvent:event=>events.push(event),
     tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
     providerTurn:async request=>{
       turns++;
@@ -2470,10 +2470,31 @@ test("native localizes residual structure after an abstraction repair before reo
       if(turns===10){
         assert.ok(request.messages.some(message=>message.role==="developer"&&/abstraction-repair verification checkpoint/i.test(String(message.content||""))));
         assert.equal(request.messages.some(message=>message.role==="developer"&&/residual-structure checkpoint/i.test(String(message.content||""))),false);
-        return {text:"",toolCalls:evidence("repair-verification"),usage:{}};
+        return {text:"",toolCalls:evidence("repair-verification-failed"),usage:{}};
       }
-      if(turns===11)return {text:"",toolCalls:evidence("residual-2"),usage:{}};
+      if(turns===11){
+        assert.equal(request.toolChoice,"none");
+        assert.deepEqual(request.tools,[]);
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/abstraction-repair verification gate/i.test(String(message.content||""))));
+        return {text:'{"status":"failed","reason":"The independent replica invariant still disagrees after the repair."}',toolCalls:[],usage:{}};
+      }
       if(turns===12){
+        assert.equal(request.messages.some(message=>message.role==="developer"&&/residual-structure checkpoint/i.test(String(message.content||""))),false);
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/verification gate did not verify/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[{id:"upstream-repair-2",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"resegmented-follow-up","new_text":"resegmented-verified"}'}],usage:{}};
+      }
+      if(turns===13){
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/abstraction-repair verification checkpoint/i.test(String(message.content||""))));
+        assert.equal(request.messages.some(message=>message.role==="developer"&&/residual-structure checkpoint/i.test(String(message.content||""))),false);
+        return {text:"",toolCalls:evidence("repair-verification-passed"),usage:{}};
+      }
+      if(turns===14){
+        assert.equal(request.toolChoice,"none");
+        assert.deepEqual(request.tools,[]);
+        return {text:'{"status":"verified","reason":"The independent replica invariant now matches the raw source on every checked rank."}',toolCalls:[],usage:{}};
+      }
+      if(turns===15)return {text:"",toolCalls:evidence("residual-2"),usage:{}};
+      if(turns===16){
         const checkpoint=request.messages.find(message=>message.role==="developer"&&/residual-structure checkpoint/i.test(String(message.content||"")));
         assert.ok(checkpoint);
         assert.match(String(checkpoint.content),/smallest failing output\/source family/i);
@@ -2481,18 +2502,20 @@ test("native localizes residual structure after an abstraction repair before reo
         assert.match(String(checkpoint.content),/packing\/interleave\/pair order/i);
         assert.match(String(checkpoint.content),/specialized grouped\/fused\/kernel representation/i);
         assert.equal(events.filter(event=>event.name==="native.progress.assumption_audit_checkpoint").length,1);
-        return {text:"",toolCalls:[{id:"local-layout-fix",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"resegmented-follow-up","new_text":"resegmented-and-local-layout-fixed"}'}],usage:{}};
+        return {text:"",toolCalls:[{id:"local-layout-fix",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"resegmented-verified","new_text":"resegmented-and-local-layout-fixed"}'}],usage:{}};
       }
       return {text:"done",toolCalls:[],usage:{}};
     },
     executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:"src/decoder.mjs",replacements:1}:{exitCode:0}},
   });
   assert.equal(result.text,"done");
-  assert.equal(executed.includes("upstream-repair"),true);assert.equal(executed.includes("follow-up-edit"),true);assert.equal(executed.includes("local-layout-fix"),true);
+  assert.equal(executed.includes("upstream-repair"),true);assert.equal(executed.includes("follow-up-edit"),true);assert.equal(executed.includes("upstream-repair-2"),true);assert.equal(executed.includes("local-layout-fix"),true);
   assert.equal(events.filter(event=>event.name==="native.progress.abstraction_boundary_escalation").length,1);
-  assert.equal(events.filter(event=>event.name==="native.progress.abstraction_repair_applied").length,2);
-  assert.equal(events.filter(event=>event.name==="native.progress.abstraction_repair_verification_checkpoint").length,2);
-  assert.equal(events.filter(event=>event.name==="native.progress.abstraction_repair_verification_evidence").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.abstraction_repair_applied").length,3);
+  assert.equal(events.filter(event=>event.name==="native.progress.abstraction_repair_verification_checkpoint").length,3);
+  assert.equal(events.filter(event=>event.name==="native.progress.abstraction_repair_verification_evidence").length,2);
+  assert.equal(events.filter(event=>event.name==="native.progress.abstraction_repair_verification_gate").length,2);
+  assert.equal(events.filter(event=>event.name==="native.progress.abstraction_repair_verified").length,1);
   assert.equal(events.filter(event=>event.name==="native.progress.residual_structure_checkpoint").length,1);
 });
 
@@ -2713,8 +2736,69 @@ test("native changes recovery strategy after three incomplete semantic epochs wi
   assert.equal(turns,9);
   assert.match(result.text,/stopped after 3 bounded semantic recovery epochs/i);
   const recoveries=events.filter(event=>event.name==="native.completion.gate_recovery");assert.equal(recoveries.length,3);assert.deepEqual(recoveries.map(event=>[event.data?.recoveryEpoch,event.data?.evidenceRoundsAllowed,event.data?.editResponsesAllowed]),[[1,2,1],[2,2,1],[3,2,1]]);
-  const resets=events.filter(event=>event.name==="native.completion.recovery_strategy_reset");assert.equal(resets.length,1);assert.equal(resets[0].data?.recoveryEpoch,3);
+  const resets=events.filter(event=>event.name==="native.completion.recovery_strategy_reset");assert.equal(resets.length,1);assert.equal(resets[0].data?.recoveryEpoch,3);assert.equal(resets[0].data?.strategy,"abstraction_reset");
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_exhausted").length,1);
+});
+
+test("native factorizes a verified localized residual instead of reopening global search",async()=>{
+  let turns=0;const events=[];
+  const evidence=label=>[
+    {id:label+"-a",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-a.mjs"]})},
+    {id:label+"-b",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-b.mjs"]})},
+  ];
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxCompletionRecoveryEpochs:3,maxModelTurns:24,maxToolCalls:32,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Fix the binary reconstruction and verify the exact output."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"initial",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"old","new_text":"candidate"}'}],usage:{}};
+      if(turns>=2&&turns<=7)return {text:"",toolCalls:evidence("pre-"+turns),usage:{}};
+      if(turns===8){
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/abstraction-boundary escalation/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[{id:"upstream-repair",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"candidate","new_text":"reframed"}'}],usage:{}};
+      }
+      if(turns===9){
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/abstraction-repair verification checkpoint/i.test(String(message.content||""))));
+        return {text:"",toolCalls:evidence("verify-upstream"),usage:{}};
+      }
+      if(turns===10){
+        assert.equal(request.toolChoice,"none");assert.deepEqual(request.tools,[]);
+        return {text:'{"status":"verified","reason":"The independent raw-record invariant now matches the repaired framing."}',toolCalls:[],usage:{}};
+      }
+      if(turns===11)return {text:"",toolCalls:evidence("localize-residual"),usage:{}};
+      if(turns===12){
+        const residual=request.messages.find(message=>message.role==="developer"&&/residual-structure checkpoint/i.test(String(message.content||"")));
+        assert.ok(residual);assert.match(String(residual.content),/smallest failing output\/source family/i);
+        return {text:"Localized candidate remains incomplete.",toolCalls:[],usage:{}};
+      }
+      if(turns===13)return {text:'{"status":"incomplete","unresolved":["localized specialized-family mismatch remains"],"reason":"The upstream framing is verified but one local transform is still wrong."}',toolCalls:[],usage:{}};
+      if(turns===14)return {text:"Epoch one candidate remains incomplete.",toolCalls:[],usage:{}};
+      if(turns===15)return {text:'{"status":"incomplete","unresolved":["localized specialized-family mismatch remains"],"reason":"Focused local work remains possible."}',toolCalls:[],usage:{}};
+      if(turns===16)return {text:"Epoch two candidate remains incomplete.",toolCalls:[],usage:{}};
+      if(turns===17)return {text:'{"status":"incomplete","unresolved":["localized specialized-family mismatch remains"],"reason":"The same localized residual survived another epoch."}',toolCalls:[],usage:{}};
+      if(turns===18){
+        const reset=request.messages.find(message=>message.role==="developer"&&/cross-epoch residual factorization reset/i.test(String(message.content||"")));
+        assert.ok(reset);
+        const content=String(reset.content||"");
+        assert.match(content,/orthogonal transform dimensions/i);
+        assert.match(content,/Hold all other dimensions fixed/i);
+        assert.match(content,/incremental effect of replacing only that one component/i);
+        assert.match(content,/combine transforms only after each component is independently supported/i);
+        assert.match(content,/changes the method, not the recovery budget/i);
+        return {text:"Epoch three candidate remains incomplete.",toolCalls:[],usage:{}};
+      }
+      if(turns===19)return {text:'{"status":"incomplete","unresolved":["localized specialized-family mismatch remains"],"reason":"The bounded recovery budget is exhausted."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{path:"src/decoder.mjs",replacements:1}:{exitCode:0,stdout:"independent evidence"},
+  });
+  assert.equal(turns,19);
+  assert.match(result.text,/stopped after 3 bounded semantic recovery epochs/i);
+  assert.equal(events.filter(event=>event.name==="native.progress.abstraction_repair_verified").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.residual_structure_checkpoint").length,1);
+  const recoveries=events.filter(event=>event.name==="native.completion.gate_recovery");assert.equal(recoveries.length,3);assert.deepEqual(recoveries.map(event=>[event.data?.recoveryEpoch,event.data?.evidenceRoundsAllowed,event.data?.editResponsesAllowed]),[[1,2,1],[2,2,1],[3,2,1]]);
+  const resets=events.filter(event=>event.name==="native.completion.recovery_strategy_reset");assert.equal(resets.length,1);assert.equal(resets[0].data?.strategy,"residual_factorization");assert.equal(resets[0].data?.recoveryEpoch,3);
 });
 
 test("native completion recovery stops after the configured number of incomplete epochs",async()=>{

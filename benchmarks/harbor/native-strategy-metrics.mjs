@@ -11,6 +11,9 @@ export function createNativeStrategyMetrics(){
     abstractionBoundaryEscalations:0,
     abstractionRepairVerificationCheckpoints:0,
     abstractionRepairVerificationEvidence:0,
+    abstractionRepairVerificationGates:0,
+    abstractionRepairVerified:0,
+    abstractionRepairVerificationRejected:0,
     residualStructureCheckpoints:0,
     completionGateChecks:0,
     completionGateRecoveries:0,
@@ -18,6 +21,7 @@ export function createNativeStrategyMetrics(){
     completionRecoveryEvidenceCallsBlocked:0,
     completionRecoveryPostEditVerificationUses:0,
     completionRecoveryStrategyResets:0,
+    completionRecoveryResidualFactorizations:0,
     completionRecoveryEditUses:0,
     completionRecoveryExhaustions:0,
     completionRecoveryEditsBlocked:0,
@@ -46,13 +50,21 @@ export function observeNativeStrategyEvent(metrics,event,atMs=null){
   else if(name==="native.progress.abstraction_boundary_escalation")target.abstractionBoundaryEscalations=Number(target.abstractionBoundaryEscalations||0)+1;
   else if(name==="native.progress.abstraction_repair_verification_checkpoint")target.abstractionRepairVerificationCheckpoints=Number(target.abstractionRepairVerificationCheckpoints||0)+1;
   else if(name==="native.progress.abstraction_repair_verification_evidence")target.abstractionRepairVerificationEvidence=Number(target.abstractionRepairVerificationEvidence||0)+1;
+  else if(name==="native.progress.abstraction_repair_verification_gate"){
+    target.abstractionRepairVerificationGates=Number(target.abstractionRepairVerificationGates||0)+1;
+    if(String(data?.verdict||"")==="verified")target.abstractionRepairVerified=Number(target.abstractionRepairVerified||0)+1;
+    else target.abstractionRepairVerificationRejected=Number(target.abstractionRepairVerificationRejected||0)+1;
+  }
   else if(name==="native.progress.residual_structure_checkpoint")target.residualStructureCheckpoints=Number(target.residualStructureCheckpoints||0)+1;
   else if(name==="native.completion.gate")target.completionGateChecks=Number(target.completionGateChecks||0)+1;
   else if(name==="native.completion.gate_recovery")target.completionGateRecoveries=Number(target.completionGateRecoveries||0)+1;
   else if(name==="native.completion.recovery_allowance_used"&&data?.kind==="evidence")target.completionRecoveryEvidenceUses=Number(target.completionRecoveryEvidenceUses||0)+1;
   else if(name==="native.completion.recovery_evidence_call_blocked")target.completionRecoveryEvidenceCallsBlocked=Number(target.completionRecoveryEvidenceCallsBlocked||0)+1;
   else if(name==="native.completion.recovery_allowance_used"&&data?.kind==="post_edit_verification")target.completionRecoveryPostEditVerificationUses=Number(target.completionRecoveryPostEditVerificationUses||0)+1;
-  else if(name==="native.completion.recovery_strategy_reset")target.completionRecoveryStrategyResets=Number(target.completionRecoveryStrategyResets||0)+1;
+  else if(name==="native.completion.recovery_strategy_reset"){
+    target.completionRecoveryStrategyResets=Number(target.completionRecoveryStrategyResets||0)+1;
+    if(String(data?.strategy||"")==="residual_factorization")target.completionRecoveryResidualFactorizations=Number(target.completionRecoveryResidualFactorizations||0)+1;
+  }
   else if(name==="native.completion.recovery_allowance_used"&&data?.kind==="edit")target.completionRecoveryEditUses=Number(target.completionRecoveryEditUses||0)+1;
   else if(name==="native.completion.recovery_exhausted")target.completionRecoveryExhaustions=Number(target.completionRecoveryExhaustions||0)+1;
   else if(name==="native.completion.recovery_edit_call_blocked")target.completionRecoveryEditsBlocked=Number(target.completionRecoveryEditsBlocked||0)+1;
