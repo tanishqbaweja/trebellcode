@@ -7,7 +7,7 @@ import { recoverCodexSessionEvidence } from "./terminal-bench-codex-evidence.mjs
 const root=resolve(fileURLToPath(new URL("..",import.meta.url))),validationDir=join(root,".harbor-validation"),jobsDir=join(root,".harbor-jobs");
 const watch=process.argv.includes("--watch"),intervalMs=Math.max(2000,Number(process.env.TREBELL_WATCHDOG_INTERVAL_MS||5000));
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-async function json(path){try{return JSON.parse(await readFile(path,"utf8"))}catch{return null}}
+async function json(path){try{return JSON.parse(String(await readFile(path,"utf8")).replace(/^\uFEFF/,""))}catch{return null}}
 async function newestTrialDir(jobName){
   let entries=[];try{entries=await readdir(join(jobsDir,jobName),{withFileTypes:true})}catch{return null}
   const dirs=entries.filter(entry=>entry.isDirectory());return dirs[0]?join(jobsDir,jobName,dirs[0].name):null;

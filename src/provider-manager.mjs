@@ -741,7 +741,7 @@ export class ProviderManager {
     let fullResponsesBody=null,openAiContinuation=null,responsesBody=null;
     if(provider.wireApi==="responses"){
       if(provider.id==="openai"){
-        const messageRefs=Array.isArray(request.messages)?request.messages:null,identityToken=request?.[NATIVE_OPENAI_CONTINUATION_IDENTITY]||null,parentId=request.promptCacheComparisonResponseId;
+        const messageRefs=Array.isArray(request.messages)?request.messages:null,identityToken=request?.[NATIVE_OPENAI_CONTINUATION_IDENTITY]||null,comparisonParentId=String(request.promptCacheComparisonResponseId||"").trim(),parentId=Object.prototype.hasOwnProperty.call(request,"openAiContinuationResponseId")?String(request.openAiContinuationResponseId||"").trim():comparisonParentId;
         const preflight=this.reuseOpenAiContinuationInputBuild
           ?this.openAiResponseContinuations.preflight(parentId,{messageRefs,identityToken,model})
           :null;

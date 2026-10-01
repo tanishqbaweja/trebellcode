@@ -205,8 +205,10 @@ export function createNativeBuiltins({root,environments=null,environmentId=null,
       }
       if(name==="write_file"){
         const content=String(args.content??"");if(Buffer.byteLength(content,"utf8")>MAX_EDIT_BYTES)throw new Error("File content exceeds the 2 MB Native edit limit");
+        let existedBefore=false;
+        try{await safeWorkspacePath(root,args.path,{environments,environmentId,mustExist:true});existedBefore=true}catch{}
         const located=await safeWorkspacePath(root,args.path,{environments,environmentId,mustExist:false});
-        const written=await environmentWorkspaceWriteFile(located.path,content,{root,environments,environmentId});return {path:written.path,size:written.size,createdOrReplaced:true};
+        const written=await environmentWorkspaceWriteFile(located.path,content,{root,environments,environmentId});return {path:written.path,size:written.size,createdOrReplaced:true,existedBefore};
       }
       if(name==="replace_text"){
         const oldText=String(args.old_text??"");if(!oldText)throw new Error("old_text must not be empty");

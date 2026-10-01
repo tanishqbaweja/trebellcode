@@ -66,6 +66,7 @@ test("Native OpenAI completion gate preserves tool-schema cache shape and keeps 
       if(calls===3){
         assert.equal(request.metadata?.completionGate,true);
         assert.equal(request.promptCacheComparisonResponseId,"resp-candidate");
+        assert.equal(request.openAiContinuationResponseId,"");
         assert.equal(request.toolChoice,"none");
         assert.deepEqual(request.tools,tools);
         return {id:"resp-gate",provider:"openai",model:"gpt-6-luna",text:'{"status":"complete","unresolved":[],"reason":"The requested workspace edit is present."}',toolCalls:[],usage:{},telemetry:{providerResponseId:"resp-gate"}};

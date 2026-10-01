@@ -2583,6 +2583,71 @@ test("native completion-gate recovery permits one corrective edit after revision
   assert.equal(events.some(event=>event.name==="native.progress.revision_churn_edit_blocked"&&event.data?.callId==="edit-15"),false);
 });
 
+test("native recovery support files do not consume or reset the corrective implementation edit",async()=>{
+  let turns=0;const events=[],executed=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxModelTurns:16,maxToolCalls:24,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Fix src/a.mjs until the acceptance check passes."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"},{name:"write_file"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"initial",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"candidate"}'}],usage:{}};
+      if(turns===2)return {text:"Candidate is ready.",toolCalls:[],usage:{}};
+      if(turns===3)return {text:'{"status":"incomplete","unresolved":["acceptance still fails"],"reason":"Focused recovery is available."}',toolCalls:[],usage:{}};
+      if(turns===4)return {text:"",toolCalls:[{id:"e1",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["e1.mjs"]}'}],usage:{}};
+      if(turns===5)return {text:"",toolCalls:[{id:"e2",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["e2.mjs"]}'}],usage:{}};
+      if(turns===6)return {text:"",toolCalls:[{id:"support-1",namespace:"trebell_workspace",name:"write_file",arguments:'{"path":"notes-one.mjs","content":"console.log(1)"}'}],usage:{}};
+      if(turns===7)return {text:"",toolCalls:[{id:"support-2",namespace:"trebell_workspace",name:"write_file",arguments:'{"path":"notes-two.mjs","content":"console.log(2)"}'}],usage:{}};
+      if(turns===8)return {text:"",toolCalls:[{id:"support-check",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["notes-one.mjs"]}'}],usage:{}};
+      if(turns===9)return {text:"",toolCalls:[{id:"repair",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"candidate","new_text":"fixed"}'}],usage:{}};
+      if(turns===10)return {text:"The implementation now satisfies acceptance.",toolCalls:[],usage:{}};
+      if(turns===11)return {text:'{"status":"complete","unresolved":[],"reason":"The established implementation path was repaired and accepted."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{
+      executed.push(call.id);
+      if(call.namespace==="trebell_terminal")return {exitCode:0,stdout:"evidence"};
+      if(call.name==="replace_text")return {path:"src/a.mjs",replacements:1};
+      return {path:String(call.arguments?.path||""),size:14,createdOrReplaced:true,existedBefore:false};
+    },
+  });
+  assert.equal(result.text,"The implementation now satisfies acceptance.");
+  const classified=events.find(event=>event.name==="native.completion.recovery_write_classified"&&event.data?.path==="notes-one.mjs");assert.ok(classified,JSON.stringify(events.filter(event=>/completion\.(gate|recovery)/.test(event.name)).map(event=>({name:event.name,data:event.data}))));assert.equal(classified.data.supportOnly,true,JSON.stringify(classified.data));
+  const supportEvents=events.filter(event=>event.name==="native.completion.recovery_support_write");assert.equal(supportEvents.length,2);assert.equal(supportEvents[0].data.editRevision,1);assert.equal(supportEvents[1].data.editRevision,1);assert.equal(supportEvents[0].data.allowanceUsed,true);assert.equal(supportEvents[1].data.allowanceUsed,false);
+  assert.deepEqual(executed,["initial","e1","e2","support-1","support-2","support-check","repair"]);
+  assert.equal(events.some(event=>event.name==="native.completion.recovery_support_write_blocked"),false);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,1);
+  assert.equal(events.some(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="support_verification"),true);
+});
+
+test("native recovery treats an explicitly requested new deliverable as a corrective edit",async()=>{
+  let turns=0;const events=[],executed=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxModelTurns:10,maxToolCalls:12,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Fix src/a.mjs and produce output/result.json with the accepted result."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"},{name:"write_file"}]}],
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"initial",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"fixed"}'}],usage:{}};
+      if(turns===2)return {text:"The code is fixed.",toolCalls:[],usage:{}};
+      if(turns===3)return {text:'{"status":"incomplete","unresolved":["output/result.json has not been produced"],"reason":"The requested deliverable is still missing."}',toolCalls:[],usage:{}};
+      if(turns===4)return {text:"",toolCalls:[{id:"deliverable",namespace:"trebell_workspace",name:"write_file",arguments:'{"path":"output/result.json","content":"{\"ok\":true}"}'}],usage:{}};
+      if(turns===5)return {text:"The code and requested result file are complete.",toolCalls:[],usage:{}};
+      if(turns===6)return {text:'{"status":"complete","unresolved":[],"reason":"Both requested workspace deliverables are present."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{
+      executed.push(call.id);
+      return call.name==="replace_text"?{path:"src/a.mjs",replacements:1}:{path:"output/result.json",size:11,createdOrReplaced:true,existedBefore:false};
+    },
+  });
+  assert.equal(result.text,"The code and requested result file are complete.");
+  assert.deepEqual(executed,["initial","deliverable"]);
+  const classified=events.find(event=>event.name==="native.completion.recovery_write_classified"&&event.data?.path==="output/result.json");assert.ok(classified);assert.equal(classified.data.supportOnly,false);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,1);
+  assert.equal(events.some(event=>event.name==="native.completion.recovery_support_write"),false);
+});
+
 test("native convergence checkpoint does not fire while the latest edit still has a failed terminal check",async()=>{
   let turns=0;const requests=[],events=[];
   const result=await runNativeAgentTurn({

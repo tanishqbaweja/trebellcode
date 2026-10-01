@@ -256,6 +256,25 @@ test("official OpenAI Responses sends only strict appended input when the previo
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
+test("official OpenAI can compare against a cached response without branching the continuation chain",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-cache-only-parent-")),bodies=[];let calls=0;
+  try{
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{
+      const body=JSON.parse(init.body||"{}");bodies.push(body);calls++;
+      return Response.json({id:calls===1?"resp-cache-parent":"resp-cache-judge",model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:calls===1?"candidate":"judge"}]}],usage:{input_tokens:8,output_tokens:2,total_tokens:10}});
+    }});
+    manager.setKey("openai","oa-key");const token={},user={role:"user",content:"Implement the change"};
+    await manager.turn("openai",{model:"gpt-5.6",messages:[user],tools:[],[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token});
+    const messages=[user,{role:"assistant",content:"candidate"},{role:"developer",content:"Judge completion"}];
+    const judged=await manager.turn("openai",{model:"gpt-5.6",messages,tools:[],promptCacheComparisonResponseId:"resp-cache-parent",openAiContinuationResponseId:"",[NATIVE_OPENAI_CONTINUATION_IDENTITY]:token});
+    assert.equal(Object.prototype.hasOwnProperty.call(bodies[1],"previous_response_id"),false);
+    assert.equal(bodies[1].input.length,3);
+    assert.deepEqual(bodies[1].prompt_cache_options,{mode:"implicit",comparison_response_id:"resp-cache-parent"});
+    assert.equal(judged.telemetry.responseContinuation.used,false);
+    assert.equal(judged.telemetry.responseContinuation.attempted,false);
+  }finally{rmSync(root,{recursive:true,force:true})}
+});
+
 test("official OpenAI continuation falls back to full input after history rewrite or manager restart",async()=>{
   const root=mkdtempSync(join(tmpdir(),"trebell-provider-continuation-fallback-")),bodies=[];
   try{

@@ -730,7 +730,24 @@ export async function runNativeAgentTurn({
   const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalStatusRequested=explicitTerminalStatusRequest(conversation),directTerminalStatusCommand=directTerminalStatusCommands===true?explicitTerminalStatusCommand(conversation):null,directReplacementStatus=directExactReplacementStatus===true?explicitExactReplacementStatus(conversation):null,directWriteStatus=directExactWriteStatus===true?explicitExactFileWriteStatus(conversation):null,directReadStatus=directExactReadStatus===true?explicitExactFileReadStatus(conversation):null,directListStatus=directExactListStatus===true?explicitImmediateWorkspaceListStatus(conversation):null,directGitStatusRequest=directGitStatus===true?explicitGitReadRequest(conversation):null,directProcessRunningRequest=directProcessRunningStatus===true?explicitBackgroundProcessRunningRequest(conversation):null,directBrowserRuntimeRequest=directBrowserRuntimeStatus===true&&explicitBrowserRuntimeHealthRequest(conversation),directBrowserScreenshotRequest=directBrowserScreenshot===true&&explicitBrowserScreenshotRequest(conversation),terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
   const verificationFinalizationRequest=verificationCompletionRequest||(finalAfterVerifiedRequest?.target?finalAfterVerifiedRequest:null);
   const successfulTerminalRuns=[];
-  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,selfAdmittedGapRecoveries=0,selfAdmittedGapRecoveryToolBaseline=0,preEditBlockerChallengeToolAllowance=false,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,progressCheckpointInjected=false,probeBatchingRequired=false,postEditProbeBatchingRequired=false,postEditEvidenceRounds=0,postEditAssumptionAuditRevision=0,postEditAbstractionEscalationRevision=0,postEditEvidenceCheckpointRevision=0,postEditEvidenceEscalated=false,singletonTerminalProbeStreak=0,implementationPressureEvidenceRounds=0,implementationPressureEscalated=false,turnBudgetCheckpointInjected=false,wallBudgetCheckpointInjected=false,revisionChurnCheckpointInjected=false,revisionChurnCheckpointRevision=0,revisionChurnConvergenceBaseline=0,revisionChurnEscalated=false,revisionChurnGraceEditUsed=false,convergenceCheckpointRevision=0,convergenceCheckpointCount=0,completionGateCandidate=null,completionGateInvalidResponses=0,completionGateChecks=0,completionGateRecoveries=0,completionRecoveryEpoch=0,completionRecoveryEvidenceRoundsRemaining=0,completionRecoveryEditResponsesRemaining=0,verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
+  let modelTurns=0,toolCalls=0,emptyCompletionRecoveries=0,toolBudgetTextRecoveries=0,verifiedFinalizationRecoveries=0,selfAdmittedGapRecoveries=0,selfAdmittedGapRecoveryToolBaseline=0,preEditBlockerChallengeToolAllowance=false,forcedToolChoice=null,lastProviderReadMessageCount=0,toolBudgetFinalizationInjected=false,progressCheckpointInjected=false,probeBatchingRequired=false,postEditProbeBatchingRequired=false,postEditEvidenceRounds=0,postEditAssumptionAuditRevision=0,postEditAbstractionEscalationRevision=0,postEditEvidenceCheckpointRevision=0,postEditEvidenceEscalated=false,singletonTerminalProbeStreak=0,implementationPressureEvidenceRounds=0,implementationPressureEscalated=false,turnBudgetCheckpointInjected=false,wallBudgetCheckpointInjected=false,revisionChurnCheckpointInjected=false,revisionChurnCheckpointRevision=0,revisionChurnConvergenceBaseline=0,revisionChurnEscalated=false,revisionChurnGraceEditUsed=false,convergenceCheckpointRevision=0,convergenceCheckpointCount=0,completionGateCandidate=null,completionGateInvalidResponses=0,completionGateChecks=0,completionGateRecoveries=0,completionRecoveryEpoch=0,completionRecoveryEvidenceRoundsRemaining=0,completionRecoveryEditResponsesRemaining=0,completionRecoverySupportWritesRemaining=0,completionRecoverySupportVerificationRemaining=0,completionRecoveryImplementationPaths=new Set(),completionRecoverySupportPaths=new Set(),verifiedFinalizationAllowed=finalAfterVerifiedCommand||verificationCompletionRequested,verifiedFinalizationReady=false,verifiedFinalizationInjected=false,editRevision=0,usage={inputTokens:0,outputTokens:0,totalTokens:0,cachedInputTokens:0,cacheWriteInputTokens:0,reasoningOutputTokens:0},lastResponse=null;
+  const normalizedEditPath=call=>String(safeArguments(call?.arguments).path||"").trim().replace(/\\/g,"/");
+  const userRequestedEditPath=path=>{
+    const value=String(path||"").trim();if(!value)return false;
+    const text=lastUserInstructionText(latestUserMessage(conversation)).replace(/\\/g,"/");
+    if(text.includes(value))return true;
+    const basename=value.split("/").filter(Boolean).pop()||"";
+    return Boolean(basename&&basename.includes(".")&&text.includes(basename));
+  };
+  const recoveryCorrectiveEditCall=call=>{
+    if(!implementationPressureEditCall(call))return false;
+    if(completionRecoveryEpoch<=0||editRevision<=0)return true;
+    const path=normalizedEditPath(call);if(!path)return true;
+    if(completionRecoverySupportPaths.has(path))return false;
+    if(userRequestedEditPath(path))return true;
+    if(call?.name==="replace_text")return true;
+    return completionRecoveryImplementationPaths.has(path);
+  };
   const startedAt=Date.now(),started=nowMs(),wallController=budget.maxWallTimeMs!=null?new AbortController():null,deadlineAt=budget.maxWallTimeMs==null?null:Date.now()+budget.maxWallTimeMs;
   let wallTimer=null;
   if(terminalRuns.length)emit(onEvent,{name:"native.verification.prior_terminal_evidence",status:"completed",model:String(model),provider:provider||null,data:{count:terminalRuns.length}});
@@ -797,7 +814,18 @@ export async function runNativeAgentTurn({
       successfulTerminalRuns.push({command:String(args.command).trim(),args:args.args.map(value=>String(value)),cwd:String(args.cwd??"")});
     }
     if(success&&output?.success!==false&&output?.uncertain!==true&&namespace==="trebell_workspace"&&["write_file","replace_text"].includes(name)){
-      editRevision++;const path=String(args.path||output?.path||"").trim();if(path)verifiedEdits.push({path,kind:name,replacements:name==="replace_text"?Math.max(0,Math.trunc(Number(output?.replacements)||0)):0,summary:name==="replace_text"?conciseReplacementSummary(args.old_text,args.new_text):null});
+      const path=String(args.path||output?.path||"").trim(),normalizedPath=path.replace(/\\/g,"/"),knownImplementationPath=Boolean(normalizedPath&&completionRecoveryImplementationPaths.has(normalizedPath)),supportOnly=name==="write_file"&&completionRecoveryEpoch>0&&editRevision>0&&completionRecoveryImplementationPaths.size>0&&!knownImplementationPath&&!userRequestedEditPath(normalizedPath)&&output?.existedBefore===false;
+      if(completionRecoveryEpoch>0)emit(onEvent,{name:"native.completion.recovery_write_classified",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,recoveryEpoch:completionRecoveryEpoch,kind:name,path:redactSecretText(path,{trim:true}).slice(0,240),existedBefore:typeof output?.existedBefore==="boolean"?output.existedBefore:null,knownImplementationPath,implementationPathCount:completionRecoveryImplementationPaths.size,supportOnly}});
+      if(supportOnly){
+        completionRecoverySupportPaths.add(normalizedPath);
+        const supportAllowanceAvailable=completionRecoverySupportWritesRemaining>0;
+        if(supportAllowanceAvailable)completionRecoverySupportWritesRemaining=Math.max(0,completionRecoverySupportWritesRemaining-1);
+        if(supportAllowanceAvailable&&completionRecoveryEvidenceRoundsRemaining<=0)completionRecoverySupportVerificationRemaining=Math.max(completionRecoverySupportVerificationRemaining,1);
+        if(path)verifiedEdits.push({path,kind:name,replacements:0,summary:null,supportOnly:true});
+        emit(onEvent,{name:"native.completion.recovery_support_write",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,recoveryEpoch:completionRecoveryEpoch,path:redactSecretText(path,{trim:true}).slice(0,240),allowanceUsed:supportAllowanceAvailable,supportVerificationAllowed:supportAllowanceAvailable&&completionRecoverySupportVerificationRemaining>0}});
+      }else{
+        editRevision++;if(normalizedPath){completionRecoverySupportPaths.delete(normalizedPath);completionRecoveryImplementationPaths.add(normalizedPath)}if(path)verifiedEdits.push({path,kind:name,replacements:name==="replace_text"?Math.max(0,Math.trunc(Number(output?.replacements)||0)):0,summary:name==="replace_text"?conciseReplacementSummary(args.old_text,args.new_text):null,supportOnly:false});
+      }
     }
     if(success&&output?.success!==false&&output?.timedOut!==true&&output?.signal==null&&namespace==="trebell_terminal"&&name==="run"){
       const key=terminalRunKey(args),exitCode=Number.isFinite(Number(output?.exitCode))?Number(output.exitCode):null;
@@ -1231,9 +1259,12 @@ export async function runNativeAgentTurn({
         completionRecoveryEpoch++;
         completionRecoveryEvidenceRoundsRemaining=2;
         completionRecoveryEditResponsesRemaining=1;
+        completionRecoverySupportWritesRemaining=1;
+        completionRecoverySupportVerificationRemaining=0;
+        completionRecoveryImplementationPaths=new Set(verifiedEdits.filter(item=>item&&!item.supportOnly).map(item=>String(item.path||"").trim().replace(/\\/g,"/")).filter(Boolean));
         const unresolved=verdict.unresolved.length?verdict.unresolved.map(item=>"- "+item).join("\n"):"- Re-evaluate the user's material acceptance requirements against the evidence.";
         const reason=verdict.reason?"\nGate rationale: "+verdict.reason:"";
-        conversation.push({role:"developer",content:"Trebell semantic completion gate rejected the proposed final answer as incomplete. Continue working; do not simply restate the candidate answer. Resolve the highest-value unmet requirement using the evidence and tools already available. This starts a bounded semantic-recovery window: up to two focused evidence-bearing tool responses and one evidence-supported workspace-edit response may proceed even if older convergence, post-edit evidence, or revision-churn guards had already escalated for the current revision. Use that allowance only on the unresolved acceptance condition, not on broad exploration. If current evidence contradicts an upstream parser/decoder/adapter/schema/measurement assumption, validate that assumption from a lower-level independent source rather than permuting outputs produced by the same suspect abstraction. Do not call a check independent when its offsets, ordering, boundaries, units, or expected positions are derived from the same abstraction under test. When redundant/replicated/equivalent representations disagree under the current decode, prefer testing a re-segmentation/re-ordering/re-framing that explains several invariants at once over selecting, averaging, splicing, or permuting contradictory decoded copies.\nUnresolved requirements:\n"+unresolved+reason});
+        conversation.push({role:"developer",content:"Trebell semantic completion gate rejected the proposed final answer as incomplete. Continue working; do not simply restate the candidate answer. Resolve the highest-value unmet requirement using the evidence and tools already available. This starts a bounded semantic-recovery window: up to two focused evidence-bearing tool responses and one evidence-supported corrective implementation edit may proceed even if older convergence, post-edit evidence, or revision-churn guards had already escalated for the current revision. A newly-created support/scratch/diagnostic workspace file does not consume or reset the corrective implementation edit; prefer inline or batched terminal diagnostics when practical. At most one new support-file write gets a one-shot verification opportunity after the ordinary evidence allowance is exhausted. Use that allowance only on the unresolved acceptance condition, not on broad exploration. If current evidence contradicts an upstream parser/decoder/adapter/schema/measurement assumption, validate that assumption from a lower-level independent source rather than permuting outputs produced by the same suspect abstraction. Do not call a check independent when its offsets, ordering, boundaries, units, or expected positions are derived from the same abstraction under test. When redundant/replicated/equivalent representations disagree under the current decode, prefer testing a re-segmentation/re-ordering/re-framing that explains several invariants at once over selecting, averaging, splicing, or permuting contradictory decoded copies.\nUnresolved requirements:\n"+unresolved+reason});
         emit(onEvent,{name:"native.completion.gate_recovery",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,recoveryAttempt:completionGateRecoveries,recoveryEpoch:completionRecoveryEpoch,evidenceRoundsAllowed:completionRecoveryEvidenceRoundsRemaining,editResponsesAllowed:completionRecoveryEditResponsesRemaining,unresolved:verdict.unresolved}});
         continue;
       }
@@ -1291,13 +1322,14 @@ export async function runNativeAgentTurn({
       emit(onEvent,{name:"native.turn.completed",status:"completed",model:result.model,provider:result.provider,data:{modelTurns,toolCalls,durationMs:result.durationMs,usage}});
       return result;
     }
-    const editRevisionBeforeCalls=editRevision,responseHasEditCall=calls.some(implementationPressureEditCall),preEditBlockerChallengeBypass=preEditBlockerChallengeToolAllowance&&editRevision===0,revisionChurnFailureEvidence=revisionChurnEscalated&&terminalRuns.some(item=>item?.currentTurn&&item?.editRevision===editRevisionBeforeCalls&&item?.exitCode!==0),completionRecoveryEvidenceBypass=completionRecoveryEvidenceRoundsRemaining>0,completionRecoveryEditBypass=completionRecoveryEditResponsesRemaining>0;let redirected=false,blockedPreEditCall=false,blockedPostEditProbeCall=false,blockedPostEditEvidenceCall=false,blockedRevisionChurnEdit=false,executedPreEditEvidence=false,executedPostEditEvidence=false;
+    const editRevisionBeforeCalls=editRevision,responseHasEditCall=calls.some(recoveryCorrectiveEditCall),preEditBlockerChallengeBypass=preEditBlockerChallengeToolAllowance&&editRevision===0,revisionChurnFailureEvidence=revisionChurnEscalated&&terminalRuns.some(item=>item?.currentTurn&&item?.editRevision===editRevisionBeforeCalls&&item?.exitCode!==0),completionRecoveryEditBypass=completionRecoveryEditResponsesRemaining>0;let redirected=false,blockedPreEditCall=false,blockedPostEditProbeCall=false,blockedPostEditEvidenceCall=false,blockedRevisionChurnEdit=false,executedPreEditEvidence=false,executedPostEditEvidence=false,executedSupportVerification=false;
     if(preEditBlockerChallengeBypass){
       preEditBlockerChallengeToolAllowance=false;
       emit(onEvent,{name:"native.completion.blocker_challenge_evidence_allowed",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,callCount:calls.length}});
     }
     for(let callIndex=0;callIndex<calls.length;){
       const call=calls[callIndex];
+      const completionRecoveryEvidenceBypass=completionRecoveryEvidenceRoundsRemaining>0||completionRecoverySupportVerificationRemaining>0;
       throwIfAborted(turnSignal);
       const steerNow=steeringMessages(consumeSteering);
       if(steerNow.length){
@@ -1318,7 +1350,7 @@ export async function runNativeAgentTurn({
       const escalatedPreEditEvidenceBlocked=editRevision===0&&!preEditBlockerChallengeBypass&&implementationPressureEscalated&&!responseHasEditCall&&!implementationPressureEditCall(call);
       const singletonPreEditEvidenceBlocked=editRevision===0&&!preEditBlockerChallengeBypass&&calls.length===1&&!implementationPressureEditCall(call)&&!implementationPressureBatchCall(call)&&(implementationPressure||probeBatchingRequired);
       const escalatedPostEditEvidenceBlocked=editRevision>0&&postEditEvidenceEscalated&&!completionRecoveryEvidenceBypass&&!responseHasEditCall&&!implementationPressureEditCall(call);
-      const escalatedRevisionChurnEditBlocked=revisionChurnEscalated&&revisionChurnGraceEditUsed&&!completionRecoveryEditBypass&&!revisionChurnFailureEvidence&&implementationPressureEditCall(call);
+      const escalatedRevisionChurnEditBlocked=revisionChurnEscalated&&revisionChurnGraceEditUsed&&!completionRecoveryEditBypass&&!revisionChurnFailureEvidence&&recoveryCorrectiveEditCall(call);
       const singletonPostConvergenceTerminalBlocked=editRevision>0&&!completionRecoveryEvidenceBypass&&convergenceCheckpointRevision===editRevision&&calls.length===1&&call?.namespace==="trebell_terminal"&&call?.name==="run"&&!implementationPressureBatchCall(call);
       if(escalatedRevisionChurnEditBlocked){
         const callId=String(call?.id||""),toolCallNumber=toolCalls+1;toolCalls=toolCallNumber;
@@ -1374,6 +1406,7 @@ export async function runNativeAgentTurn({
       const observations=prepared.length>1
         ?await Promise.all(prepared.map(item=>executeOneTool(item.call,item.toolCallNumber)))
         :[await executeOneTool(prepared[0].call,prepared[0].toolCallNumber)];
+      if(completionRecoverySupportVerificationRemaining>0&&prepared.some(item=>item.call?.namespace==="trebell_terminal"&&item.call?.name==="run"))executedSupportVerification=true;
       conversation.push(...observations);
       callIndex+=batch.length;
     }
@@ -1385,6 +1418,10 @@ export async function runNativeAgentTurn({
     if(executedPostEditEvidence&&completionRecoveryEvidenceRoundsRemaining>0){
       completionRecoveryEvidenceRoundsRemaining=Math.max(0,completionRecoveryEvidenceRoundsRemaining-1);
       emit(onEvent,{name:"native.completion.recovery_allowance_used",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,editRevision,recoveryEpoch:completionRecoveryEpoch,kind:"evidence",remaining:completionRecoveryEvidenceRoundsRemaining}});
+    }
+    if(executedSupportVerification&&completionRecoverySupportVerificationRemaining>0){
+      completionRecoverySupportVerificationRemaining=Math.max(0,completionRecoverySupportVerificationRemaining-1);
+      emit(onEvent,{name:"native.completion.recovery_allowance_used",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,editRevision,recoveryEpoch:completionRecoveryEpoch,kind:"support_verification",remaining:completionRecoverySupportVerificationRemaining}});
     }
     if(editRevision===0&&implementationPressure&&executedPreEditEvidence)implementationPressureEvidenceRounds++;
     if(editRevision>editRevisionBeforeCalls){
