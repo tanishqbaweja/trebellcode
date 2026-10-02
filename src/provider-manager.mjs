@@ -252,9 +252,10 @@ function preSerializedChatMessages(messages=[],cache=null){
   return `[${parts.join(",")}]`;
 }
 function officialOpenAiResponsesBody(request={},toolManifest=null,promptCacheKeyForBody=null,responsesOptions=null){
-  const explicitCacheBreakpoints=officialOpenAiExplicitCacheBreakpointsSupported(request.model),body=providerTurnToResponses(request,{preserveInstructionOrder:true,flattenToolCallNames:true,toolResultCacheBreakpoints:explicitCacheBreakpoints,...(responsesOptions&&typeof responsesOptions==="object"?responsesOptions:{})});
-  const tools=Array.isArray(toolManifest?.tools)?toolManifest.tools:officialOpenAiTools(request.tools);body.tools=tools;
-  const contextManagement=(Array.isArray(request.contextManagement)?request.contextManagement:[])
+  const explicitReasoningContext=String(request.reasoningContext||"").trim(),effectiveRequest=explicitReasoningContext?request:{...request,reasoningContext:"current_turn"};
+  const explicitCacheBreakpoints=officialOpenAiExplicitCacheBreakpointsSupported(effectiveRequest.model),body=providerTurnToResponses(effectiveRequest,{preserveInstructionOrder:true,flattenToolCallNames:true,toolResultCacheBreakpoints:explicitCacheBreakpoints,...(responsesOptions&&typeof responsesOptions==="object"?responsesOptions:{})});
+  const tools=Array.isArray(toolManifest?.tools)?toolManifest.tools:officialOpenAiTools(effectiveRequest.tools);body.tools=tools;
+  const contextManagement=(Array.isArray(effectiveRequest.contextManagement)?effectiveRequest.contextManagement:[])
     .map(item=>{
       if(String(item?.type||"").trim().toLowerCase()!=="compaction")return null;
       const threshold=Math.trunc(Number(item?.compactThreshold??item?.compact_threshold));
@@ -263,7 +264,7 @@ function officialOpenAiResponsesBody(request={},toolManifest=null,promptCacheKey
     .filter(Boolean);
   if(contextManagement.length)body.context_management=contextManagement;
   if(explicitCacheBreakpoints){
-    const comparisonResponseId=String(request.promptCacheComparisonResponseId||"").trim();
+    const comparisonResponseId=String(effectiveRequest.promptCacheComparisonResponseId||"").trim();
     body.prompt_cache_options={mode:"implicit",...(comparisonResponseId?{comparison_response_id:comparisonResponseId}:{})};
   }
   body.prompt_cache_key=typeof promptCacheKeyForBody==="function"?promptCacheKeyForBody(body,toolManifest?.toolsJson):officialOpenAiPromptCacheKey(body,toolManifest?.toolsJson);

@@ -199,11 +199,28 @@ test("official OpenAI Anthropic and Gemini turns use their native compatibility 
   const anthropic=requests.find(item=>item.url==="https://api.anthropic.com/v1/messages");
   const gemini=requests.find(item=>item.url==="https://generativelanguage.googleapis.com/v1beta/openai/chat/completions");
   assert.equal(openai.headers.Authorization,"Bearer oa-key");
+  assert.equal(openai.body.reasoning?.context,"current_turn");
   assert.equal(anthropic.headers["x-api-key"],"an-key");
   assert.equal(anthropic.headers["anthropic-version"],"2023-06-01");
   assert.equal(gemini.headers.Authorization,"Bearer gm-key");
   assert.equal(anthropic.body.messages[0].content[0].text,"hello");
   assert.equal(gemini.body.messages[0].content,"hello");
+});
+
+test("official OpenAI defaults to current-turn reasoning context while preserving explicit overrides",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-reasoning-context-")),bodies=[];
+  try{
+    const manager=new ProviderManager({env:{TREBELL_HOME:root},fetchFn:async(_url,init={})=>{
+      const body=JSON.parse(init.body||"{}");bodies.push(body);
+      return Response.json({id:`resp-reasoning-${bodies.length}`,model:body.model,status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"ok"}]}],usage:{input_tokens:2,output_tokens:1,total_tokens:3}});
+    }});
+    manager.setKey("openai","oa-key");
+    const common={model:"gpt-6-luna",messages:[{role:"user",content:"continue"}],tools:[],reasoningEffort:"max"};
+    await manager.turn("openai",common);
+    await manager.turn("openai",{...common,reasoningContext:"all_turns"});
+    assert.deepEqual(bodies[0].reasoning,{effort:"max",context:"current_turn"});
+    assert.deepEqual(bodies[1].reasoning,{effort:"max",context:"all_turns"});
+  }finally{rmSync(root,{recursive:true,force:true})}
 });
 
 test("official OpenAI Responses flattens Trebell namespaces into standard function tools and restores them on tool calls",async()=>{

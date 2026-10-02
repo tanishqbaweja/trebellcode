@@ -3805,6 +3805,29 @@ test("native agent treats cannot-certify and not-exhaustively-verified wording a
   assert.ok(requests[2].messages.some(message=>message.role==="developer"&&/previous draft explicitly says part of the edited task remains unverified/i.test(String(message.content||""))));
 });
 
+test("native agent treats passive not-proven optimality wording as a verification gap",async()=>{
+  const requests=[],events=[];let providerCalls=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Implement an optimizer and verify the resulting allocation is optimal."}],maxModelTurns:7,maxToolCalls:10,onEvent:event=>events.push(event),
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+    ],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));providerCalls++;
+      if(providerCalls===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/solver.py","old_text":"greedy","new_text":"search"}'}],usage:{}};
+      if(providerCalls===2)return {text:"Implemented the solver. Global optimality is not proven for the remaining cases.",toolCalls:[],usage:{}};
+      if(providerCalls===3)return {text:"",toolCalls:[{id:"verify",namespace:"trebell_terminal",name:"run",arguments:'{"command":"python","args":["verify-optimality.py"]}'}],usage:{}};
+      return {text:"Implemented the solver and verified optimality across the available acceptance cases.",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{path:"src/solver.py",replacements:1}:{exitCode:0,stdout:"all acceptance cases optimal"},
+  });
+  assert.equal(providerCalls,4);
+  assert.match(result.text,/verified optimality/i);
+  assert.equal(events.filter(event=>event.name==="native.verification.self_admitted_gap").length,1);
+  assert.ok(requests[2].messages.some(message=>message.role==="developer"&&/previous draft explicitly says part of the edited task remains unverified/i.test(String(message.content||""))));
+});
+
 test("native agent escalates a still-admitted verification gap after the first recovery actually used a tool",async()=>{
   const requests=[],events=[];let providerCalls=0;
   const result=await runNativeAgentTurn({
