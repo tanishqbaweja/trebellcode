@@ -25,6 +25,8 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/TREBELL_TERMINAL_BENCH_AGENT_TIMEOUT_MULTIPLIER\|\|1/);
   assert.match(source,/Terminal-Bench agent timeout multiplier must be > 0/);
   assert.match(source,/agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER/);
+  assert.match(source,/usesBaseAgentTimeout:AGENT_TIMEOUT_MULTIPLIER===1/);
+  assert.match(source,/timeoutComparability:AGENT_TIMEOUT_MULTIPLIER===1\?"benchmark-base":"extended-agent-timeout"/);
   assert.match(source,/const PARALLEL=!sequentialRequested/);
   assert.match(source,/--sequential/);
   assert.match(source,/cannot be both --parallel and --sequential/);

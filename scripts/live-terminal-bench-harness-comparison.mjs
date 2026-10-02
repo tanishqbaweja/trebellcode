@@ -231,6 +231,8 @@ try{
   }));
   const reportSnapshot=({complete=false}={})=>({
     pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER,
+    usesBaseAgentTimeout:AGENT_TIMEOUT_MULTIPLIER===1,
+    timeoutComparability:AGENT_TIMEOUT_MULTIPLIER===1?"benchmark-base":"extended-agent-timeout",
     sameModel:true,sameReasoningEffort:true,sequential:!PARALLEL,parallel:PARALLEL,codexAuthMode:CODEX_AUTH_MODE,codexInstallMode:CODEX_INSTALL_MODE,nativeReasoningContext:NATIVE_REASONING_CONTEXT,
     nativeEnvironmentRetention:STANDALONE_NATIVE_RERUN?"retain-until-sealed-or-regraded":"harbor-default",
     nativeContextPolicy:{operatingContextWindow:NATIVE_CONTEXT_WINDOW,serverCompactionThreshold:NATIVE_COMPACT_THRESHOLD,retroactiveOpenAiReadCooling:false},
