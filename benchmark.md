@@ -1346,3 +1346,13 @@ Commit **`521937a2`** therefore makes official OpenAI Native Responses default t
 Regression validation for `521937a2` is green: **90/90** provider/turn tests, **188/188** full Native agent-loop tests, **47/47** Native/benchmark integration tests, and the exact repository suite **1,274/1,274**. The Harbor Native bundle rebuilds successfully with SHA-256 **`b05df0de7f525b42a9dcf6337644b799328ba86e00a0b197e74bef5ae8106563`**, and `git diff --check` is clean. These are implementation checks only. Neither change has fresh unseen external proof yet.
 
 Do **not** rerun `freight-dispatch-shift` as fresh evidence. The task, verifier diagnostics, and failure structure have now been inspected. The next paid comparison must use a different unseen benchmark task.
+
+#### Contaminated `html-js-filter` diagnostic: current-turn default is wired correctly, but this is not fresh evidence
+
+Pair **`tb4-pair-gpt-6-luna-max-html-js-filter-20261002T101959Z`** froze clean source **`327724f0`** and Native bundle SHA-256 **`b05df0de7f525b42a9dcf6337644b799328ba86e00a0b197e74bef5ae8106563`**, using the base timeout, parallel Native/API/OAuth lanes, `gpt-6-luna`, `reasoning_effort=max`, and no explicit Native reasoning-context override. During a process-topology diagnostic, the observer accidentally printed the task instruction from a Docker command line before the pair closed. Under the benchmark contamination rule, this pair is retained only as diagnostic evidence and must **not** be used as the fresh causal validation for `521937a2`.
+
+All three lanes finished normally and independently passed **1/2 verifier checks**, reward **0.0**. Native used **13 model turns / 17 tools**, **472,976 input / 405,344 cached / 56,327 output** tokens, and **$0.04044769** API-equivalent cost. Codex API used **635,296 / 555,418 / 59,616** tokens at **$0.045345955**. Codex OAuth used **151,183 / 115,968 / 18,980** at **$0.01417118**. Native was therefore about **10.8% cheaper than Codex API** at the same coarse verifier result, but much more expensive than OAuth; because the pair is contaminated and all rewards are zero, these numbers carry no fresh harness-quality claim.
+
+The useful implementation-level signal is unambiguous: Native's sealed metadata reports `reasoningContext: null` at the benchmark-command level and **`effectiveReasoningContexts: ["current_turn"]`** at the provider-response level. That proves the new OpenAI default is active without a benchmark override. Cache carryover was **85.827%** across 12 transitions, aggregate cache hit **85.70%**, and no request crossed the 272K long-context pricing threshold.
+
+Do **not** tune against or rerun `html-js-filter` as fresh evidence. Move to a different untouched TB4 task for the actual external validation.
