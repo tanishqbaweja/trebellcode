@@ -52,7 +52,7 @@ async function snapshot(){
       nativeRerun.sourceReportPath=rerunPointer.reportPath;
     }
   }
-  return {capturedAt:new Date().toISOString(),pairId:pointer.pairId,task:pointer.task,model:pointer.model,parallel:pointer.parallel,complete:Boolean(report.complete),reportPath:pointer.reportPath,nativeRerunReportPath:nativeRerun?.sourceReportPath||null,lanes:nativeRerun?[lanes[0],nativeRerun,...lanes.slice(1)]:lanes};
+  return {capturedAt:new Date().toISOString(),pairId:pointer.pairId,task:pointer.task,model:pointer.model,parallel:pointer.parallel,complete:Boolean(report.complete),infrastructureInterrupted:Boolean(report.infrastructureInterrupted),infrastructureComparable:report.infrastructureComparable??null,reportPath:pointer.reportPath,nativeRerunReportPath:nativeRerun?.sourceReportPath||null,lanes:nativeRerun?[lanes[0],nativeRerun,...lanes.slice(1)]:lanes};
 }
 async function persist(snap){
   const dir=join(validationDir,"watchdog",snap.pairId);await mkdir(dir,{recursive:true});
@@ -71,6 +71,7 @@ function render(snap,saved){
   lines.push(`Pair: ${snap.pairId}`);
   lines.push(`Task: ${snap.task}`);
   lines.push(`Mode: ${snap.parallel?"PARALLEL":"SEQUENTIAL"}   Complete: ${snap.complete?"YES":"NO"}`);
+  if(snap.infrastructureInterrupted)lines.push("Infrastructure: INTERRUPTED — partial evidence only; do not treat as a clean harness comparison");
   lines.push("");
   lines.push("LANE          STATUS     ACTIVITY   VERIFY  INPUT        OUTPUT       CACHE      API-EQ COST");
   lines.push("------------  ---------  ---------  ------  -----------  -----------  ---------  -----------");

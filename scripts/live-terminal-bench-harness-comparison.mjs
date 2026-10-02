@@ -227,7 +227,7 @@ try{
   const laneStates=selectedLanes.map(lane=>({
     label:lane.label,harness:lane.harness,authMode:lane.authMode,
     jobName:`tb4-${lane.label}-${safeSlug(MODEL)}-${EFFORT}-${safeSlug(TASK)}-${runStamp}`,
-    status:"pending",startedAt:null,finishedAt:null,runError:null,attempts:[],retryReason:null,retryCleanup:null,
+    status:"pending",startedAt:null,finishedAt:null,runError:null,attempts:[],retryReason:null,retryCleanup:null,infrastructureFailureReason:null,
   }));
   const reportSnapshot=({complete=false}={})=>({
     pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER,
@@ -242,6 +242,8 @@ try{
     comparisonLanes:selectedLanes.map(lane=>lane.label),configuredComparisonLanes:lanes.map(lane=>lane.label),nativeBundleSha256,nativeAdapterSha256,
     pricingSnapshot:MODEL==="gpt-6-luna"?GPT6_LUNA_STANDARD_PRICING:null,
     complete,
+    infrastructureInterrupted:jobs.filter(Boolean).some(job=>Boolean(job.infrastructureFailureReason)),
+    infrastructureComparable:complete?!jobs.filter(Boolean).some(job=>Boolean(job.infrastructureFailureReason)):null,
     activeHarness:laneStates.filter(lane=>lane.status==="running").length===1?laneStates.find(lane=>lane.status==="running")?.label||null:null,
     activeJobName:laneStates.filter(lane=>lane.status==="running").length===1?laneStates.find(lane=>lane.status==="running")?.jobName||null:null,
     activeLanes:laneStates.filter(lane=>lane.status==="running").map(lane=>lane.label),
@@ -286,7 +288,8 @@ try{
     const failedTrial=await trialResult(outputRoot,jobName);
     const subnetExhaustion=isPreAgentDockerSubnetExhaustion(failedTrial),dockerExecTransportFailure=isDockerExecTransportFailure(failedTrial);
     laneState.attempts.push({jobName,status:runnerError||subnetExhaustion||dockerExecTransportFailure?"failed":"finished",runnerError,trialInfrastructureFailure:subnetExhaustion?"docker_subnet_exhaustion":dockerExecTransportFailure?"docker_exec_transport_failure":null});
-    if(subnetExhaustion||dockerExecTransportFailure){
+    if(dockerExecTransportFailure)laneState.infrastructureFailureReason="docker_exec_transport_failure";
+    if(subnetExhaustion){
         let cleanup;
         try{
           cleanup=await cleanupSealedExitedHarborEnvironments(outputRoot,{
@@ -297,7 +300,7 @@ try{
           cleanup={eligibleProjects:null,removedContainers:0,removedNetworks:0,projects:[],error:String(error?.message||error)};
         }
         const retryJobName=jobName+"-retry1";
-        laneState.retryReason=subnetExhaustion?"docker_subnet_exhaustion":"docker_exec_transport_failure";laneState.retryCleanup=cleanup;laneState.jobName=retryJobName;jobName=retryJobName;
+        laneState.retryReason="docker_subnet_exhaustion";laneState.retryCleanup=cleanup;laneState.jobName=retryJobName;jobName=retryJobName;
         args=argsForJob(jobName);
         if(retainNativeEnvironment)args.push("--no-delete");
         if(SETUP_TIMEOUT_MULTIPLIER>1)args.push("--agent-setup-timeout-multiplier",String(SETUP_TIMEOUT_MULTIPLIER));
@@ -306,6 +309,8 @@ try{
         try{await run(harbor,args,{env:harnessEnv})}catch(error){runnerError=error?.message||String(error);runError=runnerError}
         const retryTrial=await trialResult(outputRoot,jobName),retrySubnetExhaustion=isPreAgentDockerSubnetExhaustion(retryTrial),retryDockerExecTransportFailure=isDockerExecTransportFailure(retryTrial);
         laneState.attempts.push({jobName,status:runnerError||retrySubnetExhaustion||retryDockerExecTransportFailure?"failed":"finished",runnerError,trialInfrastructureFailure:retrySubnetExhaustion?"docker_subnet_exhaustion":retryDockerExecTransportFailure?"docker_exec_transport_failure":null});
+        if(retrySubnetExhaustion)laneState.infrastructureFailureReason="docker_subnet_exhaustion";
+        else if(retryDockerExecTransportFailure)laneState.infrastructureFailureReason="docker_exec_transport_failure";
     }
     let drainError=null;
     try{
@@ -328,6 +333,8 @@ try{
       let result=null;
       try{result=JSON.parse(await readFile(join(outputRoot,jobName,"result.json"),"utf8"))}catch{}
       const recordedTrial=await trialResult(outputRoot,jobName),trial=regradeRecovery?.ok&&regradeRecovery.regrade?.result?regradeRecovery.regrade.result:recordedTrial||await recoverTrialEvidence(outputRoot,jobName);
+      const infrastructureFailureReason=isDockerExecTransportFailure(trial)?"docker_exec_transport_failure":isPreAgentDockerSubnetExhaustion(trial)?"docker_subnet_exhaustion":laneState.infrastructureFailureReason;
+      laneState.infrastructureFailureReason=infrastructureFailureReason||null;
       const recoveredNative=harness==="native"?await recoverNativeEventEvidence(outputRoot,jobName):null;
       const recoveredCodex=harness==="codex"?await recoverCodexSessionEvidence(outputRoot,jobName):null;
       const recoveredEvidence=recoveredNative||recoveredCodex;
@@ -346,6 +353,7 @@ try{
           :null;
       jobs[laneIndex]={
         harness,label,agent,jobName,runError,runnerError,drainError,authMode,
+        infrastructureFailureReason:infrastructureFailureReason||null,
         completed:regradeRecovery?.ok?1:Number(result?.stats?.n_completed_trials||0),errors:regradeRecovery?.ok?0:Number(result?.stats?.n_errored_trials||0),
         inputTokens,cachedTokens,uncachedInputTokens,cacheHitPercent,
         outputTokens:outputMetric.value,
@@ -374,7 +382,7 @@ try{
       if(project)await cleanupDockerProject(project,{captureFn:(command,args)=>capture(command,args,{env:harnessEnv}),runFn:(command,args)=>run(command,args,{env:harnessEnv})});
     }
     const laneFailed=Boolean(runError)||Number(jobs[laneIndex]?.errors||0)>0||Number(jobs[laneIndex]?.completed||0)<1;
-    laneState.status=laneFailed?"failed":"finished";laneState.finishedAt=new Date().toISOString();laneState.runError=runError;
+    laneState.status=jobs[laneIndex]?.infrastructureFailureReason?"infrastructure-failed":laneFailed?"failed":"finished";laneState.finishedAt=new Date().toISOString();laneState.runError=runError;
     await persistReport({complete:false});
   };
   if(PARALLEL)await Promise.all(selectedLanes.map((lane,index)=>runLane(lane,index)));

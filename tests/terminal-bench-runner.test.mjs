@@ -103,6 +103,11 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/isDockerExecTransportFailure/);
   assert.match(source,/docker_subnet_exhaustion/);
   assert.match(source,/docker_exec_transport_failure/);
+  assert.match(source,/infrastructureFailureReason/);
+  assert.match(source,/infrastructureInterrupted:/);
+  assert.match(source,/infrastructureComparable:/);
+  assert.match(source,/if\(subnetExhaustion\)\{/);
+  assert.doesNotMatch(source,/if\(subnetExhaustion\|\|dockerExecTransportFailure\)/);
   assert.match(source,/const failedTrial=await trialResult\(outputRoot,jobName\)/);
   assert.match(source,/trialInfrastructureFailure:/);
   assert.match(source,/retryJobName=jobName\+"-retry1"/);
@@ -144,7 +149,7 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/verifier summary recovery failed:/);
   assert.match(source,/job\.verifierChecks=null/);
   assert.match(source,/const laneFailed=Boolean\(runError\)\|\|Number\(jobs\[laneIndex\]\?\.errors\|\|0\)>0\|\|Number\(jobs\[laneIndex\]\?\.completed\|\|0\)<1/);
-  assert.match(source,/laneState\.status=laneFailed\?"failed":"finished"/);
+  assert.match(source,/laneState\.status=jobs\[laneIndex\]\?\.infrastructureFailureReason\?"infrastructure-failed":laneFailed\?"failed":"finished"/);
   assert.match(source,/writeFile\(reportPath,JSON\.stringify\(report,null,2\)/);
 });
 
