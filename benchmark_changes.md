@@ -565,6 +565,20 @@ Payload-free per-turn analysis found that Native model turns **5** and **17** al
 
 ---
 
+## 2026-10-02 - Do not mistake API documentation paths for workspace deliverables
+
+**Evidence:** a second same-task regression launch on clean source `c72563ed` removed the earlier forced-file behavior at first, but by model turn 4 its request telemetry again marked workspace implementation pressure. The already-inspected task instruction clearly describes a live campaign-management API, yet it also says the OpenAPI specification is served at an `/openapi.json` “path.” The external-state classifier treated that incidental documentation/path wording as a workspace target, so the coding-task classifier remained active. The run was stopped before another forced helper-file edit and its isolated containers were removed.
+
+**Harness change:** positive external-state classification no longer gets cancelled merely because the instruction mentions a file, path, schema, log, or other referenced artifact. Instead, an external task is excluded from external-state handling only when a mutation verb is explicitly coupled to a workspace/code/file target. Referenced API specs and source/input paths therefore remain evidence sources, while requests such as “edit the repository,” “modify this file,” or “fix the implementation” still select workspace mutation semantics. Regression coverage now includes an API-managed live-state request whose OpenAPI spec is described as being served at an `/openapi.json` path.
+
+**Why:** inputs and documentation are not deliverables. Treating any path-like noun as proof of a coding task is especially damaging for API, infrastructure, browser, database, and remote-system work, where schemas, manifests, logs, and endpoint documentation are routinely mentioned even though the requested mutation lives elsewhere.
+
+**Expected effect:** external-state tasks should stay out of pre-edit implementation pressure from the first model turn through recovery, while mixed requests that explicitly ask to modify code/files remain coding tasks. This should prevent both early helper-file detours and later recovery misclassification without weakening implementation pressure on actual software-engineering mutations.
+
+**Validation status:** Native loop + Harbor adapter/background-process + Terminal-Bench runner focused regression set passes **220 / 220** with the instruction-shaped external-state case included. The parent code lineage had already passed the complete repository suite **1,281 / 1,281**; the relaunch on this refinement remains contaminated same-task regression evidence only.
+
+---
+
 ## Template for future entries
 
 ### YYYY-MM-DD - Short change name

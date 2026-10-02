@@ -2921,7 +2921,7 @@ test("native completion recovery can repair an external API state without invent
   const events=[],executed=[];let turns=0;
   const result=await runNativeAgentTurn({
     model:"test-model",semanticCompletionGate:true,maxModelTurns:12,maxToolCalls:16,onEvent:event=>events.push(event),
-    messages:[{role:"user",content:"Manage the running campaign through its API. The API schema is served at /openapi.json. Change the live config until the measured acceptance target passes."}],
+    messages:[{role:"user",content:"Manage the running campaign through its API. The OpenAPI spec is served at the server's /openapi.json path. Change the live config until the measured acceptance target passes."}],
     tools:[
       {type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]},
       {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
@@ -2957,7 +2957,7 @@ test("native external-state tasks do not activate workspace implementation press
   const events=[];let turns=0;
   const result=await runNativeAgentTurn({
     model:"test-model",maxModelTurns:8,maxToolCalls:12,onEvent:event=>events.push(event),
-    messages:[{role:"user",content:"Manage the running campaign through its API. The API schema is served at /openapi.json. Change the live config until the measured acceptance target passes."}],
+    messages:[{role:"user",content:"Manage the running campaign through its API. The OpenAPI spec is served at the server's /openapi.json path. Change the live config until the measured acceptance target passes."}],
     tools:[
       {type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]},
       {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},

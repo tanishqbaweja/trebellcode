@@ -237,10 +237,13 @@ function requestsExternalStateMutation(messages=[]){
   const externalTarget=/\b(?:campaign|live\s+config(?:uration)?|remote\s+(?:state|system|host|service)|runtime\s+state|api\s+(?:endpoint|state|resource)|database\s+(?:row|record|state)|cluster\s+state|account\s+setting)\b/i.test(text)
     ||/\b(?:through|via|using)\s+(?:its|the|an?)\s+api\b/i.test(text);
   if(!externalTarget)return false;
-  const workspaceTarget=/\b(?:workspace|repository|repo|codebase|source|code|implementation|project|package|module|library|script|file|folder|directory|path|function|class|method|component|frontend|backend|test(?:s| suite)?|config(?:uration)?\s+file)\b/i.test(text);
-  const filePattern=/(?:^|[\s\x60"'(])((?:\.?\.?[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9_-]{1,16})(?=$|[\s\x60"'),;:.!?])/ig;
-  const fileTarget=[...text.matchAll(filePattern)].some(match=>!String(match[1]||"").replace(/\\/g,"/").startsWith("/"));
-  return !workspaceTarget&&!fileTarget;
+  const mutationVerb="(?:implement|fix|repair|restore|reconstruct|recreate|rebuild|remediate|add|create|update|change|modify|refactor|remove|delete|rename|migrate|write|edit|replace|convert|consolidate|port|upgrade|downgrade)";
+  const workspaceNoun="(?:workspace|repository|repo|codebase|source(?:\\s+code)?|code|implementation|project|package|module|library|script|files?|folders?|director(?:y|ies)|function|class|method|component|frontend|backend|tests?|config(?:uration)?\\s+file)";
+  const explicitWorkspaceTarget=new RegExp(
+    `\\b${mutationVerb}\\b[\\s\\S]{0,100}\\b${workspaceNoun}\\b|\\b${workspaceNoun}\\b[\\s\\S]{0,100}\\b${mutationVerb}\\b`,
+    "i",
+  );
+  return !explicitWorkspaceTarget.test(text);
 }
 
 function requestsConstraintPlanning(messages=[]){
