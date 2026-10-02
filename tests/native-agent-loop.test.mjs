@@ -369,6 +369,35 @@ test("native deliverable detector separates a source asset from a passive bare o
   assert.match(String(prompt.content),/out\.step/);assert.doesNotMatch(String(prompt.content),/input\.png/);
 });
 
+test("native persistent deliverable pressure coexists with workspace mutation intent",async()=>{
+  const events=[],requests=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",
+    messages:[{role:"user",content:"Write a generator script at /app/answer.py that saves two output files next to it: /app/answer_base.bin and /app/answer_edit.bin. The edit changes one parameter; every other parameter stays unchanged."}],
+    tools:[
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]},
+    ],
+    maxModelTurns:7,maxToolCalls:16,onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turn++;
+      if(turn===5){
+        const checkpoint=request.messages.find(message=>message.role==="developer"&&/deliverable checkpoint/i.test(String(message.content||"")));
+        assert.ok(checkpoint);
+        assert.match(String(checkpoint.content),/answer\.py/);
+        assert.match(String(checkpoint.content),/answer_base\.bin/);
+        assert.match(String(checkpoint.content),/answer_edit\.bin/);
+      }
+      return turn<=4
+        ?{text:"",toolCalls:[{id:"probe-"+turn,namespace:"trebell_terminal",name:"run",arguments:'{"command":"echo","args":["evidence"]}'}],usage:{}}
+        :{text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>({success:true,stdout:"evidence",exitCode:0}),
+  });
+  assert.equal(result.text,"done");
+  assert.equal(events.filter(event=>event.name==="native.progress.deliverable_checkpoint").length,1);
+});
+
 test("native input-file inspection is not mistaken for a persistent deliverable",async()=>{
   const events=[];let turn=0;
   const result=await runNativeAgentTurn({
