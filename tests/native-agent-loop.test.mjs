@@ -2783,6 +2783,8 @@ test("native semantic completion gate rejects unsupported completion without tas
         assert.ok(gate);
         assert.match(String(gate.content),/requirement-led audit/i);
         assert.match(String(gate.content),/optimization or priority objectives/i);
+        assert.match(String(gate.content),/pre-existing public symbols/i);
+        assert.match(String(gate.content),/cleaner replacement abstraction is not by itself evidence of compatibility/i);
         return {text:'{"status":"incomplete","unresolved":["p95 latency is still above the requested ceiling"],"reason":"The latest measured p95 is 141 ms, so the requested performance target is not satisfied."}',toolCalls:[],usage:{}};
       }
       if(providerCalls===4){

@@ -17,6 +17,10 @@ test("Native system prompt teaches evidence-driven coding without inventing unav
   assert.match(prompt,/Inspect relevant state/i);
   assert.match(prompt,/Claim success only from Trebell evidence/i);
   assert.match(prompt,/exact paths, commands, URLs/i);
+  assert.match(prompt,/preserve existing externally visible contracts/i);
+  assert.match(prompt,/public function\/class\/module names/i);
+  assert.match(prompt,/keep compatibility shims/i);
+  assert.match(prompt,/smoke-test representative pre-existing entry points/i);
   assert.match(prompt,/comments inside suspect implementation code as hypotheses/i);
   assert.match(prompt,/deterministic local reproducer/i);
   assert.match(prompt,/authoritative fixtures, configuration, schemas, or data files/i);
