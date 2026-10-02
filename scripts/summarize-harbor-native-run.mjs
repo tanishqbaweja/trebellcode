@@ -35,6 +35,46 @@ for(const event of requestedTools){
 }
 const longestModel=models.reduce((best,event)=>Number(event.data?.durationMs||0)>Number(best?.data?.durationMs||0)?event:best,null);
 const longestTool=completedTools.reduce((best,event)=>Number(event.data?.durationMs||0)>Number(best?.data?.durationMs||0)?event:best,null);
+const modelPrecedingContext=new Map();
+const modelFollowingTools=new Map();
+let precedingTools=[],precedingControllerEvents=[];
+let lastCompletedTurn=null;
+for(const event of events){
+  if(event.name==="native.tool.completed"){
+    const tool=String(event.data?.namespace||"unknown")+"/"+String(event.data?.name||"unknown");
+    precedingTools.push(tool);
+    if(lastCompletedTurn!=null){
+      const tools=modelFollowingTools.get(lastCompletedTurn)||[];
+      tools.push(tool);modelFollowingTools.set(lastCompletedTurn,tools);
+    }
+    continue;
+  }
+  if(String(event.name||"").startsWith("native.progress.")||String(event.name||"").startsWith("native.completion."))precedingControllerEvents.push(String(event.name));
+  if(event.name==="native.model.completed"){
+    const turn=Number(event.data?.modelTurn||0);
+    modelPrecedingContext.set(turn,{precedingTools:[...precedingTools],precedingControllerEvents:[...precedingControllerEvents]});
+    precedingTools=[];precedingControllerEvents=[];
+    lastCompletedTurn=turn;
+  }
+}
+const modelMetricRow=event=>({
+  turn:event.data?.modelTurn??null,
+  durationMs:Math.round(Number(event.data?.durationMs||0)),
+  toolCallCount:Number(event.data?.toolCallCount||0),
+  finishReason:event.data?.finishReason??null,
+  precedingTools:modelPrecedingContext.get(Number(event.data?.modelTurn||0))?.precedingTools||[],
+  precedingControllerEvents:modelPrecedingContext.get(Number(event.data?.modelTurn||0))?.precedingControllerEvents||[],
+  followingTools:modelFollowingTools.get(Number(event.data?.modelTurn||0))||[],
+  inputTokens:Number(event.data?.usage?.inputTokens||0),
+  cachedInputTokens:Number(event.data?.usage?.cachedInputTokens||0),
+  cacheWriteInputTokens:Number(event.data?.usage?.cacheWriteInputTokens||0),
+  outputTokens:Number(event.data?.usage?.outputTokens||0),
+  reasoningOutputTokens:Number(event.data?.usage?.reasoningOutputTokens||0),
+});
+const topModelTurns=(metric,limit=5)=>models
+  .map(modelMetricRow)
+  .sort((a,b)=>Number(b?.[metric]||0)-Number(a?.[metric]||0)||Number(a.turn||0)-Number(b.turn||0))
+  .slice(0,limit);
 const terminal=events.findLast(event=>event.name==="native.turn.completed"||event.name==="native.turn.blocked")||null;
 const coolingEvents=events.filter(event=>event.name==="native.tool.history_cooled");
 const pressureEvents=events.filter(event=>event.name==="native.progress.implementation_pressure");
@@ -102,6 +142,9 @@ console.log(JSON.stringify({
   },
   toolMix,
   longestModel:longestModel?{turn:longestModel.data?.modelTurn,durationMs:Math.round(Number(longestModel.data?.durationMs||0)),inputTokens:longestModel.data?.usage?.inputTokens||0,outputTokens:longestModel.data?.usage?.outputTokens||0}:null,
+  topOutputTurns:topModelTurns("outputTokens"),
+  topReasoningTurns:topModelTurns("reasoningOutputTokens"),
+  topDurationTurns:topModelTurns("durationMs"),
   longestTool:longestTool?{toolCall:longestTool.data?.toolCall,tool:String(longestTool.data?.namespace||"")+"/"+String(longestTool.data?.name||""),durationMs:Math.round(Number(longestTool.data?.durationMs||0)),status:longestTool.status}:null,
   terminal:terminal?{name:terminal.name,status:terminal.status,atMs:terminal.atMs,data:terminal.data}:null,
   metrics,

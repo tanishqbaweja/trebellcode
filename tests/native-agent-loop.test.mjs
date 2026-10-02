@@ -93,6 +93,65 @@ test("native agent injects one implementation checkpoint after prolonged read-on
   assert.equal(events.filter(event=>event.name==="native.progress.implementation_call_blocked").length,1);
 });
 
+test("native bounds implementation-pressure output while preserving max reasoning",async()=>{
+  const requests=[],events=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"gpt-6-luna",provider:"openai",reasoningEffort:"max",messages:[{role:"user",content:"Implement the requested feature."}],
+    tools:[{type:"namespace",name:"trebell_repo",tools:[{name:"search_code"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]}],
+    maxModelTurns:8,maxToolCalls:30,onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turn++;
+      if(turn<=4)return {text:"",toolCalls:[
+        {id:`read-${turn}-a`,namespace:"trebell_repo",name:"search_code",arguments:JSON.stringify({query:`q-${turn}-a`})},
+        {id:`read-${turn}-b`,namespace:"trebell_repo",name:"search_code",arguments:JSON.stringify({query:`q-${turn}-b`})},
+      ],finishReason:"tool_calls",usage:{}};
+      if(turn===5){
+        assert.equal(request.maxOutputTokens,32768);
+        assert.equal(request.reasoningEffort,"max");
+        return {text:"",toolCalls:[{id:"write",namespace:"trebell_workspace",name:"write_file",arguments:JSON.stringify({path:"src/feature.mjs",content:"export const ready = true;\n"})}],finishReason:"tool_calls",usage:{}};
+      }
+      return {text:"implemented",toolCalls:[],finishReason:"completed",usage:{}};
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{success:true,path:"src/feature.mjs",size:27}:{success:true,matches:["evidence"]},
+  });
+  assert.equal(result.text,"implemented");
+  assert.equal(requests[4].messages.some(message=>message.role==="developer"&&/progress checkpoint/i.test(String(message.content||""))),true);
+  assert.equal(events.filter(event=>event.name==="native.model.action_output_cap").length,1);
+  assert.equal(events.filter(event=>event.name==="native.model.action_output_cap_relaxed").length,0);
+});
+
+test("native relaxes an action output cap once when the provider hits the limit before acting",async()=>{
+  const requests=[],events=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"gpt-6-luna",provider:"openai",reasoningEffort:"max",messages:[{role:"user",content:"Implement the requested feature."}],
+    tools:[{type:"namespace",name:"trebell_repo",tools:[{name:"search_code"}]},{type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]}],
+    maxModelTurns:9,maxToolCalls:30,onEvent:event=>events.push(event),
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turn++;
+      if(turn<=4)return {text:"",toolCalls:[
+        {id:`read-${turn}-a`,namespace:"trebell_repo",name:"search_code",arguments:JSON.stringify({query:`q-${turn}-a`})},
+        {id:`read-${turn}-b`,namespace:"trebell_repo",name:"search_code",arguments:JSON.stringify({query:`q-${turn}-b`})},
+      ],finishReason:"tool_calls",usage:{}};
+      if(turn===5){
+        assert.equal(request.maxOutputTokens,32768);
+        return {text:"",toolCalls:[],finishReason:"incomplete",raw:{incomplete_details:{reason:"max_output_tokens"}},usage:{outputTokens:32768,reasoningOutputTokens:32768}};
+      }
+      if(turn===6){
+        assert.equal(request.maxOutputTokens,null);
+        assert.equal(request.reasoningEffort,"max");
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/bounded action-turn output allowance was reached/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[{id:"write",namespace:"trebell_workspace",name:"write_file",arguments:JSON.stringify({path:"src/feature.mjs",content:"export const ready = true;\n"})}],finishReason:"tool_calls",usage:{}};
+      }
+      return {text:"implemented",toolCalls:[],finishReason:"completed",usage:{}};
+    },
+    executeTool:async call=>call.namespace==="trebell_workspace"?{success:true,path:"src/feature.mjs",size:27}:{success:true,matches:["evidence"]},
+  });
+  assert.equal(result.text,"implemented");
+  assert.equal(events.filter(event=>event.name==="native.model.action_output_cap").length,1);
+  assert.equal(events.filter(event=>event.name==="native.model.action_output_cap_relaxed").length,1);
+  assert.equal(requests.length,7);
+});
+
 test("native implementation checkpoint fires before a fourth read-only model turn once 24 tools are already spent",async()=>{
   const requests=[],events=[],executed=[];let turn=0;
   const result=await runNativeAgentTurn({
@@ -434,7 +493,7 @@ test("native persistent deliverable pressure coexists with workspace mutation in
   const events=[],requests=[];let turn=0;
   const result=await runNativeAgentTurn({
     model:"test-model",
-    messages:[{role:"user",content:"Write a generator script at /app/answer.py that saves two parametric files next to it: /app/answer_base.bin and /app/answer_edit.bin. The edit changes one parameter; every other parameter stays unchanged."}],
+    messages:[{role:"user",content:"Implement a generator script at /app/answer.py that saves two parametric files next to it: /app/answer_base.bin and /app/answer_edit.bin. The edit changes one parameter; every other parameter stays unchanged."}],
     tools:[
       {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
       {type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]},
@@ -445,18 +504,25 @@ test("native persistent deliverable pressure coexists with workspace mutation in
       if(turn===5){
         const checkpoint=request.messages.find(message=>message.role==="developer"&&/deliverable checkpoint/i.test(String(message.content||"")));
         assert.ok(checkpoint);
-        assert.match(String(checkpoint.content),/answer\.py/);
+        assert.match(String(checkpoint.content),/progress checkpoint/i);
         assert.match(String(checkpoint.content),/answer_base\.bin/);
         assert.match(String(checkpoint.content),/answer_edit\.bin/);
+        assert.equal(request.messages.filter(message=>message.role==="developer"&&/(?:progress|deliverable) checkpoint/i.test(String(message.content||""))).length,1,"overlapping implementation/deliverable pressure should share one model-facing checkpoint");
       }
       return turn<=4
-        ?{text:"",toolCalls:[{id:"probe-"+turn,namespace:"trebell_terminal",name:"run",arguments:'{"command":"echo","args":["evidence"]}'}],usage:{}}
+        ?{text:"",toolCalls:[
+          {id:"probe-"+turn+"-a",namespace:"trebell_terminal",name:"run",arguments:'{"command":"echo","args":["evidence-a"]}'},
+          {id:"probe-"+turn+"-b",namespace:"trebell_terminal",name:"run",arguments:'{"command":"echo","args":["evidence-b"]}'},
+        ],usage:{}}
         :{text:"done",toolCalls:[],usage:{}};
     },
     executeTool:async()=>({success:true,stdout:"evidence",exitCode:0}),
   });
   assert.equal(result.text,"done");
+  assert.equal(events.filter(event=>event.name==="native.progress.implementation_checkpoint").length,1);
   assert.equal(events.filter(event=>event.name==="native.progress.deliverable_checkpoint").length,1);
+  assert.equal(events.find(event=>event.name==="native.progress.implementation_checkpoint")?.data?.coalescedWithDeliverable,true);
+  assert.equal(events.find(event=>event.name==="native.progress.deliverable_checkpoint")?.data?.coalescedWithImplementation,true);
 });
 
 test("native input-file inspection is not mistaken for a persistent deliverable",async()=>{
@@ -2582,7 +2648,7 @@ test("native post-edit evidence rounds stop repeated batch-like scripts from byp
       if(turns>=2&&turns<=7)return {text:"",toolCalls:[{id:`batch-${turns}`,namespace:"trebell_terminal",name:"run",arguments:batchArgs(turns)}],usage:{}};
       if(turns===8){assert.ok(request.messages.some(message=>message.role==="developer"&&/post-edit evidence checkpoint/i.test(String(message.content||""))));return {text:"",toolCalls:[{id:"batch-8",namespace:"trebell_terminal",name:"run",arguments:batchArgs(8)}],usage:{}}}
       if(turns===9)return {text:"",toolCalls:[{id:"batch-9",namespace:"trebell_terminal",name:"run",arguments:batchArgs(9)}],usage:{}};
-      if(turns===10){assert.ok(request.messages.some(message=>message.role==="developer"&&/post-edit evidence escalation/i.test(String(message.content||""))));return {text:"",toolCalls:[{id:"blocked-batch",namespace:"trebell_terminal",name:"run",arguments:batchArgs(10)}],usage:{}}}
+      if(turns===10){assert.ok(request.messages.some(message=>message.role==="developer"&&/post-edit evidence escalation/i.test(String(message.content||""))));assert.equal(request.maxOutputTokens,32768);return {text:"",toolCalls:[{id:"blocked-batch",namespace:"trebell_terminal",name:"run",arguments:batchArgs(10)}],usage:{}}}
       assert.ok(request.messages.some(message=>message.role==="tool"&&message.toolCallId==="blocked-batch"&&/post-edit evidence escalation/i.test(String(message.content||""))));
       return {text:"done",toolCalls:[],usage:{}};
     },

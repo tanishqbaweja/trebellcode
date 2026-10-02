@@ -11,4 +11,9 @@ test("Codex session evidence recovers exact per-request token and cost metrics",
   assert.equal(result.modelTurns,2);assert.equal(result.inputTokens,3000);assert.equal(result.cachedTokens,2700);
   assert.equal(result.cacheWriteInputTokens,150);assert.equal(result.outputTokens,300);assert.equal(result.reasoningOutputTokens,180);
   assert.equal(result.maxObservedInputTokens,2000);assert.equal(result.apiEquivalentCostBreakdown.contextPricingExact,true);assert.ok(result.apiEquivalentCostUsd>0);
+  assert.deepEqual(result.topOutputRequests.map(row=>row.request),[2,1]);
+  assert.deepEqual(result.topReasoningRequests.map(row=>row.request),[2,1]);
+  assert.deepEqual(result.topOutputRequests[0],{
+    request:2,inputTokens:2000,cachedInputTokens:1800,cacheWriteInputTokens:100,outputTokens:200,reasoningOutputTokens:120,
+  });
 });

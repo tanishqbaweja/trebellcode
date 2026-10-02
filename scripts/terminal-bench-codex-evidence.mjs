@@ -1,5 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { estimateGpt6LunaStandardCostFromRecords } from "./terminal-bench-cost.mjs";
 
 async function walkJsonl(root){
@@ -25,6 +26,18 @@ export function summarizeCodexSessionEvidence(texts=[]){
   const rows=(Array.isArray(texts)?texts:[texts]).flatMap(tokenUsageRows);
   if(!rows.length)return null;
   const requestUsage=rows.map(row=>row.payload.usage),cost=estimateGpt6LunaStandardCostFromRecords(requestUsage);
+  const requestMetricRows=requestUsage.map((usage,index)=>({
+    request:index+1,
+    inputTokens:Number(usage?.input_tokens||usage?.inputTokens||0),
+    cachedInputTokens:Number(usage?.cached_input_tokens||usage?.cachedInputTokens||0),
+    cacheWriteInputTokens:Number(usage?.cache_write_input_tokens||usage?.cacheWriteInputTokens||0),
+    outputTokens:Number(usage?.output_tokens||usage?.outputTokens||0),
+    reasoningOutputTokens:Number(usage?.reasoning_output_tokens||usage?.reasoningOutputTokens||0),
+  }));
+  const topRequests=(metric,limit=5)=>requestMetricRows
+    .slice()
+    .sort((a,b)=>Number(b?.[metric]||0)-Number(a?.[metric]||0)||a.request-b.request)
+    .slice(0,limit);
   const reasoningOutputTokens=requestUsage.reduce((sum,usage)=>sum+Number(usage?.reasoning_output_tokens||usage?.reasoningOutputTokens||0),0);
   const usage=cost.usage;
   return {
@@ -37,6 +50,8 @@ export function summarizeCodexSessionEvidence(texts=[]){
     reasoningOutputTokens,
     cacheWriteInputTokens:usage.cacheWriteInputTokens,
     maxObservedInputTokens:requestUsage.reduce((max,turn)=>Math.max(max,Number(turn?.input_tokens||turn?.inputTokens||0)),0),
+    topOutputRequests:topRequests("outputTokens"),
+    topReasoningRequests:topRequests("reasoningOutputTokens"),
     apiEquivalentCostUsd:cost.totalUsd,
     apiEquivalentCostBreakdown:cost,
   };
@@ -52,3 +67,13 @@ export async function recoverCodexSessionEvidence(outputRoot,jobName){
   }
   return summarizeCodexSessionEvidence(texts);
 }
+
+async function main(){
+  const outputRoot=process.argv[2],jobName=process.argv[3];
+  if(!outputRoot||!jobName)throw new Error("Usage: node scripts/terminal-bench-codex-evidence.mjs <output-root> <job-name>");
+  const summary=await recoverCodexSessionEvidence(resolve(outputRoot),String(jobName));
+  if(!summary)throw new Error("No Codex token-usage evidence found for the requested job.");
+  process.stdout.write(JSON.stringify(summary,null,2)+"\n");
+}
+
+if(resolve(process.argv[1]||"")===fileURLToPath(import.meta.url))main().catch(error=>{console.error(error?.message||error);process.exitCode=1});
