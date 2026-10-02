@@ -5,6 +5,9 @@ export function createNativeStrategyMetrics(){
     convergenceCheckpoints:0,
     deliverableCheckpoints:0,
     deliverableEscalations:0,
+    globalConstraintPlanningCheckpoints:0,
+    globalConstraintCommitBlocks:0,
+    globalConstraintCommitAudits:0,
     implementationPressureEvents:0,
     convergenceCallsBlocked:0,
     postEditProbeBatchCheckpoints:0,
@@ -50,6 +53,9 @@ export function observeNativeStrategyEvent(metrics,event,atMs=null){
   }else if(name==="native.progress.convergence_checkpoint")target.convergenceCheckpoints=Number(target.convergenceCheckpoints||0)+1;
   else if(name==="native.progress.deliverable_checkpoint")target.deliverableCheckpoints=Number(target.deliverableCheckpoints||0)+1;
   else if(name==="native.progress.deliverable_escalation")target.deliverableEscalations=Number(target.deliverableEscalations||0)+1;
+  else if(name==="native.progress.global_constraint_planning_checkpoint")target.globalConstraintPlanningCheckpoints=Number(target.globalConstraintPlanningCheckpoints||0)+1;
+  else if(name==="native.progress.global_constraint_commit_blocked")target.globalConstraintCommitBlocks=Number(target.globalConstraintCommitBlocks||0)+1;
+  else if(name==="native.progress.global_constraint_commit_audited")target.globalConstraintCommitAudits=Number(target.globalConstraintCommitAudits||0)+1;
   else if(name==="native.progress.implementation_pressure")target.implementationPressureEvents=Number(target.implementationPressureEvents||0)+1;
   else if(name==="native.progress.convergence_call_blocked")target.convergenceCallsBlocked=Number(target.convergenceCallsBlocked||0)+1;
   else if(name==="native.progress.post_edit_probe_batch_checkpoint")target.postEditProbeBatchCheckpoints=Number(target.postEditProbeBatchCheckpoints||0)+1;

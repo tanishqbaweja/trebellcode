@@ -11,7 +11,9 @@ test("native terminal audit metadata records network intent while redacting secr
   assert.equal(audit.networkLike,true);assert.equal(audit.packageManager,false);assert.deepEqual(audit.hosts,["example.com"]);
   assert.equal(audit.redactedCommand.includes(secret),false);assert.match(audit.redactedCommand,/\[redacted\]/);assert.equal(audit.commandHash.length,64);
   const local=nativeTerminalAuditMetadata("trebell_terminal","run",{command:"python",args:["verify.py"]});
-  assert.equal(local.networkLike,false);assert.equal(local.packageManager,false);assert.deepEqual(local.hosts,[]);
+  assert.equal(local.networkLike,false);assert.equal(local.packageManager,false);assert.equal(local.persistentMutationLike,false);assert.deepEqual(local.hosts,[]);
+  const write=nativeTerminalAuditMetadata("trebell_terminal","run",{command:"psql",args:["-c","INSERT INTO dispatch_queue(id) VALUES (1)"]});
+  assert.equal(write.persistentMutationLike,true);assert.equal(write.persistentMutationKind,"sql_write");
   assert.equal(nativeTerminalAuditMetadata("trebell_workspace","read_file",{path:"a.txt"}),null);
 });
 
@@ -147,6 +149,65 @@ test("native implementation pressure never activates for a read-only request",as
     executeTool:async()=>({success:true,matches:["evidence"]}),
   });
   assert.equal(result.text,"architecture explained");assert.ok(requests.every(request=>request.tools.some(namespace=>namespace?.name==="trebell_repo")));
+});
+
+test("native injects an early global-constraint checkpoint for solver-style planning tasks",async()=>{
+  const requests=[],events=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"fixture",maxModelTurns:6,maxToolCalls:20,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Create a capacity-constrained production schedule that maximizes priority-order coverage while respecting inventory, due dates, shifts, downtime, and changeovers."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turn++;
+      if(turn<=3)return {text:"",toolCalls:[{id:`probe-${turn}`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[`probe-${turn}.mjs`]})}],usage:{}};
+      return {text:"schedule complete",toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>({exitCode:0,stdout:"source evidence"}),
+  });
+  assert.equal(result.text,"schedule complete");
+  assert.equal(requests[3].messages.some(message=>message.role==="developer"&&/global-constraint planning checkpoint/i.test(String(message.content||""))),true);
+  assert.match(String(requests[3].messages.find(message=>message.role==="developer"&&/global-constraint planning checkpoint/i.test(String(message.content||"")))?.content||""),/before any persistent writeback or hard-to-reverse side effect/i);
+  assert.equal(events.filter(event=>event.name==="native.progress.global_constraint_planning_checkpoint").length,1);
+});
+
+test("native does not inject the global-constraint planning checkpoint for ordinary performance optimization",async()=>{
+  const requests=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"fixture",maxModelTurns:5,maxToolCalls:20,
+    messages:[{role:"user",content:"Optimize this web app for lower latency and better responsiveness."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{requests.push(structuredClone(request));turn++;return turn<=3?{text:"",toolCalls:[{id:`perf-${turn}`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[`perf-${turn}.mjs`]})}],usage:{}}:{text:"done",toolCalls:[],usage:{}}},
+    executeTool:async()=>({exitCode:0,stdout:"evidence"}),
+  });
+  assert.equal(result.text,"done");
+  assert.equal(requests.some(request=>request.messages.some(message=>message.role==="developer"&&/global-constraint planning checkpoint/i.test(String(message.content||"")))),false);
+});
+
+test("native blocks a constraint-planning persistent commit until a full non-mutating audit runs",async()=>{
+  const events=[],executed=[],requests=[];let turn=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",provider:"fixture",maxModelTurns:9,maxToolCalls:20,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Compute a priority-optimal capacity-constrained production schedule, verify inventory, due dates, routing durations, and required-order coverage, then persist the validated plan to the production database."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turn++;
+      if(turn<=3)return {text:"",toolCalls:[{id:`probe-${turn}`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[`probe-${turn}.mjs`]})}],usage:{}};
+      if(turn===4)return {text:"",toolCalls:[{id:"commit-too-early",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO production_plan(id) VALUES (1)"]})}],usage:{}};
+      if(turn===5){
+        assert.ok(request.messages.some(message=>message.role==="tool"&&message.toolCallId==="commit-too-early"&&/global-constraint commit guard/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[{id:"full-audit",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:["audit-all-constraints.mjs"]})}],usage:{}};
+      }
+      if(turn===6)return {text:"",toolCalls:[{id:"commit-after-audit",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"psql",args:["-c","INSERT INTO production_plan(id) VALUES (1)"]})}],usage:{}};
+      return {text:"validated plan committed",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return {success:true,exitCode:0,stdout:call.id==="full-audit"?"all explicit constraints pass":"ok"}},
+  });
+  assert.equal(result.text,"validated plan committed");
+  assert.equal(executed.includes("commit-too-early"),false);
+  assert.deepEqual(executed,["probe-1","probe-2","probe-3","full-audit","commit-after-audit"]);
+  assert.equal(events.filter(event=>event.name==="native.progress.global_constraint_commit_blocked").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.global_constraint_commit_audited").length,1);
+  const blocked=events.find(event=>event.name==="native.progress.global_constraint_commit_blocked");assert.equal(blocked.data?.mutationKind,"sql_write");
 });
 
 test("native performance-improvement wording activates implementation pressure",async()=>{
@@ -2423,7 +2484,7 @@ test("native convergence guard still allows one bounded batched verification swe
   assert.equal(events.some(event=>event.name==="native.progress.convergence_call_blocked"),false);
 });
 
-test("native post-edit singleton probing switches to batch-only evidence after six reasoning round trips",async()=>{
+test("native post-edit singleton probing switches to batch-only evidence after three reasoning round trips",async()=>{
   let turns=0;const executed=[],events=[],requests=[];
   const result=await runNativeAgentTurn({
     model:"test-model",messages:[{role:"user",content:"Fix the implementation and verify it."}],maxModelTurns:12,maxToolCalls:20,onEvent:event=>events.push(event),
@@ -2431,12 +2492,12 @@ test("native post-edit singleton probing switches to batch-only evidence after s
     providerTurn:async request=>{
       requests.push(structuredClone(request));turns++;
       if(turns===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
-      if(turns>=2&&turns<=7)return {text:"",toolCalls:[{id:`probe-${turns}`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"probe",args:["same"]})}],usage:{}};
-      if(turns===8){
+      if(turns>=2&&turns<=4)return {text:"",toolCalls:[{id:`probe-${turns}`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"probe",args:["same"]})}],usage:{}};
+      if(turns===5){
         assert.ok(request.messages.some(message=>message.role==="developer"&&/post-edit probe-batching checkpoint/i.test(String(message.content||""))));
         return {text:"",toolCalls:[{id:"serial-after-checkpoint",namespace:"trebell_terminal",name:"run",arguments:'{"command":"probe","args":["serial"]}'}],usage:{}};
       }
-      if(turns===9){
+      if(turns===6){
         assert.ok(request.messages.some(message=>message.role==="tool"&&message.toolCallId==="serial-after-checkpoint"&&/post-edit probe batching/i.test(String(message.content||""))));
         return {text:"",toolCalls:[{id:"batched-after-checkpoint",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"bash",args:["-lc","for value in a b c d; do probe \"$value\"; done"]})}],usage:{}};
       }
@@ -2444,9 +2505,47 @@ test("native post-edit singleton probing switches to batch-only evidence after s
     },
     executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0}},
   });
-  assert.equal(result.text,"done");assert.equal(turns,10);
+  assert.equal(result.text,"done");assert.equal(turns,7);
   assert.equal(executed.includes("serial-after-checkpoint"),false);
   assert.equal(executed.includes("batched-after-checkpoint"),true);
+  assert.equal(events.filter(event=>event.name==="native.progress.post_edit_probe_batch_checkpoint").length,1);
+  assert.equal(events.filter(event=>event.name==="native.progress.post_edit_probe_call_blocked").length,1);
+});
+
+test("native post-edit batching counts singleton reads searches and output inspection as evidence probes",async()=>{
+  let turns=0;const executed=[],events=[],requests=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",messages:[{role:"user",content:"Fix the implementation and verify it."}],maxModelTurns:10,maxToolCalls:20,onEvent:event=>events.push(event),
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"},{name:"read_file"}]},
+      {type:"namespace",name:"trebell_repo",tools:[{name:"search_files"}]},
+      {type:"namespace",name:"trebell_output",tools:[{name:"inspect"}]},
+    ],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"good"}'}],usage:{}};
+      if(turns===2)return {text:"",toolCalls:[{id:"read-1",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/a.mjs"}'}],usage:{}};
+      if(turns===3)return {text:"",toolCalls:[{id:"search-1",namespace:"trebell_repo",name:"search_files",arguments:'{"query":"acceptance"}'}],usage:{}};
+      if(turns===4)return {text:"",toolCalls:[{id:"inspect-1",namespace:"trebell_output",name:"inspect",arguments:'{"path":"output/result.json"}'}],usage:{}};
+      if(turns===5){
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/post-edit probe-batching checkpoint/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[{id:"blocked-read",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/b.mjs"}'}],usage:{}};
+      }
+      if(turns===6){
+        assert.ok(request.messages.some(message=>message.role==="tool"&&message.toolCallId==="blocked-read"&&/singleton evidence probe/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[
+          {id:"batched-read",namespace:"trebell_workspace",name:"read_file",arguments:'{"path":"src/b.mjs"}'},
+          {id:"batched-inspect",namespace:"trebell_output",name:"inspect",arguments:'{"path":"output/result.json"}'},
+        ],usage:{}};
+      }
+      return {text:"done",toolCalls:[],usage:{}};
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"&&call.name==="replace_text"?{path:"src/a.mjs",replacements:1}:{ok:true}},
+  });
+  assert.equal(result.text,"done");assert.equal(turns,7);
+  assert.equal(executed.includes("blocked-read"),false);
+  assert.equal(executed.includes("batched-read"),true);
+  assert.equal(executed.includes("batched-inspect"),true);
   assert.equal(events.filter(event=>event.name==="native.progress.post_edit_probe_batch_checkpoint").length,1);
   assert.equal(events.filter(event=>event.name==="native.progress.post_edit_probe_call_blocked").length,1);
 });
@@ -2459,9 +2558,9 @@ test("native post-edit probe batching resets after another successful workspace 
     providerTurn:async request=>{
       turns++;
       if(turns===1)return {text:"",toolCalls:[{id:"edit-1",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"better"}'}],usage:{}};
-      if(turns>=2&&turns<=7)return {text:"",toolCalls:[{id:`probe-${turns}`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"probe",args:[String(turns)]})}],usage:{}};
-      if(turns===8){assert.ok(request.messages.some(message=>message.role==="developer"&&/post-edit probe-batching checkpoint/i.test(String(message.content||""))));return {text:"",toolCalls:[{id:"edit-2",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"better","new_text":"good"}'}],usage:{}}}
-      if(turns===9)return {text:"",toolCalls:[{id:"fresh-singleton",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      if(turns>=2&&turns<=4)return {text:"",toolCalls:[{id:`probe-${turns}`,namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"probe",args:[String(turns)]})}],usage:{}};
+      if(turns===5){assert.ok(request.messages.some(message=>message.role==="developer"&&/post-edit probe-batching checkpoint/i.test(String(message.content||""))));return {text:"",toolCalls:[{id:"edit-2",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"better","new_text":"good"}'}],usage:{}}}
+      if(turns===6)return {text:"",toolCalls:[{id:"fresh-singleton",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
       return {text:"done",toolCalls:[],usage:{}};
     },
     executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0}},
@@ -2680,7 +2779,10 @@ test("native semantic completion gate rejects unsupported completion without tas
         assert.deepEqual(request.tools,[]);
         assert.equal(request.maxOutputTokens,2048);
         assert.equal(request.reasoningEffort,"max");
-        assert.ok(request.messages.some(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||""))));
+        const gate=request.messages.find(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||"")));
+        assert.ok(gate);
+        assert.match(String(gate.content),/requirement-led audit/i);
+        assert.match(String(gate.content),/optimization or priority objectives/i);
         return {text:'{"status":"incomplete","unresolved":["p95 latency is still above the requested ceiling"],"reason":"The latest measured p95 is 141 ms, so the requested performance target is not satisfied."}',toolCalls:[],usage:{}};
       }
       if(providerCalls===4){
@@ -2710,6 +2812,37 @@ test("native semantic completion gate rejects unsupported completion without tas
   assert.equal(events.filter(event=>event.name==="native.completion.gate").length,2);
   assert.equal(events.filter(event=>event.name==="native.completion.gate_recovery").length,1);
   assert.equal(events.find(event=>event.name==="native.completion.gate"&&event.data?.verdict==="complete")?.status,"completed");
+});
+
+test("native completion recovery edits immediately when the gate already supports a concrete repair",async()=>{
+  const requests=[],events=[],executed=[];let turns=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxModelTurns:10,maxToolCalls:12,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Fix src/a.mjs and satisfy the exact acceptance requirements before publishing the result."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      requests.push(structuredClone(request));turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"initial",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"candidate"}'}],usage:{}};
+      if(turns===2)return {text:"The candidate exists, but exact acceptance is not yet satisfied.",toolCalls:[],usage:{}};
+      if(turns===3)return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"supported","unresolved":["the exact acceptance invariant still fails"],"reason":"Existing evidence identifies a concrete corrective edit."}',toolCalls:[],usage:{}};
+      if(turns===4){
+        assert.equal(request.toolChoice,"required");
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/already found concrete edit support/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[{id:"repair",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"candidate","new_text":"fixed"}'}],usage:{}};
+      }
+      if(turns===5)return {text:"",toolCalls:[{id:"verify",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["verify.mjs"]}'}],usage:{}};
+      if(turns===6)return {text:"The repaired candidate now satisfies exact acceptance.",toolCalls:[],usage:{}};
+      if(turns===7)return {text:'{"status":"complete","progress":"improved","edit_support":"unsupported","unresolved":[],"reason":"The corrective edit was followed by direct acceptance evidence."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:"src/a.mjs",replacements:1}:{exitCode:0,stdout:"acceptance=pass"}},
+  });
+  assert.equal(result.text,"The repaired candidate now satisfies exact acceptance.");
+  assert.deepEqual(executed,["initial","repair","verify"]);
+  const recovery=events.find(event=>event.name==="native.completion.gate_recovery");assert.ok(recovery);assert.equal(recovery.data?.evidenceRoundsAllowed,0);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="evidence").length,0);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,1);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="post_edit_verification").length,1);
 });
 
 test("native semantic completion gate rejects a novel pre-edit blocker without relying on blocker wording",async()=>{
@@ -3108,6 +3241,7 @@ test("native does not advance a recovery incumbent from directional judge prose 
       if(turns===6){
         const gate=request.messages.findLast(message=>message.role==="developer"&&/semantic completion gate/i.test(String(message.content||"")));
         assert.ok(gate);assert.match(String(gate.content),/Baseline exact error is 10/);
+        assert.match(String(gate.content),/do not silently drop an incumbent unresolved requirement/i);
         return {text:'{"status":"incomplete","progress":"improved","unresolved":["exact acceptance remains"],"reason":"The evidence sounds better than before, although no workspace edit occurred."}',toolCalls:[],usage:{}};
       }
       if(turns===7)return {text:"",toolCalls:[{id:"evidence-2",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["check-2.mjs"]}'}],usage:{}};
@@ -3897,7 +4031,7 @@ test("native blocker challenge gets one evidence batch through an exhausted pre-
       if(providerCalls===5)return {text:"",toolCalls:[read("batch-5-a","data/a.bin"),read("batch-5-b","data/b.bin")],usage:{}};
       if(providerCalls===6)return {text:"",toolCalls:[read("batch-6-a","data/c.bin"),read("batch-6-b","data/d.bin")],usage:{}};
       if(providerCalls===7){
-        assert.ok(request.messages.some(message=>message.role==="developer"&&/implementation escalation/i.test(String(message.content||""))));
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/(?:implementation escalation|probe-batching checkpoint)/i.test(String(message.content||""))));
         return {text:"I can't safely restore the exact records from the evidence gathered so far.",toolCalls:[],usage:{}};
       }
       if(providerCalls===8){

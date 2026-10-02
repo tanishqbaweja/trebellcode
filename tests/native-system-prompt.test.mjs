@@ -28,6 +28,10 @@ test("Native system prompt teaches evidence-driven coding without inventing unav
   assert.match(prompt,/target\/reserve and a hard minimum\/maximum/i);
   assert.match(prompt,/boundary where one threshold is satisfied and the other is not/i);
   assert.match(prompt,/planner, solver, scheduler, allocator, generator/i);
+  assert.match(prompt,/finite planning, scheduling, allocation, dispatch, routing, packing, or optimization tasks/i);
+  assert.match(prompt,/one bounded local solver\/search\/check/i);
+  assert.match(prompt,/global feasibility plus any priority\/optimality objective/i);
+  assert.match(prompt,/persistent state untouched until the strongest available pre-commit check passes/i);
   assert.match(prompt,/unexpected universal failure, infeasible, empty, or no-solution outcome/i);
   assert.match(prompt,/constraints shape construction\/selection itself rather than only reject the result afterward/i);
   assert.match(prompt,/make that conclusion evidence-based/i);
