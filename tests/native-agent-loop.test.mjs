@@ -3070,6 +3070,29 @@ test("native changes recovery strategy after three incomplete semantic epochs wi
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_exhausted").length,1);
 });
 
+test("native semantic recovery defaults to four bounded epochs",async()=>{
+  let turns=0;const events=[];
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxModelTurns:16,maxToolCalls:8,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Fix src/a.mjs until the exact acceptance condition passes."}],
+    tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]}],
+    providerTurn:async()=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"initial",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/a.mjs","old_text":"bad","new_text":"candidate"}'}],usage:{}};
+      if(turns%2===0)return {text:"The candidate is still incomplete.",toolCalls:[],usage:{}};
+      return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"uncertain","unresolved":["exact acceptance still fails"],"reason":"More local work could still be attempted."}',toolCalls:[],usage:{}};
+    },
+    executeTool:async()=>({path:"src/a.mjs",replacements:1}),
+  });
+  assert.equal(turns,11);
+  assert.match(result.text,/stopped after 4 bounded semantic recovery epochs/i);
+  const recoveries=events.filter(event=>event.name==="native.completion.gate_recovery");
+  assert.deepEqual(recoveries.map(event=>event.data?.recoveryEpoch),[1,2,3,4]);
+  const exhausted=events.filter(event=>event.name==="native.completion.recovery_exhausted");
+  assert.equal(exhausted.length,1);
+  assert.equal(exhausted[0].data?.maxRecoveryEpochs,4);
+});
+
 test("native factorizes a verified localized residual instead of reopening global search",async()=>{
   let turns=0;const events=[];
   const evidence=label=>[
