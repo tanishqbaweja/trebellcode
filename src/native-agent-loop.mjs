@@ -845,7 +845,7 @@ export async function runNativeAgentTurn({
     }else{
       if(externalStateMutationRequested){
         if(call?.namespace==="trebell_terminal"&&call?.name==="run")return nativeTerminalAuditMetadata(call.namespace,call.name,safeArguments(call.arguments))?.persistentMutationLike===true;
-        if(call?.namespace==="trebell_process"&&call?.name==="start")return true;
+        if(call?.namespace==="trebell_process"&&call?.name==="start")return nativeTerminalAuditMetadata("trebell_terminal","run",safeArguments(call.arguments))?.persistentMutationLike===true;
       }
       return false;
     }
@@ -915,7 +915,7 @@ export async function runNativeAgentTurn({
     const callId=String(call?.id||("native-tool-"+toolCallNumber)),namespace=call?.namespace?String(call.namespace):null,name=String(call?.name||"tool"),args=safeArguments(call?.arguments);
     if(namespace)executedToolKeys.add(namespace+"/"+name);
     const toolStarted=nowMs();
-    const terminalAudit=nativeTerminalAuditMetadata(namespace,name,args);
+    const terminalAudit=nativeTerminalAuditMetadata(namespace,name,args),processMutationAudit=namespace==="trebell_process"&&name==="start"?nativeTerminalAuditMetadata("trebell_terminal","run",args):null;
     emit(onEvent,{name:"native.tool.requested",status:"running",model:String(model),provider:provider||null,data:{toolCall:toolCallNumber,callId,namespace,name,...(terminalAudit?{terminalAudit}:{})}});
     let output,success=true,errorMessage=null,uncertain=false,retrySafe=false,terminalTimeoutMs=null,toolController=null,watchdogAbortedTool=false;
     try{
@@ -987,9 +987,9 @@ export async function runNativeAgentTurn({
       editRevision++;
       emit(onEvent,{name:"native.progress.external_mutation_applied",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,mutationKind:terminalAudit.persistentMutationKind||null}});
     }
-    if(success&&output?.success!==false&&output?.uncertain!==true&&namespace==="trebell_process"&&name==="start"&&externalStateMutationRequested){
+    if(success&&output?.success!==false&&output?.uncertain!==true&&namespace==="trebell_process"&&name==="start"&&externalStateMutationRequested&&processMutationAudit?.persistentMutationLike===true){
       editRevision++;
-      emit(onEvent,{name:"native.progress.external_mutation_applied",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,mutationKind:"background_process_start"}});
+      emit(onEvent,{name:"native.progress.external_mutation_applied",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,mutationKind:processMutationAudit.persistentMutationKind||"background_process_write"}});
     }
     if(success&&output?.success!==false&&output?.timedOut!==true&&output?.signal==null&&namespace==="trebell_terminal"&&name==="run"){
       const key=terminalRunKey(args),exitCode=Number.isFinite(Number(output?.exitCode))?Number(output.exitCode):null;
