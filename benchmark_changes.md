@@ -351,6 +351,24 @@ After sealing, verifier-only diagnosis exposed the same compatibility failure in
 
 ---
 
+## 2026-10-02 - Bound controller-pressure action turns without lowering reasoning effort
+
+**Evidence:** Fresh unseen `biped-contact-dynamics` pair `tb4-pair-gpt-6-luna-max-biped-contact-dynamics-20261002T112618Z`, frozen at exact source **`6de561e0`**, sealed cleanly with **3 / 3 verifier checks and reward 1.0 in all three lanes**. Native nevertheless cost **$0.18343764**, versus **$0.143693725** for Codex API and **$0.1170059** API-equivalent for Codex OAuth. Native cache hit was already healthy at **97.10%** and known cache carryover was about **97.25%**, so cache loss was not the dominant explanation.
+
+Post-seal payload-free request concentration showed that Native model turns 5 and 17 alone emitted **97,246 output / 78,784 reasoning-output tokens**, about **59.5% / 60.7%** of Native's whole trajectory. Both requests eventually produced only one workspace action. Turn 5 immediately followed overlapping implementation and persistent-deliverable checkpoint state; turn 17 immediately followed the post-edit evidence escalation. On the same task, Codex API's largest recovered request emitted **26,777** output tokens and OAuth's largest emitted **14,325**.
+
+**Harness change:** **`da2a988e`** makes overlapping implementation + persistent-deliverable pressure share one concise developer checkpoint instead of stacking separate instructions, and shortens the post-edit evidence escalation without weakening its enforcement. While implementation pressure or post-edit escalation is active, the next Native action turn gets a **32,768 output-token ceiling** while preserving the configured reasoning effort (`max` in the benchmark). If the provider actually reaches that ceiling before producing any tool action or complete answer, Trebell grants one retry with the caller's original output budget and explicitly tells the model to act from existing evidence rather than reopen broad investigation. A successful workspace edit resets the post-edit pressure state.
+
+The same commit adds payload-free benchmark telemetry for action-output caps/relaxations plus Native/Codex helpers that surface the highest-output and highest-reasoning requests without exposing reasoning text.
+
+**Why:** The benchmark showed that Native can reach equal external quality while losing cost efficiency inside a tiny number of controller-triggered action turns. Lowering `reasoning_effort` would violate the benchmark objective and may reduce quality. A narrow action-turn bound attacks the measured runaway-output mode while leaving ordinary reasoning, semantic completion gates, and explicit smaller caller budgets untouched; the one-shot relaxation fails safe when the bound is genuinely insufficient.
+
+**Expected effect:** Lower reasoning/output concentration and lower total API-equivalent cost on long action-oriented trajectories, with no reduction in configured reasoning effort and no hard failure when a difficult action genuinely needs more output budget. The new cap/relaxation counters should make any retry-induced cost visible rather than hiding it.
+
+**Validation status:** Focused Native/evidence coverage passes **191 / 191**; complete repository suite passes **1,278 / 1,278**; `npm run bench:terminal:bundle` passes; `git diff --check` is clean. Rebuilt Harbor Native bundle SHA-256: **`b4e7640eeabcdefa3182868f96cac6a988cbbefd4625022e39eb9486ec5abe98`**. **Fresh unseen external validation is pending.** The successful biped pair is the motivating baseline and cannot prove the later change. Its exact frozen source also predates `5c0eb11a`, so it is not evidence for public-contract preservation either.
+
+---
+
 ## Benchmark infrastructure changes
 
 These changes do **not** directly make Trebell Native smarter. They are kept here because benchmark evidence caused them and because they materially affect whether later harness conclusions are trustworthy. Do not count them as agent-quality improvements.
@@ -455,7 +473,7 @@ Docker Desktop's API wedged after the paid model work. Native and OAuth had comp
 
 **Expected effect:** materially reduce late-turn inference/output spend on unresolved tasks while preserving one full cross-epoch strategy reset cycle. Tasks or callers with deliberate reasons for deeper search can still override the default.
 
-**Validation status:** the recovery-only change is committed as **`6de561e0`** (`Tighten Native recovery runway`). Focused recovery tests pass **3 / 3**; full Native agent-loop passes **189 / 189**; the then-current provider/benchmark gate passes **112 / 112**. Its clean detached worktree builds the Native bundle with SHA-256 **`15c67a4c6fc4710d3925af1268dca14801447033c8d1b6d219a27a7a215d6083`**. A monolithic suite rerun at exact `6de561e0` reached **1,273 / 1,275**, with only the two Windows lane-drain process-detection tests failing; those failures reproduced on main with identical runner code and were subsequently fixed independently in **`1da49963`**. The current tree passes lane-drain **20 / 20**, broader provider/benchmark **113 / 113**, and full repository **1,276 / 1,276**. Fresh unseen external validation of the four-epoch default is still pending.
+**Validation status:** the recovery-only change is committed as **`6de561e0`** (`Tighten Native recovery runway`). Focused recovery tests pass **3 / 3**; full Native agent-loop passes **189 / 189**; the then-current provider/benchmark gate passes **112 / 112**. Its clean detached worktree builds the Native bundle with SHA-256 **`15c67a4c6fc4710d3925af1268dca14801447033c8d1b6d219a27a7a215d6083`**. A monolithic suite rerun at exact `6de561e0` reached **1,273 / 1,275**, with only the two Windows lane-drain process-detection tests failing; those failures reproduced on main with identical runner code and were subsequently fixed independently in **`1da49963`**. The later fresh `biped-contact-dynamics` pair was frozen at exact `6de561e0` and all three lanes passed **3 / 3, reward 1.0**, so the four-epoch default has a clean unseen quality non-regression. However, that Native trajectory ran only one completion-gate check and **zero recovery epochs**, so it does not exercise the four-epoch stopping boundary or prove the predicted late-recovery cost saving.
 
 Do **not** rerun `embedding-drift-monitor` as fresh evidence. The task and verifier are now inspected.
 
@@ -472,6 +490,22 @@ Do **not** rerun `embedding-drift-monitor` as fresh evidence. The task and verif
 **Expected effect:** reliable Windows lane-drain detection, faster process discovery, and no false "drained" result when PowerShell serialization is unreadable.
 
 **Validation status:** `tests/terminal-bench-runner.test.mjs` passes **20 / 20**; the combined provider/benchmark gate passes **113 / 113**; the exact repository suite passes **1,276 / 1,276**; `npm run bench:terminal:bundle` passes; `git diff --check` is clean. The Native agent bundle remains SHA-256 **`ecdd1c3990639a78b9f7d8cd673c9d737ab8856daab1b3af1ce4b0790f699e1e`** because this fix is host benchmark orchestration, not bundled agent code.
+
+---
+
+## 2026-10-02 - Bound and de-duplicate checkpoint-driven action turns
+
+**Evidence:** fresh unseen `biped-contact-dynamics` pair `tb4-pair-gpt-6-luna-max-biped-contact-dynamics-20261002T112618Z`, frozen at exact clean source **`6de561e0`**, gave all three lanes **3 / 3 verifier checks and reward 1.0**. At equal externally verified quality, Native cost **$0.18343764** versus Codex API **$0.143693725** and Codex OAuth **$0.1170059**. Native cache hit was already healthy at **97.10%**, so the cost gap was not explained by prefix-cache loss. Native used **59 model requests / 71 tools / 163,497 output / 129,708 reasoning-output** tokens versus API **52 / 51 / 131,347 / 102,599** and OAuth **56 / 55 / 98,615 / 69,967**.
+
+Payload-free per-turn analysis found that Native model turns **5** and **17** alone produced **97,246 output tokens (59.5%)** and **78,784 reasoning-output tokens (60.7%)** of the entire trajectory. Both eventually made exactly one workspace write. Turn 5 immediately followed overlapping implementation + persistent-deliverable checkpoint state; turn 17 immediately followed the post-edit evidence escalation. The largest recovered Codex API request produced **26,777** output tokens and the largest OAuth request **14,325**, making the concentration a Native interaction/controller signal rather than merely a task-wide Luna property.
+
+**Harness change:** **`da2a988e`** makes two generic changes while preserving `reasoning_effort=max` and existing enforcement. First, simultaneous implementation and persistent-deliverable pressure now emits one concise combined developer checkpoint rather than two overlapping long-lived messages; the post-edit evidence escalation is also shortened while its tool-blocking behavior is unchanged. Second, implementation-pressure and post-edit-escalation action turns get a **32,768 output-token allowance**. If a capped response actually ends because of the output limit before producing any tool action or complete answer, Native allows **one** retry using the caller's original output budget and tells the model to act from already gathered evidence rather than reopen exploration. New bounded telemetry records action caps and cap relaxations. The Native and Codex benchmark evidence summarizers also report top output/reasoning requests without exposing reasoning text.
+
+**Why:** the goal is not to reduce thinking effort. The biped solve shows that `max` reasoning can still produce correct but disproportionately expensive action turns when persistent controller messages stack or an escalation turn keeps reasoning for tens of thousands of tokens before one edit. Coalescing instructions removes redundant prompt pressure. The bounded action allowance gives the model substantial reasoning runway while preventing one pressured turn from silently consuming an extreme share of the whole trajectory. The one full-budget retry fails open for genuinely hard cases rather than turning the allowance into a correctness cliff.
+
+**Expected effect:** reduce extreme per-turn reasoning/output concentration, total output cost, and wall time on mutation tasks while preserving externally verified correctness and max reasoning effort. The next benchmark should specifically compare total cost, top-turn concentration, `actionOutputCaps`, `actionOutputCapRelaxations`, tool/turn counts, and verifier quality. A cap relaxation that merely causes the model to regenerate the same long reasoning could make cost **worse**, so that failure mode must be measured rather than assumed away.
+
+**Validation status:** provider/benchmark gate **113 / 113**; complete repository suite **1,278 / 1,278**; Harbor Native bundle build passes with SHA-256 **`b4e7640eeabcdefa3182868f96cac6a988cbbefd4625022e39eb9486ec5abe98`**; `git diff --check` was clean before the code commit. **Fresh unseen external validation of `da2a988e` is pending.** The motivating biped task is now inspected and must not be reused as proof.
 
 ---
 
