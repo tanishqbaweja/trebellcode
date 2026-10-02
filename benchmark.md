@@ -16,6 +16,118 @@ Benchmark-driven **Trebell Native harness changes** are tracked separately in [`
 - Prefer end-to-end coding tasks over microbenchmarks when deciding whether Trebell Native is becoming a stronger coding harness. Microbenchmarks remain useful for explaining *why* a harness is faster or cheaper.
 - For live-run liveness, process/container existence or high CPU alone is **not** proof of progress. Prefer the payload-free lifecycle summary from `npm run bench:terminal:health`, then corroborate with event/session file growth, canonical pair-state changes, network/block-I/O deltas, and process topology.
 - Keep clean live monitoring payload-free. If task instructions, tool arguments/results, candidate edits, verifier internals, or other task-specific agent payloads are inspected before the comparison closes, mark that task/run diagnostic/contaminated and never reuse it as fresh causal evidence.
+- Before launching any Terminal-Bench task, check the task registry below. A task that has already been attempted or exposed must **not** be reused as fresh unseen evidence. Same-task reruns are allowed only when explicitly labeled regression/diagnostic and never count toward the fresh-task pool.
+
+## Terminal-Bench 4.0 task registry
+
+Reconciled on **2026-10-03** from the local Harbor task cache, `.harbor-validation`, `.harbor-jobs`, and the chronological benchmark record below. This registry exists specifically to stop accidental task repetition.
+
+- Local cached Terminal-Bench task packages: **55**
+- Already attempted / consumed: **35**
+- Still untouched in the local cache: **20**
+- Next planned fresh task after the active `ctr-optimization` regression closes: **`coq-block-bound`**.
+- “Consumed” means the task is no longer eligible as fresh unseen evidence, even if the historical launch was incomplete, setup-invalid, diagnostic, or later contaminated.
+- An incomplete/setup-invalid run remains useful infrastructure evidence but is **not** a harness-quality score.
+- Move a task from “untouched” to “consumed” as soon as a real run starts or task-specific payload/verifier content is exposed.
+
+### Untouched tasks — eligible for future fresh comparisons
+
+These are the current fresh-task pool. Do not inspect their instructions, verifier, workspace payload, or task-specific container arguments before the corresponding comparison is sealed.
+
+| Untouched task | Untouched task |
+| --- | --- |
+| `coq-block-bound` | `fin-saccr-rwa` |
+| `foodstuff-beta-activity` | `fp8-rmsnorm-gemm` |
+| `freecad-impeller` | `freecad-platform-drawing` |
+| `glycan-ms2-elucidation` | `hof-topology-interpenetration` |
+| `make-mips-interpreter` | `music-harmony` |
+| `ontology-kg-querying` | `photonic-waveguide-routing` |
+| `protein-autointerp-disulfide` | `retro-console-soc` |
+| `roy-polymorph-cn` | `sglang-qwen-burst` |
+| `sound-change-cascade` | `takens-embedding-lean` |
+| `vpp-loss-divergence` | `wdm-design` |
+
+### Attempted / consumed tasks — do not reuse as fresh evidence
+
+The “local attempts” column indexes every pair-report timestamp currently present locally for that task. Where older pair JSON predates normalized lane telemetry, the row says so rather than inventing a score. The detailed chronology below remains authoritative when it contains a richer postmortem than the compact pair report.
+
+| Task | Local pair attempts | Canonical local record / disposition |
+| --- | --- | --- |
+| `batched-eval-parity` | 230947Z, 231941Z, 232300Z | Three incomplete historical launches; no normalized graded pair result. Consumed. |
+| `biped-contact-dynamics` | pair artifact no longer present locally; sealed result already documented below | **Native 3/3 $0.18344; Codex API 3/3 $0.14369; OAuth 3/3 $0.11701.** Clean counted result; consumed. |
+| `bun-sourcemap-leak` | 144216Z, 144605Z, 144915Z, 150313Z | Historical completed/aborted diagnostics; legacy pair JSON has no normalized lane summary. Consumed. |
+| `cad-model` | 004449Z, 010359Z | Latest graded pair: **Native 1/8 $0.09435; API 2/8 $0.06935; OAuth 2/8 $0.05085**, reward 0. Consumed. |
+| `cargo-flight-dispatch` | 233104Z, 050035Z, 051307Z, 072920Z, 074250Z, 075346Z, 080219Z | Multiple same-task diagnostics. Latest Native-only graded artifact: **22/27**, reward 0; earlier Native artifacts include 25/27 and 19/27. Consumed. |
+| `ctr-optimization` | 133924Z | Original three-lane pair: **Native 3/4 $0.06461; API 3/4 $0.69725; OAuth 3/4 $0.33187**, all reward 0. The failed check for all three is the primary CTR threshold; one of the four checks is verifier self-consistency. Task was exposed during live diagnosis and is no longer fresh. |
+| `cumulative-layout-shift` | 124616Z | Setup/cache-race invalid comparison; no valid three-lane graded result. Task later exposed during diagnosis. Consumed. |
+| `data-anonymization` | 224014Z, 224730Z | Two incomplete historical launches; no normalized graded pair result. Consumed. |
+| `distributed-dedup` | 211154Z, 214947Z, 220901Z, 222420Z, 222959Z, 223312Z | Multiple historical diagnostics; surviving legacy reports do not contain a normalized three-lane verifier summary. Consumed. |
+| `embedding-drift-monitor` | 145503Z, 223938Z, 103445Z | Clean 103445Z pair: **2/11 for all three**, Native **$0.13563**, API **$0.05741**, OAuth **$0.02704**, reward 0. Consumed. |
+| `freecad-spring-clip` | 060853Z, 061633Z | Infrastructure-incomparable diagnostics. 061633Z reports Native reward 0 at **$0.07105**; API/OAuth did not retain a valid comparable verifier score. Consumed. |
+| `freight-dispatch-shift` | 090308Z | All official rewards 0. Regraded sealed artifacts: Native **110/232** diagnostic points, OAuth **72/232**, API exposed only **12/24** early points before its generated CLI failed. Consumed. |
+| `html-js-filter` | 223148Z, 101959Z | 101959Z: **1/2 for all three**, Native **$0.04045**, API **$0.04535**, OAuth **$0.01417**, reward 0. Pair was contaminated by live process-topology inspection. Consumed. |
+| `interleaved-vigenere` | 224703Z, 224904Z | 224904Z: Native **5/6 $0.19114**; API **2/6 $0.62862**; OAuth has no valid sealed verifier result. Run carried errors/incompleteness and is diagnostic only. Consumed. |
+| `ks-solver-cpp` | 082029Z | All three lanes recorded reward 0; legacy report lacks normalized verifier-check counts. Consumed. |
+| `kv-live-surgery` | 000513Z | All three lanes reward 0; legacy report lacks normalized verifier-check counts. Consumed. |
+| `kv-store-grpc` | 073208Z | No graded trial in any lane; setup/infrastructure invalid. Consumed. |
+| `legacy-utility-triage` | 073259Z | Official reward 0 for all; post-seal partial score: **Native 18/19, OAuth 18/19, API 16/19**. Consumed. |
+| `live-database-cutover` | 030925Z, 042217Z, 042550Z | Fresh baseline Native **17/18** at 030925Z; same-task causal rerun later **16/18** at 042550Z after much higher churn. Consumed. |
+| `math-eval-grader` | 094002Z | **Missing from the previous benchmark record.** All three Harbor lanes exited with code 1 before producing a graded trial; no token/reward/verifier result exists. Setup-invalid, not a quality score; consumed/attempted. |
+| `mp-checkpoint-consolidation` | 094257Z, 132156Z, 132641Z, 080601Z, 081727Z, 101253Z | Best normalized pair at 101253Z: **Native 3/4 $0.13104; API 4/4 $0.58227; OAuth 3/4 $0.50887**. Extensively reused for same-task regression; consumed. |
+| `mvcc-lsm-compaction` | 160804Z, 161444Z | Historical diagnostics; surviving pair JSON has no normalized lane verifier summary. Consumed. |
+| `nextjs-performance` | 171300Z, 081334Z | Historical incomplete/diagnostic runs; no normalized sealed three-lane result. Consumed. |
+| `payments-pipeline-fix` | 105111Z, 094410Z | 094410Z: **0/3 for Native, API and OAuth**, reward 0. Same-task diagnostic only. Consumed. |
+| `pretrain-shard-corruption` | 022000Z, 022208Z, 025307Z | Fresh 022208Z: **Native 4/12, API 4/12, OAuth 7/12**. Same-task Native causal rerun 025307Z improved Native to **7/12**. Consumed. |
+| `production-planning` | 064647Z, 072629Z | 072629Z: **Native 16/20 $0.23408; API 16/20 $0.07799; OAuth 18/20 $0.11623**, reward 0. Consumed. |
+| `react-lead-form` | 182825Z, 194056Z, 195240Z, 202350Z | Multiple historical causal/diagnostic runs; detailed result is preserved in the chronology below, while legacy pair JSON lacks a current normalized lane summary. Consumed. |
+| `risk-scorer-replay` | 121208Z | Historical diagnostic used to motivate convergence changes; legacy pair JSON lacks normalized lane summary. Consumed. |
+| `rs-archive-clone` | 224045Z | Incomplete historical run; no valid normalized three-lane result. Consumed. |
+| `session-window-debug` | 102120Z | Incomplete historical diagnostic used to motivate verification-gap recovery. Consumed. |
+| `shadow-relay` | 171655Z, 173319Z, 175047Z, 175629Z, 175926Z, 180054Z, 180303Z, 202341Z, 203340Z plus documented clean causal run 203750Z | Heavily diagnosed. The later clean causal run documented below had **Native 8/8 and API 8/8**; OAuth crashed before valid verification. Never fresh again. |
+| `vba-userform-port` | 055904Z, 060102Z, 072814Z | 060102Z is setup-invalid for Native despite framework-level pair checks; task-level diagnosis found Native never launched, while Codex API/OAuth reached **20/28** and **22/28** trace checks. Adapter fix was validated separately. Consumed. |
+| `vf2-speedup-networkx` | 035109Z | All three official rewards 0; extensively inspected for convergence/churn. Consumed. |
+| `vllm-deepseek-streaming` | 224202Z | **Missing from the previous benchmark record.** Interrupted Native run reached **17 model turns / 57 tool calls** before stopping; no verifier result was produced and Codex lanes never launched. Task payload has now been inspected, so this remains diagnostic only and is consumed. |
+| `wal-recovery-ordering` | 113546Z | Incomplete historical run stopped by provider/WebSocket transport failure; used to motivate transport recovery. Consumed. |
+
+### Standalone Native rerun inventory
+
+Standalone reruns are **regression evidence only**. They never return a consumed task to the fresh pool.
+
+| Task | Rerun | Local result |
+| --- | --- | --- |
+| `mp-checkpoint-consolidation` | 112441Z | complete, **3/4**, reward 0, **$0.30323** |
+| `mp-checkpoint-consolidation` | 131555Z | incomplete / no sealed verifier |
+| `mp-checkpoint-consolidation` | 134832Z | aborted after repeated identical acceptance failure; no sealed verifier |
+| `mp-checkpoint-consolidation` | 143253Z | incomplete / no sealed verifier |
+| `mp-checkpoint-consolidation` | 143328Z | duplicate-launch diagnostic; no verifier. Recovered telemetry: **59,240 input / 6,646 output / $0.00650** |
+| `mp-checkpoint-consolidation` | 143357Z | aborted duplicate launch; no sealed verifier |
+| `mp-checkpoint-consolidation` | 150716Z | incomplete / no sealed verifier |
+| `mp-checkpoint-consolidation` | 151654Z | incomplete / no sealed verifier |
+| `mp-checkpoint-consolidation` | 151813Z | launcher/report marked complete but **0 graded trials** |
+| `mp-checkpoint-consolidation` | 151909Z | incomplete / no sealed verifier |
+| `mp-checkpoint-consolidation` | 154508Z | incomplete report; separate forensic artifact exists |
+| `mp-checkpoint-consolidation` | 171229Z | complete, **3/4**, reward 0, **$0.35102** |
+| `mp-checkpoint-consolidation` | 180753Z | complete, **3/4**, reward 0, **$0.38882** |
+| `mp-checkpoint-consolidation` | 185933Z | complete, **3/4**, reward 0, **$0.27148** |
+| `mp-checkpoint-consolidation` | 193955Z | complete, **3/4**, reward 0, **$0.27309** |
+| `mp-checkpoint-consolidation` | 203652Z | incomplete / no sealed verifier |
+| `mp-checkpoint-consolidation` | 212600Z | incomplete / no sealed verifier |
+| `mp-checkpoint-consolidation` | 212720Z | incomplete / no sealed verifier |
+| `mp-checkpoint-consolidation` | 212950Z | complete, **3/4**, reward 0, **$0.13930** |
+| `mp-checkpoint-consolidation` | 220627Z | complete, **3/4**, reward 0, **$0.25680** |
+| `ctr-optimization` | 164724Z | aborted diagnostic rerun; no sealed verifier |
+| `ctr-optimization` | 164919Z | aborted diagnostic rerun; no sealed verifier |
+| `ctr-optimization` | 165518Z | aborted diagnostic rerun; no sealed verifier |
+| `ctr-optimization` | 170014Z | aborted dirty-provenance diagnostic; no sealed verifier |
+| `ctr-optimization` | 170513Z | **currently running** from clean source `e6a563a2`; regression evidence only, final verifier pending |
+
+### Missing-result reconciliation notes
+
+- **`ctr-optimization`** was absent from the previous `benchmark.md` despite a sealed three-lane pair. It is now recorded above: all three lanes passed 3/4 framework checks and failed the same core CTR threshold. Native cost **$0.06461**, versus **$0.33187** OAuth and **$0.69725** API. This is not fresh reusable evidence because the task was exposed during live diagnosis.
+- **`math-eval-grader`** was absent from the previous record. The local pair contains no quality result: every lane failed at Harbor launch with no completed graded trial, so it is explicitly stored as setup-invalid rather than silently counted as zero.
+- **`vllm-deepseek-streaming`** was absent from the previous record. The local Native event journal proves real work occurred (17 turns / 57 tool calls), but the pair never reached verification and neither Codex lane launched. It is recorded as interrupted diagnostic evidence, not as a benchmark score.
+
+The task registry is the launch gate. Future agents should choose fresh tasks only from the untouched table, and should update these tables as soon as a new task is consumed.
 
 ## Current evidence ledger
 
@@ -28,7 +140,7 @@ For each harness weakness, keep these four states separate:
 3. **Regression validation** — focused/full-suite/build checks proving the implementation itself is sound.
 4. **Fresh external validation** — a later unseen benchmark showing whether the harness-level behavior improved. If this is missing, say so explicitly; unit/full-suite success is not benchmark proof.
 
-Current development checkpoint: commit **`a1bf17ba`** (`Prewarm parallel Harbor task cache`), on top of **`da2a988e`** (`Bound Native checkpoint action turns`), **`1da49963`** (Windows Terminal-Bench lane-drain hardening), **`5c0eb11a`** (repair compatibility preservation), **`6de561e0`** (`Tighten Native recovery runway`), and **`521937a2`** (`Reduce hidden reasoning carryover`). The chronological record below preserves the older commits and their exact validation states.
+Current development checkpoint: commit **`e6a563a2`** (`Require explicit workspace targets for external tasks`), on top of **`3ae0aaf9`** (`Ignore API routes in workspace intent`), **`c72563ed`** (`Separate external state from workspace pressure`), **`75b60ae8`** (`Classify background state mutations`), **`fe0c9209`** (`Recover external Native task state`), and **`38c76f98`** (`Expose Native background processes in Harbor`). The chronological record below preserves the older commits and their exact validation states.
 
 | Weakness / evidence source | Implemented fix | Regression / build validation | Fresh unseen external validation status |
 | --- | --- | --- | --- |
