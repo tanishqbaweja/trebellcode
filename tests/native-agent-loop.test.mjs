@@ -2423,13 +2423,10 @@ test("native audits upstream assumptions before exhausting repeated post-edit ev
         const audit=request.messages.find(message=>message.role==="developer"&&/assumption-audit checkpoint/i.test(String(message.content||"")));
         assert.ok(audit);
         assert.match(String(audit.content),/earliest shared assumption/i);
-        assert.match(String(audit.content),/source-of-truth invariant/i);
-        assert.match(String(audit.content),/current parser\/adapter\/interpretation/i);
-        assert.match(String(audit.content),/cross the abstraction boundary/i);
-        assert.match(String(audit.content),/do not use that same abstraction to generate both sides/i);
-        assert.match(String(audit.content),/raw bytes\/records, physical offsets\/framing\/order/i);
-        assert.match(String(audit.content),/not independent when its offsets, boundaries, ordering/i);
-        assert.match(String(audit.content),/selecting one copy, averaging, splicing/i);
+        assert.match(String(audit.content),/try to falsify it with evidence that does not itself assume the same thing/i);
+        assert.match(String(audit.content),/algorithm or problem family/i);
+        assert.match(String(audit.content),/task-specific premise/i);
+        assert.match(String(audit.content),/do not invent an upstream or representation bug/i);
         return {text:"",toolCalls:[{id:"upstream-fix",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/decoder.mjs","old_text":"candidate","new_text":"reparsed"}'}],usage:{}};
       }
       return {text:"done",toolCalls:[],usage:{}};
@@ -2442,39 +2439,42 @@ test("native audits upstream assumptions before exhausting repeated post-edit ev
   assert.equal(events.some(event=>event.name==="native.progress.post_edit_evidence_checkpoint"),false);
 });
 
-test("native escalates across the abstraction boundary when evidence continues after an assumption audit",async()=>{
+test("native assumption escalation stays advisory for a generic solver task",async()=>{
   let turns=0;const events=[],executed=[];
   const evidence=label=>[
     {id:label+"-raw",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-raw.mjs"]})},
     {id:label+"-derived",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-derived.mjs"]})},
   ];
   const result=await runNativeAgentTurn({
-    model:"test-model",messages:[{role:"user",content:"Fix the parser and verify the exact result."}],maxModelTurns:11,maxToolCalls:24,onEvent:event=>events.push(event),
+    model:"test-model",messages:[{role:"user",content:"Fix the heuristic solver and verify the exact result."}],maxModelTurns:11,maxToolCalls:24,onEvent:event=>events.push(event),
     tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
     providerTurn:async request=>{
       turns++;
-      if(turns===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/parser.mjs","old_text":"old","new_text":"candidate"}'}],usage:{}};
+      if(turns===1)return {text:"",toolCalls:[{id:"edit",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/solver.mjs","old_text":"old","new_text":"candidate"}'}],usage:{}};
       if(turns>=2&&turns<=7)return {text:"",toolCalls:evidence("probe-"+turns),usage:{}};
       if(turns===8){
         const escalation=request.messages.find(message=>message.role==="developer"&&/abstraction-boundary escalation/i.test(String(message.content||"")));
         assert.ok(escalation);
-        assert.match(String(escalation.content),/alternative source segmentation\/order\/framing\/unit\/mapping/i);
-        assert.match(String(escalation.content),/internal field\/subfield packing order/i);
-        assert.match(String(escalation.content),/axis orientation/i);
-        assert.match(String(escalation.content),/writer\/serializer\/kernel\/producer/i);
-        assert.match(String(escalation.content),/distinct producer paths as distinct schemas/i);
-        assert.match(String(escalation.content),/Selecting a supposedly authoritative replica, averaging contradictory copies/i);
-        assert.match(String(escalation.content),/explains several independent invariants simultaneously/i);
-        return {text:"",toolCalls:[{id:"parser-fix",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/parser.mjs","old_text":"candidate","new_text":"resegmented"}'}],usage:{}};
+        assert.match(String(escalation.content),/does not prove that an upstream abstraction is wrong/i);
+        assert.match(String(escalation.content),/otherwise keep the strongest task-relevant hypothesis/i);
+        assert.match(String(escalation.content),/stop forcing the problem into an abstraction\/layout explanation/i);
+        return {text:"",toolCalls:[{id:"solver-fix",namespace:"trebell_workspace",name:"replace_text",arguments:'{"path":"src/solver.mjs","old_text":"candidate","new_text":"alternative"}'}],usage:{}};
       }
-      return {text:"done",toolCalls:[],usage:{}};
+      if(turns===9){
+        assert.equal(request.messages.some(message=>message.role==="developer"&&/abstraction-repair verification checkpoint/i.test(String(message.content||""))),false);
+        return {text:"done",toolCalls:[],usage:{}};
+      }
+      throw new Error("unexpected provider call "+turns);
     },
-    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:"src/parser.mjs",replacements:1}:{exitCode:0}},
+    executeTool:async call=>{executed.push(call.id);return call.namespace==="trebell_workspace"?{path:"src/solver.mjs",replacements:1}:{exitCode:0}},
   });
   assert.equal(result.text,"done");
-  assert.equal(executed.includes("parser-fix"),true);
+  assert.equal(executed.includes("solver-fix"),true);
   assert.equal(events.filter(event=>event.name==="native.progress.assumption_audit_checkpoint").length,1);
-  assert.equal(events.filter(event=>event.name==="native.progress.abstraction_boundary_escalation").length,1);
+  const escalations=events.filter(event=>event.name==="native.progress.abstraction_boundary_escalation");
+  assert.equal(escalations.length,1);
+  assert.equal(escalations[0].data?.verificationLock,false);
+  assert.equal(events.filter(event=>event.name==="native.progress.abstraction_repair_applied").length,0);
 });
 
 test("native localizes residual structure after an abstraction repair before reopening global assumptions",async()=>{
@@ -2484,7 +2484,7 @@ test("native localizes residual structure after an abstraction repair before reo
     {id:label+"-b",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-b.mjs"]})},
   ];
   const result=await runNativeAgentTurn({
-    model:"test-model",messages:[{role:"user",content:"Fix the binary decoder and verify the exact reconstructed output."}],maxOutputTokens:32000,reasoningEffort:"max",maxModelTurns:20,maxToolCalls:50,onEvent:event=>events.push(event),
+    model:"test-model",messages:[{role:"user",content:"Fix the binary decoder and verify the exact reconstructed output."}],maxOutputTokens:32000,reasoningEffort:"max",maxModelTurns:20,maxToolCalls:50,abstractionRepairVerification:true,onEvent:event=>events.push(event),
     tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
     providerTurn:async request=>{
       turns++;
@@ -2847,7 +2847,7 @@ test("native factorizes a verified localized residual instead of reopening globa
     {id:label+"-b",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-b.mjs"]})},
   ];
   const result=await runNativeAgentTurn({
-    model:"test-model",semanticCompletionGate:true,maxCompletionRecoveryEpochs:3,maxModelTurns:24,maxToolCalls:32,onEvent:event=>events.push(event),
+    model:"test-model",semanticCompletionGate:true,abstractionRepairVerification:true,maxCompletionRecoveryEpochs:3,maxModelTurns:24,maxToolCalls:32,onEvent:event=>events.push(event),
     messages:[{role:"user",content:"Fix the binary reconstruction and verify the exact output."}],
     tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
     providerTurn:async request=>{
@@ -2920,7 +2920,7 @@ test("native restores the evidence-backed incumbent when an isolated residual re
     {id:label+"-b",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"node",args:[label+"-b.mjs"]})},
   ];
   const result=await runNativeAgentTurn({
-    model:"test-model",semanticCompletionGate:true,maxCompletionRecoveryEpochs:1,maxModelTurns:24,maxToolCalls:40,onEvent:event=>events.push(event),
+    model:"test-model",semanticCompletionGate:true,abstractionRepairVerification:true,maxCompletionRecoveryEpochs:1,maxModelTurns:24,maxToolCalls:40,onEvent:event=>events.push(event),
     messages:[{role:"user",content:"Fix the binary reconstruction and preserve the strongest exact-acceptance candidate."}],
     tools:[{type:"namespace",name:"trebell_workspace",tools:[{name:"replace_text"},{name:"write_file"}]},{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
     providerTurn:async request=>{
