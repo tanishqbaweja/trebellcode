@@ -23,6 +23,17 @@ function capture(command,args,{cwd=process.cwd(),env=process.env}={}){
   });
 }
 
+export function parseWindowsProcessRows(stdout){
+  const raw=String(stdout||"").replace(/^\uFEFF/,"").trim();
+  if(!raw)return [];
+  let parsed;
+  try{parsed=JSON.parse(raw)}catch(error){
+    const wrapped=new Error("Unable to parse Windows process-list JSON while draining a Terminal-Bench lane.");
+    wrapped.code="terminal_bench_process_list_parse";wrapped.cause=error;throw wrapped;
+  }
+  return (Array.isArray(parsed)?parsed:[parsed]).filter(row=>row&&typeof row==="object");
+}
+
 export async function lingeringJobProcesses(jobName,{cwd=process.cwd(),env=process.env,platform=process.platform,additionalNeedles=[]}={}){
   const needles=processNeedles(jobName,additionalNeedles);
   if(!needles.length)return [];
@@ -31,9 +42,9 @@ export async function lingeringJobProcesses(jobName,{cwd=process.cwd(),env=proce
     // scanner's argv, then apply the same signature-aware matcher as Unix.
     // Merely mentioning a job in a watcher/log-tail command must not keep the
     // benchmark lane alive.
-    const script="$rows=Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine } | Select-Object ProcessId,CommandLine; @($rows) | ConvertTo-Json -Compress";
+    const script="[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $rows=Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine } | Select-Object ProcessId,CommandLine; @($rows) | ConvertTo-Json -Compress";
     const {stdout}=await capture("powershell.exe",["-NoProfile","-Command",script],{cwd,env});
-    let rows=[];try{const parsed=JSON.parse(stdout.trim()||"[]");rows=Array.isArray(parsed)?parsed:[parsed]}catch{return []}
+    const rows=parseWindowsProcessRows(stdout);
     return [...new Set(rows.filter(row=>harborLaneProcessCommand(row?.CommandLine,jobName,{additionalNeedles})).map(row=>Number(row?.ProcessId)).filter(Number.isInteger))];
   }
   const {stdout}=await capture("ps",["-eo","pid=,args="],{cwd,env});

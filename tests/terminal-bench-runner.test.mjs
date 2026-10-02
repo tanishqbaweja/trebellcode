@@ -6,7 +6,7 @@ import { once } from "node:events";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { harborLaneProcessCommand, lingeringJobProcesses, parsePsProcesses, waitForJobProcessDrain } from "../scripts/terminal-bench-process-drain.mjs";
+import { harborLaneProcessCommand, lingeringJobProcesses, parsePsProcesses, parseWindowsProcessRows, waitForJobProcessDrain } from "../scripts/terminal-bench-process-drain.mjs";
 import { launchDetachedDescriptor, readDetachedStatus, writeDetachedDescriptor } from "../scripts/detached-process.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "../scripts/terminal-bench-pair-lock.mjs";
 import { cleanupSealedExitedHarborEnvironments, isDockerExecTransportFailure, isDockerImagePullFailure, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
@@ -296,6 +296,12 @@ test("Terminal-Bench Unix ps parsing only returns processes containing the exact
   ].join("\n");
   assert.deepEqual(parsePsProcesses(ps,token,[trial]),[303,404]);
   assert.deepEqual(parsePsProcesses(ps,"missing-job-token"),[]);
+});
+
+test("Terminal-Bench Windows process JSON parsing tolerates BOM and fails closed on malformed data",()=>{
+  assert.deepEqual(parseWindowsProcessRows('\uFEFF[{"ProcessId":42,"CommandLine":"harbor run --job-name demo"}]'),[{ProcessId:42,CommandLine:"harbor run --job-name demo"}]);
+  assert.deepEqual(parseWindowsProcessRows(""),[]);
+  assert.throws(()=>parseWindowsProcessRows("not-json"),error=>error?.code==="terminal_bench_process_list_parse");
 });
 
 test("Terminal-Bench lane drain detects a surviving trial-token process even without the job name",async t=>{
