@@ -24,17 +24,20 @@ test("live Terminal-Bench pair reports seal free-form lane errors without mutati
   assert.match(jobs[0].exceptionMessage,/full task instruction/);
 });
 
-test("completed Terminal-Bench pair reports retain full lane diagnostics",()=>{
+test("completed Terminal-Bench pair reports retain structured diagnostics but seal raw exception messages",()=>{
   const jobs=[{
     label:"native",
-    runError:null,
+    runError:"harbor exited with 1",
     exceptionType:"ProviderError",
-    exceptionMessage:"full post-run diagnostic",
+    exceptionMessage:"codex exec -- 'full task instruction'",
   }];
   const complete=jobsForPairReport(jobs,{complete:true});
 
-  assert.equal(complete,jobs);
-  assert.equal(complete[0].exceptionMessage,"full post-run diagnostic");
+  assert.notEqual(complete,jobs);
+  assert.equal(complete[0].runError,"harbor exited with 1");
+  assert.equal(complete[0].exceptionType,"ProviderError");
+  assert.equal(complete[0].exceptionMessage,SEALED_LIVE_DETAIL);
+  assert.match(jobs[0].exceptionMessage,/full task instruction/);
 });
 
 test("live Terminal-Bench pair reports preserve null error details",()=>{

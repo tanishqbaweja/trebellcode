@@ -6,7 +6,10 @@ function sealFreeformDetail(value){
 
 export function jobsForPairReport(jobs,{complete=false}={}){
   const list=Array.isArray(jobs)?jobs:[];
-  if(complete)return list;
+  if(complete)return list.map(job=>{
+    if(!job||typeof job!=="object")return job;
+    return {...job,exceptionMessage:sealFreeformDetail(job.exceptionMessage)};
+  });
   return list.map(job=>{
     if(!job||typeof job!=="object")return job;
     return {
