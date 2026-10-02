@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { harborLaneProcessCommand, lingeringJobProcesses, parsePsProcesses, waitForJobProcessDrain } from "../scripts/terminal-bench-process-drain.mjs";
 import { launchDetachedDescriptor, readDetachedStatus, writeDetachedDescriptor } from "../scripts/detached-process.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "../scripts/terminal-bench-pair-lock.mjs";
-import { cleanupSealedExitedHarborEnvironments, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
+import { cleanupSealedExitedHarborEnvironments, isDockerExecTransportFailure, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
 
 test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable trial metrics",async()=>{
   const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
@@ -100,7 +100,9 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/cleanupDockerProject/);
   assert.match(source,/cleanupSealedExitedHarborEnvironments/);
   assert.match(source,/isPreAgentDockerSubnetExhaustion/);
-  assert.match(source,/retryReason="docker_subnet_exhaustion"/);
+  assert.match(source,/isDockerExecTransportFailure/);
+  assert.match(source,/docker_subnet_exhaustion/);
+  assert.match(source,/docker_exec_transport_failure/);
   assert.match(source,/retryJobName=jobName\+"-retry1"/);
   assert.match(source,/readTrialVerifierSummary/);
   assert.match(source,/recoveredEvidence\?\.inputTokens/);
@@ -149,6 +151,20 @@ test("Terminal-Bench Docker subnet retry only recognizes pre-agent exhaustion",(
   assert.equal(isPreAgentDockerSubnetExhaustion(base),true);
   assert.equal(isPreAgentDockerSubnetExhaustion({...base,agent_setup:{started_at:"x"}}),false);
   assert.equal(isPreAgentDockerSubnetExhaustion({...base,exception_info:{exception_message:"unrelated Docker failure"}}),false);
+});
+
+test("Terminal-Bench Docker exec transport retry only recognizes Docker Desktop exec 5xx failures",()=>{
+  const transport={
+    exception_info:{
+      exception_message:"request returned 500 Internal Server Error for API route and version http://%2F%2F.%2Fpipe%2FdockerDesktopLinuxEngine/v1.55/exec/634775e6da59e7512b241b62453a3d4b3ea3611e302c7b7495850770d8dd8041/json, check if the server supports the requested API version",
+    },
+    agent_execution:{started_at:"x",finished_at:"y"},
+    verifier:{started_at:"z",finished_at:"w"},
+  };
+  assert.equal(isDockerExecTransportFailure(transport),true);
+  assert.equal(isDockerExecTransportFailure({...transport,exception_info:{exception_message:"request returned 500 Internal Server Error from some unrelated service"}}),false);
+  assert.equal(isDockerExecTransportFailure({...transport,exception_info:{exception_message:"dockerDesktopLinuxEngine /exec/not-a-container-id/json returned 500"}}),false);
+  assert.equal(isDockerExecTransportFailure(null),false);
 });
 
 test("Terminal-Bench Docker cleanup only removes exited environments from sealed verifier trials",async()=>{

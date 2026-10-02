@@ -13,6 +13,15 @@ export function isPreAgentDockerSubnetExhaustion(trial){
   return /all predefined address pools have been fully subnetted/i.test(message);
 }
 
+export function isDockerExecTransportFailure(trial){
+  if(!trial||typeof trial!=="object")return false;
+  const message=String(trial?.exception_info?.exception_message||"");
+  if(!message)return false;
+  return /request returned 5\d\d Internal Server Error/i.test(message)
+    && /dockerDesktopLinuxEngine/i.test(message)
+    && /\/exec\/[a-f0-9]+\/json/i.test(message);
+}
+
 export async function sealedHarborEnvironmentProjects(outputRoot,{readdirFn=readdir,readFileFn=readFile}={}){
   const projects=new Set();
   let jobs=[];try{jobs=await readdirFn(outputRoot,{withFileTypes:true})}catch{return projects}
