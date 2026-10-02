@@ -594,35 +594,31 @@ test("OpenAI WebSocket timeout is caller-retryable without blind in-turn replay 
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 
-test("OpenAI WebSocket turn has an absolute provider deadline even when the socket never goes idle",async()=>{
-  const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-absolute-deadline-"));
+test("OpenAI WebSocket streaming can outlive the provider timeout while the socket remains healthy",async()=>{
+  const root=mkdtempSync(join(tmpdir(),"trebell-provider-ws-progress-"));
   try{
-    let closeCalls=0,seenIdleTimeoutMs=null;
+    let closeCalls=0,seenIdleTimeoutMs=null,seenSignal=null;
     const manager=new ProviderManager({
       requestTimeoutMs:35,
       env:{TREBELL_HOME:root},
       openAiResponsesWebSocketFactory:()=>({
         close:()=>{closeCalls++},
         request:async(_body,{signal,idleTimeoutMs})=>{
-          seenIdleTimeoutMs=idleTimeoutMs;
-          return await new Promise((resolve,reject)=>{
-            const abort=()=>reject(signal.reason);
-            if(signal.aborted)return abort();
-            signal.addEventListener("abort",abort,{once:true});
-          });
+          seenIdleTimeoutMs=idleTimeoutMs;seenSignal=signal;
+          await new Promise(resolve=>setTimeout(resolve,55));
+          return {requestBytes:10,response:{id:"resp-long-ws",model:"gpt-5.6",status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"done"}]}],usage:{}},telemetry:{responseBytes:20,totalLatencyMs:55,timeToFirstTokenMs:5}};
         },
       }),
-      fetchFn:async()=>{throw new Error("HTTP should not run after a post-send absolute WebSocket deadline")},
+      fetchFn:async()=>{throw new Error("HTTP should not run for a healthy WebSocket")},
     });
     manager.setKey("openai","oa-key");
     const started=Date.now();
-    await assert.rejects(
-      manager.turn("openai",{model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"native_absolute_deadline"}},{streamResponses:true}),
-      error=>error?.name==="TimeoutError"&&error?.retryable===true&&error?.telemetry?.webSocketFallback?.retried===false,
-    );
-    assert.ok(Date.now()-started<500,"absolute provider deadline should settle the WebSocket request promptly");
-    assert.ok(seenIdleTimeoutMs>0&&seenIdleTimeoutMs<=35);
-    assert.equal(closeCalls,1);
+    const result=await manager.turn("openai",{model:"gpt-5.6",messages:[{role:"user",content:"hello"}],tools:[],metadata:{sessionId:"native_ws_progress"}},{streamResponses:true});
+    assert.equal(result.text,"done");
+    assert.ok(Date.now()-started>35,"healthy WebSocket streaming should outlive the original wall-clock timeout");
+    assert.equal(seenIdleTimeoutMs,35);
+    assert.equal(seenSignal,undefined);
+    assert.equal(closeCalls,0);
   }finally{rmSync(root,{recursive:true,force:true})}
 });
 

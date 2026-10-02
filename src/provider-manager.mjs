@@ -800,7 +800,7 @@ export class ProviderManager {
             const fallbackBody=this.#officialOpenAiResponsesBody({...request,model,promptCacheComparisonResponseId:""});fallbackBody.stream=true;
             fullResponsesBody=fallbackBody;responsesBody=fallbackBody;continuationFallback=true;continuationFallbackReason="websocket_connection_replaced";
           }
-          const socketStarted=performance.now(),socketRemainingMs=remainingProviderRequestMs(requestDeadlineAt),socketSignal=providerRequestSignal(signal,socketRemainingMs),socketResult=await transport.request(responsesBody,{streamId:openAiWebSocketStreamId,signal:socketSignal,idleTimeoutMs:Math.min(this.requestTimeoutMs,socketRemainingMs)}),result=normalizeResponsesTurnResponse(socketResult.response,provider.id,model);
+          const socketStarted=performance.now(),socketResult=await transport.request(responsesBody,{streamId:openAiWebSocketStreamId,signal,idleTimeoutMs:this.requestTimeoutMs}),result=normalizeResponsesTurnResponse(socketResult.response,provider.id,model);
           this.openAiResponsesWebSocketTransientFailures=0;
           this.openAiResponseContinuations.record(result.id,openAiContinuation,result);
           this.#recordOpenAiWebSocketResponseOrigin(result.id,transport);
