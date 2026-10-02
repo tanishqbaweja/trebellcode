@@ -67,7 +67,10 @@ export function nativeTerminalAuditMetadata(namespace,name,args={}){
   const gatewayMarker=/\b(?:dbgw(?:\.py)?|database[_ -]?gateway|writeback)\b/i.test(raw);
   const gatewayWritebackLike=gatewayMarker&&/\b(?:writeback|SQL_EXEC|apply|commit)\b/i.test(raw)&&/\b(?:exec|apply|commit|write|SQL_EXEC)\b/i.test(raw);
   const remoteWriteCli=/(?:^|\s)(?:git\s+push|docker\s+push|npm\s+publish|pnpm\s+publish|kubectl\s+(?:apply|delete|replace|patch)|terraform\s+(?:apply|destroy)|gh\s+(?:pr\s+merge|release\s+create))(?:\s|$)/i.test(raw);
-  const httpWriteLike=/(?:^|\s)(?:curl|invoke-webrequest|irm|iwr)\b[\s\S]{0,800}\b(?:-X|--request|Method)\s*[=:]?\s*(?:POST|PUT|PATCH|DELETE)\b/i.test(raw);
+  const httpWriteCli=/(?:^|\s)(?:curl|invoke-webrequest|irm|iwr)\b[\s\S]{0,800}\b(?:-X|--request|Method)\s*[=:]?\s*(?:POST|PUT|PATCH|DELETE)\b/i.test(raw);
+  const pythonHttpWrite=/\brequests\s*\.\s*(?:post|put|patch|delete)\s*\(|\burllib\.request\.Request\s*\([\s\S]{0,1200}?\bmethod\s*=\s*['"](?:POST|PUT|PATCH|DELETE)['"]/i.test(raw);
+  const nodeHttpWrite=/\bfetch\s*\([\s\S]{0,1200}?\bmethod\s*:\s*['"](?:POST|PUT|PATCH|DELETE)['"]/i.test(raw);
+  const httpWriteLike=httpWriteCli||pythonHttpWrite||nodeHttpWrite;
   const persistentMutationLike=remoteWriteCli||httpWriteLike||(sqlMutationLike&&(remoteSqlClient||gatewayMarker))||gatewayWritebackLike;
   const persistentMutationKind=remoteWriteCli?"remote_write_cli":httpWriteLike?"http_write":sqlMutationLike&&(remoteSqlClient||gatewayMarker)?"sql_write":gatewayWritebackLike?"gateway_writeback":null;
   return {executable,commandHash:createHash("sha256").update(redacted).digest("hex"),networkLike,packageManager,persistentMutationLike,persistentMutationKind,hosts,redactedCommand:redacted};
@@ -193,7 +196,7 @@ function latestUserMessage(messages=[]){
   return null;
 }
 
-function requestsWorkspaceMutation(messages=[]){
+function requestsTaskMutation(messages=[]){
   const text=lastUserInstructionText(latestUserMessage(messages)).trim();
   if(!text)return false;
   const explicitlyReadOnly=/(?:do\s+not|don't|dont|never)\s+(?:edit|change|modify|write|update)(?=\s*(?:[.!?;\n]|$))/i.test(text)
@@ -214,6 +217,27 @@ function requestsWorkspaceMutation(messages=[]){
     ||/\b(?:why|how|what)\b[\s\S]{0,120}\b(?:broken|failing|fails|not working|incorrect|wrong)\b/i.test(text);
   if(diagnosticOnly)return false;
   return /\b(?:not\s+working(?:\s+(?:correctly|properly))?|broken|buggy|malfunction(?:ing|s)?|incorrect(?:ly)?|wrong\s+results?|fails?\b|failing\b|regression\b)\b/i.test(text);
+}
+
+function requestsWorkspaceMutation(messages=[]){
+  const text=lastUserInstructionText(latestUserMessage(messages)).trim();
+  if(!text||!requestsTaskMutation(messages))return false;
+  const workspaceTarget=/\b(?:workspace|repository|repo|codebase|source|code|implementation|project|package|module|library|app(?:lication)?|service|script|file|folder|directory|path|function|class|method|component|frontend|backend|test(?:s| suite)?|config(?:uration)?\s+file)\b/i.test(text);
+  const fileTarget=/(?:^|[\s\x60"'(])(?:\.?\.?[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9_-]{1,16}(?=$|[\s\x60"'),;:.!?])/i.test(text);
+  if(workspaceTarget||fileTarget)return true;
+  const externalOnly=/\b(?:campaign|live\s+config(?:uration)?|remote\s+(?:state|system|host|service)|runtime\s+state|api\s+(?:endpoint|state|resource)|database\s+(?:row|record|state)|cluster\s+state|account\s+setting)\b/i.test(text);
+  return !externalOnly;
+}
+
+function requestsExternalStateMutation(messages=[]){
+  const text=lastUserInstructionText(latestUserMessage(messages)).trim();
+  if(!text||!requestsTaskMutation(messages))return false;
+  const externalTarget=/\b(?:campaign|live\s+config(?:uration)?|remote\s+(?:state|system|host|service)|runtime\s+state|api\s+(?:endpoint|state|resource)|database\s+(?:row|record|state)|cluster\s+state|account\s+setting)\b/i.test(text)
+    ||/\b(?:through|via|using)\s+(?:its|the|an?)\s+api\b/i.test(text);
+  if(!externalTarget)return false;
+  const workspaceTarget=/\b(?:workspace|repository|repo|codebase|source|code|implementation|project|package|module|library|script|file|folder|directory|path|function|class|method|component|frontend|backend|test(?:s| suite)?|config(?:uration)?\s+file)\b/i.test(text);
+  const fileTarget=/(?:^|[\s`"'(])(?:\.?\.?[\\/])?[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.[A-Za-z0-9_-]{1,16}(?=$|[\s`"'),;:.!?])/i.test(text);
+  return !workspaceTarget&&!fileTarget;
 }
 
 function requestsConstraintPlanning(messages=[]){
@@ -800,7 +824,7 @@ export async function runNativeAgentTurn({
   if(typeof executeTool!=="function")throw new Error("Native agent loop requires an executeTool function.");
   if(!String(model||"").trim())throw new Error("Native agent loop requires a model.");
   const executeControllerTool=typeof executeInternalTool==="function"?executeInternalTool:executeTool;
-  const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),completionRecoveryEpochLimit=boundedInteger(maxCompletionRecoveryEpochs,4,{min:1,max:16}),strictAbstractionRepairVerification=abstractionRepairVerification===true,conversation=[...(Array.isArray(messages)?messages:[])],visibleTools=providerVisibleTools(tools,toolAllowlist),directVisiblePairs=exposedToolPairs(visibleTools),workspaceMutationRequested=requestsWorkspaceMutation(conversation),constraintPlanningRequested=requestsConstraintPlanning(conversation),persistentArtifactTargets=explicitPersistentArtifactTargets(conversation),requestMetricsToolCache=new WeakMap(),requestMetricsMessageCache=new WeakMap(),requestMetricsCurrentTurnCache=new WeakMap(),requestMetricsHistoryHashCache={},requestMetricsClassificationCache=typeof coolReadToolHistory==="function"?null:{},openAiContinuationIdentity={};
+  const budget=nativeAgentBudget({maxModelTurns,maxToolCalls,maxWallTimeMs}),completionRecoveryEpochLimit=boundedInteger(maxCompletionRecoveryEpochs,4,{min:1,max:16}),strictAbstractionRepairVerification=abstractionRepairVerification===true,conversation=[...(Array.isArray(messages)?messages:[])],visibleTools=providerVisibleTools(tools,toolAllowlist),directVisiblePairs=exposedToolPairs(visibleTools),taskMutationRequested=requestsTaskMutation(conversation),workspaceMutationRequested=requestsWorkspaceMutation(conversation),externalStateMutationRequested=requestsExternalStateMutation(conversation),constraintPlanningRequested=requestsConstraintPlanning(conversation),persistentArtifactTargets=explicitPersistentArtifactTargets(conversation),requestMetricsToolCache=new WeakMap(),requestMetricsMessageCache=new WeakMap(),requestMetricsCurrentTurnCache=new WeakMap(),requestMetricsHistoryHashCache={},requestMetricsClassificationCache=typeof coolReadToolHistory==="function"?null:{},openAiContinuationIdentity={};
   const persistentArtifactRequested=persistentArtifactTargets.length>0,artifactTargetSummary=persistentArtifactTargets.slice(0,3).map(value=>`\`${value}\``).join(", ");
   const explicitlyRequired=explicitlyRequestedTools(conversation,visibleTools),executedToolKeys=new Set(),requiredToolRecoveries=new Set();
   const finalAfterVerifiedRequest=explicitFinalAnswerAfterVerification(conversation),finalAfterVerifiedCommand=Boolean(finalAfterVerifiedRequest),summaryAfterVerifiedCommand=explicitSummaryAfterVerification(conversation),literalAfterVerifiedCommand=explicitLiteralAfterVerification(conversation),verificationCompletionRequest=explicitVerificationCompletion(conversation),verificationCompletionRequested=Boolean(verificationCompletionRequest),terminalStatusRequested=explicitTerminalStatusRequest(conversation),directTerminalStatusCommand=directTerminalStatusCommands===true?explicitTerminalStatusCommand(conversation):null,directReplacementStatus=directExactReplacementStatus===true?explicitExactReplacementStatus(conversation):null,directWriteStatus=directExactWriteStatus===true?explicitExactFileWriteStatus(conversation):null,directReadStatus=directExactReadStatus===true?explicitExactFileReadStatus(conversation):null,directListStatus=directExactListStatus===true?explicitImmediateWorkspaceListStatus(conversation):null,directGitStatusRequest=directGitStatus===true?explicitGitReadRequest(conversation):null,directProcessRunningRequest=directProcessRunningStatus===true?explicitBackgroundProcessRunningRequest(conversation):null,directBrowserRuntimeRequest=directBrowserRuntimeStatus===true&&explicitBrowserRuntimeHealthRequest(conversation),directBrowserScreenshotRequest=directBrowserScreenshot===true&&explicitBrowserScreenshotRequest(conversation),terminalRuns=priorTerminalEvidence(priorTerminalRuns),verifiedEdits=[];
@@ -816,7 +840,15 @@ export async function runNativeAgentTurn({
     return Boolean(basename&&basename.includes(".")&&text.includes(basename));
   };
   const recoveryCorrectiveEditCall=call=>{
-    if(!implementationPressureEditCall(call))return false;
+    if(implementationPressureEditCall(call)){
+      if(externalStateMutationRequested)return false;
+    }else{
+      if(externalStateMutationRequested){
+        if(call?.namespace==="trebell_terminal"&&call?.name==="run")return nativeTerminalAuditMetadata(call.namespace,call.name,safeArguments(call.arguments))?.persistentMutationLike===true;
+        if(call?.namespace==="trebell_process"&&call?.name==="start")return true;
+      }
+      return false;
+    }
     if(completionRecoveryEpoch<=0||editRevision<=0)return true;
     const path=normalizedEditPath(call);if(!path)return true;
     if(completionRecoverySupportPaths.has(path))return false;
@@ -933,7 +965,7 @@ export async function runNativeAgentTurn({
       successfulTerminalRuns.push({command:String(args.command).trim(),args:args.args.map(value=>String(value)),cwd:String(args.cwd??"")});
     }
     if(success&&output?.success!==false&&output?.uncertain!==true&&namespace==="trebell_workspace"&&["write_file","replace_text"].includes(name)){
-      const path=String(args.path||output?.path||"").trim(),normalizedPath=path.replace(/\\/g,"/"),knownImplementationPath=Boolean(normalizedPath&&completionRecoveryImplementationPaths.has(normalizedPath)),supportOnly=name==="write_file"&&completionRecoveryEpoch>0&&editRevision>0&&completionRecoveryImplementationPaths.size>0&&!knownImplementationPath&&!userRequestedEditPath(normalizedPath)&&output?.existedBefore===false;
+      const path=String(args.path||output?.path||"").trim(),normalizedPath=path.replace(/\\/g,"/"),knownImplementationPath=Boolean(normalizedPath&&completionRecoveryImplementationPaths.has(normalizedPath)),supportOnly=(externalStateMutationRequested&&completionRecoveryEpoch>0&&!userRequestedEditPath(normalizedPath))||(name==="write_file"&&completionRecoveryEpoch>0&&editRevision>0&&completionRecoveryImplementationPaths.size>0&&!knownImplementationPath&&!userRequestedEditPath(normalizedPath)&&output?.existedBefore===false);
       if(completionRecoveryEpoch>0)emit(onEvent,{name:"native.completion.recovery_write_classified",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,recoveryEpoch:completionRecoveryEpoch,kind:name,path:redactSecretText(path,{trim:true}).slice(0,240),existedBefore:typeof output?.existedBefore==="boolean"?output.existedBefore:null,knownImplementationPath,implementationPathCount:completionRecoveryImplementationPaths.size,supportOnly}});
       if(supportOnly){
         completionRecoverySupportPaths.add(normalizedPath);
@@ -950,6 +982,14 @@ export async function runNativeAgentTurn({
         }
         if(normalizedPath){completionRecoverySupportPaths.delete(normalizedPath);completionRecoveryImplementationPaths.add(normalizedPath)}if(path)verifiedEdits.push({path,kind:name,replacements:name==="replace_text"?Math.max(0,Math.trunc(Number(output?.replacements)||0)):0,summary:name==="replace_text"?conciseReplacementSummary(args.old_text,args.new_text):null,supportOnly:false,beforeSha256:String(output?.beforeSha256||"")||null,afterSha256:String(output?.afterSha256||"")||null});
       }
+    }
+    if(success&&output?.success!==false&&output?.uncertain!==true&&namespace==="trebell_terminal"&&name==="run"&&externalStateMutationRequested&&terminalAudit?.persistentMutationLike===true){
+      editRevision++;
+      emit(onEvent,{name:"native.progress.external_mutation_applied",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,mutationKind:terminalAudit.persistentMutationKind||null}});
+    }
+    if(success&&output?.success!==false&&output?.uncertain!==true&&namespace==="trebell_process"&&name==="start"&&externalStateMutationRequested){
+      editRevision++;
+      emit(onEvent,{name:"native.progress.external_mutation_applied",status:"completed",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCalls,editRevision,mutationKind:"background_process_start"}});
     }
     if(success&&output?.success!==false&&output?.timedOut!==true&&output?.signal==null&&namespace==="trebell_terminal"&&name==="run"){
       const key=terminalRunKey(args),exitCode=Number.isFinite(Number(output?.exitCode))?Number(output.exitCode):null;
@@ -1299,7 +1339,7 @@ export async function runNativeAgentTurn({
       verifiedFinalizationInjected=true;
     }
     modelTurns++;
-    const requestStarted=nowMs(),requestMessageCount=conversation.length,forcedAllowlist=forcedToolChoice?[forcedToolChoice.namespace?forcedToolChoice.namespace+"/"+forcedToolChoice.name:forcedToolChoice.name]:null,completionGateMode=Boolean(completionGateCandidate),abstractionRepairVerificationGateMode=Boolean(abstractionRepairVerificationGateCandidate),controlGateMode=completionGateMode||abstractionRepairVerificationGateMode,finalAnswerOnly=toolBudgetExhausted||verifiedFinalizationReady||controlGateMode,recoveryEditMode=completionRecoveryEditRequired&&!controlGateMode&&!finalAnswerOnly,implementationPressure=workspaceMutationRequested&&progressCheckpointInjected&&editRevision===0&&!finalAnswerOnly&&!forcedAllowlist,recoveryEditAllowlist=["trebell_workspace/replace_text","trebell_workspace/write_file"],requestTools=controlGateMode?(preserveToolSchemasOnFinalization?visibleTools:[]):finalAnswerOnly&&!preserveToolSchemasOnFinalization?[]:forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):visibleTools,requestToolChoice=finalAnswerOnly?"none":recoveryEditMode?"required":forcedToolChoice||toolChoice;
+    const requestStarted=nowMs(),requestMessageCount=conversation.length,forcedAllowlist=forcedToolChoice?[forcedToolChoice.namespace?forcedToolChoice.namespace+"/"+forcedToolChoice.name:forcedToolChoice.name]:null,completionGateMode=Boolean(completionGateCandidate),abstractionRepairVerificationGateMode=Boolean(abstractionRepairVerificationGateCandidate),controlGateMode=completionGateMode||abstractionRepairVerificationGateMode,finalAnswerOnly=toolBudgetExhausted||verifiedFinalizationReady||controlGateMode,recoveryEditMode=completionRecoveryEditRequired&&!controlGateMode&&!finalAnswerOnly,implementationPressure=workspaceMutationRequested&&progressCheckpointInjected&&editRevision===0&&!finalAnswerOnly&&!forcedAllowlist,recoveryEditAllowlist=workspaceMutationRequested?["trebell_workspace/replace_text","trebell_workspace/write_file"]:["trebell_terminal/run","trebell_process/start"],requestTools=controlGateMode?(preserveToolSchemasOnFinalization?visibleTools:[]):finalAnswerOnly&&!preserveToolSchemasOnFinalization?[]:forcedAllowlist?providerVisibleTools(visibleTools,forcedAllowlist):visibleTools,requestToolChoice=finalAnswerOnly?"none":recoveryEditMode?"required":forcedToolChoice||toolChoice;
     const configuredMaxOutputTokens=maxOutputTokens!=null&&Number.isFinite(Number(maxOutputTokens))?Math.max(1,Math.trunc(Number(maxOutputTokens))):null;
     const pressureActionTurn=(implementationPressure||postEditEvidenceEscalated)&&!controlGateMode&&!finalAnswerOnly;
     const relaxActionCap=actionOutputCapRelaxOnce;actionOutputCapRelaxOnce=false;
@@ -1489,6 +1529,20 @@ export async function runNativeAgentTurn({
           completionRecoveryIncumbentWorkspaceAligned=verdict.progress==="unchanged";
           completionRecoveryEditTransaction=null;
         }
+        const externalStateRegressed=!workspaceMutationRequested&&taskMutationRequested&&completionRecoveryIncumbent&&verdict.progress==="regressed"&&Number(completionRecoveryIncumbent.editRevision)<editRevision;
+        if(externalStateRegressed){
+          completionRecoveryIncumbentWorkspaceAligned=false;
+          completionRecoveryEditResponsesRemaining=Math.max(1,completionRecoveryEditResponsesRemaining);
+          completionRecoveryEditRequired=true;
+          completionRecoveryEditRequiredMisses=0;
+          conversation.push({role:"developer",content:"Trebell detected that the latest external/runtime state regressed relative to the strongest evidence-backed recovery incumbent. Automatic rollback is not safe for arbitrary external systems. Before exploring another candidate or finalizing, use the available state-changing tool to restore the prior stronger state when reversible, or apply a different evidence-supported correction that is demonstrably no worse. Do not leave a known-regressed external state active merely because the recovery epoch is ending. Re-use the concrete prior state/configuration already present in the conversation/tool history rather than inventing values."});
+          emit(onEvent,{name:"native.completion.recovery_external_restore_required",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,recoveryEpoch:completionRecoveryEpoch,incumbentEditRevision:completionRecoveryIncumbent.editRevision,progress:verdict.progress}});
+          continue;
+        }
+        if(!workspaceMutationRequested&&taskMutationRequested&&completionRecoveryIncumbent&&verdict.progress==="unchanged"&&Number(completionRecoveryIncumbent.editRevision)<editRevision){
+          completionRecoveryIncumbentWorkspaceAligned=true;
+          emit(onEvent,{name:"native.completion.recovery_external_incumbent_restored",status:"completed",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,recoveryEpoch:completionRecoveryEpoch,incumbentEditRevision:completionRecoveryIncumbent.editRevision}});
+        }
         completionGateRecoveries++;
         const unsupportedRecoveryEdit=completionRecoveryEpoch>0&&completionRecoveryEvidenceRoundsRemaining<=0&&completionRecoveryEditResponsesRemaining>0&&completionRecoverySupportVerificationRemaining<=0&&verdict.editSupport==="unsupported";
         if(unsupportedRecoveryEdit){
@@ -1505,7 +1559,10 @@ export async function runNativeAgentTurn({
           completionRecoveryEditRequiredMisses=0;
           const unresolved=verdict.unresolved.length?verdict.unresolved.map(item=>"- "+item).join("\n"):"- Re-evaluate the user's material acceptance requirements against the evidence.";
           const reason=verdict.reason?"\nGate rationale: "+verdict.reason:"";
-          conversation.push({role:"developer",content:"Trebell semantic completion gate still finds the task incomplete, but the current recovery epoch has already consumed its bounded evidence allowance and still owes one corrective implementation edit. Do not run more probes and do not propose completion again yet. Use the evidence already gathered to make one evidence-supported change to the actual implementation/deliverable. Trebell will expose only workspace edit tools on the next turn. If a newly-created support file is attempted instead, it will not discharge this edit debt.\nUnresolved requirements:\n"+unresolved+reason});
+          const correctiveDebtText=externalStateMutationRequested
+            ?"Trebell semantic completion gate still finds the task incomplete, but the current recovery epoch has already consumed its bounded evidence allowance and still owes one corrective state-changing action. Do not run more probes and do not propose completion again yet. Use the evidence already gathered to make one evidence-supported state-changing action against the actual external/runtime target. Do not substitute a scratch/support file for the required state correction."
+            :"Trebell semantic completion gate still finds the task incomplete, but the current recovery epoch has already consumed its bounded evidence allowance and still owes one corrective implementation edit. Do not run more probes and do not propose completion again yet. Use the evidence already gathered to make one evidence-supported change to the actual implementation/deliverable. Trebell will expose only workspace edit tools on the next turn. If a newly-created support file is attempted instead, it will not discharge this edit debt.";
+          conversation.push({role:"developer",content:correctiveDebtText+"\nUnresolved requirements:\n"+unresolved+reason});
           emit(onEvent,{name:"native.completion.gate_recovery",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,recoveryAttempt:completionGateRecoveries,recoveryEpoch:completionRecoveryEpoch,evidenceRoundsAllowed:0,editResponsesAllowed:completionRecoveryEditResponsesRemaining,editRequired:true,unresolved:verdict.unresolved}});
           continue;
         }
@@ -1517,9 +1574,10 @@ export async function runNativeAgentTurn({
         }
         if(completionRecoveryEpoch>=completionRecoveryEpochLimit){
           const unresolved=verdict.unresolved.length?verdict.unresolved:["A material acceptance condition remains unresolved."];
-          const preservation=completionRecoveryIncumbentWorkspaceAligned?"The strongest evidence-backed workspace state has been preserved or restored":"The current workspace state could not be proven identical to the strongest evidence-backed recovery incumbent";
+          const stateLabel=workspaceMutationRequested?"workspace state":"task state";
+          const preservation=completionRecoveryIncumbentWorkspaceAligned?`The strongest evidence-backed ${stateLabel} has been preserved or restored`:`The current ${stateLabel} could not be proven equivalent to the strongest evidence-backed recovery incumbent`;
           const exhaustionText=`Trebell stopped after ${completionRecoveryEpochLimit} bounded semantic recovery epochs because the completion gate still found the task incomplete. ${preservation}, and completion is not verified. Unresolved: ${unresolved.join("; ")}`;
-          conversation.push({role:"developer",content:`Trebell exhausted its bounded semantic completion-recovery budget (${completionRecoveryEpochLimit} epochs). The immediately preceding candidate was not accepted as complete. ${completionRecoveryIncumbentWorkspaceAligned?"The stronger evidence-backed recovery incumbent is the current workspace state.":"The current workspace may differ from the strongest evidence-backed recovery incumbent because a safe rollback could not be established."} Do not treat the rejected candidate as verified completion on a later turn unless new evidence resolves the remaining acceptance gap.`});
+          conversation.push({role:"developer",content:`Trebell exhausted its bounded semantic completion-recovery budget (${completionRecoveryEpochLimit} epochs). The immediately preceding candidate was not accepted as complete. ${completionRecoveryIncumbentWorkspaceAligned?`The stronger evidence-backed recovery incumbent is the current ${stateLabel}.`:`The current ${stateLabel} may differ from the strongest evidence-backed recovery incumbent because a safe rollback could not be established.`} Do not treat the rejected candidate as verified completion on a later turn unless new evidence resolves the remaining acceptance gap.`});
           const result={
             text:exhaustionText,model:candidate.model,provider:candidate.provider,
             messages:conversation,modelTurns,toolCalls,usage,startedAt,completedAt:Date.now(),durationMs:duration(started),lastResponse:candidate.lastResponse,
@@ -1540,9 +1598,13 @@ export async function runNativeAgentTurn({
         completionRecoveryImplementationPaths=new Set(verifiedEdits.filter(item=>item&&!item.supportOnly).map(item=>String(item.path||"").trim().replace(/\\/g,"/")).filter(Boolean));
         const unresolved=verdict.unresolved.length?verdict.unresolved.map(item=>"- "+item).join("\n"):"- Re-evaluate the user's material acceptance requirements against the evidence.";
         const reason=verdict.reason?"\nGate rationale: "+verdict.reason:"";
-        const recoveryStart=immediateSupportedRecoveryEdit
-          ?"The semantic gate already found concrete edit support, so do not spend extra model rounds gathering generic evidence before acting. Make one coherent evidence-supported corrective implementation/deliverable edit now; a single post-edit verification response is reserved afterward."
-          :"This starts a bounded semantic-recovery window: up to two focused evidence-bearing tool responses and one evidence-supported corrective implementation edit may proceed even if older convergence, post-edit evidence, or revision-churn guards had already escalated for the current revision. If both ordinary evidence responses are spent before the corrective edit, one additional post-edit evidence response is reserved only to verify that repair before proposing the next completion candidate.";
+        const recoveryStart=externalStateMutationRequested
+          ?immediateSupportedRecoveryEdit
+            ?"The semantic gate already found concrete corrective support, so do not spend extra model rounds gathering generic evidence before acting. Make one coherent evidence-supported corrective state-changing action against the actual task target now; a single post-action verification response is reserved afterward."
+            :"This starts a bounded semantic-recovery window: up to two focused evidence-bearing tool responses and one evidence-supported corrective state-changing action against the actual task target may proceed even if older convergence or evidence guards had already escalated for the current revision. If both ordinary evidence responses are spent before the corrective action, one additional post-action evidence response is reserved only to verify that repair before proposing the next completion candidate."
+          :immediateSupportedRecoveryEdit
+            ?"The semantic gate already found concrete edit support, so do not spend extra model rounds gathering generic evidence before acting. Make one coherent evidence-supported corrective implementation/deliverable edit now; a single post-edit verification response is reserved afterward."
+            :"This starts a bounded semantic-recovery window: up to two focused evidence-bearing tool responses and one evidence-supported corrective implementation edit may proceed even if older convergence, post-edit evidence, or revision-churn guards had already escalated for the current revision. If both ordinary evidence responses are spent before the corrective edit, one additional post-edit evidence response is reserved only to verify that repair before proposing the next completion candidate.";
         conversation.push({role:"developer",content:"Trebell semantic completion gate rejected the proposed final answer as incomplete. Continue working; do not simply restate the candidate answer. Resolve the highest-value unmet requirement using the evidence and tools already available. When one unresolved requirement is a prerequisite semantic validity constraint or objective/priority condition and another is merely downstream persistence, packaging, publication, or application of that candidate, resolve the prerequisite semantic requirement first; do not commit hard-to-reverse state merely to create evidence for a candidate whose acceptance-critical semantics remain unverified. "+recoveryStart+" A newly-created support/scratch/diagnostic workspace file does not consume or reset the corrective implementation edit; prefer inline or batched terminal diagnostics when practical. At most one new support-file write gets a one-shot verification opportunity after the ordinary evidence allowance is exhausted. Use these allowances only on the unresolved acceptance condition, not on broad exploration. If the evidence contradicts a shared premise behind the recent attempts, falsify that premise with an observation that does not depend on the same premise before changing layers or trying more variants. The premise may concern the algorithm or problem family, an input or API contract, environment behavior, state, units, ordering, or another task-specific assumption. If it survives the independent check, keep the strongest remaining hypothesis instead of inventing a new abstraction problem.\nUnresolved requirements:\n"+unresolved+reason});
         if(completionRecoveryEpoch>=3&&completionRecoveryEpoch%3===0){
           const residualFactorizationReady=abstractionRepairRevision>0&&!pendingAbstractionRepair&&!abstractionRepairVerificationPending&&postEditResidualStructureRevision>=abstractionRepairRevision;
@@ -1565,7 +1627,7 @@ export async function runNativeAgentTurn({
       const preEditCompletionBlockerChallenge=hasSelfCompletionGap&&editRevision===0&&selfAdmittedGapRecoveries===0;
       const selfAdmittedGapCanRecover=preEditCompletionBlockerChallenge||editRevision>0;
       const maxSelfAdmittedGapRecoveries=hasFailedAcceptanceGap?3:2;
-      if(completionRecoveryEpoch===0&&workspaceMutationRequested&&selfAdmittedGapCanRecover&&canVerifyLocally&&!toolBudgetExhausted&&(!verifiedFinalizationReady||hasFailedAcceptanceGap)&&selfAdmittedGapRecoveries<maxSelfAdmittedGapRecoveries&&shouldRecoverSelfAdmittedGap&&modelTurns<budget.maxModelTurns&&selfAdmittedGapKind){
+      if(completionRecoveryEpoch===0&&taskMutationRequested&&selfAdmittedGapCanRecover&&canVerifyLocally&&!toolBudgetExhausted&&(!verifiedFinalizationReady||hasFailedAcceptanceGap)&&selfAdmittedGapRecoveries<maxSelfAdmittedGapRecoveries&&shouldRecoverSelfAdmittedGap&&modelTurns<budget.maxModelTurns&&selfAdmittedGapKind){
         selfAdmittedGapRecoveries++;
         selfAdmittedGapRecoveryToolBaseline=toolCalls;
         const recoveryMessage=preEditCompletionBlockerChallenge
@@ -1600,14 +1662,16 @@ export async function runNativeAgentTurn({
       if(completionRecoveryEditRequired&&completionRecoveryEditResponsesRemaining>0){
         if(completionRecoveryEditRequiredMisses<1&&modelTurns<budget.maxModelTurns){
           completionRecoveryEditRequiredMisses++;
-          conversation.push({role:"developer",content:"Trebell recovery still requires the reserved corrective implementation edit before another completion attempt. Do not answer yet. On the next turn, call one of the available workspace edit tools and modify the actual implementation/deliverable using the evidence already gathered."});
+          conversation.push({role:"developer",content:externalStateMutationRequested
+            ?"Trebell recovery still requires the reserved corrective state-changing action before another completion attempt. Do not answer yet. Change the actual external/runtime task target using the evidence already gathered, then verify the resulting state."
+            :"Trebell recovery still requires the reserved corrective implementation edit before another completion attempt. Do not answer yet. On the next turn, call one of the available workspace edit tools and modify the actual implementation/deliverable using the evidence already gathered."});
           emit(onEvent,{name:"native.completion.recovery_edit_retry",status:"retrying",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,recoveryEpoch:completionRecoveryEpoch,misses:completionRecoveryEditRequiredMisses}});
           continue;
         }
-        const error=new Error("Native completion recovery failed to perform the required corrective implementation edit.");error.code="native_recovery_edit_not_called";
+        const error=new Error(externalStateMutationRequested?"Native completion recovery failed to perform the required corrective state-changing action.":"Native completion recovery failed to perform the required corrective implementation edit.");error.code="native_recovery_edit_not_called";
         emit(onEvent,{name:"native.turn.blocked",status:"blocked",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{reason:error.code,modelTurns,toolCalls,editRevision,recoveryEpoch:completionRecoveryEpoch}});throw error;
       }
-      if(semanticCompletionGate===true&&workspaceMutationRequested&&modelTurns<budget.maxModelTurns){
+      if(semanticCompletionGate===true&&taskMutationRequested&&modelTurns<budget.maxModelTurns){
         const residualMonotonicRecovery=completionRecoveryEpoch>0&&abstractionRepairRevision>0&&!pendingAbstractionRepair&&!abstractionRepairVerificationPending&&postEditResidualStructureRevision>=abstractionRepairRevision;
         const recoveryTransaction=completionRecoveryEditTransaction?.recoveryEpoch===completionRecoveryEpoch?completionRecoveryEditTransaction:null;
         const incumbent=completionRecoveryIncumbent?{...completionRecoveryIncumbent}:null;
@@ -1616,7 +1680,7 @@ export async function runNativeAgentTurn({
         const incumbentComparison=incumbent
           ?`\nRecovery incumbent to compare against: unresolved=${JSON.stringify(incumbent.unresolved||[])}; reason=${JSON.stringify(String(incumbent.reason||"").slice(0,1200))}. Set progress=improved only when the current evidence materially moves the same acceptance condition closer to satisfaction than this incumbent, progress=regressed when it materially moves farther away, progress=unchanged when it is materially equivalent, and progress=uncertain when the evidence is not comparable or does not establish direction. Compare the strongest actual acceptance evidence, not confidence, narration, process exit codes, or amount of work performed. Do not silently drop an incumbent unresolved requirement merely because a newer local defect was discovered: for each incumbent unresolved item, either keep it unresolved or identify concrete evidence in the reason that resolves it. Re-audit earlier hard constraints and objective/priority requirements after any persistence or writeback step; persistence alone is not evidence that those semantic obligations are satisfied.`
           :"\nThere is no prior recovery incumbent yet, so set progress=uncertain.";
-        conversation.push({role:"developer",content:"Trebell semantic completion gate. This is an internal control check, not the user-visible answer. Evaluate the immediately preceding candidate final answer against the user's full request and the evidence in this conversation. Return only one JSON object: {\"status\":\"complete|incomplete|blocked\",\"progress\":\"improved|unchanged|regressed|uncertain\",\"edit_support\":\"supported|unsupported|uncertain\",\"unresolved\":[\"material unmet requirement\"],\"reason\":\"brief evidence-based rationale\"}. Before choosing a verdict, perform a requirement-led audit rather than a recency-led audit: treat explicit hard constraints, quantitative bounds, minimum/maximum coverage, sequencing/order/routing rules, optimization or priority objectives, and required persistent side effects as separate obligations. For a bug fix, repair, or refactor of existing code, also treat unexplained removal, renaming, or signature/shape changes of pre-existing public symbols, imports, CLI contracts, configuration/schema/data formats, or other externally visible behavior as material unresolved compatibility risks unless the requested contract explicitly changed or evidence shows existing consumers remain compatible. A cleaner replacement abstraction is not by itself evidence of compatibility. A newer local defect does not supersede an older unresolved obligation. Use status=complete only when every material requested deliverable and acceptance condition is supported by the available evidence. Use status=incomplete when additional local tool work could still resolve an unmet or uncertain requirement. Use status=blocked only when a material requirement genuinely cannot be completed with the available inputs/tools or depends on an unavailable external condition. Set edit_support=supported only when the evidence available to this gate supports a concrete corrective implementation/deliverable edit now. Set edit_support=unsupported only when the bounded evidence actually argues against the tested corrections or otherwise establishes that no evidence-supported corrective edit is available in the current hypothesis class; do not use unsupported merely because the answer is incomplete or the exact fix is uncertain. Use edit_support=uncertain when the evidence does not justify either conclusion. When semantic validity is a prerequisite to a non-idempotent or hard-to-reverse persistence/application step, do not treat successful persistence as proof that the semantic constraints or objective are satisfied; require direct evidence for those prerequisites. A Trebell-internal convergence, evidence-budget, or revision-churn guard rejecting a recent tool call is not by itself a genuine blocker: if the underlying tool/input still exists and further focused work could resolve the requirement, return incomplete so the recovery controller can reopen a bounded allowance. Do not infer success merely from a process exit code when tool output, measurements, or the candidate answer contradict the actual requirement. Judge semantics and evidence, not wording. Do not call tools and do not address the user."+incumbentComparison});
+        conversation.push({role:"developer",content:"Trebell semantic completion gate. This is an internal control check, not the user-visible answer. Evaluate the immediately preceding candidate final answer against the user's full request and the evidence in this conversation. Return only one JSON object: {\"status\":\"complete|incomplete|blocked\",\"progress\":\"improved|unchanged|regressed|uncertain\",\"edit_support\":\"supported|unsupported|uncertain\",\"unresolved\":[\"material unmet requirement\"],\"reason\":\"brief evidence-based rationale\"}. Before choosing a verdict, perform a requirement-led audit rather than a recency-led audit: treat explicit hard constraints, quantitative bounds, minimum/maximum coverage, sequencing/order/routing rules, optimization or priority objectives, and required persistent side effects as separate obligations. For a bug fix, repair, or refactor of existing code, also treat unexplained removal, renaming, or signature/shape changes of pre-existing public symbols, imports, CLI contracts, configuration/schema/data formats, or other externally visible behavior as material unresolved compatibility risks unless the requested contract explicitly changed or evidence shows existing consumers remain compatible. A cleaner replacement abstraction is not by itself evidence of compatibility. A newer local defect does not supersede an older unresolved obligation. Use status=complete only when every material requested deliverable and acceptance condition is supported by the available evidence. Use status=incomplete when additional local tool work could still resolve an unmet or uncertain requirement. Use status=blocked only when a material requirement genuinely cannot be completed with the available inputs/tools or depends on an unavailable external condition. Set edit_support=supported only when the evidence available to this gate supports a concrete corrective action now: for workspace tasks that can be an implementation/deliverable edit; for external/runtime tasks it can be a state-changing API/process action against the actual task target. Set edit_support=unsupported only when the bounded evidence actually argues against the tested corrections or otherwise establishes that no evidence-supported corrective action is available in the current hypothesis class; do not use unsupported merely because the answer is incomplete or the exact fix is uncertain. Use edit_support=uncertain when the evidence does not justify either conclusion. When semantic validity is a prerequisite to a non-idempotent or hard-to-reverse persistence/application step, do not treat successful persistence as proof that the semantic constraints or objective are satisfied; require direct evidence for those prerequisites. A Trebell-internal convergence, evidence-budget, or revision-churn guard rejecting a recent tool call is not by itself a genuine blocker: if the underlying tool/input still exists and further focused work could resolve the requirement, return incomplete so the recovery controller can reopen a bounded allowance. Do not infer success merely from a process exit code when tool output, measurements, or the candidate answer contradict the actual requirement. Judge semantics and evidence, not wording. Do not call tools and do not address the user."+incumbentComparison});
         emit(onEvent,{name:"native.completion.gate_requested",status:"running",model:String(lastResponse.model||model),provider:lastResponse.provider||provider||null,data:{modelTurn:modelTurns,editRevision,toolCalls}});
         continue;
       }
@@ -1661,7 +1725,9 @@ export async function runNativeAgentTurn({
       const singletonPostConvergenceTerminalBlocked=editRevision>0&&!completionRecoveryEvidenceBypass&&convergenceCheckpointRevision===editRevision&&calls.length===1&&call?.namespace==="trebell_terminal"&&call?.name==="run"&&!implementationPressureBatchCall(call);
       if(recoveryEditMode&&!recoveryCorrectiveEditCall(call)){
         const callId=String(call?.id||""),toolCallNumber=toolCalls+1;toolCalls=toolCallNumber;
-        conversation.push({role:"tool",toolCallId:callId,content:"Trebell semantic recovery: this non-edit tool call was not executed because the current recovery step requires the reserved corrective implementation edit. Use one workspace replace_text or write_file call on the actual implementation/deliverable. Evidence-only tools become available again after the recovery edit is resolved or a later bounded recovery epoch opens."});
+        conversation.push({role:"tool",toolCallId:callId,content:workspaceMutationRequested
+          ?"Trebell semantic recovery: this non-edit tool call was not executed because the current recovery step requires the reserved corrective implementation edit. Use one workspace replace_text or write_file call on the actual implementation/deliverable. Evidence-only tools become available again after the recovery edit is resolved or a later bounded recovery epoch opens."
+          :"Trebell semantic recovery: this tool call was not executed because the current recovery step requires a real corrective external/runtime state change. Use a persistent state-changing terminal action or start the long-running process that performs the corrective task; do not substitute a workspace/support-file edit. Evidence-only tools become available again after the corrective action is resolved or a later bounded recovery epoch opens."});
         emit(onEvent,{name:"native.completion.recovery_non_edit_call_blocked",status:"blocked",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCall:toolCallNumber,callId,namespace:call?.namespace||null,name:call?.name||"tool",editRevision,recoveryEpoch:completionRecoveryEpoch,reason:"recovery_edit_required"}});
         callIndex++;continue;
       }
@@ -1672,7 +1738,9 @@ export async function runNativeAgentTurn({
         const callId=String(call?.id||""),toolCallNumber=toolCalls+1;toolCalls=toolCallNumber;
         const editRequiredAfterBlock=completionRecoverySupportVerificationRemaining<=0;
         if(editRequiredAfterBlock){completionRecoveryEditRequired=true;completionRecoveryEditRequiredMisses=0}
-        conversation.push({role:"tool",toolCallId:callId,content:"Trebell semantic recovery: this evidence tool call was not executed because the current recovery epoch has already consumed its bounded evidence responses. Use the reserved corrective implementation edit if the gathered evidence supports one, or submit the best current completion candidate so the semantic gate can judge it and, if needed, open a new bounded recovery epoch. Do not spend another evidence-only tool call in this epoch."});
+        conversation.push({role:"tool",toolCallId:callId,content:workspaceMutationRequested
+          ?"Trebell semantic recovery: this evidence tool call was not executed because the current recovery epoch has already consumed its bounded evidence responses. Use the reserved corrective implementation edit if the gathered evidence supports one, or submit the best current completion candidate so the semantic gate can judge it and, if needed, open a new bounded recovery epoch. Do not spend another evidence-only tool call in this epoch."
+          :"Trebell semantic recovery: this evidence tool call was not executed because the current recovery epoch has already consumed its bounded evidence responses. Use the reserved corrective state-changing action against the actual external/runtime target if the evidence supports one, or submit the best current completion candidate so the semantic gate can judge it and, if needed, open a new bounded recovery epoch. Do not spend another evidence-only tool call in this epoch."});
         blockedCompletionRecoveryEvidence=true;
         emit(onEvent,{name:"native.completion.recovery_evidence_call_blocked",status:"blocked",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCall:toolCallNumber,callId,namespace:call?.namespace||null,name:call?.name||"tool",editRevision,recoveryEpoch:completionRecoveryEpoch,reason:"recovery_evidence_response_budget",editRequiredAfterBlock}});
         callIndex++;continue;
@@ -1688,7 +1756,9 @@ export async function runNativeAgentTurn({
       }
       if(completionRecoveryEditAllowanceConsumed&&recoveryCorrectiveEditCall(call)){
         const callId=String(call?.id||""),toolCallNumber=toolCalls+1;toolCalls=toolCallNumber;
-        conversation.push({role:"tool",toolCallId:callId,content:"Trebell semantic recovery: this implementation edit was not executed because the current recovery epoch already consumed its one corrective-edit response. Do not keep editing in the same recovery epoch. Propose the best current completion candidate so the semantic gate can either accept it or open a new bounded recovery epoch for any still-unresolved requirement."});
+        conversation.push({role:"tool",toolCallId:callId,content:workspaceMutationRequested
+          ?"Trebell semantic recovery: this implementation edit was not executed because the current recovery epoch already consumed its one corrective-edit response. Do not keep editing in the same recovery epoch. Propose the best current completion candidate so the semantic gate can either accept it or open a new bounded recovery epoch for any still-unresolved requirement."
+          :"Trebell semantic recovery: this state-changing action was not executed because the current recovery epoch already consumed its one corrective-action response. Do not keep mutating the external/runtime target in the same recovery epoch. Propose the best current completion candidate so the semantic gate can either accept it or open a new bounded recovery epoch for any still-unresolved requirement."});
         blockedCompletionRecoveryEdit=true;
         emit(onEvent,{name:"native.completion.recovery_edit_call_blocked",status:"blocked",model:String(model),provider:provider||null,data:{modelTurn:modelTurns,toolCall:toolCallNumber,callId,namespace:call?.namespace||null,name:call?.name||"tool",editRevision,recoveryEpoch:completionRecoveryEpoch,reason:"recovery_edit_response_budget"}});
         callIndex++;continue;

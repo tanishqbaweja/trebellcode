@@ -537,6 +537,20 @@ Payload-free per-turn analysis found that Native model turns **5** and **17** al
 
 ---
 
+## 2026-10-02 - Recover the real external state instead of forcing workspace edits
+
+**Evidence:** completed Native trial `ctr-optimization__o2swqft` received Harbor reward **0.0** with **3 / 4** verifier checks passing. The failed check measured the final campaign state at only **0.10% genuine CTR** against the required **2.20%**. Native had not found a passing incumbent: replaying the earlier treatment configuration produced about **0.15%**, and the untouched initial configuration about **0.78%**. The trajectory did notice contaminated traffic and gathered click-latency/IP evidence, but after its first incomplete completion-gate verdict the controller treated the task as workspace-mutation work. Recovery spent reserved corrective actions on helper/monitor file edits while the actual deliverable was mutable external API state. Native then left a known-bad external configuration active and exhausted four semantic recovery epochs.
+
+**Harness change:** Native now distinguishes generic task mutation, workspace mutation, and external-state mutation. Python/Node HTTP writes such as `requests.post`, `urllib.request.Request(... method="POST")`, and `fetch(... {method:"POST"})` are classified as persistent external mutations alongside existing curl/CLI write detection. For external-state tasks, semantic recovery accepts a proven persistent state mutation as the reserved corrective action, increments the recovery revision on successful external mutation, keeps diagnostic workspace files from discharging that action debt during recovery, and asks the model to repair the actual external/runtime target rather than invent a file edit. If the semantic gate says the latest external state regressed versus the evidence-backed incumbent, Native requires an explicit reversible restore or another demonstrably non-regressing correction before it can finalize. Existing workspace-edit recovery semantics remain unchanged.
+
+**Why:** the old recovery controller conflated “the user wants something changed” with “the workspace must be edited.” That is valid for coding tasks but wrong for API/service/runtime tasks where the deliverable is persistent external state. A helper script can be useful evidence, but writing it is not the requested state change and must not satisfy the controller’s corrective-action requirement.
+
+**Expected effect:** fewer false recoveries that optimize support files instead of the task target, better long-horizon API/service task correctness, and better use of the newly exposed `trebell_process` capability for sustained experiments. The change should preserve coding-task convergence behavior while allowing external-state tasks to spend recovery budget on actual state corrections and verification.
+
+**Validation status:** Native loop passes **193 / 193**; Harbor adapter + Terminal-Bench runner passes **23 / 23**; the Harbor bundle rebuild and `git diff --check` pass. A same-task Native rerun of `ctr-optimization` is intentionally treated only as contaminated regression evidence because the task/verifier is now inspected; a fresh unseen task is still required for generalization proof.
+
+---
+
 ## Template for future entries
 
 ### YYYY-MM-DD - Short change name

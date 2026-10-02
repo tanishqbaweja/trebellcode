@@ -14,6 +14,10 @@ test("native terminal audit metadata records network intent while redacting secr
   assert.equal(local.networkLike,false);assert.equal(local.packageManager,false);assert.equal(local.persistentMutationLike,false);assert.deepEqual(local.hosts,[]);
   const write=nativeTerminalAuditMetadata("trebell_terminal","run",{command:"psql",args:["-c","INSERT INTO dispatch_queue(id) VALUES (1)"]});
   assert.equal(write.persistentMutationLike,true);assert.equal(write.persistentMutationKind,"sql_write");
+  const pythonWrite=nativeTerminalAuditMetadata("trebell_terminal","run",{command:"python",args:["-c","import requests; requests.post('http://localhost:5000/api/config', json={'mode':'safe'})"]});
+  assert.equal(pythonWrite.persistentMutationLike,true);assert.equal(pythonWrite.persistentMutationKind,"http_write");
+  const urllibWrite=nativeTerminalAuditMetadata("trebell_terminal","run",{command:"python",args:["-c","import urllib.request; urllib.request.Request('http://localhost:5000/api/config', data=b'{}', method='POST')"]});
+  assert.equal(urllibWrite.persistentMutationLike,true);assert.equal(urllibWrite.persistentMutationKind,"http_write");
   assert.equal(nativeTerminalAuditMetadata("trebell_workspace","read_file",{path:"a.txt"}),null);
 });
 
@@ -2911,6 +2915,76 @@ test("native completion recovery edits immediately when the gate already support
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="evidence").length,0);
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,1);
   assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="post_edit_verification").length,1);
+});
+
+test("native completion recovery can repair an external API state without inventing a workspace edit",async()=>{
+  const events=[],executed=[];let turns=0;
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxModelTurns:12,maxToolCalls:16,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Manage the running campaign through its API. Change the live config until the measured acceptance target passes."}],
+    tools:[
+      {type:"namespace",name:"trebell_workspace",tools:[{name:"write_file"}]},
+      {type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]},
+      {type:"namespace",name:"trebell_process",tools:[{name:"start"},{name:"status"}]},
+    ],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"initial-api-write",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","import requests; requests.post('http://localhost:5000/api/config', json={'mode':'candidate'})"]})}],usage:{}};
+      if(turns===2)return {text:"The live target is still below acceptance.",toolCalls:[],usage:{}};
+      if(turns===3)return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"supported","unresolved":["live acceptance target still fails"],"reason":"The measured runtime state still misses the target and supports another config mutation."}',toolCalls:[],usage:{}};
+      if(turns===4){
+        assert.equal(request.toolChoice,"required");
+        const recovery=request.messages.findLast(message=>message.role==="developer"&&/state-changing action against the actual task target/i.test(String(message.content||"")));
+        assert.ok(recovery);
+        assert.doesNotMatch(String(recovery.content),/only workspace edit tools/i);
+        return {text:"",toolCalls:[{id:"repair-api-write",namespace:"trebell_process",name:"start",arguments:JSON.stringify({command:"python",args:["-c","import requests; requests.post('http://localhost:5000/api/config', json={'mode':'fixed'})"]})}],usage:{}};
+      }
+      if(turns===5)return {text:"",toolCalls:[{id:"verify-live",namespace:"trebell_process",name:"status",arguments:JSON.stringify({process_id:"proc-fixed"})}],usage:{}};
+      if(turns===6)return {text:"The corrected live state now satisfies acceptance.",toolCalls:[],usage:{}};
+      if(turns===7)return {text:'{"status":"complete","progress":"improved","edit_support":"unsupported","unresolved":[],"reason":"The corrected external state passed the live acceptance check."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{executed.push(call.id);if(call.id==="repair-api-write")return {processId:"proc-fixed",running:true};if(call.id==="verify-live")return {processId:"proc-fixed",running:false,exitCode:0,stdout:"acceptance=pass"};return {exitCode:0,stdout:"updated"}},
+  });
+  assert.equal(result.text,"The corrected live state now satisfies acceptance.");
+  assert.deepEqual(executed,["initial-api-write","repair-api-write","verify-live"]);
+  assert.equal(events.filter(event=>event.name==="native.progress.external_mutation_applied").length,2);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="edit").length,1);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_allowance_used"&&event.data?.kind==="post_edit_verification").length,1);
+});
+
+test("native external recovery requires restoring a regressed incumbent before final exhaustion",async()=>{
+  const events=[],executed=[];let turns=0;
+  const writeArgs=mode=>JSON.stringify({command:"python",args:["-c",`import requests; requests.post('http://localhost:5000/api/config', json={'mode':'${mode}'})`]});
+  const result=await runNativeAgentTurn({
+    model:"test-model",semanticCompletionGate:true,maxCompletionRecoveryEpochs:1,maxModelTurns:18,maxToolCalls:24,onEvent:event=>events.push(event),
+    messages:[{role:"user",content:"Manage the live campaign through its API. Update the remote configuration until the acceptance metric is satisfied."}],
+    tools:[{type:"namespace",name:"trebell_terminal",tools:[{name:"run"}]}],
+    providerTurn:async request=>{
+      turns++;
+      if(turns===1)return {text:"",toolCalls:[{id:"baseline",namespace:"trebell_terminal",name:"run",arguments:writeArgs("baseline")}],usage:{}};
+      if(turns===2)return {text:"The baseline external state is the strongest candidate so far, but acceptance remains unresolved.",toolCalls:[],usage:{}};
+      if(turns===3)return {text:'{"status":"incomplete","progress":"uncertain","edit_support":"supported","unresolved":["acceptance remains below target"],"reason":"A bounded external-state correction is supported."}',toolCalls:[],usage:{}};
+      if(turns===4)return {text:"",toolCalls:[{id:"worse",namespace:"trebell_terminal",name:"run",arguments:writeArgs("worse")}],usage:{}};
+      if(turns===5)return {text:"",toolCalls:[{id:"verify-worse",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","print('metric=worse')"]})}],usage:{}};
+      if(turns===6)return {text:"The new external state is worse than the baseline and still fails acceptance.",toolCalls:[],usage:{}};
+      if(turns===7)return {text:'{"status":"incomplete","progress":"regressed","edit_support":"supported","unresolved":["acceptance remains below target"],"reason":"The measured metric regressed relative to the recovery incumbent."}',toolCalls:[],usage:{}};
+      if(turns===8){
+        assert.equal(request.toolChoice,"required");
+        assert.ok(request.messages.some(message=>message.role==="developer"&&/external\/runtime state regressed/i.test(String(message.content||""))));
+        return {text:"",toolCalls:[{id:"restore",namespace:"trebell_terminal",name:"run",arguments:writeArgs("baseline")}],usage:{}};
+      }
+      if(turns===9)return {text:"",toolCalls:[{id:"verify-restore",namespace:"trebell_terminal",name:"run",arguments:JSON.stringify({command:"python",args:["-c","print('metric=baseline')"]})}],usage:{}};
+      if(turns===10)return {text:"The strongest baseline state has been restored; acceptance is still unresolved.",toolCalls:[],usage:{}};
+      if(turns===11)return {text:'{"status":"incomplete","progress":"unchanged","edit_support":"unsupported","unresolved":["acceptance remains below target"],"reason":"The external state is back to the prior incumbent but the target remains unresolved."}',toolCalls:[],usage:{}};
+      throw new Error("unexpected provider call "+turns);
+    },
+    executeTool:async call=>{executed.push(call.id);return {exitCode:0,stdout:String(call.id).startsWith("verify-")?"metric observed":"updated"}},
+  });
+  assert.deepEqual(executed,["baseline","worse","verify-worse","restore","verify-restore"]);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_external_restore_required").length,1);
+  assert.equal(events.filter(event=>event.name==="native.completion.recovery_external_incumbent_restored").length,1);
+  assert.match(result.text,/strongest evidence-backed task state has been preserved or restored/i);
 });
 
 test("native semantic completion gate rejects a novel pre-edit blocker without relying on blocker wording",async()=>{
