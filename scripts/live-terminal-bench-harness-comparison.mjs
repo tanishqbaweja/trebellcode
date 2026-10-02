@@ -14,6 +14,7 @@ import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTermin
 import { estimateGpt6LunaStandardCostFromAggregate, GPT6_LUNA_STANDARD_PRICING } from "./terminal-bench-cost.mjs";
 import { cleanupDockerProject, composeProjectForTrial, findNativeTrialDir, recoverDroppedNativeTrial } from "./terminal-bench-native-salvage.mjs";
 import { cleanupSealedExitedHarborEnvironments, isDockerExecTransportFailure, isDockerImagePullFailure, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion } from "./terminal-bench-docker-recovery.mjs";
+import { prewarmTerminalBenchTaskCache } from "./terminal-bench-task-cache.mjs";
 
 if(!process.argv.includes("--live"))throw new Error("Refusing to run paid/live Terminal-Bench without --live.");
 
@@ -216,6 +217,10 @@ try{
     ...(nativePinnedNodeTarballPath?{TREBELL_NODE_PINNED_TARBALL:nativePinnedNodeTarballPath}: {}),
     ...(codexPinnedTarballPath?{TREBELL_CODEX_PINNED_TARBALL:codexPinnedTarballPath}: {}),
   },outputRoot=join(root,".harbor-jobs"),jobs=[];
+  let taskCachePrewarm=null;
+  if(PARALLEL&&selectedLanes.length>1){
+    taskCachePrewarm={startedAt:new Date().toISOString(),...(await prewarmTerminalBenchTaskCache({harbor,dataset:DATASET,task:TASK,env:sharedEnv,runFn:run})),finishedAt:new Date().toISOString()};
+  }
   const willRunCodexApi=selectedLanes.some(lane=>lane.label==="codex-api"),willRunCodexOauth=selectedLanes.some(lane=>lane.label==="codex-oauth");
   if(willRunCodexOauth)await access(join(homedir(),".codex","auth.json"));
   if(willRunCodexApi){
@@ -230,7 +235,7 @@ try{
     status:"pending",startedAt:null,finishedAt:null,runError:null,attempts:[],retryReason:null,retryCleanup:null,infrastructureFailureReason:null,
   }));
   const reportSnapshot=({complete=false}={})=>({
-    pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER,
+    pairId,dataset:DATASET,task:TASK,model:MODEL,reasoningEffort:EFFORT,setupTimeoutMultiplier:SETUP_TIMEOUT_MULTIPLIER,agentTimeoutMultiplier:AGENT_TIMEOUT_MULTIPLIER,taskCachePrewarm,
     usesBaseAgentTimeout:AGENT_TIMEOUT_MULTIPLIER===1,
     timeoutComparability:AGENT_TIMEOUT_MULTIPLIER===1?"benchmark-base":"extended-agent-timeout",
     sameModel:true,sameReasoningEffort:true,sequential:!PARALLEL,parallel:PARALLEL,codexAuthMode:CODEX_AUTH_MODE,codexInstallMode:CODEX_INSTALL_MODE,nativeReasoningContext:NATIVE_REASONING_CONTEXT,
@@ -285,11 +290,11 @@ try{
     laneState.status="running";laneState.startedAt=new Date().toISOString();await persistReport({complete:false});
     let runError=null,runnerError=null,regradeRecovery=null;
     try{await run(harbor,args,{env:harnessEnv})}catch(error){runnerError=error?.message||String(error);runError=runnerError}
-    const failedTrial=await trialResult(outputRoot,jobName);
+    const failedTrial=await trialResult(outputRoot,jobName),preTrialRunnerFailure=Boolean(runnerError)&&!failedTrial;
     const subnetExhaustion=isPreAgentDockerSubnetExhaustion(failedTrial),imagePullFailure=isPreAgentDockerImagePullFailure(failedTrial),dockerExecTransportFailure=isDockerExecTransportFailure(failedTrial);
-    laneState.attempts.push({jobName,status:runnerError||subnetExhaustion||imagePullFailure||dockerExecTransportFailure?"failed":"finished",runnerError,trialInfrastructureFailure:subnetExhaustion?"docker_subnet_exhaustion":imagePullFailure?"docker_image_pull_failure":dockerExecTransportFailure?"docker_exec_transport_failure":null});
+    laneState.attempts.push({jobName,status:runnerError||subnetExhaustion||imagePullFailure||dockerExecTransportFailure?"failed":"finished",runnerError,trialInfrastructureFailure:preTrialRunnerFailure?"pre_trial_runner_failure":subnetExhaustion?"docker_subnet_exhaustion":imagePullFailure?"docker_image_pull_failure":dockerExecTransportFailure?"docker_exec_transport_failure":null});
     if(dockerExecTransportFailure)laneState.infrastructureFailureReason="docker_exec_transport_failure";
-    if(subnetExhaustion||imagePullFailure){
+    if(subnetExhaustion||imagePullFailure||preTrialRunnerFailure){
         let cleanup;
         try{
           cleanup=await cleanupSealedExitedHarborEnvironments(outputRoot,{
@@ -300,16 +305,17 @@ try{
           cleanup={eligibleProjects:null,removedContainers:0,removedNetworks:0,projects:[],error:String(error?.message||error)};
         }
         const retryJobName=jobName+"-retry1";
-        laneState.retryReason=subnetExhaustion?"docker_subnet_exhaustion":"docker_image_pull_failure";laneState.retryCleanup=cleanup;laneState.jobName=retryJobName;jobName=retryJobName;
+        laneState.retryReason=preTrialRunnerFailure?"pre_trial_runner_failure":subnetExhaustion?"docker_subnet_exhaustion":"docker_image_pull_failure";laneState.retryCleanup=cleanup;laneState.jobName=retryJobName;jobName=retryJobName;
         args=argsForJob(jobName);
         if(retainNativeEnvironment)args.push("--no-delete");
         if(SETUP_TIMEOUT_MULTIPLIER>1)args.push("--agent-setup-timeout-multiplier",String(SETUP_TIMEOUT_MULTIPLIER));
         if(AGENT_TIMEOUT_MULTIPLIER!==1)args.push("--agent-timeout-multiplier",String(AGENT_TIMEOUT_MULTIPLIER));
         runnerError=null;runError=null;await persistLatestPointer();await persistReport({complete:false});
         try{await run(harbor,args,{env:harnessEnv})}catch(error){runnerError=error?.message||String(error);runError=runnerError}
-        const retryTrial=await trialResult(outputRoot,jobName),retrySubnetExhaustion=isPreAgentDockerSubnetExhaustion(retryTrial),retryImagePullFailure=isPreAgentDockerImagePullFailure(retryTrial),retryDockerExecTransportFailure=isDockerExecTransportFailure(retryTrial);
-        laneState.attempts.push({jobName,status:runnerError||retrySubnetExhaustion||retryImagePullFailure||retryDockerExecTransportFailure?"failed":"finished",runnerError,trialInfrastructureFailure:retrySubnetExhaustion?"docker_subnet_exhaustion":retryImagePullFailure?"docker_image_pull_failure":retryDockerExecTransportFailure?"docker_exec_transport_failure":null});
-        if(retrySubnetExhaustion)laneState.infrastructureFailureReason="docker_subnet_exhaustion";
+        const retryTrial=await trialResult(outputRoot,jobName),retryPreTrialRunnerFailure=Boolean(runnerError)&&!retryTrial,retrySubnetExhaustion=isPreAgentDockerSubnetExhaustion(retryTrial),retryImagePullFailure=isPreAgentDockerImagePullFailure(retryTrial),retryDockerExecTransportFailure=isDockerExecTransportFailure(retryTrial);
+        laneState.attempts.push({jobName,status:runnerError||retrySubnetExhaustion||retryImagePullFailure||retryDockerExecTransportFailure?"failed":"finished",runnerError,trialInfrastructureFailure:retryPreTrialRunnerFailure?"pre_trial_runner_failure":retrySubnetExhaustion?"docker_subnet_exhaustion":retryImagePullFailure?"docker_image_pull_failure":retryDockerExecTransportFailure?"docker_exec_transport_failure":null});
+        if(retryPreTrialRunnerFailure)laneState.infrastructureFailureReason="pre_trial_runner_failure";
+        else if(retrySubnetExhaustion)laneState.infrastructureFailureReason="docker_subnet_exhaustion";
         else if(retryImagePullFailure)laneState.infrastructureFailureReason="docker_image_pull_failure";
         else if(retryDockerExecTransportFailure)laneState.infrastructureFailureReason="docker_exec_transport_failure";
     }

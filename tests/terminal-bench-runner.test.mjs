@@ -10,6 +10,7 @@ import { harborLaneProcessCommand, lingeringJobProcesses, parsePsProcesses, pars
 import { launchDetachedDescriptor, readDetachedStatus, writeDetachedDescriptor } from "../scripts/detached-process.mjs";
 import { acquireTerminalBenchPairLock, sharedTerminalBenchLockPath, sharedTerminalBenchNativeRerunLockPath } from "../scripts/terminal-bench-pair-lock.mjs";
 import { cleanupSealedExitedHarborEnvironments, isDockerExecTransportFailure, isDockerImagePullFailure, isPreAgentDockerImagePullFailure, isPreAgentDockerSubnetExhaustion, sealedHarborEnvironmentProjects } from "../scripts/terminal-bench-docker-recovery.mjs";
+import { prewarmTerminalBenchTaskCache, terminalBenchTaskPackageRef } from "../scripts/terminal-bench-task-cache.mjs";
 
 test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable trial metrics",async()=>{
   const source=await readFile(new URL("../scripts/live-terminal-bench-harness-comparison.mjs",import.meta.url),"utf8");
@@ -28,6 +29,9 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/usesBaseAgentTimeout:AGENT_TIMEOUT_MULTIPLIER===1/);
   assert.match(source,/timeoutComparability:AGENT_TIMEOUT_MULTIPLIER===1\?"benchmark-base":"extended-agent-timeout"/);
   assert.match(source,/const PARALLEL=!sequentialRequested/);
+  assert.match(source,/prewarmTerminalBenchTaskCache/);
+  assert.match(source,/PARALLEL&&selectedLanes\.length>1/);
+  assert.match(source,/taskCachePrewarm/);
   assert.match(source,/--sequential/);
   assert.match(source,/cannot be both --parallel and --sequential/);
   assert.match(nativeRunnerSource,/semanticCompletionGate:true/);
@@ -109,7 +113,10 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/infrastructureFailureReason/);
   assert.match(source,/infrastructureInterrupted:/);
   assert.match(source,/infrastructureComparable:/);
-  assert.match(source,/if\(subnetExhaustion\|\|imagePullFailure\)\{/);
+  assert.match(source,/preTrialRunnerFailure=Boolean\(runnerError\)&&!failedTrial/);
+  assert.match(source,/if\(subnetExhaustion\|\|imagePullFailure\|\|preTrialRunnerFailure\)\{/);
+  assert.match(source,/retryPreTrialRunnerFailure=Boolean\(runnerError\)&&!retryTrial/);
+  assert.match(source,/pre_trial_runner_failure/);
   assert.doesNotMatch(source,/if\(subnetExhaustion\|\|dockerExecTransportFailure\)/);
   assert.match(source,/const failedTrial=await trialResult\(outputRoot,jobName\)/);
   assert.match(source,/trialInfrastructureFailure:/);
@@ -154,6 +161,20 @@ test("Terminal-Bench pair runner prevents overlapping pairs and saves comparable
   assert.match(source,/const laneFailed=Boolean\(runError\)\|\|Number\(jobs\[laneIndex\]\?\.errors\|\|0\)>0\|\|Number\(jobs\[laneIndex\]\?\.completed\|\|0\)<1/);
   assert.match(source,/laneState\.status=jobs\[laneIndex\]\?\.infrastructureFailureReason\?"infrastructure-failed":laneFailed\?"failed":"finished"/);
   assert.match(source,/writeFile\(reportPath,JSON\.stringify\(report,null,2\)/);
+});
+
+test("Terminal-Bench parallel task cache prewarm derives the exact dataset task version",async()=>{
+  assert.equal(terminalBenchTaskPackageRef("terminal-bench/terminal-bench@4.0.0","terminal-bench/example-task"),"terminal-bench/example-task@4.0.0");
+  assert.equal(terminalBenchTaskPackageRef("other-org/dataset@v2","terminal-bench/example-task"),null);
+  assert.equal(terminalBenchTaskPackageRef("terminal-bench/terminal-bench","terminal-bench/example-task"),null);
+  const calls=[];
+  const result=await prewarmTerminalBenchTaskCache({
+    harbor:"harbor-test",dataset:"terminal-bench/terminal-bench@4.0.0",task:"terminal-bench/example-task",env:{SAFE:"1"},
+    runFn:async(command,args,options)=>{calls.push({command,args,options})},
+  });
+  assert.deepEqual(result,{packageRef:"terminal-bench/example-task@4.0.0",completed:true});
+  assert.deepEqual(calls,[{command:"harbor-test",args:["task","download","terminal-bench/example-task@4.0.0","--cache"],options:{env:{SAFE:"1"}}}]);
+  await assert.rejects(()=>prewarmTerminalBenchTaskCache({harbor:"h",dataset:"local-dataset",task:"terminal-bench/example-task",runFn:async()=>{}}),/Cannot derive a registry task package ref/);
 });
 
 test("Terminal-Bench Docker subnet retry only recognizes pre-agent exhaustion",()=>{
