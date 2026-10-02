@@ -37,6 +37,11 @@ test("Harbor Native adapter stages the OpenAI key instead of passing it through 
 test("Harbor Native runner keeps durable output retrieval available and avoids a smaller private task budget",async()=>{
   const source=await readFile(new URL("../benchmarks/harbor/trebell-native-runner.mjs",import.meta.url),"utf8");
   assert.match(source,/output:true/);
+  assert.match(source,/process:true/);
+  assert.match(source,/NativeBackgroundProcessManager/);
+  assert.match(source,/backgroundProcesses,threadId:"trebell-harbor"/);
+  assert.match(source,/"trebell_workspace","trebell_terminal","trebell_process"/);
+  assert.match(source,/backgroundProcesses\.closeAll\(\)/);
   assert.match(source,/TREBELL_HARBOR_MAX_MODEL_TURNS\)\|\|500/);
   assert.match(source,/TREBELL_HARBOR_MAX_TOOL_CALLS\)\|\|5000/);
   assert.match(source,/maxWallTimeMs=.*null/);

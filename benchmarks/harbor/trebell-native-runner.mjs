@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
 import { ContextEngine } from "../../src/context-engine.mjs";
+import { NativeBackgroundProcessManager } from "../../src/native-background-processes.mjs";
 import { createNativeBuiltins } from "../../src/native-builtins.mjs";
 import { NativeAgentSession } from "../../src/native-agent-session.mjs";
 import { attachNativePromptProvenance, nativeCacheCarryover } from "../../src/native-request-metrics.mjs";
@@ -62,6 +63,7 @@ const tools=platformDynamicToolNamespaces({
   output:true,
   workspaceTools:true,
   terminal:true,
+  process:true,
   browser:false,
   computer:false,
   sourceControl:false,
@@ -69,7 +71,14 @@ const tools=platformDynamicToolNamespaces({
 });
 const outputStore=new NativeToolOutputStore({directory:"/tmp/trebell-output",environment:process.env});
 const contextEngine=new ContextEngine();
-const builtins=createNativeBuiltins({root,environment:process.env});
+const requests=[],assistantChunks=[],eventStarted=performance.now(),strategyMetrics=createNativeStrategyMetrics();let eventWrites=Promise.resolve();
+const onEvent=event=>{
+  const row={atMs:Math.round(performance.now()-eventStarted),name:event?.name||null,status:event?.status||null,data:event?.data||null};
+  observeNativeStrategyEvent(strategyMetrics,event,row.atMs);
+  eventWrites=eventWrites.then(()=>appendFile(eventsPath,JSON.stringify(row)+"\n","utf8")).catch(()=>{});
+};
+const backgroundProcesses=new NativeBackgroundProcessManager({environment:process.env,onEvent});
+const builtins=createNativeBuiltins({root,environment:process.env,backgroundProcesses,threadId:"trebell-harbor"});
 const discoverRepositoryTools=({query,limit=8}={})=>{
   const exposed=(tools.find(item=>item?.name==="trebell_repo")?.tools||[]).map(item=>item.name);
   const matches=searchRepositoryToolDefinitions({query,limit,exclude:exposed});
@@ -101,17 +110,10 @@ const executor=createNativeToolExecutor({
     projectAvailable:true,
   },
   executeShared:call=>{
-    if(["trebell_workspace","trebell_terminal"].includes(call.namespace))return builtins(call);
+    if(["trebell_workspace","trebell_terminal","trebell_process"].includes(call.namespace))return builtins(call);
     throw new Error("Unsupported Harbor benchmark tool: "+call.namespace+"/"+call.name);
   },
 });
-
-const requests=[],assistantChunks=[],eventStarted=performance.now(),strategyMetrics=createNativeStrategyMetrics();let eventWrites=Promise.resolve();
-const onEvent=event=>{
-  const row={atMs:Math.round(performance.now()-eventStarted),name:event?.name||null,status:event?.status||null,data:event?.data||null};
-  observeNativeStrategyEvent(strategyMetrics,event,row.atMs);
-  eventWrites=eventWrites.then(()=>appendFile(eventsPath,JSON.stringify(row)+"\n","utf8")).catch(()=>{});
-};
 const session=new NativeAgentSession({
   cwd:root,
   provider,
@@ -207,9 +209,13 @@ const metrics={
   error:error?String(error?.stack||error?.message||error).slice(-8000):null,
 };
 await eventWrites;
-await writeFile(metricsPath,JSON.stringify(metrics,null,2)+"\n","utf8");
-if(metrics.finalReply)console.log(metrics.finalReply);
-console.log("TREBELL_HARBOR_METRICS "+JSON.stringify(metrics));
-await session.close().catch(()=>{});
-manager.close();
+try{
+  await writeFile(metricsPath,JSON.stringify(metrics,null,2)+"\n","utf8");
+  if(metrics.finalReply)console.log(metrics.finalReply);
+  console.log("TREBELL_HARBOR_METRICS "+JSON.stringify(metrics));
+}finally{
+  await backgroundProcesses.closeAll().catch(()=>{});
+  await session.close().catch(()=>{});
+  manager.close();
+}
 if(error)throw error;

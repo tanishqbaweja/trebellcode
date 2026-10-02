@@ -523,6 +523,20 @@ Payload-free per-turn analysis found that Native model turns **5** and **17** al
 
 ---
 
+## 2026-10-02 - Expose Native background processes in Harbor benchmarks
+
+**Evidence:** the live `ctr-optimization` comparison is frozen at source `ccbdc2ec`, so it is unaffected by this change. While auditing the running pair without changing its task state, Native's bounded telemetry showed that its semantic completion gate exhausted all four recovery epochs while a material external condition remained unresolved. A separate capability audit then found a generic benchmark-adapter mismatch: Trebell Native already owns a real `trebell_process` namespace and `NativeBackgroundProcessManager`, but `benchmarks/harbor/trebell-native-runner.mjs` enabled only `trebell_terminal` and constructed its built-ins without a background-process manager or thread id. That made `trebell_process` unavailable in Harbor even though it is a supported Native platform capability. External harnesses with ordinary shell control can keep long-lived child processes alive, so the omission can unfairly disadvantage Native on servers, watchers, daemons, and long-lived external-state tasks.
+
+**Harness change:** the Harbor Native runner now enables `process:true`, instantiates the existing `NativeBackgroundProcessManager`, passes it into `createNativeBuiltins` with a benchmark-owned thread id, routes `trebell_process` calls through the same built-in executor as workspace/terminal calls, and closes any still-owned background processes during runner shutdown. No benchmark-only process implementation or fake tool was added.
+
+**Why:** a benchmark adapter should not silently remove a real first-party harness capability. `trebell_terminal/run` is intentionally bounded to five minutes and is not a replacement for thread-owned long-running processes. Reusing the production manager preserves the same argv isolation, bounded output, secret-redaction/environment rules, ownership, status, stop, and descendant-cleanup behavior used by Trebell Native outside Harbor.
+
+**Expected effect:** future Native benchmark runs can start, inspect, and stop genuine long-running processes when the task requires them instead of being forced to compress that work into short terminal calls or terminate while an external condition is still pending. This should improve capability parity and long-horizon task reliability without changing reasoning effort or adding task-specific hints.
+
+**Validation status:** focused Harbor/process/Terminal-Bench tests pass **26 / 26**; the complete repository suite passes **1,279 / 1,279**; `npm run bench:terminal:bundle` passes; `git diff --check` is clean. Rebuilt Native bundle SHA-256 is **`bb0c9d42a6dd85b7a057ea1c8f02b9ddd7380a94a1ce42652a57785041801093`**. Fresh external validation is pending. The current `ctr-optimization` run cannot validate this change because its Native bundle was already frozen before the patch. Its task details were also exposed during a host process-liveness inspection, so any later rerun of that task should be treated as regression evidence rather than independent unseen-generalization evidence.
+
+---
+
 ## Template for future entries
 
 ### YYYY-MM-DD - Short change name
