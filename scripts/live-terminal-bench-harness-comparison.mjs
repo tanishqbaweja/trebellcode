@@ -285,10 +285,15 @@ try{
     if(runnerError){
       const failedTrial=await trialResult(outputRoot,jobName);
       if(isPreAgentDockerSubnetExhaustion(failedTrial)){
-        const cleanup=await cleanupSealedExitedHarborEnvironments(outputRoot,{
-          captureFn:(command,argv)=>capture(command,argv,{env:harnessEnv}),
-          runFn:(command,argv)=>run(command,argv,{env:harnessEnv}),
-        });
+        let cleanup;
+        try{
+          cleanup=await cleanupSealedExitedHarborEnvironments(outputRoot,{
+            captureFn:(command,argv)=>capture(command,argv,{env:harnessEnv}),
+            runFn:(command,argv)=>run(command,argv,{env:harnessEnv}),
+          });
+        }catch(error){
+          cleanup={eligibleProjects:null,removedContainers:0,removedNetworks:0,projects:[],error:String(error?.message||error)};
+        }
         const retryJobName=jobName+"-retry1";
         laneState.retryReason="docker_subnet_exhaustion";laneState.retryCleanup=cleanup;laneState.jobName=retryJobName;jobName=retryJobName;
         args=argsForJob(jobName);
