@@ -333,7 +333,7 @@ After sealing, verifier-only diagnosis exposed the same compatibility failure in
 
 **Expected effect:** higher compatibility correctness on repair/refactor tasks, fewer broad rewrites, fewer late recovery edits, and lower total turns/output/cost when the original interface was already the acceptance surface.
 
-**Validation status:** focused Native prompt/agent-loop coverage passes **191/191**, Native benchmark/adapter/runner coverage passes **22/22**, and the exact repository suite passes **1,275/1,275**. The Harbor Native bundle rebuilds with SHA-256 **`ecdd1c3990639a78b9f7d8cd673c9d737ab8856daab1b3af1ce4b0790f699e1e`**, and `git diff --check` is clean. The inspected `embedding-drift-monitor` task must not be rerun as fresh proof; external validation requires a different unseen task.
+**Validation status:** focused Native prompt/agent-loop coverage passes **191/191**. After the separate Windows lane-drain hardening in **`1da49963`**, lane-drain coverage passes **20/20**, the broader provider/benchmark gate passes **113/113**, and the exact repository suite passes **1,276/1,276**. The Harbor Native bundle rebuilds with SHA-256 **`ecdd1c3990639a78b9f7d8cd673c9d737ab8856daab1b3af1ce4b0790f699e1e`**, and `git diff --check` is clean. The inspected `embedding-drift-monitor` task must not be rerun as fresh proof; external validation requires a different unseen task.
 
 ---
 
@@ -455,9 +455,23 @@ Docker Desktop's API wedged after the paid model work. Native and OAuth had comp
 
 **Expected effect:** materially reduce late-turn inference/output spend on unresolved tasks while preserving one full cross-epoch strategy reset cycle. Tasks or callers with deliberate reasons for deeper search can still override the default.
 
-**Validation status:** the recovery-only change is committed as **`6de561e0`** (`Tighten Native recovery runway`). Focused recovery tests pass **3 / 3**; full Native agent-loop passes **189 / 189**; provider/benchmark infrastructure gate passes **112 / 112**. An isolated detached worktree at exact commit `6de561e0` passes the full repository suite **1,275 / 1,275**, the Harbor Native bundle build, and `git diff --check`. The recovery-only bundle SHA-256 is **`15c67a4c6fc4710d3925af1268dca14801447033c8d1b6d219a27a7a215d6083`**. Fresh unseen external validation of the four-epoch default is still pending.
+**Validation status:** the recovery-only change is committed as **`6de561e0`** (`Tighten Native recovery runway`). Focused recovery tests pass **3 / 3**; full Native agent-loop passes **189 / 189**; the then-current provider/benchmark gate passes **112 / 112**. Its clean detached worktree builds the Native bundle with SHA-256 **`15c67a4c6fc4710d3925af1268dca14801447033c8d1b6d219a27a7a215d6083`**. A monolithic suite rerun at exact `6de561e0` reached **1,273 / 1,275**, with only the two Windows lane-drain process-detection tests failing; those failures reproduced on main with identical runner code and were subsequently fixed independently in **`1da49963`**. The current tree passes lane-drain **20 / 20**, broader provider/benchmark **113 / 113**, and full repository **1,276 / 1,276**. Fresh unseen external validation of the four-epoch default is still pending.
 
 Do **not** rerun `embedding-drift-monitor` as fresh evidence. The task and verifier are now inspected.
+
+---
+
+### 2026-10-02 - Fail closed on Windows Terminal-Bench lane-drain process enumeration
+
+**Evidence:** after validating the recovery-only commit in a detached worktree, the monolithic suite repeatedly failed exactly two tests: detection of a live Harbor job-token process and detection of a live Docker trial-token process. The same failures reproduced from main even though `terminal-bench-process-drain.mjs` and its tests were byte-identical between `6de561e0` and current HEAD. Direct CIM enumeration returned process command lines correctly, and the signature matcher accepted the exact controlled command line, but the Node capture path returned an empty process set.
+
+**Harness change:** **`1da49963`** forces Windows PowerShell process-list stdout to UTF-8 before `ConvertTo-Json`, adds a BOM-tolerant JSON normalizer, and makes malformed process-list JSON throw `terminal_bench_process_list_parse` instead of silently returning `[]`.
+
+**Why:** lane draining is a paid-benchmark safety boundary. A parse failure must never masquerade as "no lingering process," because that can permit overlapping Harbor/Docker lanes and contaminate cost/timing evidence. The fix keeps the signature-aware observer exclusion while making Windows process capture deterministic and fail-closed.
+
+**Expected effect:** reliable Windows lane-drain detection, faster process discovery, and no false "drained" result when PowerShell serialization is unreadable.
+
+**Validation status:** `tests/terminal-bench-runner.test.mjs` passes **20 / 20**; the combined provider/benchmark gate passes **113 / 113**; the exact repository suite passes **1,276 / 1,276**; `npm run bench:terminal:bundle` passes; `git diff --check` is clean. The Native agent bundle remains SHA-256 **`ecdd1c3990639a78b9f7d8cd673c9d737ab8856daab1b3af1ce4b0790f699e1e`** because this fix is host benchmark orchestration, not bundled agent code.
 
 ---
 
