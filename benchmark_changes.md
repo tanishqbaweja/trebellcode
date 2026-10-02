@@ -303,7 +303,7 @@ The current comparison program uses the same model and reasoning effort across l
 
 **Expected effect:** Lower repeated input/context cost on long OpenAI Native sessions without lowering thinking effort, while preserving explicit opt-in to broader hidden-reasoning carryover when needed.
 
-**Validation status:** Provider/turn regression gate passes **90/90**; Native/benchmark integration gate passes **47/47**. **Fresh unseen external validation is still pending.**
+**Validation status:** Provider/turn regression gate passes **90/90**; full Native agent-loop coverage passes **188/188**; Native/benchmark integration passes **47/47**; the exact repository suite passes **1,274/1,274**; Harbor Native bundle build and `git diff --check` are clean. Rebuilt bundle SHA-256: **`b05df0de7f525b42a9dcf6337644b799328ba86e00a0b197e74bef5ae8106563`**. **Fresh unseen external validation is still pending.**
 
 ---
 
