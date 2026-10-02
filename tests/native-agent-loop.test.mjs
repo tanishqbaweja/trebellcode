@@ -2594,7 +2594,11 @@ test("native semantic completion gate rejects unsupported completion without tas
         return {text:'{"status":"incomplete","unresolved":["p95 latency is still above the requested ceiling"],"reason":"The latest measured p95 is 141 ms, so the requested performance target is not satisfied."}',toolCalls:[],usage:{}};
       }
       if(providerCalls===4){
-        assert.ok(request.messages.some(message=>message.role==="developer"&&/completion gate rejected the proposed final answer as incomplete/i.test(String(message.content||""))));
+        const recovery=request.messages.find(message=>message.role==="developer"&&/completion gate rejected the proposed final answer as incomplete/i.test(String(message.content||"")));
+        assert.ok(recovery);
+        assert.match(String(recovery.content),/shared premise behind the recent attempts/i);
+        assert.match(String(recovery.content),/algorithm or problem family/i);
+        assert.doesNotMatch(String(recovery.content),/parser\/decoder|re-segmentation|replicated representations/i);
         return {text:"",toolCalls:[{id:"measure",namespace:"trebell_terminal",name:"run",arguments:'{"command":"node","args":["measure-latency.mjs"]}'}],usage:{}};
       }
       if(providerCalls===5)return {text:"The implementation is updated and the latest measured p95 is 84 ms, below the requested 100 ms ceiling.",toolCalls:[],usage:{}};
@@ -2826,6 +2830,9 @@ test("native changes recovery strategy after three incomplete semantic epochs wi
         const reset=request.messages.find(message=>message.role==="developer"&&/cross-epoch recovery strategy reset/i.test(String(message.content||"")));
         assert.ok(reset);
         assert.match(String(reset.content),/changes the method, not the recovery budget/i);
+        assert.match(String(reset.content),/algorithm or problem family/i);
+        assert.match(String(reset.content),/test that premise independently/i);
+        assert.doesNotMatch(String(reset.content),/serialized, sharded|producer-to-consumer mappings/i);
         return {text:"The result remains unverified after changing strategy.",toolCalls:[],usage:{}};
       }
       if(turns===9)return {text:'{"status":"incomplete","unresolved":["exact acceptance still fails"],"reason":"The bounded semantic recovery budget is exhausted."}',toolCalls:[],usage:{}};
@@ -3479,10 +3486,10 @@ test("native failed acceptance overrides a stale verified-finalization-ready heu
       if(providerCalls===6){
         const recovery=request.messages.find(message=>message.role==="developer"&&/required acceptance or verification check actually failed/i.test(String(message.content||"")));
         assert.ok(recovery);
-        assert.match(String(recovery.content),/contradicts a documented invariant/i);
-        assert.match(String(recovery.content),/upstream parsing, decoding, measurement, or ordering assumption/i);
-        assert.match(String(recovery.content),/falsification must cross that abstraction boundary/i);
-        assert.match(String(recovery.content),/do not reuse the suspect parser\/decoder\/adapter\/mapper/i);
+        assert.match(String(recovery.content),/shared premise behind the current approach/i);
+        assert.match(String(recovery.content),/algorithmic, contractual, environmental, stateful, representational/i);
+        assert.match(String(recovery.content),/evidence that does not depend on it/i);
+        assert.doesNotMatch(String(recovery.content),/parser\/decoder\/adapter\/mapper|offsets, framing, ordering/i);
         return {text:"",toolCalls:[{id:"diagnose",namespace:"trebell_terminal",name:"run",arguments:'{"command":"python","args":["diagnose-upstream.py"]}'}],usage:{}};
       }
       return {text:"The upstream decode was repaired and the exact acceptance path now passes.",toolCalls:[],usage:{}};
